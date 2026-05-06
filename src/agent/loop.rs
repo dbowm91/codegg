@@ -514,7 +514,14 @@ impl AgentLoop {
             tool_registry,
             hook_registry,
             context_tracker,
-            doom_detector: DoomLoopDetector::new(50, 20),
+            doom_detector: DoomLoopDetector::new(
+                50,
+                config
+                    .permission
+                    .as_ref()
+                    .and_then(|p| p.doomloop_threshold)
+                    .unwrap_or(20),
+            ),
             steering: AtomicBool::new(false),
             follow_up_tx,
             follow_up_rx,
