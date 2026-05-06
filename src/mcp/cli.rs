@@ -69,6 +69,7 @@ impl McpCli {
                 transport: None,
                 timeout: Some(30000),
                 oauth: None,
+                reconnect: None,
             }),
             enabled: Some(true),
         };

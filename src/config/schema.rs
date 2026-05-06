@@ -227,6 +227,17 @@ pub struct McpServerConfig {
     pub transport: Option<String>,
     pub timeout: Option<u64>,
     pub oauth: Option<McpOAuthConfig>,
+    pub reconnect: Option<McpReconnectConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct McpReconnectConfig {
+    pub enabled: Option<bool>,
+    pub max_retries: Option<u64>,
+    pub base_delay_secs: Option<u64>,
+    pub max_delay_secs: Option<u64>,
+    pub heartbeat_interval_secs: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

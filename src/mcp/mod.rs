@@ -18,7 +18,7 @@ use crate::error::McpError;
 use crate::provider::ToolDefinition;
 use auth::OAuthManager;
 use local::LocalClient;
-use remote::RemoteClient;
+use remote::McpConnectionManager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpPrompt {
@@ -77,7 +77,7 @@ pub struct McpServer {
 #[derive(Clone)]
 pub enum McpClientType {
     Local(Arc<RwLock<LocalClient>>),
-    Remote(Arc<RwLock<RemoteClient>>),
+    Remote(Arc<RwLock<McpConnectionManager>>),
 }
 
 pub struct McpService {
@@ -143,14 +143,14 @@ impl McpService {
             )));
         }
 
-        let mut client = RemoteClient::new(url, headers, timeout)?;
+        let mut manager = McpConnectionManager::new(url, headers, timeout)?;
 
         if let Some(token) = self.oauth.get_token_for_server(url) {
-            client.set_oauth_token(token).await;
+            manager.set_oauth_token(token).await;
         }
 
-        client.initialize().await?;
-        let tools = client.discover_tools().await?;
+        manager.connect().await?;
+        let tools = manager.discover_tools().await?;
         let mcp_tools = tools
             .into_iter()
             .map(|t| McpTool {
@@ -165,7 +165,7 @@ impl McpService {
             name: name.to_string(),
             status: McpServerStatus::Connected,
             tools: mcp_tools,
-            client: McpClientType::Remote(Arc::new(RwLock::new(client))),
+            client: McpClientType::Remote(Arc::new(RwLock::new(manager))),
         };
         self.servers.insert(key, server);
         Ok(())
