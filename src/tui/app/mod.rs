@@ -1650,7 +1650,7 @@ impl App {
                 if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
                     let perm_id = perm_id.clone();
                     tokio::spawn(async move {
-                        PermissionRegistry::respond(perm_id, choice).await;
+                        PermissionRegistry::respond(perm_id, choice);
                     });
                 }
                 self.dialog_state.permission_dialog = None;
@@ -1661,7 +1661,7 @@ impl App {
                 if let Some(session_id) = self.dialog_state.question_session_id.take() {
                     let answers = answers_json.clone();
                     tokio::spawn(async move {
-                        QuestionRegistry::answer_question(session_id, answers).await;
+                        QuestionRegistry::answer_question(session_id, answers);
                     });
                 }
                 self.dialog_state.question_dialog = None;
@@ -5011,7 +5011,7 @@ impl App {
             let answers = qd.answers_json();
             if let Some(session_id) = self.dialog_state.question_session_id.take() {
                 tokio::spawn(async move {
-                    QuestionRegistry::answer_question(session_id, answers).await;
+                    QuestionRegistry::answer_question(session_id, answers);
                 });
             }
         }
@@ -5045,8 +5045,7 @@ impl App {
                         true => crate::permission::PermissionChoice::AllowOnce,
                         false => crate::permission::PermissionChoice::DenyOnce,
                     },
-                )
-                .await;
+                );
             });
         }
         self.dialog_state.permission_dialog = None;
@@ -5068,7 +5067,7 @@ impl App {
         if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
             let perm_id = perm_id.clone();
             tokio::spawn(async move {
-                PermissionRegistry::respond(perm_id, choice).await;
+                PermissionRegistry::respond(perm_id, choice);
             });
         }
         self.dialog_state.permission_dialog = None;
