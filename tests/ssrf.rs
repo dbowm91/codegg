@@ -5,6 +5,7 @@ use codegg::security::ssrf::is_internal_ip;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codegg::security::ssrf::{is_internal_ip, validate_host_ip, validate_url_host};
 
     #[test]
     fn test_ipv4_loopback() {

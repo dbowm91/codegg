@@ -13,7 +13,7 @@ use tokio::time::sleep;
 use crate::error::McpError;
 use crate::mcp::{McpPrompt, McpResource, McpResourceContent, PromptArgument};
 use crate::provider::ToolDefinition;
-use crate::security::ssrf::{revalidate_dns, validate_host_ip};
+use crate::security::ssrf::{revalidate_dns, validate_host_ip, validate_url_host};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ConnectionState {
@@ -264,12 +264,10 @@ impl RemoteClient {
         headers: HashMap<String, String>,
         timeout: u64,
     ) -> Result<Self, McpError> {
+        let host = validate_url_host(url).map_err(McpError::Connection)?;
+
         let parsed = reqwest::Url::parse(url)
             .map_err(|e| McpError::Connection(format!("invalid URL: {}", e)))?;
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| McpError::Connection("URL must have a host".to_string()))?
-            .to_string();
         let port = parsed
             .port()
             .unwrap_or_else(|| if parsed.scheme() == "https" { 443 } else { 80 });

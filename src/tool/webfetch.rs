@@ -4,7 +4,7 @@ use serde_json::json;
 use std::time::Duration;
 
 use crate::error::ToolError;
-use crate::security::ssrf::{revalidate_dns, validate_host_ip};
+use crate::security::ssrf::{revalidate_dns, validate_host_ip, validate_url_host};
 use crate::tool::Tool;
 
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024; // 5MB
@@ -87,23 +87,10 @@ impl Tool for WebFetchTool {
 
         let max_length = input["max_length"].as_u64().unwrap_or(10_000) as usize;
 
+        let host = validate_url_host(url).map_err(ToolError::Execution)?;
+
         let parsed_url = reqwest::Url::parse(url)
             .map_err(|_| ToolError::Execution("invalid URL".to_string()))?;
-
-        match parsed_url.scheme() {
-            "http" | "https" => {}
-            _ => {
-                return Err(ToolError::Execution(format!(
-                    "unsupported URL scheme: {} (only http/https allowed)",
-                    parsed_url.scheme()
-                )));
-            }
-        }
-
-        let host = parsed_url
-            .host_str()
-            .ok_or_else(|| ToolError::Execution("URL must have a host".to_string()))?;
-
         let port = parsed_url.port().unwrap_or_else(|| {
             if parsed_url.scheme() == "https" {
                 443
@@ -111,10 +98,9 @@ impl Tool for WebFetchTool {
                 80
             }
         });
+        let validated_ips = validate_host_ip(&host, port).map_err(ToolError::Execution)?;
 
-        let validated_ips = validate_host_ip(host, port).map_err(ToolError::Execution)?;
-
-        revalidate_dns(host, port, &validated_ips).map_err(ToolError::Execution)?;
+        revalidate_dns(&host, port, &validated_ips).map_err(ToolError::Execution)?;
 
         let response = self
             .client
