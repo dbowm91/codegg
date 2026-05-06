@@ -714,6 +714,7 @@ async fn handle_spawn_subagent(app: &mut app::App, agent_name: String, prompt: S
         agent: agent_name.clone(),
         parent_id: Some(session_id.clone()),
         denied_tools: Vec::new(),
+        allowed_paths: Vec::new(),
         description: format!(
             "Task for agent '{}': {}",
             agent_name,
@@ -1047,6 +1048,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                 let current_agent_idx = app.agent_state.current_agent;
                 let config = config.clone();
                 let pool = app.session_store.as_ref().map(|s| s.pool());
+                let subagent_pool = app.subagent_pool.clone();
 
                 async move {
                     use crate::agent::prompt::load_agent_prompt;
@@ -1067,7 +1069,18 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     if let Some(base_provider) = registry.get(&provider_name) {
                         debug_log!("Agent task: provider found, creating agent loop");
                         let provider = base_provider.clone_box();
-                        let tool_registry = ToolRegistry::with_defaults();
+                        let mut tool_registry = ToolRegistry::with_defaults();
+
+                        if let Some(pool) = subagent_pool {
+                            let task_tool = crate::tool::task::TaskTool::new(
+                                pool.task_store(),
+                                Some(pool.spawner()),
+                                Some(session_id.clone()),
+                                Vec::new(),
+                            );
+                            tool_registry.register(task_tool);
+                        }
+
                         let permission_checker = PermissionChecker::new(Some(&config), None);
 
                         let system = Some(load_agent_prompt(

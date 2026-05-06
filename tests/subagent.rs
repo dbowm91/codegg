@@ -129,6 +129,7 @@ mod tests {
                 request.agent.clone(),
                 request.parent_id.clone(),
                 request.denied_tools.clone(),
+                request.allowed_paths.clone(),
             )
             .await;
         request.task_id = created_id;
@@ -373,6 +374,7 @@ mod tests {
             agent: "test-agent".to_string(),
             parent_id: Some("parent-session-123".to_string()),
             denied_tools: vec![],
+            allowed_paths: vec![],
             description: "Test task".to_string(),
             depth: 0,
         };
@@ -488,6 +490,7 @@ mod tests {
             agent: "nonexistent-agent".to_string(),
             parent_id: Some("parent".to_string()),
             denied_tools: vec![],
+            allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 0,
         };
@@ -550,6 +553,7 @@ mod tests {
             agent: "test-agent".to_string(),
             parent_id: Some("parent".to_string()),
             denied_tools: vec![],
+            allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 0,
         };
@@ -615,6 +619,7 @@ mod tests {
             agent: "test-agent".to_string(),
             parent_id: None,
             denied_tools: vec![],
+            allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 3, // Equal to max_depth
         };
@@ -647,6 +652,7 @@ mod tests {
             agent: "test-agent".to_string(),
             parent_id: None,
             denied_tools: vec![],
+            allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 4, // Greater than max_depth
         };
@@ -958,6 +964,7 @@ mod tests {
                 agent: "test-agent".to_string(),
                 parent_id: None,
                 denied_tools: vec![],
+            allowed_paths: vec![],
                 description: format!("Task {}", i),
                 depth: 0,
             };
@@ -1061,6 +1068,7 @@ mod tests {
             agent: "test".to_string(),
             parent_id: None,
             denied_tools: vec![],
+            allowed_paths: vec![],
             description: "test".to_string(),
             depth: 0,
         };
@@ -1071,6 +1079,7 @@ mod tests {
             agent: "test".to_string(),
             parent_id: Some("parent".to_string()),
             denied_tools: vec![],
+            allowed_paths: vec![],
             description: "test".to_string(),
             depth: 2,
         };
@@ -1145,6 +1154,7 @@ mod tests {
             agent: "nonexistent".to_string(),
             parent_id: None,
             denied_tools: vec![],
+            allowed_paths: vec![],
             description: "test".to_string(),
             depth: 0,
         };
@@ -1199,6 +1209,7 @@ mod tests {
                     agent: "nonexistent".to_string(),
                     parent_id: None,
                     denied_tools: vec![],
+            allowed_paths: vec![],
                     description: "task 1".to_string(),
                     depth: 0,
                 };
@@ -1217,6 +1228,7 @@ mod tests {
                     agent: "nonexistent".to_string(),
                     parent_id: None,
                     denied_tools: vec![],
+            allowed_paths: vec![],
                     description: "task 2".to_string(),
                     depth: 0,
                 };
@@ -1344,6 +1356,7 @@ mod tests {
             agent: "blocking-agent".to_string(),
             parent_id: Some("parent".to_string()),
             denied_tools: vec![],
+            allowed_paths: vec![],
             description: "Blocking task".to_string(),
             depth: 0,
         };

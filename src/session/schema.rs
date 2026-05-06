@@ -61,12 +61,15 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 13 {
         migrate_v13(pool).await?;
     }
+    if current_version < 14 {
+        migrate_v14(pool).await?;
+    }
 
     sqlx::query(
         "INSERT INTO migration_version (id, version) VALUES (1, ?) \
          ON CONFLICT(id) DO UPDATE SET version = excluded.version",
     )
-    .bind(13i64)
+    .bind(14i64)
     .execute(pool)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
@@ -451,6 +454,15 @@ async fn migrate_v13(pool: &SqlitePool) -> Result<(), StorageError> {
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS snapshot_session_idx ON snapshot(session_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v14(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query("ALTER TABLE task ADD COLUMN allowed_paths TEXT")
         .execute(pool)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;

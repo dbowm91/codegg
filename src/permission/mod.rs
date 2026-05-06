@@ -753,9 +753,9 @@ impl PermissionChecker {
     }
 
     fn effective_path_rules(&self) -> Vec<PathRule> {
-        let mut rules = self.config_rules.path_rules.clone();
+        let mut rules = self.agent_rules.path_rules.clone();
         rules.extend(self.session_rules.path_rules.clone());
-        rules.extend(self.agent_rules.path_rules.clone());
+        rules.extend(self.config_rules.path_rules.clone());
         rules
     }
 

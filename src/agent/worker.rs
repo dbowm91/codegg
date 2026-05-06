@@ -22,6 +22,7 @@ pub struct SubAgentRequest {
     pub agent: String,
     pub parent_id: Option<String>,
     pub denied_tools: Vec<String>,
+    pub allowed_paths: Vec<String>,
     pub description: String,
     pub depth: usize,
 }
@@ -620,7 +621,35 @@ async fn execute_agent_task(
     if !request.denied_tools.is_empty() {
         tool_registry.filter_out(&request.denied_tools);
     }
-    let permission_checker = PermissionChecker::new(Some(&config), None);
+
+    let mut agent_rules = crate::permission::PermissionRuleset::default();
+    if !request.allowed_paths.is_empty() {
+        for path in &request.allowed_paths {
+            // Allow the path itself and everything under it
+            agent_rules.path_rules.push(crate::permission::PathRule {
+                pattern: path.clone(),
+                level: crate::permission::PermissionLevel::Allow,
+            });
+            if !path.ends_with('/') {
+                agent_rules.path_rules.push(crate::permission::PathRule {
+                    pattern: format!("{}/{}", path, "**"),
+                    level: crate::permission::PermissionLevel::Allow,
+                });
+            } else {
+                agent_rules.path_rules.push(crate::permission::PathRule {
+                    pattern: format!("{}{}", path, "**"),
+                    level: crate::permission::PermissionLevel::Allow,
+                });
+            }
+        }
+        // Deny everything else if specific paths are allowed
+        agent_rules.path_rules.push(crate::permission::PathRule {
+            pattern: "**".to_string(),
+            level: crate::permission::PermissionLevel::Deny,
+        });
+    }
+
+    let permission_checker = PermissionChecker::new(Some(&config), None).with_agent_rules(agent_rules);
 
     let mut agent_loop = AgentLoop::new(
         agents.iter().cloned().collect(),
@@ -634,6 +663,10 @@ async fn execute_agent_task(
 
     if let Some(parent_id) = &request.parent_id {
         agent_loop.set_session_id(parent_id);
+    }
+
+    if agent_name == "plan" {
+        agent_loop.enter_plan_mode(Some(request.description.clone()));
     }
 
     agent_loop.set_agent(agent_name)?;

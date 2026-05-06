@@ -22,6 +22,7 @@ pub struct SubAgentTask {
     pub result: Option<String>,
     pub parent_id: Option<String>,
     pub denied_tools: Vec<String>,
+    pub allowed_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -61,6 +62,7 @@ impl TaskStore {
                 .unwrap_or(0);
 
             let denied_tools = serde_json::to_string(&task.denied_tools).unwrap_or_default();
+            let allowed_paths = serde_json::to_string(&task.allowed_paths).unwrap_or_default();
             let status_str = match task.status {
                 TaskStatus::Pending => "pending",
                 TaskStatus::Running => "running",
@@ -72,8 +74,8 @@ impl TaskStore {
             sqlx::query(
                 r#"
                 INSERT INTO task (parent_id, session_id, description, prompt, agent, status,
-                                 result, denied_tools, time_created, time_updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 result, denied_tools, allowed_paths, time_created, time_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     status = excluded.status,
                     result = excluded.result,
@@ -88,6 +90,7 @@ impl TaskStore {
             .bind(status_str)
             .bind(&task.result)
             .bind(&denied_tools)
+            .bind(&allowed_paths)
             .bind(now)
             .bind(now)
             .execute(pool)
@@ -104,7 +107,7 @@ impl TaskStore {
             let rows = sqlx::query(
                 r#"
                 SELECT id, parent_id, session_id, description, prompt, agent, status,
-                       result, denied_tools, time_created, time_updated
+                       result, denied_tools, allowed_paths, time_created, time_updated
                 FROM task
                 WHERE status IN ('pending', 'running')
                 "#,
@@ -123,6 +126,7 @@ impl TaskStore {
                 let status_str: String = row.get("status");
                 let result: Option<String> = row.get("result");
                 let denied_tools_str: Option<String> = row.get("denied_tools");
+                let allowed_paths_str: Option<String> = row.get("allowed_paths");
 
                 let status = match status_str.as_str() {
                     "running" => TaskStatus::Running,
@@ -135,6 +139,10 @@ impl TaskStore {
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default();
 
+                let allowed_paths: Vec<String> = allowed_paths_str
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default();
+
                 tasks.push(SubAgentTask {
                     id,
                     description,
@@ -144,6 +152,7 @@ impl TaskStore {
                     result,
                     parent_id,
                     denied_tools,
+                    allowed_paths,
                 });
             }
 
@@ -194,6 +203,7 @@ impl TaskStore {
         agent: String,
         parent_id: Option<String>,
         denied_tools: Vec<String>,
+        allowed_paths: Vec<String>,
     ) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let task = SubAgentTask {
@@ -205,6 +215,7 @@ impl TaskStore {
             result: None,
             parent_id,
             denied_tools,
+            allowed_paths,
         };
         self.tasks.lock().await.insert(id, task);
         id
@@ -365,6 +376,11 @@ impl Tool for TaskTool {
                     "type": "string",
                     "description": "Agent to use (default: general, action=spawn)"
                 },
+                "allowed_paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "List of directories the subagent is allowed to access (action=spawn)"
+                },
                 "task_id": {
                     "type": "integer",
                     "description": "Task ID to retrieve (action=get)"
@@ -400,6 +416,20 @@ impl Tool for TaskTool {
 
             let agent = input["agent"].as_str().unwrap_or("general").to_string();
 
+            let mut denied_tools = self.denied_tools.clone();
+            if !denied_tools.contains(&"task".to_string()) {
+                denied_tools.push("task".to_string());
+            }
+
+            let allowed_paths: Vec<String> = input["allowed_paths"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
             let task_id = self
                 .store
                 .lock()
@@ -409,7 +439,8 @@ impl Tool for TaskTool {
                     prompt.clone(),
                     agent.clone(),
                     self.parent_session_id.clone(),
-                    self.denied_tools.clone(),
+                    denied_tools.clone(),
+                    allowed_paths.clone(),
                 )
                 .await;
 
@@ -420,7 +451,8 @@ impl Tool for TaskTool {
                     prompt,
                     agent,
                     parent_id: self.parent_session_id.clone(),
-                    denied_tools: self.denied_tools.clone(),
+                    denied_tools,
+                    allowed_paths,
                     depth: 0,
                 };
                 spawner.send_async(req).await.map_err(|e| {
