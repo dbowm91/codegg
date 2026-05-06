@@ -84,17 +84,6 @@ pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError> {
 
     let db_path_str = db_path.to_string_lossy().to_string();
 
-    if !db_path.exists() {
-        info!("creating new database at: {}", db_path.display());
-        std::fs::File::create(&db_path).map_err(|e| {
-            StorageError::Database(format!(
-                "failed to create database file {}: {}",
-                db_path.display(),
-                e
-            ))
-        })?;
-    }
-
     let pool = SqlitePoolOptions::new()
         .max_connections(10)
         .connect(&db_path_str)
@@ -104,6 +93,11 @@ pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError> {
         })?;
 
     sqlx::query("PRAGMA journal_mode=WAL")
+        .execute(&pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+    sqlx::query("PRAGMA wal_autocheckpoint = 1000")
         .execute(&pool)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))?;
