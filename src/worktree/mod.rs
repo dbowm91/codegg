@@ -29,6 +29,8 @@ pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
     let mut worktrees = Vec::new();
     let mut current_path = String::new();
     let mut current_branch = String::new();
+    let mut is_detached = false;
+    let mut is_current = false;
 
     for line in stdout.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
@@ -36,15 +38,23 @@ pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
                 worktrees.push(Worktree {
                     path: current_path.clone(),
                     branch: current_branch.clone(),
-                    is_current: false,
-                    is_detached: false,
+                    is_current,
+                    is_detached,
                 });
             }
             current_path = path.to_string();
+            current_branch.clear();
+            is_detached = false;
+            is_current = false;
         } else if let Some(branch) = line.strip_prefix("branch ") {
             current_branch = branch.to_string();
-        } else if line == "HEAD" && !current_branch.is_empty() {
-            current_branch = format!("detached@{}", current_path);
+            is_detached = false;
+        } else if line == "HEAD" {
+            is_current = true;
+        } else if line.starts_with("HEAD ") {
+            is_current = true;
+            is_detached = true;
+            current_branch = line.trim_start_matches("HEAD ").to_string();
         }
     }
 
@@ -52,8 +62,8 @@ pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
         worktrees.push(Worktree {
             path: current_path,
             branch: current_branch,
-            is_current: false,
-            is_detached: false,
+            is_current,
+            is_detached,
         });
     }
 
