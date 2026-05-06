@@ -1,0 +1,14 @@
+# Clippy configuration
+# https://doc.rust-lang.org/clippy/lint_configuration.html
+
+# Maximum number of bytes before suggesting to use a Box
+large-error-threshold = 256
+
+# Maximum size for types on the stack before warning
+too-many-arguments-threshold = 8
+
+# Allow dbg! macro in debug builds
+allow-dbg-in-tests = true
+
+# Allow print! macros in tests
+allow-print-in-tests = true

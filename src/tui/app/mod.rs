@@ -1,0 +1,5569 @@
+mod types;
+
+pub use types::{CompletionType, Dialog, HistoryEntry, SessionStatus, TodoEntry, TuiMsg};
+
+pub mod state;
+pub use state::*;
+
+use super::components::component::DialogType;
+use super::components::dialogs::agent::AgentDialog;
+use super::components::dialogs::command::CommandPalette;
+use super::components::dialogs::confirm::ConfirmDialog;
+use super::components::dialogs::import::ImportDialog;
+use super::components::dialogs::keybind::KeybindDialog;
+use super::components::dialogs::mcp::BrowseMode;
+use super::components::dialogs::model::ModelDialog;
+use super::components::dialogs::permission::PermissionDialog;
+use super::components::dialogs::question::{QuestionDialog, QuestionSpec};
+use super::components::dialogs::session::SessionDialog;
+use super::components::dialogs::theme::ThemePickerDialog;
+use super::components::dialogs::tree::TreeDialog;
+use super::components::footer::FooterWidget;
+use super::components::messages::{MessageRole, MessagesWidget, MsgPart};
+use super::components::prompt::PromptWidget;
+use super::components::sidebar::SidebarWidget;
+use super::components::toast::ToastManager;
+use super::input::{
+    handle_event, handle_event_with_bindings_moded, InputAction, InputMode, KeybindConfig,
+};
+use super::layout::{LayoutConfig, TuiLayout};
+use super::route::{Route, RouteManager};
+use super::theme::Theme;
+use crate::agent::builtin_agents;
+use crate::agent::Agent;
+use crate::bus::{PermissionRegistry, QuestionRegistry};
+use crate::config::schema::SessionTemplate;
+use crate::permission::PermissionRequest;
+use crate::provider::ChatEvent;
+use crate::session::message::ToolStatus;
+use crate::session::{MessageStore, Session, SessionStore};
+use crate::tts::Tts;
+use crate::tui::components::toast::Toast;
+use crate::util::fuzzy::fuzzy_score;
+use crossterm::event::KeyEvent;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::Frame;
+use std::collections::HashMap;
+#[allow(unused_imports)]
+use std::process::Command;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::{broadcast, mpsc, RwLock};
+
+#[cfg(feature = "debug-logging")]
+use std::fs::OpenOptions;
+
+#[cfg(feature = "debug-logging")]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        let _ = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("codegg_debug.log")
+            .and_then(|mut file| {
+                std::io::Write::write_all(&mut file, format!("[TUI-DEBUG] {}\n", format!($($arg)*)).as_bytes())
+            });
+    };
+}
+
+#[cfg(not(feature = "debug-logging"))]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {};
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TuiCommand {
+    DeleteSession {
+        session_id: String,
+    },
+    ArchiveSession {
+        session_id: String,
+        unarchive: bool,
+    },
+    UndoDelete {
+        session_id: String,
+    },
+    ForkSession {
+        session_id: String,
+    },
+    ShareSession {
+        session_id: String,
+    },
+    UnshareSession {
+        session_id: String,
+    },
+    ExportSession {
+        session_id: String,
+    },
+    RenameSession {
+        session_id: String,
+        new_title: String,
+    },
+    BulkDelete {
+        session_ids: Vec<String>,
+    },
+    BulkArchive {
+        session_ids: Vec<String>,
+        unarchive: bool,
+    },
+    BulkExport {
+        session_ids: Vec<String>,
+    },
+    ReloadSessions,
+    OpenTreeDialog,
+    PreviewImport {
+        source: super::components::dialogs::import::ImportSource,
+    },
+    ConfirmImport {
+        source: super::components::dialogs::import::ImportSource,
+    },
+    CreateFromTemplate {
+        key: String,
+        template: SessionTemplate,
+    },
+    LoadSessionMessages {
+        session_id: String,
+    },
+    SpawnSubagent {
+        agent_name: String,
+        prompt: String,
+    },
+    ListTasks,
+    DeleteTask {
+        id: String,
+    },
+    CompactSession,
+    OpenDiffDialog {
+        old_content: Box<str>,
+        new_content: Box<str>,
+        title: Box<str>,
+    },
+    SendNotification {
+        notification_type: super::components::notification::NotificationType,
+        body: String,
+    },
+    UpdateModels(Vec<String>),
+}
+
+/// Main application state for the TUI.
+///
+/// The `App` struct is organized into several state domains:
+///
+/// - `ui_state`: Theme, layout, dialogs, routes
+/// - `session_state`: Session management and history
+/// - `prompt_state`: Prompt input and completions
+/// - `messages_state`: Message history and display
+/// - `dialog_state`: Dialog visibility and data
+/// - `agent_state`: Agent and model configuration
+///
+/// Additionally:
+/// - `sidebar` and `footer`: UI widgets
+/// - `session_store` and `message_store`: Database access
+/// - Areas for mouse event handling
+///
+/// # Event Handling
+///
+/// Events flow through `on_key()` which delegates to:
+/// - `handle_dialog_key` - when a dialog is open
+/// - `handle_command_key` - in command mode
+/// - `handle_completion_key` - when completions shown
+/// - Direct action handling for prompt input
+///
+/// # Rendering
+///
+/// The [`render`](App::render) method draws widgets in layers:
+/// 1. Header, viewport, prompt, footer (main area)
+/// 2. Sidebar (if visible)
+/// 3. Dialog (if open)
+/// 4. Completions overlay
+/// 5. Timeline (if visible)
+/// 6. Toasts (topmost)
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClickTarget {
+    Viewport,
+    Prompt,
+    Dialog,
+    Completion,
+    Sidebar,
+    None,
+}
+
+pub struct App {
+    pub ui_state: UiState,
+    pub session_state: SessionState,
+    pub prompt_state: PromptState,
+    pub messages_state: MessagesState,
+    pub dialog_state: DialogState,
+    pub agent_state: AgentState,
+    pub sidebar: SidebarWidget,
+    pub footer: FooterWidget,
+    pub session_store: Option<Arc<SessionStore>>,
+    pub message_store: Option<Arc<MessageStore>>,
+    pub viewport_area: Option<Rect>,
+    pub prompt_area: Option<Rect>,
+    pub dialog_area: Option<Rect>,
+    pub completion_area: Option<Rect>,
+    pub sidebar_area: Option<Rect>,
+    pub last_click_time: Option<Instant>,
+    pub last_click_target: Option<ClickTarget>,
+    pub hover_target: Option<ClickTarget>,
+    pub hover_position: Option<(u16, u16)>,
+    pub context_hint: String,
+    pub event_rx: Option<mpsc::Receiver<ChatEvent>>,
+    pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
+    pub remote_event_rx: Option<mpsc::UnboundedReceiver<serde_json::Value>>,
+    pub config_watcher: Option<crate::config::ConfigWatcher>,
+    pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+    pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
+    pub undo_session_id: Option<String>,
+    pub undo_until: Option<Instant>,
+    pub notification_manager: Option<crate::tui::components::notification::NotificationManager>,
+    pub focus_manager: crate::tui::components::component::FocusManager,
+    pub busy_spinner: crate::tui::components::spinner::SpinnerWidget,
+}
+
+impl App {
+    pub fn new(project_dir: String) -> Self {
+        Self::with_config(project_dir, None)
+    }
+
+    pub fn with_config(project_dir: String, cfg: Option<&crate::config::schema::Config>) -> Self {
+        let focus_manager = crate::tui::components::component::FocusManager::new();
+        let agents = builtin_agents();
+        let current_agent = agents.iter().position(|a| a.name == "build").unwrap_or(0);
+        let models = vec![
+            "codegg_zen/big-pickle".to_string(),
+            "codegg_zen/minimax-m2.5-free".to_string(),
+            "codegg_zen/nemotron-3-super-free".to_string(),
+        ];
+        let current_model = models[0].clone();
+        use crate::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
+        let slash_completions: Vec<CompletionItem> = crate::tui::command::COMMAND_REGISTRY
+            .commands()
+            .iter()
+            .map(|c| CompletionItem {
+                label: c.name.clone(),
+                description: if c.description.is_empty() {
+                    None
+                } else {
+                    Some(c.description.clone())
+                },
+                kind: CompletionItemKind::File,
+            })
+            .collect();
+        let help_lines = vec![
+            "Keyboard Shortcuts".to_string(),
+            "".to_string(),
+            "Enter          Send prompt".to_string(),
+            "Shift+Enter    New line in prompt".to_string(),
+            "Tab            Switch agent".to_string(),
+            "Ctrl+L         Model selector".to_string(),
+            "Ctrl+K         Clear session".to_string(),
+            "Ctrl+N         New session".to_string(),
+            "Ctrl+T         Toggle sidebar".to_string(),
+            "Ctrl+W         Close session".to_string(),
+            "Esc            Close dialog / cancel".to_string(),
+            "j/k or arrows  Navigate".to_string(),
+            "PgUp/PgDown    Scroll viewport".to_string(),
+            "/              Focus prompt".to_string(),
+            "?              Help".to_string(),
+            "@              File completions".to_string(),
+            "Up/Down        History navigation".to_string(),
+            "Ctrl+S         Stash prompt".to_string(),
+            "Ctrl+R         Restore prompt".to_string(),
+            "Ctrl+P         Cycle model forward".to_string(),
+            "Ctrl+Shift+P   Cycle model backward".to_string(),
+            "Ctrl+Y         Toggle TTS (speak)".to_string(),
+            "Ctrl+Shift+Y   Stop TTS".to_string(),
+            "Ctrl+Shift+F   Toggle fullscreen".to_string(),
+        ];
+        let keybinds = cfg.and_then(|c| c.keybinds.as_ref()).map(|raw| {
+            let mut bindings: HashMap<String, crate::tui::input::ActionKey> = HashMap::new();
+            for (k, v) in raw {
+                if let Ok(action) = serde_json::from_str(&format!("\"{}\"", v)) {
+                    bindings.insert(k.clone(), action);
+                }
+            }
+            KeybindConfig { bindings }
+        });
+        let bindings = super::input::build_bindings(
+            keybinds.as_ref(),
+            cfg.and_then(|c| c.vim_mode).unwrap_or(false),
+        );
+        debug_log!(
+            "loaded {} keybindings, custom config: {}",
+            bindings.len(),
+            keybinds.is_some()
+        );
+        let up_key = bindings.get(&(
+            crossterm::event::KeyModifiers::NONE,
+            crossterm::event::KeyCode::Up,
+        ));
+        let down_key = bindings.get(&(
+            crossterm::event::KeyModifiers::NONE,
+            crossterm::event::KeyCode::Down,
+        ));
+        let j_key = bindings.get(&(
+            crossterm::event::KeyModifiers::NONE,
+            crossterm::event::KeyCode::Char('j'),
+        ));
+        let k_key = bindings.get(&(
+            crossterm::event::KeyModifiers::NONE,
+            crossterm::event::KeyCode::Char('k'),
+        ));
+        debug_log!(
+            "navigation bindings: up={:?}, down={:?}, j={:?}, k={:?}",
+            up_key,
+            down_key,
+            j_key,
+            k_key
+        );
+        // Note: navigation keybindings retrieved for debug logging only
+        let _ = (up_key, down_key, j_key, k_key);
+        let indexed_files: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+        let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+        let dir_clone = project_dir.clone();
+        let files_clone = Arc::clone(&indexed_files);
+        tokio::spawn(async move {
+            let mut rx = shutdown_rx;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = rx.recv() => break,
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                        let files = index_files_sync(&dir_clone);
+                        let mut guard = files_clone.write().await;
+                        *guard = files;
+                    }
+                }
+            }
+        });
+
+        let theme = Arc::new(Theme::dark());
+
+        Self {
+            ui_state: UiState {
+                running: true,
+                theme: Arc::clone(&theme),
+                layout: TuiLayout::with_config(LayoutConfig::default()),
+                routes: RouteManager::new(),
+                dialog: Dialog::None,
+                command_mode: false,
+                input_mode: InputMode::Insert,
+                shutdown_tx: Some(shutdown_tx),
+                help_lines,
+                bindings,
+                keybinds: keybinds.clone(),
+                remote_mode: false,
+                remote_status: None,
+                sidebar_visible: true,
+                auto_scroll: true,
+                show_thinking: true,
+                show_timestamps: false,
+                timeline_visible: false,
+                timeline_selected: 0,
+                render_panic_count: 0,
+                last_render_error: None,
+                tts: Tts::new(),
+                tts_enabled: false,
+                fullscreen: false,
+            },
+            session_state: SessionState {
+                session: None,
+                session_status: SessionStatus::Idle,
+                token_in: 0,
+                token_out: 0,
+                reasoning_tokens: 0,
+                history: std::collections::VecDeque::new(),
+                history_pos: None,
+                indexed_files,
+                project_dir,
+                last_edited_file: None,
+                changed_files: Vec::new(),
+                mcp_servers: Vec::new(),
+                context_tokens: 0,
+                context_limit: 128_000,
+                compaction_count: 0,
+                rpm_limit: None,
+                tpm_limit: None,
+                rpm_remaining: None,
+                tpm_remaining: None,
+                permission_pending: false,
+                subagent_count: 0,
+            },
+            prompt_state: PromptState {
+                prompt: PromptWidget::new(Arc::clone(&theme)),
+                slash_completions,
+                file_completions: Vec::new(),
+                agent_completions: Vec::new(),
+                completion_filter: String::new(),
+                show_completions: false,
+                completion_type: CompletionType::Slash,
+                completion_sel: 0,
+                stashed_prompts: Vec::new(),
+                stash_pos: None,
+                pending_send: false,
+            },
+            messages_state: MessagesState {
+                messages: MessagesWidget::new(Arc::clone(&theme)),
+                toasts: ToastManager::new(),
+            },
+            dialog_state: DialogState {
+                model_dialog: ModelDialog::new(Arc::clone(&theme)),
+                agent_dialog: AgentDialog::new(Arc::clone(&theme)),
+                session_dialog: SessionDialog::new(Arc::clone(&theme)),
+                tree_dialog: TreeDialog::new(Arc::clone(&theme)),
+                theme_picker: None,
+                question_dialog: None,
+                question_session_id: None,
+                command_palette: CommandPalette::new(),
+                permission_dialog: None,
+                permission_perm_id: None,
+                keybind_dialog: None,
+                mcp_dialog: None,
+                share_dialog: None,
+                import_dialog: None,
+                template_dialog: None,
+                connect_dialog: None,
+                goto_dialog: None,
+                plan_dialog: None,
+                diff_dialog: None,
+                help_dialog: None,
+                info_dialog: None,
+                pending_delete_session: None,
+                pending_archive_session: None,
+                pending_bulk_delete: None,
+                pending_bulk_archive: None,
+            },
+            agent_state: AgentState {
+                agents,
+                current_agent,
+                current_model,
+                models,
+                model_idx: 0,
+                plan_mode: false,
+                plan_topic: None,
+            },
+            sidebar: SidebarWidget::new(Arc::clone(&theme)),
+            footer: FooterWidget::new(Arc::clone(&theme)),
+            session_store: None,
+            message_store: None,
+            viewport_area: None,
+            prompt_area: None,
+            dialog_area: None,
+            completion_area: None,
+            sidebar_area: None,
+            last_click_time: None,
+            last_click_target: None,
+            hover_target: None,
+            hover_position: None,
+            context_hint: String::new(),
+            event_rx: None,
+            tui_cmd_tx: None,
+            remote_event_rx: None,
+            config_watcher: Some(crate::config::ConfigWatcher::new()),
+            subagent_pool: None,
+            bg_scheduler: None,
+            undo_session_id: None,
+            undo_until: None,
+            notification_manager: None,
+            focus_manager,
+            busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
+        }
+    }
+
+    pub fn new_remote(project_dir: String) -> Self {
+        let mut app = Self::new(project_dir);
+        app.ui_state.remote_mode = true;
+        app.ui_state.remote_status = Some("Connected".to_string());
+        app.remote_event_rx = None;
+        app
+    }
+
+    /// Create a minimal App instance for testing.
+    /// This avoids spawning background tasks that interfere with tests.
+    pub fn new_for_testing(project_dir: String) -> Self {
+        let focus_manager = crate::tui::components::component::FocusManager::new();
+        let agents = builtin_agents();
+        let current_agent = agents.iter().position(|a| a.name == "build").unwrap_or(0);
+        let models = vec![
+            "codegg_zen/big-pickle".to_string(),
+            "codegg_zen/minimax-m2.5-free".to_string(),
+            "codegg_zen/nemotron-3-super-free".to_string(),
+        ];
+        let current_model = models[0].clone();
+        use crate::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
+        let slash_completions: Vec<CompletionItem> = crate::tui::command::COMMAND_REGISTRY
+            .commands()
+            .iter()
+            .map(|c| CompletionItem {
+                label: c.name.clone(),
+                description: if c.description.is_empty() {
+                    None
+                } else {
+                    Some(c.description.clone())
+                },
+                kind: CompletionItemKind::File,
+            })
+            .collect();
+        let help_lines = vec![
+            "Keyboard Shortcuts".to_string(),
+            "".to_string(),
+            "Enter          Send prompt".to_string(),
+        ];
+        let bindings = super::input::build_bindings(None, false);
+        let theme = Arc::new(Theme::dark());
+        let indexed_files: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+
+        Self {
+            ui_state: UiState {
+                running: true,
+                theme: Arc::clone(&theme),
+                layout: TuiLayout::with_config(LayoutConfig::default()),
+                routes: RouteManager::new(),
+                dialog: Dialog::None,
+                command_mode: false,
+                input_mode: InputMode::Insert,
+                shutdown_tx: None, // No shutdown channel for tests
+                help_lines,
+                bindings,
+                keybinds: None,
+                remote_mode: false,
+                remote_status: None,
+                sidebar_visible: true,
+                auto_scroll: true,
+                show_thinking: true,
+                show_timestamps: false,
+                timeline_visible: false,
+                timeline_selected: 0,
+                render_panic_count: 0,
+                last_render_error: None,
+                tts: Tts::new(),
+                tts_enabled: false,
+                fullscreen: false,
+            },
+            session_state: SessionState {
+                session: None,
+                session_status: SessionStatus::Idle,
+                token_in: 0,
+                token_out: 0,
+                reasoning_tokens: 0,
+                history: std::collections::VecDeque::new(),
+                history_pos: None,
+                indexed_files,
+                project_dir,
+                last_edited_file: None,
+                changed_files: Vec::new(),
+                mcp_servers: Vec::new(),
+                context_tokens: 0,
+                context_limit: 128_000,
+                compaction_count: 0,
+                rpm_limit: None,
+                tpm_limit: None,
+                rpm_remaining: None,
+                tpm_remaining: None,
+                permission_pending: false,
+                subagent_count: 0,
+            },
+            prompt_state: PromptState {
+                prompt: PromptWidget::new(Arc::clone(&theme)),
+                slash_completions,
+                file_completions: Vec::new(),
+                agent_completions: Vec::new(),
+                completion_filter: String::new(),
+                show_completions: false,
+                completion_type: CompletionType::Slash,
+                completion_sel: 0,
+                stashed_prompts: Vec::new(),
+                stash_pos: None,
+                pending_send: false,
+            },
+            messages_state: MessagesState {
+                messages: MessagesWidget::new(Arc::clone(&theme)),
+                toasts: ToastManager::new(),
+            },
+            dialog_state: DialogState {
+                model_dialog: ModelDialog::new(Arc::clone(&theme)),
+                agent_dialog: AgentDialog::new(Arc::clone(&theme)),
+                session_dialog: SessionDialog::new(Arc::clone(&theme)),
+                tree_dialog: TreeDialog::new(Arc::clone(&theme)),
+                theme_picker: None,
+                question_dialog: None,
+                question_session_id: None,
+                command_palette: CommandPalette::new(),
+                permission_dialog: None,
+                permission_perm_id: None,
+                keybind_dialog: None,
+                mcp_dialog: None,
+                share_dialog: None,
+                import_dialog: None,
+                template_dialog: None,
+                connect_dialog: None,
+                goto_dialog: None,
+                plan_dialog: None,
+                diff_dialog: None,
+                help_dialog: None,
+                info_dialog: None,
+                pending_delete_session: None,
+                pending_archive_session: None,
+                pending_bulk_delete: None,
+                pending_bulk_archive: None,
+            },
+            agent_state: AgentState {
+                agents,
+                current_agent,
+                current_model,
+                models,
+                model_idx: 0,
+                plan_mode: false,
+                plan_topic: None,
+            },
+            sidebar: SidebarWidget::new(Arc::clone(&theme)),
+            footer: FooterWidget::new(Arc::clone(&theme)),
+            session_store: None,
+            message_store: None,
+            viewport_area: None,
+            prompt_area: None,
+            dialog_area: None,
+            completion_area: None,
+            sidebar_area: None,
+            last_click_time: None,
+            last_click_target: None,
+            hover_target: None,
+            hover_position: None,
+            context_hint: String::new(),
+            event_rx: None,
+            tui_cmd_tx: None,
+            remote_event_rx: None,
+            config_watcher: None, // No config watcher for tests
+            subagent_pool: None,
+            bg_scheduler: None,
+            undo_session_id: None,
+            undo_until: None,
+            notification_manager: None,
+            focus_manager,
+            busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
+        }
+    }
+
+    pub fn set_remote_event_rx(&mut self, rx: mpsc::UnboundedReceiver<serde_json::Value>) {
+        self.remote_event_rx = Some(rx);
+    }
+
+    pub fn handle_remote_event(&mut self, event: serde_json::Value) {
+        let event_type = event
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        debug_log!("handle_remote_event: type={}", event_type);
+
+        match event_type {
+            "TextDelta" => {
+                if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                    self.messages_state
+                        .messages
+                        .add_assistant_text(delta.to_string());
+                    if matches!(self.session_state.session_status, SessionStatus::Working) {
+                        self.footer
+                            .set_thinking(true, Some("Thinking...".to_string()));
+                    }
+                }
+            }
+            "ToolCallStarted" => {
+                if let (Some(tool_id), Some(tool_name), Some(arguments)) = (
+                    event.get("tool_id").and_then(|v| v.as_str()),
+                    event.get("tool_name").and_then(|v| v.as_str()),
+                    event
+                        .get("arguments")
+                        .and_then(|v| serde_json::to_value(v).ok()),
+                ) {
+                    self.messages_state.messages.add_tool_call(
+                        tool_id.to_string(),
+                        tool_name.to_string(),
+                        arguments,
+                    );
+                }
+            }
+            "ToolResult" => {
+                if let (Some(tool_id), Some(output), Some(success)) = (
+                    event.get("tool_id").and_then(|v| v.as_str()),
+                    event.get("output").and_then(|v| v.as_str()),
+                    event.get("success").and_then(|v| v.as_bool()),
+                ) {
+                    let status = if success {
+                        crate::session::message::ToolStatus::Completed
+                    } else {
+                        crate::session::message::ToolStatus::Error
+                    };
+                    self.messages_state.messages.update_tool_call(
+                        tool_id,
+                        output.to_string(),
+                        status,
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
+            "SessionInfo" => {
+                if let Some(info) = event.get("info") {
+                    if let Some(name) = info.get("name").and_then(|v| v.as_str()) {
+                        if let Some(ref mut session) = self.session_state.session {
+                            session.title = name.to_string();
+                        }
+                    }
+                }
+            }
+            "SessionEnded" => {
+                self.session_state.session_status = SessionStatus::Idle;
+                self.footer.set_thinking(false, None);
+            }
+            "PermissionPending" => {
+                if let (Some(perm_id), Some(tool), Some(path), Some(args)) = (
+                    event.get("perm_id").and_then(|v| v.as_str()),
+                    event.get("tool").and_then(|v| v.as_str()),
+                    event.get("path").and_then(|v| v.as_str()),
+                    event.get("args"),
+                ) {
+                    self.show_permission_dialog(
+                        perm_id.to_string(),
+                        PermissionRequest {
+                            tool: tool.to_string(),
+                            path: Some(path.to_string()),
+                            args: Some(args.clone()),
+                        },
+                    );
+                }
+            }
+            "QuestionPending" => {
+                if let (Some(session_id), Some(questions)) = (
+                    event.get("session_id").and_then(|v| v.as_str()),
+                    event
+                        .get("questions")
+                        .and_then(|v| serde_json::from_value::<Vec<QuestionSpec>>(v.clone()).ok()),
+                ) {
+                    self.show_question_dialog(questions, session_id.to_string());
+                }
+            }
+            "Error" => {
+                if let Some(message) = event.get("message").and_then(|v| v.as_str()) {
+                    self.session_state.session_status = SessionStatus::Error;
+                    self.footer.set_thinking(false, None);
+                    self.messages_state.toasts.add(Toast::error(message));
+                }
+            }
+            _ => {
+                debug_log!("handle_remote_event: unhandled type={}", event_type);
+            }
+        }
+    }
+
+    pub fn reset_state(&mut self) {
+        self.ui_state.dialog = Dialog::None;
+        self.ui_state.command_mode = false;
+        self.ui_state.timeline_visible = false;
+        self.prompt_state.show_completions = false;
+        self.prompt_state.completion_filter.clear();
+        self.prompt_state.prompt.clear();
+        self.messages_state.messages.clear_search();
+    }
+
+    pub fn render(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        let main_chunks = self.ui_state.layout.split(area);
+        let main_area = main_chunks[0];
+        let max_prompt_height = (area.height * 40 / 100).max(3);
+        let prompt_height = self.prompt_state.prompt.needed_height(max_prompt_height);
+        let session_chunks = self
+            .ui_state
+            .layout
+            .session_layout(main_area, Some(prompt_height));
+
+        self.viewport_area = Some(session_chunks[1]);
+        self.prompt_area = Some(session_chunks[2]);
+
+        self.render_header(frame, session_chunks[0]);
+        self.render_viewport(frame, session_chunks[1]);
+        self.render_prompt(frame, session_chunks[2]);
+        self.render_footer(frame, session_chunks[3]);
+
+        if self.ui_state.sidebar_visible && main_chunks.len() > 1 {
+            self.sidebar_area = Some(main_chunks[1]);
+            self.render_sidebar(frame, main_chunks[1]);
+        } else {
+            self.sidebar_area = None;
+        }
+
+        if self.ui_state.dialog.is_open() {
+            let popup_area = centered_rect(60, 50, area);
+            self.dialog_area = Some(popup_area);
+            self.render_dialog(frame, area);
+        } else {
+            self.dialog_area = None;
+        }
+
+        if self.prompt_state.show_completions {
+            let prompt_area = session_chunks[2];
+            let max_h = 8.min(self.prompt_state.slash_completions.len() as u16);
+            let compl_h = max_h + 2;
+            let compl_w = 40.min(prompt_area.width.saturating_sub(2));
+            let compl_area = Rect {
+                x: prompt_area.x + 1,
+                y: prompt_area.y.saturating_sub(compl_h),
+                width: compl_w,
+                height: compl_h,
+            };
+            self.completion_area = Some(compl_area);
+            self.render_completions(frame, session_chunks[2]);
+        } else {
+            self.completion_area = None;
+        }
+
+        if self.ui_state.timeline_visible {
+            self.render_timeline(frame, area);
+        }
+
+        if !self.messages_state.toasts.is_empty() {
+            let toast_area = Rect {
+                x: area.width.saturating_sub(60),
+                y: 2,
+                width: 60.min(area.width),
+                height: 10.min(area.height.saturating_sub(4)),
+            };
+            self.messages_state
+                .toasts
+                .render(frame, toast_area, &self.ui_state.theme);
+        }
+    }
+
+    pub fn render_error(&mut self, frame: &mut Frame, error_msg: &str) {
+        let area = frame.area();
+        let theme = &self.ui_state.theme;
+
+        let block = Block::default()
+            .title(" Error ")
+            .borders(Borders::ALL)
+            .border_style(ratatui::style::Style::default().fg(theme.error))
+            .style(
+                ratatui::style::Style::default()
+                    .bg(theme.background)
+                    .fg(theme.foreground),
+            );
+
+        let content = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "⚠ Rendering Error",
+                ratatui::style::Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::raw("The UI failed to render properly:")),
+            Line::from(""),
+            Line::from(Span::styled(
+                error_msg,
+                ratatui::style::Style::default().fg(theme.warning),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press 'r' to retry or 'q' to quit",
+                ratatui::style::Style::default().fg(theme.muted),
+            )),
+            Line::from(""),
+        ];
+
+        let paragraph = Paragraph::new(content)
+            .block(block)
+            .wrap(Wrap { trim: true })
+            .alignment(Alignment::Center);
+
+        let center_area = centered_rect(60, 40, area);
+        frame.render_widget(Clear, center_area);
+        frame.render_widget(paragraph, center_area);
+    }
+
+    fn render_header(&mut self, frame: &mut Frame, area: Rect) {
+        let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
+        let model_short = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next_back()
+            .unwrap_or(&self.agent_state.current_model);
+        let mode_indicator = if self.agent_state.plan_mode {
+            format!(
+                "[PLAN: {}]  ",
+                self.agent_state.plan_topic.as_deref().unwrap_or("general")
+            )
+        } else {
+            String::new()
+        };
+        let context_indicator = self.active_context_indicator();
+        let title = match self.ui_state.routes.current() {
+            Route::Home => Line::from(vec![
+                Span::styled(
+                    " codegg ",
+                        Style::default()
+                            .fg(self.ui_state.theme.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    if context_indicator.is_empty() {
+                        Span::raw("")
+                    } else {
+                        Span::styled(
+                            context_indicator.clone(),
+                            Style::default()
+                                .fg(self.ui_state.theme.warning)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    },
+                    Span::styled(
+                        format!("{mode_indicator}{sess_title}  "),
+                        Style::default()
+                            .fg(self.ui_state.theme.foreground)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("agent:{agent_name}  model:{model_short}"),
+                        Style::default().fg(self.ui_state.theme.muted),
+                    ),
+                ])
+            }
+        };
+        let block = Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(Style::default().fg(self.ui_state.theme.border));
+        let paragraph = Paragraph::new(title).block(block);
+        frame.render_widget(paragraph, area);
+    }
+
+    fn active_context_indicator(&self) -> String {
+        let dialog_type = self.focus_manager.active_dialog_type();
+        if dialog_type != DialogType::None {
+            return format!("[DIALOG: {:?}]  ", dialog_type);
+        }
+        if self.ui_state.dialog.is_open() {
+            return format!("[DIALOG: {:?}]  ", self.ui_state.dialog);
+        }
+        if self.ui_state.command_mode {
+            return "[CMD]  ".to_string();
+        }
+        if self.messages_state.messages.search_visible {
+            return "[SEARCH]  ".to_string();
+        }
+        if self.agent_state.plan_mode {
+            return "[PLAN]  ".to_string();
+        }
+        if self.session_state.permission_pending {
+            return "[PERMISSION]  ".to_string();
+        }
+        let subagent_count = self.session_state.subagent_count;
+        if subagent_count > 0 {
+            return format!("[...{}]  ", subagent_count);
+        }
+        match self.session_state.session_status {
+            SessionStatus::Working => {
+                self.busy_spinner.tick();
+                format!("{}  ", self.busy_spinner.frame())
+            }
+            _ => String::new(),
+        }
+    }
+
+    fn render_viewport(&mut self, frame: &mut Frame, area: Rect) {
+        match self.ui_state.routes.current() {
+            Route::Home => self.render_home(frame, area),
+            Route::Session(_) => self.render_session(frame, area),
+        }
+    }
+
+    fn render_home(&mut self, frame: &mut Frame, area: Rect) {
+        // Render a background block first to ensure the viewport isn't transparent
+        let block = Block::default().style(Style::default().bg(self.ui_state.theme.background));
+        frame.render_widget(block, area);
+
+        let lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  codegg ",
+                Style::default()
+                    .fg(self.ui_state.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Type a prompt to begin",
+                Style::default().fg(self.ui_state.theme.muted),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Ctrl+N  new session    Ctrl+L  change model    ?  help",
+                Style::default().fg(self.ui_state.theme.muted),
+            )),
+        ];
+        let paragraph = Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
+    }
+
+    fn render_session(&mut self, frame: &mut Frame, area: Rect) {
+        self.messages_state.messages.set_theme(&self.ui_state.theme);
+        self.messages_state.messages.show_thinking = self.ui_state.show_thinking;
+        self.messages_state.messages.show_timestamps = self.ui_state.show_timestamps;
+        self.messages_state
+            .messages
+            .set_visible_height(area.height as usize);
+
+        // Render a background block first to ensure the viewport isn't transparent
+        let block = Block::default().style(Style::default().bg(self.ui_state.theme.background));
+        frame.render_widget(block, area);
+
+        frame.render_widget(&self.messages_state.messages, area);
+    }
+
+    fn render_prompt(&mut self, frame: &mut Frame, area: Rect) {
+        let status = match &self.session_state.session_status {
+            SessionStatus::Idle => "idle",
+            SessionStatus::Working => "working",
+            SessionStatus::Error => "error",
+        };
+        let mode_indicator = match self.ui_state.input_mode {
+            InputMode::Insert => Span::styled(
+                "[INS] ",
+                Style::default()
+                    .fg(self.ui_state.theme.secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            InputMode::Normal => Span::styled(
+                "[NOR]",
+                Style::default()
+                    .fg(self.ui_state.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        };
+        let session_prefix = match &self.session_state.session_status {
+            SessionStatus::Working => Span::styled(
+                " ● ",
+                Style::default()
+                    .fg(self.ui_state.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            SessionStatus::Error => Span::styled(
+                " ✗ ",
+                Style::default()
+                    .fg(self.ui_state.theme.error)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            SessionStatus::Idle => Span::styled(
+                " ❯ ",
+                Style::default()
+                    .fg(self.ui_state.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        };
+        self.prompt_state.prompt.set_theme(&self.ui_state.theme);
+        self.prompt_state.prompt.set_mode_indicator(mode_indicator);
+        self.prompt_state.prompt.set_prefix(session_prefix);
+        self.prompt_state
+            .prompt
+            .set_placeholder(format!("Ask anything… ({status})"));
+        let visible_lines = area.height.saturating_sub(2) as usize;
+        self.prompt_state
+            .prompt
+            .ensure_cursor_visible(visible_lines);
+        frame.render_widget(&self.prompt_state.prompt, area);
+
+        if self.ui_state.command_mode {
+            self.dialog_state
+                .command_palette
+                .render(frame, area, &self.ui_state.theme);
+        }
+    }
+
+    fn render_footer(&mut self, frame: &mut Frame, area: Rect) {
+        let token_str = format!(
+            "tokens: {}↑ {}↓ ({}r)",
+            self.session_state.token_in,
+            self.session_state.token_out,
+            self.session_state.reasoning_tokens
+        );
+        let status_str = match &self.session_state.session_status {
+            SessionStatus::Idle => "idle",
+            SessionStatus::Working => "working",
+            SessionStatus::Error => "error",
+        };
+        self.footer.set_status(status_str.to_string());
+        self.footer.set_tokens(token_str);
+        self.footer.set_theme(&self.ui_state.theme);
+        self.footer
+            .set_tts(self.ui_state.tts_enabled, self.ui_state.tts.is_speaking());
+        self.footer.update_keybinds(&self.ui_state.bindings);
+        self.footer.set_context_hint(self.context_hint.clone());
+        frame.render_widget(&self.footer, area);
+    }
+
+    fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
+        self.sidebar.set_theme(&self.ui_state.theme);
+        if let Some(ref sess) = self.session_state.session {
+            self.sidebar.set_session(sess);
+        }
+        self.sidebar
+            .set_agent(&self.agent_state.agents[self.agent_state.current_agent].name);
+        self.sidebar.set_model(&self.agent_state.current_model);
+        self.sidebar
+            .set_tokens(self.session_state.token_in, self.session_state.token_out);
+        self.sidebar
+            .set_status(match self.session_state.session_status {
+                SessionStatus::Idle => "idle".to_string(),
+                SessionStatus::Working => "working".to_string(),
+                SessionStatus::Error => "error".to_string(),
+            });
+        self.sidebar
+            .set_mcp_servers(self.session_state.mcp_servers.clone());
+
+        if let Some(ref sess) = self.session_state.session {
+            let project_dir = std::path::Path::new(&sess.project_id);
+            if let Some(git_root) = crate::worktree::find_git_root(project_dir) {
+                let branch = get_git_branch(&git_root);
+                let dirty = check_git_dirty(&git_root);
+                self.sidebar.set_git_info(
+                    branch,
+                    dirty,
+                    Some(git_root.to_string_lossy().into_owned()),
+                );
+            } else {
+                self.sidebar
+                    .set_git_info(None, false, Some(sess.project_id.clone()));
+            }
+        } else {
+            self.sidebar.set_git_info(None, false, None);
+        }
+
+        frame.render_widget(&self.sidebar, area);
+    }
+
+    fn render_dialog(&mut self, frame: &mut Frame, area: Rect) {
+        if self.focus_manager.is_empty() && !self.ui_state.dialog.is_open() {
+            return;
+        }
+
+        let popup_area = centered_rect(60, 50, area);
+        frame.render_widget(Clear, popup_area);
+
+        // Phase 3: Use FocusManager first
+        if !self.focus_manager.is_empty() {
+            self.focus_manager
+                .render(frame, popup_area, &self.ui_state.theme);
+            return;
+        }
+
+        // Legacy rendering - only reached when no focused dialogs and dialog is open
+        // This is dead code for Help/Context/Cost/Usage which are now handled via FocusManager
+        {}
+    }
+
+    fn render_completions(&self, frame: &mut Frame, prompt_area: Rect) {
+        use crate::tui::components::completion_overlay::CompletionItem;
+        let items: Vec<ListItem> = match self.prompt_state.completion_type {
+            CompletionType::Slash => {
+                let filter = self.prompt_state.completion_filter.trim_start_matches('/');
+                let mut scored: Vec<(&CompletionItem, usize)> = self
+                    .prompt_state
+                    .slash_completions
+                    .iter()
+                    .filter_map(|item| {
+                        let item_name = item.label.trim_start_matches('/');
+                        let score = if filter.is_empty() {
+                            usize::MAX
+                        } else {
+                            fuzzy_score(filter, item_name)
+                        };
+                        if filter.is_empty() || score > 0 {
+                            Some((item, score))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !filter.is_empty() {
+                    scored.sort_by(|a, b| b.1.cmp(&a.1));
+                }
+                scored
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (c, _))| {
+                        let style = if i == self.prompt_state.completion_sel {
+                            Style::default()
+                                .bg(self.ui_state.theme.selection)
+                                .fg(self.ui_state.theme.primary)
+                        } else {
+                            Style::default().fg(self.ui_state.theme.foreground)
+                        };
+                        let content = if let Some(ref desc) = c.description {
+                            Text::from(vec![Line::from(vec![
+                                Span::styled(format!("{} ", c.label), style),
+                                Span::styled(desc, Style::default().fg(self.ui_state.theme.muted)),
+                            ])])
+                        } else {
+                            Text::from(Span::styled(&c.label, style))
+                        };
+                        ListItem::new(content)
+                    })
+                    .collect()
+            }
+            CompletionType::File => self
+                .prompt_state
+                .file_completions
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let style = if i == self.prompt_state.completion_sel {
+                        Style::default()
+                            .bg(self.ui_state.theme.selection)
+                            .fg(self.ui_state.theme.primary)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.foreground)
+                    };
+                    let content = if let Some(ref desc) = c.description {
+                        Text::from(vec![Line::from(vec![
+                            Span::styled(format!("{} ", c.icon()), style),
+                            Span::styled(format!("{} ", c.label), style),
+                            Span::styled(desc, Style::default().fg(self.ui_state.theme.muted)),
+                        ])])
+                    } else {
+                        Text::from(vec![Line::from(vec![
+                            Span::styled(format!("{} ", c.icon()), style),
+                            Span::styled(&c.label, style),
+                        ])])
+                    };
+                    ListItem::new(content)
+                })
+                .collect(),
+            CompletionType::Agent => self
+                .prompt_state
+                .agent_completions
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let style = if i == self.prompt_state.completion_sel {
+                        Style::default()
+                            .bg(self.ui_state.theme.selection)
+                            .fg(self.ui_state.theme.primary)
+                    } else {
+                        Style::default().fg(self.ui_state.theme.foreground)
+                    };
+                    let content = if let Some(ref desc) = c.description {
+                        Text::from(vec![Line::from(vec![
+                            Span::styled(format!("@{} ", c.label), style),
+                            Span::styled(desc, Style::default().fg(self.ui_state.theme.muted)),
+                        ])])
+                    } else {
+                        Text::from(Span::styled(format!("@{}", c.label), style))
+                    };
+                    ListItem::new(content)
+                })
+                .collect(),
+        };
+        if items.is_empty() {
+            return;
+        }
+        let max_h = 8.min(items.len() as u16);
+        let compl_h = max_h + 2;
+        let compl_w = 40.min(prompt_area.width.saturating_sub(2));
+        let compl_area = Rect {
+            x: prompt_area.x + 1,
+            y: prompt_area.y.saturating_sub(compl_h),
+            width: compl_w,
+            height: compl_h,
+        };
+        frame.render_widget(Clear, compl_area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.ui_state.theme.border))
+            .style(Style::default().bg(self.ui_state.theme.background));
+        let list = List::new(items).block(block);
+        frame.render_widget(list, compl_area);
+    }
+
+    pub fn process_msg(&mut self, msg: TuiMsg) {
+        debug_log!("process_msg: {:?}", msg);
+        match msg {
+            TuiMsg::SubmitPrompt => self.send_prompt(),
+            TuiMsg::NavigateUp => self.navigate_up(),
+            TuiMsg::NavigateDown => self.navigate_down(),
+            TuiMsg::CycleAgent => self.cycle_agent(),
+            TuiMsg::OpenModelDialog => self.open_dialog(Dialog::Model),
+            TuiMsg::OpenAgentDialog => self.open_dialog(Dialog::Agent),
+            TuiMsg::OpenSessionDialog => self.open_dialog(Dialog::Session),
+            TuiMsg::OpenHelpDialog => self.open_dialog(Dialog::Help),
+            TuiMsg::OpenTreeDialog => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::OpenTreeDialog);
+                }
+            }
+            TuiMsg::OpenThemeDialog => self.open_dialog(Dialog::Theme),
+            TuiMsg::OpenShareDialog => {
+                if let Some(ref session) = self.session_state.session {
+                    let session_id = session.id.clone();
+                    if let Some(ref tx) = self.tui_cmd_tx {
+                        let _ = tx.try_send(TuiCommand::ShareSession { session_id });
+                    }
+                }
+            }
+            TuiMsg::OpenImportDialog => self.open_dialog(Dialog::Import),
+            TuiMsg::OpenDiffDialog {
+                old_content,
+                new_content,
+                title,
+            } => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::OpenDiffDialog {
+                        old_content,
+                        new_content,
+                        title,
+                    });
+                }
+            }
+            TuiMsg::SelectModel { model } => {
+                self.agent_state.current_model = model.clone();
+                self.dialog_state
+                    .model_dialog
+                    .set_current(&self.agent_state.current_model);
+                if let Some(idx) = self.agent_state.models.iter().position(|m| m == &model) {
+                    self.agent_state.model_idx = idx;
+                }
+                self.close_dialog();
+            }
+            TuiMsg::SelectAgent { agent_name } => {
+                if let Some(idx) = self
+                    .agent_state
+                    .agents
+                    .iter()
+                    .position(|a| a.name == agent_name)
+                {
+                    self.agent_state.current_agent = idx;
+                }
+                self.close_dialog();
+            }
+            TuiMsg::SelectSession(session) => {
+                self.set_session(*session);
+                self.close_dialog();
+            }
+            TuiMsg::SubmitConnect => {
+                self.handle_connect_send();
+            }
+            TuiMsg::ConnectConfigured {
+                provider_name,
+                env_var,
+                api_key,
+            } => {
+                let provider_id = provider_name.to_lowercase();
+                if let (Some(env_var), Some(api_key)) = (env_var, api_key) {
+                    std::env::set_var(&env_var, &api_key);
+
+                    // Persist to config
+                    if let Ok(mut config) = crate::config::schema::Config::load() {
+                        let provider_map = config
+                            .provider
+                            .get_or_insert_with(std::collections::HashMap::new);
+                        let mut p_config = provider_map
+                            .get(&provider_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        p_config.api_key = Some(api_key.clone());
+                        provider_map.insert(provider_id.clone(), p_config);
+
+                        if let Err(e) = config.save() {
+                            tracing::error!("Failed to save config: {}", e);
+                            self.messages_state
+                                .toasts
+                                .error(&format!("Failed to save API key to config: {}", e));
+                        } else {
+                            self.messages_state.toasts.success(&format!(
+                                "API key saved to config for {}",
+                                provider_name
+                            ));
+                        }
+                    }
+
+                    self.messages_state.toasts.info(&format!(
+                        "API key set for {}. {} environment variable updated.",
+                        provider_name, env_var
+                    ));
+                    self.refresh_models();
+                } else {
+                    self.messages_state.toasts.info(&format!(
+                        "Connected to {} (no API key required)",
+                        provider_name
+                    ));
+                }
+                self.dialog_state.connect_dialog = None;
+                self.close_dialog();
+            }
+            TuiMsg::CloseDialog => {
+                self.close_dialog();
+            }
+            TuiMsg::ConfirmResult(confirmed) => {
+                self.close_dialog();
+                if confirmed == Some(true) {
+                    if let Some(session_id) = self.dialog_state.pending_delete_session.take() {
+                        let undo_id = session_id.clone();
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::DeleteSession { session_id });
+                        }
+                        self.undo_session_id = Some(undo_id);
+                        self.undo_until = Some(Instant::now() + std::time::Duration::from_secs(30));
+                        self.footer
+                            .set_undo_message("Session deleted — press U to undo");
+                    } else if let Some((session_id, unarchive)) =
+                        self.dialog_state.pending_archive_session.take()
+                    {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ArchiveSession {
+                                session_id,
+                                unarchive,
+                            });
+                        }
+                    } else if let Some(_count) = self.dialog_state.pending_bulk_delete.take() {
+                        let ids = self.dialog_state.session_dialog.get_selected_ids();
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::BulkDelete { session_ids: ids });
+                        }
+                        self.dialog_state.session_dialog.toggle_bulk_mode();
+                    } else if let Some((_count, unarchive)) =
+                        self.dialog_state.pending_bulk_archive.take()
+                    {
+                        let ids = self.dialog_state.session_dialog.get_selected_ids();
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::BulkArchive {
+                                session_ids: ids,
+                                unarchive,
+                            });
+                        }
+                        self.dialog_state.session_dialog.toggle_bulk_mode();
+                    }
+                } else {
+                    self.dialog_state.pending_delete_session = None;
+                    self.dialog_state.pending_archive_session = None;
+                    self.dialog_state.pending_bulk_delete = None;
+                    self.dialog_state.pending_bulk_archive = None;
+                }
+            }
+            TuiMsg::McpAction {
+                server_name,
+                action,
+            } => {
+                match action.as_str() {
+                    "Configure OAuth" => {
+                        self.messages_state.toasts.info(&format!(
+                                                "OAuth for {} - configure in .codegg/mcp.json",
+                            server_name
+                        ));
+                    }
+                    "Browse Resources" => {
+                        if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                            mcp.browse_mode = BrowseMode::Resources { selected: 0 };
+                            mcp.action_mode = false;
+                        }
+                        self.close_dialog();
+                        return;
+                    }
+                    "Disconnect" => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Disconnecting {}...", server_name));
+                    }
+                    "Reconnect" => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Reconnecting {}...", server_name));
+                    }
+                    "Connect" => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Connecting {}...", server_name));
+                    }
+                    "Remove" => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Removing {}...", server_name));
+                    }
+                    "Wait" => {
+                        self.messages_state
+                            .toasts
+                            .info("Server is connecting, please wait...");
+                    }
+                    "Configure" => {
+                        self.messages_state.toasts.info(&format!(
+                                                "Configure {} - edit .codegg/mcp.json",
+                            server_name
+                        ));
+                    }
+                    _ => {}
+                }
+                self.close_dialog();
+            }
+            TuiMsg::KeybindChanged {
+                action: _,
+                binding: _,
+            } => {
+                if let Some(ref kd) = self.dialog_state.keybind_dialog {
+                    if let Some(keybinds) = &mut self.ui_state.keybinds {
+                        keybinds.bindings = kd.bindings.clone();
+                    } else {
+                        self.ui_state.keybinds = Some(crate::tui::input::KeybindConfig {
+                            bindings: kd.bindings.clone(),
+                        });
+                    }
+                }
+                self.close_dialog();
+            }
+            TuiMsg::ConfirmDeleteSession { session_id } => {
+                let msg = "Delete this session? This cannot be undone.".to_string();
+                self.dialog_state.pending_delete_session = Some(session_id.clone());
+                self.push_dialog(
+                    Dialog::Confirm,
+                    Box::new(ConfirmDialog::new("Delete Session".to_string(), msg)),
+                );
+            }
+            TuiMsg::ConfirmArchiveSession {
+                session_id,
+                unarchive,
+            } => {
+                let (title, msg) = if unarchive {
+                    ("Unarchive Session", "Unarchive this session?")
+                } else {
+                    ("Archive Session", "Archive this session?")
+                };
+                self.dialog_state.pending_archive_session = Some((session_id.clone(), unarchive));
+                self.push_dialog(
+                    Dialog::Confirm,
+                    Box::new(ConfirmDialog::new(title.to_string(), msg.to_string())),
+                );
+            }
+            TuiMsg::ConfirmBulkDelete { count } => {
+                let msg = format!("Delete {} selected sessions? This cannot be undone.", count);
+                self.dialog_state.pending_bulk_delete = Some(count);
+                self.push_dialog(
+                    Dialog::Confirm,
+                    Box::new(ConfirmDialog::new("Delete Sessions".to_string(), msg)),
+                );
+            }
+            TuiMsg::ConfirmBulkArchive { count, unarchive } => {
+                let (title, msg) = if unarchive {
+                    (
+                        "Unarchive Sessions",
+                        format!("Unarchive {} selected sessions?", count),
+                    )
+                } else {
+                    (
+                        "Archive Sessions",
+                        format!("Archive {} selected sessions?", count),
+                    )
+                };
+                self.dialog_state.pending_bulk_archive = Some((count, unarchive));
+                self.push_dialog(
+                    Dialog::Confirm,
+                    Box::new(ConfirmDialog::new(title.to_string(), msg)),
+                );
+            }
+            TuiMsg::SelectTheme { theme_name } => {
+                if let Some(theme) = crate::tui::theme::find_theme(&theme_name) {
+                    self.ui_state.theme = Arc::new(theme);
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Theme: {}", theme_name));
+                }
+                self.dialog_state.theme_picker = None;
+                self.close_dialog();
+            }
+            TuiMsg::SelectTreeSession { session_id } => {
+                let store = self.session_store.clone();
+                let session_id_clone = session_id.clone();
+                tokio::spawn(async move {
+                    if let Some(ref store) = store {
+                        if let Ok(Some(session)) = store.get(&session_id_clone).await {
+                            let _ = session;
+                        }
+                    }
+                });
+                self.close_dialog();
+            }
+            TuiMsg::ForkTreeSession { session_id } => {
+                self.close_dialog();
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ForkSession { session_id });
+                }
+            }
+            TuiMsg::ForkSession { session_id } => {
+                self.close_dialog();
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ForkSession { session_id });
+                }
+            }
+            TuiMsg::SubmitImportPreview => {
+                self.handle_import_send();
+            }
+            TuiMsg::ConfirmImport => {
+                self.handle_import_send();
+            }
+            TuiMsg::SubmitPermission { choice_index } => {
+                let choice = match choice_index {
+                    0 => crate::permission::PermissionChoice::AllowOnce,
+                    1 => crate::permission::PermissionChoice::AlwaysAllow,
+                    2 => crate::permission::PermissionChoice::DenyOnce,
+                    3 => crate::permission::PermissionChoice::AlwaysDeny,
+                    _ => return,
+                };
+                if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
+                    let perm_id = perm_id.clone();
+                    tokio::spawn(async move {
+                        PermissionRegistry::respond(perm_id, choice).await;
+                    });
+                }
+                self.dialog_state.permission_dialog = None;
+                self.dialog_state.permission_perm_id = None;
+                self.close_dialog();
+            }
+            TuiMsg::SubmitQuestionAnswers { answers_json } => {
+                if let Some(session_id) = self.dialog_state.question_session_id.take() {
+                    let answers = answers_json.clone();
+                    tokio::spawn(async move {
+                        QuestionRegistry::answer_question(session_id, answers).await;
+                    });
+                }
+                self.dialog_state.question_dialog = None;
+                self.dialog_state.question_session_id = None;
+                self.close_dialog();
+            }
+            TuiMsg::SelectTemplate { key, template } => {
+                self.apply_template(key, *template);
+                self.dialog_state.template_dialog = None;
+                self.close_dialog();
+            }
+            TuiMsg::GotoMessage { index } => {
+                self.messages_state.messages.select_index(index);
+                self.dialog_state.goto_dialog = None;
+                self.close_dialog();
+            }
+            TuiMsg::CopyShareUrl => {
+                if let Some(ref mut share) = self.dialog_state.share_dialog {
+                    if share.copy_url() {
+                        self.messages_state.toasts.info("URL copied to clipboard!");
+                    } else {
+                        self.messages_state.toasts.error("Failed to copy URL");
+                    }
+                }
+                self.dialog_state.share_dialog = None;
+                self.close_dialog();
+            }
+            TuiMsg::ToggleSidebar => self.toggle_sidebar(),
+            TuiMsg::ToggleFullscreen => self.toggle_fullscreen(),
+            TuiMsg::ToggleReasoning => self.toggle_reasoning(),
+            TuiMsg::ToggleTts => self.toggle_tts(),
+            TuiMsg::CycleModelForward => self.cycle_model_forward(),
+            TuiMsg::CycleModelBackward => self.cycle_model_backward(),
+            TuiMsg::ClearSession => self.clear_session(),
+            TuiMsg::NewSession => self.new_session(),
+            TuiMsg::CloseSession => self.close_session(),
+            TuiMsg::CharInput(c) => self.on_char(c),
+            TuiMsg::Backspace => self.prompt_state.prompt.backspace(),
+            TuiMsg::Delete => self.prompt_state.prompt.delete(),
+            TuiMsg::CursorLeft => self.prompt_state.prompt.cursor_left(),
+            TuiMsg::CursorRight => self.prompt_state.prompt.cursor_right(),
+            TuiMsg::CursorHome => self.prompt_state.prompt.cursor_home(),
+            TuiMsg::CursorEnd => self.prompt_state.prompt.cursor_end(),
+            TuiMsg::PageUp => self.messages_state.messages.scroll_page_up(),
+            TuiMsg::PageDown => self.messages_state.messages.scroll_page_down(),
+            TuiMsg::Search => {
+                if self.messages_state.messages.is_searching() {
+                    self.messages_state.messages.clear_search();
+                } else {
+                    self.ui_state.command_mode = true;
+                    self.prompt_state.prompt.insert_char('/');
+                    self.prompt_state.prompt.set_cursor(1);
+                    self.dialog_state.command_palette.set_query("/search ");
+                    self.messages_state.messages.search_visible = true;
+                }
+            }
+            TuiMsg::SearchNext => self.messages_state.messages.search_next(),
+            TuiMsg::SearchPrev => self.messages_state.messages.search_prev(),
+            TuiMsg::ClearSearch => self.messages_state.messages.clear_search(),
+            TuiMsg::FocusPrompt => self.prompt_state.prompt.focus(),
+            TuiMsg::StashPrompt => self.stash_prompt(),
+            TuiMsg::RestorePrompt => self.restore_prompt(),
+            TuiMsg::CopyMessage => self.copy_message(),
+            TuiMsg::Quit => self.quit(),
+            TuiMsg::ExternalEditor => self.open_external_editor(),
+            TuiMsg::UndoDelete => {
+                if let Some(session_id) = self.undo_session_id.take() {
+                    if let Some(ref tx) = self.tui_cmd_tx {
+                        let _ = tx.try_send(TuiCommand::UndoDelete { session_id });
+                    }
+                    self.undo_until = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn on_key(&mut self, key: KeyEvent) {
+        debug_log!(
+            "on_key: dialog_open={}, dialog={:?}, command_mode={}, timeline_visible={}, show_completions={}, pending_send={}, key_code={:?}, key_modifiers={:?}",
+            self.ui_state.dialog.is_open(),
+            self.ui_state.dialog,
+            self.ui_state.command_mode,
+            self.ui_state.timeline_visible,
+            self.prompt_state.show_completions,
+            self.prompt_state.pending_send,
+            key.code,
+            key.modifiers
+        );
+
+        // Modal dialogs own input while they are active.
+        if !self.focus_manager.is_empty() {
+            if let Some(msg) = self.focus_manager.handle_key(key) {
+                self.process_msg(msg);
+            }
+            return;
+        }
+
+        if self.ui_state.dialog.is_open() {
+            debug_assert!(false, "handle_dialog_key fallback should be unreachable - dialog opened without FocusManager");
+            self.handle_dialog_key(key);
+            return;
+        }
+
+        if self.ui_state.timeline_visible {
+            debug_log!("routing to handle_timeline_key");
+            self.handle_timeline_key(key);
+            return;
+        }
+
+        if self.ui_state.command_mode {
+            debug_log!("routing to handle_command_key");
+            self.handle_command_key(key);
+            return;
+        }
+
+        if self.prompt_state.show_completions && self.handle_completion_key(key) {
+            debug_log!(
+                "routing to handle_completion_key - completions shown, Enter was intercepted"
+            );
+            return;
+        }
+
+        let action = handle_event_with_bindings_moded(
+            crossterm::event::Event::Key(key),
+            Some(&self.ui_state.bindings),
+            self.ui_state.input_mode,
+        );
+        debug_log!("action from bindings: {:?}", action);
+        match action {
+            Some(InputAction::Send) => self.process_msg(TuiMsg::SubmitPrompt),
+            Some(InputAction::Newline) => self.prompt_state.prompt.insert_newline(),
+            Some(InputAction::Cancel) => self.cancel(),
+            Some(InputAction::NavigateUp) => {
+                if self.ui_state.input_mode == InputMode::Insert
+                    && key.modifiers == crossterm::event::KeyModifiers::NONE
+                    && key.code == crossterm::event::KeyCode::Char('k')
+                {
+                    self.process_msg(TuiMsg::CharInput('k'));
+                } else if self.ui_state.input_mode == InputMode::Normal {
+                    self.scroll_viewport_up();
+                } else {
+                    self.process_msg(TuiMsg::NavigateUp);
+                }
+            }
+            Some(InputAction::NavigateDown) => {
+                if self.ui_state.input_mode == InputMode::Insert
+                    && key.modifiers == crossterm::event::KeyModifiers::NONE
+                    && key.code == crossterm::event::KeyCode::Char('j')
+                {
+                    self.process_msg(TuiMsg::CharInput('j'));
+                } else if self.ui_state.input_mode == InputMode::Normal {
+                    self.scroll_viewport_down();
+                } else {
+                    self.process_msg(TuiMsg::NavigateDown);
+                }
+            }
+            Some(InputAction::SwitchAgent) => self.process_msg(TuiMsg::CycleAgent),
+            Some(InputAction::SelectModel) => self.process_msg(TuiMsg::OpenModelDialog),
+            Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
+            Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
+            Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
+            Some(InputAction::ToggleSection) => {
+                if self.ui_state.sidebar_visible {
+                    self.sidebar.toggle_focused();
+                }
+            }
+            Some(InputAction::CloseSession) => self.process_msg(TuiMsg::CloseSession),
+            Some(InputAction::Help) => self.process_msg(TuiMsg::OpenHelpDialog),
+            Some(InputAction::FocusPrompt) => {
+                if self.prompt_state.prompt.cursor_pos() == 0 {
+                    self.ui_state.command_mode = true;
+                    self.prompt_state.prompt.insert_char('/');
+                    self.prompt_state.prompt.set_cursor(1);
+                    self.dialog_state.command_palette.set_query("/");
+                }
+                self.process_msg(TuiMsg::FocusPrompt);
+            }
+            Some(InputAction::StashPrompt) => self.process_msg(TuiMsg::StashPrompt),
+            Some(InputAction::RestorePrompt) => self.process_msg(TuiMsg::RestorePrompt),
+            Some(InputAction::CopyMessage) => self.process_msg(TuiMsg::CopyMessage),
+            Some(InputAction::CycleModelForward) => self.process_msg(TuiMsg::CycleModelForward),
+            Some(InputAction::CycleModelBackward) => self.process_msg(TuiMsg::CycleModelBackward),
+            Some(InputAction::ToggleReasoning) => self.process_msg(TuiMsg::ToggleReasoning),
+            Some(InputAction::ToggleTts) => self.process_msg(TuiMsg::ToggleTts),
+            Some(InputAction::StopTts) => self.stop_tts(),
+            Some(InputAction::ToggleFullscreen) => self.process_msg(TuiMsg::ToggleFullscreen),
+            Some(InputAction::TogglePermissionMode) => {
+                if self.agent_state.plan_mode {
+                    self.exit_plan_mode();
+                } else {
+                    self.enter_plan_mode(None);
+                }
+            }
+            Some(InputAction::OpenDiff) => {
+                let old = "line 1\nline 2\nline 3";
+                let new = "line 1\nline modified\nline 3";
+                self.process_msg(TuiMsg::OpenDiffDialog {
+                    old_content: old.to_string().into_boxed_str(),
+                    new_content: new.to_string().into_boxed_str(),
+                    title: "Example Diff".to_string().into_boxed_str(),
+                });
+            }
+            Some(InputAction::Quit) => self.process_msg(TuiMsg::Quit),
+            Some(InputAction::ExternalEditor) => self.process_msg(TuiMsg::ExternalEditor),
+            Some(InputAction::Char(c)) => self.process_msg(TuiMsg::CharInput(c)),
+            Some(InputAction::Backspace) => self.process_msg(TuiMsg::Backspace),
+            Some(InputAction::Delete) => self.process_msg(TuiMsg::Delete),
+            Some(InputAction::Left) => self.process_msg(TuiMsg::CursorLeft),
+            Some(InputAction::Right) => self.process_msg(TuiMsg::CursorRight),
+            Some(InputAction::Home) => self.process_msg(TuiMsg::CursorHome),
+            Some(InputAction::End) => self.process_msg(TuiMsg::CursorEnd),
+            Some(InputAction::PageUp) => self.scroll_page_up(),
+            Some(InputAction::PageDown) => self.scroll_page_down(),
+            Some(InputAction::GoToTop) => self.go_to_top(),
+            Some(InputAction::GoToBottom) => self.go_to_bottom(),
+            Some(InputAction::Search) => self.process_msg(TuiMsg::Search),
+            Some(InputAction::SearchNext) => self.process_msg(TuiMsg::SearchNext),
+            Some(InputAction::SearchPrev) => self.process_msg(TuiMsg::SearchPrev),
+            Some(InputAction::ClearSearch) => self.process_msg(TuiMsg::ClearSearch),
+            Some(InputAction::Command) => {
+                self.ui_state.command_mode = true;
+                self.prompt_state.prompt.insert_char(':');
+                self.prompt_state.prompt.set_cursor(1);
+                self.dialog_state.command_palette.set_query(":");
+            }
+            None => {
+                // In Normal mode, only 'i' switches to Insert mode
+                // All other keys pass through to their bindings (j/k for navigate, etc.)
+                if self.ui_state.input_mode == InputMode::Normal {
+                    if let crossterm::event::KeyCode::Char('i') = key.code {
+                        if key.modifiers == crossterm::event::KeyModifiers::NONE {
+                            self.ui_state.input_mode = InputMode::Insert;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let (Some(_session_id), Some(undo_until)) = (&self.undo_session_id, &self.undo_until) {
+            if Instant::now() < *undo_until {
+                if let crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char('u'),
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                    ..
+                } = key
+                {
+                    self.process_msg(TuiMsg::UndoDelete);
+                }
+            } else {
+                self.undo_session_id = None;
+                self.undo_until = None;
+                self.footer.clear_undo_message();
+            }
+        }
+    }
+
+    fn handle_dialog_key(&mut self, key: KeyEvent) {
+        debug_log!(
+            "handle_dialog_key: dialog={:?}, key_code={:?}",
+            self.ui_state.dialog,
+            key.code
+        );
+
+        if let Dialog::Keybind = &self.ui_state.dialog {
+            self.handle_keybind_key(key);
+            return;
+        }
+        if let Dialog::Model = &self.ui_state.dialog {
+            if key.code == crossterm::event::KeyCode::Tab {
+                self.dialog_state.model_dialog.next_tab();
+                return;
+            }
+        }
+        if key.code == crossterm::event::KeyCode::Tab
+            && !matches!(
+                self.ui_state.dialog,
+                Dialog::None | Dialog::Help | Dialog::Context | Dialog::Cost | Dialog::Usage
+            )
+        {
+            return;
+        }
+        let action = handle_event_with_bindings_moded(
+            crossterm::event::Event::Key(key),
+            Some(&self.ui_state.bindings),
+            InputMode::Insert,
+        );
+        debug_log!("handle_dialog_key: action={:?}", action);
+        match action {
+            Some(InputAction::Cancel) => {
+                self.dialog_state.theme_picker = None;
+                if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                    if mcp.action_mode {
+                        mcp.exit_action_mode();
+                    } else {
+                        self.dialog_state.mcp_dialog = None;
+                        self.close_dialog();
+                    }
+                } else if matches!(self.ui_state.dialog, Dialog::Session) {
+                    if self.dialog_state.session_dialog.bulk_mode {
+                        self.dialog_state.session_dialog.toggle_bulk_mode();
+                    } else {
+                        self.dialog_state.session_dialog.clear_message_preview();
+                        self.close_dialog();
+                    }
+                } else if matches!(self.ui_state.dialog, Dialog::Connect) {
+                    if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                        if cd.step
+                            == crate::tui::components::dialogs::connect::ConnectStep::EnterApiKey
+                        {
+                            cd.back_to_provider_selection();
+                        } else {
+                            self.dialog_state.connect_dialog = None;
+                            self.close_dialog();
+                        }
+                    }
+                } else if matches!(
+                    self.ui_state.dialog,
+                    Dialog::Context | Dialog::Cost | Dialog::Usage
+                ) {
+                    self.close_dialog();
+                } else {
+                    self.dialog_state.import_dialog = None;
+                    self.close_dialog();
+                }
+            }
+            Some(InputAction::NavigateUp) => {
+                debug_log!(
+                    "NavigateUp: calling select_up on {:?}",
+                    self.ui_state.dialog
+                );
+                match &mut self.ui_state.dialog {
+                    Dialog::Model => self.dialog_state.model_dialog.select_up(),
+                    Dialog::Agent => self.dialog_state.agent_dialog.select_up(),
+                    Dialog::Session => self.dialog_state.session_dialog.select_up(),
+                    Dialog::Tree => self.dialog_state.tree_dialog.select_up(),
+                    Dialog::Theme => {
+                        if let Some(picker) = &mut self.dialog_state.theme_picker {
+                            picker.select_up();
+                        }
+                    }
+                    Dialog::Question => {
+                        if let Some(qd) = &mut self.dialog_state.question_dialog {
+                            qd.select_up();
+                        }
+                    }
+                    Dialog::Permission => {
+                        if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                            pd.cursor_up();
+                        }
+                    }
+                    Dialog::Mcp => {
+                        if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                            mcp.select_up();
+                        }
+                    }
+                    Dialog::Template => {
+                        if let Some(ref mut td) = self.dialog_state.template_dialog {
+                            td.select_up();
+                        }
+                    }
+                    Dialog::Connect => {
+                        if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                            cd.cursor_up();
+                        }
+                    }
+                    Dialog::Context | Dialog::Cost | Dialog::Usage => {}
+                    _ => {}
+                }
+            }
+            Some(InputAction::NavigateDown) => {
+                debug_log!(
+                    "NavigateDown: calling select_down on {:?}",
+                    self.ui_state.dialog
+                );
+                match &mut self.ui_state.dialog {
+                    Dialog::Model => self.dialog_state.model_dialog.select_down(),
+                    Dialog::Agent => self.dialog_state.agent_dialog.select_down(),
+                    Dialog::Session => self.dialog_state.session_dialog.select_down(),
+                    Dialog::Tree => self.dialog_state.tree_dialog.select_down(),
+                    Dialog::Theme => {
+                        if let Some(picker) = &mut self.dialog_state.theme_picker {
+                            picker.select_down();
+                        }
+                    }
+                    Dialog::Question => {
+                        if let Some(qd) = &mut self.dialog_state.question_dialog {
+                            qd.select_down();
+                        }
+                    }
+                    Dialog::Permission => {
+                        if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                            pd.cursor_down();
+                        }
+                    }
+                    Dialog::Mcp => {
+                        if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                            mcp.select_down();
+                        }
+                    }
+                    Dialog::Template => {
+                        if let Some(ref mut td) = self.dialog_state.template_dialog {
+                            td.select_down();
+                        }
+                    }
+                    Dialog::Connect => {
+                        if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                            cd.cursor_down();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some(InputAction::Send) => match &self.ui_state.dialog {
+                Dialog::Model => {
+                    if self.dialog_state.model_dialog.adding_model {
+                        if let Some(model) = self.dialog_state.model_dialog.add_custom_model() {
+                            let full_name = format!("{}/{}", model.provider, model.name);
+                            if !self.agent_state.models.contains(&full_name) {
+                                self.agent_state.models.push(full_name);
+                            }
+                        }
+                    } else if let Some(model) = self.dialog_state.model_dialog.selected() {
+                        self.agent_state.current_model = model.clone();
+                        if let Some(idx) = self.agent_state.models.iter().position(|m| m == &model)
+                        {
+                            self.agent_state.model_idx = idx;
+                        }
+                        self.close_dialog();
+                    }
+                }
+                Dialog::Agent => {
+                    if let Some(agent) = self.dialog_state.agent_dialog.selected() {
+                        if let Some(idx) =
+                            self.agent_state.agents.iter().position(|a| a.name == agent)
+                        {
+                            self.agent_state.current_agent = idx;
+                        }
+                    }
+                    self.close_dialog();
+                }
+                Dialog::Session => {
+                    if self.dialog_state.session_dialog.bulk_mode {
+                        self.dialog_state.session_dialog.toggle_bulk_mode();
+                    } else if let Some(session) =
+                        self.dialog_state.session_dialog.selected_session()
+                    {
+                        self.set_session(session.clone());
+                        self.close_dialog();
+                    }
+                }
+                Dialog::Theme => {
+                    if let Some(picker) = &self.dialog_state.theme_picker {
+                        if let Some(theme) = picker.selected_theme() {
+                            self.ui_state.theme = Arc::new(theme.clone());
+                            self.messages_state
+                                .toasts
+                                .info(&format!("Theme: {}", theme.name));
+                        }
+                    }
+                    self.dialog_state.theme_picker = None;
+                    self.close_dialog();
+                }
+                Dialog::Question => {
+                    self.submit_question_answers();
+                }
+                Dialog::Permission => {
+                    self.on_permission_confirm();
+                }
+                Dialog::Mcp => {
+                    if let Some(ref mut mcp) = self.dialog_state.mcp_dialog {
+                        if mcp.action_mode {
+                            if let Some(action) = mcp.selected_action_name() {
+                                match action {
+                                    "Configure OAuth" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state.toasts.info(&format!(
+                            "OAuth for {} - configure in .codegg/mcp.json",
+                                                server.name
+                                            ));
+                                        }
+                                    }
+                                    "Browse Resources" => {
+                                        mcp.browse_mode = BrowseMode::Resources { selected: 0 };
+                                        mcp.action_mode = false;
+                                    }
+                                    "Disconnect" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state
+                                                .toasts
+                                                .info(&format!("Disconnecting {}...", server.name));
+                                        }
+                                    }
+                                    "Reconnect" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state
+                                                .toasts
+                                                .info(&format!("Reconnecting {}...", server.name));
+                                        }
+                                    }
+                                    "Connect" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state
+                                                .toasts
+                                                .info(&format!("Connecting {}...", server.name));
+                                        }
+                                    }
+                                    "Remove" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state
+                                                .toasts
+                                                .info(&format!("Removing {}...", server.name));
+                                        }
+                                    }
+                                    "Wait" => {
+                                        self.messages_state
+                                            .toasts
+                                            .info("Server is connecting, please wait...");
+                                    }
+                                    "Configure" => {
+                                        if let Some(server) = mcp.selected_server() {
+                                            self.messages_state.toasts.info(&format!(
+                            "Configure {} - edit .codegg/mcp.json",
+                                                server.name
+                                            ));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        } else {
+                            mcp.enter_action_mode();
+                        }
+                    }
+                }
+                Dialog::Share => {
+                    if let Some(ref mut share) = self.dialog_state.share_dialog {
+                        if share.copy_url() {
+                            self.messages_state.toasts.info("URL copied to clipboard!");
+                        } else {
+                            self.messages_state.toasts.error("Failed to copy URL");
+                        }
+                    }
+                }
+                Dialog::Import => {
+                    self.handle_import_send();
+                }
+                Dialog::Template => {
+                    if let Some(ref template_dialog) = self.dialog_state.template_dialog {
+                        if let Some((key, template)) = template_dialog.selected() {
+                            self.apply_template(key, template);
+                        }
+                    }
+                    self.dialog_state.template_dialog = None;
+                    self.close_dialog();
+                }
+                Dialog::Connect => {
+                    self.handle_connect_send();
+                }
+                _ => {}
+            },
+            Some(InputAction::Char(c)) => match &mut self.ui_state.dialog {
+                Dialog::Model => {
+                    if self.dialog_state.model_dialog.adding_model {
+                        if self.dialog_state.model_dialog.new_model_name.is_empty() {
+                            self.dialog_state.model_dialog.new_model_name.push(c);
+                        } else if self.dialog_state.model_dialog.new_model_provider.is_empty() {
+                            self.dialog_state.model_dialog.new_model_provider.push(c);
+                        } else if self.dialog_state.model_dialog.new_model_api_key.is_empty() {
+                            self.dialog_state.model_dialog.new_model_api_key.push(c);
+                        } else {
+                            self.dialog_state.model_dialog.new_model_base_url.push(c);
+                        }
+                    } else if self.dialog_state.model_dialog.tab
+                        == crate::tui::components::dialogs::model::ModelDialogTab::Configure
+                    {
+                        match c {
+                            'a' => {
+                                self.dialog_state.model_dialog.start_adding_model();
+                            }
+                            'd' => {
+                                self.dialog_state
+                                    .model_dialog
+                                    .remove_custom_model(self.dialog_state.model_dialog.selected);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        if c.is_alphanumeric() || c == '-' || c == '_' || c == '/' {
+                            self.dialog_state.model_dialog.set_filter(c);
+                        }
+                    }
+                }
+                Dialog::Agent => {
+                    if c.is_alphanumeric() || c == '-' || c == '_' || c == '/' {
+                        self.dialog_state.agent_dialog.set_filter(c);
+                    }
+                }
+                Dialog::Session => {
+                    if self.dialog_state.session_dialog.bulk_mode {
+                        match c {
+                            'a' => {
+                                let count = self.dialog_state.session_dialog.selected_count();
+                                if count > 0 {
+                                    let msg = format!("Archive {} selected sessions?", count);
+                                    self.dialog_state.pending_bulk_archive = Some((count, false));
+                                    self.push_dialog(
+                                        Dialog::Confirm,
+                                        Box::new(ConfirmDialog::new(
+                                            "Archive Sessions".to_string(),
+                                            msg,
+                                        )),
+                                    );
+                                }
+                            }
+                            'd' => {
+                                let count = self.dialog_state.session_dialog.selected_count();
+                                if count > 0 {
+                                    let msg = format!(
+                                        "Delete {} selected sessions? This cannot be undone.",
+                                        count
+                                    );
+                                    self.dialog_state.pending_bulk_delete = Some(count);
+                                    self.push_dialog(
+                                        Dialog::Confirm,
+                                        Box::new(ConfirmDialog::new(
+                                            "Delete Sessions".to_string(),
+                                            msg,
+                                        )),
+                                    );
+                                }
+                            }
+                            'A' => {
+                                self.dialog_state.session_dialog.select_all();
+                            }
+                            'D' => {
+                                self.dialog_state.session_dialog.deselect_all();
+                            }
+                            ' ' => {
+                                self.dialog_state.session_dialog.toggle_selection();
+                            }
+                            _ => {
+                                self.dialog_state.session_dialog.set_filter(c);
+                            }
+                        }
+                    } else {
+                        match c {
+                            's' => {
+                                self.dialog_state.session_dialog.cycle_sort();
+                            }
+                            'h' => {
+                                self.toggle_show_archived();
+                            }
+                            'b' => {
+                                self.dialog_state.session_dialog.toggle_bulk_mode();
+                            }
+                            _ => {
+                                self.dialog_state.session_dialog.set_filter(c);
+                            }
+                        }
+                    }
+                }
+                Dialog::Tree => match c {
+                    'e' => {
+                        self.dialog_state.tree_dialog.toggle_expand();
+                    }
+                    'f' => {
+                        self.fork_tree_session();
+                    }
+                    _ => {}
+                },
+                Dialog::Question => {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.set_answer(c);
+                    }
+                }
+                Dialog::Import => {
+                    if let Some(ref mut import) = self.dialog_state.import_dialog {
+                        if let super::components::dialogs::import::ImportState::Input = import.state
+                        {
+                            import.set_input(c);
+                        }
+                    }
+                }
+                Dialog::Template => {
+                    if let Some(ref mut td) = self.dialog_state.template_dialog {
+                        td.set_filter(c);
+                    }
+                }
+                Dialog::Connect => {
+                    if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                        if cd.step
+                            == crate::tui::components::dialogs::connect::ConnectStep::EnterApiKey
+                        {
+                            cd.insert_char(c);
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Some(InputAction::Backspace) => match &mut self.ui_state.dialog {
+                Dialog::Model => {
+                    if self.dialog_state.model_dialog.adding_model {
+                        if !self.dialog_state.model_dialog.new_model_base_url.is_empty() {
+                            self.dialog_state.model_dialog.new_model_base_url.pop();
+                        } else if !self.dialog_state.model_dialog.new_model_api_key.is_empty() {
+                            self.dialog_state.model_dialog.new_model_api_key.pop();
+                        } else if !self.dialog_state.model_dialog.new_model_provider.is_empty() {
+                            self.dialog_state.model_dialog.new_model_provider.pop();
+                        } else if !self.dialog_state.model_dialog.new_model_name.is_empty() {
+                            self.dialog_state.model_dialog.new_model_name.pop();
+                        }
+                    } else {
+                        self.dialog_state.model_dialog.backspace_filter();
+                    }
+                }
+                Dialog::Agent => self.dialog_state.agent_dialog.backspace_filter(),
+                Dialog::Session => self.dialog_state.session_dialog.backspace_filter(),
+                Dialog::Question => {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.backspace();
+                    }
+                }
+                Dialog::Import => {
+                    if let Some(ref mut import) = self.dialog_state.import_dialog {
+                        if let super::components::dialogs::import::ImportState::Input = import.state
+                        {
+                            import.backspace();
+                        }
+                    }
+                }
+                Dialog::Template => {
+                    if let Some(ref mut td) = self.dialog_state.template_dialog {
+                        td.backspace_filter();
+                    }
+                }
+                Dialog::Connect => {
+                    if let Some(ref mut cd) = self.dialog_state.connect_dialog {
+                        if cd.step
+                            == crate::tui::components::dialogs::connect::ConnectStep::EnterApiKey
+                        {
+                            cd.backspace();
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Some(InputAction::Delete) => {
+                if let Dialog::Question = &self.ui_state.dialog {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.delete();
+                    }
+                }
+            }
+            Some(InputAction::Left) => {
+                if let Dialog::Question = &self.ui_state.dialog {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.cursor_left();
+                    }
+                }
+            }
+            Some(InputAction::Right) => {
+                if let Dialog::Question = &self.ui_state.dialog {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.cursor_right();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_keybind_key(&mut self, key: KeyEvent) {
+        use crate::tui::components::dialogs::keybind::KeybindMode;
+        use crossterm::event::KeyCode;
+
+        let kd = match &mut self.dialog_state.keybind_dialog {
+            Some(kd) => kd,
+            None => return,
+        };
+
+        match kd.mode {
+            KeybindMode::WaitingForKey => {
+                let key_str = format_key_event(&key);
+                if key.code == KeyCode::Esc {
+                    kd.cancel_remap();
+                    return;
+                }
+                if let Some(action_idx) = kd.waiting_for_key {
+                    let actions =
+                        crate::tui::components::dialogs::keybind::KeybindDialog::actions();
+                    if action_idx < actions.len() {
+                        let action = &actions[action_idx];
+                        let existing_key_for_action = kd
+                            .bindings
+                            .iter()
+                            .find(|(_, val)| *val == action)
+                            .map(|(k, _)| k.clone());
+
+                        if let Some(ref existing_key) = existing_key_for_action {
+                            if existing_key != &key_str {
+                                kd.bindings.remove(existing_key);
+                            }
+                        }
+
+                        let current_binding_for_action = kd.get_binding(action);
+                        if current_binding_for_action.as_ref() != Some(&key_str) {
+                            kd.bindings.insert(key_str, action.clone());
+                        }
+                        kd.clear_conflict();
+                    }
+                    kd.waiting_for_key = None;
+                    kd.mode = KeybindMode::Normal;
+                    self.save_keybinds();
+                }
+            }
+            KeybindMode::Export => {
+                if key.code == KeyCode::Esc {
+                    kd.cancel_mode();
+                }
+            }
+            KeybindMode::Import => match key.code {
+                KeyCode::Esc => {
+                    kd.cancel_mode();
+                }
+                KeyCode::Enter => {
+                    if let Err(e) = kd.apply_import() {
+                        kd.conflict = Some(e);
+                    } else {
+                        self.save_keybinds();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    kd.import_text.push(c);
+                }
+                KeyCode::Backspace => {
+                    kd.import_text.pop();
+                }
+                _ => {}
+            },
+            KeybindMode::Normal => {
+                let action = handle_event(crossterm::event::Event::Key(key));
+                match action {
+                    Some(InputAction::Cancel) => {
+                        self.dialog_state.keybind_dialog = None;
+                        self.close_dialog();
+                    }
+                    Some(InputAction::NavigateUp) => {
+                        kd.select_up();
+                    }
+                    Some(InputAction::NavigateDown) => {
+                        kd.select_down();
+                    }
+                    Some(InputAction::Send) => {
+                        kd.start_remap();
+                    }
+                    Some(InputAction::Char(c)) => match c {
+                        'r' | 'R' => {
+                            kd.reset_to_defaults();
+                            self.save_keybinds();
+                        }
+                        'e' | 'E' => {
+                            kd.start_export();
+                        }
+                        'i' | 'I' => {
+                            kd.start_import();
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn save_keybinds(&mut self) {
+        if let Some(ref kd) = self.dialog_state.keybind_dialog {
+            if let Some(keybinds) = &mut self.ui_state.keybinds {
+                keybinds.bindings = kd.bindings.clone();
+            } else {
+                self.ui_state.keybinds = Some(crate::tui::input::KeybindConfig {
+                    bindings: kd.bindings.clone(),
+                });
+            }
+        }
+    }
+
+    fn handle_completion_key(&mut self, key: KeyEvent) -> bool {
+        let action = handle_event(crossterm::event::Event::Key(key));
+        debug_log!("handle_completion_key: action={:?}", action);
+        match action {
+            Some(InputAction::NavigateUp) => {
+                if self.prompt_state.completion_sel > 0 {
+                    self.prompt_state.completion_sel -= 1;
+                }
+                true
+            }
+            Some(InputAction::NavigateDown) => {
+                let max_sel = match self.prompt_state.completion_type {
+                    CompletionType::Slash => {
+                        let filter = self.prompt_state.completion_filter.trim_start_matches('/');
+                        if filter.is_empty() {
+                            self.prompt_state.slash_completions.len().saturating_sub(1)
+                        } else {
+                            self.prompt_state
+                                .slash_completions
+                                .iter()
+                                .filter(|item| {
+                                    let item_name = item.label.trim_start_matches('/');
+                                    fuzzy_score(filter, item_name) > 0
+                                })
+                                .count()
+                                .saturating_sub(1)
+                        }
+                    }
+                    CompletionType::File => {
+                        self.prompt_state.file_completions.len().saturating_sub(1)
+                    }
+                    CompletionType::Agent => {
+                        self.prompt_state.agent_completions.len().saturating_sub(1)
+                    }
+                };
+                if self.prompt_state.completion_sel < max_sel {
+                    self.prompt_state.completion_sel += 1;
+                }
+                true
+            }
+            Some(InputAction::Send) => {
+                debug_log!("handle_completion_key: Send action - accepting completion");
+                self.accept_completion();
+                true
+            }
+            Some(InputAction::Cancel) => {
+                self.prompt_state.show_completions = false;
+                true
+            }
+            Some(InputAction::Char(c)) => {
+                self.prompt_state.completion_filter.push(c);
+                self.prompt_state.completion_sel = 0;
+                true
+            }
+            Some(InputAction::Backspace) => {
+                self.prompt_state.completion_filter.pop();
+                self.prompt_state.completion_sel = 0;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_command_key(&mut self, key: KeyEvent) {
+        let action = handle_event(crossterm::event::Event::Key(key));
+        debug_log!("handle_command_key: action={:?}", action);
+        match action {
+            Some(InputAction::Cancel) => {
+                debug_log!("handle_command_key: Cancel - exiting command mode");
+                self.ui_state.command_mode = false;
+                self.dialog_state.command_palette.set_query("");
+                self.prompt_state.prompt.clear();
+            }
+            Some(InputAction::NavigateUp) => {
+                self.dialog_state.command_palette.cursor_up();
+            }
+            Some(InputAction::NavigateDown) => {
+                self.dialog_state.command_palette.cursor_down();
+            }
+            Some(InputAction::Send) => {
+                if let Some(cmd) = self.dialog_state.command_palette.selected() {
+                    debug_log!("handle_command_key: executing command: {}", cmd.name);
+                    self.execute_command(cmd);
+                    self.ui_state.command_mode = false;
+                    self.dialog_state.command_palette.set_query("");
+                    self.prompt_state.prompt.clear();
+                } else {
+                    debug_log!("handle_command_key: no matching command, exiting command mode and sending prompt");
+                    self.ui_state.command_mode = false;
+                    self.dialog_state.command_palette.set_query("");
+                    self.send_prompt();
+                }
+            }
+            Some(InputAction::Char(c)) => {
+                self.prompt_state.prompt.insert_char(c);
+                let query = self.prompt_state.prompt.get_text();
+                self.dialog_state.command_palette.set_query(&query);
+            }
+            Some(InputAction::Backspace) => {
+                if self.prompt_state.prompt.cursor_pos() > 0 {
+                    self.prompt_state.prompt.backspace();
+                }
+                let query = self.prompt_state.prompt.get_text();
+                if query.is_empty() || query == "/" {
+                    self.ui_state.command_mode = false;
+                } else {
+                    self.dialog_state.command_palette.set_query(&query);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn execute_command(&mut self, cmd: &crate::tui::command::Command) {
+        if let Some(dialog) = &cmd.dialog {
+            self.ui_state.command_mode = false;
+            self.open_dialog(dialog.clone());
+            return;
+        }
+        match cmd.name.as_str() {
+            "/exit" | "/quit" | "/q" => {
+                self.ui_state.running = false;
+                let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
+            }
+            "/help" => {
+                self.ui_state.command_mode = false;
+                self.open_dialog(Dialog::Help);
+            }
+            "/tree" => {
+                self.ui_state.command_mode = false;
+                self.open_tree_dialog();
+            }
+            "/model" => {
+                self.ui_state.command_mode = false;
+                self.open_dialog(Dialog::Model);
+            }
+            "/agent" => {
+                self.ui_state.command_mode = false;
+                self.open_dialog(Dialog::Agent);
+            }
+            "/clear" | "/new" => {
+                self.clear_session();
+            }
+            "/compact" => {
+                self.messages_state
+                    .toasts
+                    .info("Compaction triggered - reducing context");
+            }
+            "/connect" => {
+                self.ui_state.command_mode = false;
+                self.open_connect_dialog();
+            }
+            "/status" => {
+                self.messages_state.toasts.info(&format!(
+                    "status: {:?} | tokens: {}↑ {}↓ | model: {}",
+                    self.session_state.session_status,
+                    self.session_state.token_in,
+                    self.session_state.token_out,
+                    self.agent_state
+                        .current_model
+                        .split('/')
+                        .next_back()
+                        .unwrap_or(&self.agent_state.current_model)
+                ));
+            }
+            "/context" => {
+                self.ui_state.command_mode = false;
+                self.open_dialog(Dialog::Context);
+            }
+            "/cost" => {
+                self.ui_state.command_mode = false;
+                self.open_dialog(Dialog::Cost);
+            }
+            "/usage" => {
+                self.ui_state.command_mode = false;
+                self.open_dialog(Dialog::Usage);
+            }
+            "/themes" => {
+                self.open_dialog(Dialog::Theme);
+            }
+            "/tui" => {
+                self.toggle_fullscreen();
+            }
+            "/sessions" => {
+                self.open_dialog(Dialog::Session);
+            }
+            "/share" => {
+                if let Some(ref session) = self.session_state.session {
+                    if let Some(ref existing) = session.share_url {
+                        let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(
+                            Arc::clone(&self.ui_state.theme),
+                        );
+                        dialog.set_theme(&self.ui_state.theme);
+                        dialog.set_url(existing.clone());
+                        self.dialog_state.share_dialog = Some(dialog);
+                        self.open_dialog(Dialog::Share);
+                    } else if self.tui_cmd_tx.is_some() {
+                        let session_id = session.id.clone();
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ShareSession { session_id });
+                        }
+                    } else {
+                        self.messages_state
+                            .toasts
+                            .error("Session store not available");
+                    }
+                } else {
+                    self.messages_state
+                        .toasts
+                        .info("No active session to share");
+                }
+            }
+            "/unshare" => {
+                if self.session_state.session.is_some() {
+                    self.messages_state.toasts.info("Session unshared");
+                } else {
+                    self.messages_state.toasts.info("No active session");
+                }
+            }
+            "/rename" => {
+                self.messages_state
+                    .toasts
+                    .info("Use /sessions to rename - select and press Enter");
+            }
+            "/timeline" => {
+                self.show_timeline();
+            }
+            "/undo" => {
+                if self.messages_state.messages.undo() {
+                    self.messages_state.toasts.info("Undid last message");
+                } else {
+                    self.messages_state.toasts.info("Nothing to undo");
+                }
+            }
+            "/redo" => {
+                if self.messages_state.messages.redo() {
+                    self.messages_state.toasts.info("Redid message");
+                } else {
+                    self.messages_state.toasts.info("Nothing to redo");
+                }
+            }
+            "/export" => {
+                self.messages_state
+                    .toasts
+                    .info("Exporting session - copy to clipboard");
+            }
+            "/import" => {
+                self.dialog_state.import_dialog =
+                    Some(crate::tui::components::dialogs::import::ImportDialog::new(
+                        Arc::clone(&self.ui_state.theme),
+                    ));
+                self.open_dialog(Dialog::Import);
+            }
+            "/timestamps" => {
+                self.ui_state.show_timestamps = !self.ui_state.show_timestamps;
+                let msg = if self.ui_state.show_timestamps {
+                    "timestamps shown"
+                } else {
+                    "timestamps hidden"
+                };
+                self.messages_state.toasts.info(msg);
+            }
+            "/thinking" => {
+                self.ui_state.show_thinking = !self.ui_state.show_thinking;
+                let msg = if self.ui_state.show_thinking {
+                    "thinking shown"
+                } else {
+                    "thinking hidden"
+                };
+                self.messages_state.toasts.info(msg);
+            }
+            "/models-refresh" | "/refresh-models" => {
+                self.refresh_models();
+            }
+            "/variants" => {
+                let model = &self.agent_state.current_model;
+                let base = model.split('/').next_back().unwrap_or(model);
+                self.messages_state
+                    .toasts
+                    .info(&format!("Variants for {}: default (no suffix)", base));
+            }
+            "/mcps" => {
+                if self.session_state.mcp_servers.is_empty() {
+                    self.messages_state.toasts.info("No MCP servers configured");
+                } else {
+                    let status: Vec<String> = self
+                        .session_state
+                        .mcp_servers
+                        .iter()
+                        .map(|(name, status)| format!("{}: {}", name, status))
+                        .collect();
+                    self.messages_state.toasts.info(&status.join(", "));
+                }
+            }
+            "/fork" => {
+                if let Some(idx) = self.messages_state.messages.sel_msg {
+                    self.messages_state.toasts.info(&format!(
+                        "Fork from message {} - use CLI --fork flag for now",
+                        idx
+                    ));
+                } else {
+                    self.messages_state
+                        .toasts
+                        .info("Select a message with arrow keys first, then use /fork");
+                }
+            }
+            "/workspaces" => {
+                self.messages_state
+                    .toasts
+                    .info("Workspace management - use /sessions to switch workspaces");
+            }
+            "/worktree" => {
+                self.handle_worktree_command();
+            }
+            "/editor" => {
+                self.open_external_editor();
+            }
+            "/loop" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let parts: Vec<&str> = query.splitn(2, ' ').collect();
+                if parts.len() < 2 {
+                    self.messages_state.toasts.warning(
+                        "Usage: /loop <interval> \"<message>\" (e.g. /loop 5m \"check status\")",
+                    );
+                } else if let Some(duration) = crate::agent::task::parse_duration(parts[0]) {
+                    let message = parts[1].trim_matches('"').to_string();
+                    if let Some(ref scheduler) = self.bg_scheduler {
+                        let session_id = self
+                            .session_state
+                            .session
+                            .as_ref()
+                            .map(|s| s.id.clone())
+                            .unwrap_or_default();
+                        let task = crate::agent::task::BackgroundTask::new(
+                            session_id.clone(),
+                            duration,
+                            message,
+                        );
+                        let id = task.id.clone();
+                        let prompt = format!("[Background] {}", task.message);
+                        let pool = self.subagent_pool.clone();
+                        let scheduler_clone = scheduler.clone();
+                        self.messages_state.toasts.info(&format!(
+                            "Task {} scheduled (every {:?})",
+                            id.chars().take(8).collect::<String>(),
+                            duration
+                        ));
+                        tokio::spawn(async move {
+                            let _ = scheduler_clone.add(task).await;
+                            if let Some(ref pool) = pool {
+                                let request = crate::agent::worker::SubAgentRequest {
+                                    task_id: 0,
+                                    prompt,
+                                    agent: "build".to_string(),
+                                    parent_id: Some(session_id),
+                                    denied_tools: Vec::new(),
+                                    description: "Background loop task".to_string(),
+                                    depth: 0,
+                                };
+                                pool.spawner().send(request).await.ok();
+                            }
+                        });
+                    } else {
+                        self.messages_state.toasts.error("Scheduler not available");
+                    }
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning("Invalid interval. Examples: 30s, 5m, 1h, 1d");
+                }
+            }
+            "/tasks" => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ListTasks);
+                } else {
+                    self.messages_state.toasts.info("No background tasks");
+                }
+            }
+            "/task-del" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let id = query.trim();
+                if id.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /task-del <id> (use /tasks to see IDs)");
+                } else if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::DeleteTask { id: id.to_string() });
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning("Scheduler not available");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn on_paste(&mut self, text: String) {
+        if self.ui_state.command_mode {
+            self.prompt_state.prompt.paste(text);
+            let query = self.prompt_state.prompt.get_text();
+            self.dialog_state.command_palette.set_query(&query);
+        } else if !self.ui_state.dialog.is_open() {
+            self.paste_into_prompt(text);
+        }
+        // If a dialog is open but FocusManager didn't handle the paste,
+        // don't paste into the prompt behind the dialog
+    }
+
+    /// Paste text into the prompt and update derived state (completions).
+    fn paste_into_prompt(&mut self, text: String) {
+        self.prompt_state.prompt.paste(text);
+        self.update_completions();
+    }
+
+    pub fn on_resize(&mut self) {
+        self.ui_state.auto_scroll = true;
+    }
+
+    fn update_context_hint(&mut self, target: &ClickTarget) {
+        self.context_hint = match target {
+            ClickTarget::Viewport => {
+                if self.messages_state.messages.sel_msg.is_some() {
+                    "Click: Select message | j/k: Navigate".to_string()
+                } else {
+                    "j/k: Scroll | Enter: Read more".to_string()
+                }
+            }
+            ClickTarget::Prompt => {
+                "Enter: Send | Shift+Enter: New line | Tab: Complete".to_string()
+            }
+            ClickTarget::Dialog => "Enter: Select | Esc: Close".to_string(),
+            ClickTarget::Completion => "Tab/Enter: Complete | Esc: Close".to_string(),
+            ClickTarget::Sidebar => "Click: Toggle section | j/k: Navigate".to_string(),
+            ClickTarget::None => String::new(),
+        };
+    }
+
+    pub fn on_mouse(&mut self, event: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        let target = self.clickable_area_at(event.column, event.row);
+
+        match event.kind {
+            MouseEventKind::Down(btn) => {
+                let is_double_click = self
+                    .last_click_target
+                    .as_ref()
+                    .map(|t| t == &target)
+                    .unwrap_or(false)
+                    && self
+                        .last_click_time
+                        .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
+                        .unwrap_or(false);
+
+                self.last_click_time = Some(Instant::now());
+                self.last_click_target = Some(target.clone());
+
+                match btn {
+                    MouseButton::Left | MouseButton::Right => {
+                        if is_double_click {
+                            self.on_double_click(&target);
+                        } else {
+                            self.on_click(&target, event.column, event.row);
+                        }
+                    }
+                    MouseButton::Middle => {
+                        self.on_scroll_up(&target);
+                    }
+                }
+            }
+            MouseEventKind::Up(btn) => {
+                match btn {
+                    MouseButton::Left | MouseButton::Right => {
+                        // Complete click or drag operation
+                        // Clear any drag state if present
+                    }
+                    MouseButton::Middle => {
+                        // Middle button release - could paste or other action
+                    }
+                }
+            }
+            MouseEventKind::Moved => {
+                let prev_target = self.hover_target.clone();
+                self.hover_target = Some(target.clone());
+                self.hover_position = Some((event.column, event.row));
+
+                if prev_target != Some(target.clone()) {
+                    self.update_context_hint(&target);
+                }
+
+                if target == ClickTarget::Sidebar {
+                    self.sidebar
+                        .set_hover_position(event.column, event.row, self.sidebar_area);
+                } else {
+                    self.sidebar.clear_hover();
+                }
+            }
+            MouseEventKind::Drag(btn) => {
+                match btn {
+                    MouseButton::Left => {
+                        // Handle text selection or drag operations in prompt/viewport
+                        if target == ClickTarget::Prompt {
+                            // Could start/extend text selection
+                        }
+                    }
+                    MouseButton::Right => {
+                        // Right drag - could be context menu or other action
+                    }
+                    _ => {}
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                self.on_scroll_up(&target);
+            }
+            MouseEventKind::ScrollDown => {
+                self.on_scroll_down(&target);
+            }
+            MouseEventKind::ScrollLeft => {
+                self.on_scroll_left(&target);
+            }
+            MouseEventKind::ScrollRight => {
+                self.on_scroll_right(&target);
+            }
+        }
+    }
+
+    fn clickable_area_at(&self, x: u16, y: u16) -> ClickTarget {
+        if let Some(ref area) = self.dialog_area {
+            if Self::in_rect(x, y, *area) {
+                return ClickTarget::Dialog;
+            }
+        }
+        if let Some(ref area) = self.completion_area {
+            if Self::in_rect(x, y, *area) {
+                return ClickTarget::Completion;
+            }
+        }
+        if let Some(ref area) = self.prompt_area {
+            if Self::in_rect(x, y, *area) {
+                return ClickTarget::Prompt;
+            }
+        }
+        if let Some(ref area) = self.viewport_area {
+            if Self::in_rect(x, y, *area) {
+                return ClickTarget::Viewport;
+            }
+        }
+        if let Some(ref area) = self.sidebar_area {
+            if Self::in_rect(x, y, *area) {
+                return ClickTarget::Sidebar;
+            }
+        }
+        ClickTarget::None
+    }
+
+    fn in_rect(x: u16, y: u16, rect: Rect) -> bool {
+        x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+    }
+
+    fn on_click(&mut self, target: &ClickTarget, x: u16, y: u16) {
+        match target {
+            ClickTarget::Viewport => {
+                self.messages_state.messages.sel_msg = None;
+            }
+            ClickTarget::Dialog => {
+                if let Some(ref area) = self.dialog_area {
+                    let rel_y = y.saturating_sub(area.y);
+                    let rel_x = x.saturating_sub(area.x);
+                    self.select_dialog_item(rel_x, rel_y, *area);
+                }
+            }
+            ClickTarget::Completion => {
+                if let Some(ref area) = self.completion_area {
+                    let rel_y = y.saturating_sub(area.y);
+                    if rel_y > 0 && rel_y < area.height.saturating_sub(1) {
+                        let idx = (rel_y as usize).saturating_sub(1);
+                        let max_idx = match self.prompt_state.completion_type {
+                            CompletionType::Slash => {
+                                self.prompt_state.slash_completions.len().saturating_sub(1)
+                            }
+                            CompletionType::File => {
+                                self.prompt_state.file_completions.len().saturating_sub(1)
+                            }
+                            CompletionType::Agent => {
+                                self.prompt_state.agent_completions.len().saturating_sub(1)
+                            }
+                        };
+                        if idx <= max_idx {
+                            self.prompt_state.completion_sel = idx;
+                        }
+                    }
+                }
+            }
+            ClickTarget::Prompt => {
+                if let Some(ref area) = self.prompt_area {
+                    let rel_x = x.saturating_sub(area.x);
+                    let char_w = 1u16;
+                    let cursor_pos = rel_x as usize / char_w as usize;
+                    self.prompt_state.prompt.set_cursor(cursor_pos.min(256));
+                    self.prompt_state.prompt.focus();
+                }
+            }
+            ClickTarget::Sidebar => {
+                if self.ui_state.sidebar_visible {
+                    self.sidebar.toggle_focused();
+                }
+            }
+            ClickTarget::None => {}
+        }
+    }
+
+    fn on_double_click(&mut self, target: &ClickTarget) {
+        match target {
+            ClickTarget::Dialog => {
+                if let Some(InputAction::Send) = self.dialog_confirm_action() {
+                    self.confirm_dialog();
+                }
+            }
+            ClickTarget::Completion => {
+                self.accept_completion();
+            }
+            _ => {}
+        }
+    }
+
+    fn on_scroll_up(&mut self, target: &ClickTarget) {
+        match target {
+            ClickTarget::Viewport
+            | ClickTarget::Prompt
+            | ClickTarget::Sidebar
+            | ClickTarget::None => {
+                self.messages_state.messages.scroll_up();
+            }
+            ClickTarget::Dialog => {
+                self.dialog_navigate_up();
+            }
+            ClickTarget::Completion => {
+                if self.prompt_state.completion_sel > 0 {
+                    self.prompt_state.completion_sel -= 1;
+                }
+            }
+        }
+    }
+
+    fn on_scroll_down(&mut self, target: &ClickTarget) {
+        match target {
+            ClickTarget::Viewport
+            | ClickTarget::Prompt
+            | ClickTarget::Sidebar
+            | ClickTarget::None => {
+                self.messages_state.messages.scroll_down();
+            }
+            ClickTarget::Dialog => {
+                self.dialog_navigate_down();
+            }
+            ClickTarget::Completion => {
+                let max_sel = match self.prompt_state.completion_type {
+                    CompletionType::Slash => {
+                        self.prompt_state.slash_completions.len().saturating_sub(1)
+                    }
+                    CompletionType::File => {
+                        self.prompt_state.file_completions.len().saturating_sub(1)
+                    }
+                    CompletionType::Agent => {
+                        self.prompt_state.agent_completions.len().saturating_sub(1)
+                    }
+                };
+                if self.prompt_state.completion_sel < max_sel {
+                    self.prompt_state.completion_sel += 1;
+                }
+            }
+        }
+    }
+
+    fn on_scroll_left(&mut self, target: &ClickTarget) {
+        if target == &ClickTarget::Viewport {
+            self.messages_state.messages.scroll_left();
+        }
+    }
+
+    fn on_scroll_right(&mut self, target: &ClickTarget) {
+        if target == &ClickTarget::Viewport {
+            self.messages_state.messages.scroll_right();
+        }
+    }
+
+    fn select_dialog_item(&mut self, _rel_x: u16, rel_y: u16, _area: Rect) {
+        if rel_y < 1 {
+            return;
+        }
+        let rel_y_usize = rel_y as usize;
+
+        // First, get the index from hit_test (shared borrow of focus_manager)
+        let idx = if let Some(active) = self.focus_manager.top() {
+            active.hit_test(rel_y_usize)
+        } else {
+            None
+        };
+
+        // Now the shared borrow is dropped, we can have mutable borrows
+        if let Some(idx) = idx {
+            // Update dialog_state for legacy code paths
+            match &mut self.ui_state.dialog {
+                Dialog::Model => {
+                    self.dialog_state.model_dialog.selected = idx;
+                }
+                Dialog::Agent => {
+                    let visible: Vec<usize> = self
+                        .agent_state
+                        .agents
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| !a.hidden)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if let Some(&real_idx) = visible.get(idx) {
+                        self.agent_state.current_agent = real_idx;
+                    }
+                }
+                Dialog::Session => {
+                    self.dialog_state.session_dialog.selected = idx;
+                }
+                Dialog::Tree => {
+                    let cur = self.dialog_state.tree_dialog.selected;
+                    if idx > cur {
+                        for _ in cur..idx {
+                            self.dialog_state.tree_dialog.select_down();
+                        }
+                    } else if idx < cur {
+                        for _ in idx..cur {
+                            self.dialog_state.tree_dialog.select_up();
+                        }
+                    }
+                }
+                Dialog::Question => {
+                    if let Some(qd) = &mut self.dialog_state.question_dialog {
+                        qd.selected_question = idx;
+                    }
+                }
+                Dialog::Permission => {
+                    if idx < 4 {
+                        if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                            pd.selected_option = idx;
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            // Sync the selection to the focused clone in FocusManager
+            if let Some(top) = self.focus_manager.top_mut() {
+                top.set_selected(idx);
+            }
+
+            return;
+        }
+
+        // Fallback: legacy handling (should not be reached with FocusManager)
+        let idx = rel_y_usize.saturating_sub(1);
+        match &mut self.ui_state.dialog {
+            Dialog::Model => {
+                let total = self.dialog_state.model_dialog.models.len();
+                if idx < total {
+                    self.dialog_state.model_dialog.selected = idx;
+                }
+            }
+            Dialog::Agent => {
+                let visible: Vec<usize> = self
+                    .agent_state
+                    .agents
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| !a.hidden)
+                    .map(|(i, _)| i)
+                    .collect();
+                if idx < visible.len() {
+                    if let Some(&real_idx) = visible.get(idx) {
+                        self.agent_state.current_agent = real_idx;
+                    }
+                }
+            }
+            Dialog::Session => {
+                let total = self.dialog_state.session_dialog.sessions.len();
+                if idx < total {
+                    self.dialog_state.session_dialog.selected = idx;
+                }
+            }
+            Dialog::Tree => {
+                let cur = self.dialog_state.tree_dialog.selected;
+                if idx > cur {
+                    for _ in cur..idx {
+                        self.dialog_state.tree_dialog.select_down();
+                    }
+                } else if idx < cur {
+                    for _ in idx..cur {
+                        self.dialog_state.tree_dialog.select_up();
+                    }
+                }
+            }
+            Dialog::Question => {
+                if let Some(qd) = &mut self.dialog_state.question_dialog {
+                    if idx < qd.questions.len() {
+                        qd.selected_question = idx;
+                    }
+                }
+            }
+            Dialog::Permission => {
+                if idx < 4 {
+                    if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                        pd.selected_option = idx;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn dialog_confirm_action(&self) -> Option<InputAction> {
+        match &self.ui_state.dialog {
+            Dialog::Model
+            | Dialog::Agent
+            | Dialog::Session
+            | Dialog::Theme
+            | Dialog::Question
+            | Dialog::Permission => Some(InputAction::Send),
+            _ => None,
+        }
+    }
+
+    fn dialog_navigate_up(&mut self) {
+        match &mut self.ui_state.dialog {
+            Dialog::Model => self.dialog_state.model_dialog.select_up(),
+            Dialog::Agent => self.dialog_state.agent_dialog.select_up(),
+            Dialog::Session => self.dialog_state.session_dialog.select_up(),
+            Dialog::Tree => self.dialog_state.tree_dialog.select_up(),
+            Dialog::Theme => {
+                if let Some(picker) = &mut self.dialog_state.theme_picker {
+                    picker.select_up();
+                }
+            }
+            Dialog::Question => {
+                if let Some(qd) = &mut self.dialog_state.question_dialog {
+                    qd.select_up();
+                }
+            }
+            Dialog::Permission => {
+                if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                    pd.cursor_up();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn dialog_navigate_down(&mut self) {
+        match &mut self.ui_state.dialog {
+            Dialog::Model => self.dialog_state.model_dialog.select_down(),
+            Dialog::Agent => self.dialog_state.agent_dialog.select_down(),
+            Dialog::Session => self.dialog_state.session_dialog.select_down(),
+            Dialog::Tree => self.dialog_state.tree_dialog.select_down(),
+            Dialog::Theme => {
+                if let Some(picker) = &mut self.dialog_state.theme_picker {
+                    picker.select_down();
+                }
+            }
+            Dialog::Question => {
+                if let Some(qd) = &mut self.dialog_state.question_dialog {
+                    qd.select_down();
+                }
+            }
+            Dialog::Permission => {
+                if let Some(pd) = &mut self.dialog_state.permission_dialog {
+                    pd.cursor_down();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn confirm_dialog(&mut self) {
+        let enter_key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        if !self.focus_manager.is_empty() {
+            if let Some(msg) = self.focus_manager.handle_key(enter_key) {
+                self.process_msg(msg);
+            }
+        } else {
+            self.handle_dialog_key(enter_key);
+        }
+    }
+
+    fn send_prompt(&mut self) {
+        let text = self.prompt_state.prompt.get_text();
+        let trimmed_text = text.trim().to_string();
+        debug_log!(
+            "send_prompt: text='{}', trimmed='{}', pending_send={}",
+            text,
+            trimmed_text,
+            self.prompt_state.pending_send
+        );
+
+        if trimmed_text.is_empty() {
+            debug_log!("send_prompt: returning - trimmed text is empty");
+            return;
+        }
+        if self.prompt_state.pending_send {
+            debug_log!("send_prompt: returning - pending_send already true");
+            return;
+        }
+        if self.handle_slash_command(&text) {
+            debug_log!("send_prompt: handled slash command, clearing prompt");
+            self.prompt_state.prompt.clear();
+            self.prompt_state.show_completions = false;
+            return;
+        }
+
+        if let Some(pos) = self
+            .session_state
+            .history
+            .iter()
+            .position(|e| e.text == trimmed_text)
+        {
+            self.session_state.history[pos].touch();
+        } else {
+            if self.session_state.history.len() >= 1000 {
+                self.session_state.history.pop_front();
+            }
+            self.session_state
+                .history
+                .push_back(HistoryEntry::new(trimmed_text.clone()));
+        }
+        let history_vec: Vec<HistoryEntry> = self.session_state.history.iter().cloned().collect();
+        let mut sorted = history_vec;
+        sorted.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        self.session_state.history = sorted.into();
+        self.session_state.history_pos = None;
+
+        self.messages_state.messages.add_user_message(trimmed_text, Some(self.agent_state.plan_mode));
+        self.prompt_state.prompt.clear();
+        self.prompt_state.show_completions = false;
+        self.prompt_state.pending_send = true;
+        self.session_state.session_status = SessionStatus::Working;
+
+        // Navigate to session view when user sends a prompt
+        let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+        if let Some(ref sid) = session_id {
+            self.ui_state.routes.navigate_to(Route::Session(sid.clone()));
+        } else {
+            // Navigate to a placeholder session route - will be updated when real session is created
+            self.ui_state.routes.navigate_to(Route::Session("pending".to_string()));
+        }
+
+        debug_log!("send_prompt: completed - pending_send set to true, status=Working");
+    }
+
+    fn handle_slash_command(&mut self, text: &str) -> bool {
+        let trimmed = text.trim();
+        if trimmed == "/tree" {
+            self.open_tree_dialog();
+            return true;
+        }
+        if trimmed == "/exit" {
+            self.ui_state.running = false;
+            let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
+            return true;
+        }
+        if trimmed == "/help" {
+            self.open_dialog(Dialog::Help);
+            return true;
+        }
+        if trimmed == "/model" || trimmed == "/models" {
+            self.open_dialog(Dialog::Model);
+            return true;
+        }
+        if trimmed == "/agent" {
+            self.open_dialog(Dialog::Agent);
+            return true;
+        }
+        if trimmed == "/clear" {
+            self.clear_session();
+            return true;
+        }
+        if trimmed == "/compact" {
+            return true;
+        }
+        if trimmed.starts_with("/search ") {
+            let query = trimmed.trim_start_matches("/search ").trim();
+            if !query.is_empty() {
+                self.messages_state.messages.search(query);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn cancel(&mut self) {
+        if self.ui_state.dialog.is_open() {
+            self.close_dialog();
+            return;
+        }
+        if self.prompt_state.show_completions {
+            self.prompt_state.show_completions = false;
+            return;
+        }
+
+        // If in Insert mode, switch to Normal mode instead of canceling
+        if self.ui_state.input_mode == InputMode::Insert {
+            self.ui_state.input_mode = InputMode::Normal;
+            return;
+        }
+
+        // Ctrl+C semantics: clear input if text exists, otherwise exit
+        let text = self.prompt_state.prompt.get_text();
+        if !text.trim().is_empty() {
+            // Clear the input
+            self.prompt_state.prompt.clear();
+            self.prompt_state.show_completions = false;
+        } else {
+            // Exit the program
+            self.ui_state.running = false;
+            let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
+        }
+    }
+
+    fn navigate_up(&mut self) {
+        // Input history navigation in insert mode.
+        if self.session_state.history.is_empty() {
+            return;
+        }
+        let new_pos = match self.session_state.history_pos {
+            Some(pos) if pos > 0 => pos - 1,
+            None => self.session_state.history.len() - 1,
+            _ => return,
+        };
+        self.session_state.history_pos = Some(new_pos);
+        if let Some(entry) = self.session_state.history.get(new_pos) {
+            self.prompt_state.prompt.set_text(entry.text.clone());
+        }
+    }
+
+    fn navigate_down(&mut self) {
+        // Input history navigation in insert mode.
+        let new_pos = match self.session_state.history_pos {
+            Some(pos) if pos + 1 < self.session_state.history.len() => pos + 1,
+            Some(_) => {
+                self.session_state.history_pos = None;
+                self.prompt_state.prompt.clear();
+                return;
+            }
+            None => return,
+        };
+        self.session_state.history_pos = Some(new_pos);
+        if let Some(entry) = self.session_state.history.get(new_pos) {
+            self.prompt_state.prompt.set_text(entry.text.clone());
+        }
+    }
+
+    fn scroll_page_up(&mut self) {
+        self.messages_state.messages.scroll_page_up();
+    }
+
+    fn scroll_page_down(&mut self) {
+        self.messages_state.messages.scroll_page_down();
+    }
+
+    fn scroll_viewport_up(&mut self) {
+        if self.ui_state.dialog.is_open() {
+            self.dialog_navigate_up();
+        } else {
+            self.messages_state.messages.scroll_up();
+        }
+    }
+
+    fn scroll_viewport_down(&mut self) {
+        if self.ui_state.dialog.is_open() {
+            self.dialog_navigate_down();
+        } else {
+            self.messages_state.messages.scroll_down();
+        }
+    }
+
+    fn go_to_top(&mut self) {
+        if !self.ui_state.dialog.is_open() {
+            self.messages_state.messages.scroll_to_top();
+        }
+    }
+
+    fn go_to_bottom(&mut self) {
+        if !self.ui_state.dialog.is_open() {
+            self.messages_state.messages.scroll_to_bottom();
+        }
+    }
+
+    fn cycle_agent(&mut self) {
+        let visible: Vec<usize> = self
+            .agent_state
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !a.hidden)
+            .map(|(i, _)| i)
+            .collect();
+        if visible.is_empty() {
+            return;
+        }
+        let cur_pos = visible
+            .iter()
+            .position(|&i| i == self.agent_state.current_agent)
+            .unwrap_or(0);
+        let next_pos = (cur_pos + 1) % visible.len();
+        self.agent_state.current_agent = visible[next_pos];
+    }
+
+    fn push_dialog(
+        &mut self,
+        dialog: Dialog,
+        component: Box<dyn crate::tui::components::component::Component>,
+    ) {
+        self.ui_state.dialog = dialog;
+        self.focus_manager.push(component);
+    }
+
+    fn close_dialog(&mut self) {
+        self.focus_manager.pop();
+        let active_type = self.focus_manager.active_dialog_type();
+        if active_type != DialogType::None {
+            self.ui_state.dialog = Dialog::from(active_type);
+        } else {
+            self.ui_state.dialog = Dialog::None;
+        }
+    }
+
+    #[allow(dead_code)]
+    fn replace_dialog(
+        &mut self,
+        dialog: Dialog,
+        component: Box<dyn crate::tui::components::component::Component>,
+    ) {
+        self.focus_manager.pop();
+        self.ui_state.dialog = dialog;
+        self.focus_manager.push(component);
+    }
+
+    #[allow(dead_code)]
+    fn active_dialog_type(&self) -> crate::tui::components::component::DialogType {
+        self.focus_manager.active_dialog_type()
+    }
+
+    pub fn open_dialog(&mut self, dialog: Dialog) {
+        match dialog {
+            Dialog::Session => {
+                self.load_sessions_dialog();
+                self.focus_manager
+                    .push(Box::new(self.dialog_state.session_dialog.clone()));
+            }
+            Dialog::Model => {
+                self.dialog_state.model_dialog.initialize_selection();
+                self.focus_manager
+                    .push(Box::new(self.dialog_state.model_dialog.clone()));
+            }
+            Dialog::Agent => {
+                let visible: Vec<&Agent> = self
+                    .agent_state
+                    .agents
+                    .iter()
+                    .filter(|a| !a.hidden)
+                    .collect();
+                self.dialog_state.agent_dialog.set_agents(visible);
+                self.dialog_state.agent_dialog.initialize_selection(
+                    &self.agent_state.agents[self.agent_state.current_agent].name,
+                );
+                self.focus_manager
+                    .push(Box::new(self.dialog_state.agent_dialog.clone()));
+            }
+            Dialog::Help => {
+                if self.dialog_state.help_dialog.is_none() {
+                    self.dialog_state.help_dialog =
+                        Some(crate::tui::components::dialogs::help::HelpDialog::new(
+                            Arc::clone(&self.ui_state.theme),
+                            self.ui_state.help_lines.clone(),
+                        ));
+                }
+                if let Some(ref mut help_dialog) = self.dialog_state.help_dialog {
+                    help_dialog.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(help_dialog.clone()));
+                }
+            }
+            Dialog::Context | Dialog::Cost | Dialog::Usage => {
+                let info_type = match self.ui_state.dialog {
+                    Dialog::Context => crate::tui::components::dialogs::info::InfoType::Context,
+                    Dialog::Cost => crate::tui::components::dialogs::info::InfoType::Cost,
+                    Dialog::Usage => crate::tui::components::dialogs::info::InfoType::Usage,
+                    _ => crate::tui::components::dialogs::info::InfoType::Context,
+                };
+                let lines = self.get_info_dialog_lines();
+                if self.dialog_state.info_dialog.is_none() {
+                    self.dialog_state.info_dialog =
+                        Some(crate::tui::components::dialogs::info::InfoDialog::new(
+                            Arc::clone(&self.ui_state.theme),
+                            info_type,
+                            lines,
+                        ));
+                } else if let Some(ref mut info_dialog) = self.dialog_state.info_dialog {
+                    info_dialog.set_content(lines);
+                    info_dialog.set_theme(&self.ui_state.theme);
+                }
+                if let Some(ref info_dialog) = self.dialog_state.info_dialog {
+                    self.focus_manager.push(Box::new(info_dialog.clone()));
+                }
+            }
+            Dialog::Tree => {
+                self.focus_manager
+                    .push(Box::new(self.dialog_state.tree_dialog.clone()));
+            }
+            Dialog::Theme => {
+                if self.dialog_state.theme_picker.is_none() {
+                    self.dialog_state.theme_picker =
+                        Some(ThemePickerDialog::new(Arc::clone(&self.ui_state.theme)));
+                }
+                if let Some(ref mut picker) = self.dialog_state.theme_picker {
+                    picker.set_theme(&self.ui_state.theme);
+                    picker.initialize_selection();
+                    self.focus_manager.push(Box::new(picker.clone()));
+                }
+            }
+            Dialog::Question => {
+                if let Some(ref mut qd) = self.dialog_state.question_dialog {
+                    self.focus_manager.push(Box::new((*qd).clone()));
+                }
+            }
+            Dialog::Permission => {
+                if let Some(ref mut pd) = self.dialog_state.permission_dialog {
+                    self.focus_manager.push(Box::new((*pd).clone()));
+                }
+            }
+            Dialog::Mcp => {
+                if self.dialog_state.mcp_dialog.is_none() {
+                    self.dialog_state.mcp_dialog =
+                        Some(crate::tui::components::dialogs::mcp::McpDialog::new(
+                            Arc::clone(&self.ui_state.theme),
+                        ));
+                }
+                if let Some(ref mut mcp_dialog) = self.dialog_state.mcp_dialog {
+                    let servers: Vec<crate::tui::components::dialogs::mcp::McpServerInfo> = self
+                        .session_state
+                        .mcp_servers
+                        .iter()
+                        .map(
+                            |(name, status)| crate::tui::components::dialogs::mcp::McpServerInfo {
+                                name: name.clone(),
+                                status: status.clone(),
+                                status_error: None,
+                                server_type: "unknown".to_string(),
+                                tools: Vec::new(),
+                                resources: Vec::new(),
+                                has_oauth: false,
+                            },
+                        )
+                        .collect();
+                    mcp_dialog.set_servers(servers);
+                    self.focus_manager.push(Box::new((*mcp_dialog).clone()));
+                }
+            }
+            Dialog::Keybind => {
+                if self.dialog_state.keybind_dialog.is_none() {
+                    let mut dialog = KeybindDialog::new(Arc::clone(&self.ui_state.theme));
+                    if let Some(keybinds) = &self.ui_state.keybinds {
+                        dialog.set_bindings(keybinds.bindings.clone());
+                    }
+                    self.dialog_state.keybind_dialog = Some(dialog);
+                }
+                if let Some(ref kd) = self.dialog_state.keybind_dialog {
+                    self.focus_manager.push(Box::new(kd.clone()));
+                }
+            }
+            Dialog::Share => {
+                if let Some(ref dialog) = self.dialog_state.share_dialog {
+                    self.focus_manager.push(Box::new(dialog.clone()));
+                }
+            }
+            Dialog::Import => {
+                if self.dialog_state.import_dialog.is_none() {
+                    self.dialog_state.import_dialog =
+                        Some(ImportDialog::new(Arc::clone(&self.ui_state.theme)));
+                }
+                if let Some(ref mut import) = self.dialog_state.import_dialog {
+                    self.focus_manager.push(Box::new(import.clone()));
+                }
+            }
+            Dialog::Template => {
+                if self.dialog_state.template_dialog.is_none() {
+                    self.dialog_state.template_dialog = Some(
+                        crate::tui::components::dialogs::template::TemplateDialog::new(Arc::clone(
+                            &self.ui_state.theme,
+                        )),
+                    );
+                }
+                if let Some(config_watcher) = self.config_watcher.as_ref() {
+                    if let Ok(config) = config_watcher.reload_now() {
+                        if let Some(templates) = config.templates.as_ref() {
+                            let template_list: Vec<(String, SessionTemplate)> = templates
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                            if let Some(ref mut dialog) = self.dialog_state.template_dialog {
+                                dialog.set_templates(template_list);
+                            }
+                        }
+                    }
+                }
+                if let Some(ref mut dialog) = self.dialog_state.template_dialog {
+                    dialog.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(dialog.clone()));
+                }
+            }
+            Dialog::Connect => {
+                if self.dialog_state.connect_dialog.is_none() {
+                    // This shouldn't happen - open_connect_dialog() should always be called first
+                    // Call it to ensure proper setup
+                    self.open_connect_dialog();
+                    return;
+                }
+                if let Some(ref mut connect_dialog) = self.dialog_state.connect_dialog {
+                    connect_dialog.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(connect_dialog.clone()));
+                }
+            }
+            Dialog::Diff => {
+                if let Some(ref mut diff_dialog) = self.dialog_state.diff_dialog {
+                    self.focus_manager.push(Box::new(diff_dialog.clone()));
+                }
+            }
+            Dialog::Goto => {
+                if self.dialog_state.goto_dialog.is_none() {
+                    self.dialog_state.goto_dialog =
+                        Some(crate::tui::components::dialogs::goto::GotoDialog::new(
+                            self.messages_state.messages.messages.len(),
+                        ));
+                }
+                if let Some(ref mut goto_dialog) = self.dialog_state.goto_dialog {
+                    goto_dialog.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(goto_dialog.clone()));
+                }
+            }
+            Dialog::Plan => {
+                if let Some(ref mut plan_dialog) = self.dialog_state.plan_dialog {
+                    self.focus_manager.push(Box::new(plan_dialog.clone()));
+                }
+            }
+            Dialog::Confirm => {
+                self.focus_manager.push(Box::new(ConfirmDialog::new(
+                    "Confirm".to_string(),
+                    "Are you sure?".to_string(),
+                )));
+            }
+            _ => {}
+        }
+        self.ui_state.dialog = dialog;
+    }
+
+    fn load_sessions_dialog(&mut self) {
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::ReloadSessions);
+        }
+    }
+
+    #[allow(dead_code)]
+    fn delete_selected_session(&mut self) {
+        let session = match self.dialog_state.session_dialog.selected_session() {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        let session_id = session.id.clone();
+
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::DeleteSession {
+                session_id: session_id.clone(),
+            });
+        }
+        self.undo_session_id = Some(session_id);
+        self.undo_until = Some(Instant::now() + std::time::Duration::from_secs(30));
+        self.footer
+            .set_undo_message("Session deleted — press U to undo");
+    }
+
+    #[allow(dead_code)]
+    fn archive_selected_session(&mut self) {
+        let session = match self.dialog_state.session_dialog.selected_session() {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        let session_id = session.id.clone();
+        let is_archived = session.time_archived.is_some();
+
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::ArchiveSession {
+                session_id,
+                unarchive: is_archived,
+            });
+        }
+    }
+
+    #[allow(dead_code)]
+    fn fork_selected_session(&mut self) {
+        let session = match self.dialog_state.session_dialog.selected_session() {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        let session_id = session.id.clone();
+
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::ForkSession { session_id });
+        }
+    }
+
+    fn toggle_show_archived(&mut self) {
+        self.dialog_state.session_dialog.toggle_show_archived();
+        self.load_sessions_dialog();
+    }
+
+    fn clear_session(&mut self) {
+        self.messages_state.messages.clear();
+        self.session_state.token_in = 0;
+        self.session_state.token_out = 0;
+    }
+
+    fn new_session(&mut self) {
+        if let Some(config_watcher) = self.config_watcher.as_ref() {
+            if let Ok(config) = config_watcher.reload_now() {
+                if let Some(templates) = config.templates.as_ref() {
+                    if !templates.is_empty() {
+                        self.open_dialog(Dialog::Template);
+                        return;
+                    }
+                }
+            }
+        }
+
+        self.session_state.session = None;
+        self.messages_state.messages.clear();
+        self.session_state.token_in = 0;
+        self.session_state.token_out = 0;
+        self.session_state.session_status = SessionStatus::Idle;
+        self.prompt_state.pending_send = false;
+        self.ui_state.routes.navigate_to(Route::Home);
+    }
+
+    fn apply_template(&mut self, key: String, template: SessionTemplate) {
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::CreateFromTemplate { key, template });
+        }
+    }
+
+    fn toggle_sidebar(&mut self) {
+        self.ui_state.sidebar_visible = !self.ui_state.sidebar_visible;
+    }
+
+    fn toggle_reasoning(&mut self) {
+        if let Some(idx) = self.messages_state.messages.sel_msg {
+            self.messages_state.messages.toggle_reasoning(idx);
+        }
+    }
+
+    fn toggle_tts(&mut self) {
+        self.ui_state.tts_enabled = !self.ui_state.tts_enabled;
+        if self.ui_state.tts_enabled {
+            if let Some(idx) = self.messages_state.messages.sel_msg {
+                if let Some(msg) = self.messages_state.messages.get_message(idx) {
+                    let text = msg.text_content();
+                    if !text.is_empty() {
+                        let tts = self.ui_state.tts.clone();
+                        let text = text.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = tts.speak(&text).await {
+                                tracing::debug!("TTS speak error: {}", e);
+                            }
+                        });
+                    }
+                }
+            }
+            self.messages_state.toasts.info("TTS enabled");
+        } else {
+            let tts = self.ui_state.tts.clone();
+            tokio::spawn(async move {
+                if let Err(e) = tts.stop().await {
+                    tracing::debug!("TTS stop error: {}", e);
+                }
+            });
+            self.messages_state.toasts.info("TTS disabled");
+        }
+    }
+
+    fn stop_tts(&mut self) {
+        let tts = self.ui_state.tts.clone();
+        tokio::spawn(async move {
+            if let Err(e) = tts.stop().await {
+                tracing::debug!("TTS stop error: {}", e);
+            }
+        });
+        self.messages_state.toasts.info("TTS stopped");
+    }
+
+    fn toggle_fullscreen(&mut self) {
+        self.ui_state.fullscreen = !self.ui_state.fullscreen;
+        use std::io::Write;
+        if self.ui_state.fullscreen {
+            let _ = std::io::stdout().write_all(b"\x1b[?1049h");
+            self.messages_state.toasts.info("Fullscreen mode enabled");
+        } else {
+            let _ = std::io::stdout().write_all(b"\x1b[?1049l");
+            self.messages_state.toasts.info("Fullscreen mode disabled");
+        }
+    }
+
+    fn open_external_editor(&mut self) {
+        if let Some(ref file) = self.session_state.last_edited_file {
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+            if let Err(e) = std::process::Command::new(&editor).arg(file).spawn() {
+                self.messages_state
+                    .toasts
+                    .info(&format!("Failed to open editor: {}", e));
+            } else {
+                self.messages_state
+                    .toasts
+                    .info(&format!("Opening {} in {}", file, editor));
+            }
+        } else {
+            self.messages_state
+                .toasts
+                .info("No recently edited file to open");
+        }
+    }
+
+    fn handle_worktree_command(&mut self) {
+        let git_root = std::path::PathBuf::from(&self.session_state.project_dir);
+        let root = match crate::worktree::find_git_root(&git_root) {
+            Some(r) => r,
+            None => {
+                self.messages_state.toasts.info("Not in a git repository");
+                return;
+            }
+        };
+
+        match crate::worktree::list_worktrees(&root) {
+            Ok(trees) => {
+                if trees.is_empty() {
+                    self.messages_state.toasts.info("No worktrees found");
+                } else {
+                    let names: Vec<String> = trees
+                        .iter()
+                        .map(|t| format!("{} ({})", t.path, t.branch))
+                        .collect();
+                    self.messages_state.toasts.info(&names.join(", "));
+                }
+            }
+            Err(e) => {
+                self.messages_state.toasts.info(&format!("Error: {}", e));
+            }
+        }
+    }
+
+    fn close_session(&mut self) {
+        self.clear_session();
+    }
+
+    fn quit(&mut self) {
+        self.ui_state.running = false;
+        let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
+    }
+
+    fn stash_prompt(&mut self) {
+        let text = self.prompt_state.prompt.get_text();
+        if text.is_empty() {
+            return;
+        }
+        self.prompt_state.stashed_prompts.push(text.clone());
+        self.prompt_state.prompt.clear();
+    }
+
+    fn restore_prompt(&mut self) {
+        if self.prompt_state.stashed_prompts.is_empty() {
+            return;
+        }
+        let new_pos = match self.prompt_state.stash_pos {
+            Some(pos) if pos > 0 => pos - 1,
+            None => self.prompt_state.stashed_prompts.len() - 1,
+            _ => return,
+        };
+        self.prompt_state.stash_pos = Some(new_pos);
+        if let Some(entry) = self.prompt_state.stashed_prompts.get(new_pos) {
+            self.prompt_state.prompt.set_text(entry.clone());
+        }
+    }
+
+    fn copy_message(&mut self) {
+        let text = self.messages_state.messages.get_selected_content();
+        if text.is_empty() {
+            return;
+        }
+        use arboard::Clipboard;
+        if let Ok(mut clip) = Clipboard::new() {
+            let _ = clip.set_text(&text);
+        }
+    }
+
+    fn cycle_model_forward(&mut self) {
+        if self.agent_state.models.is_empty() {
+            return;
+        }
+        self.agent_state.model_idx =
+            (self.agent_state.model_idx + 1) % self.agent_state.models.len();
+        self.agent_state.current_model =
+            self.agent_state.models[self.agent_state.model_idx].clone();
+        self.dialog_state
+            .model_dialog
+            .set_current(&self.agent_state.current_model);
+    }
+
+    fn cycle_model_backward(&mut self) {
+        if self.agent_state.models.is_empty() {
+            return;
+        }
+        self.agent_state.model_idx = if self.agent_state.model_idx == 0 {
+            self.agent_state.models.len() - 1
+        } else {
+            self.agent_state.model_idx - 1
+        };
+        self.agent_state.current_model =
+            self.agent_state.models[self.agent_state.model_idx].clone();
+        self.dialog_state
+            .model_dialog
+            .set_current(&self.agent_state.current_model);
+    }
+
+    fn open_connect_dialog(&mut self) {
+        use crate::tui::components::dialogs::connect::ProviderInfo;
+
+        let providers = vec![
+            ProviderInfo {
+                id: "openai".to_string(),
+                name: "OpenAI".to_string(),
+                description: "GPT-4, GPT-4o, and other OpenAI models".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("OPENAI_API_KEY".to_string()),
+                base_url_example: Some("https://api.openai.com/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "anthropic".to_string(),
+                name: "Anthropic".to_string(),
+                description: "Claude models (Note: API access restricted)".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("ANTHROPIC_API_KEY".to_string()),
+                base_url_example: Some("https://api.anthropic.com".to_string()),
+            },
+            ProviderInfo {
+                id: "google".to_string(),
+                name: "Google".to_string(),
+                description: "Gemini models".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("GOOGLE_API_KEY".to_string()),
+                base_url_example: Some("https://generativelanguage.googleapis.com/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "ollama".to_string(),
+                name: "Ollama".to_string(),
+                description: "Local and self-hosted models".to_string(),
+                requires_api_key: false,
+                env_var_name: None,
+                base_url_example: Some("http://localhost:11434".to_string()),
+            },
+            ProviderInfo {
+                id: "openrouter".to_string(),
+                name: "OpenRouter".to_string(),
+                description: "Unified API for 100+ models".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("OPENROUTER_API_KEY".to_string()),
+                base_url_example: Some("https://openrouter.ai/api/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "lmstudio".to_string(),
+                name: "LM Studio".to_string(),
+                description: "Local models via LM Studio".to_string(),
+                requires_api_key: false,
+                env_var_name: None,
+                base_url_example: Some("http://localhost:1234/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "deepseek".to_string(),
+                name: "DeepSeek".to_string(),
+                description: "DeepSeek models".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("DEEPSEEK_API_KEY".to_string()),
+                base_url_example: Some("https://api.deepseek.com/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "xai".to_string(),
+                name: "xAI".to_string(),
+                description: "xAI (Grok)".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("XAI_API_KEY".to_string()),
+                base_url_example: Some("https://api.x.ai/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "cohere".to_string(),
+                name: "Cohere".to_string(),
+                description: "Command R models".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("COHERE_API_KEY".to_string()),
+                base_url_example: Some("https://api.cohere.ai/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "fireworks".to_string(),
+                name: "Fireworks".to_string(),
+                description: "Fireworks AI models".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("FIREWORKS_API_KEY".to_string()),
+                base_url_example: Some("https://api.fireworks.ai/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "novai".to_string(),
+                name: "Novae".to_string(),
+                description: "Novae AI models".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("NOVAI_API_KEY".to_string()),
+                base_url_example: Some("https://api.novai.ai/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "codegg_zen".to_string(),
+                name: "Codegg Zen".to_string(),
+                description: "Free models from Codegg".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("CODEGG_ZEN_API_KEY".to_string()),
+                base_url_example: Some("https://opencode.ai/zen/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "codegg_go".to_string(),
+                name: "Codegg Go".to_string(),
+                description: "Enterprise models from Codegg".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("CODEGG_GO_API_KEY".to_string()),
+                base_url_example: Some("https://opencode.ai/go/v1".to_string()),
+            },
+            ProviderInfo {
+                id: "minimax".to_string(),
+                name: "MiniMax".to_string(),
+                description: "Chinese LLM provider".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("MINIMAX_API_KEY".to_string()),
+                base_url_example: Some("https://api.minimax.chat".to_string()),
+            },
+            ProviderInfo {
+                id: "zai".to_string(),
+                name: "Z.ai".to_string(),
+                description: "Z.ai provider".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("ZAI_API_KEY".to_string()),
+                base_url_example: Some("https://api.z.ai".to_string()),
+            },
+        ];
+
+        let connect_dialog = crate::tui::components::dialogs::connect::ConnectDialog::new(
+            providers,
+            Arc::clone(&self.ui_state.theme),
+        );
+        self.dialog_state.connect_dialog = Some(connect_dialog);
+        self.open_dialog(Dialog::Connect);
+    }
+
+    fn open_tree_dialog(&mut self) {
+        self.open_dialog(Dialog::Tree);
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::OpenTreeDialog);
+        }
+    }
+
+    fn fork_tree_session(&mut self) {
+        let session_id = match self.dialog_state.tree_dialog.fork_selected() {
+            Some(id) => id,
+            None => return,
+        };
+
+        self.close_dialog();
+
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::ForkSession { session_id });
+        }
+    }
+
+    fn handle_import_send(&mut self) {
+        let import = match &mut self.dialog_state.import_dialog {
+            Some(i) => i,
+            None => return,
+        };
+
+        match import.state {
+            super::components::dialogs::import::ImportState::Input => {
+                let source = import.parse_input();
+                match source {
+                    Some(src) => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::PreviewImport { source: src });
+                        }
+                    }
+                    None => {
+                        import.set_error("Enter a share URL, session ID, or file path".to_string());
+                    }
+                }
+            }
+            super::components::dialogs::import::ImportState::Preview => {
+                let source = import.parse_input();
+                import.set_importing();
+
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    if let Some(src) = source {
+                        let _ = tx.try_send(TuiCommand::ConfirmImport { source: src });
+                    }
+                }
+            }
+            super::components::dialogs::import::ImportState::Done => {
+                if let Some(session) = import.imported_session() {
+                    let session = session.clone();
+                    self.dialog_state.import_dialog = None;
+                    self.close_dialog();
+                    self.set_session(session);
+                    self.messages_state.toasts.info("Session imported");
+                }
+            }
+            super::components::dialogs::import::ImportState::Error => {
+                self.dialog_state.import_dialog = None;
+                self.close_dialog();
+            }
+            super::components::dialogs::import::ImportState::Importing => {}
+        }
+    }
+
+    fn handle_connect_send(&mut self) {
+        use crate::tui::components::dialogs::connect::ConnectStep;
+
+        let provider_info = {
+            let connect_dialog = match &mut self.dialog_state.connect_dialog {
+                Some(cd) => cd,
+                None => return,
+            };
+
+            match connect_dialog.step {
+                ConnectStep::SelectProvider => {
+                    let provider = match connect_dialog.select_provider() {
+                        Some(p) => p.clone(),
+                        None => {
+                            connect_dialog.set_error("No provider selected".to_string());
+                            return;
+                        }
+                    };
+
+                    if provider.requires_api_key {
+                        connect_dialog.move_to_api_key_step();
+                        return;
+                    } else {
+                        self.dialog_state.connect_dialog = None;
+                        self.close_dialog();
+                        self.messages_state.toasts.info(&format!(
+                            "Connected to {} (no API key required)",
+                            provider.name
+                        ));
+                        return;
+                    }
+                }
+                ConnectStep::EnterApiKey => {
+                    let api_key = connect_dialog.get_api_key();
+                    if api_key.trim().is_empty() {
+                        connect_dialog.set_error("API key cannot be empty".to_string());
+                        return;
+                    }
+
+                    let provider = match connect_dialog.select_provider() {
+                        Some(p) => p.clone(),
+                        None => {
+                            connect_dialog.set_error("No provider selected".to_string());
+                            return;
+                        }
+                    };
+
+                    Some((provider, api_key))
+                }
+            }
+        };
+
+        if let Some((provider, api_key)) = provider_info {
+            if let Some(env_var) = &provider.env_var_name {
+                std::env::set_var(env_var, &api_key);
+                self.dialog_state.connect_dialog = None;
+                self.close_dialog();
+                self.messages_state.toasts.info(&format!(
+                    "API key set for {}. {} environment variable updated.",
+                    provider.name, env_var
+                ));
+            } else {
+                if let Some(cd) = &mut self.dialog_state.connect_dialog {
+                    cd.set_error("Provider has no environment variable configured".to_string());
+                }
+            }
+        }
+    }
+
+    fn on_char(&mut self, c: char) {
+        if self.ui_state.dialog.is_open() {
+            return;
+        }
+        if self.messages_state.messages.is_searching() {
+            if c == 'n' {
+                self.messages_state.messages.search_next();
+                return;
+            }
+            if c == 'N' {
+                self.messages_state.messages.search_prev();
+                return;
+            }
+        }
+        if c == '/' && self.prompt_state.prompt.cursor_pos() == 0 {
+            self.ui_state.command_mode = true;
+            self.dialog_state.command_palette.set_query("/");
+            debug_log!("on_char: typed '/' at position 0, entering command_mode");
+        }
+        self.prompt_state.prompt.insert_char(c);
+        self.update_completions();
+    }
+
+    fn update_completions(&mut self) {
+        let text = self.prompt_state.prompt.get_text();
+        let cursor = self.prompt_state.prompt.cursor_pos();
+        let before_cursor = &text[..cursor];
+
+        if let Some(pos) = before_cursor.rfind('/') {
+            if pos == 0 || before_cursor.chars().nth(pos.saturating_sub(1)) == Some(' ') {
+                self.prompt_state.completion_filter = before_cursor[pos..].to_string();
+                self.prompt_state.completion_type = CompletionType::Slash;
+                if !self.ui_state.command_mode {
+                    self.prompt_state.show_completions = true;
+                    debug_log!("update_completions: slash completion - show_completions=true");
+                }
+                self.prompt_state.completion_sel = 0;
+                return;
+            }
+        }
+
+        if let Some(pos) = before_cursor.rfind('@') {
+            if pos == 0 || before_cursor.chars().nth(pos.saturating_sub(1)) == Some(' ') {
+                self.prompt_state.completion_filter = before_cursor[pos..].to_string();
+                let query = self.prompt_state.completion_filter.trim_start_matches('@');
+
+                let is_agent_trigger =
+                    !query.contains('/') && !query.contains('\\') && !query.contains('.');
+
+                if is_agent_trigger {
+                    self.prompt_state.completion_type = CompletionType::Agent;
+                    self.update_agent_completions();
+                    self.prompt_state.show_completions = true;
+                    debug_log!("update_completions: agent completion - show_completions=true");
+                } else {
+                    self.prompt_state.completion_type = CompletionType::File;
+                    self.update_file_completions();
+                    self.prompt_state.show_completions = true;
+                    debug_log!("update_completions: file completion - show_completions=true");
+                }
+                self.prompt_state.completion_sel = 0;
+                return;
+            }
+        }
+
+        if self.prompt_state.show_completions {
+            debug_log!("update_completions: no trigger found - show_completions=false");
+        }
+        self.prompt_state.show_completions = false;
+    }
+
+    fn update_file_completions(&mut self) {
+        use crate::tui::components::completion_overlay::CompletionItem;
+
+        let filter = self.prompt_state.completion_filter.trim_start_matches('@');
+
+        let (dir_prefix, partial_name) = self.parse_path_components(filter);
+
+        let candidates = match self.session_state.indexed_files.try_read() {
+            Ok(files) => files.clone(),
+            Err(_) => {
+                self.prompt_state.file_completions.clear();
+                return;
+            }
+        };
+
+        let expanded_dir = if let Some(stripped) = dir_prefix.strip_prefix('~') {
+            match dirs::home_dir() {
+                Some(home) => format!("{}/{}", home.display(), stripped),
+                None => dir_prefix.clone(),
+            }
+        } else {
+            dir_prefix.clone()
+        };
+
+        let filtered: Vec<CompletionItem> = candidates
+            .iter()
+            .filter(|path| {
+                if dir_prefix.is_empty() {
+                    true
+                } else {
+                    path.starts_with(&expanded_dir) || path.contains(&partial_name)
+                }
+            })
+            .filter_map(|path| {
+                let name = if dir_prefix.is_empty() {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(path)
+                        .to_string()
+                } else {
+                    let stripped = path.strip_prefix(&expanded_dir).unwrap_or(path);
+                    let stripped = stripped.trim_start_matches('/');
+                    std::path::Path::new(stripped)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(stripped)
+                        .to_string()
+                };
+
+                let score = if partial_name.is_empty() {
+                    usize::MAX
+                } else {
+                    fuzzy_score(&partial_name, &name)
+                };
+
+                if score > 0 {
+                    Some((name, score))
+                } else {
+                    None
+                }
+            })
+            .filter(|(_, score)| partial_name.is_empty() || *score > 0)
+            .take(20)
+            .map(|(name, _)| CompletionItem::new_file(name, None))
+            .collect();
+
+        self.prompt_state.file_completions = filtered;
+    }
+
+    fn parse_path_components(&self, filter: &str) -> (String, String) {
+        let path_part = filter.trim_start_matches('@');
+
+        if let Some(last_slash) = path_part.rfind('/') {
+            let dir = &path_part[..=last_slash];
+            let partial = &path_part[last_slash + 1..];
+            (dir.to_string(), partial.to_string())
+        } else {
+            (String::new(), path_part.to_string())
+        }
+    }
+
+    fn update_agent_completions(&mut self) {
+        use crate::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
+        let filter = self.prompt_state.completion_filter.trim_start_matches('@');
+
+        let filtered = crate::agent::mention::filter_agents(&self.agent_state.agents, filter);
+
+        self.prompt_state.agent_completions = filtered
+            .into_iter()
+            .map(|a| CompletionItem {
+                label: a.name.clone(),
+                description: Some(a.description.clone()),
+                kind: CompletionItemKind::File,
+            })
+            .collect();
+    }
+
+    fn accept_completion(&mut self) {
+        let selected = match self.prompt_state.completion_type {
+            CompletionType::Slash => self
+                .prompt_state
+                .slash_completions
+                .iter()
+                .filter(|c| c.label.starts_with(&self.prompt_state.completion_filter))
+                .nth(self.prompt_state.completion_sel)
+                .map(|c| c.label.clone()),
+            CompletionType::File => self
+                .prompt_state
+                .file_completions
+                .get(self.prompt_state.completion_sel)
+                .map(|c| c.label.clone()),
+            CompletionType::Agent => self
+                .prompt_state
+                .agent_completions
+                .get(self.prompt_state.completion_sel)
+                .map(|c| c.label.clone()),
+        };
+        if let Some(sel) = selected {
+            let text = self.prompt_state.prompt.get_text();
+            let cursor = self.prompt_state.prompt.cursor_pos();
+            let safe_cursor = cursor.min(text.len());
+            let before_cursor = &text[..safe_cursor];
+            let after_cursor = &text[safe_cursor..];
+
+            if self.prompt_state.completion_type == CompletionType::Agent {
+                let agent_name = sel.clone();
+                let trigger_pos = before_cursor.rfind('@').unwrap_or(safe_cursor);
+                let new_text = format!("{}{}", &text[..trigger_pos.min(text.len())], after_cursor);
+                self.prompt_state.prompt.set_text(new_text);
+                self.prompt_state.show_completions = false;
+                self.spawn_subagent(&agent_name, &text[trigger_pos.min(text.len())..]);
+                return;
+            }
+
+            let trigger_pos = if self.prompt_state.completion_type == CompletionType::Slash {
+                before_cursor.rfind('/').unwrap_or(safe_cursor)
+            } else {
+                before_cursor.rfind('@').unwrap_or(safe_cursor)
+            };
+
+            let new_text = format!(
+                "{}{}{}",
+                &text[..trigger_pos.min(text.len())],
+                sel,
+                after_cursor
+            );
+            self.prompt_state.prompt.set_text(new_text);
+            self.prompt_state.prompt.set_cursor(trigger_pos + sel.len());
+        }
+        self.prompt_state.show_completions = false;
+    }
+
+    fn spawn_subagent(&self, agent_name: &str, prompt: &str) {
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::SpawnSubagent {
+                agent_name: agent_name.to_string(),
+                prompt: prompt.trim().to_string(),
+            });
+        }
+    }
+
+    pub fn add_assistant_text(&mut self, text: String) {
+        self.messages_state.messages.add_assistant_text(text);
+    }
+
+    pub fn add_tool_call(&mut self, id: String, name: String, input: serde_json::Value) {
+        self.messages_state.messages.add_tool_call(id, name, input);
+    }
+
+    pub fn update_tool_call(
+        &mut self,
+        id: &str,
+        output: String,
+        status: ToolStatus,
+        duration_ms: Option<u64>,
+        exit_code: Option<i32>,
+        output_lines: Option<usize>,
+    ) {
+        self.messages_state.messages.update_tool_call(
+            id,
+            output,
+            status,
+            duration_ms,
+            exit_code,
+            output_lines,
+        );
+    }
+
+    pub fn add_reasoning(&mut self, reasoning: String) {
+        self.messages_state.messages.add_reasoning(reasoning);
+    }
+
+    pub fn set_session(&mut self, sess: Session) {
+        let sess_id = sess.id.clone();
+        self.session_state.session = Some(sess);
+        self.ui_state
+            .routes
+            .navigate_to(Route::Session(sess_id.clone()));
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::LoadSessionMessages {
+                session_id: sess_id,
+            });
+        }
+    }
+
+    pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
+        self.session_store = Some(store);
+    }
+
+    pub fn set_message_store(&mut self, store: Arc<MessageStore>) {
+        self.message_store = Some(store);
+    }
+
+    pub fn set_models(&mut self, models: Vec<String>) {
+        self.agent_state.models = models;
+        self.dialog_state
+            .model_dialog
+            .set_models(self.agent_state.models.clone());
+        if let Some(idx) = self
+            .agent_state
+            .models
+            .iter()
+            .position(|m| m == &self.agent_state.current_model)
+        {
+            self.agent_state.model_idx = idx;
+        } else if !self.agent_state.models.is_empty() {
+            self.agent_state.current_model = self.agent_state.models[0].clone();
+            self.agent_state.model_idx = 0;
+        }
+        self.dialog_state
+            .model_dialog
+            .set_current(&self.agent_state.current_model);
+    }
+
+    pub fn refresh_models(&mut self) {
+        self.messages_state
+            .toasts
+            .info("Refreshing model cache in background...");
+        let pool = self.session_store.as_ref().map(|s| s.pool().clone());
+        let cmd_tx = self.tui_cmd_tx.clone();
+        if let (Some(pool), Some(tx)) = (pool, cmd_tx) {
+            tokio::spawn(async move {
+                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let mut registry = crate::provider::ProviderRegistry::new();
+                crate::provider::register_builtin_with_config(&mut registry, &config);
+                let discovery = crate::provider::discovery::ModelDiscoveryService::new(
+                    std::path::PathBuf::new(),
+                )
+                .with_pool(pool);
+                let models = discovery.refresh(&registry).await;
+                let model_ids: Vec<String> = models
+                    .iter()
+                    .map(|m| format!("{}/{}", m.provider, m.id))
+                    .collect();
+                let _ = tx.send(TuiCommand::UpdateModels(model_ids)).await;
+            });
+        } else {
+            self.messages_state
+                .toasts
+                .warning("Database or command channel not available for refresh");
+        }
+    }
+
+    pub fn set_tokens(&mut self, input: u64, output: u64) {
+        self.session_state.token_in = input;
+        self.session_state.token_out = output;
+    }
+
+    pub fn set_context_info(&mut self, tokens: usize, limit: usize, compactions: usize) {
+        self.session_state.context_tokens = tokens;
+        self.session_state.context_limit = limit;
+        self.session_state.compaction_count = compactions;
+    }
+
+    pub fn set_rate_limits(
+        &mut self,
+        rpm: Option<u64>,
+        tpm: Option<u64>,
+        rpm_rem: Option<u64>,
+        tpm_rem: Option<u64>,
+    ) {
+        self.session_state.rpm_limit = rpm;
+        self.session_state.tpm_limit = tpm;
+        self.session_state.rpm_remaining = rpm_rem;
+        self.session_state.tpm_remaining = tpm_rem;
+    }
+
+    fn get_info_dialog_lines(&self) -> Vec<String> {
+        let lines: Vec<Line<'_>> = match &self.ui_state.dialog {
+            Dialog::Context => self.get_context_lines(),
+            Dialog::Cost => self.get_cost_lines(),
+            Dialog::Usage => self.get_usage_lines(),
+            _ => vec![],
+        };
+        lines
+            .into_iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<&str>>()
+                    .join("")
+            })
+            .collect()
+    }
+
+    fn get_context_lines(&self) -> Vec<Line<'_>> {
+        let mut lines = vec![
+            Line::from(""),
+            Line::from(Span::raw(format!(
+                "  Current context: {} tokens",
+                self.session_state.context_tokens
+            ))),
+            Line::from(Span::raw(format!(
+                "  Context limit: {} tokens",
+                self.session_state.context_limit
+            ))),
+        ];
+
+        if self.session_state.context_limit > 0 {
+            let pct = (self.session_state.context_tokens as f64
+                / self.session_state.context_limit as f64
+                * 100.0)
+                .min(100.0);
+            lines.push(Line::from(Span::raw(format!("  Usage: {:.1}%", pct))));
+        }
+
+        lines.push(Line::from(Span::raw(format!(
+            "  Compactions: {}",
+            self.session_state.compaction_count
+        ))));
+
+        if let Some(ref session) = self.session_state.session {
+            if session.time_compacting.is_some() {
+                lines.push(Line::from(Span::raw("  Session has been compacted")));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Providers (Active Keys):",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+
+        let active_vars = [
+            ("openai", "OPENAI_API_KEY"),
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("google", "GOOGLE_API_KEY"),
+            ("minimax", "MINIMAX_API_KEY"),
+            ("codegg_zen", "CODEGG_ZEN_API_KEY"),
+            ("codegg_go", "CODEGG_GO_API_KEY"),
+        ];
+
+        for (id, var) in active_vars {
+            if let Ok(val) = std::env::var(var) {
+                let len = val.len();
+                let prefix = if len > 4 { &val[..4] } else { "..." };
+                let suffix = if len > 4 { &val[len - 4..] } else { "..." };
+                lines.push(Line::from(Span::raw(format!(
+                    "    {}: {}...{} (len={})",
+                    id, prefix, suffix, len
+                ))));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines
+    }
+
+    fn get_cost_lines(&self) -> Vec<Line<'_>> {
+        let total_tokens = self.session_state.token_in + self.session_state.token_out;
+        let model = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next_back()
+            .unwrap_or(&self.agent_state.current_model);
+
+        let mut lines = vec![
+            Line::from(""),
+            Line::from(Span::raw("  Token Usage")),
+            Line::from(Span::raw(format!(
+                "  Input:  {} tokens",
+                self.session_state.token_in
+            ))),
+            Line::from(Span::raw(format!(
+                "  Output: {} tokens",
+                self.session_state.token_out
+            ))),
+            Line::from(Span::raw(format!("  Total:  {} tokens", total_tokens))),
+            Line::from(""),
+            Line::from(Span::raw("  Estimated Cost")),
+        ];
+
+        let cost = estimate_cost(
+            &self.session_state.token_in,
+            &self.session_state.token_out,
+            model,
+        );
+        lines.push(Line::from(Span::raw(format!("  {}", cost))));
+
+        lines.push(Line::from(""));
+        lines
+    }
+
+    fn get_usage_lines(&self) -> Vec<Line<'_>> {
+        let mut lines = vec![Line::from(""), Line::from(Span::raw("  Rate Limits"))];
+
+        if let (Some(rpm), Some(rem)) = (
+            self.session_state.rpm_limit,
+            self.session_state.rpm_remaining,
+        ) {
+            lines.push(Line::from(Span::raw(format!(
+                "  Requests/min: {} ({} remaining)",
+                rpm, rem
+            ))));
+        } else {
+            lines.push(Line::from(Span::raw("  Requests/min: N/A")));
+        }
+
+        if let (Some(tpm), Some(rem)) = (
+            self.session_state.tpm_limit,
+            self.session_state.tpm_remaining,
+        ) {
+            lines.push(Line::from(Span::raw(format!(
+                "  Tokens/min: {} ({} remaining)",
+                tpm, rem
+            ))));
+        } else {
+            lines.push(Line::from(Span::raw("  Tokens/min: N/A")));
+        }
+
+        lines.push(Line::from(""));
+        lines
+    }
+
+    pub fn set_status(&mut self, status: SessionStatus) {
+        self.session_state.session_status = status.clone();
+        if status == SessionStatus::Idle {
+            self.prompt_state.pending_send = false;
+            self.busy_spinner.stop();
+        } else if status == SessionStatus::Working {
+            self.busy_spinner.start(None);
+        }
+    }
+
+    pub fn set_todos(&mut self, todos: Vec<TodoEntry>) {
+        self.sidebar.set_todos(todos);
+    }
+
+    pub fn show_question_dialog(&mut self, questions: Vec<QuestionSpec>, session_id: String) {
+        self.dialog_state.question_dialog = Some(QuestionDialog::new(questions));
+        self.dialog_state.question_session_id = Some(session_id);
+        self.open_dialog(Dialog::Question);
+        self.session_state.session_status = SessionStatus::Working;
+    }
+
+    pub fn submit_question_answers(&mut self) {
+        if let Some(qd) = &self.dialog_state.question_dialog {
+            let answers = qd.answers_json();
+            if let Some(session_id) = self.dialog_state.question_session_id.take() {
+                tokio::spawn(async move {
+                    QuestionRegistry::answer_question(session_id, answers).await;
+                });
+            }
+        }
+        self.dialog_state.question_dialog = None;
+        self.dialog_state.question_session_id = None;
+        self.close_dialog();
+        self.session_state.session_status = SessionStatus::Idle;
+    }
+
+    pub fn show_permission_dialog(
+        &mut self,
+        perm_id: String,
+        request: crate::permission::PermissionRequest,
+    ) {
+        self.dialog_state.permission_dialog = Some(PermissionDialog::new(
+            request,
+            Arc::clone(&self.ui_state.theme),
+        ));
+        self.dialog_state.permission_perm_id = Some(perm_id);
+        self.open_dialog(Dialog::Permission);
+    }
+
+    pub fn submit_permission_response(&mut self, allowed: bool) {
+        if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
+            let perm_id = perm_id.clone();
+            let allowed_flag = allowed;
+            tokio::spawn(async move {
+                PermissionRegistry::respond(
+                    perm_id,
+                    match allowed_flag {
+                        true => crate::permission::PermissionChoice::AllowOnce,
+                        false => crate::permission::PermissionChoice::DenyOnce,
+                    },
+                )
+                .await;
+            });
+        }
+        self.dialog_state.permission_dialog = None;
+        self.dialog_state.permission_perm_id = None;
+        self.close_dialog();
+    }
+
+    pub fn on_permission_confirm(&mut self) -> Option<(bool, usize)> {
+        let pd = self.dialog_state.permission_dialog.as_ref()?;
+        let idx = pd.selected_option();
+        let choice = match idx {
+            0 => crate::permission::PermissionChoice::AllowOnce,
+            1 => crate::permission::PermissionChoice::AlwaysAllow,
+            2 => crate::permission::PermissionChoice::DenyOnce,
+            3 => crate::permission::PermissionChoice::AlwaysDeny,
+            _ => return None,
+        };
+        let allowed = choice.allowed();
+        if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
+            let perm_id = perm_id.clone();
+            tokio::spawn(async move {
+                PermissionRegistry::respond(perm_id, choice).await;
+            });
+        }
+        self.dialog_state.permission_dialog = None;
+        self.dialog_state.permission_perm_id = None;
+        self.close_dialog();
+        Some((allowed, idx))
+    }
+
+    pub fn enter_plan_mode(&mut self, topic: Option<String>) {
+        self.agent_state.plan_mode = true;
+        self.agent_state.plan_topic = topic;
+    }
+
+    pub fn exit_plan_mode(&mut self) {
+        self.agent_state.plan_mode = false;
+        self.agent_state.plan_topic = None;
+    }
+
+    pub fn show_timeline(&mut self) {
+        let count = self.messages_state.messages.message_count();
+        if count > 0 {
+            self.ui_state.timeline_selected = count - 1;
+            self.ui_state.timeline_visible = true;
+        } else {
+            self.messages_state.toasts.info("No messages in timeline");
+        }
+    }
+
+    fn handle_timeline_key(&mut self, key: KeyEvent) {
+        let action = handle_event(crossterm::event::Event::Key(key));
+        match action {
+            Some(InputAction::NavigateUp) => {
+                if self.ui_state.timeline_selected > 0 {
+                    self.ui_state.timeline_selected -= 1;
+                }
+            }
+            Some(InputAction::NavigateDown) => {
+                let count = self.messages_state.messages.message_count();
+                if self.ui_state.timeline_selected + 1 < count {
+                    self.ui_state.timeline_selected += 1;
+                }
+            }
+            Some(InputAction::Send) => {
+                self.messages_state
+                    .messages
+                    .select_index(self.ui_state.timeline_selected);
+                self.ui_state.timeline_visible = false;
+                self.messages_state.toasts.info(&format!(
+                    "Jumped to message {}",
+                    self.ui_state.timeline_selected
+                ));
+            }
+            Some(InputAction::Cancel) => {
+                self.ui_state.timeline_visible = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn render_timeline(&self, frame: &mut Frame, area: Rect) {
+        use crate::session::message::ToolStatus;
+
+        let messages = &self.messages_state.messages.messages;
+        if messages.is_empty() {
+            return;
+        }
+
+        let count = messages.len();
+        let selected = self.ui_state.timeline_selected;
+
+        let max_visible = 15.min(count as u16);
+        let height = max_visible + 4;
+
+        let timeline_area = centered_rect(75, height, area);
+
+        let block = Block::default()
+            .title(" Timeline ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.ui_state.theme.primary))
+            .style(
+                Style::default()
+                    .bg(self.ui_state.theme.background)
+                    .fg(self.ui_state.theme.foreground),
+            );
+
+        let _inner_area = block.inner(timeline_area);
+
+        let mut lines: Vec<Line> = Vec::new();
+
+        let is_last_msg = |idx: usize| -> bool { idx + 1 >= count };
+
+        for (i, msg) in messages.iter().enumerate() {
+            let is_sel = i == selected;
+            let tree_char = if is_last_msg(i) {
+                "└──"
+            } else {
+                "├──"
+            };
+            let continued = if is_last_msg(i) { "   " } else { "│  " };
+
+            match msg.role {
+                MessageRole::User => {
+                    let role_style = Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD);
+
+                    let time_str = msg.timestamp.map(|ts| {
+                        chrono::DateTime::from_timestamp(ts, 0)
+                            .map(|dt| dt.format("%H:%M").to_string())
+                            .unwrap_or_default()
+                    });
+
+                    let time_suffix = time_str.map(|t| format!(" @{}", t)).unwrap_or_default();
+
+                    let preview = match msg.parts.first() {
+                        Some(MsgPart::Text { content }) => {
+                            let first_line = content.lines().next().unwrap_or("");
+                            if first_line.len() > 45 {
+                                format!("{}...", &first_line[..45])
+                            } else {
+                                first_line.to_string()
+                            }
+                        }
+                        Some(MsgPart::Reasoning { .. }) | Some(MsgPart::ToolCall { .. }) => {
+                            String::new()
+                        }
+                        None => String::new(),
+                    };
+
+                    if is_sel {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{} ", tree_char),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled("● ", Style::default().fg(self.ui_state.theme.primary)),
+                            Span::styled("You", role_style),
+                            Span::styled(
+                                format!(": {}{}", preview, time_suffix),
+                                Style::default().fg(self.ui_state.theme.foreground),
+                            ),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{} ", tree_char),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled("○ ", Style::default().fg(self.ui_state.theme.muted)),
+                            Span::styled("You", role_style),
+                            Span::styled(
+                                format!(": {}{}", preview, time_suffix),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                        ]));
+                    }
+                }
+                MessageRole::Assistant => {
+                    let role_style = Style::default()
+                        .fg(self.ui_state.theme.secondary)
+                        .add_modifier(Modifier::BOLD);
+
+                    let time_str = msg.timestamp.map(|ts| {
+                        chrono::DateTime::from_timestamp(ts, 0)
+                            .map(|dt| dt.format("%H:%M").to_string())
+                            .unwrap_or_default()
+                    });
+
+                    let time_suffix = time_str.map(|t| format!(" @{}", t)).unwrap_or_default();
+
+                    let preview = match msg.parts.first() {
+                        Some(MsgPart::Text { content }) => {
+                            let first_line = content.lines().next().unwrap_or("");
+                            if first_line.len() > 45 {
+                                format!("{}...", &first_line[..45])
+                            } else {
+                                first_line.to_string()
+                            }
+                        }
+                        Some(MsgPart::Reasoning { .. }) => "reasoning...".to_string(),
+                        Some(MsgPart::ToolCall { name, .. }) => format!("[{}]", name),
+                        None => String::new(),
+                    };
+
+                    let tool_calls: Vec<_> = msg
+                        .parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            MsgPart::ToolCall { name, status, .. } => {
+                                Some((name.clone(), status.clone()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+
+                    if is_sel {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{} ", tree_char),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled("● ", Style::default().fg(self.ui_state.theme.secondary)),
+                            Span::styled("Assistant", role_style),
+                            Span::styled(
+                                format!(": {}{}", preview, time_suffix),
+                                Style::default().fg(self.ui_state.theme.foreground),
+                            ),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{} ", tree_char),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled("○ ", Style::default().fg(self.ui_state.theme.muted)),
+                            Span::styled("Assistant", role_style),
+                            Span::styled(
+                                format!(": {}{}", preview, time_suffix),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                        ]));
+                    }
+
+                    for (j, (name, status)) in tool_calls.iter().enumerate() {
+                        let is_last_tool = j == tool_calls.len() - 1;
+                        let branch = if is_last_tool {
+                            "└── "
+                        } else {
+                            "├── "
+                        };
+
+                        let spinner = match status {
+                            ToolStatus::Running => "⟳",
+                            ToolStatus::Pending => "○",
+                            ToolStatus::Completed => "✓",
+                            ToolStatus::Error => "✗",
+                        };
+
+                        let status_color = match status {
+                            ToolStatus::Pending => self.ui_state.theme.muted,
+                            ToolStatus::Running => self.ui_state.theme.warning,
+                            ToolStatus::Completed => self.ui_state.theme.success,
+                            ToolStatus::Error => self.ui_state.theme.error,
+                        };
+
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("{}{}", continued, branch),
+                                Style::default().fg(self.ui_state.theme.muted),
+                            ),
+                            Span::styled(spinner, Style::default().fg(status_color)),
+                            Span::raw(format!(" {}", name)),
+                        ]));
+
+                        let _ = is_last_tool;
+                    }
+                }
+            }
+        }
+
+        let visible_lines: Vec<Line> = if lines.len() > max_visible as usize {
+            let start = if selected >= (max_visible as usize / 2) {
+                (selected.saturating_sub(max_visible as usize / 2))
+                    .min(lines.len().saturating_sub(max_visible as usize))
+            } else {
+                0
+            };
+            lines[start..start + max_visible as usize].to_vec()
+        } else {
+            lines.clone()
+        };
+
+        let paragraph = Paragraph::new(visible_lines)
+            .block(block)
+            .wrap(Wrap { trim: true });
+
+        frame.render_widget(Clear, timeline_area);
+        frame.render_widget(paragraph, timeline_area);
+
+        let nav_hint = Line::from(Span::styled(
+            " ↑/↓ navigate  Enter: jump  Esc: close ",
+            Style::default().fg(self.ui_state.theme.muted),
+        ));
+        let hint_len = 42;
+        let hint_x = timeline_area.x + (timeline_area.width.saturating_sub(hint_len)) / 2;
+        let hint_y = timeline_area.y + timeline_area.height - 1;
+        let hint_area = Rect {
+            x: hint_x,
+            y: hint_y,
+            width: hint_len,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(nav_hint), hint_area);
+
+        let pos_indicator = Line::from(Span::styled(
+            format!("Message {} of {}", selected + 1, count),
+            Style::default().fg(self.ui_state.theme.muted),
+        ));
+        let pos_len = 20;
+        let pos_x = timeline_area.x + (timeline_area.width.saturating_sub(pos_len)) / 2;
+        let pos_y = timeline_area.y + timeline_area.height - 1;
+        let pos_area = Rect {
+            x: pos_x,
+            y: pos_y,
+            width: pos_len,
+            height: 1,
+        };
+        let pos_para = Paragraph::new(pos_indicator).alignment(Alignment::Center);
+        frame.render_widget(pos_para, pos_area);
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new(
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        )
+    }
+}
+
+fn index_files_sync(dir: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    index_files_recursive(dir, dir, 0, 10, &mut files);
+    files
+}
+
+fn index_files_recursive(
+    current_dir: &str,
+    root_dir: &str,
+    depth: usize,
+    max_depth: usize,
+    files: &mut Vec<String>,
+) {
+    if depth >= max_depth {
+        return;
+    }
+
+    let skip_dirs = [
+        "node_modules",
+        ".git",
+        "target",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".cargo",
+        "dist",
+        "build",
+    ];
+
+    if let Ok(entries) = std::fs::read_dir(current_dir) {
+        for entry in entries.flatten() {
+            if let Ok(path) = entry.path().canonicalize() {
+                if path.is_symlink() {
+                    continue;
+                }
+                if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if !skip_dirs.contains(&name) {
+                            index_files_recursive(
+                                path.to_str().unwrap_or(""),
+                                root_dir,
+                                depth + 1,
+                                max_depth,
+                                files,
+                            );
+                        }
+                    }
+                } else if path.is_file() {
+                    if let Ok(rel) = path.strip_prefix(root_dir) {
+                        let rel_str = rel.to_string_lossy().to_string();
+                        if !rel_str.contains(".git/") && !rel_str.contains("node_modules/") {
+                            files.push(rel_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+fn format_key_event(key: &crossterm::event::KeyEvent) -> String {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let mut parts = Vec::new();
+
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("shift".to_string());
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".to_string());
+    }
+
+    let key_part = match key.code {
+        KeyCode::Enter => "enter",
+        KeyCode::Esc => "esc",
+        KeyCode::Tab => "tab",
+        KeyCode::Backspace => "backspace",
+        KeyCode::Delete => "delete",
+        KeyCode::Left => "left",
+        KeyCode::Right => "right",
+        KeyCode::Up => "up",
+        KeyCode::Down => "down",
+        KeyCode::Home => "home",
+        KeyCode::End => "end",
+        KeyCode::PageUp => "pageup",
+        KeyCode::PageDown => "pagedown",
+        KeyCode::Char(c) => {
+            if c == ' ' {
+                return if parts.is_empty() {
+                    "space".to_string()
+                } else {
+                    format!("{}+space", parts.join("+"))
+                };
+            }
+            return if parts.is_empty() {
+                c.to_lowercase().to_string()
+            } else {
+                format!("{}+{}", parts.join("+"), c.to_lowercase())
+            };
+        }
+        _ => return parts.join("+"),
+    };
+
+    if parts.is_empty() {
+        key_part.to_string()
+    } else {
+        format!("{}+{}", parts.join("+"), key_part)
+    }
+}
+
+fn estimate_cost(input_tokens: &u64, output_tokens: &u64, model: &str) -> String {
+    let input_price_per_m = match model.to_lowercase().as_str() {
+        m if m.contains("gpt-4o") || m.contains("gpt-4t") => 2.50,
+        m if m.contains("gpt-4") && m.contains("32k") => 60.0,
+        m if m.contains("gpt-4") && !m.contains("turbo") => 30.0,
+        m if m.contains("gpt-4-turbo") => 10.0,
+        m if m.contains("gpt-35-turbo") || m.contains("gpt-3.5") || m.contains("gpt-4o-mini") => {
+            0.5
+        }
+        m if m.contains("claude") && m.contains("haiku") => 0.25,
+        m if m.contains("claude") && m.contains("sonnet") => 3.0,
+        m if m.contains("claude") && m.contains("opus") => 15.0,
+        m if m.contains("claude") => 3.0,
+        m if m.contains("gemini") && m.contains("2.0-flash") => 0.0,
+        m if m.contains("gemini") && m.contains("1.5") && m.contains("pro") => 1.25,
+        m if m.contains("gemini") => 0.125,
+        m if m.contains("o1") || m.contains("o3") => 0.0,
+        m if m.contains("o3-mini") => 1.10,
+        m if m.contains("o1-mini") => 0.55,
+        _ => 0.0,
+    };
+
+    let output_price_per_m = match model.to_lowercase().as_str() {
+        m if m.contains("gpt-4o") || m.contains("gpt-4t") => 10.0,
+        m if m.contains("gpt-4") && m.contains("32k") => 120.0,
+        m if m.contains("gpt-4") && !m.contains("turbo") => 60.0,
+        m if m.contains("gpt-4-turbo") => 30.0,
+        m if m.contains("gpt-35-turbo") || m.contains("gpt-3.5") || m.contains("gpt-4o-mini") => {
+            1.5
+        }
+        m if m.contains("claude") && m.contains("haiku") => 1.25,
+        m if m.contains("claude") && m.contains("sonnet") => 15.0,
+        m if m.contains("claude") && m.contains("opus") => 75.0,
+        m if m.contains("claude") => 15.0,
+        m if m.contains("gemini") && m.contains("2.0-flash") => 0.0,
+        m if m.contains("gemini") && m.contains("1.5") && m.contains("pro") => 5.0,
+        m if m.contains("gemini") => 0.5,
+        m if m.contains("o1") || m.contains("o3") => 0.0,
+        m if m.contains("o3-mini") => 4.40,
+        m if m.contains("o1-mini") => 3.50,
+        _ => 0.0,
+    };
+
+    let input_cost = (*input_tokens as f64 / 1_000_000.0) * input_price_per_m;
+    let output_cost = (*output_tokens as f64 / 1_000_000.0) * output_price_per_m;
+    let total = input_cost + output_cost;
+
+    if total < 0.001 {
+        "< $0.001 (free model or no pricing data)".to_string()
+    } else {
+        format!("${:.4}", total)
+    }
+}
+
+fn get_git_branch(git_root: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .args(["branch", "--show-current"])
+        .current_dir(git_root)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if branch.is_empty() {
+            Some("detached".to_string())
+        } else {
+            Some(branch)
+        }
+    } else {
+        None
+    }
+}
+
+fn check_git_dirty(git_root: &std::path::Path) -> bool {
+    let output = std::process::Command::new("git")
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .args(["status", "--porcelain"])
+        .current_dir(git_root)
+        .output()
+        .ok();
+    output.is_some_and(|o| !o.stdout.is_empty())
+}

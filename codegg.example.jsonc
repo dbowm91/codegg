@@ -1,0 +1,191 @@
+{
+  "$schema": "https://opencode.ai/schema/config.json",
+  "log_level": "info",
+  
+  "model": "opencode_zen/minimax-m2.5-free",
+  "small_model": "opencode_zen/nemotron-3-super-free",
+  
+  "username": "your-username",
+  "share": "public",
+  
+  "autoupdate": {
+    "enabled": true,
+    "check_interval_hours": 24
+  },
+  
+  "server": {
+    "port": 3000,
+    "hostname": "0.0.0.0",
+    "mdns": true,
+    "mdns_domain": "opencode.local",
+    "cors_origins": ["https://opencode.ai"],
+    "tool_timeout_seconds": 120,
+    "max_parallel_tools": 5
+  },
+  
+  "provider": {
+    "anthropic": {
+      "api_key": "sk-ant-...",
+      "base_url": "https://api.anthropic.com",
+      "timeout": "60s",
+      "whitelist": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"]
+    },
+    "openai": {
+      "api_key": "sk-...",
+      "base_url": "https://api.openai.com/v1",
+      "timeout": "30s",
+      "options": {
+        "max_retries": 3
+      }
+    },
+    "google": {
+      "api_key": "AIza...",
+      "timeout": "45s"
+    },
+    "openrouter": {
+      "api_key": "sk-or-...",
+      "base_url": "https://openrouter.ai/api/v1"
+    },
+    "opencode_zen": {
+      "api_key": "sk-opencode-...",
+      "base_url": "https://opencode.ai/zen/v1",
+      "models": {
+        "minimax-m2.5-free": {
+          "context_window": 200000,
+          "max_output_tokens": 64000,
+          "supports_tools": true
+        },
+        "big-pickle": {
+          "context_window": 200000,
+          "max_output_tokens": 64000,
+          "supports_tools": true
+        },
+        "nemotron-3-super-free": {
+          "context_window": 128000,
+          "max_output_tokens": 32000,
+          "supports_tools": true
+        },
+        "qwen3.6-plus-free": {
+          "context_window": 128000,
+          "max_output_tokens": 32000,
+          "supports_tools": true
+        }
+      }
+    }
+  },
+  
+  "mcp": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "env": {}
+    },
+    "github": {
+      "command": "uvx",
+      "args": ["mcp-server-github", "--token", "ghp_..."]
+    }
+  },
+  
+  "permission": {
+    "allow": [
+      { "tool": "bash", "path": "**/node_modules/**" },
+      { "tool": "read", "path": "**/*" },
+      { "tool": "glob", "path": "**/*" },
+      { "tool": "grep", "path": "**/*" }
+    ],
+    "deny": [
+      { "tool": "bash", "path": "**/secrets/**" },
+      { "tool": "edit", "path": "**/node_modules/**" }
+    ],
+    "auto_respond": true,
+    "auto_allow_duration_seconds": 300
+  },
+  
+  "compaction": {
+    "strategy": "auto_compact",
+    "reserved_tokens": 10000,
+    "max_context_operations": 100
+  },
+  
+  "skills": {
+    "directories": [".opencode/skills"],
+    "default": ["docs", "testing"]
+  },
+  
+  "commands": {
+    "git": {
+      "command": "git",
+      "always_allow": true
+    },
+    "npm": {
+      "command": "npm"
+    }
+  },
+  
+  "tools": {
+    "bash": true,
+    "read": true,
+    "edit": true,
+    "glob": true,
+    "grep": true,
+    "apply_patch": true,
+    "multiedit": true,
+    "webfetch": true,
+    "question": true
+  },
+  
+  "formatter": {
+    "rules": {
+      "rs": {
+        "command": ["rustfmt", "$FILE"],
+        "disabled": false
+      },
+      "js": {
+        "command": ["prettier", "--write", "$FILE"],
+        "disabled": false
+      },
+      "ts": {
+        "command": ["prettier", "--write", "$FILE"],
+        "disabled": false
+      }
+    }
+  },
+  
+  "lsp": {
+    "rust": {
+      "command": "rust-analyzer"
+    },
+    "typescript": {
+      "command": "typescript-language-server",
+      "args": ["--stdio"]
+    }
+  },
+  
+  "watcher": {
+    "enabled": true,
+    "debounce_ms": 500
+  },
+  
+  "plugin": [
+    {
+      "id": "custom-plugin",
+      "path": "./plugins/custom.wasm"
+    }
+  ],
+  
+  "experimental": {
+    "stream_tool_output": true,
+    "compact_on_overflow": true
+  },
+  
+  "keybinds": {
+    "ctrl+enter": "submit",
+    "ctrl+c": "cancel",
+    "ctrl+l": "clear"
+  },
+  
+  "instructions": [
+    "Always write tests before committing code",
+    "Use meaningful commit messages"
+  ]
+}

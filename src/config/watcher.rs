@@ -1,0 +1,159 @@
+use notify::{Config as NotifyConfig, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::time::sleep;
+
+use crate::config::paths::{find_project_config, global_config_path};
+use crate::config::schema::{Config, WatcherConfig};
+use crate::error::{AppError, ConfigError};
+
+pub struct ConfigWatcher {
+    watcher: Option<RecommendedWatcher>,
+    rx: mpsc::Receiver<()>,
+    tx: mpsc::Sender<()>,
+    watched_paths: Vec<PathBuf>,
+    started: bool,
+    debounce_duration: Duration,
+    last_hash: Option<u64>,
+}
+
+impl ConfigWatcher {
+    pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel(32);
+        Self {
+            watcher: None,
+            rx,
+            tx,
+            watched_paths: Vec::new(),
+            started: false,
+            debounce_duration: Duration::from_millis(500),
+            last_hash: None,
+        }
+    }
+
+    pub fn with_config(mut self, config: &WatcherConfig) -> Self {
+        if let Some(ms) = config.debounce_duration_ms {
+            self.debounce_duration = Duration::from_millis(ms);
+        }
+        self
+    }
+
+    pub async fn start(&mut self) -> Result<(), AppError> {
+        if self.started {
+            return Ok(());
+        }
+        let paths = Self::collect_config_paths();
+        if paths.is_empty() {
+            return Err(AppError::Config(ConfigError::Watch(
+                "no config files found to watch".to_string(),
+            )));
+        }
+
+        let tx = self.tx.clone();
+        let mut watcher = RecommendedWatcher::new(
+            move |res: Result<Event, notify::Error>| {
+                if let Ok(event) = res {
+                    if event.kind.is_modify() || event.kind.is_create() {
+                        drop(tx.send(()));
+                    }
+                }
+            },
+            NotifyConfig::default(),
+        )
+        .map_err(|e| AppError::Config(ConfigError::Watch(e.to_string())))?;
+
+        for path in &paths {
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            if parent.exists() {
+                let _ = watcher.watch(parent, RecursiveMode::NonRecursive);
+            }
+        }
+
+        self.watched_paths = paths;
+        self.watcher = Some(watcher);
+        self.started = true;
+        Ok(())
+    }
+
+    pub async fn recv(&mut self) -> Option<Result<Config, AppError>> {
+        // Wait for notification with debounce
+        while let Some(()) = self.rx.recv().await {
+            sleep(self.debounce_duration).await;
+
+            // Drain any additional notifications during debounce
+            while let Ok(()) = self.rx.try_recv() {
+                // Discard extra notifications
+            }
+
+            // Check if content actually changed
+            if let Some(new_hash) = Self::compute_config_hash() {
+                if self.last_hash != Some(new_hash) {
+                    self.last_hash = Some(new_hash);
+                    return Some(Self::reload_config());
+                }
+            }
+        }
+        None
+    }
+
+    pub fn reload_now(&self) -> Result<Config, AppError> {
+        Self::reload_config()
+    }
+
+    fn collect_config_paths() -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        if let Some(global) = global_config_path() {
+            if global.exists() {
+                paths.push(global);
+            }
+        }
+
+        if let Some(project) = find_project_config() {
+            paths.push(project);
+        }
+
+        paths
+    }
+
+    fn compute_config_hash() -> Option<u64> {
+        let paths = Self::collect_config_paths();
+        if paths.is_empty() {
+            return None;
+        }
+
+        let mut hasher = std::hash::DefaultHasher::new();
+        for path in &paths {
+            if let Ok(content) = std::fs::read(path) {
+                content.hash(&mut hasher);
+            }
+        }
+        Some(hasher.finish())
+    }
+
+    fn reload_config() -> Result<Config, AppError> {
+        let paths = Self::collect_config_paths();
+        if paths.is_empty() {
+            return Ok(Config::default());
+        }
+
+        let configs: Result<Vec<_>, _> = paths
+            .iter()
+            .map(|p| {
+                crate::config::paths::load_config(p)
+                    .map_err(|e| AppError::Config(ConfigError::Watch(e.to_string())))
+            })
+            .collect();
+
+        let configs = configs?;
+        Ok(crate::config::paths::merge_configs(&configs))
+    }
+}
+
+impl Default for ConfigWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -1,0 +1,662 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+pub const CONFIG_VERSION: &str = "1";
+pub const MIN_SUPPORTED_VERSION: &str = "1";
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum AutoupdateConfig {
+    Bool(bool),
+    Notify(String),
+}
+
+impl Default for AutoupdateConfig {
+    fn default() -> Self {
+        AutoupdateConfig::Bool(true)
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct Config {
+    #[serde(rename = "$schema")]
+    pub schema: Option<String>,
+    pub version: Option<String>,
+    pub log_level: Option<String>,
+    pub model: Option<String>,
+    pub small_model: Option<String>,
+    pub medium_model: Option<String>,
+    pub auto_route_models: Option<bool>,
+    pub default_agent: Option<String>,
+    pub username: Option<String>,
+    pub share: Option<String>,
+    pub autoupdate: Option<AutoupdateConfig>,
+    pub server: Option<ServerConfig>,
+    pub provider: Option<HashMap<String, ProviderConfig>>,
+    pub disabled_providers: Option<Vec<String>>,
+    pub enabled_providers: Option<Vec<String>>,
+    pub agent: Option<HashMap<String, AgentConfig>>,
+    pub mcp: Option<HashMap<String, McpEntry>>,
+    pub permission: Option<PermissionConfig>,
+    pub compaction: Option<CompactionConfig>,
+    pub subagent: Option<SubagentConfig>,
+    pub skills: Option<SkillsConfig>,
+    pub commands: Option<HashMap<String, CommandConfig>>,
+    pub templates: Option<HashMap<String, SessionTemplate>>,
+    pub instructions: Option<Vec<String>>,
+    pub layout: Option<String>,
+    pub tools: Option<HashMap<String, bool>>,
+    pub formatter: Option<FormatterConfig>,
+    pub lsp: Option<LspConfig>,
+    pub watcher: Option<WatcherConfig>,
+    pub snapshot: Option<bool>,
+    pub plugin: Option<Vec<PluginSpec>>,
+    pub enterprise: Option<EnterpriseConfig>,
+    pub experimental: Option<ExperimentalConfig>,
+    pub mode: Option<HashMap<String, ModeConfig>>,
+    pub keybinds: Option<HashMap<String, String>>,
+    pub vim_mode: Option<bool>,
+    pub hooks: Option<Vec<HookConfigEntry>>,
+    pub notifications: Option<NotificationConfig>,
+    pub catalog: Option<CatalogConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+pub struct HookConfigEntry {
+    pub event: String,
+    #[serde(flatten)]
+    pub hook: HookConfig,
+}
+
+impl Default for HookConfigEntry {
+    fn default() -> Self {
+        Self {
+            event: "pre_tool_execute".to_string(),
+            hook: HookConfig::ShellCommand {
+                command: "echo 'default hook'".to_string(),
+                timeout_secs: None,
+            },
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HookConfig {
+    ShellCommand {
+        command: String,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+    },
+    InlineScript {
+        script: String,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+    },
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ServerConfig {
+    pub port: Option<u16>,
+    pub hostname: Option<String>,
+    pub mdns: Option<bool>,
+    pub mdns_domain: Option<String>,
+    pub cors: Option<Vec<String>>,
+    pub cors_origins: Option<Vec<String>>,
+    pub tool_timeout_seconds: Option<u64>,
+    pub max_parallel_tools: Option<usize>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ProviderConfig {
+    pub api_key: Option<String>,
+    pub encrypted_api_key: Option<String>,
+    pub encrypted: Option<bool>,
+    pub base_url: Option<String>,
+    pub enterprise_url: Option<String>,
+    pub set_cache_key: Option<bool>,
+    pub timeout: Option<ProviderTimeout>,
+    pub chunk_timeout: Option<u64>,
+    pub whitelist: Option<Vec<String>>,
+    pub blacklist: Option<Vec<String>>,
+    pub models: Option<HashMap<String, ModelConfig>>,
+    pub options: Option<HashMap<String, serde_json::Value>>,
+}
+
+impl ProviderConfig {
+    pub fn api_key(&self, prefix: &str) -> Option<String> {
+        let env_key = format!("{}_API_KEY", prefix.to_uppercase().replace('-', "_"));
+        if let Ok(env_val) = std::env::var(&env_key) {
+            return Some(env_val);
+        }
+
+        if let Some(ref api_key) = self.api_key {
+            return Some(api_key.clone());
+        }
+
+        if let (Some(ref encrypted_api_key), Some(true)) = (&self.encrypted_api_key, self.encrypted)
+        {
+            if let Ok(password) = std::env::var("CODEGG_ENCRYPTION_KEY") {
+                if let Ok(decrypted) =
+                    crate::crypto::decrypt_from_string(encrypted_api_key, &password)
+                {
+                    return Some(decrypted);
+                }
+            }
+        }
+
+        None
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum ProviderTimeout {
+    Ms(u64),
+    Disabled(bool),
+}
+
+impl Default for ProviderTimeout {
+    fn default() -> Self {
+        ProviderTimeout::Ms(300000)
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ModelConfig {
+    pub name: Option<String>,
+    pub variants: Option<HashMap<String, ModelVariant>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ModelVariant {
+    pub disabled: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct AgentConfig {
+    pub name: Option<String>,
+    pub model: Option<String>,
+    pub variant: Option<String>,
+    pub mode: Option<String>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub prompt: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<String>,
+    pub steps: Option<u32>,
+    pub hidden: Option<bool>,
+    pub disable: Option<bool>,
+    pub permission: Option<HashMap<String, PermissionRule>>,
+    pub tools: Option<HashMap<String, bool>>,
+    pub options: Option<HashMap<String, serde_json::Value>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum PermissionRule {
+    Action(String),
+    Object(HashMap<String, String>),
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct McpEntry {
+    #[serde(flatten)]
+    pub inner: Option<McpServerConfig>,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct McpServerConfig {
+    #[serde(rename = "type")]
+    pub server_type: Option<String>,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: Option<HashMap<String, String>>,
+    pub environment: Option<HashMap<String, String>>,
+    pub url: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub transport: Option<String>,
+    pub timeout: Option<u64>,
+    pub oauth: Option<McpOAuthConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct McpOAuthConfig {
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub scope: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct PermissionConfig {
+    pub default: Option<String>,
+    pub read: Option<PermissionRule>,
+    pub edit: Option<PermissionRule>,
+    pub glob: Option<PermissionRule>,
+    pub grep: Option<PermissionRule>,
+    pub list: Option<PermissionRule>,
+    pub bash: Option<PermissionRule>,
+    pub task: Option<PermissionRule>,
+    pub todowrite: Option<String>,
+    pub question: Option<String>,
+    pub webfetch: Option<String>,
+    pub websearch: Option<String>,
+    pub codesearch: Option<String>,
+    pub lsp: Option<PermissionRule>,
+    pub doom_loop: Option<String>,
+    pub skill: Option<PermissionRule>,
+    pub tools: Option<HashMap<String, String>>,
+    pub paths: Option<Vec<String>>,
+    pub doomloop_threshold: Option<usize>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct CompactionConfig {
+    pub enabled: Option<bool>,
+    pub auto: Option<bool>,
+    pub prune: Option<bool>,
+    pub max_tokens: Option<usize>,
+    pub threshold: Option<f64>,
+    pub reserved: Option<usize>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct SubagentConfig {
+    pub max_concurrent: Option<usize>,
+    pub max_depth: Option<usize>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct SkillsConfig {
+    pub enabled: Option<bool>,
+    pub paths: Option<Vec<String>>,
+    pub urls: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct CommandConfig {
+    pub template: String,
+    pub description: Option<String>,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub subtask: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct SessionTemplate {
+    pub name: String,
+    pub description: Option<String>,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub instructions: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum FormatterConfig {
+    Disabled(bool),
+    Rules(HashMap<String, FormatterRule>),
+}
+
+impl Default for FormatterConfig {
+    fn default() -> Self {
+        FormatterConfig::Rules(HashMap::new())
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct FormatterRule {
+    pub disabled: Option<bool>,
+    pub command: Option<Vec<String>>,
+    pub environment: Option<HashMap<String, String>>,
+    pub extensions: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum LspConfig {
+    Disabled(bool),
+    Rules(HashMap<String, LspRule>),
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        LspConfig::Rules(HashMap::new())
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum LspRule {
+    Disabled {
+        disabled: bool,
+    },
+    Active {
+        command: Vec<String>,
+        extensions: Option<Vec<String>>,
+        disabled: Option<bool>,
+        env: Option<HashMap<String, String>>,
+        initialization: Option<HashMap<String, serde_json::Value>>,
+    },
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct WatcherConfig {
+    pub ignore: Option<Vec<String>>,
+    #[serde(default = "default_debounce_duration_ms")]
+    pub debounce_duration_ms: Option<u64>,
+}
+
+fn default_debounce_duration_ms() -> Option<u64> {
+    Some(500)
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct EnterpriseConfig {
+    pub url: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ExperimentalConfig {
+    pub disable_paste_summary: Option<bool>,
+    pub batch_tool: Option<bool>,
+    pub lsp_tool: Option<bool>,
+    pub open_telemetry: Option<bool>,
+    pub primary_tools: Option<Vec<String>>,
+    pub continue_loop_on_deny: Option<bool>,
+    pub mcp_timeout: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ModeConfig {
+    pub description: Option<String>,
+    pub default: Option<String>,
+    pub inherit: Option<bool>,
+    pub tools: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct NotificationConfig {
+    pub enabled: Option<bool>,
+    pub on_task_complete: Option<bool>,
+    pub on_error: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct CatalogConfig {
+    pub enabled: Option<bool>,
+    pub deferred_tools: Option<Vec<String>>,
+    pub search_max_results: Option<usize>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum PluginSpec {
+    Path(String),
+    WithOptions(String, HashMap<String, serde_json::Value>),
+}
+
+impl Config {
+    pub fn load() -> Result<Self, crate::error::ConfigError> {
+        let paths = crate::config::paths::resolve_config_paths();
+        if paths.is_empty() {
+            return Ok(Config::default());
+        }
+        let configs: Result<Vec<_>, _> = paths
+            .iter()
+            .map(|p| crate::config::paths::load_config(p))
+            .collect();
+        let configs = configs?;
+        let mut config = crate::config::paths::merge_configs(&configs);
+
+        config.migrate();
+
+        if let Err(errors) = config.validate() {
+            let msg = errors.join("; ");
+            tracing::warn!(errors = %msg, "config validation warnings");
+        }
+
+        Ok(config)
+    }
+
+    pub fn save(&self) -> Result<(), crate::error::ConfigError> {
+        let path = crate::config::paths::find_project_config()
+            .or_else(crate::config::paths::global_config_path)
+            .ok_or_else(|| {
+                crate::error::ConfigError::Invalid("Could not determine config path to save".into())
+            })?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                crate::error::ConfigError::Invalid(format!("Failed to create config dir: {}", e))
+            })?;
+        }
+
+        let content = serde_json::to_string_pretty(self).map_err(|e| {
+            crate::error::ConfigError::Parse(format!("Failed to serialize config: {}", e))
+        })?;
+
+        std::fs::write(&path, content).map_err(|e| {
+            crate::error::ConfigError::Invalid(format!("Failed to write config file: {}", e))
+        })?;
+
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+
+        if let Some(ref level) = self.log_level {
+            match level.as_str() {
+                "debug" | "info" | "warn" | "error" | "trace" => {}
+                _ => errors.push(format!(
+                    "invalid log_level '{}': must be one of debug, info, warn, error, trace",
+                    level
+                )),
+            }
+        }
+
+        if let Some(ref share) = self.share {
+            match share.as_str() {
+                "manual" | "auto" | "disabled" => {}
+                _ => errors.push(format!(
+                    "invalid share value '{}': must be one of manual, auto, disabled",
+                    share
+                )),
+            }
+        }
+
+        if let Some(ref model) = self.model {
+            if !model.contains('/') {
+                errors.push(format!(
+                    "invalid model '{}': must be in format provider/model",
+                    model
+                ));
+            }
+        }
+
+        if let Some(ref small_model) = self.small_model {
+            if !small_model.contains('/') {
+                errors.push(format!(
+                    "invalid small_model '{}': must be in format provider/model",
+                    small_model
+                ));
+            }
+        }
+
+        if let Some(ref providers) = self.provider {
+            for (name, provider) in providers {
+                if let Some(ref models) = provider.models {
+                    for (model_name, model_cfg) in models {
+                        if let Some(ref variants) = model_cfg.variants {
+                            for variant_name in variants.keys() {
+                                if variant_name.is_empty() {
+                                    errors.push(format!(
+                                        "empty variant name in provider '{}' model '{}'",
+                                        name, model_name
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(ref mcp) = self.mcp {
+            for (name, entry) in mcp {
+                if let Some(ref server) = entry.inner {
+                    if let Some(ref stype) = server.server_type {
+                        match stype.as_str() {
+                            "local" => {
+                                if server.command.is_none() {
+                                    errors.push(format!(
+                                        "MCP server '{}' of type 'local' requires a command",
+                                        name
+                                    ));
+                                }
+                            }
+                            "remote" => {
+                                if server.url.is_none() {
+                                    errors.push(format!(
+                                        "MCP server '{}' of type 'remote' requires a url",
+                                        name
+                                    ));
+                                }
+                            }
+                            _ => errors.push(format!(
+                                "invalid MCP server type '{}' for server '{}': must be local or remote",
+                                stype, name
+                            )),
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(ref commands) = self.commands {
+            for (name, cmd) in commands {
+                if cmd.template.is_empty() {
+                    errors.push(format!("command '{}' has an empty template", name));
+                }
+            }
+        }
+
+        if let Some(ref server) = self.server {
+            if let Some(port) = server.port {
+                if port < 1024 {
+                    errors.push(format!("port {} is in privileged range (1024-65535)", port));
+                }
+            }
+            if let Some(timeout) = server.tool_timeout_seconds {
+                if timeout == 0 {
+                    errors.push("tool_timeout_seconds cannot be 0".to_string());
+                }
+                if timeout > 3600 {
+                    errors.push("tool_timeout_seconds exceeds 1 hour".to_string());
+                }
+            }
+            if let Some(max) = server.max_parallel_tools {
+                if max == 0 {
+                    errors.push("max_parallel_tools cannot be 0".to_string());
+                }
+                if max > 100 {
+                    errors.push("max_parallel_tools exceeds 100".to_string());
+                }
+            }
+        }
+
+        if let Some(ref compaction) = self.compaction {
+            if let Some(threshold) = compaction.threshold {
+                if !(0.1..=1.0).contains(&threshold) {
+                    errors.push(format!(
+                        "compaction threshold {} must be between 0.1 and 1.0",
+                        threshold
+                    ));
+                }
+            }
+            if let Some(limit) = compaction.max_tokens {
+                if limit < 1000 {
+                    errors.push("compaction max_tokens must be at least 1000".to_string());
+                }
+            }
+        }
+
+        if let Some(ref agents) = self.agent {
+            for (name, agent) in agents {
+                if let Some(ref mode) = agent.mode {
+                    match mode.as_str() {
+                        "subagent" | "primary" | "all" => {}
+                        _ => errors.push(format!(
+                            "invalid mode '{}' for agent '{}': must be one of subagent, primary, all",
+                            mode, name
+                        )),
+                    }
+                }
+                if let Some(ref color) = agent.color {
+                    if !color.starts_with('#')
+                        && !matches!(
+                            color.as_str(),
+                            "primary"
+                                | "secondary"
+                                | "accent"
+                                | "success"
+                                | "warning"
+                                | "error"
+                                | "info"
+                        )
+                    {
+                        errors.push(format!(
+                            "invalid color '{}' for agent '{}': must be hex color or theme color name",
+                            color, name
+                        ));
+                    }
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    pub fn migrate(&mut self) {
+        let version = self.version.clone().unwrap_or_else(|| "0".to_string());
+
+        if version == "0" {
+            self.migrate_from_v0();
+        }
+
+        self.version = Some(CONFIG_VERSION.to_string());
+    }
+
+    fn migrate_from_v0(&mut self) {
+        tracing::info!("Migrating config from v0 to v1");
+    }
+}

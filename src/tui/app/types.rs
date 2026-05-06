@@ -1,0 +1,237 @@
+#[derive(Debug, Clone, PartialEq)]
+pub enum Dialog {
+    None,
+    Model,
+    Agent,
+    Session,
+    Help,
+    Tree,
+    Theme,
+    Question,
+    Permission,
+    Mcp,
+    Keybind,
+    Share,
+    Import,
+    Template,
+    Connect,
+    Context,
+    Cost,
+    Usage,
+    Goto,
+    Plan,
+    Diff,
+    Confirm,
+}
+
+impl Dialog {
+    pub fn is_open(&self) -> bool {
+        matches!(
+            self,
+            Self::Model
+                | Self::Agent
+                | Self::Session
+                | Self::Help
+                | Self::Tree
+                | Self::Theme
+                | Self::Question
+                | Self::Permission
+                | Self::Mcp
+                | Self::Keybind
+                | Self::Share
+                | Self::Import
+                | Self::Template
+                | Self::Connect
+                | Self::Context
+                | Self::Cost
+                | Self::Usage
+                | Self::Goto
+                | Self::Plan
+                | Self::Diff
+                | Self::Confirm
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TuiMsg {
+    SubmitPrompt,
+    NavigateUp,
+    NavigateDown,
+    NavigateLeft,
+    NavigateRight,
+    CycleAgent,
+    OpenModelDialog,
+    OpenAgentDialog,
+    OpenSessionDialog,
+    OpenHelpDialog,
+    OpenTreeDialog,
+    OpenThemeDialog,
+    OpenShareDialog,
+    OpenImportDialog,
+    OpenDiffDialog {
+        old_content: Box<str>,
+        new_content: Box<str>,
+        title: Box<str>,
+    },
+    SelectModel {
+        model: String,
+    },
+    SelectAgent {
+        agent_name: String,
+    },
+    SelectSession(Box<Session>),
+    SubmitConnect,
+    ConnectConfigured {
+        provider_name: String,
+        env_var: Option<String>,
+        api_key: Option<String>,
+    },
+    CloseDialog,
+    ToggleSidebar,
+    ToggleFullscreen,
+    ToggleReasoning,
+    ToggleTts,
+    CycleModelForward,
+    CycleModelBackward,
+    ClearSession,
+    NewSession,
+    CloseSession,
+    CharInput(char),
+    Backspace,
+    Delete,
+    CursorLeft,
+    CursorRight,
+    CursorHome,
+    CursorEnd,
+    PageUp,
+    PageDown,
+    Search,
+    SearchNext,
+    SearchPrev,
+    ClearSearch,
+    FocusPrompt,
+    StashPrompt,
+    RestorePrompt,
+    CopyMessage,
+    Quit,
+    ExternalEditor,
+    UndoDelete,
+    SelectTheme {
+        theme_name: String,
+    },
+    SubmitPermission {
+        choice_index: usize,
+    },
+    SubmitQuestionAnswers {
+        answers_json: String,
+    },
+    SelectTreeSession {
+        session_id: String,
+    },
+    ForkTreeSession {
+        session_id: String,
+    },
+    ForkSession {
+        session_id: String,
+    },
+    SubmitImportPreview,
+    ConfirmImport,
+    SelectTemplate {
+        key: String,
+        template: Box<SessionTemplate>,
+    },
+    GotoMessage {
+        index: usize,
+    },
+    CopyShareUrl,
+    McpAction {
+        server_name: String,
+        action: String,
+    },
+    KeybindChanged {
+        action: String,
+        binding: String,
+    },
+    ConfirmDeleteSession {
+        session_id: String,
+    },
+    ConfirmArchiveSession {
+        session_id: String,
+        unarchive: bool,
+    },
+    ConfirmBulkDelete {
+        count: usize,
+    },
+    ConfirmBulkArchive {
+        count: usize,
+        unarchive: bool,
+    },
+    ConfirmResult(Option<bool>),
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub text: String,
+    pub score: f64,
+    pub last_used: i64,
+    pub frequency: u32,
+}
+
+impl HistoryEntry {
+    pub fn new(text: String) -> Self {
+        let now = now_ms();
+        Self {
+            text,
+            score: 1.0,
+            last_used: now,
+            frequency: 1,
+        }
+    }
+
+    pub fn touch(&mut self) {
+        self.frequency += 1;
+        self.last_used = now_ms();
+        self.recalc_score();
+    }
+
+    fn recalc_score(&mut self) {
+        let now = now_ms();
+        let age_hours = ((now - self.last_used) as f64) / 3600000.0;
+        let recency = 1.0 / (1.0 + age_hours);
+        let freq = (self.frequency as f64).ln() + 1.0;
+        self.score = recency * freq;
+    }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+use crate::config::schema::SessionTemplate;
+use crate::session::models::Session;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone)]
+pub struct TodoEntry {
+    pub content: String,
+    pub status: String,
+    pub priority: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionStatus {
+    Idle,
+    Working,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompletionType {
+    Slash,
+    File,
+    Agent,
+}

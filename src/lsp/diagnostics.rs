@@ -1,0 +1,128 @@
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use lsp_types::*;
+use tokio::sync::Mutex;
+use tokio::time::Instant;
+use tracing::debug;
+use url::Url;
+
+use crate::error::LspError;
+use crate::lsp::service::LspService;
+
+const DEBOUNCE_MS: u64 = 150;
+
+#[derive(Debug, Clone)]
+pub struct FileDiagnostic {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub message: String,
+    pub severity: DiagnosticSeverity,
+    pub source: Option<String>,
+    pub code: Option<String>,
+}
+
+pub struct DiagnosticsCollector {
+    service: Arc<LspService>,
+    last_update: Arc<Mutex<HashMap<String, Instant>>>,
+}
+
+impl DiagnosticsCollector {
+    pub fn new(service: Arc<LspService>) -> Self {
+        Self {
+            service,
+            last_update: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub async fn should_debounce(&self, uri: &str) -> bool {
+        let mut last = self.last_update.lock().await;
+        let now = Instant::now();
+
+        if let Some(prev) = last.get(uri) {
+            if now.duration_since(*prev) < Duration::from_millis(DEBOUNCE_MS) {
+                return true;
+            }
+        }
+
+        last.insert(uri.to_string(), now);
+        false
+    }
+
+    pub async fn get_diagnostics_for_file(
+        &self,
+        file_path: &Path,
+    ) -> Result<Vec<FileDiagnostic>, LspError> {
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+
+        let uri_str = uri.to_string();
+
+        if self.should_debounce(&uri_str).await {
+            debug!(uri = %uri_str, "debouncing diagnostics");
+            return Ok(Vec::new());
+        }
+
+        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+
+        let raw = self.service.get_diagnostics_for_key(&key, &uri_str).await?;
+
+        Ok(raw
+            .into_iter()
+            .map(|d| FileDiagnostic {
+                file: uri_str.clone(),
+                line: d.range.start.line,
+                column: d.range.start.character,
+                message: d.message,
+                severity: d.severity.unwrap_or(DiagnosticSeverity::ERROR),
+                source: d.source,
+                code: d.code.as_ref().map(|c| match c {
+                    NumberOrString::Number(n) => n.to_string(),
+                    NumberOrString::String(s) => s.clone(),
+                }),
+            })
+            .collect())
+    }
+
+    pub async fn get_all_diagnostics(
+        &self,
+    ) -> Result<HashMap<String, Vec<FileDiagnostic>>, LspError> {
+        let keys = self.service.client_keys().await;
+        let mut all = HashMap::new();
+
+        for key in keys {
+            let raw = self.service.get_all_diagnostics_for_key(&key).await?;
+            for (uri, ds) in raw {
+                let fds: Vec<FileDiagnostic> = ds
+                    .into_iter()
+                    .map(|d| FileDiagnostic {
+                        file: uri.clone(),
+                        line: d.range.start.line,
+                        column: d.range.start.character,
+                        message: d.message,
+                        severity: d.severity.unwrap_or(DiagnosticSeverity::ERROR),
+                        source: d.source,
+                        code: d.code.as_ref().map(|c| match c {
+                            NumberOrString::Number(n) => n.to_string(),
+                            NumberOrString::String(s) => s.clone(),
+                        }),
+                    })
+                    .collect();
+                all.entry(uri).or_insert_with(Vec::new).extend(fds);
+            }
+        }
+
+        Ok(all)
+    }
+
+    pub async fn has_errors(&self, file_path: &Path) -> Result<bool, LspError> {
+        let diags = self.get_diagnostics_for_file(file_path).await?;
+        Ok(diags
+            .iter()
+            .any(|d| d.severity == DiagnosticSeverity::ERROR))
+    }
+}

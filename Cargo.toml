@@ -1,0 +1,182 @@
+[package]
+name = "codegg"
+version = "0.1.0"
+edition = "2021"
+description = "A lightweight, pure-Rust implementation of an AI coding agent"
+license = "MIT"
+authors = ["Anomalyco"]
+repository = "https://github.com/anomalyco/codegg"
+homepage = "https://github.com/anomalyco/codegg"
+readme = "README.md"
+keywords = ["ai", "coding", "agent", "llm", "claude"]
+categories = ["command-line-utilities", "artificial-intelligence"]
+rust-version = "1.81"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/{ version }/{ name }-{ target }{ archive-suffix }"
+target = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+
+[dependencies]
+# Core
+tokio = { version = "1", features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "fs",
+    "io-util",
+    "net",
+    "process",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+unicode-width = "0.2"
+
+# HTTP / Streaming
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
+bytes = "1"
+
+# Async / Streams
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "json"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# File operations
+tokio-util = { version = "0.7", features = ["io"] }
+walkdir = "2"
+globset = "0.4"
+ignore = "0.4"
+pathdiff = "0.2"
+dunce = "1"
+tempfile = "3"
+
+# Search
+grep = "0.3"
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+
+# Text processing
+comrak = "0.35"
+syntect = "5"
+unicode-segmentation = "1"
+strsim = "0.11"
+shell-words = "1"
+tiktoken = "3.1"
+
+# Config
+json5 = "0.4"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# UUID / IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+ulid = { version = "1", features = ["serde"] }
+semver = "1"
+
+# MCP
+serde_path_to_error = "0.1"
+
+# Auth
+url = "2"
+base64 = "0.22"
+rand = "0.9"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+aes-gcm = "0.10"
+
+# Clipboard (optional, platform-specific)
+arboard = { version = "3", optional = true }
+
+# Desktop notifications
+notify-rust = "4"
+
+# Directory paths
+dirs = "6"
+
+# TUI input
+ratatui-textarea = "0.4"
+
+# Concurrency
+parking_lot = "0.12"
+dashmap = "5"
+
+# Enum utilities
+strum = { version = "0.26", features = ["derive"] }
+
+# Regex
+regex = "1"
+
+# HTML to markdown
+html2text = "0.13"
+
+# LSP
+lsp-types = "0.97"
+lsp-server = "0.7"
+zip = "2"
+flate2 = "1"
+tar = "0.4"
+xz2 = "0.1"
+notify = "7"
+
+# Server (feature-gated)
+axum = { version = "0.8", features = ["ws"], optional = true }
+http = { version = "1", optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-br", "compression-gzip", "set-header"], optional = true }
+tokio-tungstenite = { version = "0.26", optional = true }
+subtle = "2"
+
+# Plugins (feature-gated)
+wasmtime = { version = "27", optional = true }
+wasmtime-wasi = { version = "27", optional = true }
+md5 = "0.8.0"
+socket2 = "0.5"
+similar = "3.0.0"
+libc = "0.2"
+bitflags = "2"
+once_cell = "1"
+qrcode = "0.14.1"
+clap_complete = "4.6.2"
+
+# Image support (optional)
+ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"], optional = true }
+num-traits = "0.2.19"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+
+[features]
+default = ["arboard"]
+arboard = ["dep:arboard"]
+plugins = ["wasmtime", "wasmtime-wasi"]
+debug-logging = []
+server = [
+    "axum",
+    "http",
+    "tower-http",
+    "tokio-tungstenite",
+]
+image = ["dep:ratatui-image"]
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

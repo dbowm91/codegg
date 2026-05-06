@@ -1,0 +1,20 @@
+pub mod api;
+pub mod builtin;
+pub mod event_bus;
+pub mod hooks;
+pub mod install;
+pub mod loader;
+pub mod manifest;
+pub mod registry;
+pub mod service;
+pub mod tui;
+
+pub use api::{ApiVersion, Stability, API_VERSION};
+pub use event_bus::{PluginEventBus, PluginEventSubscription};
+pub use hooks::{HookContext, HookResult, HookType};
+pub use install::{install_from_path, install_from_url, uninstall};
+pub use loader::{load_plugin, LoadedPlugin};
+pub use manifest::PluginManifest;
+pub use registry::{PluginInfo, PluginRegistry};
+pub use service::PluginService;
+pub use tui::{TuiComponent, TuiPluginRegistry, TuiRoute};

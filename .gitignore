@@ -1,0 +1,77 @@
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editor directories
+.idea/
+.vscode/
+.codex/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# VCS
+.worktrees/
+
+# Local development
+.env
+.env.backup
+.env.local
+codegg-dev
+logs/
+playground
+tmp/
+a.out
+*.pdb
+
+# Rust build artifacts
+/target/
+**/target/
+**/*.rs.bak
+**/debug/
+**/release/
+**/build/
+dist/
+
+# Cargo
+.cargo/
+vendor/
+
+# Node (for any JS tooling)
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# direnv
+.direnv/
+
+# Scripts
+.scripts/
+
+# codegg
+/codegg.json
+
+# Misc
+*.log

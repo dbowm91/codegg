@@ -1,0 +1,431 @@
+use sqlx::SqlitePool;
+
+use crate::error::StorageError;
+
+pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS migration_version (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            version INTEGER NOT NULL DEFAULT 0
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    let current_version: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT version FROM migration_version WHERE id = 1), 0)",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    if current_version < 1 {
+        migrate_v1(pool).await?;
+    }
+    if current_version < 2 {
+        migrate_v2(pool).await?;
+    }
+    if current_version < 3 {
+        migrate_v3(pool).await?;
+    }
+    if current_version < 4 {
+        migrate_v4(pool).await?;
+    }
+    if current_version < 5 {
+        migrate_v5(pool).await?;
+    }
+    if current_version < 6 {
+        migrate_v6(pool).await?;
+    }
+    if current_version < 7 {
+        migrate_v7(pool).await?;
+    }
+    if current_version < 8 {
+        migrate_v8(pool).await?;
+    }
+    if current_version < 9 {
+        migrate_v9(pool).await?;
+    }
+    if current_version < 10 {
+        migrate_v10(pool).await?;
+    }
+    if current_version < 11 {
+        migrate_v11(pool).await?;
+    }
+    if current_version < 12 {
+        migrate_v12(pool).await?;
+    }
+
+    sqlx::query(
+        "INSERT INTO migration_version (id, version) VALUES (1, ?) \
+         ON CONFLICT(id) DO UPDATE SET version = excluded.version",
+    )
+    .bind(12i64)
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS project (
+            id TEXT PRIMARY KEY,
+            worktree TEXT NOT NULL,
+            vcs TEXT,
+            name TEXT,
+            icon_url TEXT,
+            icon_color TEXT,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            time_initialized INTEGER,
+            sandboxes TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS session (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            workspace_id TEXT,
+            parent_id TEXT,
+            slug TEXT NOT NULL,
+            directory TEXT NOT NULL,
+            title TEXT NOT NULL,
+            version TEXT NOT NULL,
+            share_url TEXT,
+            summary_additions INTEGER,
+            summary_deletions INTEGER,
+            summary_files INTEGER,
+            summary_diffs TEXT,
+            revert TEXT,
+            permission TEXT,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            time_compacting INTEGER,
+            time_archived INTEGER,
+            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS part (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            FOREIGN KEY (message_id) REFERENCES message(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS todo (
+            session_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            status TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            PRIMARY KEY (session_id, position),
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS permission (
+            project_id TEXT PRIMARY KEY,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS session_share (
+            session_id TEXT PRIMARY KEY,
+            id TEXT NOT NULL,
+            secret TEXT NOT NULL,
+            url TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS session_project_idx ON session(project_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS session_workspace_idx ON session(workspace_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS session_parent_idx ON session(parent_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS todo_session_idx ON todo(session_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS message_session_time_created_id_idx ON message(session_id, time_created, id)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS part_message_id_id_idx ON part(message_id, id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS part_session_idx ON part(session_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v2(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query("CREATE INDEX IF NOT EXISTS session_title_idx ON session(title)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS session_slug_idx ON session(slug)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v3(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS cached_models (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            name TEXT NOT NULL,
+            context_window INTEGER,
+            max_output_tokens INTEGER,
+            supports_tools INTEGER NOT NULL DEFAULT 1,
+            supports_vision INTEGER NOT NULL DEFAULT 0,
+            fetched_at INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS cached_models_provider_idx ON cached_models(provider)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v4(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query("CREATE INDEX IF NOT EXISTS session_time_updated_idx ON session(time_updated)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v5(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query("ALTER TABLE session_share ADD COLUMN share_expires_at INTEGER")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v6(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS permission_time_idx ON permission(time_created, time_updated)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS session_project_archived_idx ON session(project_id, time_archived)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v7(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query("ALTER TABLE session ADD COLUMN tags TEXT")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS session_tags_idx ON session(tags)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v8(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        "ALTER TABLE part ADD COLUMN part_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.type')) STORED",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS part_type_idx ON part(part_type)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v9(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS task (
+            id INTEGER PRIMARY KEY,
+            parent_id TEXT,
+            session_id TEXT NOT NULL,
+            description TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result TEXT,
+            denied_tools TEXT,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS task_session_idx ON task(session_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS task_parent_idx ON task(parent_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v10(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS checkpoint_session_idx ON checkpoints(session_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v11(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_directory ON session(directory)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v12(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query("ALTER TABLE session ADD COLUMN time_deleted INTEGER DEFAULT NULL")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}

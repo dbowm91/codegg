@@ -1,0 +1,8 @@
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "keybinds": {
+    "ctrl+enter": "submit",
+    "ctrl+c": "cancel",
+    "ctrl+l": "clear"
+  }
+}
