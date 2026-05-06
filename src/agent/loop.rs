@@ -1060,6 +1060,23 @@ impl AgentLoop {
 
     #[instrument(skip(self, request), fields(session_id = %self.session_id, turn_count = self.state.turn_count))]
     pub async fn run(&mut self, mut request: ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
+        let session_start_ctx = crate::hooks::HookContext {
+            event: crate::hooks::HookEvent::SessionStart,
+            session_id: Some(self.session_id.clone()),
+            tool_name: None,
+            tool_arguments: None,
+            tool_result: None,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+        };
+        if let Some(ref hr) = self.hook_registry {
+            for err in hr.run_hooks(crate::hooks::HookEvent::SessionStart, &session_start_ctx).await {
+                tracing::error!("SessionStart hook error: {}", err);
+            }
+        }
+
         self.apply_auto_routing(&mut request);
         self.apply_agent_config(&mut request);
         if let Some(system) = request.system.take() {
@@ -1109,6 +1126,23 @@ impl AgentLoop {
 
             self.state.turn_count += 1;
             tracing::debug!("Agent turn {}", self.state.turn_count);
+
+            let agent_start_ctx = crate::hooks::HookContext {
+                event: crate::hooks::HookEvent::AgentStart,
+                session_id: Some(self.session_id.clone()),
+                tool_name: None,
+                tool_arguments: None,
+                tool_result: None,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+            };
+            if let Some(ref hr) = self.hook_registry {
+                for err in hr.run_hooks(crate::hooks::HookEvent::AgentStart, &agent_start_ctx).await {
+                    tracing::error!("AgentStart hook error: {}", err);
+                }
+            }
 
             self.compact_if_needed(&mut request.messages).await;
 
@@ -1177,10 +1211,44 @@ impl AgentLoop {
             }
 
             processor.reset();
+
+            let agent_end_ctx = crate::hooks::HookContext {
+                event: crate::hooks::HookEvent::AgentEnd,
+                session_id: Some(self.session_id.clone()),
+                tool_name: None,
+                tool_arguments: None,
+                tool_result: None,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+            };
+            if let Some(ref hr) = self.hook_registry {
+                for err in hr.run_hooks(crate::hooks::HookEvent::AgentEnd, &agent_end_ctx).await {
+                    tracing::error!("AgentEnd hook error: {}", err);
+                }
+            }
         }
 
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
             .await;
+
+        let session_end_ctx = crate::hooks::HookContext {
+            event: crate::hooks::HookEvent::SessionEnd,
+            session_id: Some(self.session_id.clone()),
+            tool_name: None,
+            tool_arguments: None,
+            tool_result: None,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+        };
+        if let Some(ref hr) = self.hook_registry {
+            for err in hr.run_hooks(crate::hooks::HookEvent::SessionEnd, &session_end_ctx).await {
+                tracing::error!("SessionEnd hook error: {}", err);
+            }
+        }
 
         Ok(all_events)
     }
@@ -1330,9 +1398,12 @@ impl AgentLoop {
                         .as_secs() as i64,
                 };
                 if let Some(ref hr) = hook_registry {
-                    let _ = hr
+                    for err in hr
                         .run_hooks(crate::hooks::HookEvent::PreToolExecute, &pre_ctx)
-                        .await;
+                        .await
+                    {
+                        tracing::error!("Pre-tool hook error: {}", err);
+                    }
                 }
 
                 let result = {
@@ -1371,9 +1442,12 @@ impl AgentLoop {
                         .as_secs() as i64,
                 };
                 if let Some(ref hr) = hook_registry {
-                    let _ = hr
+                    for err in hr
                         .run_hooks(crate::hooks::HookEvent::PostToolExecute, &post_ctx)
-                        .await;
+                        .await
+                    {
+                        tracing::error!("Post-tool hook error: {}", err);
+                    }
                 }
 
                 drop(permit);
