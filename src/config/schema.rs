@@ -440,6 +440,10 @@ impl Config {
             tracing::warn!(errors = %msg, "config validation warnings");
         }
 
+        crate::config::encryption::decrypt_provider_keys(&mut config).map_err(|e| {
+            crate::error::ConfigError::Invalid(format!("failed to decrypt provider keys: {}", e))
+        })?;
+
         Ok(config)
     }
 
@@ -456,7 +460,12 @@ impl Config {
             })?;
         }
 
-        let content = serde_json::to_string_pretty(self).map_err(|e| {
+        let mut config = self.clone();
+        crate::config::encryption::encrypt_provider_keys(&mut config).map_err(|e| {
+            crate::error::ConfigError::Invalid(format!("failed to encrypt provider keys: {}", e))
+        })?;
+
+        let content = serde_json::to_string_pretty(&config).map_err(|e| {
             crate::error::ConfigError::Parse(format!("Failed to serialize config: {}", e))
         })?;
 
