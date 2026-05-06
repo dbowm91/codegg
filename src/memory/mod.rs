@@ -3,8 +3,10 @@
 //! Session-to-session learning storing and retrieving context across sessions.
 
 use chrono::Utc;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,21 +43,37 @@ impl Memory {
 
 pub struct MemoryStore {
     root: PathBuf,
-    memories: HashMap<String, Memory>,
+    memories: Mutex<HashMap<String, Memory>>,
+    auto_save: Mutex<bool>,
+}
+
+fn is_safe_namespace(namespace: &str) -> bool {
+    if namespace.is_empty() || namespace.contains('/') || namespace.contains('\\') {
+        return false;
+    }
+    if namespace == "." || namespace == ".." {
+        return false;
+    }
+    true
 }
 
 impl MemoryStore {
     pub fn new() -> std::io::Result<Self> {
+        Self::with_auto_save(false)
+    }
+
+    pub fn with_auto_save(auto_save: bool) -> std::io::Result<Self> {
         let root = dirs::config_dir()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no config dir"))?
             .join("codegg")
             .join("memory");
 
-        std::fs::create_dir_all(&root)?;
+        fs::create_dir_all(&root)?;
 
         let mut store = Self {
             root,
-            memories: HashMap::new(),
+            memories: Mutex::new(HashMap::new()),
+            auto_save: Mutex::new(auto_save),
         };
 
         let _ = store.load_all();
@@ -63,11 +81,15 @@ impl MemoryStore {
         Ok(store)
     }
 
+    pub fn set_auto_save(&self, enabled: bool) {
+        *self.auto_save.lock() = enabled;
+    }
+
     fn load_all(&mut self) -> std::io::Result<()> {
         if !self.root.exists() {
             return Ok(());
         }
-        for entry in std::fs::read_dir(&self.root)? {
+        for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
@@ -76,12 +98,17 @@ impl MemoryStore {
                     .and_then(|n| n.to_str())
                     .unwrap_or("user")
                     .to_string();
+
+                if !is_safe_namespace(&namespace) {
+                    continue;
+                }
+
                 let index_path = path.join("MEMORY.md");
                 if index_path.exists() {
-                    let content = std::fs::read_to_string(&index_path)?;
+                    let content = fs::read_to_string(&index_path)?;
                     if !content.is_empty() {
                         let memory = Memory::new(namespace.clone(), content);
-                        self.memories.insert(memory.id.clone(), memory);
+                        self.memories.lock().insert(memory.id.clone(), memory);
                     }
                 }
             }
@@ -89,37 +116,69 @@ impl MemoryStore {
         Ok(())
     }
 
-    pub fn add(&mut self, memory: Memory) -> Option<Memory> {
-        self.memories.insert(memory.id.clone(), memory)
+    pub fn add(&self, memory: Memory) -> Option<Memory> {
+        let result = self.memories.lock().insert(memory.id.clone(), memory);
+        if *self.auto_save.lock() {
+            let _ = self.save();
+        }
+        result
     }
 
-    pub fn get(&self, id: &str) -> Option<&Memory> {
-        self.memories.get(id)
+    pub fn get(&self, id: &str) -> Option<std::sync::MutexGuard<'_, Memory>> {
+        let guard = self.memories.lock();
+        if guard.contains_key(id) {
+            Some(guard)
+        } else {
+            None
+        }
     }
 
-    pub fn list(&self, namespace: &str) -> Vec<&Memory> {
+    pub fn list(&self, namespace: &str) -> Vec<std::sync::MutexGuard<'_, Memory>> {
         self.memories
+            .lock()
             .values()
             .filter(|m| m.namespace == namespace)
-            .collect()
+            .cloned()
+            .collect::<Vec<_>>()
     }
 
-    pub fn search(&self, query: &str) -> Vec<&Memory> {
+    pub fn search(&self, query: &str) -> Vec<std::sync::MutexGuard<'_, Memory>> {
         let query_lower = query.to_lowercase();
         self.memories
+            .lock()
             .values()
             .filter(|m| m.content.to_lowercase().contains(&query_lower))
-            .collect()
+            .cloned()
+            .collect::<Vec<_>>()
     }
 
-    pub fn delete(&mut self, id: &str) -> Option<Memory> {
-        self.memories.remove(id)
+    pub fn delete(&self, id: &str) -> Option<Memory> {
+        let result = self.memories.lock().remove(id);
+        if *self.auto_save.lock() {
+            let _ = self.save();
+        }
+        result
     }
 
     pub fn save(&self) -> std::io::Result<()> {
+        let lock_path = self.root.join(".lock");
+        let lock_file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_path)?;
+        flock_lock(&lock_file)?;
+
+        let result = self.save_unlocked();
+
+        let _ = flock_unlock(&lock_file);
+        result
+    }
+
+    fn save_unlocked(&self) -> std::io::Result<()> {
+        let memories = self.memories.lock().clone();
         let mut by_namespace: HashMap<String, Vec<&Memory>> = HashMap::new();
 
-        for memory in self.memories.values() {
+        for memory in memories.values() {
             by_namespace
                 .entry(memory.namespace.clone())
                 .or_default()
@@ -127,10 +186,16 @@ impl MemoryStore {
         }
 
         for (namespace, memories) in by_namespace.iter() {
+            if !is_safe_namespace(namespace) {
+                continue;
+            }
+
             let namespace_dir = self.root.join(namespace);
-            std::fs::create_dir_all(&namespace_dir)?;
+            fs::create_dir_all(&namespace_dir)?;
 
             let index_path = namespace_dir.join("MEMORY.md");
+            let temp_path = namespace_dir.join("MEMORY.md.tmp");
+
             let mut content = String::new();
 
             for memory in memories {
@@ -144,7 +209,8 @@ impl MemoryStore {
                 ));
             }
 
-            std::fs::write(&index_path, content)?;
+            fs::write(&temp_path, &content)?;
+            fs::rename(&temp_path, &index_path)?;
         }
 
         Ok(())
@@ -153,9 +219,40 @@ impl MemoryStore {
 
 impl Default for MemoryStore {
     fn default() -> Self {
-        Self::new().unwrap_or(Self {
+        Self {
             root: PathBuf::new(),
-            memories: HashMap::new(),
-        })
+            memories: Mutex::new(HashMap::new()),
+            auto_save: Mutex::new(false),
+        }
     }
+}
+
+#[cfg(unix)]
+fn flock_lock(file: &fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn flock_unlock(file: &fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn flock_lock(_file: &fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn flock_unlock(_file: &fs::File) -> std::io::Result<()> {
+    Ok(())
 }

@@ -4,6 +4,7 @@
 //! global config, project config, and environment variables. It also provides
 //! configuration watching for hot-reloading during development.
 
+pub mod encryption;
 pub mod paths;
 pub mod schema;
 pub mod watcher;
