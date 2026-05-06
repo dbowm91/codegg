@@ -282,7 +282,7 @@ impl AgentLoop {
             if let Ok(questions) = parse_question_questions(tc.arguments.clone()) {
                 let questions_json = serde_json::to_string(&questions).unwrap_or_default();
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                QuestionRegistry::register(self.session_id.clone(), tx).await;
+                QuestionRegistry::register(self.session_id.clone(), tx);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::QuestionPending {
                     session_id: self.session_id.clone(),
                     questions: questions_json,
@@ -356,7 +356,7 @@ impl AgentLoop {
 
                 let perm_id = format!("{}-{}", tc.id, tc.name);
                 let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                PermissionRegistry::register(perm_id.clone(), resp_tx).await;
+                PermissionRegistry::register(perm_id.clone(), resp_tx);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
                     session_id: self.session_id.clone(),
                     perm_id: perm_id.clone(),
@@ -368,7 +368,7 @@ impl AgentLoop {
                     Ok(Ok(choice)) => choice,
                     _ => PermissionChoice::DenyOnce,
                 };
-                PermissionRegistry::unregister(&perm_id).await;
+                PermissionRegistry::unregister(&perm_id);
                 let allowed = choice.allowed();
                 if choice.persist() {
                     if allowed {
@@ -1493,7 +1493,7 @@ impl AgentLoop {
                             .collect();
                     }
                 }
-                QuestionRegistry::unregister(&self.session_id).await;
+                QuestionRegistry::unregister(&self.session_id);
             }
         }
 

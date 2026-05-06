@@ -35,7 +35,7 @@ pub async fn submit_question(
         )))
     })?;
 
-    let answered = QuestionRegistry::answer_question(session_id.clone(), answers_json).await;
+    let answered = QuestionRegistry::answer_question(session_id.clone(), answers_json);
 
     if !answered {
         return Err(AppError::Storage(StorageError::NotFound(

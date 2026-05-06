@@ -789,7 +789,7 @@ async fn handle_tui_message(
             };
             let id = id.clone();
             tokio::spawn(async move {
-                let _ = crate::bus::PermissionRegistry::respond(id, perm_choice).await;
+                let _ = crate::bus::PermissionRegistry::respond(id, perm_choice);
             });
         }
         TuiMessage::QuestionResponse { id, answers } => {
@@ -801,7 +801,7 @@ async fn handle_tui_message(
                     Ok(json) => json,
                     Err(_) => return,
                 };
-                let _ = crate::bus::QuestionRegistry::answer_question(id, answers_json).await;
+                let _ = crate::bus::QuestionRegistry::answer_question(id, answers_json);
             });
         }
         TuiMessage::SessionInfo { id, model } => {

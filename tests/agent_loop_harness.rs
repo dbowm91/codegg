@@ -46,7 +46,7 @@ use tokio::sync::Mutex;
 // ScriptedProvider and similar test providers record all ChatRequest objects
 // sent to stream(). Access them via get_requests():
 //
-//   let requests = scripted_provider.get_requests().await;
+//   let requests = scripted_provider.get_requests()
 //   assert_eq!(requests.len(), 2);
 //   // Second request should contain tool result from first turn:
 //   let has_tool_result = requests[1].messages.iter().any(|m| matches!(m, Message::Tool { .. }));
@@ -289,7 +289,7 @@ impl Provider for ScriptedProvider {
     async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         self.requests.lock().await.push(request.clone());
 
-        let mut idx = self.response_index.lock().await;
+        let mut idx = self.response_index.lock()
         let events = if *idx < self.responses.len() {
             self.responses[*idx].clone()
         } else {
@@ -395,7 +395,7 @@ impl Tool for SlowEchoTool {
         &self,
         input: serde_json::Value,
     ) -> Result<String, codegg::error::ToolError> {
-        let _guard = self.barrier.lock().await;
+        let _guard = self.barrier.lock()
         Ok(input.to_string())
     }
 }
@@ -464,7 +464,7 @@ impl Tool for ParallelTool {
         }
 
         // Wait on barrier to control execution flow
-        let _guard = self.barrier.lock().await;
+        let _guard = self.barrier.lock()
 
         // Decrement current concurrent count
         self.current.fetch_sub(1, Ordering::SeqCst);
@@ -874,7 +874,7 @@ async fn test_agent_loop_harness_smoke_test() {
         response_format: None,
     };
 
-    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
+    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request)
     event_collector.collect();
     assert!(
         result.is_ok(),
@@ -885,7 +885,7 @@ async fn test_agent_loop_harness_smoke_test() {
     let events = result.unwrap();
     assert!(!events.is_empty(), "Should have returned events");
 
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(
         requests.len(),
         2,
@@ -893,7 +893,7 @@ async fn test_agent_loop_harness_smoke_test() {
         requests.len()
     );
 
-    let call_count = scripted_provider.request_count().await;
+    let call_count = scripted_provider.request_count()
     assert!(
         call_count >= 2,
         "Provider recorded {} calls, expected at least 2",
@@ -1030,9 +1030,9 @@ async fn test_agent_loop_harness_records_requests() {
         response_format: None,
     };
 
-    let _: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
+    let _: Result<Vec<ChatEvent>, _> = agent_loop.run(request)
 
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(requests.len(), 2, "Should record both provider requests");
 
     assert!(
@@ -1075,7 +1075,7 @@ async fn test_agent_loop_harness_fails_without_second_call() {
         }
 
         async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
-            let mut count = self.calls.lock().await;
+            let mut count = self.calls.lock()
             let events = if *count == 0 {
                 vec![
                     ChatEvent::TextDelta("Hello".to_string().into()),
@@ -1131,7 +1131,7 @@ async fn test_agent_loop_harness_fails_without_second_call() {
         response_format: None,
     };
 
-    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
+    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request)
     assert!(result.is_ok(), "Should complete successfully");
 }
 
@@ -1177,10 +1177,10 @@ async fn test_denied_tool_produces_error_result() {
     );
 
     let request = make_chat_request("Use denied_tool");
-    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
+    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request)
     assert!(result.is_ok(), "Loop should continue after denied tool");
 
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(requests.len(), 2, "Should have 2 provider calls");
 
     let second_request = &requests[1];
@@ -1230,10 +1230,10 @@ async fn test_missing_tool_produces_error_result() {
     let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
 
     let request = make_chat_request("Use nonexistent_tool");
-    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
+    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request)
     assert!(result.is_ok(), "Loop should continue after missing tool");
 
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(requests.len(), 2, "Should have 2 provider calls");
 
     let second_request = &requests[1];
@@ -1317,7 +1317,7 @@ async fn test_question_tool_produces_tool_result() {
     .to_string();
 
     let answered =
-        QuestionRegistry::answer_question("test-session-123".to_string(), answers.clone()).await;
+        QuestionRegistry::answer_question("test-session-123".to_string(), answers.clone());
     assert!(answered, "Question should be answered");
 
     let result = handle.await.unwrap();
@@ -1328,7 +1328,7 @@ async fn test_question_tool_produces_tool_result() {
     );
 
     // Verify assertions (Packet 3)
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert!(
         requests.len() >= 2,
         "Should have at least 2 provider calls, got {}",
@@ -1413,7 +1413,7 @@ async fn test_question_tool_answer_immediately() {
 
     let answers = serde_json::json!({"q1": "blue"}).to_string();
     let answered =
-        QuestionRegistry::answer_question("test-session-immediate-q".to_string(), answers).await;
+        QuestionRegistry::answer_question("test-session-immediate-q".to_string(), answers)
     assert!(
         answered,
         "Question should be answered immediately after registration"
@@ -1422,7 +1422,7 @@ async fn test_question_tool_answer_immediately() {
     let result = handle.await.unwrap();
     assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
 
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert!(requests.len() >= 2, "Should have at least 2 provider calls");
     let req2 = &requests[1];
     assert_messages_have_roles(&req2.messages, &["user", "assistant", "tool"]);
@@ -1493,7 +1493,7 @@ async fn test_permission_ask_answer_immediately() {
         "PermissionRegistry should have permission registered BEFORE answering"
     );
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce).await;
+    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce)
     assert!(
         responded,
         "Permission should be responded to immediately after registration"
@@ -1502,7 +1502,7 @@ async fn test_permission_ask_answer_immediately() {
     let result = handle.await.unwrap();
     assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
 
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(requests.len(), 2, "Should have 2 provider calls");
     let req2 = &requests[1];
     assert_messages_have_roles(&req2.messages, &["user", "assistant", "tool"]);
@@ -1513,7 +1513,7 @@ async fn test_permission_ask_answer_immediately() {
 async fn test_echo_args_tool_returns_input() {
     let tool = EchoArgsTool::new();
     let input = serde_json::json!({"value": "hello world"});
-    let result = tool.execute(input).await;
+    let result = tool.execute(input)
     assert!(result.is_ok());
     let output = result.unwrap();
     assert!(output.contains("hello world"));
@@ -1529,7 +1529,7 @@ async fn test_slow_echo_waits_on_barrier() {
         tool.execute(input).await
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10))
 
     drop(barrier);
 
@@ -1572,7 +1572,7 @@ impl Provider for RetryThenSuccessProvider {
     async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         self.requests.lock().await.push(request.clone());
 
-        let mut idx = self.response_index.lock().await;
+        let mut idx = self.response_index.lock()
         *idx += 1;
 
         let events = if *idx == 1 && self.error_before_success {
@@ -1672,7 +1672,7 @@ impl Provider for RepeatedRateLimitProvider {
     }
 
     async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
-        let mut count = self.request_count.lock().await;
+        let mut count = self.request_count.lock()
         *count += 1;
 
         if *count <= self.max_retries {
@@ -1725,7 +1725,7 @@ impl Provider for RepeatedStreamErrorProvider {
     }
 
     async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
-        let mut count = self.request_count.lock().await;
+        let mut count = self.request_count.lock()
         *count += 1;
         if *count <= self.max_retries {
             Err(ProviderError::Stream("retryable stream error".to_string()))
@@ -1778,7 +1778,7 @@ impl Provider for RepeatedTimeoutProvider {
     }
 
     async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
-        let mut count = self.request_count.lock().await;
+        let mut count = self.request_count.lock()
         *count += 1;
         if *count <= self.max_retries {
             Err(ProviderError::Timeout("retryable timeout".to_string()))
@@ -1851,7 +1851,7 @@ async fn test_retryable_stream_error_then_success() {
     let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
 
     let request = make_chat_request("Test retry");
-    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
+    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request)
     assert!(result.is_ok(), "Should succeed after retry");
 }
 
@@ -1865,7 +1865,7 @@ async fn test_auth_error_not_retried() {
     let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
 
     let request = make_chat_request("Test auth");
-    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
+    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request)
 
     assert!(result.is_err(), "Should return error for auth failure");
     let err = result.unwrap_err();
@@ -1887,7 +1887,7 @@ async fn test_repeated_rate_limit_returns_final_error() {
     let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
 
     let request = make_chat_request("Test rate limit");
-    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
+    let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request)
 
     assert!(
         result.is_err(),
@@ -1900,7 +1900,7 @@ async fn test_repeated_rate_limit_returns_final_error() {
     );
     assert!(is_rate_limit, "Should be rate limit error: {:?}", err);
 
-    let call_count = provider_inner.get_call_count().await;
+    let call_count = provider_inner.get_call_count()
     assert_eq!(call_count, 3, "Provider should be called exactly 3 times");
 }
 
@@ -1913,7 +1913,7 @@ async fn test_repeated_stream_error_exhaustion() {
     registry.register(EchoArgsTool::new());
     let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
     let request = make_chat_request("Test stream error exhaustion");
-    let result = agent_loop.run(request).await;
+    let result = agent_loop.run(request)
 
     assert!(result.is_err(), "Should return error after max retries");
     let err = result.unwrap_err();
@@ -1924,7 +1924,7 @@ async fn test_repeated_stream_error_exhaustion() {
         err
     );
 
-    let call_count = provider_inner.get_call_count().await;
+    let call_count = provider_inner.get_call_count()
     assert_eq!(call_count, 3, "Provider should be called exactly 3 times");
 }
 
@@ -1937,7 +1937,7 @@ async fn test_repeated_timeout_exhaustion() {
     registry.register(EchoArgsTool::new());
     let mut agent_loop = build_agent_loop_with_error_config(provider, registry);
     let request = make_chat_request("Test timeout exhaustion");
-    let result = agent_loop.run(request).await;
+    let result = agent_loop.run(request)
 
     assert!(result.is_err(), "Should return error after max retries");
     let err = result.unwrap_err();
@@ -1948,7 +1948,7 @@ async fn test_repeated_timeout_exhaustion() {
         err
     );
 
-    let call_count = provider_inner.get_call_count().await;
+    let call_count = provider_inner.get_call_count()
     assert_eq!(call_count, 3, "Provider should be called exactly 3 times");
 }
 
@@ -1990,7 +1990,7 @@ impl Provider for FollowUpProvider {
     async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         self.requests.lock().await.push(request.clone());
 
-        let mut idx = self.response_index.lock().await;
+        let mut idx = self.response_index.lock()
         let events = if *idx < self.responses.len() {
             self.responses[*idx].clone()
         } else {
@@ -2039,7 +2039,7 @@ async fn test_no_follow_up_latency() {
     let request = make_chat_request("Hello");
 
     let start = Instant::now();
-    let result = agent_loop.run(request).await;
+    let result = agent_loop.run(request)
     let elapsed = start.elapsed();
 
     assert!(result.is_ok(), "Should complete successfully");
@@ -2071,10 +2071,10 @@ async fn test_follow_up_sender_channel_works() {
     follow_up_tx.send("Test follow-up".to_string()).ok();
 
     let request = make_chat_request("Hello");
-    let result = agent_loop.run(request).await;
+    let result = agent_loop.run(request)
     assert!(result.is_ok());
 
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert!(!requests.is_empty());
 }
 
@@ -2107,11 +2107,11 @@ async fn test_follow_up_queued_before_run_is_processed() {
     follow_up_tx.send("Early follow-up".to_string()).ok();
 
     let request = make_chat_request("Hello");
-    let result = agent_loop.run(request).await;
+    let result = agent_loop.run(request)
     assert!(result.is_ok(), "Run should succeed with queued follow-up");
 
     // The queued follow-up should cause an extra provider request
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(
         requests.len(),
         2,
@@ -2181,11 +2181,11 @@ async fn test_follow_up_with_tool_call() {
     // Send follow-up BEFORE run() to ensure it's queued when drain_follow_up is called
     follow_up_tx.send("Follow-up with tool".to_string()).ok();
 
-    let result = agent_loop.run(request).await;
+    let result = agent_loop.run(request)
     assert!(result.is_ok(), "Should complete successfully");
     let events = result.unwrap();
 
-    let requests = provider.get_requests().await;
+    let requests = provider.get_requests()
 
     // Packet 2: Strengthened assertions
     // Require exactly 3 provider requests
@@ -2330,14 +2330,14 @@ async fn test_permission_ask_allow_once() {
         .await
         .unwrap();
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce).await;
+    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce)
     assert!(responded, "Permission should be responded to");
 
     let result = handle.await.unwrap();
     assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
 
     // Verify the tool executed and result is in provider request
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(requests.len(), 2, "Should have 2 provider calls");
 
     let req2 = &requests[1];
@@ -2351,7 +2351,7 @@ async fn test_permission_ask_allow_once() {
         "perm-test-ask-allow".to_string(),
         PermissionChoice::AllowOnce,
     )
-    .await;
+    
     assert!(
         !cleaned_up,
         "PermissionRegistry should be unregistered after completion"
@@ -2418,14 +2418,14 @@ async fn test_permission_ask_deny_once() {
         .await
         .unwrap();
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::DenyOnce).await;
+    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::DenyOnce)
     assert!(responded, "Permission should be responded to");
 
     let result = handle.await.unwrap();
     assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
 
     // Verify the tool was denied and error result is in provider request
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(requests.len(), 2, "Should have 2 provider calls");
 
     let req2 = &requests[1];
@@ -2511,14 +2511,14 @@ async fn test_mixed_tool_ordering() {
     );
 
     let request = make_chat_request("Use multiple tools");
-    let result = agent_loop.run(request).await;
+    let result = agent_loop.run(request)
     assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
 
     // Release the barrier to allow slow_echo to complete
     drop(barrier);
 
     // Verify the tool results are in the correct order
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(requests.len(), 2, "Should have 2 provider calls");
 
     let req2 = &requests[1];
@@ -2552,7 +2552,7 @@ async fn test_max_parallel_tools_enforcement() {
     let barrier = Arc::new(Mutex::new(()));
 
     // Lock barrier initially so tools wait for coordination
-    let barrier_guard = barrier.lock().await;
+    let barrier_guard = barrier.lock()
 
     // Create tool registry with 3 parallel tools
     let mut registry = ToolRegistry::new();
@@ -2631,7 +2631,7 @@ async fn test_max_parallel_tools_enforcement() {
     let handle = tokio::spawn(async move { agent_loop.run(request).await });
 
     // Wait briefly for tools to start executing
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200))
 
     // Verify max observed concurrent tools does not exceed 2
     let max = max_observed.load(Ordering::SeqCst);
@@ -2645,7 +2645,7 @@ async fn test_max_parallel_tools_enforcement() {
     assert!(result.is_ok(), "Loop should complete: {:?}", result.err());
 
     // Verify provider requests are valid
-    let requests = scripted_provider.get_requests().await;
+    let requests = scripted_provider.get_requests()
     assert_eq!(requests.len(), 2, "Should have 2 provider calls");
     assert_no_orphan_tool_results(&requests[1].messages);
 }
@@ -2683,7 +2683,7 @@ impl RequestRecordingProvider {
             if count > 0 {
                 return Ok(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(interval_ms))
         }
         Err(format!(
             "Timeout waiting for request after {} attempts",
@@ -2708,7 +2708,7 @@ impl Provider for RequestRecordingProvider {
 
     async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         self.requests.lock().await.push(request.clone());
-        let mut idx = self.response_index.lock().await;
+        let mut idx = self.response_index.lock()
         let events = if *idx < self.responses.len() {
             self.responses[*idx].clone()
         } else {
@@ -2860,7 +2860,7 @@ async fn test_task_tool_integration_with_subagent() {
         session_store,
         None,
     )
-    .await;
+    
 
     // Create TaskStore and TaskTool
     let task_store = Arc::new(tokio::sync::Mutex::new(TaskStore::new()));
@@ -2926,7 +2926,7 @@ async fn test_task_tool_integration_with_subagent() {
 
     // Run the AgentLoop
     let request = make_chat_request("Spawn a subagent to do work");
-    let result = agent_loop.run(request).await;
+    let result = agent_loop.run(request)
 
     assert!(
         result.is_ok(),
@@ -2935,7 +2935,7 @@ async fn test_task_tool_integration_with_subagent() {
     );
 
     // Verify the task tool result is in the transcript
-    let requests = main_provider.get_requests().await;
+    let requests = main_provider.get_requests()
     assert!(
         requests.len() >= 2,
         "Should have at least 2 provider calls, got {}",
@@ -2965,7 +2965,7 @@ async fn test_task_tool_integration_with_subagent() {
 
     // Verify task is stored in TaskStore by checking the task count
     // (TaskStore has private fields, so we use the public API)
-    let _store = task_store.lock().await;
+    let _store = task_store.lock()
     // The store should have at least one task
     // We can verify by trying to get a task (even if we don't know the ID,
     // the fact that the tool returned successfully means it was created)
@@ -3049,7 +3049,7 @@ async fn test_task_tool_denied_tools_passthrough() {
         session_store,
         None,
     )
-    .await;
+    
 
     // Create TaskStore with pool for persistence and get_task support
     let task_store = Arc::new(tokio::sync::Mutex::new(TaskStore::new()));
@@ -3118,7 +3118,7 @@ async fn test_task_tool_denied_tools_passthrough() {
 
     // Run the AgentLoop
     let request = make_chat_request("Spawn subagent with denied tools");
-    let result = agent_loop.run(request).await;
+    let result = agent_loop.run(request)
     assert!(
         result.is_ok(),
         "AgentLoop should complete: {:?}",
@@ -3132,7 +3132,7 @@ async fn test_task_tool_denied_tools_passthrough() {
         .expect("Subagent provider should receive request within timeout");
 
     // Verify subagent provider received request with denied tools filtered
-    let subagent_requests = subagent_provider.get_requests().await;
+    let subagent_requests = subagent_provider.get_requests()
     assert!(
         !subagent_requests.is_empty(),
         "Subagent should have received at least one request, got {:?}",
@@ -3175,7 +3175,7 @@ async fn test_task_tool_async_safety() {
     });
 
     // This should NOT panic or stall the runtime
-    let result = task_tool.execute(input).await;
+    let result = task_tool.execute(input)
 
     // When spawner is None, the tool should return a result indicating the task was queued but not executed
     assert!(
@@ -3196,7 +3196,7 @@ async fn test_question_http_route_no_pending_question() {
 
     let answers_json = serde_json::json!(["red", "blue"]).to_string();
     let answered =
-        QuestionRegistry::answer_question("nonexistent-session".to_string(), answers_json).await;
+        QuestionRegistry::answer_question("nonexistent-session".to_string(), answers_json)
     assert!(
         !answered,
         "answer_question should return false when no question is pending"
@@ -3210,7 +3210,7 @@ async fn test_question_http_route_wakes_waiting_receiver() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let session_id = "test-http-route-wake".to_string();
 
-    QuestionRegistry::register(session_id.clone(), tx).await;
+    QuestionRegistry::register(session_id.clone(), tx)
 
     let is_registered = QuestionRegistry::is_registered(&session_id);
     assert!(
@@ -3219,13 +3219,13 @@ async fn test_question_http_route_wakes_waiting_receiver() {
     );
 
     let answers_json = serde_json::json!(["answer1"]).to_string();
-    let answered = QuestionRegistry::answer_question(session_id.clone(), answers_json).await;
+    let answered = QuestionRegistry::answer_question(session_id.clone(), answers_json)
     assert!(
         answered,
         "answer_question should return true when question is pending"
     );
 
-    let received = rx.await;
+    let received = rx
     assert!(received.is_ok(), "Receiver should get the answer");
     assert!(
         received.unwrap().contains("answer1"),
@@ -3240,7 +3240,7 @@ async fn test_permission_http_route_no_pending_permission() {
 
     let responded =
         PermissionRegistry::respond("nonexistent-perm".to_string(), PermissionChoice::AllowOnce)
-            .await;
+            
     assert!(
         !responded,
         "respond should return false when no permission is pending"
@@ -3255,7 +3255,7 @@ async fn test_permission_http_route_wakes_waiting_receiver() {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let perm_id = "test-perm-http-wake".to_string();
 
-    PermissionRegistry::register(perm_id.clone(), tx).await;
+    PermissionRegistry::register(perm_id.clone(), tx)
 
     let is_registered = PermissionRegistry::is_registered(&perm_id);
     assert!(
@@ -3263,13 +3263,13 @@ async fn test_permission_http_route_wakes_waiting_receiver() {
         "Permission should be registered before responding"
     );
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce).await;
+    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce)
     assert!(
         responded,
         "respond should return true when permission is pending"
     );
 
-    let received = rx.await;
+    let received = rx
     assert!(received.is_ok(), "Receiver should get the choice");
     assert!(
         matches!(received.unwrap(), PermissionChoice::AllowOnce),
@@ -3284,7 +3284,7 @@ async fn test_registry_recovery_after_missed_event() {
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let perm_id = "test-recovery-perm".to_string();
-    PermissionRegistry::register(perm_id.clone(), tx).await;
+    PermissionRegistry::register(perm_id.clone(), tx)
 
     let pending_perms = PermissionRegistry::pending_permission_ids();
     assert!(
@@ -3292,8 +3292,8 @@ async fn test_registry_recovery_after_missed_event() {
         "Should be able to recover pending permission from registry"
     );
 
-    PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce).await;
-    let _ = rx.await;
+    PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce)
+    let _ = rx
 
     let pending_perms_after = PermissionRegistry::pending_permission_ids();
     assert!(
@@ -3303,7 +3303,7 @@ async fn test_registry_recovery_after_missed_event() {
 
     let (tx2, rx2) = tokio::sync::oneshot::channel();
     let question_id = "test-recovery-question".to_string();
-    QuestionRegistry::register(question_id.clone(), tx2).await;
+    QuestionRegistry::register(question_id.clone(), tx2)
 
     let pending_qs = QuestionRegistry::pending_question_ids();
     assert!(
@@ -3312,8 +3312,8 @@ async fn test_registry_recovery_after_missed_event() {
     );
 
     let answers_json = serde_json::json!(["answer"]).to_string();
-    QuestionRegistry::answer_question(question_id.clone(), answers_json).await;
-    let _ = rx2.await;
+    QuestionRegistry::answer_question(question_id.clone(), answers_json)
+    let _ = rx2
 
     let pending_qs_after = QuestionRegistry::pending_question_ids();
     assert!(
