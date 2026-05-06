@@ -45,6 +45,27 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `util/` | Utility functions (clipboard, fuzzy search, etc.) |
 | `worktree/` | Git worktree support for project management |
 
+## Critical Implementation Notes (from Review Sessions)
+
+These items were identified during module reviews and are important for future agents to know:
+
+### Verified Correct Items (not bugs)
+- **WebSocket rate limiter**: If `REDIS_URL` is set → use Redis; otherwise → use in-memory. Proper fallback behavior.
+- **`process_request()` is implemented**: It publishes `SubagentStarted`/`SubagentCompleted` events and returns `SubAgentResult::success()`.
+- **`SubAgentPool` bounded concurrency**: Properly uses semaphore with default of 5
+- **Tool definition caching**: Properly versioned cache key
+
+### Implementation Patterns
+- **DoomLoop doc mismatch**: Comment says "consecutive" but implementation uses window-based counting
+- **MCP reconnect exists**: `remote.rs` has `reconnect()` at line 470 - needs to be wired up to auto-retry
+- **TUI render.rs doesn't exist**: Only `mod.rs`, `types.rs`, and `commands.rs` exist in `src/tui/app/`
+- **Component trait**: All dialogs implement `Component` trait with `handle_key`, `update`, `render` methods
+- **Registration-before-publish pattern**: When publishing `PermissionPending` or `QuestionPending`, register the responder BEFORE publishing the event
+
+### Code Quality Issues (Lower Priority)
+- **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
+- **PlanRegistry has send-then-discard bug**: `wait_for_response()` in `src/agent/plan_registry.rs` sends Cancelled then discards the response channel before awaiting
+
 ## Documentation Structure
 
 Agent guidance is **modularized** to reduce context pollution. Each module has its own `AGENTS.override.md` file in `.codegg/docs/<module>/`. The root `AGENTS.md` serves as an index only.

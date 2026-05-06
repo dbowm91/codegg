@@ -22,3 +22,24 @@ This file contains event bus-specific guidance and overrides root AGENTS.md.
 - Registry for pending question requests, keyed by session ID
 - Helpers: `register(session_id, resp_tx)`, `answer_question(session_id, answers_json)`, `pending_question_ids()`, `is_registered(session_id)`
 - Supports session-specific pending state recovery for HTTP/websocket clients that miss events
+
+## Known Issues
+
+### Dead Letter Channels (HIGH)
+**File:** `src/bus/mod.rs:21-89`
+
+When a sender (permission or question response) is dropped without being answered, the entry remains in `DashMap` forever. No TTL-based cleanup mechanism exists. This can cause memory leaks in long-running sessions.
+
+**Current behavior:**
+```rust
+pub async fn respond(perm_id: String, choice: PermissionChoice) -> bool {
+    if let Some((_, tx)) = PERMISSION_REGISTRY.senders.remove(&perm_id) {
+        let _ = tx.send(choice);  // Silent failure if receiver already dropped
+        true
+    } else {
+        false
+    }
+}
+```
+
+**Recommendation:** Add a background cleanup task that removes stale entries based on age, or use a channel-based approach that automatically cleans up on drop.

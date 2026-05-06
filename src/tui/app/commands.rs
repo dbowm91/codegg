@@ -285,36 +285,7 @@ impl App {
         }
 
         true
-    }
-
-    pub fn on_paste(&mut self, text: String) {
-        if self.ui_state.command_mode {
-            self.prompt_state.prompt.paste(text);
-            let query = self.prompt_state.prompt.get_text();
-            self.dialog_state.command_palette.set_query(&query);
-        } else if self.ui_state.dialog.is_open() {
-            match &mut self.ui_state.dialog {
-                super::Dialog::Session => {
-                    self.dialog_state.session_dialog.filter.push_str(&text);
-                }
-                super::Dialog::Connect => {
-                    if let Some(ref mut cd) = self.dialog_state.connect_dialog {
-                        if cd.step
-                            == crate::tui::components::dialogs::connect::ConnectStep::EnterApiKey
-                        {
-                            cd.api_key_input.push_str(&text);
-                            cd.cursor_pos = cd.api_key_input.len();
-                        }
-                    }
-                }
-                _ => {
-                    self.prompt_state.prompt.paste(text);
-                }
-            }
-        } else {
-            self.prompt_state.prompt.paste(text);
-        }
-    }
+}
 
     pub fn on_resize(&mut self) {
         self.ui_state.auto_scroll = true;
