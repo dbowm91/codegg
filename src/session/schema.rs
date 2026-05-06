@@ -58,12 +58,15 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 12 {
         migrate_v12(pool).await?;
     }
+    if current_version < 13 {
+        migrate_v13(pool).await?;
+    }
 
     sqlx::query(
         "INSERT INTO migration_version (id, version) VALUES (1, ?) \
          ON CONFLICT(id) DO UPDATE SET version = excluded.version",
     )
-    .bind(12i64)
+    .bind(13i64)
     .execute(pool)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
@@ -423,6 +426,31 @@ async fn migrate_v11(pool: &SqlitePool) -> Result<(), StorageError> {
 
 async fn migrate_v12(pool: &SqlitePool) -> Result<(), StorageError> {
     sqlx::query("ALTER TABLE session ADD COLUMN time_deleted INTEGER DEFAULT NULL")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v13(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS snapshot (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            label TEXT,
+            data TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS snapshot_session_idx ON snapshot(session_id)")
         .execute(pool)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;

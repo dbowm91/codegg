@@ -810,6 +810,7 @@ async fn handle_tui_message(
             state_guard.model = model;
             state_guard.rate_limit_key = format!("session:{}", id);
         }
+        _ => {}
     }
 }
 

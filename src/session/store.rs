@@ -50,8 +50,8 @@ impl SessionStore {
         Self { pool }
     }
 
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
+    pub fn pool(&self) -> SqlitePool {
+        self.pool.clone()
     }
 
     pub async fn create(&self, input: CreateSession) -> Result<Session, StorageError> {
@@ -1287,6 +1287,12 @@ impl SessionStore {
         let share_id = uuid::Uuid::new_v4().to_string();
         let url = format!("codegg://share/{token}");
 
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
         sqlx::query(
             r#"
             INSERT INTO session_share (session_id, id, secret, url, share_expires_at, time_created, time_updated)
@@ -1306,11 +1312,25 @@ impl SessionStore {
         .bind(share_expires_at)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        self.set_share_url(session_id, &url).await
+        let result = sqlx::query_as::<_, SessionRow>(
+            "UPDATE session SET share_url = ?, time_updated = ? WHERE id = ? RETURNING *",
+        )
+        .bind(&url)
+        .bind(now)
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(result.into())
     }
 
     pub async fn unshare_session(&self, session_id: &str) -> Result<Session, StorageError> {

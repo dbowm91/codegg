@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::error::ToolError;
 
 pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolError> {
+    check_path_for_symlinks(path)?;
     let canonical = canonicalize_path_internal(path)?;
     let root_canonical = allowed_root
         .canonicalize()

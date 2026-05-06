@@ -70,6 +70,7 @@ pub struct SubAgentPool {
     session_store: Arc<SessionStore>,
     cancel_token: CancellationToken,
     active_handles: Arc<TokioMutex<Vec<tokio::task::JoinHandle<()>>>>,
+    pool: Option<SqlitePool>,
 }
 
 impl SubAgentPool {
@@ -94,14 +95,14 @@ impl SubAgentPool {
         let (shutdown_tx, _) = broadcast::channel(1);
         let active_count = Arc::new(AtomicUsize::new(0));
         let task_store = Arc::new(TokioMutex::new(TaskStore::new()));
-        if let Some(p) = pool {
-            task_store.lock().await.set_pool(p);
+        if let Some(ref p) = pool {
+            task_store.lock().await.set_pool(p.clone());
         }
         let workers = Arc::new(TokioMutex::new(Vec::new()));
         let cancel_token = CancellationToken::new();
         let active_handles = Arc::new(TokioMutex::new(Vec::new()));
 
-        let pool = Self {
+        let pool_inst = Self {
             shutdown_tx,
             active_count,
             max_concurrent,
@@ -115,12 +116,13 @@ impl SubAgentPool {
             session_store,
             cancel_token,
             active_handles,
+            pool,
         };
 
-        let pool_clone = pool.clone();
+        let pool_clone = pool_inst.clone();
         pool_clone.start_worker_loop(request_rx);
 
-        pool
+        pool_inst
     }
 
     pub async fn new_with_store(
@@ -147,11 +149,11 @@ impl SubAgentPool {
         let workers = Arc::new(TokioMutex::new(Vec::new()));
         let cancel_token = CancellationToken::new();
         let active_handles = Arc::new(TokioMutex::new(Vec::new()));
-        if let Some(p) = pool {
-            task_store.lock().await.set_pool(p);
+        if let Some(ref p) = pool {
+            task_store.lock().await.set_pool(p.clone());
         }
 
-        let pool = Self {
+        let pool_inst = Self {
             shutdown_tx,
             active_count,
             max_concurrent,
@@ -165,12 +167,13 @@ impl SubAgentPool {
             session_store,
             cancel_token,
             active_handles,
+            pool,
         };
 
-        let pool_clone = pool.clone();
+        let pool_clone = pool_inst.clone();
         pool_clone.start_worker_loop(request_rx);
 
-        pool
+        pool_inst
     }
 
     fn start_worker_loop(&self, mut request_rx: mpsc::Receiver<WorkerRequest>) {
@@ -184,6 +187,7 @@ impl SubAgentPool {
         let session_store = Arc::clone(&self.session_store);
         let workers = Arc::clone(&self.workers);
         let active_handles = Arc::clone(&self.active_handles);
+        let db_pool = self.pool.clone();
 
         let handle = tokio::spawn(async move {
             let sem = Arc::new(Semaphore::new(max_concurrent));
@@ -212,6 +216,7 @@ impl SubAgentPool {
                         let config = Arc::clone(&config);
                         let session_store = Arc::clone(&session_store);
                         let cancel_token = cancel_token.clone();
+                        let db_pool = db_pool.clone();
 
                         let handle = tokio::spawn(async move {
                             // RAII guard for active_count
@@ -254,6 +259,7 @@ impl SubAgentPool {
                                 config,
                                 session_store,
                                 cancel_token,
+                                db_pool,
                             ).await;
 
                             let _ = response_tx.send(result);
@@ -375,6 +381,7 @@ impl Clone for SubAgentPool {
             session_store: Arc::clone(&self.session_store),
             cancel_token: self.cancel_token.clone(),
             active_handles: Arc::clone(&self.active_handles),
+            pool: self.pool.clone(),
         }
     }
 }
@@ -530,6 +537,7 @@ async fn run_subagent_task_with_cancel(
     config: Arc<Config>,
     session_store: Arc<SessionStore>,
     cancel_token: CancellationToken,
+    pool: Option<SqlitePool>,
 ) -> SubAgentResult {
     let task_id = request.task_id;
     let session_id = request.parent_id.clone().unwrap_or_default();
@@ -574,6 +582,7 @@ async fn run_subagent_task_with_cancel(
             provider_registry,
             config,
             session_store,
+            pool,
         ) => {
             match result {
                 Ok(output) => {
@@ -614,6 +623,7 @@ async fn execute_agent_task(
     provider_registry: Arc<ProviderRegistry>,
     config: Arc<Config>,
     _session_store: Arc<SessionStore>,
+    pool: Option<SqlitePool>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let agent_name = &request.agent;
     let agent = agents
@@ -646,6 +656,7 @@ async fn execute_agent_task(
         tool_registry,
         (*config).clone(),
         None,
+        pool,
     );
 
     if let Some(parent_id) = &request.parent_id {

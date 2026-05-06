@@ -28,7 +28,10 @@ impl PermissionRegistry {
 
     pub fn respond(perm_id: String, choice: PermissionChoice) -> bool {
         if let Some((_, (tx, _))) = PERMISSION_REGISTRY.senders.remove(&perm_id) {
-            let _ = tx.send(choice);
+            if let Err(_) = tx.send(choice) {
+                tracing::warn!("failed to send permission response for {}", perm_id);
+                return false;
+            }
             true
         } else {
             false
@@ -88,7 +91,10 @@ impl QuestionRegistry {
 
     pub fn answer_question(question_id: String, answers: String) -> bool {
         if let Some((_, (tx, _))) = QUESTION_REGISTRY.senders.remove(&question_id) {
-            let _ = tx.send(answers);
+            if let Err(_) = tx.send(answers) {
+                tracing::warn!("failed to send question answer for {}", question_id);
+                return false;
+            }
             true
         } else {
             false

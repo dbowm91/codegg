@@ -1,47 +1,48 @@
-use axum::{extract::Request, middleware::Next, response::Response};
+use axum::{extract::{Request, State}, middleware::Next, response::Response};
+use http::StatusCode;
 use subtle::ConstantTimeEq;
 
-use crate::error::{AppError, ProviderError, ServerRuntimeError};
+use crate::server::state::ServerState;
 
-#[allow(dead_code)]
-pub struct AuthMiddleware {
-    expected_token: Option<String>,
-    auth_required: bool,
-}
-
-impl AuthMiddleware {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        let expected_token = std::env::var("CODEGG_SERVER_TOKEN").ok();
-        let auth_required = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_err();
-    let expected = std::env::var("CODEGG_SERVER_TOKEN").ok();
-    let auth_required = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_err();
-
-    if auth_required && expected.is_none() {
-        return Err(AppError::Provider(ProviderError::Auth(
-            "server not configured with auth token".to_string(),
-        )));
+pub async fn auth_middleware(
+    State(state): State<ServerState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let auth_disabled = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_ok();
+    if auth_disabled {
+        return Ok(next.run(request).await);
     }
 
-    if let Some(expected_token) = expected {
-        match token {
-            Some(t) if t.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1 => {
-                Ok(next.run(request).await)
+    let expected_token = std::env::var("CODEGG_SERVER_TOKEN").ok().or_else(|| {
+        state.config.server.as_ref().and_then(|s| s.token.clone())
+    });
+
+    match expected_token {
+        Some(expected) => {
+            let auth_header = request
+                .headers()
+                .get(http::header::AUTHORIZATION)
+                .and_then(|h| h.to_str().ok());
+
+            let token = auth_header.and_then(|h| h.strip_prefix("Bearer "));
+
+            match token {
+                Some(provided) if validate_token(provided, &expected) => {
+                    Ok(next.run(request).await)
+                }
+                _ => Err(StatusCode::UNAUTHORIZED),
             }
-            _ => Err(AppError::Provider(ProviderError::Auth(
-                "invalid or missing token".to_string(),
-            ))),
         }
-    } else {
-        Ok(next.run(request).await)
+        None => {
+            // If no token is configured and auth is not explicitly disabled,
+            // we default to requiring it but it's impossible to provide.
+            // This is a safety measure.
+            Err(StatusCode::UNAUTHORIZED)
+        }
     }
 }
 
-#[allow(dead_code)]
-pub fn validate_token(provided: &str, expected: &str) -> Result<(), ServerRuntimeError> {
-    if provided.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() == 1 {
-        Ok(())
-    } else {
-        Err(ServerRuntimeError::Auth("invalid token".to_string()))
-    }
+pub fn validate_token(provided: &str, expected: &str) -> bool {
+    provided.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() == 1
 }

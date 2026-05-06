@@ -1,5 +1,6 @@
 //! Circuit breaker implementation for provider resilience.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::instrument;
@@ -26,7 +27,7 @@ impl std::fmt::Display for CircuitError {
 
 impl std::error::Error for CircuitError {}
 
-pub struct CircuitBreaker {
+struct CircuitBreakerInner {
     name: String,
     state: TokioRwLock<CircuitState>,
     failure_count: TokioRwLock<usize>,
@@ -37,6 +38,11 @@ pub struct CircuitBreaker {
     success_threshold: usize,
 }
 
+#[derive(Clone)]
+pub struct CircuitBreaker {
+    inner: Arc<CircuitBreakerInner>,
+}
+
 impl CircuitBreaker {
     pub fn new(
         name: impl Into<String>,
@@ -45,54 +51,60 @@ impl CircuitBreaker {
         success_threshold: usize,
     ) -> Self {
         Self {
-            name: name.into(),
-            state: TokioRwLock::new(CircuitState::Closed),
-            failure_count: TokioRwLock::new(0),
-            success_count: TokioRwLock::new(0),
-            last_failure_time: TokioRwLock::new(None),
-            failure_threshold,
-            timeout_secs,
-            success_threshold,
+            inner: Arc::new(CircuitBreakerInner {
+                name: name.into(),
+                state: TokioRwLock::new(CircuitState::Closed),
+                failure_count: TokioRwLock::new(0),
+                success_count: TokioRwLock::new(0),
+                last_failure_time: TokioRwLock::new(None),
+                failure_threshold,
+                timeout_secs,
+                success_threshold,
+            }),
         }
     }
 
     pub fn name(&self) -> &str {
-        &self.name
+        &self.inner.name
     }
 
     pub async fn state(&self) -> CircuitState {
-        *self.state.read().await
+        *self.inner.state.read().await
     }
 
     pub async fn is_available(&self) -> bool {
-        let state = self.state.read().await;
-        if *state == CircuitState::Open {
-            if let Some(last_failure) = *self.last_failure_time.read().await {
-                let timeout = Duration::from_secs(self.timeout_secs);
-                if last_failure.elapsed() >= timeout {
-                    drop(state);
-                    let mut s = self.state.write().await;
-                    *s = CircuitState::HalfOpen;
-                    tracing::info!("circuit breaker {} transitioned to HalfOpen", self.name);
-                    return true;
+        let state = self.inner.state.read().await;
+        match *state {
+            CircuitState::Closed | CircuitState::HalfOpen => true,
+            CircuitState::Open => {
+                if let Some(last_failure) = *self.inner.last_failure_time.read().await {
+                    let timeout = Duration::from_secs(self.inner.timeout_secs);
+                    if last_failure.elapsed() >= timeout {
+                        drop(state);
+                        let mut state = self.inner.state.write().await;
+                        // Double-check state after acquiring write lock
+                        if *state == CircuitState::Open {
+                            *state = CircuitState::HalfOpen;
+                            tracing::info!("circuit breaker {} transitioned to HalfOpen", self.inner.name);
+                        }
+                        return true;
+                    }
                 }
+                false
             }
-            false
-        } else {
-            true
         }
     }
 
-    #[instrument(skip(self, op), fields(breaker_name = %self.name))]
+    #[instrument(skip(self, op), fields(breaker_name = %self.inner.name))]
     pub async fn call<F, R, E>(&self, op: F) -> Result<R, E>
     where
         F: core::future::Future<Output = Result<R, E>>,
         E: From<CircuitError>,
     {
         if !self.is_available().await {
-            let state = *self.state.read().await;
+            let state = *self.inner.state.read().await;
             if state == CircuitState::Open {
-                return Err(CircuitError::Open(self.name.clone()).into());
+                return Err(CircuitError::Open(self.inner.name.clone()).into());
             }
         }
 
@@ -107,19 +119,19 @@ impl CircuitBreaker {
     }
 
     pub async fn record_success(&self) {
-        let mut state = self.state.write().await;
+        let mut state = self.inner.state.write().await;
         match *state {
             CircuitState::Closed => {
-                *self.failure_count.write().await = 0;
+                *self.inner.failure_count.write().await = 0;
             }
             CircuitState::HalfOpen => {
-                let mut count = self.success_count.write().await;
+                let mut count = self.inner.success_count.write().await;
                 *count += 1;
-                if *count >= self.success_threshold {
+                if *count >= self.inner.success_threshold {
                     *state = CircuitState::Closed;
-                    *self.failure_count.write().await = 0;
-                    *self.success_count.write().await = 0;
-                    tracing::info!("circuit breaker {} transitioned to Closed", self.name);
+                    *self.inner.failure_count.write().await = 0;
+                    *self.inner.success_count.write().await = 0;
+                    tracing::info!("circuit breaker {} transitioned to Closed", self.inner.name);
                 }
             }
             CircuitState::Open => {}
@@ -127,45 +139,30 @@ impl CircuitBreaker {
     }
 
     pub async fn record_failure(&self) {
-        let mut state = self.state.write().await;
-        *self.last_failure_time.write().await = Some(Instant::now());
+        let mut state = self.inner.state.write().await;
+        *self.inner.last_failure_time.write().await = Some(Instant::now());
         match *state {
             CircuitState::Closed => {
-                let mut count = self.failure_count.write().await;
+                let mut count = self.inner.failure_count.write().await;
                 *count += 1;
-                if *count >= self.failure_threshold {
+                if *count >= self.inner.failure_threshold {
                     *state = CircuitState::Open;
                     tracing::warn!(
                         "circuit breaker {} transitioned to Open after {} failures",
-                        self.name,
-                        self.failure_threshold
+                        self.inner.name,
+                        self.inner.failure_threshold
                     );
                 }
             }
             CircuitState::HalfOpen => {
                 *state = CircuitState::Open;
-                *self.success_count.write().await = 0;
+                *self.inner.success_count.write().await = 0;
                 tracing::warn!(
                     "circuit breaker {} transitioned to Open after HalfOpen failure",
-                    self.name
+                    self.inner.name
                 );
             }
             CircuitState::Open => {}
-        }
-    }
-}
-
-impl Clone for CircuitBreaker {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            state: TokioRwLock::new(*self.state.blocking_read()),
-            failure_count: TokioRwLock::new(*self.failure_count.blocking_read()),
-            success_count: TokioRwLock::new(*self.success_count.blocking_read()),
-            last_failure_time: TokioRwLock::new(*self.last_failure_time.blocking_read()),
-            failure_threshold: self.failure_threshold,
-            timeout_secs: self.timeout_secs,
-            success_threshold: self.success_threshold,
         }
     }
 }

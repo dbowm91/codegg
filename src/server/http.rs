@@ -212,6 +212,7 @@ pub async fn run_server(host: &str, port: u16) -> Result<(), crate::error::Serve
         pool,
         mcp_service: Arc::new(RwLock::new(mcp_service)),
         event_bus: routes::GlobalEventBus::new(),
+        config: config.unwrap_or_default(),
     };
 
     let cors = build_cors(&server_config);

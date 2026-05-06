@@ -101,6 +101,7 @@ pub enum HookConfig {
 pub struct ServerConfig {
     pub port: Option<u16>,
     pub hostname: Option<String>,
+    pub token: Option<String>,
     pub mdns: Option<bool>,
     pub mdns_domain: Option<String>,
     pub cors: Option<Vec<String>>,

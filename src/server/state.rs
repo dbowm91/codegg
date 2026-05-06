@@ -3,6 +3,7 @@ use sqlx::SqlitePool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::config::schema::Config;
 use crate::mcp::McpService;
 use crate::server::routes::GlobalEventBus;
 
@@ -12,6 +13,7 @@ pub struct ServerState {
     pub pool: SqlitePool,
     pub mcp_service: Arc<RwLock<McpService>>,
     pub event_bus: GlobalEventBus,
+    pub config: Config,
 }
 
 impl FromRef<ServerState> for SqlitePool {
@@ -29,5 +31,11 @@ impl FromRef<ServerState> for Arc<RwLock<McpService>> {
 impl FromRef<ServerState> for GlobalEventBus {
     fn from_ref(state: &ServerState) -> GlobalEventBus {
         state.event_bus.clone()
+    }
+}
+
+impl FromRef<ServerState> for Config {
+    fn from_ref(state: &ServerState) -> Config {
+        state.config.clone()
     }
 }

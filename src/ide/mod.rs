@@ -47,23 +47,34 @@ pub fn open_diff(
 }
 
 fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<(), String> {
-    use std::fs;
+    use std::io::Write;
     use std::process::Command;
+    use tempfile::Builder;
 
-    let temp_dir = std::env::temp_dir();
-    let original_temp = temp_dir.join("codegg_original");
-    let modified_temp = temp_dir.join("codegg_modified");
+    let mut original_temp = Builder::new()
+        .prefix("codegg_original_")
+        .tempfile()
+        .map_err(|e| format!("failed to create temp original: {}", e))?;
+    let mut modified_temp = Builder::new()
+        .prefix("codegg_modified_")
+        .tempfile()
+        .map_err(|e| format!("failed to create temp modified: {}", e))?;
 
-    fs::write(&original_temp, original_content)
+    original_temp
+        .write_all(original_content.as_bytes())
         .map_err(|e| format!("failed to write temp original: {}", e))?;
-    fs::write(&modified_temp, modified_content)
+    modified_temp
+        .write_all(modified_content.as_bytes())
         .map_err(|e| format!("failed to write temp modified: {}", e))?;
+
+    let original_path = original_temp.path().to_owned();
+    let modified_path = modified_temp.path().to_owned();
 
     let output = Command::new("code")
         .args([
             "--diff",
-            original_temp.to_str().unwrap(),
-            modified_temp.to_str().unwrap(),
+            original_path.to_str().unwrap(),
+            modified_path.to_str().unwrap(),
         ])
         .output()
         .map_err(|e| format!("failed to open vscode: {}", e))?;

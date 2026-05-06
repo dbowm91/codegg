@@ -127,6 +127,7 @@ impl ExecMode {
             tool_registry,
             config,
             mcp_service,
+            None,
         );
 
         let session_id = uuid::Uuid::new_v4().to_string();

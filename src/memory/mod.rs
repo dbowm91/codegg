@@ -59,7 +59,7 @@ fn is_safe_namespace(namespace: &str) -> bool {
 
 impl MemoryStore {
     pub fn new() -> std::io::Result<Self> {
-        Self::with_auto_save(false)
+        Self::with_auto_save(true)
     }
 
     pub fn with_auto_save(auto_save: bool) -> std::io::Result<Self> {
@@ -124,16 +124,11 @@ impl MemoryStore {
         result
     }
 
-    pub fn get(&self, id: &str) -> Option<std::sync::MutexGuard<'_, Memory>> {
-        let guard = self.memories.lock();
-        if guard.contains_key(id) {
-            Some(guard)
-        } else {
-            None
-        }
+    pub fn get(&self, id: &str) -> Option<Memory> {
+        self.memories.lock().get(id).cloned()
     }
 
-    pub fn list(&self, namespace: &str) -> Vec<std::sync::MutexGuard<'_, Memory>> {
+    pub fn list(&self, namespace: &str) -> Vec<Memory> {
         self.memories
             .lock()
             .values()
@@ -142,7 +137,7 @@ impl MemoryStore {
             .collect::<Vec<_>>()
     }
 
-    pub fn search(&self, query: &str) -> Vec<std::sync::MutexGuard<'_, Memory>> {
+    pub fn search(&self, query: &str) -> Vec<Memory> {
         let query_lower = query.to_lowercase();
         self.memories
             .lock()
@@ -230,6 +225,7 @@ impl Default for MemoryStore {
 #[cfg(unix)]
 fn flock_lock(file: &fs::File) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
+    #[allow(unsafe_code)]
     let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if ret != 0 {
         return Err(std::io::Error::last_os_error());
@@ -240,6 +236,7 @@ fn flock_lock(file: &fs::File) -> std::io::Result<()> {
 #[cfg(unix)]
 fn flock_unlock(file: &fs::File) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
+    #[allow(unsafe_code)]
     let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
     if ret != 0 {
         return Err(std::io::Error::last_os_error());

@@ -461,6 +461,7 @@ impl AgentLoop {
         tool_registry: ToolRegistry,
         config: Config,
         mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
+        pool: Option<sqlx::SqlitePool>,
     ) -> Self {
         let mut map = HashMap::new();
         let mut default_name = "build".to_string();
@@ -492,8 +493,12 @@ impl AgentLoop {
         let model_router = ModelRouter::from_config(&config);
 
         let snapshot_manager = if config.snapshot.unwrap_or(false) {
-            let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            Some(crate::snapshot::SnapshotManager::new(project_root))
+            if let Some(pool) = pool {
+                let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                Some(crate::snapshot::SnapshotManager::new(pool, project_root))
+            } else {
+                None
+            }
         } else {
             None
         };

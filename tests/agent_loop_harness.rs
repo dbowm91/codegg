@@ -570,6 +570,7 @@ fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistr
         tool_registry,
         config,
         None,
+        None,
     )
 }
 
@@ -603,6 +604,7 @@ fn build_test_agent_loop_with_permissions(
         tool_registry,
         config,
         None,
+        None,
     )
 }
 
@@ -635,6 +637,7 @@ fn build_test_agent_loop_with_config(
         permission_checker,
         tool_registry,
         config,
+        None,
         None,
     )
 }
@@ -1838,6 +1841,7 @@ fn build_agent_loop_with_error_config(
         tool_registry,
         config,
         None,
+        None,
     )
 }
 
@@ -2920,6 +2924,7 @@ async fn test_task_tool_integration_with_subagent() {
         tool_registry,
         config,
         None,
+        None,
     );
 
     agent_loop.set_session_id("test-session-123");
@@ -3112,6 +3117,7 @@ async fn test_task_tool_denied_tools_passthrough() {
         permission_checker,
         tool_registry,
         config,
+        None,
         None,
     );
     agent_loop.set_session_id("test-session-denied");

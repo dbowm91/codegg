@@ -1046,6 +1046,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                 let agents = app.agent_state.agents.clone();
                 let current_agent_idx = app.agent_state.current_agent;
                 let config = config.clone();
+                let pool = app.session_store.as_ref().map(|s| s.pool());
 
                 async move {
                     use crate::agent::prompt::load_agent_prompt;
@@ -1082,6 +1083,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             tool_registry,
                             config.clone(),
                             None,
+                            pool,
                         );
                         agent_loop.set_session_id(&session_id);
 

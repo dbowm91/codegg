@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_with_base_url() {
-        let provider = OpencodeZenProvider::new("test-key".to_string())
+        let provider = CodeggZenProvider::new("test-key".to_string())
             .with_base_url("https://custom.api.com/v1".to_string());
         assert_eq!(provider.base_url, "https://custom.api.com/v1");
     }

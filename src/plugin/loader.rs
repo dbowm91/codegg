@@ -157,7 +157,7 @@ mod module_cache {
                 .ok()?
                 .modified()
                 .ok()?
-                .elapsed()
+                .duration_since(std::time::UNIX_EPOCH)
                 .ok()?
                 .as_secs();
 
