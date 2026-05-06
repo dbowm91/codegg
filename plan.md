@@ -1,7 +1,7 @@
 # Implementation Plan
 
-**Status**: PLANNED
-**Last Updated**: 2026-04-29
+**Status**: IN PROGRESS
+**Last Updated**: 2026-05-06
 
 ---
 
@@ -56,10 +56,25 @@
 - `/fork` command fully wired to `TuiCommand::ForkSession`.
 - `/rename` command redirects to session dialog for rename.
 
-### Async Command Handling
-- `/tasks` and `/task-del` use `TuiCommand` pattern.
-- `ListTasks`, `DeleteTask`, `CompactSession` commands in TuiCommand enum.
-- `UnshareSession`, `ExportSession`, `RenameSession` commands added to TuiCommand enum.
+### TUI Input Reliability (Completed 2026-05-01)
+- Shift-modified printable characters insert correctly.
+- Paste updates completion state, dialog paste isolation.
+- Tests pass: `cargo test tui::input` ✅, `cargo test tui` (139 tests ✅)
+
+### TUI Scrolling Fix (Completed 2026-05-06)
+- Fixed `set_visible_height` not being called.
+- Added `total_rendered_lines()` helper for line-based scrolling.
+- Fixed `is_at_bottom()` for `usize::MAX` sentinel.
+- Navigate/scroll key separation (arrows=j/k history, PageUp/Down/Ctrl+u/d/G=scroll).
+- Added `scroll_to_top()`/`scroll_to_bottom()`.
+- Tests pass: `cargo test messages` (17 tests), `cargo test tui` (8 layout tests)
+
+### TUI Message Flow (Completed 2026-05-05)
+- Thinking tag parsing (`<thinking>...</thinking>` → collapsible section).
+- Removed "You"/"Assistant" labels, replaced with color-coded vertical bars.
+- Mode-based color coding (yellow=Plan, blue=Build).
+- Git permission explicit type (`"git"` added to `PERMISSION_TYPES`).
+- Commit `0add872`: TUI message flow cleanup.
 
 ---
 
@@ -69,10 +84,10 @@ The implementation is organized into **5 waves** to maximize parallel work:
 
 | Wave | Focus | Items | Parallel Potential |
 |------|-------|-------|-------------------|
-| 0 | Quick Wins | 7 items | All independent |
-| 1 | Critical Security | 3 items | 2 of 3 independent |
-| 2 | High-Priority Infrastructure | 4 items | All independent |
-| 3 | Medium-Priority Groups | 6 groups | Groups independent, items within sequential |
+| 0 | Quick Wins | ~15 items | All independent |
+| 1 | Critical Security | ~10 items | 3 groups, items within group sequential |
+| 2 | High-Priority Infrastructure | ~12 items | Groups independent |
+| 3 | Medium-Priority Groups | ~25 items | Groups independent |
 | 4 | Large Refactors | 2 items | Sequential (large effort) |
 
 ---
@@ -81,17 +96,46 @@ The implementation is organized into **5 waves** to maximize parallel work:
 
 These items are small, independent, and can be done in parallel by multiple agents.
 
-### QW-1: Delete Dead Code (5 min)
+### QW-1: Delete Dead Code in TUI (5 min)
 - **File**: `src/tui/app/render.rs` (953 lines)
-- **Action**: Delete if not imported anywhere
-- **Verification**: `cargo build` succeeds
+- **Action**: File does not exist. Only `mod.rs`, `types.rs`, and `commands.rs` exist in `src/tui/app/`. No action needed - REMOVE THIS ITEM.
 
-### QW-2: Fix Redis Fallback Logic (15 min)
-- **File**: `src/server/ws.rs:168-174`
-- **Issue**: Redis backend logic is inverted (falls back when Redis URL is found)
-- **Fix**: Invert the condition
+### QW-2: Verify Redis Fallback Logic (15 min)
+- **File**: `src/server/ws.rs:168-178`
+- **Status**: VERIFIED CORRECT - if `REDIS_URL` is set → use Redis; otherwise → use in-memory. This is proper fallback behavior, not inverted.
+- **Action**: REMOVE THIS ITEM - no fix needed.
 
-### QW-3: Add Config Watcher Debounce (1 hr)
+### QW-3: Delete Duplicate handle_slash_command (30 min)
+- **Files**: `src/tui/app/commands.rs:62-288` and `323-536`
+- **Action**: Remove duplicate `handle_slash_command`, `on_paste()`, `on_resize()`
+- **Fix**: Keep one implementation, remove the duplicate
+
+### QW-4: Remove or Implement execute_command (15 min)
+- **File**: `src/tui/app/commands.rs:538-727`
+- **Issue**: `execute_command` appears unused - dead code
+- **Action**: Either implement it properly or remove it
+
+### QW-5: Fix Early Return Bug (15 min)
+- **File**: `src/tui/app/commands.rs:612-623`
+- **Issue**: Early return bypasses intended return value
+- **Action**: Fix the return statement logic
+
+### QW-6: Add DeniedTools Audit Log (30 min)
+- **File**: `src/tool/mod.rs` or wherever `filter_out()` is called
+- **Action**: Add `tracing::info!` when tools are filtered
+- **Reference**: Keep existing `denied_tools` enforcement
+
+### QW-7: Standardize DB Pool Size (5 min)
+- **Files**: `storage/mod.rs`, `session/store.rs`
+- **Issue**: `init()` uses 10, `Database::new()` uses 5
+- **Fix**: Standardize to single value (recommend 10)
+
+### QW-8: Make DoomLoop Threshold Configurable (30 min)
+- **Files**: `config/schema.rs`, `permission/mod.rs`
+- **Action**: Add `doomloop_threshold` to config schema
+- **Reference**: `DoomLoopDetector` at `permission/mod.rs:1162-1231`
+
+### QW-9: Add Config Watcher Debounce (1 hr)
 - **Files**: `config/schema.rs`, `config/watcher.rs`
 - **Action**:
   - Add `debounce_duration_ms` config (default 500ms)
@@ -99,57 +143,117 @@ These items are small, independent, and can be done in parallel by multiple agen
   - Add content hash before reload
   - Validate config before applying
 
-### QW-4: Add DeniedTools Audit Log (30 min)
-- **File**: `src/tool/mod.rs` or wherever `filter_out()` is called
-- **Action**: Add `tracing::info!` when tools are filtered
+### QW-10: Fix Upgrade Duplicate Logic (30 min)
+- **Files**: `main.rs:549-590`, `upgrade/mod.rs`
+- **Action**: Refactor `cmd_upgrade()` to use module instead of duplicating logic
 
-### QW-5: Standardize DB Pool Size (5 min)
-- **Files**: `storage/mod.rs`, `session/store.rs`
-- **Issue**: `init()` uses 10, `Database::new()` uses 5
-- **Fix**: Standardize to single value
+### QW-11: Add Request Timeout to Upgrade (15 min)
+- **File**: `upgrade/mod.rs:72-78`
+- **Action**: Add `-m 300` (5 min timeout) to curl command
 
-### QW-6: Make DoomLoop Threshold Configurable (30 min)
-- **File**: `config/schema.rs`, `permission/mod.rs`
-- **Action**: Add `doomloop_threshold` to config schema
-
-### QW-7: Add Content Hash Before Reload (1 hr)
+### QW-12: Add Content Hash Before Reload (1 hr)
 - **File**: `config/watcher.rs`
 - **Action**: Hash content before triggering reload to avoid unnecessary reloads
 
+### QW-13: DoomLoop O(n) to O(1) Fix (1 hr)
+- **File**: `src/permission/mod.rs:1162-1231`
+- **Action**: Replace `VecDeque` iteration with `HashMap<String, usize>` for count tracking
+- **Impact**: Changes O(n) to O(1) for doomloop detection
+
+### QW-14: Rename/Mark PTY Module (15 min)
+- **Files**: `src/pty/`, `docs/ARCHITECTURE.md`
+- **Issue**: Module misleadingly named - no actual PTY functionality
+- **Action**: Update documentation to clarify actual functionality, or rename
+
+### QW-15: Fix Worktree is_current/is_detached (30 min)
+- **Files**: `src/worktree/mod.rs:36-56`
+- **Action**:
+  - Parse HEAD line to detect current worktree
+  - Set `is_detached=true` when HEAD points to commit (not branch)
+
 ---
 
-## Wave 1: Critical Security (Week 1)
+## Wave 1: Critical Security & Data Integrity (Week 1)
 
-### CRIT-1: Unsafe Code in mdns.rs (CRITICAL)
-- **Files**: `src/server/mdns.rs:111-135`, `Cargo.toml`
-- **Reference**: `#![deny(unsafe_code)]` in `src/lib.rs:1`
-- **Action**:
-  1. Add `socket2` crate to Cargo.toml
-  2. Refactor `create_socket()` to use socket2 instead of raw unsafe
-  3. Verify build and clippy pass
-  4. Run mdns tests if any
+Items in this wave address critical bugs that could cause data loss, security vulnerabilities, or crashes.
 
-### CRIT-2: API Key Encryption - Config Integration
-- **Status**: ⚠️ PARTIALLY FIXED - `src/crypto/mod.rs` exists but not integrated with config
-- **Files**: `config/schema.rs`, `config/mod.rs`, `config/load.rs`, `main.rs`
-- **Action**:
-  1. Add `encrypted_api_key: String` field to `ProviderConfig` schema
-  2. Add `encrypted: bool` field to `ProviderConfig`
-  3. Create `config/encryption.rs` with `decrypt_provider_keys()` helper
-  4. Wire decryption into config loading flow
-  5. Wire encryption into config saving flow
-  6. Add `CODEGG_MASTER_KEY` env var support
-  7. Add master key prompt on startup if not configured
-  8. Add integration tests
+### CRIT-1: Tool Module Security Fixes
+| Item | Location | Action |
+|------|----------|--------|
+| 1.1 | `tool/util.rs:26-28`, `tool/read.rs:99` | Use `check_path_for_symlinks()` before canonicalization to fix symlink bypass |
+| 1.2 | `tool/write.rs:80-115` | Re-validate final path after creation (TOCTOU fix) |
+| 1.3 | `tool/replace.rs:114-120` | Always validate `allowed_root` unless `unrestricted=true` |
+| 1.4 | `tool/diff.rs` | Add `unrestricted` field to `DiffTool` like other tools |
+| 1.5 | `tool/terminal.rs` | Add `HashSet<String>` for blocked commands (like `bash.rs:86-120`) |
+| 1.6 | `tool/bash.rs` | Check entire command string for allowlist bypass, not just first word |
 
-### CRIT-3: SSRF Implementation Duplication
-- **Files**: `src/security/ssrf.rs` (canonical), `src/tool/webfetch.rs:21-138` (duplicate), `src/mcp/remote.rs:45-95` (duplicate)
+**Dependencies**: None - all independent
+
+### CRIT-2: Server Module Auth Middleware (CRITICAL)
+- **Files**: `src/server/middleware/auth.rs` (broken), `src/server/http.rs`, `src/server/ws.rs`
+- **Issues**:
+  - Auth middleware completely broken - wrong signature, undefined variables
+  - WebSocket auth returns 500 instead of 401/503
+  - Rate limiter cleanup race condition
+  - CORS config inconsistent (`cors` field unused, `cors_origins` used)
 - **Action**:
-  1. Audit all three implementations for differences
-  2. Move `validate_url_host()` from `mcp/remote.rs` to `security/ssrf.rs`
-  3. Replace `webfetch.rs` copy with re-export from `ssrf.rs`
-  4. Update MCP to use centralized SSRF module
-  5. Add SSRF tests to verify no regression
+  1. Rewrite `AuthMiddleware` as proper Axum middleware
+  2. Fix 500 → 401/503 in WebSocket auth
+  3. Add WebSocket message timeouts
+  4. Remove or use unused `cors` config field
+  5. Fix rate limiter cleanup to prevent unbounded growth
+
+### CRIT-3: Session Module Data Integrity
+- **Files**: `src/session/store.rs`
+- **Issues**:
+  - Race condition in `share_session` - UPSERT + set_share_url not atomic (line ~1290-1313)
+  - SQL construction pattern in `revert_to_message` - fragile dynamic SQL (line ~1114-1119)
+  - Missing error handling in `unrevert_session` transaction (line ~1412-1450)
+  - `CheckpointStore::save()` lacks transaction
+- **Action**:
+  1. Wrap `share_session` in transaction
+  2. Add transaction to `CheckpointStore::save`
+  3. Fix `revert_to_message` SQL construction
+  4. Add proper error handling in `unrevert_session`
+
+### CRIT-4: Storage/Database Race Conditions
+- **Files**: `src/storage/mod.rs:87-96`
+- **Issues**:
+  - Race condition in database creation - `std::fs::File::create` vs SQLite
+  - Inconsistent blocking I/O in async context
+  - Hardcoded connection pool limit (10)
+  - No WAL checkpoint configuration
+- **Action**:
+  1. Remove `std::fs::File::create` check - let SQLite handle creation atomically
+  2. Replace with `tokio::fs::File::create()`
+  3. Make `max_connections` configurable
+
+### CRIT-5: Memory Module Persistence
+- **Files**: `src/memory/mod.rs`
+- **Issues**:
+  - Race condition in `save()` - non-atomic file ops (line 119-151)
+  - `add()`/`delete()` don't persist - silent data loss (line 92-117)
+  - No file locking - multi-process corruption risk
+  - Namespace path traversal vulnerability (line 74-78)
+- **Action**:
+  1. Fix non-atomic save with temp file pattern (write to temp, rename)
+  2. Add auto-save option for add/delete
+  3. Add file locking for concurrent access
+  4. Add namespace path traversal validation
+
+### CRIT-6: Snapshot Module Persistence
+- **Files**: `src/snapshot/mod.rs`, `src/snapshot/diff.rs`
+- **Issues**:
+  - **No persistence** - snapshots lost on restart, in-memory `Vec` only
+  - `collect_files()` race condition - no depth limit, stack overflow risk
+  - MD5 hash for integrity - cryptographically weak
+  - **No restore functionality** - one-way capture only
+  - `diff_files()` creates single massive hunk for large files
+- **Action**:
+  1. Implement SQLite persistence for snapshots
+  2. Add depth limit to recursive file collection
+  3. Implement `restore(snapshot_id)` functionality
+  4. Upgrade MD5 to SHA-256 or BLAKE3
 
 ---
 
@@ -165,29 +269,79 @@ These items are small, independent, and can be done in parallel by multiple agen
   4. Add ping/pong heartbeat mechanism
   5. Wire auto-reconnection into `McpService::connect()`
   6. Add connection health tracking and status updates
-  7. Add MCP reconnection tests
 
-### HIGH-2: WebSocket Rate Limiter - Per-Session
-- **Files**: `src/server/ws.rs`
+### HIGH-2: MCP Critical Fixes
+| Item | Location | Action |
+|------|----------|--------|
+| 2.1 | `mcp/local.rs:414-460` | Fix `LocalClient::read_loop` race condition on drop |
+| 2.2 | `mcp/ide_server.rs:79-113` | Replace blocking I/O in `IdeServer::run_stdio` with async |
+| 2.3 | `mcp/remote.rs:608-653` | Add timeout on SSE buffer to prevent memory exhaustion |
+| 2.4 | `mcp/remote.rs:179-193` | Fix or remove `McpConnectionManager::clone` (unsound) |
+| 2.5 | `mcp/auth.rs:318-332` | Fix OAuth replay protection race |
+
+### HIGH-3: Resilience Module Fixes
+- **Files**: `src/resilience/circuit.rs`
+- **Issues**:
+  - TOCTOU race in `is_available()` (line 67-84)
+  - Clone creates inconsistent snapshot (line 158-171)
+  - `success_count` not reset on HalfOpen
+  - Missing `Send + Sync` bounds
 - **Action**:
-  1. Fix Redis fallback logic (QW-2 should cover this)
-  2. Add per-session rate limiter
-  3. Add rate limit tests for both backends
+  1. Use atomic compare-and-swap in `is_available()`
+  2. Implement transaction-like snapshot or atomic snapshot
+  3. Reset `success_count` when transitioning to HalfOpen
+  4. Add `static_assertions::assert_impl_all!(CircuitBreaker: Send, Sync)`
 
-### HIGH-3: block_on in Subagent Pool
-- **Files**: `agent/worker.rs:95, 146`
+### HIGH-4: Config Module Race Conditions
+- **Files**: `config/watcher.rs`, `config/schema.rs`, `config/paths.rs`
+- **Issues**:
+  - Race Condition in ConfigWatcher - closure captures `tx`, stored in `self.watcher` (line 55-76)
+  - Missing Error on Config Watch Failure - `start()` fails silently
+  - Hash Collision in Config Change Detection - `DefaultHasher` vulnerable to HashDOS
+  - Env Var Interpolation Silent Failure - missing env vars replaced with empty strings
+  - JSONC Comment Stripping Bug - `//` inside string values incorrectly stripped
+  - Config Migration is a No-Op - `migrate_from_v0()` only logs
 - **Action**:
-  1. Identify all `block_on` calls
-  2. Refactor to use `tokio::spawn`
-  3. Verify subagent tests pass
+  1. Fix ConfigWatcher race condition (use `Arc<Mutex<...>>`)
+  2. Add error propagation in `recv()` for watch failures
+  3. Use a DoS-resistant hasher for config changes
+  4. Add warning for missing env vars
+  5. Fix JSONC stripping to not affect URLs
+  6. Implement actual migration logic
 
-### HIGH-4: Config Watcher Improvements
-- **Files**: `config/watcher.rs`, `config/schema.rs`
-- **Action**: (QW-3 and QW-7 combined)
-  1. Add debounce duration config (default 500ms)
-  2. Implement debounce using `tokio::time::sleep`
-  3. Add content hash before reload
-  4. Validate config before applying
+### HIGH-5: Hooks Module - Emit Events
+- **Files**: `src/hooks/mod.rs`, `src/agent/loop.rs`
+- **Issues**:
+  - Unused hook events (`SessionStart`, `SessionEnd`, `AgentStart`, `AgentEnd`) never triggered
+  - Silent error swallowing - failures not logged (line 1326-1329, 1366-1370)
+  - `InlineScript` placeholder always fails
+  - No hook failure isolation - one failure stops subsequent hooks
+- **Action**:
+  1. Emit `SessionStart`/`SessionEnd` in `AgentLoop::run()`
+  2. Replace silent error swallowing with proper logging/tracing
+  3. Modify `run_hooks()` to execute all hooks and collect errors
+  4. Implement `InlineScript` or remove the variant
+
+### HIGH-6: Bus Module Memory Leak
+- **Files**: `src/bus/mod.rs`, `src/bus/global.rs`
+- **Issues**:
+  - Dead letter channels - memory leak if sender dropped without response (line 21-36, 70-85)
+  - Silent send failure when broadcast buffer (2048) is full
+  - Synchronous file I/O on every `publish()` call
+  - Unnecessary `async` on sync methods
+- **Action**:
+  1. Add TTL cleanup or use channel with drop notification
+  2. Log errors on broadcast failures or implement backpressure
+  3. Remove debug logging or make it async
+  4. Remove `async` from synchronous methods
+
+### HIGH-7: SSRF Implementation Duplication
+- **Files**: `src/security/ssrf.rs` (canonical), `src/tool/webfetch.rs:21-138` (duplicate), `src/mcp/remote.rs:45-95` (duplicate)
+- **Action**:
+  1. Audit all three implementations for differences
+  2. Move `validate_url_host()` from `mcp/remote.rs` to `security/ssrf.rs`
+  3. Replace `webfetch.rs` copy with re-export from `ssrf.rs`
+  4. Update MCP to use centralized SSRF module
 
 ---
 
@@ -199,62 +353,103 @@ Groups can be worked on in parallel by different agents. Items within a group ma
 
 | Item | Files | Action |
 |------|-------|--------|
-| A-1: Google API Key Header | `src/provider/google.rs:185-188` | Test `x-goog-api-key` header auth |
-| A-2: Command Injection Gaps | `src/tool/bash.rs` | Add `${`, `$VAR` expansion, block input redirect |
-| A-3: Path Traversal Fixes | `server/file.rs`, `tool/replace.rs`, `tool/grep.rs`, `tool/glob.rs` | Use `util.rs` validation, fix bypasses |
-| A-4: CORS allow_methods | `src/server/http.rs` | Restrict to required set |
+| A-1 | `src/provider/google.rs:185-188` | Test `x-goog-api-key` header auth |
+| A-2 | `src/tool/bash.rs` | Add `${`, `$VAR` expansion blocking, block input redirect |
+| A-3 | `server/file.rs`, `tool/replace.rs`, `tool/grep.rs`, `tool/glob.rs` | Use `util.rs` validation, fix bypasses |
+| A-4 | `src/server/http.rs` | Restrict CORS `allow_methods` to required set |
+| A-5 | `src/plugin/loader.rs:156-162` | Fix mtime cache invalidation (use UNIX_EPOCH comparison) |
+| A-6 | `src/plugin/loader.rs:136` | Make `Module` `Send+Sync` or change caching strategy |
+| A-7 | `src/plugin/event_bus.rs:63-69` | Implement `dispatch_to_plugin` or remove dead code |
 
 ### GROUP-B: Performance Optimization
 
 | Item | Files | Action |
 |------|-------|--------|
-| B-1: Regex Pre-compilation | `src/agent/loop.rs:48-80`, `src/tui/app/handlers.rs:~1990` | Use `LazyLock` for redact patterns |
-| B-2: SQLite Tuning | `src/storage/mod.rs:106-120` | Add PRAGMAs, LIMIT constraints |
-| B-3: String Arc Conversion | `agent/loop.rs`, `provider/mod.rs`, `tool/mod.rs` | Wrap `ToolCall`, `Message` fields in `Arc` |
-| B-4: LLM Response Caching | `src/provider/cache.rs` (new) | Create `ResponseCache` with `DashMap` |
+| B-1 | `src/agent/loop.rs:48-80`, `src/tui/app/handlers.rs:~1990` | Use `LazyLock` for redact patterns |
+| B-2 | `src/storage/mod.rs:106-120` | Add PRAGMAs, LIMIT constraints |
+| B-3 | `agent/loop.rs`, `provider/mod.rs`, `tool/mod.rs` | Wrap `ToolCall`, `Message` fields in `Arc` |
+| B-4 | `src/provider/cache.rs` (new) | Create `ResponseCache` with `DashMap` |
+| B-5 | `src/provider/mod.rs:7-17` | Replace `debug_log!` macro with `tracing::debug!` |
+| B-6 | `src/provider/fallback.rs` | Add exponential backoff with jitter |
+| B-7 | `src/provider/sse_parser.rs:11-13` | Ensure parser not shared across concurrent streams |
 
 ### GROUP-C: TUI Improvements
 
 | Item | Files | Action |
 |------|-------|--------|
-| C-1: Handlers Complex Match | `tui/app/handlers.rs` (2543 lines) | Extract dialog handlers to trait objects |
-| C-2: MessagesWidget Split | `tui/components/messages.rs` (1289 lines) | Split into smaller widgets |
-| C-3: Dialog State Cleanup | Various TUI files | Implement `Drop` for dialogs |
-| C-4: Dirty Region Tracking | `tui/mod.rs` | Add dirty region instead of full redraw |
+| C-1 | `tui/app/handlers.rs` (2543 lines) | Extract dialog handlers to trait objects |
+| C-2 | `tui/components/messages.rs` (1289 lines) | Split into smaller widgets |
+| C-3 | Various TUI files | Implement `Drop` for dialogs |
+| C-4 | `tui/mod.rs` | Add dirty region instead of full redraw |
+| C-5 | `tui/app/commands.rs:86,112` | Make hardcoded width 50 configurable |
+| C-6 | `src/tts/mod.rs:51` | Add cross-platform TTS provider abstraction |
+| C-7 | `src/tts/mod.rs:67-70` | Fix `stop()` race condition by awaiting child process |
 
 ### GROUP-D: Agent Loop Improvements
 
 | Item | Files | Action |
 |------|-------|--------|
-| D-1: Summarization Implementation | `agent/compaction.rs` | Implement LLM-based summarization |
-| D-2: DoomLoop Doc Mismatch | `permission/mod.rs:1054-1128` | Decide behavior, fix impl or docs |
-| D-3: Tool Search | `tool/catalog.rs` (new), `tool/mod.rs` | On-demand tool discovery |
+| D-1 | `agent/compaction.rs` | Implement LLM-based summarization (current is placeholder) |
+| D-2 | `permission/mod.rs:1054-1128` | Decide behavior for DoomLoop doc mismatch, fix impl or docs |
+| D-3 | `tool/catalog.rs` (new) | On-demand tool discovery |
+| D-4 | `agent/worker.rs:278-303` | Review `process_request()` - it IS implemented (publishes events, returns success) |
+| D-5 | `agent/plan_registry.rs:85-97` | Implement or remove `PlanRegistry` |
+| D-6 | `agent/worker.rs:276` | Implement `start_workers()` |
+| D-7 | `agent/loop.rs:834-841` | Add MCP version hash for precise cache invalidation |
+| D-8 | `agent/compaction.rs:414` | Use configured model instead of hardcoded `gpt-4o-mini` |
 
 ### GROUP-E: Provider System
 
 | Item | Files | Action |
 |------|-------|--------|
-| E-1: SSE Parser Deduplication | `provider/*.rs` | Extract shared utilities, create base trait |
-| E-2: Model Config Wiring | `provider/mod.rs` | Wire `context_window`, `max_output_tokens` |
-| E-3: Provider Health Check | `provider/*.rs` | Add `ping` or `models` call on startup |
-| E-4: Provider Inconsistencies | All 17 providers | Create shared base trait |
+| E-1 | `provider/*.rs` | Extract shared SSE parser utilities, create base trait |
+| E-2 | `provider/mod.rs` | Wire `context_window`, `max_output_tokens` |
+| E-3 | `provider/*.rs` | Add `ping` or `models` call on startup for health check |
+| E-4 | All 17 providers | Create shared base trait to reduce inconsistencies |
+| E-5 | `src/provider/google.rs:353` | Extract ID from API response, use UUID as fallback |
 
-### GROUP-F: Tool System
-
-| Item | Files | Action |
-|------|-------|--------|
-| F-1: TerminalTool Security | `tool/terminal.rs` | Add regex/blocked patterns from BashTool |
-| F-2: Allowlist Bypass Fix | `tool/bash.rs` | Check entire command string, not just first word |
-
-### GROUP-G: Testing Expansion
+### GROUP-F: IDE/LSP Fixes
 
 | Item | Files | Action |
 |------|-------|--------|
-| G-1: Agent Loop Integration Tests | `tests/` | Add end-to-end tests |
-| G-2: Code Coverage | CI | Add tarpaulin/grcov |
-| G-3: Benchmarks | `benches/` | Add criterion benchmarks |
-| G-4: Test Utilities | `tests/test_util.rs` | Create shared test helpers |
-| G-5: Missing Tests | Various | LSP, plugin, skills, memory, worktree, snapshot, upgrade |
+| F-1 | `src/ide/ide.rs:53-60` | Fix temp file race with `mkstemp` or `tempfile` crate |
+| F-2 | `src/ide/ide.rs:78-107` | Fix JetBrains line range handling |
+| F-3 | `src/ide/ide.rs:65-66` | Remove unsafe `unwrap()` on temp path |
+| F-4 | `src/ide/ide.rs:97-98,116-117,132-133` | Escape paths for command arguments |
+| F-5 | `src/lsp/client.rs:451-457` | Fix request ID wrap-around race condition |
+| F-6 | `src/lsp/launch.rs:38` | Remove hardcoded PATH in server launch |
+| F-7 | `src/lsp/launch.rs` | Add stderr draining background task |
+| F-8 | `src/lsp/download.rs` | Add path traversal check to `extract_zip` |
+| F-9 | `src/lsp/operations.rs:388-391` | Fix `format_signature_help` panic on invalid params |
+
+### GROUP-G: Skills Module
+
+| Item | Files | Action |
+|------|-------|--------|
+| G-1 | `src/skills/mod.rs:18-24` | Add `permission: Option<SkillPermission>` to structs |
+| G-2 | `src/skills/mod.rs:59-84` | Replace `fs::read_dir()` with `tokio::fs::read_dir()` |
+| G-3 | `src/skills/mod.rs:156-167` | Add bounds checking in `parse_frontmatter` |
+| G-4 | `src/tool/skill.rs:44-47` | Cache `SkillIndex` instead of reloading on every call |
+
+### GROUP-H: Plugin Module
+
+| Item | Files | Action |
+|------|-------|--------|
+| H-1 | `src/plugin/api.rs:39-117` vs `hooks.rs:1-115` | Unify `HookType` definitions |
+| H-2 | `src/plugin/loader.rs:276-277` | Validate and canonicalize plugin paths |
+| H-3 | `src/plugin/service.rs:18` vs `loader.rs:14` | Align 5s service timeout with 30s WASM timeout |
+| H-4 | `src/plugin/loader.rs:204-226` | Use proper atomic operations for fuel budget |
+
+### GROUP-I: Client Module
+
+| Item | Files | Action |
+|------|-------|--------|
+| I-1 | `src/client/attach.rs:98,105-115` | Fix orphaned input channel - wire up or remove |
+| I-2 | `src/client/attach.rs:112` | Handle WebSocket send errors properly |
+| I-3 | `src/client/attach.rs:140-141` | Graceful task shutdown with `JoinSet` or `CancellationToken` |
+| I-4 | `attach.rs:87-89`, `sdk.rs:32-41` | Add connection timeouts |
+| I-5 | `src/client/attach.rs:75-146` | Add reconnection logic for WS drops |
+| I-6 | `attach.rs:149-171` | Fix URL scheme replacement edge cases |
 
 ---
 
@@ -593,7 +788,7 @@ The following are large refactors that would require rewriting thousands of line
 
 10. **Token Estimation**: `estimate_tokens_sync()` uses `TokenizerType` for model-specific multipliers. Claude: 1.4x, Gemini: 1.2x.
 
-### Implementation Notes from Plans
+### Implementation Notes from Review Sessions
 
 11. **`/compact` Command**: Wired to `TuiCommand::CompactSession`. Compaction happens during agent processing.
 
@@ -615,9 +810,37 @@ The following are large refactors that would require rewriting thousands of line
 
 20. **DoomLoop doc mismatch**: Comment says "consecutive" but implementation uses window-based counting.
 
-21. **WebSocket rate limiter bug**: Redis backend logic is inverted (falls back when Redis URL is found).
+21. **WebSocket rate limiter**: VERIFIED CORRECT - if `REDIS_URL` is set → use Redis; otherwise → use in-memory. Proper fallback behavior.
 
 22. **OAuth tokens verified good**: AES-256-GCM with CODEGG_TOKEN_KEY, file permissions 0o600.
+
+23. **Symlink bypass in tools**: `canonicalize_path()` in `util.rs` doesn't check intermediate symlinks. Use `check_path_for_symlinks()` before canonicalization.
+
+24. **TTS is macOS-only**: Currently uses hardcoded `say` command. Cross-platform abstraction needed.
+
+25. **Memory module doesn't persist**: `add()`/`delete()` in `src/memory/mod.rs` don't actually save to disk.
+
+26. **Commands.rs has duplicate code**: `handle_slash_command` appears twice (lines 62-288 and 323-536).
+
+27. **Agent `process_request()` is implemented**: It publishes `SubagentStarted`/`SubagentCompleted` events and returns `SubAgentResult::success()`. Review if behavior is correct.
+
+28. **PlanRegistry unused**: `wait_for_response()` has send-then-discard bug.
+
+29. **Bus module memory leak**: Dead letter channels if sender dropped without response.
+
+30. **Auth middleware broken**: Wrong signature and undefined variables in `src/server/middleware/auth.rs`.
+
+31. **Session `share_session` race**: UPSERT + set_share_url not atomic.
+
+32. **Snapshot no persistence**: In-memory only, lost on restart.
+
+33. **Storage race condition**: `std::fs::File::create` vs SQLite atomic creation.
+
+34. **IDE temp file race**: Predictable filenames, needs `mkstemp` or `tempfile` crate.
+
+35. **LSP request ID race**: Wrap-around issue in `client.rs:451-457`.
+
+36. **Config watcher race**: Closure captures `tx` before stored in `self.watcher`.
 
 ### Testing Commands
 
@@ -629,6 +852,14 @@ cargo test --all-features
 
 # Specific feature testing
 cargo test --all-features -- --test-threads=1  # For integration tests
+
+# TUI tests
+cargo test tui::input
+cargo test tui
+cargo test messages
+
+# Run specific module tests
+cargo test --package codegg -- <module>_test_pattern
 ```
 
 ### Security Reminders
@@ -645,21 +876,19 @@ cargo test --all-features -- --test-threads=1  # For integration tests
 
 | Category | Status |
 |----------|--------|
-| Security Fixes | ✅ COMPLETE |
-| Async/Mutex | ✅ COMPLETE |
-| Performance | ✅ COMPLETE |
-| Agent Capabilities | ✅ COMPLETE |
-| TUI Features | ✅ COMPLETE |
-| Async Command Handling | ✅ COMPLETE |
-| Wave 0: Quick Wins | ✅ COMPLETE |
-| Wave 1: Critical Security | ✅ COMPLETE |
-| Wave 2: High-Priority | ✅ COMPLETE |
-| Wave 3: Medium-Priority | ✅ COMPLETE |
+| Historical Completed | ✅ |
+| TUI Input Repair (Completed 2026-05-01) | ✅ |
+| TUI Scrolling Fix (Completed 2026-05-06) | ✅ |
+| TUI Message Flow (Completed 2026-05-05) | ✅ |
+| Wave 0: Quick Wins | ⏳ PENDING |
+| Wave 1: Critical Security | ⏳ PENDING |
+| Wave 2: High-Priority | ⏳ PENDING |
+| Wave 3: Medium-Priority | ⏳ PENDING |
 | Wave 4: Large Refactors | ⏳ DEFERRED |
-| TUI Enhancement Features | ✅ COMPLETE |
-| Agent Capability Features | ✅ COMPLETE |
-| Mode/Exec Features | ✅ COMPLETE |
-| Documentation | ✅ COMPLETE |
+| TUI Enhancement Features | ⏳ FUTURE |
+| Agent Capability Features | ⏳ FUTURE |
+| Mode/Exec Features | ⏳ FUTURE |
+| Documentation | ⏳ FUTURE |
 
 ---
 
@@ -667,11 +896,11 @@ cargo test --all-features -- --test-threads=1  # For integration tests
 
 | Metric | Value |
 |--------|-------|
-| Total planned items | ~90 |
-| Wave 0 (Quick Wins) | 7 |
-| Wave 1 (Critical) | 3 |
-| Wave 2 (High-Priority) | 4 |
-| Wave 3 (Medium-Priority Groups) | ~30 |
+| Total planned items | ~100+ |
+| Wave 0 (Quick Wins) | 15 |
+| Wave 1 (Critical Security) | 6 groups |
+| Wave 2 (High-Priority) | 7 groups |
+| Wave 3 (Medium-Priority Groups) | 9 groups (~30 items) |
 | Wave 4 (Large Refactors) | 2 |
 | TUI Enhancement Features | 6 |
 | Agent Capability Features | 8 |
@@ -679,7 +908,7 @@ cargo test --all-features -- --test-threads=1  # For integration tests
 | Plugin Marketplace | 1 |
 | Model/Routing Features | 2 |
 | Documentation Files | ~15 |
-| Estimated timeline | 8-10 weeks |
+| Estimated timeline | 10-12 weeks |
 
 ---
 
