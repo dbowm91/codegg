@@ -280,7 +280,7 @@ These are large efforts that should be done after Wave 3 is complete.
 
 ---
 
-## TUI Enhancement Features (Future)
+## TUI Enhancement Features (SKIPPED - Future)
 
 These are enhancement features that build on Wave 3 TUI work.
 
@@ -559,10 +559,10 @@ The following are large refactors that would require rewriting thousands of line
 - **UI Parity**: Leader keys, session tabs not implemented
 - **Headless Mode**: `--auto-approve` not implemented
 
-### Resilience (DEFERRED)
-- **LLM Summarization**: IMPLEMENTED - `summarize_old_turns()` uses LLM-based summarization (see `src/agent/compaction.rs`)
-- **Checkpointing**: IMPLEMENTED - SnapshotManager wired to AgentLoop, captures snapshots before file-modifying tools
-- **CircuitBreaker Integration**: IMPLEMENTED - CircuitBreaker integrated into FallbackProvider (see `src/provider/fallback.rs`)
+### Resilience (DEFERRED - Already Implemented)
+- **LLM Summarization**: ✅ IMPLEMENTED - `summarize_old_turns()` uses LLM-based summarization (see `src/agent/compaction.rs`)
+- **Checkpointing**: ✅ IMPLEMENTED - SnapshotManager wired to AgentLoop, captures snapshots before file-modifying tools
+- **CircuitBreaker Integration**: ✅ IMPLEMENTED - CircuitBreaker integrated into FallbackProvider (see `src/provider/fallback.rs`)
 
 ### Cloud Tasks (DEFERRED)
 - **Cloud Tasks**: Requires significant infrastructure investment
@@ -609,13 +609,13 @@ The following are large refactors that would require rewriting thousands of line
 
 17. **Tracing Instrumentation**: `#[tracing::instrument]` added to `AgentLoop::run()`, `execute_tool_calls()`, and `CircuitBreaker::call()`.
 
-18. **MCP reconnect exists**: `remote.rs` has `reconnect()` at line 470 - needs to be wired up to auto-retry.
+18. **MCP reconnect wired**: HIGH-1 completed auto-reconnection with exponential backoff.
 
-19. **TUI render.rs is dead code**: `src/tui/app/render.rs` (953 lines) is duplicate of `mod.rs` implementation - DELETE after verification.
+19. **TUI render.rs dead code**: This was a duplicate of mod.rs - left as-is (large file, low priority deletion).
 
-20. **DoomLoop doc mismatch**: Comment says "consecutive" but implementation uses window-based counting.
+20. **DoomLoop doc mismatch FIXED**: D-2 updated docs to correctly describe window-based counting behavior.
 
-21. **WebSocket rate limiter bug**: Redis backend logic is inverted (falls back when Redis URL is found).
+21. **WebSocket rate limiter CORRECT**: QW-2 verified Redis fallback logic is correct - use Redis if URL set, else in-memory.
 
 22. **OAuth tokens verified good**: AES-256-GCM with CODEGG_TOKEN_KEY, file permissions 0o600.
 
@@ -656,10 +656,10 @@ cargo test --all-features -- --test-threads=1  # For integration tests
 | Wave 2: High-Priority | ✅ COMPLETE |
 | Wave 3: Medium-Priority | ✅ COMPLETE |
 | Wave 4: Large Refactors | ⏳ DEFERRED |
-| TUI Enhancement Features | ✅ COMPLETE |
-| Agent Capability Features | ✅ COMPLETE |
-| Mode/Exec Features | ✅ COMPLETE |
-| Documentation | ✅ COMPLETE |
+| TUI Enhancement Features | ⏳ FUTURE |
+| Agent Capability Features | ⏳ FUTURE |
+| Mode/Exec Features | ⏳ FUTURE |
+| Documentation | ⏳ FUTURE |
 
 ---
 
