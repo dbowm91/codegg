@@ -1,5 +1,6 @@
 use crate::error::ProviderError;
-use crate::provider::{ChatEvent, TokenUsage, ToolCall};
+use crate::provider::{ChatEvent, EventStream, TokenUsage, ToolCall, MAX_BUFFER_SIZE};
+use futures::StreamExt;
 use serde_json::json;
 use std::collections::VecDeque;
 
@@ -675,4 +676,75 @@ pub fn parse_openai_chunk_standalone(
     }
 
     None
+}
+
+pub fn create_sse_stream<F, Fut>(
+    send_request: F,
+    parse_buffer: fn(&mut String) -> Option<Result<ChatEvent, ProviderError>>,
+) -> Result<EventStream, ProviderError>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<reqwest::Response, ProviderError>> + Send,
+{
+    let buffer = String::new();
+    let response = tokio::runtime::Handle::current().block_on(send_request())?;
+
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(ProviderError::RateLimit);
+    }
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let err_text = tokio::runtime::Handle::current()
+            .block_on(response.text())
+            .unwrap_or_else(|_| "unknown error".to_string());
+        return Err(ProviderError::api(
+            status.as_u16().to_string(),
+            format!("HTTP {}: {}", status, err_text),
+        ));
+    }
+
+    let stream = response.bytes_stream();
+
+    Ok(Box::pin(futures::stream::unfold(
+        (stream, buffer),
+        move |(mut stream, mut buffer)| async move {
+            loop {
+                if let Some(event) = parse_buffer(&mut buffer) {
+                    return Some((event, (stream, buffer)));
+                }
+
+                let chunk = stream.next().await;
+                match chunk {
+                    Some(Ok(bytes)) => {
+                        let text = String::from_utf8_lossy(&bytes).to_string();
+                        buffer.push_str(&text);
+                        if buffer.len() > MAX_BUFFER_SIZE {
+                            return Some((
+                                Err(ProviderError::Stream(
+                                    "response buffer exceeded limit".to_string(),
+                                )),
+                                (stream, buffer),
+                            ));
+                        }
+                    }
+                    Some(Err(e)) => {
+                        return Some((
+                            Err(ProviderError::Stream(e.to_string())),
+                            (stream, buffer),
+                        ));
+                    }
+                    None => {
+                        if buffer.is_empty() {
+                            return None;
+                        }
+                        if let Some(event) = parse_buffer(&mut buffer) {
+                            return Some((event, (stream, buffer)));
+                        }
+                        return None;
+                    }
+                }
+            }
+        },
+    )))
 }

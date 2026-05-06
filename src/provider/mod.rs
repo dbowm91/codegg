@@ -72,6 +72,9 @@ pub trait Provider: Send + Sync {
     async fn discover_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
         self.models().await
     }
+    async fn ping(&self) -> Result<bool, ProviderError> {
+        self.models().await.map(|m| !m.is_empty())
+    }
 }
 
 #[async_trait]
@@ -90,6 +93,9 @@ impl Provider for Box<dyn Provider> {
     }
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
         self.as_ref().models().await
+    }
+    async fn ping(&self) -> Result<bool, ProviderError> {
+        self.as_ref().ping().await
     }
 }
 
