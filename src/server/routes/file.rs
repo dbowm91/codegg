@@ -8,42 +8,32 @@ use std::path::{Path as StdPath, PathBuf};
 
 use super::super::state::ServerState;
 use crate::error::{AppError, StorageError};
+use crate::tool::util::check_path_for_symlinks;
 
 pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError> {
     let root = StdPath::new(root);
     let joined = root.join(requested);
 
-    // Check for path traversal before canonicalization
-    // Normalize the path and check each component
-    let _normalized = joined.components().collect::<Vec<_>>();
-    let _root_components: Vec<_> = root.components().collect();
-
-    // Reject if the joined path tries to escape root using ../
-    // We check lexicographically first, then verify with canonicalize if possible
-    let joined_str = joined.to_string_lossy();
-    if joined_str.contains("..") && !requested.starts_with("..") {
-        // The requested path might be trying traversal
-        // Let the canonicalize handle it if path exists
+    let mut root_clone = root.to_path_buf();
+    if root_clone.is_relative() {
+        root_clone = std::env::current_dir()
+            .map_err(AppError::Io)?
+            .join(root_clone);
     }
+    let root_canonicalized = root_clone.canonicalize().map_err(|_| {
+        AppError::Storage(StorageError::NotFound("root path not found".into()))
+    })?;
 
-    // Try to canonicalize if path exists
+    check_path_for_symlinks(&joined).map_err(|e| {
+        AppError::Storage(StorageError::NotFound(format!(
+            "path validation failed: {}",
+            e
+        )))
+    })?;
+
     let resolved = match joined.canonicalize() {
         Ok(p) => p,
         Err(_) => {
-            // Path doesn't exist, but we still need to check it's not trying to escape
-            // Use lexical analysis for path traversal detection
-            let mut root_clone = root.to_path_buf();
-            if root_clone.is_relative() {
-                root_clone = std::env::current_dir()
-                    .map_err(AppError::Io)?
-                    .join(root_clone);
-            }
-            let root_canonicalized = root_clone.canonicalize().map_err(|_| {
-                AppError::Storage(StorageError::NotFound("root path not found".into()))
-            })?;
-
-            // For non-existent paths, check if the joined path escapes root
-            // by checking components
             let mut test_path = root_canonicalized.clone();
             for component in requested.split('/') {
                 if component == ".." {
@@ -53,7 +43,6 @@ pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError> {
                 }
             }
 
-            // Check if the final path is within root
             if !test_path.starts_with(&root_canonicalized) {
                 return Err(AppError::Storage(StorageError::NotFound(
                     "path outside allowed directory".into(),
@@ -63,10 +52,6 @@ pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError> {
             return Ok(test_path);
         }
     };
-
-    let root_canonicalized = root
-        .canonicalize()
-        .map_err(|_| AppError::Storage(StorageError::NotFound("root path not found".into())))?;
 
     if resolved.starts_with(&root_canonicalized) {
         Ok(resolved)

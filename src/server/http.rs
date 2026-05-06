@@ -131,7 +131,6 @@ fn build_cors(config: &Option<crate::config::schema::ServerConfig>) -> CorsLayer
                 .allow_methods([
                     http::Method::GET,
                     http::Method::POST,
-                    http::Method::PUT,
                     http::Method::DELETE,
                 ])
                 .allow_headers(tower_http::cors::Any)
@@ -150,7 +149,6 @@ fn build_cors(config: &Option<crate::config::schema::ServerConfig>) -> CorsLayer
                 .allow_methods([
                     http::Method::GET,
                     http::Method::POST,
-                    http::Method::PUT,
                     http::Method::DELETE,
                 ])
                 .allow_headers(tower_http::cors::Any)

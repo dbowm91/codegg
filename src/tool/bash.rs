@@ -17,10 +17,13 @@ const MAX_COMMAND_LENGTH: usize = 100_000;
 static BLOCKED_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?x)
         \$\(            # command substitution
+        |\$\{           # braced command substitution ${{...}}
         |`             # backtick substitution
+        |\$[A-Za-z_][A-Za-z0-9_]*  # variable expansion $VAR
         |\|/.*sh       # pipe to shell
         |\|/.*bash     # pipe to bash
         |> /dev/       # redirect to dev
+        |< /dev/       # input redirect from dev
         |2> /dev/      # redirect stderr to dev
         |&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf  # fork bomb with rm
         |\|\|[\s\n\r]*rm[\s\n\r]+-rf       # || rm -rf
