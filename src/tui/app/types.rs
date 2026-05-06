@@ -162,10 +162,12 @@ pub enum TuiMsg {
     },
     ConfirmBulkDelete {
         count: usize,
+        session_ids: Vec<String>,
     },
     ConfirmBulkArchive {
         count: usize,
         unarchive: bool,
+        session_ids: Vec<String>,
     },
     ConfirmResult(Option<bool>),
 }
