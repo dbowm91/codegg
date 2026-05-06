@@ -171,26 +171,23 @@ impl HookRegistry {
                     command,
                     timeout_secs,
                 } => Box::new(ShellCommandHook::new(command.clone(), *timeout_secs)),
-                ConfigHookConfig::InlineScript {
-                    script: _,
-                    timeout_secs,
-                } => {
-                    let cmd = "echo 'Inline scripts not yet supported'; exit 1".to_string();
-                    Box::new(ShellCommandHook::new(cmd, *timeout_secs))
-                }
+                ConfigHookConfig::InlineScript { .. } => continue,
             };
             registry.register(event, hook);
         }
         registry
     }
 
-    pub async fn run_hooks(&self, event: HookEvent, ctx: &HookContext) -> Result<(), AppError> {
+    pub async fn run_hooks(&self, event: HookEvent, ctx: &HookContext) -> Vec<AppError> {
+        let mut errors = Vec::new();
         if let Some(hooks) = self.hooks.get(&event) {
             for hook in hooks {
-                hook.execute(ctx).await?;
+                if let Err(e) = hook.execute(ctx).await {
+                    errors.push(e);
+                }
             }
         }
-        Ok(())
+        errors
     }
 
     pub fn has_hooks(&self, event: HookEvent) -> bool {
