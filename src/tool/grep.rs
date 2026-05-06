@@ -3,12 +3,13 @@ use grep::regex::RegexMatcher;
 use grep_searcher::{Searcher, Sink, SinkMatch};
 use ignore::WalkBuilder;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 use crate::error::ToolError;
+use crate::tool::util::{canonicalize_path, validate_path};
 use crate::tool::Tool;
 
 const MAX_GLOBAL_RESULTS: usize = 10_000;
@@ -101,37 +102,17 @@ impl Tool for GrepTool {
         }
 
         let search_path_str = input["path"].as_str().unwrap_or(".");
-        let search_path = PathBuf::from(search_path_str);
+        let search_path = Path::new(search_path_str);
         let context = input["context"].as_u64().unwrap_or(0) as usize;
 
-        {
-            let canonical_search = search_path
-                .canonicalize()
-                .map_err(|_| ToolError::Execution("cannot canonicalize search path".to_string()))?;
+        let allowed_root = self.allowed_root.clone();
+        let unrestricted = self.unrestricted;
 
-            let root_canonical = self
-                .allowed_root
-                .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from("."));
-
-            if !canonical_search.starts_with(&root_canonical) {
-                if self.unrestricted {
-                    tracing::warn!(
-                        "GrepTool path '{}' outside allowed_root, unrestricted=true - bypassing",
-                        search_path.display()
-                    );
-                } else {
-                    return Err(ToolError::Permission(
-                        "search path outside allowed directory".to_string(),
-                    ));
-                }
-            }
-        }
-
-        let root_canonical = self
-            .allowed_root
-            .canonicalize()
-            .unwrap_or_else(|_| PathBuf::from("."));
+        let canonical_search = if unrestricted {
+            canonicalize_path(search_path)?
+        } else {
+            validate_path(search_path, &allowed_root)?
+        };
 
         RegexMatcher::new(&pattern)
             .map_err(|e| ToolError::Execution(format!("invalid regex: {e}")))?;
@@ -142,7 +123,7 @@ impl Tool for GrepTool {
             .follow_links(false)
             .build();
 
-        let root_canonical = root_canonical.clone();
+        let canonical_search = canonical_search.clone();
         let unrestricted = self.unrestricted;
 
         let (entries, truncated) = tokio::task::spawn_blocking(move || {
@@ -162,7 +143,7 @@ impl Tool for GrepTool {
                         let Ok(canonical) = path.canonicalize() else {
                             continue;
                         };
-                        if !unrestricted && !canonical.starts_with(&root_canonical) {
+                        if !unrestricted && !canonical.starts_with(&canonical_search) {
                             continue;
                         }
                         entries.push(canonical);

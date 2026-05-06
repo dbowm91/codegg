@@ -2,9 +2,10 @@ use async_trait::async_trait;
 use globset::GlobBuilder;
 use ignore::WalkBuilder;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::ToolError;
+use crate::tool::util::{canonicalize_path, validate_path};
 use crate::tool::Tool;
 
 const MAX_PATTERN_SIZE: usize = 4096;
@@ -80,36 +81,16 @@ impl Tool for GlobTool {
         }
 
         let search_path_str = input["path"].as_str().unwrap_or(".");
-        let search_path = PathBuf::from(search_path_str);
+        let search_path = Path::new(search_path_str);
 
-        {
-            let canonical_search = search_path
-                .canonicalize()
-                .map_err(|_| ToolError::Execution("cannot canonicalize search path".to_string()))?;
+        let allowed_root = self.allowed_root.clone();
+        let unrestricted = self.unrestricted;
 
-            let root_canonical = self
-                .allowed_root
-                .canonicalize()
-                .unwrap_or_else(|_| PathBuf::from("."));
-
-            if !canonical_search.starts_with(&root_canonical) {
-                if self.unrestricted {
-                    tracing::warn!(
-                        "GlobTool path '{}' outside allowed_root, unrestricted=true - bypassing",
-                        search_path.display()
-                    );
-                } else {
-                    return Err(ToolError::Permission(
-                        "search path outside allowed directory".to_string(),
-                    ));
-                }
-            }
-        }
-
-        let root_canonical = self
-            .allowed_root
-            .canonicalize()
-            .unwrap_or_else(|_| PathBuf::from("."));
+        let canonical_search = if unrestricted {
+            canonicalize_path(search_path)?
+        } else {
+            validate_path(search_path, &allowed_root)?
+        };
 
         let unrestricted = self.unrestricted;
 
@@ -126,7 +107,7 @@ impl Tool for GlobTool {
             .follow_links(false)
             .build();
 
-        let root_canonical = root_canonical.clone();
+        let canonical_search = canonical_search.clone();
 
         let (matches, truncated) = tokio::task::spawn_blocking(move || {
             let mut matches = Vec::new();
@@ -146,7 +127,7 @@ impl Tool for GlobTool {
                         Err(_) => continue,
                     };
 
-                    if !unrestricted && !canonical.starts_with(&root_canonical) {
+                    if !unrestricted && !canonical.starts_with(&canonical_search) {
                         continue;
                     }
 
