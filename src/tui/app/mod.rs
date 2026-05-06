@@ -371,6 +371,7 @@ impl App {
                 tts: Tts::new(),
                 tts_enabled: false,
                 fullscreen: false,
+                dirty_regions: Vec::new(),
             },
             session_state: SessionState {
                 session: None,
@@ -547,6 +548,7 @@ impl App {
                 tts: Tts::new(),
                 tts_enabled: false,
                 fullscreen: false,
+                dirty_regions: Vec::new(),
             },
             session_state: SessionState {
                 session: None,
