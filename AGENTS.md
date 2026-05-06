@@ -49,35 +49,22 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 
 These items were identified during module reviews and are important for future agents to know:
 
-### Data Persistence Issues
-- **Memory module doesn't persist**: `add()`/`delete()` in `src/memory/mod.rs` don't actually save to disk
-- **Snapshot has no persistence**: In-memory only, lost on restart. Needs SQLite persistence.
-- **Session `share_session` race**: UPSERT + set_share_url not atomic in `store.rs:1290-1313`
-
-### Security Issues
-- **Auth middleware is broken**: Wrong signature and undefined variables in `src/server/middleware/auth.rs`
-- **Symlink bypass in tools**: `canonicalize_path()` in `util.rs` doesn't check intermediate symlinks. Use `check_path_for_symlinks()` before canonicalization.
-- **IDE temp file race**: Predictable filenames in `src/ide/ide.rs`, needs `mkstemp` or `tempfile` crate
-
-### Concurrency Issues
-- **LSP request ID race**: Wrap-around issue in `client.rs:451-457`
-- **Config watcher race**: Closure captures `tx` before stored in `self.watcher`
-- **Bus module memory leak**: Dead letter channels if sender dropped without response in `src/bus/mod.rs`
-- **Storage race condition**: `std::fs::File::create` vs SQLite atomic creation in `src/storage/mod.rs`
-
-### Code Quality Issues
-- **Commands.rs has duplicate code**: `handle_slash_command` appears twice (lines ~62-288 and ~323-536)
-- **PlanRegistry unused**: `wait_for_response()` has send-then-discard bug in `src/agent/plan_registry.rs`
-- **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
-
 ### Verified Correct Items (not bugs)
 - **WebSocket rate limiter**: If `REDIS_URL` is set → use Redis; otherwise → use in-memory. Proper fallback behavior.
 - **`process_request()` is implemented**: It publishes `SubagentStarted`/`SubagentCompleted` events and returns `SubAgentResult::success()`.
+- **`SubAgentPool` bounded concurrency**: Properly uses semaphore with default of 5
+- **Tool definition caching**: Properly versioned cache key
 
 ### Implementation Patterns
 - **DoomLoop doc mismatch**: Comment says "consecutive" but implementation uses window-based counting
 - **MCP reconnect exists**: `remote.rs` has `reconnect()` at line 470 - needs to be wired up to auto-retry
 - **TUI render.rs doesn't exist**: Only `mod.rs`, `types.rs`, and `commands.rs` exist in `src/tui/app/`
+- **Component trait**: All dialogs implement `Component` trait with `handle_key`, `update`, `render` methods
+- **Registration-before-publish pattern**: When publishing `PermissionPending` or `QuestionPending`, register the responder BEFORE publishing the event
+
+### Code Quality Issues (Lower Priority)
+- **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
+- **PlanRegistry has send-then-discard bug**: `wait_for_response()` in `src/agent/plan_registry.rs` sends Cancelled then discards the response channel before awaiting
 
 ## Documentation Structure
 
