@@ -66,11 +66,21 @@ impl HookContext {
         let mut env = HashMap::new();
         env.insert(
             "CODEGG_HOOK_EVENT".to_string(),
+            self.event.as_str().to_string(),
+        );
+        if let Some(ref sid) = self.session_id {
             env.insert("CODEGG_SESSION_ID".to_string(), sid.clone());
+        }
+        if let Some(ref name) = self.tool_name {
             env.insert("CODEGG_TOOL_NAME".to_string(), name.clone());
+        }
+        if let Some(ref args) = self.tool_arguments {
             env.insert("CODEGG_TOOL_ARGUMENTS".to_string(), args.to_string());
+        }
+        if let Some(ref result) = self.tool_result {
             env.insert("CODEGG_TOOL_RESULT".to_string(), result.clone());
-            env.insert("CODEGG_TIMESTAMP".to_string(), self.timestamp.to_string());
+        }
+        env.insert("CODEGG_TIMESTAMP".to_string(), self.timestamp.to_string());
         env
     }
 }
