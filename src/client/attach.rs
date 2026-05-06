@@ -95,24 +95,10 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
     let mut app = tui::App::new_remote(url.to_string());
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-    let (_, input_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     app.set_remote_event_rx(event_rx);
 
     let tx = Arc::new(Mutex::new(tx));
-    let tx_clone = Arc::clone(&tx);
-
-    let input_handler = tokio::spawn(async move {
-        let tx = tx_clone;
-        let mut input_rx = input_rx;
-        while let Some(text) = input_rx.recv().await {
-            let msg = TuiMessage::Input { text };
-            if let Ok(json) = serde_json::to_string(&msg) {
-                let mut tx = tx.lock().await;
-                let _ = tx.send(Message::Text(json.into())).await;
-            }
-        }
-    });
 
     let event_task = tokio::spawn(async move {
         while let Some(msg) = rx.next().await {
@@ -137,7 +123,6 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 
     let result = tui::run_event_loop(&mut app).await;
 
-    input_handler.abort();
     event_task.abort();
 
     let mut tx = tx.lock().await;

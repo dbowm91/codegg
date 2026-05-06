@@ -6,13 +6,7 @@
 
 macro_rules! debug_log {
     ($($arg:tt)*) => {
-        let _ = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("codegg_debug.log")
-            .and_then(|mut file| {
-                std::io::Write::write_all(&mut file, format!("[API-DEBUG] {}\n", format!($($arg)*)).as_bytes())
-            });
+        tracing::debug!($($arg)*);
     };
 }
 

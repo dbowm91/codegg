@@ -254,22 +254,6 @@ impl McpConnectionManager {
     }
 }
 
-impl Clone for McpConnectionManager {
-    fn clone(&self) -> Self {
-        Self {
-            client: self.client.clone(),
-            state: Arc::clone(&self.state),
-            retry_count: Arc::clone(&self.retry_count),
-            max_retries: self.max_retries,
-            base_delay: self.base_delay,
-            max_delay: self.max_delay,
-            heartbeat_interval: self.heartbeat_interval,
-            heartbeat_task: Arc::clone(&self.heartbeat_task),
-            shutdown: Arc::clone(&self.shutdown),
-        }
-    }
-}
-
 pub struct RemoteClient {
     url: String,
     headers: HashMap<String, String>,

@@ -448,13 +448,11 @@ impl LspClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, LspError> {
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let id = if id == i64::MAX {
-            self.request_id.store(1, Ordering::SeqCst);
-            1
-        } else {
-            id
-        };
+        let mut id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        if id == 0 {
+            // Never use 0 as an ID, it's often reserved
+            id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        }
 
         let msg = serde_json::json!({
             "jsonrpc": "2.0",

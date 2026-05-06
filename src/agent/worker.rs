@@ -281,33 +281,6 @@ impl SubAgentPool {
 
     pub fn start_workers(&mut self) {}
 
-    pub fn process_request(&self, request: SubAgentRequest) -> SubAgentResult {
-        let task_id = request.task_id;
-
-        GlobalEventBus::publish(AppEvent::SubagentStarted {
-            session_id: request.parent_id.clone().unwrap_or_default(),
-            task_id,
-            agent: request.agent.clone(),
-            description: request.description.clone(),
-        });
-
-        let result = format!(
-            "Subagent task {} dispatched to agent '{}'\n\nPrompt: {}\nStatus: queued for execution",
-            task_id,
-            request.agent,
-            request.prompt.chars().take(200).collect::<String>()
-        );
-
-        GlobalEventBus::publish(AppEvent::SubagentCompleted {
-            session_id: request.parent_id.clone().unwrap_or_default(),
-            task_id,
-            agent: request.agent.clone(),
-            result_summary: result.chars().take(200).collect(),
-        });
-
-        SubAgentResult::success(task_id, result)
-    }
-
     pub fn spawner(&self) -> SubAgentSpawner {
         SubAgentSpawner { pool: self.clone() }
     }

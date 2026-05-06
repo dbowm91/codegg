@@ -107,6 +107,10 @@ impl Provider for FallbackProvider {
 
                     if is_retryable {
                         last_error = Some(e);
+                        // Implement exponential backoff: base 1s, max 30s
+                        let delay_secs = (2u64.pow(i as u32)).min(30);
+                        tracing::info!("fallback: retrying next provider in {}s", delay_secs);
+                        tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
                         continue;
                     }
                     return Err(e);
