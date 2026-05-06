@@ -437,7 +437,9 @@ impl App {
                 pending_delete_session: None,
                 pending_archive_session: None,
                 pending_bulk_delete: None,
+                pending_bulk_delete_ids: None,
                 pending_bulk_archive: None,
+                pending_bulk_archive_ids: None,
             },
             agent_state: AgentState {
                 agents,
@@ -611,7 +613,9 @@ impl App {
                 pending_delete_session: None,
                 pending_archive_session: None,
                 pending_bulk_delete: None,
+                pending_bulk_delete_ids: None,
                 pending_bulk_archive: None,
+                pending_bulk_archive_ids: None,
             },
             agent_state: AgentState {
                 agents,
@@ -1437,7 +1441,11 @@ impl App {
                             });
                         }
                     } else if let Some(_count) = self.dialog_state.pending_bulk_delete.take() {
-                        let ids = self.dialog_state.session_dialog.get_selected_ids();
+                        let ids = self
+                            .dialog_state
+                            .pending_bulk_delete_ids
+                            .take()
+                            .unwrap_or_default();
                         if let Some(ref tx) = self.tui_cmd_tx {
                             let _ = tx.try_send(TuiCommand::BulkDelete { session_ids: ids });
                         }
@@ -1445,7 +1453,11 @@ impl App {
                     } else if let Some((_count, unarchive)) =
                         self.dialog_state.pending_bulk_archive.take()
                     {
-                        let ids = self.dialog_state.session_dialog.get_selected_ids();
+                        let ids = self
+                            .dialog_state
+                            .pending_bulk_archive_ids
+                            .take()
+                            .unwrap_or_default();
                         if let Some(ref tx) = self.tui_cmd_tx {
                             let _ = tx.try_send(TuiCommand::BulkArchive {
                                 session_ids: ids,
@@ -1458,7 +1470,9 @@ impl App {
                     self.dialog_state.pending_delete_session = None;
                     self.dialog_state.pending_archive_session = None;
                     self.dialog_state.pending_bulk_delete = None;
+                    self.dialog_state.pending_bulk_delete_ids = None;
                     self.dialog_state.pending_bulk_archive = None;
+                    self.dialog_state.pending_bulk_archive_ids = None;
                 }
             }
             TuiMsg::McpAction {
@@ -1553,15 +1567,20 @@ impl App {
                     Box::new(ConfirmDialog::new(title.to_string(), msg.to_string())),
                 );
             }
-            TuiMsg::ConfirmBulkDelete { count } => {
+            TuiMsg::ConfirmBulkDelete { count, session_ids } => {
                 let msg = format!("Delete {} selected sessions? This cannot be undone.", count);
                 self.dialog_state.pending_bulk_delete = Some(count);
+                self.dialog_state.pending_bulk_delete_ids = Some(session_ids);
                 self.push_dialog(
                     Dialog::Confirm,
                     Box::new(ConfirmDialog::new("Delete Sessions".to_string(), msg)),
                 );
             }
-            TuiMsg::ConfirmBulkArchive { count, unarchive } => {
+            TuiMsg::ConfirmBulkArchive {
+                count,
+                unarchive,
+                session_ids,
+            } => {
                 let (title, msg) = if unarchive {
                     (
                         "Unarchive Sessions",
@@ -1574,6 +1593,7 @@ impl App {
                     )
                 };
                 self.dialog_state.pending_bulk_archive = Some((count, unarchive));
+                self.dialog_state.pending_bulk_archive_ids = Some(session_ids);
                 self.push_dialog(
                     Dialog::Confirm,
                     Box::new(ConfirmDialog::new(title.to_string(), msg)),
@@ -2248,7 +2268,9 @@ impl App {
                                 let count = self.dialog_state.session_dialog.selected_count();
                                 if count > 0 {
                                     let msg = format!("Archive {} selected sessions?", count);
+                                    let ids = self.dialog_state.session_dialog.get_selected_ids();
                                     self.dialog_state.pending_bulk_archive = Some((count, false));
+                                    self.dialog_state.pending_bulk_archive_ids = Some(ids);
                                     self.push_dialog(
                                         Dialog::Confirm,
                                         Box::new(ConfirmDialog::new(
@@ -2265,7 +2287,9 @@ impl App {
                                         "Delete {} selected sessions? This cannot be undone.",
                                         count
                                     );
+                                    let ids = self.dialog_state.session_dialog.get_selected_ids();
                                     self.dialog_state.pending_bulk_delete = Some(count);
+                                    self.dialog_state.pending_bulk_delete_ids = Some(ids);
                                     self.push_dialog(
                                         Dialog::Confirm,
                                         Box::new(ConfirmDialog::new(
@@ -3165,7 +3189,13 @@ impl App {
                 self.messages_state.messages.scroll_up();
             }
             ClickTarget::Dialog => {
-                self.dialog_navigate_up();
+                let up_key = crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Up,
+                    crossterm::event::KeyModifiers::NONE,
+                );
+                if let Some(msg) = self.focus_manager.handle_key(up_key) {
+                    self.process_msg(msg);
+                }
             }
             ClickTarget::Completion => {
                 if self.prompt_state.completion_sel > 0 {
@@ -3184,7 +3214,13 @@ impl App {
                 self.messages_state.messages.scroll_down();
             }
             ClickTarget::Dialog => {
-                self.dialog_navigate_down();
+                let down_key = crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Down,
+                    crossterm::event::KeyModifiers::NONE,
+                );
+                if let Some(msg) = self.focus_manager.handle_key(down_key) {
+                    self.process_msg(msg);
+                }
             }
             ClickTarget::Completion => {
                 let max_sel = match self.prompt_state.completion_type {

@@ -27,6 +27,24 @@ pub struct QuestionDialog {
 }
 
 impl QuestionDialog {
+    fn prev_char_boundary(s: &str, idx: usize) -> usize {
+        let i = idx.min(s.len());
+        s[..i].char_indices().next_back().map(|(pos, _)| pos).unwrap_or(0)
+    }
+
+    fn next_char_boundary(s: &str, idx: usize) -> usize {
+        let i = idx.min(s.len());
+        if i >= s.len() {
+            s.len()
+        } else {
+            s[i..]
+                .char_indices()
+                .nth(1)
+                .map(|(off, _)| i + off)
+                .unwrap_or(s.len())
+        }
+    }
+
     pub fn new(questions: Vec<QuestionSpec>) -> Self {
         let answers = questions
             .iter()
@@ -113,34 +131,36 @@ impl QuestionDialog {
 
     pub fn set_answer(&mut self, ch: char) {
         self.current_input.insert(self.cursor_pos, ch);
-        self.cursor_pos += 1;
+        self.cursor_pos += ch.len_utf8();
         self.answers[self.selected_question] = self.current_input.clone();
     }
 
     pub fn backspace(&mut self) {
         if self.cursor_pos > 0 {
-            self.cursor_pos -= 1;
-            self.current_input.remove(self.cursor_pos);
+            let prev = Self::prev_char_boundary(&self.current_input, self.cursor_pos);
+            self.current_input.drain(prev..self.cursor_pos);
+            self.cursor_pos = prev;
             self.answers[self.selected_question] = self.current_input.clone();
         }
     }
 
     pub fn delete(&mut self) {
         if self.cursor_pos < self.current_input.len() {
-            self.current_input.remove(self.cursor_pos);
+            let next = Self::next_char_boundary(&self.current_input, self.cursor_pos);
+            self.current_input.drain(self.cursor_pos..next);
             self.answers[self.selected_question] = self.current_input.clone();
         }
     }
 
     pub fn cursor_left(&mut self) {
         if self.cursor_pos > 0 {
-            self.cursor_pos -= 1;
+            self.cursor_pos = Self::prev_char_boundary(&self.current_input, self.cursor_pos);
         }
     }
 
     pub fn cursor_right(&mut self) {
         if self.cursor_pos < self.current_input.len() {
-            self.cursor_pos += 1;
+            self.cursor_pos = Self::next_char_boundary(&self.current_input, self.cursor_pos);
         }
     }
 

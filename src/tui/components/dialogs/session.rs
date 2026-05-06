@@ -410,7 +410,14 @@ impl Default for SessionDialog {
 impl Component for SessionDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         match key.code {
-            crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),
+            crossterm::event::KeyCode::Esc => {
+                if self.bulk_mode {
+                    self.toggle_bulk_mode();
+                    None
+                } else {
+                    Some(TuiMsg::CloseDialog)
+                }
+            }
             crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
                 self.select_up();
                 None
@@ -469,6 +476,40 @@ impl Component for SessionDialog {
             crossterm::event::KeyCode::Char('m') => {
                 self.toggle_search_mode();
                 None
+            }
+            crossterm::event::KeyCode::Char(' ') if self.bulk_mode => {
+                self.toggle_selection();
+                None
+            }
+            crossterm::event::KeyCode::Char('A') if self.bulk_mode => {
+                self.select_all();
+                None
+            }
+            crossterm::event::KeyCode::Char('D') if self.bulk_mode => {
+                self.deselect_all();
+                None
+            }
+            crossterm::event::KeyCode::Char('a') if self.bulk_mode => {
+                let session_ids = self.get_selected_ids();
+                let count = session_ids.len();
+                if count > 0 {
+                    Some(TuiMsg::ConfirmBulkArchive {
+                        count,
+                        unarchive: false,
+                        session_ids,
+                    })
+                } else {
+                    None
+                }
+            }
+            crossterm::event::KeyCode::Char('d') if self.bulk_mode => {
+                let session_ids = self.get_selected_ids();
+                let count = session_ids.len();
+                if count > 0 {
+                    Some(TuiMsg::ConfirmBulkDelete { count, session_ids })
+                } else {
+                    None
+                }
             }
             crossterm::event::KeyCode::Char(c) if !self.bulk_mode => {
                 self.set_filter(c);

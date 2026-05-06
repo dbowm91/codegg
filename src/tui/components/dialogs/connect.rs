@@ -109,7 +109,7 @@ impl ConnectDialog {
 
     pub fn insert_char(&mut self, c: char) {
         self.api_key_input.insert(self.cursor_pos, c);
-        self.cursor_pos += 1;
+        self.cursor_pos += c.len_utf8();
     }
 
     pub fn backspace(&mut self) {
@@ -304,7 +304,14 @@ impl Widget for &ConnectDialog {
 impl Component for ConnectDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         match key.code {
-            crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),
+            crossterm::event::KeyCode::Esc => {
+                if self.step == ConnectStep::EnterApiKey {
+                    self.back_to_provider_selection();
+                    None
+                } else {
+                    Some(TuiMsg::CloseDialog)
+                }
+            }
             crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
                 if self.step == ConnectStep::SelectProvider {
                     self.cursor_up();
@@ -368,8 +375,8 @@ impl Component for ConnectDialog {
 
     fn handle_paste(&mut self, text: String) -> Option<TuiMsg> {
         if self.step == ConnectStep::EnterApiKey {
-            self.api_key_input.push_str(&text);
-            self.cursor_pos = self.api_key_input.len();
+            self.api_key_input.insert_str(self.cursor_pos, &text);
+            self.cursor_pos += text.len();
         }
         None
     }

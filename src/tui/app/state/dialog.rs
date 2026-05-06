@@ -49,5 +49,7 @@ pub struct DialogState {
     pub pending_delete_session: Option<String>,
     pub pending_archive_session: Option<(String, bool)>,
     pub pending_bulk_delete: Option<usize>,
+    pub pending_bulk_delete_ids: Option<Vec<String>>,
     pub pending_bulk_archive: Option<(usize, bool)>,
+    pub pending_bulk_archive_ids: Option<Vec<String>>,
 }
