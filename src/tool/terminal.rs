@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
