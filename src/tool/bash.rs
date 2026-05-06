@@ -17,10 +17,13 @@ const MAX_COMMAND_LENGTH: usize = 100_000;
 static BLOCKED_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?x)
         \$\(            # command substitution
+        |\$\{           # braced command substitution ${{...}}
         |`             # backtick substitution
+        |\$[A-Za-z_][A-Za-z0-9_]*  # variable expansion $VAR
         |\|/.*sh       # pipe to shell
         |\|/.*bash     # pipe to bash
         |> /dev/       # redirect to dev
+        |< /dev/       # input redirect from dev
         |2> /dev/      # redirect stderr to dev
         |&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf  # fork bomb with rm
         |\|\|[\s\n\r]*rm[\s\n\r]+-rf       # || rm -rf
@@ -188,37 +191,44 @@ impl BashTool {
 
         // Check allowlist - must check entire command string
         if let Some(ref allowlist) = self.allowlist {
-            // Extract the actual command being executed
-            // Handle common wrappers like `env`, `nohup`, etc.
+            let normalized = parts.join(" ");
+
             let mut cmd_parts = parts.iter().copied();
             let mut cmd = cmd_parts.next().unwrap_or("");
 
-            // Skip common wrapper commands to find the actual command
             while ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&cmd) {
                 cmd = cmd_parts.next().unwrap_or("");
             }
 
-            // For `bash -c "..."` or `sh -c "..."`, the shell itself must be allowed
             if (cmd == "bash" || cmd == "sh" || cmd == "dash")
                 && parts.len() > 2
                 && parts[1] == "-c"
             {
-                // The actual command is inside the -c argument
-                // Just check if the shell itself is allowed
                 if !allowlist.contains(&cmd) {
                     return Err(ToolError::Permission(format!(
                         "command '{}' not in allowlist",
                         cmd
                     )));
                 }
+
+                let full_match = allowlist.iter().any(|allowed| normalized.starts_with(allowed));
+                if !full_match {
+                    return Err(ToolError::Permission(format!(
+                        "command '{}' not in allowlist",
+                        normalized
+                    )));
+                }
                 return Ok(());
             }
 
             if !allowlist.contains(&cmd) {
-                return Err(ToolError::Permission(format!(
-                    "command '{}' not in allowlist",
-                    cmd
-                )));
+                let full_match = allowlist.iter().any(|allowed| normalized.starts_with(allowed));
+                if !full_match {
+                    return Err(ToolError::Permission(format!(
+                        "command '{}' not in allowlist",
+                        normalized
+                    )));
+                }
             }
         }
 
