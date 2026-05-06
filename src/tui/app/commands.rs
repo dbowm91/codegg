@@ -605,7 +605,7 @@ impl App {
             "/tui" => {
                 self.toggle_fullscreen();
             }
-"/sessions" => {
+            "/sessions" => {
                 self.open_dialog(super::Dialog::Session);
             }
             "/goto" => {
@@ -620,7 +620,6 @@ impl App {
                     if dialog.is_valid() {
                         if let Some(idx) = dialog.get_index() {
                             self.messages_state.messages.sel_msg = Some(idx);
-                            return true;
                         }
                     }
                 }
