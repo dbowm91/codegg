@@ -30,7 +30,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `permission/` | Access control, path restrictions, DoomLoop detection, mode system |
 | `plugin/` | WASM plugin system with hooks and TUI extensions |
 | `provider/` | LLM provider implementations (Anthropic, OpenAI, Google, etc.) |
-| `pty/` | PTY (pseudo-terminal) support for terminal tools |
+| `shell/` | Shell session management (in-memory session metadata, no actual PTY) |
 | `resilience/` | Circuit breaker, retry mechanisms, and rate limiting |
 | `security/` | SSRF protection, internal IP validation, Landlock sandboxing |
 | `server/` | HTTP server (Axum) with WebSocket support for remote TUIs |
@@ -95,6 +95,8 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 │   └── AGENTS.override.md        # Provider patterns, token estimation
 ├── security/
 │   └── AGENTS.override.md        # SSRF, symlink protection, Landlock
+├── shell/
+│   └── AGENTS.override.md        # Shell session management
 ├── tool/
 │   └── AGENTS.override.md        # Tool path validation, async command pattern
 ├── tui/
