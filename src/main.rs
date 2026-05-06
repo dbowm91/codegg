@@ -11,6 +11,7 @@ use codegg::session::{MessageStore, Session, SessionStore};
 use codegg::skills::SkillIndex;
 use codegg::storage;
 use codegg::tui;
+use codegg::upgrade;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::Read;

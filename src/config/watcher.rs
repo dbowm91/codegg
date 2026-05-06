@@ -148,7 +148,17 @@ impl ConfigWatcher {
             .collect();
 
         let configs = configs?;
-        Ok(crate::config::paths::merge_configs(&configs))
+        let config = crate::config::paths::merge_configs(&configs);
+
+        if let Err(errors) = config.validate() {
+            let msg = errors.join("; ");
+            return Err(AppError::Config(ConfigError::Watch(format!(
+                "config validation failed: {}",
+                msg
+            ))));
+        }
+
+        Ok(config)
     }
 }
 
