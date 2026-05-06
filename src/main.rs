@@ -11,6 +11,7 @@ use codegg::session::{MessageStore, Session, SessionStore};
 use codegg::skills::SkillIndex;
 use codegg::storage;
 use codegg::tui;
+use codegg::upgrade;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::Read;
@@ -549,39 +550,17 @@ async fn cmd_import(file: &str) -> Result<(), AppError> {
 async fn cmd_upgrade() -> Result<(), AppError> {
     println!("Checking for updates...");
 
-    let client = reqwest::Client::builder()
-        .user_agent("codegg")
-        .build()?;
+    let info = upgrade::check_for_updates().await?;
 
-    let resp = client
-        .get("https://api.github.com/repos/anomalyco/codegg/releases/latest")
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        println!(
-            "Could not check for updates. HTTP status: {}",
-            resp.status()
-        );
-        return Ok(());
-    }
-
-    let release: serde_json::Value = resp.json().await?;
-    let latest_version = release["tag_name"]
-        .as_str()
-        .unwrap_or("unknown")
-        .trim_start_matches('v');
-
-    let current_version = env!("CARGO_PKG_VERSION");
-
-    if latest_version == current_version {
-        println!("Already on latest version ({})", current_version);
+    if !info.needs_update {
+        println!("Already on latest version ({})", info.current);
         return Ok(());
     }
 
     println!(
         "New version available: {} (current: {})",
-        latest_version, current_version
+        info.latest.as_deref().unwrap_or("unknown"),
+        info.current
     );
     println!("Run the following to upgrade:");
     println!("  cargo install --git https://github.com/anomalyco/codegg --path codegg");

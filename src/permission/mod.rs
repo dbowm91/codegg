@@ -1161,6 +1161,7 @@ pub fn default_store_path() -> Option<std::path::PathBuf> {
 /// This approach is O(1) for both recording and detection, making it efficient even with large windows.
 pub struct DoomLoopDetector {
     history: VecDeque<String>,
+    counts: HashMap<String, usize>,
     max_window: usize,
     threshold: usize,
 }
@@ -1184,6 +1185,7 @@ impl DoomLoopDetector {
 
         Self {
             history: VecDeque::with_capacity(max_window),
+            counts: HashMap::with_capacity(max_window),
             max_window,
             threshold,
         }
@@ -1195,10 +1197,18 @@ impl DoomLoopDetector {
 
     pub fn record_tool_call(&mut self, tool_name: &str) {
         let normalized = Self::normalize_tool_name(tool_name);
-        self.history.push_back(normalized.clone());
-        if self.history.len() > self.max_window {
-            self.history.pop_front();
+        if self.history.len() >= self.max_window {
+            if let Some(evicted) = self.history.pop_front() {
+                if let Some(count) = self.counts.get_mut(&evicted) {
+                    *count -= 1;
+                    if *count == 0 {
+                        self.counts.remove(&evicted);
+                    }
+                }
+            }
         }
+        self.history.push_back(normalized.clone());
+        *self.counts.entry(normalized).or_insert(0) += 1;
     }
 
     pub fn is_doom_loop(&self) -> bool {
@@ -1210,23 +1220,12 @@ impl DoomLoopDetector {
             return false;
         };
 
-        let mut consecutive = 0;
-        for tool in self.history.iter().rev() {
-            if *tool == *last_tool {
-                consecutive += 1;
-                if consecutive >= self.threshold {
-                    return true;
-                }
-            } else {
-                break;
-            }
-        }
-
-        false
+        self.counts.get(last_tool).map(|&c| c >= self.threshold).unwrap_or(false)
     }
 
     pub fn reset(&mut self) {
         self.history.clear();
+        self.counts.clear();
     }
 }
 
