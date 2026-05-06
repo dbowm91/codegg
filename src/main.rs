@@ -480,7 +480,7 @@ async fn cmd_export(id: &str, output: Option<&str>) -> Result<(), AppError> {
         .unwrap_or_default();
     let pool = storage::init(&project_dir).await?;
     let session_store = SessionStore::new(pool.clone());
-    let message_store = codegg_rs::session::MessageStore::new(pool);
+    let message_store = codegg::session::MessageStore::new(pool);
 
     let session = session_store
         .get(id)
@@ -522,9 +522,9 @@ async fn cmd_import(file: &str) -> Result<(), AppError> {
         .unwrap_or_default();
     let pool = storage::init(&project_dir).await?;
     let session_store = SessionStore::new(pool.clone());
-    let message_store = codegg_rs::session::MessageStore::new(pool);
+    let message_store = codegg::session::MessageStore::new(pool);
 
-    let input = codegg_rs::session::CreateSession {
+    let input = codegg::session::CreateSession {
         project_id: export.session.project_id,
         directory: export.session.directory,
         title: Some(export.session.title),
@@ -881,14 +881,14 @@ fn parse_model(model: &str) -> (String, String) {
 
 #[cfg(feature = "server")]
 async fn cmd_server(host: &str, port: u16) -> Result<(), AppError> {
-    codegg_rs::server::run_server(host, port)
+    codegg::server::run_server(host, port)
         .await
         .map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)))
 }
 
 #[cfg(feature = "server")]
 async fn cmd_attach(url: &str, token: Option<&str>) -> Result<(), AppError> {
-    codegg_rs::client::run_attach(url, token)
+    codegg::client::run_attach(url, token)
         .await
         .map_err(|e| AppError::Other(anyhow::anyhow!("Client error: {}", e)))
 }

@@ -904,6 +904,11 @@ impl App {
             String::new()
         };
         let context_indicator = self.active_context_indicator();
+        let sess_title = if let Some(ref session) = self.session_state.session {
+            format!("[{}]  ", session.title)
+        } else {
+            String::new()
+        };
         let title = match self.ui_state.routes.current() {
             Route::Home => Line::from(vec![
                 Span::styled(
@@ -933,8 +938,8 @@ impl App {
                         format!("agent:{agent_name}  model:{model_short}"),
                         Style::default().fg(self.ui_state.theme.muted),
                     ),
-                ])
-            }
+                ]),
+            Route::Session(_) => Line::from(""),
         };
         let block = Block::default()
             .borders(Borders::BOTTOM)
