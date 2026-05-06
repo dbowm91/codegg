@@ -85,6 +85,8 @@ pub struct TerminalTool {
     max_output_lines: usize,
     max_output_bytes: usize,
     workdir: Option<PathBuf>,
+    blocked_commands: HashSet<&'static str>,
+    allowlist: Option<HashSet<&'static str>>,
 }
 
 impl TerminalTool {
@@ -94,6 +96,42 @@ impl TerminalTool {
             max_output_lines: 2000,
             max_output_bytes: 50_000,
             workdir: None,
+            blocked_commands: HashSet::from([
+                "rm -rf /",
+                "rm -rf /*",
+                "rm -rf /home",
+                "rm -rf /root",
+                "rm -rf /var",
+                "mkfs",
+                "dd if=/dev/zero",
+                ":(){:|:&};:",
+                "chmod -R 777 /",
+                "chown -R",
+                "curl -sL | sh",
+                "wget -q -O- | sh",
+                "bash -c",
+                "zcat /dev/urandom",
+                "> /dev/sd",
+                "fdisk",
+                "parted",
+                "lsblk",
+                "umount /",
+                "init 0",
+                "shutdown",
+                "reboot",
+                "systemctl poweroff",
+                "telinit 0",
+                "poweroff",
+                "halt",
+                "cat /etc/passwd",
+                "cat /etc/shadow",
+                "sudo su",
+                "sudo -i",
+                "sudo bash",
+                "su root",
+                "pkexec",
+            ]),
+            allowlist: None,
         }
     }
 
@@ -107,6 +145,16 @@ impl TerminalTool {
         self
     }
 
+    pub fn with_blocked_commands(mut self, commands: Vec<&'static str>) -> Self {
+        self.blocked_commands = commands.into_iter().collect();
+        self
+    }
+
+    pub fn with_allowlist(mut self, commands: Vec<&'static str>) -> Self {
+        self.allowlist = Some(commands.into_iter().collect());
+        self
+    }
+
     fn check_command_security(&self, command: &str, args: &[String]) -> Result<(), ToolError> {
         let full_command = format!("{} {}", command, args.join(" "));
 
@@ -114,6 +162,48 @@ impl TerminalTool {
             return Err(ToolError::Permission(
                 "command matches blocked pattern".to_string(),
             ));
+        }
+
+        let normalized = full_command.as_str();
+
+        let blocked = &self.blocked_commands;
+        if !blocked.is_empty() {
+            for blocked_cmd in blocked {
+                if normalized.starts_with(blocked_cmd) {
+                    return Err(ToolError::Permission(format!(
+                        "command matches blocked list: {}",
+                        blocked_cmd
+                    )));
+                }
+            }
+        }
+
+        if let Some(ref allowlist) = self.allowlist {
+            let mut cmd_parts = full_command.split_whitespace();
+            let mut cmd = cmd_parts.next().unwrap_or("");
+
+            while ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&cmd) {
+                cmd = cmd_parts.next().unwrap_or("");
+            }
+
+            if (cmd == "bash" || cmd == "sh" || cmd == "dash")
+                && full_command.contains(" -c ")
+            {
+                if !allowlist.contains(&cmd) {
+                    return Err(ToolError::Permission(format!(
+                        "command '{}' not in allowlist",
+                        cmd
+                    )));
+                }
+                return Ok(());
+            }
+
+            if !allowlist.contains(&cmd) {
+                return Err(ToolError::Permission(format!(
+                    "command '{}' not in allowlist",
+                    cmd
+                )));
+            }
         }
 
         Ok(())
