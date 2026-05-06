@@ -174,6 +174,84 @@ impl McpConnectionManager {
         self.client.shutdown().await;
         *self.state.lock().await = ConnectionState::Disconnected;
     }
+
+    pub async fn set_oauth_token(&self, token: String) {
+        self.client.set_oauth_token(token).await;
+    }
+
+    pub async fn discover_tools(&mut self) -> Result<Vec<ToolDefinition>, McpError> {
+        self.ensure_connected().await?;
+        self.client.discover_tools().await
+    }
+
+    pub async fn call_tool(
+        &mut self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<String, McpError> {
+        self.ensure_connected().await?;
+        self.client.call_tool(tool, arguments).await
+    }
+
+    pub async fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {
+        self.ensure_connected().await?;
+        self.client.list_prompts().await
+    }
+
+    pub async fn get_prompt(
+        &mut self,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<String, McpError> {
+        self.ensure_connected().await?;
+        self.client.get_prompt(name, arguments).await
+    }
+
+    pub async fn list_resources(&mut self) -> Result<Vec<McpResource>, McpError> {
+        self.ensure_connected().await?;
+        self.client.list_resources().await
+    }
+
+    pub async fn read_resource(&mut self, uri: &str) -> Result<McpResourceContent, McpError> {
+        self.ensure_connected().await?;
+        self.client.read_resource(uri).await
+    }
+
+    pub async fn disconnect(&mut self) -> Result<(), McpError> {
+        self.client.disconnect().await
+    }
+
+    pub fn max_retries(&self) -> u64 {
+        self.max_retries
+    }
+
+    pub fn set_max_retries(&mut self, max_retries: u64) {
+        self.max_retries = max_retries;
+    }
+
+    pub fn base_delay(&self) -> Duration {
+        self.base_delay
+    }
+
+    pub fn set_base_delay(&mut self, base_delay: Duration) {
+        self.base_delay = base_delay;
+    }
+
+    pub fn max_delay(&self) -> Duration {
+        self.max_delay
+    }
+
+    pub fn set_max_delay(&mut self, max_delay: Duration) {
+        self.max_delay = max_delay;
+    }
+
+    pub fn heartbeat_interval(&self) -> Duration {
+        self.heartbeat_interval
+    }
+
+    pub fn set_heartbeat_interval(&mut self, interval: Duration) {
+        self.heartbeat_interval = interval;
+    }
 }
 
 impl Clone for McpConnectionManager {
