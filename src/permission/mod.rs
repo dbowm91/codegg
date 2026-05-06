@@ -1155,8 +1155,8 @@ pub fn default_store_path() -> Option<std::path::PathBuf> {
 /// The detection algorithm:
 /// 1. Maintains a history of recent tool calls (up to max_window)
 /// 2. Uses a HashMap for O(1) count lookups instead of iterating history
-/// 3. Considers it a doom loop when the same tool has been called threshold times consecutively
-///    at the end of the window (e.g., 5 times in a row)
+/// 3. Considers it a doom loop when the most recent tool has been called threshold times
+///    anywhere in the window (not necessarily consecutively)
 ///
 /// This approach is O(1) for both recording and detection, making it efficient even with large windows.
 pub struct DoomLoopDetector {
