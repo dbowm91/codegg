@@ -633,13 +633,16 @@ async fn upgrade_tui(
 
     let rate_limiter = RateLimiter::new(100, 60);
 
-    let session_state = Arc::new(Mutex::new(TuiSessionState::new()));
+    let session_state = Arc::new(Mutex::new(TuiSessionState::new(addr.to_string())));
 
     let mut recv_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
         while let Some(Ok(msg)) = ws_rx.next().await {
             if let axum::extract::ws::Message::Text(text) = msg {
-                let key = addr.to_string();
+                let key = {
+                    let session = session_state.lock().await;
+                    session.rate_limit_key.clone()
+                };
                 if !rate_limiter.check_rate_limit(&key).await {
                     let err = TuiMessage::Error {
                         message: "Too Many Requests".to_string(),
@@ -727,13 +730,15 @@ struct TuiSessionState {
     session_id: Option<String>,
     #[allow(dead_code)]
     model: String,
+    rate_limit_key: String,
 }
 
 impl TuiSessionState {
-    fn new() -> Self {
+    fn new(rate_limit_key: String) -> Self {
         Self {
             session_id: None,
             model: "anthropic/claude-sonnet-4-20250514".to_string(),
+            rate_limit_key,
         }
     }
 }
@@ -799,7 +804,12 @@ async fn handle_tui_message(
                 let _ = crate::bus::QuestionRegistry::answer_question(id, answers_json).await;
             });
         }
-        _ => {}
+        TuiMessage::SessionInfo { id, model } => {
+            let mut state_guard = state.lock().await;
+            state_guard.session_id = Some(id.clone());
+            state_guard.model = model;
+            state_guard.rate_limit_key = format!("session:{}", id);
+        }
     }
 }
 
