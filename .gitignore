@@ -71,6 +71,8 @@ dmypy.json
 .scripts/
 
 # codegg
+.codegg/
+.opencode/
 /codegg.json
 
 # Misc
