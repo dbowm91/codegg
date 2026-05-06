@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use ratatui::layout::Rect;
 use tokio::sync::broadcast;
 
 use crate::tts::Tts;
@@ -68,4 +69,20 @@ pub struct UiState {
     pub tts_enabled: bool,
     /// Fullscreen mode (DEC 1049 alternate screen buffer)
     pub fullscreen: bool,
+    /// Dirty region for partial redraw optimization
+    pub dirty_regions: Vec<Rect>,
+}
+
+impl UiState {
+    pub fn add_dirty_region(&mut self, region: Rect) {
+        self.dirty_regions.push(region);
+    }
+
+    pub fn clear_dirty_regions(&mut self) {
+        self.dirty_regions.clear();
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        !self.dirty_regions.is_empty()
+    }
 }
