@@ -195,4 +195,63 @@ mod tests {
             0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001
         ))));
     }
+
+    #[test]
+    fn test_validate_url_host_https() {
+        let result = validate_url_host("https://example.com/path");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "example.com");
+    }
+
+    #[test]
+    fn test_validate_url_host_http() {
+        let result = validate_url_host("http://example.com:8080/path");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "example.com");
+    }
+
+    #[test]
+    fn test_validate_url_host_unsupported_scheme() {
+        let result = validate_url_host("ftp://example.com");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unsupported URL scheme"));
+    }
+
+    #[test]
+    fn test_validate_url_host_no_host() {
+        let result = validate_url_host("https://");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_url_host_internal_blocked() {
+        let result = validate_url_host("https://127.0.0.1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("internal addresses not allowed"));
+    }
+
+    #[test]
+    fn test_validate_url_host_internal_blocked_10() {
+        let result = validate_url_host("http://10.0.0.1:8080");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("internal addresses not allowed"));
+    }
+
+    #[test]
+    fn test_validate_host_ip_external() {
+        let result = validate_host_ip("example.com", 443);
+        assert!(result.is_ok());
+        let ips = result.unwrap();
+        assert!(!ips.is_empty());
+        for ip in ips {
+            assert!(!is_internal_ip(&ip));
+        }
+    }
+
+    #[test]
+    fn test_validate_host_ip_internal_blocked() {
+        let result = validate_host_ip("127.0.0.1", 80);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("internal addresses not allowed"));
+    }
 }
