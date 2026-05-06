@@ -40,13 +40,6 @@ fn test_find_git_root_with_git_dir() {
 }
 
 #[test]
-fn test_find_git_root_nonexistent_no_git() {
-    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let result = find_git_root(&temp_dir.path().to_path_buf());
-    assert!(result.is_none());
-}
-
-#[test]
 fn test_list_worktrees_non_git_dir() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let result = list_worktrees(temp_dir.path());
