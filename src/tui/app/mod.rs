@@ -2912,6 +2912,7 @@ impl App {
                                     agent: "build".to_string(),
                                     parent_id: Some(session_id),
                                     denied_tools: Vec::new(),
+                                    allowed_paths: Vec::new(),
                                     description: "Background loop task".to_string(),
                                     depth: 0,
                                 };
