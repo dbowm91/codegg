@@ -245,16 +245,7 @@ pub fn is_url(s: &str) -> bool {
 }
 
 pub async fn load_agent_prompt_async(agent: &Agent, config: &Config, model_id: &str) -> String {
-    if let Some(prompt) = &agent.system_prompt {
-        return prompt.clone();
-    }
-    let builtin_prompts = builtin_prompts();
-    let name_str = agent.name.as_str();
-    if let Some(prompt) = builtin_prompts.get(name_str) {
-        return prompt.to_string();
-    }
-    let provider_prompt = select_provider_prompt(model_id);
-    let mut parts = vec![provider_prompt.to_string()];
+    let mut parts = base_prompt_parts(agent, model_id);
     for content in find_all_instruction_files() {
         parts.push(content);
     }
@@ -285,16 +276,7 @@ pub async fn load_agent_prompt_async(agent: &Agent, config: &Config, model_id: &
 }
 
 pub fn load_agent_prompt(agent: &Agent, config: &Config, model_id: &str) -> String {
-    if let Some(prompt) = &agent.system_prompt {
-        return prompt.clone();
-    }
-    let builtin_prompts = builtin_prompts();
-    let name_str = agent.name.as_str();
-    if let Some(prompt) = builtin_prompts.get(name_str) {
-        return prompt.to_string();
-    }
-    let provider_prompt = select_provider_prompt(model_id);
-    let mut parts = vec![provider_prompt.to_string()];
+    let mut parts = base_prompt_parts(agent, model_id);
     for content in find_all_instruction_files() {
         parts.push(content);
     }
@@ -310,6 +292,27 @@ pub fn load_agent_prompt(agent: &Agent, config: &Config, model_id: &str) -> Stri
         }
     }
     parts.join("\n\n")
+}
+
+fn base_prompt_parts(agent: &Agent, model_id: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    parts.push(select_provider_prompt(model_id).to_string());
+
+    if let Some(prompt) = &agent.system_prompt {
+        parts.push(prompt.clone());
+        return parts;
+    }
+
+    let builtin_prompts = builtin_prompts();
+    if let Some(prompt) = builtin_prompts.get(agent.name.as_str()) {
+        parts.push(prompt.to_string());
+    } else {
+        parts.push(format!(
+            "You are the {} agent. {}",
+            agent.name, agent.description
+        ));
+    }
+    parts
 }
 
 fn builtin_prompts() -> &'static HashMap<&'static str, &'static str> {

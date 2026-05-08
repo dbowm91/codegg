@@ -118,13 +118,12 @@ mod tests {
         );
         let func = tool_calls[0].get("function").unwrap();
         assert_eq!(func.get("name").unwrap().as_str().unwrap(), "echo_args");
+        let args: serde_json::Value = serde_json::from_str(
+            func.get("arguments").unwrap().as_str().unwrap(),
+        )
+        .unwrap();
         assert_eq!(
-            func.get("arguments")
-                .unwrap()
-                .get("value")
-                .unwrap()
-                .as_str()
-                .unwrap(),
+            args.get("value").unwrap().as_str().unwrap(),
             "hello"
         );
 
@@ -542,13 +541,12 @@ mod tests {
         );
         let func = tool_calls[0].get("function").unwrap();
         assert_eq!(func.get("name").unwrap().as_str().unwrap(), "echo_args");
+        let args: serde_json::Value = serde_json::from_str(
+            func.get("arguments").unwrap().as_str().unwrap(),
+        )
+        .unwrap();
         assert_eq!(
-            func.get("arguments")
-                .unwrap()
-                .get("value")
-                .unwrap()
-                .as_str()
-                .unwrap(),
+            args.get("value").unwrap().as_str().unwrap(),
             "test"
         );
     }

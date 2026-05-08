@@ -58,6 +58,73 @@ fn test_parse_openai_tool_calls_multiple() {
 }
 
 #[test]
+fn test_parse_openai_tool_calls_interleaved_fragments_by_index() {
+    let first = serde_json::json!({
+        "choices": [{
+            "delta": {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "function": {
+                            "name": "read",
+                            "arguments": "{\"path\":\"src/"
+                        }
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_2",
+                        "function": {
+                            "name": "grep",
+                            "arguments": "{\"pattern\":\"foo\"}"
+                        }
+                    }
+                ]
+            }
+        }]
+    });
+    let second = serde_json::json!({
+        "choices": [{
+            "delta": {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "function": {
+                            "arguments": "main.rs\"}"
+                        }
+                    }
+                ]
+            }
+        }]
+    });
+    let mut buffer = format!("data: {}\ndata: {}\n", first, second);
+
+    let evt1 = parse_openai_buffer(&mut buffer);
+    assert!(evt1.is_some());
+    let evt1 = evt1.unwrap().unwrap();
+    match evt1 {
+        ChatEvent::ToolCall(tc) => {
+            assert_eq!(tc.id.as_ref(), "call_2");
+            assert_eq!(tc.name.as_ref(), "grep");
+            assert_eq!(tc.arguments["pattern"], "foo");
+        }
+        other => panic!("Expected ToolCall for call_2, got {:?}", other),
+    }
+
+    let evt2 = parse_openai_buffer(&mut buffer);
+    assert!(evt2.is_some());
+    let evt2 = evt2.unwrap().unwrap();
+    match evt2 {
+        ChatEvent::ToolCall(tc) => {
+            assert_eq!(tc.id.as_ref(), "call_1");
+            assert_eq!(tc.name.as_ref(), "read");
+            assert_eq!(tc.arguments["path"], "src/main.rs");
+        }
+        other => panic!("Expected ToolCall for call_1, got {:?}", other),
+    }
+}
+
+#[test]
 fn test_parse_anthropic_text_delta() {
     let mut buffer = r#"event: content_block_start
 data: {"index":0,"content_block":{"type":"text","text":"Hello"}}

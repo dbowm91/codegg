@@ -2,7 +2,16 @@ use crate::error::ProviderError;
 use crate::provider::{ChatEvent, EventStream, TokenUsage, ToolCall, MAX_BUFFER_SIZE};
 use futures::StreamExt;
 use serde_json::json;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
+
+#[derive(Debug, Clone, Default)]
+struct OpenAiToolState {
+    id: String,
+    name: String,
+    args_buffer: String,
+}
 
 pub struct SseParser {
     buffer: String,
@@ -11,6 +20,7 @@ pub struct SseParser {
     pending_tool_calls: VecDeque<ToolCall>,
     current_tool: Option<(String, String, String)>,
     args_buffer: String,
+    openai_tool_states: HashMap<usize, OpenAiToolState>,
 }
 
 impl SseParser {
@@ -22,6 +32,7 @@ impl SseParser {
             pending_tool_calls: VecDeque::new(),
             current_tool: None,
             args_buffer: String::new(),
+            openai_tool_states: HashMap::new(),
         }
     }
 
@@ -151,110 +162,116 @@ impl SseParser {
         let choices = val.get("choices")?.as_array()?;
 
         for choice in choices {
-            let delta = choice.get("delta")?;
+            let empty = serde_json::Value::Null;
+            let delta = choice.get("delta").unwrap_or(&empty);
 
             if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 if tool_calls.is_empty() {
                     return None;
                 }
-                for tc in tool_calls {
-                    let id = tc
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let function = tc.get("function")?;
-                    let name = function
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let args_val = function.get("arguments");
+                for (arr_idx, tc) in tool_calls.iter().enumerate() {
+                    let idx = tc
+                        .get("index")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize)
+                        .unwrap_or(arr_idx);
+                    let state = self.openai_tool_states.entry(idx).or_default();
 
-                    let mut use_id = id;
-                    let mut use_name = name;
-                    if use_id.is_empty() || use_name.is_empty() {
-                        if let Some((stored_id, stored_name, _)) = &self.current_tool {
-                            if use_id.is_empty() {
-                                use_id = stored_id.clone();
-                            }
-                            if use_name.is_empty() {
-                                use_name = stored_name.clone();
-                            }
+                    if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                        if !id.is_empty() {
+                            state.id = id.to_string();
                         }
                     }
 
+                    let Some(function) = tc.get("function") else {
+                        continue;
+                    };
+
+                    if let Some(name) = function.get("name").and_then(|v| v.as_str()) {
+                        if !name.is_empty() {
+                            state.name = name.to_string();
+                        }
+                    }
+
+                    let args_val = function.get("arguments");
                     if let Some(v) = args_val {
                         if !v.is_string() {
-                            if !use_name.trim().is_empty() {
+                            if !state.name.trim().is_empty() {
                                 self.pending_tool_calls.push_back(ToolCall {
-                                    id: use_id.into(),
-                                    name: use_name.into(),
+                                    id: state.id.clone().into(),
+                                    name: state.name.clone().into(),
                                     arguments: v.clone(),
                                 });
                             }
-                            self.current_tool = None;
-                            self.args_buffer.clear();
+                            state.args_buffer.clear();
                             continue;
                         }
                     }
 
                     let args_str = args_val.and_then(|v| v.as_str()).unwrap_or("");
-
-                    // Some providers send tool call deltas in fragments where the first
-                    // chunk may contain name/id but empty arguments. Keep state so later
-                    // argument chunks can be associated to the right tool.
                     if args_str.is_empty() {
-                        if !use_name.trim().is_empty() {
-                            self.current_tool =
-                                Some((use_id.clone(), use_name.clone(), use_id.clone()));
-                        }
                         continue;
                     }
 
-                    if let Ok(args) = serde_json::from_str::<serde_json::Value>(args_str) {
-                        if !use_name.trim().is_empty() {
+                    state.args_buffer.push_str(args_str);
+                    if let Ok(args) =
+                        serde_json::from_str::<serde_json::Value>(&state.args_buffer)
+                    {
+                        if !state.name.trim().is_empty() {
                             self.pending_tool_calls.push_back(ToolCall {
-                                id: use_id.into(),
-                                name: use_name.into(),
+                                id: state.id.clone().into(),
+                                name: state.name.clone().into(),
                                 arguments: args,
                             });
                         }
-                        self.current_tool = None;
-                        self.args_buffer.clear();
-                        continue;
-                    }
-
-                    match &self.current_tool {
-                        Some((stored_id, stored_name, _))
-                            if *stored_id == use_id && *stored_name == use_name =>
-                        {
-                            self.args_buffer.push_str(args_str);
-                        }
-                        _ => {
-                            self.current_tool =
-                                Some((use_id.clone(), use_name.clone(), use_id.clone()));
-                            self.args_buffer.clear();
-                            self.args_buffer.push_str(args_str);
-                        }
-                    }
-
-                    if let Ok(args) = serde_json::from_str::<serde_json::Value>(&self.args_buffer) {
-                        if !use_name.trim().is_empty() {
-                            self.pending_tool_calls.push_back(ToolCall {
-                                id: use_id.into(),
-                                name: use_name.into(),
-                                arguments: args,
-                            });
-                            self.current_tool = None;
-                            self.args_buffer.clear();
-                        }
+                        state.args_buffer.clear();
                     }
                 }
                 if let Some(tc) = self.pending_tool_calls.pop_front() {
                     return Some(Ok(ChatEvent::ToolCall(tc)));
                 }
                 return None;
+            }
+
+            if let Some(tool_calls) = choice.get("tool_calls").and_then(|t| t.as_array()) {
+                for tc in tool_calls {
+                    if let Some(parsed) = parse_openai_tool_call_value(tc) {
+                        self.pending_tool_calls.push_back(parsed);
+                    }
+                }
+                if let Some(tc) = self.pending_tool_calls.pop_front() {
+                    return Some(Ok(ChatEvent::ToolCall(tc)));
+                }
+            }
+
+            if let Some(tool_calls) = choice
+                .get("message")
+                .and_then(|m| m.get("tool_calls"))
+                .and_then(|t| t.as_array())
+            {
+                for tc in tool_calls {
+                    if let Some(parsed) = parse_openai_tool_call_value(tc) {
+                        self.pending_tool_calls.push_back(parsed);
+                    }
+                }
+                if let Some(tc) = self.pending_tool_calls.pop_front() {
+                    return Some(Ok(ChatEvent::ToolCall(tc)));
+                }
+            }
+
+            if let Some(function_call) = delta.get("function_call") {
+                if let Some(parsed) = parse_openai_legacy_function_call(function_call) {
+                    return Some(Ok(ChatEvent::ToolCall(parsed)));
+                }
+            }
+
+            if let Some(function_call) = choice
+                .get("message")
+                .and_then(|m| m.get("function_call"))
+            {
+                if let Some(parsed) = parse_openai_legacy_function_call(function_call) {
+                    return Some(Ok(ChatEvent::ToolCall(parsed)));
+                }
             }
 
             if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
@@ -277,6 +294,40 @@ impl SseParser {
 
             if let Some(finish_reason) = choice.get("finish_reason").and_then(|v| v.as_str()) {
                 if finish_reason != "null" {
+                    if finish_reason == "tool_calls" && self.pending_tool_calls.is_empty() {
+                        let mut recovered = Vec::new();
+                        collect_tool_calls_loose(choice, &mut recovered);
+                        if recovered.is_empty() {
+                            collect_tool_calls_loose(val, &mut recovered);
+                        }
+                        let mut seen = HashSet::new();
+                        for tc in recovered {
+                            let key = format!("{}|{}|{}", tc.id, tc.name, tc.arguments);
+                            if seen.insert(key) {
+                                self.pending_tool_calls.push_back(tc);
+                            }
+                        }
+                        if let Some(tc) = self.pending_tool_calls.pop_front() {
+                            return Some(Ok(ChatEvent::ToolCall(tc)));
+                        }
+                    }
+                    if finish_reason == "tool_calls" && self.pending_tool_calls.is_empty() {
+                        debug_log!(
+                            "[API-DEBUG] tool-calls-miss: finish_reason=tool_calls but no tool call parsed; has_delta_tool_calls={}, has_choice_tool_calls={}, has_message_tool_calls={}, has_delta_function_call={}, has_message_function_call={}, choice={}",
+                            delta.get("tool_calls").is_some(),
+                            choice.get("tool_calls").is_some(),
+                            choice
+                                .get("message")
+                                .and_then(|m| m.get("tool_calls"))
+                                .is_some(),
+                            delta.get("function_call").is_some(),
+                            choice
+                                .get("message")
+                                .and_then(|m| m.get("function_call"))
+                                .is_some(),
+                            choice
+                        );
+                    }
                     let mut usage = TokenUsage::default();
                     if let Some(u) = val.get("usage") {
                         if let Some(prompt) = u.get("prompt_tokens").and_then(|v| v.as_u64()) {
@@ -320,30 +371,38 @@ pub fn parse_openai_buffer(buffer: &mut String) -> Option<Result<ChatEvent, Prov
     if let Some(tc) = pop_queued_tool_call(buffer) {
         return Some(Ok(ChatEvent::ToolCall(tc)));
     }
-    let (current_tool, args_buffer) = pop_openai_state(buffer);
+    let openai_tool_states = pop_openai_state(buffer);
     let mut parser = SseParser::new(true);
     std::mem::swap(&mut parser.buffer, buffer);
-    parser.current_tool = current_tool;
-    parser.args_buffer = args_buffer;
+    parser.openai_tool_states = openai_tool_states;
     let result = parser.parse();
     let mut rebuilt = String::new();
     rebuilt.push_str(&parser.buffer);
     if !parser.pending_tool_calls.is_empty() {
         queue_remaining_tool_calls(&mut rebuilt, &parser.pending_tool_calls);
     }
-    queue_openai_state(&mut rebuilt, &parser.current_tool, &parser.args_buffer);
+    queue_openai_state(&mut rebuilt, &parser.openai_tool_states);
     *buffer = rebuilt;
     result
 }
 
 fn pop_queued_tool_call(buffer: &mut String) -> Option<ToolCall> {
     const PREFIX: &str = "\n__TC__:";
+    const STATE_PREFIX: &str = "\n__OAI_STATE__:";
     let prefix_idx = buffer.find(PREFIX)?;
     let json_start = prefix_idx + PREFIX.len();
-    let json_end = buffer[json_start..]
+    let next_tc = buffer[json_start..]
         .find(PREFIX)
-        .map(|i| json_start + i)
-        .unwrap_or(buffer.len());
+        .map(|i| json_start + i);
+    let next_state = buffer[json_start..]
+        .find(STATE_PREFIX)
+        .map(|i| json_start + i);
+    let json_end = match (next_tc, next_state) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => buffer.len(),
+    };
 
     let json_str = &buffer[json_start..json_end];
     let tc = serde_json::from_str(json_str).ok()?;
@@ -361,53 +420,72 @@ fn queue_remaining_tool_calls(buffer: &mut String, queue: &VecDeque<ToolCall>) {
     }
 }
 
-fn pop_openai_state(buffer: &mut String) -> (Option<(String, String, String)>, String) {
+fn pop_openai_state(buffer: &mut String) -> HashMap<usize, OpenAiToolState> {
     const PREFIX: &str = "\n__OAI_STATE__:";
     let Some(prefix_idx) = buffer.find(PREFIX) else {
-        return (None, String::new());
+        return HashMap::new();
     };
     let json_start = prefix_idx + PREFIX.len();
     let json_str = &buffer[json_start..];
     let parsed = serde_json::from_str::<serde_json::Value>(json_str).ok();
     buffer.truncate(prefix_idx);
     let Some(val) = parsed else {
-        return (None, String::new());
+        return HashMap::new();
     };
-    let current_tool = val
-        .get("current_tool")
-        .and_then(|v| v.as_array())
-        .and_then(|a| {
-            if a.len() == 3 {
-                Some((
-                    a[0].as_str()?.to_string(),
-                    a[1].as_str()?.to_string(),
-                    a[2].as_str()?.to_string(),
-                ))
-            } else {
-                None
-            }
-        });
-    let args_buffer = val
-        .get("args_buffer")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    (current_tool, args_buffer)
+    let mut states = HashMap::new();
+    if let Some(state_obj) = val.get("tool_states").and_then(|v| v.as_object()) {
+        for (k, entry) in state_obj {
+            let Ok(idx) = k.parse::<usize>() else {
+                continue;
+            };
+            let id = entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args_buffer = entry
+                .get("args_buffer")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            states.insert(
+                idx,
+                OpenAiToolState {
+                    id,
+                    name,
+                    args_buffer,
+                },
+            );
+        }
+    }
+    states
 }
 
-fn queue_openai_state(
-    buffer: &mut String,
-    current_tool: &Option<(String, String, String)>,
-    args_buffer: &str,
-) {
-    if current_tool.is_none() && args_buffer.is_empty() {
+fn queue_openai_state(buffer: &mut String, states: &HashMap<usize, OpenAiToolState>) {
+    if states.is_empty() {
         return;
     }
     const PREFIX: &str = "\n__OAI_STATE__:";
-    let current_tool_json = current_tool.as_ref().map(|(a, b, c)| json!([a, b, c]));
+    let tool_states: serde_json::Map<String, serde_json::Value> = states
+        .iter()
+        .map(|(idx, st)| {
+            (
+                idx.to_string(),
+                json!({
+                    "id": st.id,
+                    "name": st.name,
+                    "args_buffer": st.args_buffer,
+                }),
+            )
+        })
+        .collect();
     let payload = json!({
-        "current_tool": current_tool_json,
-        "args_buffer": args_buffer,
+        "tool_states": tool_states,
     });
     if let Ok(state) = serde_json::to_string(&payload) {
         buffer.push_str(PREFIX);
@@ -587,7 +665,8 @@ pub fn parse_openai_chunk_standalone(
     let choices = val.get("choices")?.as_array()?;
 
     for choice in choices {
-        let delta = choice.get("delta")?;
+        let empty = serde_json::Value::Null;
+        let delta = choice.get("delta").unwrap_or(&empty);
 
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             if tool_calls.is_empty() {
@@ -678,6 +757,74 @@ pub fn parse_openai_chunk_standalone(
     None
 }
 
+fn parse_openai_tool_call_value(tc: &serde_json::Value) -> Option<ToolCall> {
+    let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let (name, arguments) = if let Some(function) = tc.get("function") {
+        (
+            function.get("name").and_then(|v| v.as_str())?.to_string(),
+            function.get("arguments")?,
+        )
+    } else {
+        (
+            tc.get("name").and_then(|v| v.as_str())?.to_string(),
+            tc.get("arguments")?,
+        )
+    };
+    let args = if let Some(s) = arguments.as_str() {
+        serde_json::from_str::<serde_json::Value>(s).ok()?
+    } else {
+        arguments.clone()
+    };
+    Some(ToolCall {
+        id: id.into(),
+        name: name.into(),
+        arguments: args,
+    })
+}
+
+fn parse_openai_legacy_function_call(function_call: &serde_json::Value) -> Option<ToolCall> {
+    let name = function_call.get("name").and_then(|v| v.as_str())?.to_string();
+    let arguments = function_call.get("arguments")?;
+    let args = if let Some(s) = arguments.as_str() {
+        serde_json::from_str::<serde_json::Value>(s).ok()?
+    } else {
+        arguments.clone()
+    };
+    Some(ToolCall {
+        id: format!("call_legacy_{}", name).into(),
+        name: name.into(),
+        arguments: args,
+    })
+}
+
+fn collect_tool_calls_loose(value: &serde_json::Value, out: &mut Vec<ToolCall>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(arr) = map.get("tool_calls").and_then(|v| v.as_array()) {
+                for tc in arr {
+                    if let Some(parsed) = parse_openai_tool_call_value(tc) {
+                        out.push(parsed);
+                    }
+                }
+            }
+            if let Some(fc) = map.get("function_call") {
+                if let Some(parsed) = parse_openai_legacy_function_call(fc) {
+                    out.push(parsed);
+                }
+            }
+            for child in map.values() {
+                collect_tool_calls_loose(child, out);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for child in arr {
+                collect_tool_calls_loose(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn create_sse_stream<F, Fut>(
     send_request: F,
     parse_buffer: fn(&mut String) -> Option<Result<ChatEvent, ProviderError>>,
@@ -747,4 +894,64 @@ where
             }
         },
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_openai_message_tool_calls_shape() {
+        let payload = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "read",
+                            "arguments": "{\"filePath\":\"README.md\"}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let mut parser = SseParser::new(true);
+        let evt = parser.parse_openai_chunk(&payload);
+        match evt {
+            Some(Ok(ChatEvent::ToolCall(tc))) => {
+                assert_eq!(tc.id.as_ref(), "call_123");
+                assert_eq!(tc.name.as_ref(), "read");
+                assert_eq!(tc.arguments["filePath"], "README.md");
+            }
+            other => panic!("expected tool call event, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_openai_legacy_message_function_call_shape() {
+        let payload = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "function_call": {
+                        "name": "glob",
+                        "arguments": "{\"pattern\":\"src/**/*.rs\"}"
+                    }
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let mut parser = SseParser::new(true);
+        let evt = parser.parse_openai_chunk(&payload);
+        match evt {
+            Some(Ok(ChatEvent::ToolCall(tc))) => {
+                assert_eq!(tc.name.as_ref(), "glob");
+                assert_eq!(tc.arguments["pattern"], "src/**/*.rs");
+            }
+            other => panic!("expected tool call event, got {:?}", other),
+        }
+    }
 }

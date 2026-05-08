@@ -27,9 +27,11 @@ use crate::error::{AgentError, AppError, ProviderError, ToolError};
 use crate::permission::{DoomLoopDetector, PermissionChecker, PermissionChoice, PermissionResult};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
+use crate::provider::text_tool_parser::parse_text_as_tool_calls;
 use crate::tool::plan::detect_plan_mode_change;
 use crate::tool::question::{format_question_answers, parse_question_questions};
 use crate::tool::ToolRegistry;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -85,11 +87,96 @@ fn redact_local_paths(input: &str) -> String {
     result
 }
 
+fn harden_history(messages: &mut Vec<Message>) {
+    let mut hardened: Vec<Message> = Vec::with_capacity(messages.len() + 8);
+    let mut pending_tool_calls: BTreeMap<String, String> = BTreeMap::new();
+
+    let flush_pending = |target: &mut Vec<Message>, pending: &mut BTreeMap<String, String>| {
+        if pending.is_empty() {
+            return;
+        }
+        for tool_call_id in pending.keys() {
+            target.push(Message::Tool {
+                tool_call_id: tool_call_id.clone().into(),
+                content: "[tool result missing due to history repair]".to_string().into(),
+            });
+        }
+        pending.clear();
+    };
+
+    for msg in messages.drain(..) {
+        match msg {
+            Message::Assistant { content, tool_calls } => {
+                flush_pending(&mut hardened, &mut pending_tool_calls);
+                for tc in &tool_calls {
+                    pending_tool_calls.insert(tc.id.to_string(), tc.name.to_string());
+                }
+                hardened.push(Message::Assistant { content, tool_calls });
+            }
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => {
+                if pending_tool_calls.remove(tool_call_id.as_ref()).is_some() {
+                    hardened.push(Message::Tool {
+                        tool_call_id,
+                        content,
+                    });
+                } else {
+                    tracing::debug!(
+                        tool_call_id = %tool_call_id,
+                        "Dropping orphan tool message during history hardening"
+                    );
+                }
+            }
+            Message::User { content } => {
+                flush_pending(&mut hardened, &mut pending_tool_calls);
+                hardened.push(Message::User { content });
+            }
+            Message::System { content } => {
+                flush_pending(&mut hardened, &mut pending_tool_calls);
+                hardened.push(Message::System { content });
+            }
+        }
+    }
+
+    if !pending_tool_calls.is_empty() {
+        for tool_call_id in pending_tool_calls.keys() {
+            hardened.push(Message::Tool {
+                tool_call_id: tool_call_id.clone().into(),
+                content: "[tool result missing due to history repair]".to_string().into(),
+            });
+        }
+    }
+
+    *messages = hardened;
+}
+
+fn indicates_more_work(text: &str) -> bool {
+    let t = text.to_lowercase();
+    t.contains("let me")
+        || t.contains("i'll")
+        || t.contains("i will")
+        || t.contains("next,")
+        || t.contains("next step")
+        || t.contains("now i")
+}
+
+fn is_repo_task_prompt(prompt: &str) -> bool {
+    let p = prompt.to_lowercase();
+    p.contains("review")
+        || p.contains("docs")
+        || p.contains("read")
+        || p.contains("file")
+        || p.contains("project")
+        || p.contains("repository")
+        || p.contains("codebase")
+}
+
 #[derive(Copy, Clone)]
 struct ModelFlags {
     is_gpt: bool,
     is_non_oss: bool,
-    needs_exa: bool,
     exa_available: bool,
 }
 
@@ -710,7 +797,18 @@ impl AgentLoop {
 
         use futures::StreamExt;
         let mut stream = stream;
-        while let Some(event) = stream.next().await {
+        const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+        loop {
+            let next_event = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next())
+                .await
+                .map_err(|_| {
+                    AppError::Provider(ProviderError::Timeout(
+                        "provider stream stalled waiting for next event".to_string(),
+                    ))
+                })?;
+            let Some(event) = next_event else {
+                break;
+            };
             match event {
                 Ok(evt) => {
                     match &evt {
@@ -1093,10 +1191,41 @@ impl AgentLoop {
             );
         }
         request.tools = Some(self.build_tool_definitions().await);
+        let model_lower = request.model.to_lowercase();
+        if model_lower.contains("minimax") {
+            if let Some(Message::System { content }) = request.messages.first_mut() {
+                let merged = format!(
+                    "{}\n\nTool-use contract: For repository/file/code/doc tasks, emit structured tool calls before giving conclusions. Do not only describe intended tool use in plain text.",
+                    content
+                );
+                *content = merged.into();
+            }
+        }
         self.context_tracker.add_messages(&request.messages);
 
         let mut all_events = Vec::with_capacity(128);
         let mut processor = EventProcessor::new();
+        let mut missing_structured_tool_call_retries: u8 = 0;
+        let mut post_tool_continuation_retry_budget: u8 = 0;
+        let mut just_executed_tools = false;
+        let mut did_bootstrap_tool = false;
+        let original_prompt = request
+            .messages
+            .iter()
+            .find_map(|m| {
+                if let Message::User { content } = m {
+                    content.iter().find_map(|p| {
+                        if let ContentPart::Text { text } = p {
+                            Some(text.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
 
         loop {
             if let Some(reason) = self.check_limits() {
@@ -1150,6 +1279,7 @@ impl AgentLoop {
             }
 
             self.compact_if_needed(&mut request.messages).await;
+            harden_history(&mut request.messages);
 
             let events = match self.stream_with_retry(&request).await {
                 Ok(events) => events,
@@ -1164,12 +1294,98 @@ impl AgentLoop {
             }
             all_events.extend(events);
 
-            if !processor.has_tool_calls() {
-                break;
+            let mut tool_calls = processor.tool_calls().to_vec();
+            if tool_calls.is_empty() && matches!(processor.stop_reason(), Some("tool_calls")) {
+                if let Some(parsed_calls) = parse_text_as_tool_calls(processor.text()) {
+                    for tc in &parsed_calls {
+                        crate::bus::global::GlobalEventBus::publish(AppEvent::ToolCallStarted {
+                            session_id: self.session_id.clone(),
+                            tool_name: tc.name.to_string(),
+                            tool_id: tc.id.to_string(),
+                            arguments: tc.arguments.to_string(),
+                        });
+                    }
+                    tool_calls = parsed_calls;
+                }
             }
 
-            let tool_calls = processor.tool_calls().to_vec();
+            if tool_calls.is_empty() {
+                if !did_bootstrap_tool
+                    && self.state.turn_count <= 2
+                    && matches!(processor.stop_reason(), Some("stop"))
+                    && is_repo_task_prompt(&original_prompt)
+                {
+                    let synthetic = ToolCall {
+                        id: "synthetic_bootstrap_list".to_string().into(),
+                        name: "list".to_string().into(),
+                        arguments: serde_json::json!({"path":"."}),
+                    };
+                    crate::bus::global::GlobalEventBus::publish(AppEvent::ToolCallStarted {
+                        session_id: self.session_id.clone(),
+                        tool_name: synthetic.name.to_string(),
+                        tool_id: synthetic.id.to_string(),
+                        arguments: synthetic.arguments.to_string(),
+                    });
+                    let tool_results = self.execute_tool_calls(&[synthetic.clone()]).await?;
+                    let assistant = Message::Assistant {
+                        content: vec![],
+                        tool_calls: vec![synthetic],
+                    };
+                    self.context_tracker.add_message(&assistant);
+                    request.messages.push(assistant);
+                    for (id, content) in &tool_results {
+                        crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
+                            tool_id: id.clone(),
+                            tool_name: "list".to_string(),
+                            session_id: self.session_id.clone(),
+                            output: content.clone(),
+                            success: !content.starts_with("Error:"),
+                        });
+                        let redacted_content = redact_local_paths(content);
+                        let msg = Message::Tool {
+                            tool_call_id: id.clone().into(),
+                            content: redacted_content.into(),
+                        };
+                        self.context_tracker.add_message(&msg);
+                        request.messages.push(msg);
+                    }
+                    did_bootstrap_tool = true;
+                    processor.reset();
+                    continue;
+                }
+                if just_executed_tools
+                    && post_tool_continuation_retry_budget < 1
+                    && matches!(processor.stop_reason(), Some("stop"))
+                    && (processor.text().trim().len() < 220
+                        || indicates_more_work(processor.text()))
+                {
+                    if let Some(msg) = processor.to_assistant_message() {
+                        self.context_tracker.add_message(&msg);
+                        request.messages.push(msg);
+                    }
+                    post_tool_continuation_retry_budget += 1;
+                    just_executed_tools = false;
+                    processor.reset();
+                    continue;
+                }
+                if matches!(processor.stop_reason(), Some("tool_calls"))
+                    && missing_structured_tool_call_retries < 2
+                {
+                    request.messages.push(Message::System {
+                        content: "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only."
+                            .to_string()
+                            .into(),
+                    });
+                    missing_structured_tool_call_retries += 1;
+                    processor.reset();
+                    continue;
+                }
+                break;
+            }
+            missing_structured_tool_call_retries = 0;
+            post_tool_continuation_retry_budget = 0;
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
+            just_executed_tools = !tool_results.is_empty();
 
             if let Some(msg) = processor.to_assistant_message() {
                 self.context_tracker.add_message(&msg);
@@ -1471,8 +1687,8 @@ impl AgentLoop {
 
         if has_pending_question {
             if let Some(rx) = self.question_rx.take() {
-                match rx.await {
-                    Ok(answers) => {
+                match tokio::time::timeout(Duration::from_secs(300), rx).await {
+                    Ok(Ok(answers)) => {
                         let formatted = format_question_answers(&answers);
                         tool_results = tool_results
                             .into_iter()
@@ -1485,12 +1701,24 @@ impl AgentLoop {
                             })
                             .collect();
                     }
-                    Err(_) => {
+                    Ok(Err(_)) => {
                         tool_results = tool_results
                             .into_iter()
                             .map(|(idx, id, output)| {
                                 if output == "__QUESTION_PENDING__" {
                                     (idx, id, "[question cancelled by user]".to_string())
+                                } else {
+                                    (idx, id, output)
+                                }
+                            })
+                            .collect();
+                    }
+                    Err(_) => {
+                        tool_results = tool_results
+                            .into_iter()
+                            .map(|(idx, id, output)| {
+                                if output == "__QUESTION_PENDING__" {
+                                    (idx, id, "[question timed out waiting for user response]".to_string())
                                 } else {
                                     (idx, id, output)
                                 }
@@ -1546,8 +1774,12 @@ impl AgentLoop {
         });
 
         // Continue processing until done (handles tool calls and follow-up responses)
+        let mut missing_structured_tool_call_retries: u8 = 0;
+        let mut post_tool_continuation_retry_budget: u8 = 0;
+        let mut just_executed_tools = false;
         loop {
             self.compact_if_needed(&mut request.messages).await;
+            harden_history(&mut request.messages);
 
             let events = match self.stream_with_retry(request).await {
                 Ok(events) => events,
@@ -1562,12 +1794,53 @@ impl AgentLoop {
             }
             all_events.extend(events);
 
-            if !processor.has_tool_calls() {
+            let mut tool_calls = processor.tool_calls().to_vec();
+            if tool_calls.is_empty() && matches!(processor.stop_reason(), Some("tool_calls")) {
+                if let Some(parsed_calls) = parse_text_as_tool_calls(processor.text()) {
+                    for tc in &parsed_calls {
+                        crate::bus::global::GlobalEventBus::publish(AppEvent::ToolCallStarted {
+                            session_id: self.session_id.clone(),
+                            tool_name: tc.name.to_string(),
+                            tool_id: tc.id.to_string(),
+                            arguments: tc.arguments.to_string(),
+                        });
+                    }
+                    tool_calls = parsed_calls;
+                }
+            }
+
+            if tool_calls.is_empty() {
+                if just_executed_tools
+                    && post_tool_continuation_retry_budget < 1
+                    && matches!(processor.stop_reason(), Some("stop"))
+                    && (processor.text().trim().len() < 220
+                        || indicates_more_work(processor.text()))
+                {
+                    if let Some(msg) = processor.to_assistant_message() {
+                        request.messages.push(msg);
+                    }
+                    post_tool_continuation_retry_budget += 1;
+                    just_executed_tools = false;
+                    processor.reset();
+                    continue;
+                }
+                if matches!(processor.stop_reason(), Some("tool_calls"))
+                    && missing_structured_tool_call_retries < 2
+                {
+                    request.messages.push(Message::System {
+                        content: "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only."
+                            .to_string()
+                            .into(),
+                    });
+                    missing_structured_tool_call_retries += 1;
+                    processor.reset();
+                    continue;
+                }
                 processor.reset();
                 break;
             }
-
-            let tool_calls = processor.tool_calls().to_vec();
+            missing_structured_tool_call_retries = 0;
+            post_tool_continuation_retry_budget = 0;
             let tool_results = match self.execute_tool_calls(&tool_calls).await {
                 Ok(results) => results,
                 Err(e) => {
@@ -1576,6 +1849,7 @@ impl AgentLoop {
                     return;
                 }
             };
+            just_executed_tools = !tool_results.is_empty();
 
             // Push assistant message BEFORE tool results (fix Packet 2)
             if let Some(msg) = processor.to_assistant_message() {
@@ -1699,7 +1973,7 @@ fn filter_tools_for_model<'a>(
 
             match t.name() {
                 "apply_patch" => flags.is_gpt && flags.is_non_oss,
-                "edit" | "write" => flags.needs_exa,
+                "edit" | "write" => true,
                 "codesearch" | "websearch" => flags.exa_available,
                 "lsp" => lsp_enabled,
                 "batch" => false,
@@ -1715,16 +1989,11 @@ fn compute_model_flags(model: Option<&String>) -> ModelFlags {
     let is_gpt = model_id.contains("gpt") && !model_id.contains("gpt-4");
     let is_non_oss =
         model_id.contains("gpt") || model_id.contains("claude") || model_id.contains("gemini");
-    let needs_exa = model_id.contains("claude")
-        || model_id.contains("gpt")
-        || model_id.contains("gemini")
-        || model_id.contains("llm");
     let exa_available =
         std::env::var("EXA_API_KEY").is_ok() || std::env::var("EXA_CODE_API_KEY").is_ok();
     ModelFlags {
         is_gpt,
         is_non_oss,
-        needs_exa,
         exa_available,
     }
 }

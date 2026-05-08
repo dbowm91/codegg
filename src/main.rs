@@ -689,7 +689,36 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
 
     let provider = registry
         .get(&provider_id)
-        .ok_or_else(|| AppError::Other(anyhow::anyhow!("Provider not found: {}", provider_id)))?;
+        .ok_or_else(|| AppError::Other(anyhow::anyhow!("Provider not found: {}", provider_id)))?
+        .clone_box();
+
+    let agents = agent::resolve_agents(&config)?;
+    let target_agent = cli.agent.as_deref().unwrap_or(
+        config
+            .default_agent
+            .as_deref()
+            .unwrap_or("build"),
+    );
+    let selected_agent = agents
+        .iter()
+        .find(|a| a.name == target_agent)
+        .cloned()
+        .ok_or_else(|| AppError::Other(anyhow::anyhow!("Agent not found: {}", target_agent)))?;
+
+    let permission_checker = codegg::permission::PermissionChecker::new(Some(&config), None);
+    let tool_registry = codegg::tool::ToolRegistry::with_defaults();
+    let mut agent_loop = codegg::agent::r#loop::AgentLoop::new(
+        agents,
+        provider,
+        permission_checker,
+        tool_registry,
+        config.clone(),
+        None,
+        None,
+    );
+    let session_id = uuid::Uuid::new_v4().to_string();
+    agent_loop.set_session_id(&session_id);
+    agent_loop.set_agent(&selected_agent.name)?;
 
     let request = provider::ChatRequest {
         messages: vec![provider::Message::User {
@@ -699,33 +728,31 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         }],
         model: model_name.to_string(),
         tools: None,
-        system: None,
-        temperature: None,
-        top_p: None,
+        system: Some(codegg::agent::prompt::load_agent_prompt(
+            &selected_agent,
+            &config,
+            &model_name,
+        )),
+        temperature: selected_agent.temperature,
+        top_p: selected_agent.top_p,
         max_tokens: None,
         response_format: None,
     };
 
-    let mut stream = provider.stream(&request).await?;
-
-    use futures::StreamExt;
-    while let Some(event) = stream.next().await {
-        match event? {
-            provider::ChatEvent::TextDelta(text) => {
-                print!("{}", text);
-                use std::io::Write;
-                std::io::stdout().flush()?;
-            }
-            provider::ChatEvent::Finish { usage, .. } => {
-                eprintln!(
-                    "\n\nTokens: {} input, {} output",
-                    usage.input_tokens, usage.output_tokens
-                );
-            }
-            _ => {}
+    let events = agent_loop.run(request).await?;
+    let mut processor = codegg::agent::processor::EventProcessor::new();
+    let mut final_usage = None;
+    for event in events {
+        if let provider::ChatEvent::Finish { usage, .. } = &event {
+            final_usage = Some((usage.input_tokens, usage.output_tokens));
         }
+        processor.process(event);
     }
+    print!("{}", processor.text());
     println!();
+    if let Some((input, output)) = final_usage {
+        eprintln!("\nTokens: {} input, {} output", input, output);
+    }
 
     Ok(())
 }
