@@ -729,3 +729,23 @@ async fn test_edit_tool_error_suggests_similar() {
     let err = result.unwrap_err();
     assert!(matches!(err, codegg::error::ToolError::Execution(_)));
 }
+
+#[tokio::test]
+async fn test_read_tool_missing_path_suggests_module_agent_docs() {
+    let dir = setup_dir();
+    let docs_meta = dir.path().join(".codegg").join("docs").join("meta");
+    fs::create_dir_all(&docs_meta).unwrap();
+    fs::write(docs_meta.join("AGENTS.override.md"), "# Meta guidance\n").unwrap();
+
+    let tool = ReadTool::new().with_allowed_root(dir.path().to_path_buf());
+    let input = serde_json::json!({
+        "path": dir.path().join(".codegg/docs/AGENTS.md").to_string_lossy().to_string()
+    });
+
+    let result = tool.execute(input).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    let message = err.to_string();
+    assert!(message.contains("file not found"));
+    assert!(message.contains(".codegg/docs/meta/AGENTS.override.md"));
+}

@@ -19,6 +19,121 @@ fn is_pdf_extension(ext: &str) -> bool {
     PDF_EXTENSIONS.contains(&ext)
 }
 
+fn path_for_display(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string())
+}
+
+fn missing_path_hint(requested: &Path, allowed_root: &Path, unrestricted: bool) -> Option<String> {
+    let root = allowed_root.canonicalize().ok()?;
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        root.join(requested)
+    };
+
+    let parent = candidate.parent()?;
+    let parent_canonical = parent.canonicalize().ok()?;
+    if !unrestricted && !parent_canonical.starts_with(&root) {
+        return None;
+    }
+
+    let requested_name = candidate
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    let requested_stem = candidate
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+
+    let mut suggestions = Vec::new();
+    collect_matching_entries(
+        &parent_canonical,
+        &root,
+        &requested_name,
+        &requested_stem,
+        0,
+        &mut suggestions,
+    );
+
+    suggestions.sort();
+    suggestions.dedup();
+    suggestions.truncate(8);
+
+    let mut message = format!("read failed: file not found: {}", candidate.display());
+    if parent_canonical.is_dir() {
+        message.push_str(&format!(
+            "\nParent directory exists: {}",
+            path_for_display(&parent_canonical, &root)
+        ));
+    }
+    if !suggestions.is_empty() {
+        message.push_str("\nDid you mean one of these paths?\n");
+        for suggestion in suggestions {
+            message.push_str("- ");
+            message.push_str(&suggestion);
+            message.push('\n');
+        }
+    }
+    Some(message)
+}
+
+fn collect_matching_entries(
+    dir: &Path,
+    root: &Path,
+    requested_name: &str,
+    requested_stem: &str,
+    depth: usize,
+    suggestions: &mut Vec<String>,
+) {
+    if depth > 4 || suggestions.len() >= 16 {
+        return;
+    }
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        let name_matches = !requested_name.is_empty() && name.contains(requested_name);
+        let stem_matches = !requested_stem.is_empty() && name.starts_with(requested_stem);
+
+        if (name_matches || stem_matches) && file_type.is_file() {
+            suggestions.push(path_for_display(&path, root));
+            if suggestions.len() >= 16 {
+                return;
+            }
+        }
+
+        if file_type.is_dir() {
+            collect_matching_entries(
+                &path,
+                root,
+                requested_name,
+                requested_stem,
+                depth + 1,
+                suggestions,
+            );
+            if suggestions.len() >= 16 {
+                return;
+            }
+        }
+    }
+}
+
 pub struct ReadTool {
     allowed_root: PathBuf,
     unrestricted: bool,
@@ -95,10 +210,20 @@ impl Tool for ReadTool {
 
         let result = tokio::task::spawn_blocking(move || {
             let original_path = Path::new(&path_str);
-            let validated_path = if unrestricted {
-                canonicalize_path(original_path)?
+            let validated_path = match if unrestricted {
+                canonicalize_path(original_path)
             } else {
-                validate_path(original_path, &allowed_root)?
+                validate_path(original_path, &allowed_root)
+            } {
+                Ok(path) => path,
+                Err(err) => {
+                    if let Some(hint) =
+                        missing_path_hint(original_path, &allowed_root, unrestricted)
+                    {
+                        return Err(ToolError::Execution(hint));
+                    }
+                    return Err(err);
+                }
             };
 
             if !validated_path.exists() {
