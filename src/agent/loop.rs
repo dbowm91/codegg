@@ -152,6 +152,34 @@ fn harden_history(messages: &mut Vec<Message>) {
     *messages = hardened;
 }
 
+fn should_avoid_late_system_messages(model: &str) -> bool {
+    model.to_lowercase().contains("minimax")
+}
+
+fn push_control_instruction(messages: &mut Vec<Message>, model: &str, content: &str) {
+    if should_avoid_late_system_messages(model) {
+        if let Some(Message::System {
+            content: system_content,
+        }) = messages.first_mut()
+        {
+            let merged = format!("{system_content}\n\n{content}");
+            *system_content = merged.into();
+            return;
+        }
+
+        messages.push(Message::User {
+            content: vec![ContentPart::Text {
+                text: format!("Instruction: {content}").into(),
+            }],
+        });
+        return;
+    }
+
+    messages.push(Message::System {
+        content: content.to_string().into(),
+    });
+}
+
 fn indicates_more_work(text: &str) -> bool {
     let t = text.to_lowercase();
     t.contains("let me")
@@ -1244,9 +1272,7 @@ impl AgentLoop {
                             "CRITICAL - MAXIMUM STEPS REACHED\n\nYou have reached the maximum number of steps ({}). Provide a summary of your work and exit.",
                             steps
                         );
-                        request.messages.push(Message::System {
-                            content: system.into(),
-                        });
+                        push_control_instruction(&mut request.messages, &request.model, &system);
                         request.messages.push(Message::Assistant {
                             content: vec![ContentPart::Text {
                                 text: "Here is a summary of my work so far:".to_string().into(),
@@ -1371,11 +1397,11 @@ impl AgentLoop {
                 if matches!(processor.stop_reason(), Some("tool_calls"))
                     && missing_structured_tool_call_retries < 2
                 {
-                    request.messages.push(Message::System {
-                        content: "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only."
-                            .to_string()
-                            .into(),
-                    });
+                    push_control_instruction(
+                        &mut request.messages,
+                        &request.model,
+                        "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
+                    );
                     missing_structured_tool_call_retries += 1;
                     processor.reset();
                     continue;
@@ -1827,11 +1853,11 @@ impl AgentLoop {
                 if matches!(processor.stop_reason(), Some("tool_calls"))
                     && missing_structured_tool_call_retries < 2
                 {
-                    request.messages.push(Message::System {
-                        content: "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only."
-                            .to_string()
-                            .into(),
-                    });
+                    push_control_instruction(
+                        &mut request.messages,
+                        &request.model,
+                        "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
+                    );
                     missing_structured_tool_call_retries += 1;
                     processor.reset();
                     continue;
