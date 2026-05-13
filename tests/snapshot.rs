@@ -1,9 +1,19 @@
 use codegg::snapshot::{FileSnapshot, SnapshotView, SnapshotManager};
 use std::collections::HashMap;
+use std::fs;
+use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 
+async fn create_test_pool() -> SqlitePool {
+    SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("failed to connect to memory db")
+}
+
 async fn create_test_manager() -> SnapshotManager {
-    let pool = SqlitePool::connect("sqlite::memory:").await.expect("failed to connect to memory db");
+    let pool = create_test_pool().await;
     // Run migrations
     codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
     
@@ -67,12 +77,37 @@ async fn test_snapshot_capture_empty_dir() {
 }
 
 async fn create_test_manager_with_pool() -> (SnapshotManager, SqlitePool) {
-    let pool = SqlitePool::connect("sqlite::memory:").await.expect("failed to connect to memory db");
+    let pool = create_test_pool().await;
     // Run migrations
     codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
     
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     (SnapshotManager::new(pool.clone(), temp_dir.path().to_path_buf()), pool)
+}
+
+async fn insert_test_project_and_session(pool: &SqlitePool) {
+    sqlx::query("INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, ?, ?, ?, ?)")
+        .bind("test-project")
+        .bind(".")
+        .bind("[]")
+        .bind(0)
+        .bind(0)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind("test-session")
+        .bind("test-project")
+        .bind("test-session")
+        .bind(".")
+        .bind("Test Session")
+        .bind("1")
+        .bind(0)
+        .bind(0)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 #[test]
@@ -112,4 +147,74 @@ fn test_snapshot_view_creation() {
 
     assert_eq!(snapshot.id, "id");
     assert_eq!(snapshot.files.len(), 1);
+}
+
+#[tokio::test]
+async fn test_capture_incremental_uses_old_content() {
+    let pool = create_test_pool().await;
+    codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
+    insert_test_project_and_session(&pool).await;
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let manager = SnapshotManager::new(pool.clone(), temp_dir.path().to_path_buf());
+
+    let result = manager
+        .capture_incremental(
+            "test-session",
+            Some("incremental-pre-change".to_string()),
+            vec![
+                ("src/main.rs".to_string(), Some("old-main".to_string())),
+                ("new/file.txt".to_string(), None),
+            ],
+        )
+        .await
+        .unwrap()
+        .expect("expected incremental snapshot");
+
+    assert_eq!(result.files.len(), 1);
+    assert_eq!(result.label, Some("incremental-pre-change".to_string()));
+    let old = result.files.get("src/main.rs").expect("missing file");
+    assert_eq!(old.content, "old-main");
+}
+
+#[tokio::test]
+async fn test_capture_skips_binary_and_large_files() {
+    let pool = create_test_pool().await;
+    codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
+    insert_test_project_and_session(&pool).await;
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+
+    fs::write(root.join("src").join("ok.txt"), "hello world").unwrap();
+    fs::write(root.join("src").join("bin.dat"), [0_u8, 159, 146, 150]).unwrap();
+    fs::write(root.join("src").join("big.txt"), vec![b'a'; 1_000_001]).unwrap();
+
+    let mut manager = SnapshotManager::new(pool, root.to_path_buf());
+    let snapshot = manager.capture("test-session", Some("full".to_string())).await.unwrap();
+
+    assert!(snapshot.files.contains_key("src/ok.txt"));
+    assert!(!snapshot.files.contains_key("src/bin.dat"));
+    assert!(!snapshot.files.contains_key("src/big.txt"));
+}
+
+#[tokio::test]
+async fn test_capture_file_count_limit() {
+    let pool = create_test_pool().await;
+    codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
+    insert_test_project_and_session(&pool).await;
+
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join("many")).unwrap();
+
+    for i in 0..5_100 {
+        fs::write(root.join("many").join(format!("f{i}.txt")), "x").unwrap();
+    }
+
+    let mut manager = SnapshotManager::new(pool, root.to_path_buf());
+    let snapshot = manager.capture("test-session", Some("full".to_string())).await.unwrap();
+
+    assert!(snapshot.files.len() <= 5_000);
 }

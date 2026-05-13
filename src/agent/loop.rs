@@ -54,6 +54,7 @@ static PATH_REDACTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
         .collect()
 });
 use tokio::sync::mpsc;
+use tokio::sync::broadcast::error::TryRecvError;
 use tracing::instrument;
 
 type ToolDefCache = (
@@ -566,6 +567,7 @@ pub struct AgentLoop {
     tool_def_cache: Option<ToolDefCache>,
     model_router: ModelRouter,
     snapshot_manager: Option<crate::snapshot::SnapshotManager>,
+    file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
 }
 
 impl AgentLoop {
@@ -610,7 +612,16 @@ impl AgentLoop {
         let snapshot_manager = if config.snapshot.unwrap_or(false) {
             if let Some(pool) = pool {
                 let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                Some(crate::snapshot::SnapshotManager::new(pool, project_root))
+                let options = config
+                    .snapshot_config
+                    .as_ref()
+                    .map(|c| crate::snapshot::SnapshotOptions {
+                        max_files: c.max_files,
+                        max_file_bytes: c.max_file_bytes,
+                        max_total_bytes: c.max_total_bytes,
+                    })
+                    .unwrap_or_default();
+                Some(crate::snapshot::SnapshotManager::new_with_options(pool, project_root, options))
             } else {
                 None
             }
@@ -654,6 +665,7 @@ impl AgentLoop {
             tool_def_cache: None,
             model_router,
             snapshot_manager,
+            file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
         }
     }
 
@@ -1519,6 +1531,54 @@ impl AgentLoop {
         }
     }
 
+    fn drain_file_change_events(&mut self) -> Vec<(String, Option<String>)> {
+        let mut changes = Vec::new();
+        loop {
+            match self.file_change_rx.try_recv() {
+                Ok(AppEvent::FileChanged { path, old_content, .. }) => {
+                    changes.push((path, old_content));
+                }
+                Ok(_) => {}
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Lagged(skipped)) => {
+                    tracing::warn!("FileChanged stream lagged, skipped {skipped} events");
+                }
+                Err(TryRecvError::Closed) => break,
+            }
+        }
+        changes
+    }
+
+    async fn capture_incremental_snapshot_if_needed(&mut self, label: Option<String>) {
+        if self.snapshot_manager.is_none() {
+            return;
+        }
+
+        let changes = self.drain_file_change_events();
+        if changes.is_empty() {
+            return;
+        }
+
+        if let Some(ref snapshot_manager) = self.snapshot_manager {
+            match snapshot_manager
+                .capture_incremental(&self.session_id, label, changes)
+                .await
+            {
+                Ok(Some(snapshot)) => {
+                    tracing::info!(
+                        "Incremental snapshot captured: {} with {} files",
+                        snapshot.id,
+                        snapshot.files.len()
+                    );
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("Failed to capture incremental snapshot: {}", e);
+                }
+            }
+        }
+    }
+
     #[instrument(skip(self, tool_calls), fields(tool_count = tool_calls.len()))]
     async fn execute_tool_calls(
         &mut self,
@@ -1546,6 +1606,8 @@ impl AgentLoop {
         // Capture snapshot before executing file-modifying tools
         let has_file_modifying = allowed_tools.iter().any(|(_, tc)| is_file_modifying_tool(&tc.name));
         if has_file_modifying {
+            // Clear stale file-change events so we only checkpoint this batch.
+            let _ = self.drain_file_change_events();
             self.capture_snapshot_if_needed().await;
         }
 
@@ -1709,6 +1771,11 @@ impl AgentLoop {
                 Err(e) => format!("Error: {}", e),
             };
             tool_results.push((idx, id.to_string(), output));
+        }
+
+        if has_file_modifying {
+            self.capture_incremental_snapshot_if_needed(Some("incremental-pre-change".to_string()))
+                .await;
         }
 
         if has_pending_question {

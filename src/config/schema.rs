@@ -51,6 +51,7 @@ pub struct Config {
     pub lsp: Option<LspConfig>,
     pub watcher: Option<WatcherConfig>,
     pub snapshot: Option<bool>,
+    pub snapshot_config: Option<SnapshotConfig>,
     pub plugin: Option<Vec<PluginSpec>>,
     pub enterprise: Option<EnterpriseConfig>,
     pub experimental: Option<ExperimentalConfig>,
@@ -60,6 +61,24 @@ pub struct Config {
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub catalog: Option<CatalogConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct SnapshotConfig {
+    pub max_files: usize,
+    pub max_file_bytes: u64,
+    pub max_total_bytes: u64,
+}
+
+impl Default for SnapshotConfig {
+    fn default() -> Self {
+        Self {
+            max_files: 5_000,
+            max_file_bytes: 1_000_000,
+            max_total_bytes: 20_000_000,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]

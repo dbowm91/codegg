@@ -5,6 +5,23 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use sqlx::SqlitePool;
 
+#[derive(Debug, Clone)]
+pub struct SnapshotOptions {
+    pub max_files: usize,
+    pub max_file_bytes: u64,
+    pub max_total_bytes: u64,
+}
+
+impl Default for SnapshotOptions {
+    fn default() -> Self {
+        Self {
+            max_files: 5_000,
+            max_file_bytes: 1_000_000,
+            max_total_bytes: 20_000_000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSnapshot {
     pub path: String,
@@ -34,6 +51,7 @@ pub struct SnapshotView {
 pub struct SnapshotManager {
     pool: SqlitePool,
     project_root: PathBuf,
+    options: SnapshotOptions,
 }
 
 impl SnapshotManager {
@@ -41,6 +59,15 @@ impl SnapshotManager {
         Self {
             pool,
             project_root,
+            options: SnapshotOptions::default(),
+        }
+    }
+
+    pub fn new_with_options(pool: SqlitePool, project_root: PathBuf, options: SnapshotOptions) -> Self {
+        Self {
+            pool,
+            project_root,
+            options,
         }
     }
 
@@ -51,9 +78,11 @@ impl SnapshotManager {
     ) -> Result<SnapshotView, String> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp_millis();
-        let mut files = HashMap::new();
-
-        self.collect_files(&self.project_root, &mut files);
+        let project_root = self.project_root.clone();
+        let options = self.options.clone();
+        let files = tokio::task::spawn_blocking(move || collect_files_sync(&project_root, &options))
+            .await
+            .map_err(|e| format!("snapshot collection join error: {e}"))?;
 
         let data = serde_json::to_string(&files).map_err(|e| e.to_string())?;
 
@@ -76,6 +105,59 @@ impl SnapshotManager {
             created_at: now,
             label,
         })
+    }
+
+    pub async fn capture_incremental(
+        &self,
+        session_id: &str,
+        label: Option<String>,
+        file_changes: Vec<(String, Option<String>)>,
+    ) -> Result<Option<SnapshotView>, String> {
+        let mut files = HashMap::new();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        for (path, old_content) in file_changes {
+            let Some(content) = old_content else {
+                continue;
+            };
+            let rel_path = self.to_relative_path(&path);
+            let hash = format!("{:x}", md5::compute(content.as_bytes()));
+            files.insert(
+                rel_path.clone(),
+                FileSnapshot {
+                    path: rel_path,
+                    content,
+                    hash,
+                    timestamp: now,
+                },
+            );
+        }
+
+        if files.is_empty() {
+            return Ok(None);
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let data = serde_json::to_string(&files).map_err(|e| e.to_string())?;
+        sqlx::query(
+            "INSERT INTO snapshot (id, session_id, created_at, label, data) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(&id)
+        .bind(session_id)
+        .bind(now)
+        .bind(&label)
+        .bind(&data)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        Ok(Some(SnapshotView {
+            id,
+            session_id: session_id.to_string(),
+            files,
+            created_at: now,
+            label,
+        }))
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<SnapshotView>, String> {
@@ -149,39 +231,101 @@ impl SnapshotManager {
         }
     }
 
-    fn collect_files(&self, dir: &Path, files: &mut HashMap<String, FileSnapshot>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy())
-                        .unwrap_or_default();
-                    if name == ".git" || name == "node_modules" || name == "target" || name == ".codegg" {
-                        continue;
-                    }
-                    self.collect_files(&path, files);
-                } else if path.is_file() {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let hash = format!("{:x}", md5::compute(content.as_bytes()));
-                        let rel_path = path
-                            .strip_prefix(&self.project_root)
-                            .unwrap_or(&path)
-                            .to_string_lossy()
-                            .to_string();
+    fn to_relative_path(&self, path: &str) -> String {
+        let path_buf = PathBuf::from(path);
+        path_buf
+            .strip_prefix(&self.project_root)
+            .unwrap_or(path_buf.as_path())
+            .to_string_lossy()
+            .to_string()
+    }
+}
 
-                        let snapshot = FileSnapshot {
-                            path: rel_path.clone(),
-                            content,
-                            hash,
-                            timestamp: chrono::Utc::now().timestamp_millis(),
-                        };
+fn collect_files_sync(project_root: &Path, options: &SnapshotOptions) -> HashMap<String, FileSnapshot> {
+    let mut files = HashMap::new();
+    let mut stack = vec![project_root.to_path_buf()];
+    let mut total_bytes = 0_u64;
+    let now = chrono::Utc::now().timestamp_millis();
 
-                        files.insert(rel_path, snapshot);
-                    }
-                }
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            if files.len() >= options.max_files || total_bytes >= options.max_total_bytes {
+                return files;
             }
+
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default();
+                if name == ".git" || name == "node_modules" || name == "target" || name == ".codegg" {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+
+            if !path.is_file() {
+                continue;
+            }
+
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.len() > options.max_file_bytes {
+                continue;
+            }
+
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if bytes.is_empty() {
+                let rel_path = path
+                    .strip_prefix(project_root)
+                    .unwrap_or(path.as_path())
+                    .to_string_lossy()
+                    .to_string();
+                files.insert(
+                    rel_path.clone(),
+                    FileSnapshot {
+                        path: rel_path,
+                        content: String::new(),
+                        hash: format!("{:x}", md5::compute([])),
+                        timestamp: now,
+                    },
+                );
+                continue;
+            }
+            if total_bytes.saturating_add(bytes.len() as u64) > options.max_total_bytes {
+                return files;
+            }
+            let Ok(content) = String::from_utf8(bytes) else {
+                continue;
+            };
+
+            total_bytes = total_bytes.saturating_add(content.len() as u64);
+            let hash = format!("{:x}", md5::compute(content.as_bytes()));
+            let rel_path = path
+                .strip_prefix(project_root)
+                .unwrap_or(path.as_path())
+                .to_string_lossy()
+                .to_string();
+            files.insert(
+                rel_path.clone(),
+                FileSnapshot {
+                    path: rel_path,
+                    content,
+                    hash,
+                    timestamp: now,
+                },
+            );
         }
     }
+
+    files
 }
