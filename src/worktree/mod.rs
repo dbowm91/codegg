@@ -12,6 +12,40 @@ pub struct Worktree {
     pub is_detached: bool,
 }
 
+fn push_parsed_worktree(
+    worktrees: &mut Vec<Worktree>,
+    path: &str,
+    branch: &str,
+    head: Option<&str>,
+    is_current: bool,
+    is_detached: bool,
+) {
+    if path.is_empty() {
+        return;
+    }
+
+    let branch_name = if !branch.is_empty() {
+        branch
+            .strip_prefix("refs/heads/")
+            .unwrap_or(branch)
+            .to_string()
+    } else if is_detached {
+        match head {
+            Some(sha) if !sha.is_empty() => format!("detached@{sha}"),
+            _ => format!("detached@{path}"),
+        }
+    } else {
+        String::new()
+    };
+
+    worktrees.push(Worktree {
+        path: path.to_string(),
+        branch: branch_name,
+        is_current,
+        is_detached,
+    });
+}
+
 pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
     let output = Command::new("git")
         .args(["worktree", "list", "--porcelain"])
@@ -29,33 +63,46 @@ pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
     let mut worktrees = Vec::new();
     let mut current_path = String::new();
     let mut current_branch = String::new();
+    let mut current_head: Option<String> = None;
+    let mut current_is_detached = false;
+    let mut current_is_current = false;
+    let git_root_canonical = git_root.canonicalize().ok();
 
     for line in stdout.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
-            if !current_path.is_empty() {
-                worktrees.push(Worktree {
-                    path: current_path.clone(),
-                    branch: current_branch.clone(),
-                    is_current: false,
-                    is_detached: false,
-                });
-            }
+            push_parsed_worktree(
+                &mut worktrees,
+                &current_path,
+                &current_branch,
+                current_head.as_deref(),
+                current_is_current,
+                current_is_detached,
+            );
             current_path = path.to_string();
+            current_branch.clear();
+            current_head = None;
+            current_is_detached = false;
+            current_is_current = git_root_canonical
+                .as_ref()
+                .and_then(|root| Path::new(path).canonicalize().ok().map(|p| p == *root))
+                .unwrap_or(false);
         } else if let Some(branch) = line.strip_prefix("branch ") {
             current_branch = branch.to_string();
-        } else if line == "HEAD" && !current_branch.is_empty() {
-            current_branch = format!("detached@{}", current_path);
+        } else if let Some(head) = line.strip_prefix("HEAD ") {
+            current_head = Some(head.to_string());
+        } else if line == "detached" {
+            current_is_detached = true;
         }
     }
 
-    if !current_path.is_empty() {
-        worktrees.push(Worktree {
-            path: current_path,
-            branch: current_branch,
-            is_current: false,
-            is_detached: false,
-        });
-    }
+    push_parsed_worktree(
+        &mut worktrees,
+        &current_path,
+        &current_branch,
+        current_head.as_deref(),
+        current_is_current,
+        current_is_detached,
+    );
 
     Ok(worktrees)
 }
