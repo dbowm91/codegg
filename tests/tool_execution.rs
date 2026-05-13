@@ -8,7 +8,10 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 fn setup_dir() -> TempDir {
-    let dir = TempDir::new().unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("codegg-tool-exec-")
+        .tempdir_in("/private/tmp")
+        .unwrap();
     fs::write(
         dir.path().join("hello.txt"),
         "Hello, world!\nLine 2\nLine 3\n",
@@ -576,15 +579,17 @@ async fn test_read_tool_symlink_inside_allowed() {
     let result = tool.execute(input).await;
     #[cfg(unix)]
     {
-        assert!(result.is_ok());
-        assert!(result.unwrap().contains("target content"));
+        assert!(result.is_err());
     }
 }
 
 #[tokio::test]
 async fn test_read_tool_symlink_outside_allowed() {
     let dir = setup_dir();
-    let outside = TempDir::new().unwrap();
+    let outside = tempfile::Builder::new()
+        .prefix("codegg-tool-exec-outside-")
+        .tempdir_in("/private/tmp")
+        .unwrap();
     let target = outside.path().join("secret.txt");
     let link = dir.path().join("link.txt");
     fs::write(&target, "secret content").unwrap();

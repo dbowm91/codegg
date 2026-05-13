@@ -17,7 +17,13 @@ pub fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }
-    format!("{}... [truncated]", &text[..max_bytes])
+    let safe_end = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    format!("{}... [truncated]", &text[..safe_end])
 }
 
 #[cfg(test)]
@@ -93,6 +99,13 @@ mod tests {
     fn test_truncate_bytes_empty() {
         let result = truncate_bytes("", 10);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_bytes_utf8_boundary_safe() {
+        let text = "éclair";
+        let result = truncate_bytes(text, 1);
+        assert_eq!(result, "... [truncated]");
     }
 
     #[test]

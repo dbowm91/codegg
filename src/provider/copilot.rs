@@ -22,6 +22,7 @@ impl CopilotProvider {
                     base_url: "https://api.githubcopilot.com".to_string(),
                     auth_header: "Authorization".to_string(),
                     extra_headers: vec![("Editor-Version".to_string(), "codegg/1.0".to_string())],
+                    tool_choice_auto: false,
                     models: vec![
                         ModelInfo {
                             id: "copilot/gpt-4o".to_string(),

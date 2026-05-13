@@ -304,8 +304,15 @@ mod tests {
 
     #[test]
     fn test_validate_path_safety() {
-        let allowed = vec!["/tmp".to_string(), "/home/user/project".to_string()];
-        let result = validate_path_safety(Path::new("/tmp/test"), &allowed);
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let temp_path = temp_dir.path().join("test");
+        std::fs::create_dir_all(&temp_path).expect("temp path should be created");
+
+        let allowed = vec![
+            temp_dir.path().to_string_lossy().to_string(),
+            "/home/user/project".to_string(),
+        ];
+        let result = validate_path_safety(&temp_path, &allowed);
         assert!(result.is_ok());
 
         let result = validate_path_safety(Path::new("/etc/passwd"), &allowed);

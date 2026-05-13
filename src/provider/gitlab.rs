@@ -22,6 +22,7 @@ impl GitLabProvider {
                     base_url: "https://gitlab.com/api/v4/ai/chat".to_string(),
                     auth_header: "Authorization".to_string(),
                     extra_headers: Vec::new(),
+                    tool_choice_auto: false,
                     models: vec![
                         ModelInfo {
                             id: "gitlab/claude-sonnet-4".to_string(),
@@ -59,6 +60,7 @@ impl GitLabProvider {
                     base_url,
                     auth_header: "Authorization".to_string(),
                     extra_headers: Vec::new(),
+                    tool_choice_auto: false,
                     models: vec![
                         ModelInfo {
                             id: "gitlab/claude-sonnet-4".to_string(),

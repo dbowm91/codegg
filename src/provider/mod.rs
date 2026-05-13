@@ -17,6 +17,7 @@ pub mod bedrock;
 pub mod cache;
 pub mod catalog;
 pub mod cloudflare;
+pub mod codegg_zen;
 pub mod copilot;
 pub mod discovery;
 pub mod fallback;
@@ -25,9 +26,9 @@ pub mod google;
 pub mod models;
 pub mod openai;
 pub mod openai_compatible;
-pub mod codegg_zen;
 pub mod openrouter;
 pub mod sse_parser;
+pub mod text_tool_parser;
 pub mod vertex;
 
 use async_trait::async_trait;

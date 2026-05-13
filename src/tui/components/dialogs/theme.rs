@@ -240,17 +240,17 @@ impl Widget for &ThemePickerDialog {
                         .fg(preview.foreground)
                         .bg(preview.background),
                 ),
-                Span::raw("                   │"),
+                Span::raw("          │"),
             ]),
             Line::from(vec![
                 Span::styled("│", Style::default().fg(preview.border)),
                 Span::styled(
-                    " To exit vim:  ",
+                    " To exit vim: ",
                     Style::default()
                         .fg(preview.secondary)
                         .bg(preview.background),
                 ),
-                Span::raw("                      │"),
+                Span::raw("              │"),
             ]),
             Line::from(vec![
                 Span::styled("│", Style::default().fg(preview.border)),
@@ -262,7 +262,7 @@ impl Widget for &ThemePickerDialog {
                 ),
                 Span::styled(":q", Style::default().fg(preview.success)),
                 Span::styled(
-                    " to quit                     │",
+                    "to quit                      │",
                     Style::default()
                         .fg(preview.secondary)
                         .bg(preview.background),
@@ -278,7 +278,7 @@ impl Widget for &ThemePickerDialog {
                 ),
                 Span::styled(":wq", Style::default().fg(preview.success)),
                 Span::styled(
-                    " to save and quit            │",
+                    "to save and quit             │",
                     Style::default()
                         .fg(preview.secondary)
                         .bg(preview.background),
@@ -286,7 +286,7 @@ impl Widget for &ThemePickerDialog {
             ]),
             Line::from(vec![
                 Span::styled("│", Style::default().fg(preview.border)),
-                Span::raw("                              │"),
+                Span::raw("                            │"),
             ]),
             Line::from(vec![
                 Span::styled("│", Style::default().fg(preview.border)),
@@ -295,7 +295,7 @@ impl Widget for &ThemePickerDialog {
                     " Bash running ",
                     Style::default().fg(preview.foreground).bg(preview.primary),
                 ),
-                Span::raw("                  │"),
+                Span::raw("                            │"),
             ]),
             Line::from(vec![
                 Span::styled("└", Style::default().fg(preview.border)),
@@ -440,7 +440,7 @@ impl Component for ThemePickerDialog {
                         .fg(preview.foreground)
                         .bg(preview.background),
                 ),
-                Span::raw("                   │"),
+                Span::raw("                │"),
             ]),
             Line::from(vec![
                 Span::styled("│", Style::default().fg(preview.border)),
@@ -462,7 +462,7 @@ impl Component for ThemePickerDialog {
                 ),
                 Span::styled(":q", Style::default().fg(preview.success)),
                 Span::styled(
-                    " to quit                     │",
+                    " to quit                       │",
                     Style::default()
                         .fg(preview.secondary)
                         .bg(preview.background),
@@ -478,7 +478,7 @@ impl Component for ThemePickerDialog {
                 ),
                 Span::styled(":wq", Style::default().fg(preview.success)),
                 Span::styled(
-                    " to save and quit            │",
+                    " to save and quit             │",
                     Style::default()
                         .fg(preview.secondary)
                         .bg(preview.background),

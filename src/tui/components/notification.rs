@@ -1,4 +1,6 @@
-use notify_rust::{Notification, Urgency};
+use notify_rust::Notification;
+#[cfg(target_os = "linux")]
+use notify_rust::Urgency;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -13,6 +15,7 @@ pub enum NotificationType {
 }
 
 impl NotificationType {
+    #[cfg(target_os = "linux")]
     pub fn urgency(self) -> Urgency {
         match self {
             NotificationType::Info => Urgency::Normal,
@@ -37,6 +40,22 @@ pub struct NotificationManager {
 }
 
 impl NotificationManager {
+    fn with_platform_options(
+        notification: Notification,
+        notification_type: NotificationType,
+    ) -> Notification {
+        #[cfg(target_os = "linux")]
+        {
+            return notification.urgency(notification_type.urgency());
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = notification_type;
+            notification
+        }
+    }
+
     pub fn new(config: NotificationConfig) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -77,8 +96,7 @@ impl NotificationManager {
             NotificationType::Warning => {}
         }
 
-        Notification::new()
-            .urgency(notification_type.urgency())
+        Self::with_platform_options(Notification::new(), notification_type)
             .summary(notification_type.title())
             .body(body)
             .show()?;
@@ -95,8 +113,7 @@ impl NotificationManager {
             return Ok(());
         }
 
-        Notification::new()
-            .urgency(notification_type.urgency())
+        Self::with_platform_options(Notification::new(), notification_type)
             .summary(notification_type.title())
             .body(body)
             .show()?;

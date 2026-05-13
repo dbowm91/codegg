@@ -65,7 +65,11 @@ pub fn create_venice(api_key: String) -> impl Provider {
 pub fn create_minimax(api_key: String) -> impl Provider {
     let key_len = api_key.len();
     let key_prefix = if key_len > 4 { &api_key[..4] } else { "short" };
-    let key_suffix = if key_len > 4 { &api_key[key_len - 4..] } else { "" };
+    let key_suffix = if key_len > 4 {
+        &api_key[key_len - 4..]
+    } else {
+        ""
+    };
     debug_log!(
         "create_minimax: called with key_len={}, key_prefix={}...{}",
         key_len,
@@ -77,6 +81,7 @@ pub fn create_minimax(api_key: String) -> impl Provider {
         base_url: "https://api.minimax.io/v1".to_string(),
         auth_header: "Authorization".to_string(),
         extra_headers: Vec::new(),
+        tool_choice_auto: false,
         models: vec![
             ModelInfo {
                 id: "MiniMax-M2.7".to_string(),

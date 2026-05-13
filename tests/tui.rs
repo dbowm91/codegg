@@ -101,7 +101,7 @@ fn test_messages_widget_empty() {
 #[test]
 fn test_messages_widget_add_user_message() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    widget.add_user_message("Hello".to_string());
+    widget.add_user_message("Hello".to_string(), None);
 
     assert_eq!(widget.message_count(), 1);
     if let Some(msg) = widget.messages.get(0) {
@@ -113,7 +113,7 @@ fn test_messages_widget_add_user_message() {
 #[test]
 fn test_messages_widget_add_assistant_text() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    widget.add_user_message("Hello".to_string());
+    widget.add_user_message("Hello".to_string(), None);
     widget.add_assistant_text("Hi there!".to_string());
 
     assert_eq!(widget.message_count(), 2);
@@ -139,7 +139,7 @@ fn test_messages_widget_add_assistant_text_appends_to_last() {
 #[test]
 fn test_messages_widget_add_reasoning() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    widget.add_user_message("Hello".to_string());
+    widget.add_user_message("Hello".to_string(), None);
     widget.add_reasoning("Let me think...".to_string());
 
     assert_eq!(widget.message_count(), 2);
@@ -199,7 +199,7 @@ fn test_messages_widget_update_tool_call() {
 #[test]
 fn test_messages_widget_clear() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    widget.add_user_message("Hello".to_string());
+    widget.add_user_message("Hello".to_string(), None);
     widget.add_assistant_text("Hi".to_string());
     assert_eq!(widget.message_count(), 2);
 
@@ -212,7 +212,7 @@ fn test_messages_widget_clear() {
 fn test_messages_widget_scroll() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
     for i in 0..20 {
-        widget.add_user_message(format!("Message {i}"));
+        widget.add_user_message(format!("Message {i}"), None);
     }
 
     assert!(widget.auto_scroll);
@@ -226,9 +226,9 @@ fn test_messages_widget_scroll() {
 #[test]
 fn test_messages_widget_selection() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    widget.add_user_message("First".to_string());
-    widget.add_user_message("Second".to_string());
-    widget.add_user_message("Third".to_string());
+    widget.add_user_message("First".to_string(), None);
+    widget.add_user_message("Second".to_string(), None);
+    widget.add_user_message("Third".to_string(), None);
 
     assert!(widget.sel_msg.is_none());
 
@@ -245,9 +245,9 @@ fn test_messages_widget_selection() {
 #[test]
 fn test_messages_widget_search() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    widget.add_user_message("Hello world".to_string());
-    widget.add_user_message("foo bar".to_string());
-    widget.add_user_message("Hello everyone".to_string());
+    widget.add_user_message("Hello world".to_string(), None);
+    widget.add_user_message("foo bar".to_string(), None);
+    widget.add_user_message("Hello everyone".to_string(), None);
 
     widget.search("Hello");
     assert!(widget.is_searching());
@@ -267,7 +267,7 @@ fn test_messages_widget_search() {
 fn test_messages_widget_search_scrolls_to_match() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
     for i in 0..20 {
-        widget.add_user_message(format!("Message {i}"));
+        widget.add_user_message(format!("Message {i}"), None);
     }
 
     assert!(widget.auto_scroll);
@@ -284,7 +284,7 @@ fn test_messages_widget_search_scrolls_to_match() {
 #[test]
 fn test_messages_widget_search_empty_query() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    widget.add_user_message("Hello".to_string());
+    widget.add_user_message("Hello".to_string(), None);
     widget.search("");
 
     assert!(!widget.is_searching());
@@ -294,7 +294,7 @@ fn test_messages_widget_search_empty_query() {
 #[test]
 fn test_messages_widget_undo_redo() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    widget.add_user_message("Hello".to_string());
+    widget.add_user_message("Hello".to_string(), None);
     widget.add_assistant_text("Hi".to_string());
 
     assert!(widget.undo());
@@ -325,7 +325,7 @@ fn test_messages_widget_streaming() {
 #[test]
 fn test_messages_widget_get_selected_content() {
     let mut widget = MessagesWidget::new(Arc::new(Theme::dark()));
-    widget.add_user_message("Hello World".to_string());
+    widget.add_user_message("Hello World".to_string(), None);
     widget.select_index(0);
 
     let content = widget.get_selected_content();

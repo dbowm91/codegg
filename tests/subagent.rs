@@ -767,6 +767,7 @@ mod tests {
             agent: "test-agent".to_string(),
             parent_id: Some("parent".to_string()),
             denied_tools: vec!["bash".to_string(), "write".to_string()],
+            allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 0,
         };
@@ -1034,6 +1035,7 @@ mod tests {
             agent: "test".to_string(),
             parent_id: Some("parent-session".to_string()),
             denied_tools: vec!["bash".to_string()],
+            allowed_paths: vec![],
             description: "Test task".to_string(),
             depth: 0,
         };
@@ -1104,6 +1106,7 @@ mod tests {
             agent: "test".to_string(),
             parent_id: Some("parent".to_string()),
             denied_tools: vec!["bash".to_string(), "write".to_string()],
+            allowed_paths: vec![],
             description: "Test description".to_string(),
             depth: 1,
         };

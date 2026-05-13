@@ -23,6 +23,7 @@ impl CloudflareProvider {
                     base_url,
                     auth_header: "Authorization".to_string(),
                     extra_headers: Vec::new(),
+                    tool_choice_auto: false,
                     models: vec![
                         ModelInfo {
                             id: "cloudflare/@cf/meta/llama-3.3-70b-instruct-fp8-fast".to_string(),

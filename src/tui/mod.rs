@@ -134,17 +134,14 @@ use std::io::{self, stdout};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "debug-logging")]
-use std::fs::OpenOptions;
-
 use crate::permission::PermissionChecker;
 use crate::provider::{ChatRequest, ContentPart, Message, ProviderRegistry};
 use crate::session::CreateSession;
 
 use crate::tui::app::SessionStatus;
 use rand;
-use tokio::sync::mpsc;
 use std::fs::OpenOptions;
+use tokio::sync::mpsc;
 
 macro_rules! debug_log {
     ($($arg:tt)*) => {
@@ -1033,7 +1030,14 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             }
 
             let config = crate::config::schema::Config::load().unwrap_or_default();
+            let active_agent = &app.agent_state.agents[app.agent_state.current_agent];
             debug_log!("Event loop: using model={}", app.agent_state.current_model);
+            debug_log!(
+                "Event loop: active agent name={}, mode={:?}, steps={:?}",
+                active_agent.name,
+                active_agent.mode,
+                active_agent.steps
+            );
 
             processing_task = Some(tokio::spawn({
                 let model = app.agent_state.current_model.clone();
@@ -1070,6 +1074,10 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         debug_log!("Agent task: provider found, creating agent loop");
                         let provider = base_provider.clone_box();
                         let mut tool_registry = ToolRegistry::with_defaults();
+                        debug_log!(
+                            "Agent task: default tool registry size={}",
+                            tool_registry.list().len()
+                        );
 
                         if let Some(pool) = subagent_pool {
                             let task_tool = crate::tool::task::TaskTool::new(
@@ -1135,7 +1143,10 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             provider_name
                         );
                         crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                            message: format!("Provider '{}' not found. Please check your configuration.", provider_name),
+                            message: format!(
+                                "Provider '{}' not found. Please check your configuration.",
+                                provider_name
+                            ),
                         });
                     }
                 }
@@ -1212,11 +1223,15 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         };
                         app.messages_state.messages.update_tool_call(&tool_id, output, status, None, None, None);
                     }
-                    AppEvent::AgentFinished { stop_reason: _, .. } => {
-                        debug_log!("Event loop: AgentFinished received");
-                        app.session_state.session_status = SessionStatus::Idle;
-                        app.prompt_state.pending_send = false;
-                        app.footer.set_thinking(false, None);
+                    AppEvent::AgentFinished { stop_reason, .. } => {
+                        debug_log!("Event loop: AgentFinished received stop_reason={}", stop_reason);
+                        if stop_reason == "completed" {
+                            app.session_state.session_status = SessionStatus::Idle;
+                            app.prompt_state.pending_send = false;
+                            app.footer.set_thinking(false, None);
+                        } else if matches!(app.session_state.session_status, SessionStatus::Working) {
+                            app.footer.set_thinking(true, Some("Thinking...".to_string()));
+                        }
                     }
                     AppEvent::PermissionPending { perm_id, tool, path, args, .. } => {
                         debug_log!("Event loop: PermissionPending for tool={}, path={:?}", tool, path);

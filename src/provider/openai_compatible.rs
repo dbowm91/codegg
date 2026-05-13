@@ -18,6 +18,7 @@ pub struct OpenAiCompatibleConfig {
     pub auth_header: String,
     pub extra_headers: Vec<(String, String)>,
     pub models: Vec<ModelInfo>,
+    pub tool_choice_auto: bool,
 }
 
 #[derive(Clone)]
@@ -48,6 +49,7 @@ impl OpenAiCompatibleProvider {
                 auth_header: "Authorization".to_string(),
                 extra_headers: Vec::new(),
                 models: Vec::new(),
+                tool_choice_auto: false,
             },
         )
     }
@@ -166,12 +168,21 @@ impl Provider for OpenAiCompatibleProvider {
                 .collect::<Vec<_>>()
         });
 
-        let body = json!({
+        let mut body = json!({
             "model": request.model,
             "messages": messages,
             "stream": true,
             "tools": tools_json,
         });
+        if self.config.tool_choice_auto
+            && request
+                .tools
+                .as_ref()
+                .map(|t| !t.is_empty())
+                .unwrap_or(false)
+        {
+            body["tool_choice"] = json!("auto");
+        }
 
         let tool_count = request.tools.as_ref().map(|t| t.len()).unwrap_or(0);
         let tool_preview = request

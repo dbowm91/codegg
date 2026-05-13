@@ -105,7 +105,11 @@ pub mod inner {
         }
 
         pub fn dec(&self) {
-            self.0.fetch_sub(1, Ordering::Relaxed);
+            let _ = self
+                .0
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    Some(v.saturating_sub(1))
+                });
         }
     }
 
@@ -132,5 +136,22 @@ pub mod inner {
 
     pub fn metrics() -> &'static Metrics {
         &METRICS
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn gauge_dec_saturates_at_zero() {
+            let metrics = Metrics::new();
+            let gauge = metrics.gauge("test_gauge");
+
+            gauge.dec();
+            gauge.dec();
+
+            let snapshot = metrics.snapshot();
+            assert_eq!(snapshot.gauges.get("test_gauge"), Some(&0));
+        }
     }
 }

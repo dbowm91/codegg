@@ -2,13 +2,11 @@ use crate::provider::ToolCall;
 use regex::Regex;
 use std::sync::LazyLock;
 
-static INVOKE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"invoke\s*\(\s*"(\w+)"\s*,\s*(\{[^}]+\})"#).unwrap()
-});
+static INVOKE_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"invoke\s*\(\s*"(\w+)"\s*,\s*(\{[^}]+\})"#).unwrap());
 
-static CODE_BLOCK_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"```\s*(\w+)\s*(\{[^}]+\})`"#).unwrap()
-});
+static CODE_BLOCK_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?s)```\s*(\w+)\s*(\{.*?\})\s*```"#).unwrap());
 
 pub fn parse_text_as_tool_calls(text: &str) -> Option<Vec<ToolCall>> {
     let mut tool_calls = Vec::new();
@@ -20,8 +18,8 @@ pub fn parse_text_as_tool_calls(text: &str) -> Option<Vec<ToolCall>> {
         if let Ok(args) = serde_json::from_str(args_str) {
             let id = uuid::Uuid::new_v4().to_string();
             tool_calls.push(ToolCall {
-                id,
-                name,
+                id: id.into(),
+                name: name.into(),
                 arguments: args,
             });
         }
@@ -33,8 +31,8 @@ pub fn parse_text_as_tool_calls(text: &str) -> Option<Vec<ToolCall>> {
         if let Ok(args) = serde_json::from_str(args_str) {
             let id = uuid::Uuid::new_v4().to_string();
             tool_calls.push(ToolCall {
-                id,
-                name,
+                id: id.into(),
+                name: name.into(),
                 arguments: args,
             });
         }
@@ -58,7 +56,7 @@ mod tests {
         assert!(result.is_some());
         let calls = result.unwrap();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].name.as_ref(), "bash");
     }
 
     #[test]
@@ -70,7 +68,7 @@ mod tests {
         assert!(result.is_some());
         let calls = result.unwrap();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].name.as_ref(), "bash");
     }
 
     #[test]
