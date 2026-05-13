@@ -3764,7 +3764,7 @@ impl App {
                 }
             }
             Dialog::Context | Dialog::Cost | Dialog::Usage => {
-                let info_type = match self.ui_state.dialog {
+                let info_type = match dialog {
                     Dialog::Context => crate::tui::components::dialogs::info::InfoType::Context,
                     Dialog::Cost => crate::tui::components::dialogs::info::InfoType::Cost,
                     Dialog::Usage => crate::tui::components::dialogs::info::InfoType::Usage,
@@ -3779,6 +3779,7 @@ impl App {
                             lines,
                         ));
                 } else if let Some(ref mut info_dialog) = self.dialog_state.info_dialog {
+                    info_dialog.set_info_type(info_type);
                     info_dialog.set_content(lines);
                     info_dialog.set_theme(&self.ui_state.theme);
                 }

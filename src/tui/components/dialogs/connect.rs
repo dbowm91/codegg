@@ -213,10 +213,20 @@ impl Widget for &ConnectDialog {
                 footer.render(area, buf);
             }
             ConnectStep::EnterApiKey => {
-                let provider = self
-                    .providers
-                    .get(self.selected)
-                    .expect("selected provider index out of bounds");
+                let Some(provider) = self.providers.get(self.selected) else {
+                    let block = Block::default()
+                        .title(" Connect ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(self.theme.error))
+                        .style(Style::default().bg(self.theme.background));
+                    let inner_area = block.inner(area);
+                    block.render(area, buf);
+                    let msg = Paragraph::new("Selected provider is invalid. Press Esc to go back.")
+                        .alignment(Alignment::Center)
+                        .wrap(Wrap { trim: true });
+                    msg.render(inner_area, buf);
+                    return;
+                };
 
                 let title = Line::from(vec![Span::styled(
                     format!(" Connect to {} ", provider.name),
@@ -468,10 +478,19 @@ impl Component for ConnectDialog {
                 frame.render_widget(footer, chunks[1]);
             }
             ConnectStep::EnterApiKey => {
-                let provider = self
-                    .providers
-                    .get(self.selected)
-                    .expect("selected provider index out of bounds");
+                let Some(provider) = self.providers.get(self.selected) else {
+                    let block = Block::default()
+                        .title(" Connect ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.error))
+                        .style(Style::default().bg(theme.background));
+                    frame.render_widget(block, area);
+                    let msg = Paragraph::new("Selected provider is invalid. Press Esc to go back.")
+                        .alignment(Alignment::Center)
+                        .wrap(Wrap { trim: true });
+                    frame.render_widget(msg, area);
+                    return;
+                };
 
                 let title = Line::from(vec![Span::styled(
                     format!(" Connect to {} ", provider.name),

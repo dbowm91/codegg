@@ -39,6 +39,11 @@ impl InfoDialog {
         self.scroll = 0;
     }
 
+    pub fn set_info_type(&mut self, info_type: InfoType) {
+        self.info_type = info_type;
+        self.scroll = 0;
+    }
+
     fn title(&self) -> &'static str {
         match self.info_type {
             InfoType::Context => " Context ",
