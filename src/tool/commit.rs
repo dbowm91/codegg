@@ -215,6 +215,10 @@ impl Tool for CommitTool {
                 "amend": {
                     "type": "boolean",
                     "description": "Amend the previous commit (default: false)"
+                },
+                "allow_amend": {
+                    "type": "boolean",
+                    "description": "Required safety acknowledgement when amend=true"
                 }
             },
             "required": []
@@ -224,8 +228,15 @@ impl Tool for CommitTool {
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let all = input["all"].as_bool().unwrap_or(false);
         let amend = input["amend"].as_bool().unwrap_or(false);
+        let allow_amend = input["allow_amend"].as_bool().unwrap_or(false);
         let co_authored = input["co_authored"].as_bool().unwrap_or(false);
         let manual_message = input["message"].as_str();
+
+        if amend && !allow_amend {
+            return Err(ToolError::Execution(
+                "amend requires explicit allow_amend=true acknowledgement".to_string(),
+            ));
+        }
 
         if all {
             self.stage_all().await?;

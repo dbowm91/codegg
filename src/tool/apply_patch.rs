@@ -1,9 +1,8 @@
 use crate::error::ToolError;
-use crate::tool::util::{canonicalize_path, validate_path};
+use crate::tool::util::{canonicalize_path, check_path_for_symlinks, validate_path};
 use crate::tool::Tool;
 use async_trait::async_trait;
 use serde::Deserialize;
-use similar::{ChangeTag, TextDiff};
 use std::path::{Path, PathBuf};
 
 const MAX_PATCH_SIZE: usize = 100_000;
@@ -139,9 +138,9 @@ impl ApplyPatchTool {
         tokio::task::spawn_blocking(move || {
             let original_path = Path::new(&path_owned);
             let validated_path = if unrestricted {
-                canonicalize_path(original_path)?
+                validate_target_path_unrestricted(original_path)?
             } else {
-                validate_path(original_path, &allowed_root)?
+                validate_target_path(original_path, &allowed_root)?
             };
 
             if let Some(parent) = validated_path.parent() {
@@ -181,9 +180,9 @@ impl ApplyPatchTool {
             };
 
             let new_full = if unrestricted {
-                canonicalize_path(new_original)?
+                validate_target_path_unrestricted(new_original)?
             } else {
-                validate_path(new_original, &allowed_root)?
+                validate_target_path(new_original, &allowed_root)?
             };
 
             if !old_full.exists() {
@@ -226,9 +225,8 @@ impl ApplyPatchTool {
             let original = std::fs::read_to_string(&validated_path)
                 .map_err(|e| ToolError::Execution(format!("failed to read file: {e}")))?;
 
-            let result = apply_unified_diff(&original, &patch_owned).ok_or_else(|| {
-                ToolError::Execution("failed to apply patch: invalid diff format".to_string())
-            })?;
+            let result = apply_unified_diff_result(&original, &patch_owned)
+                .map_err(ToolError::Execution)?;
 
             let preview = generate_diff_preview(&original, &result, &path_owned);
 
@@ -244,42 +242,120 @@ impl ApplyPatchTool {
     }
 }
 
-fn apply_unified_diff(original: &str, patch: &str) -> Option<String> {
-    let diff = TextDiff::from_lines(original, patch);
+fn apply_unified_diff_result(original: &str, patch: &str) -> Result<String, String> {
+    let original_lines: Vec<&str> = original.lines().collect();
+    let patch_lines: Vec<&str> = patch.lines().collect();
 
-    let mut result: Vec<&str> = Vec::new();
-    let mut orig_lines: Vec<&str> = original.lines().collect();
+    let mut output: Vec<String> = Vec::new();
+    let mut orig_idx: usize = 0;
+    let mut patch_idx: usize = 0;
+    let mut saw_hunk = false;
 
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Delete => {
-                let line_num = change.old_index()?;
-                if line_num > 0 && line_num <= orig_lines.len() {
-                    orig_lines.remove(line_num - 1);
+    while patch_idx < patch_lines.len() {
+        let line = patch_lines[patch_idx];
+
+        if !line.starts_with("@@") {
+            patch_idx += 1;
+            continue;
+        }
+
+        saw_hunk = true;
+        let old_start = parse_hunk_old_start(line)
+            .ok_or_else(|| format!("invalid hunk header: {}", line))?;
+
+        let target_idx = old_start.saturating_sub(1);
+        if target_idx < orig_idx {
+            return Err(format!(
+                "overlapping hunk at original line {}",
+                old_start
+            ));
+        }
+        while orig_idx < target_idx && orig_idx < original_lines.len() {
+            output.push(original_lines[orig_idx].to_string());
+            orig_idx += 1;
+        }
+
+        patch_idx += 1;
+        while patch_idx < patch_lines.len() {
+            let hline = patch_lines[patch_idx];
+            if hline.starts_with("@@") {
+                break;
+            }
+            if hline.starts_with("--- ") || hline.starts_with("+++ ") {
+                patch_idx += 1;
+                continue;
+            }
+            if hline.starts_with("\\ No newline at end of file") {
+                patch_idx += 1;
+                continue;
+            }
+
+            if hline.is_empty() {
+                return Err("invalid empty hunk line".to_string());
+            }
+            let tag = &hline[..1];
+            let content = &hline[1..];
+            match tag {
+                " " => {
+                    if orig_idx >= original_lines.len() || original_lines[orig_idx] != content {
+                        return Err(format!(
+                            "context mismatch at original line {}",
+                            orig_idx + 1
+                        ));
+                    }
+                    output.push(content.to_string());
+                    orig_idx += 1;
                 }
+                "-" => {
+                    if orig_idx >= original_lines.len() || original_lines[orig_idx] != content {
+                        return Err(format!(
+                            "delete mismatch at original line {}",
+                            orig_idx + 1
+                        ));
+                    }
+                    orig_idx += 1;
+                }
+                "+" => output.push(content.to_string()),
+                _ => return Err(format!("invalid hunk prefix '{}'", tag)),
             }
-            ChangeTag::Insert => {
-                let content = change.value().trim_start_matches('+');
-                orig_lines.insert(change.new_index().unwrap_or(orig_lines.len()), content);
-            }
-            ChangeTag::Equal => {
-                result.push(change.value().trim_end());
-            }
+            patch_idx += 1;
         }
     }
 
-    Some(orig_lines.join("\n"))
+    if !saw_hunk {
+        return Err("patch does not contain any hunks".to_string());
+    }
+
+    while orig_idx < original_lines.len() {
+        output.push(original_lines[orig_idx].to_string());
+        orig_idx += 1;
+    }
+
+    Ok(output.join("\n"))
+}
+
+fn parse_hunk_old_start(header: &str) -> Option<usize> {
+    // @@ -old_start,old_count +new_start,new_count @@
+    let mut parts = header.split_whitespace();
+    let _at1 = parts.next()?;
+    let old_part = parts.next()?;
+    if !old_part.starts_with('-') {
+        return None;
+    }
+    let old_nums = &old_part[1..];
+    let old_start = old_nums.split(',').next()?.parse::<usize>().ok()?;
+    Some(old_start)
 }
 
 fn generate_diff_preview(original: &str, modified: &str, _path: &str) -> String {
-    let diff = TextDiff::from_lines(original, modified);
+    let diff = similar::TextDiff::from_lines(original, modified);
     let mut preview = String::from("Preview:\n");
 
     for change in diff.iter_all_changes() {
         let prefix = match change.tag() {
-            ChangeTag::Delete => "-",
-            ChangeTag::Insert => "+",
-            ChangeTag::Equal => " ",
+            similar::ChangeTag::Delete => "-",
+            similar::ChangeTag::Insert => "+",
+            similar::ChangeTag::Equal => " ",
         };
         preview.push_str(&format!("{}{}", prefix, change.value()));
     }
@@ -315,4 +391,153 @@ fn parse_rename(patch: &str) -> Option<(String, String)> {
     }
 
     None
+}
+
+fn validate_target_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolError> {
+    check_path_for_symlinks(path)?;
+    let root_canonical = allowed_root
+        .canonicalize()
+        .map_err(|_| ToolError::Execution("invalid allowed root".to_string()))?;
+
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root_canonical.join(path)
+    };
+
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
+    check_path_for_symlinks(parent)?;
+    let parent_canonical = parent.canonicalize().map_err(|_| {
+        ToolError::Execution(format!("invalid path: {}", parent.display()))
+    })?;
+    if !parent_canonical.starts_with(&root_canonical) {
+        return Err(ToolError::Permission(format!(
+            "path '{}' is outside allowed directory",
+            path.display()
+        )));
+    }
+
+    let file_name = candidate
+        .file_name()
+        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
+    Ok(parent_canonical.join(file_name))
+}
+
+fn validate_target_path_unrestricted(path: &Path) -> Result<PathBuf, ToolError> {
+    check_path_for_symlinks(path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
+    check_path_for_symlinks(parent)?;
+    let parent_canonical = parent.canonicalize().map_err(|_| {
+        ToolError::Execution(format!("invalid path: {}", parent.display()))
+    })?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
+    Ok(parent_canonical.join(file_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn apply_unified_diff_applies_single_hunk() {
+        let original = "a\nb\nc";
+        let patch = "\
+@@ -1,3 +1,3 @@
+ a
+-b
++B
+ c";
+
+        let updated = apply_unified_diff_result(original, patch).expect("patch should apply");
+        assert_eq!(updated, "a\nB\nc");
+    }
+
+    #[test]
+    fn apply_unified_diff_applies_multiple_hunks() {
+        let original = "l1\nl2\nl3\nl4\nl5";
+        let patch = "\
+@@ -1,2 +1,2 @@
+ l1
+-l2
++L2
+@@ -4,2 +4,2 @@
+ l4
+-l5
++L5";
+
+        let updated = apply_unified_diff_result(original, patch).expect("patch should apply");
+        assert_eq!(updated, "l1\nL2\nl3\nl4\nL5");
+    }
+
+    #[test]
+    fn apply_unified_diff_fails_on_context_mismatch() {
+        let original = "a\nb\nc";
+        let patch = "\
+@@ -1,3 +1,3 @@
+ a
+ x
+ c";
+
+        let err = apply_unified_diff_result(original, patch).expect_err("must fail");
+        assert!(
+            err.contains("context mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn apply_unified_diff_fails_on_delete_mismatch() {
+        let original = "a\nb\nc";
+        let patch = "\
+@@ -1,3 +1,2 @@
+ a
+-x
+ c";
+
+        let err = apply_unified_diff_result(original, patch).expect_err("must fail");
+        assert!(err.contains("delete mismatch"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn validate_target_path_allows_nonexistent_file_within_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("nested")).expect("create nested");
+
+        let validated =
+            validate_target_path(Path::new("nested/new.txt"), root).expect("path should validate");
+        let expected_parent = root
+            .join("nested")
+            .canonicalize()
+            .expect("canonical nested parent");
+        assert_eq!(validated, expected_parent.join("new.txt"));
+    }
+
+    #[test]
+    fn validate_target_path_rejects_outside_root() {
+        let temp = TempDir::new().expect("temp dir");
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&root).expect("create root");
+        std::fs::create_dir_all(&outside).expect("create outside");
+
+        let path = Path::new("../outside/new.txt");
+        let err = validate_target_path(path, &root).expect_err("must reject");
+        match err {
+            ToolError::Permission(msg) => {
+                assert!(
+                    msg.contains("outside allowed directory"),
+                    "unexpected permission message: {msg}"
+                );
+            }
+            other => panic!("unexpected error type: {other:?}"),
+        }
+    }
 }

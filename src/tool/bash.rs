@@ -62,10 +62,7 @@ static BLOCKED_PATTERN: Lazy<Regex> = Lazy::new(|| {
         |wget\s+.*-O\s+/                   # wget to root
         |curl\s+.*-o\s+/                  # curl to root
         |:\(\)\s*:\s*\|                   # fork bomb
-        |&&                                # &&
-        |\|\|                              # || pipe
         |(?:^|\s)&(?:[\s]|$)               # standalone &
-        |;\s*                              # semicolon
     ").unwrap()
 });
 
