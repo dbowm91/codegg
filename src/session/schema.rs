@@ -23,58 +23,100 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     if current_version < 1 {
-        migrate_v1(pool).await?;
+        migrate_and_record(pool, 1).await?;
     }
     if current_version < 2 {
-        migrate_v2(pool).await?;
+        migrate_and_record(pool, 2).await?;
     }
     if current_version < 3 {
-        migrate_v3(pool).await?;
+        migrate_and_record(pool, 3).await?;
     }
     if current_version < 4 {
-        migrate_v4(pool).await?;
+        migrate_and_record(pool, 4).await?;
     }
     if current_version < 5 {
-        migrate_v5(pool).await?;
+        migrate_and_record(pool, 5).await?;
     }
     if current_version < 6 {
-        migrate_v6(pool).await?;
+        migrate_and_record(pool, 6).await?;
     }
     if current_version < 7 {
-        migrate_v7(pool).await?;
+        migrate_and_record(pool, 7).await?;
     }
     if current_version < 8 {
-        migrate_v8(pool).await?;
+        migrate_and_record(pool, 8).await?;
     }
     if current_version < 9 {
-        migrate_v9(pool).await?;
+        migrate_and_record(pool, 9).await?;
     }
     if current_version < 10 {
-        migrate_v10(pool).await?;
+        migrate_and_record(pool, 10).await?;
     }
     if current_version < 11 {
-        migrate_v11(pool).await?;
+        migrate_and_record(pool, 11).await?;
     }
     if current_version < 12 {
-        migrate_v12(pool).await?;
+        migrate_and_record(pool, 12).await?;
     }
     if current_version < 13 {
-        migrate_v13(pool).await?;
+        migrate_and_record(pool, 13).await?;
     }
     if current_version < 14 {
-        migrate_v14(pool).await?;
+        migrate_and_record(pool, 14).await?;
     }
 
-    sqlx::query(
-        "INSERT INTO migration_version (id, version) VALUES (1, ?) \
-         ON CONFLICT(id) DO UPDATE SET version = excluded.version",
-    )
-    .bind(14i64)
-    .execute(pool)
-    .await
-    .map_err(|e| StorageError::Migration(e.to_string()))?;
-
     Ok(())
+}
+
+async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), StorageError> {
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    let result = async {
+        match version {
+            1 => migrate_v1(pool).await?,
+            2 => migrate_v2(pool).await?,
+            3 => migrate_v3(pool).await?,
+            4 => migrate_v4(pool).await?,
+            5 => migrate_v5(pool).await?,
+            6 => migrate_v6(pool).await?,
+            7 => migrate_v7(pool).await?,
+            8 => migrate_v8(pool).await?,
+            9 => migrate_v9(pool).await?,
+            10 => migrate_v10(pool).await?,
+            11 => migrate_v11(pool).await?,
+            12 => migrate_v12(pool).await?,
+            13 => migrate_v13(pool).await?,
+            14 => migrate_v14(pool).await?,
+            _ => return Err(StorageError::Migration(format!("unknown migration version {}", version))),
+        }
+        sqlx::query(
+            "INSERT INTO migration_version (id, version) VALUES (1, ?) \
+             ON CONFLICT(id) DO UPDATE SET version = excluded.version",
+        )
+        .bind(version)
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+        Ok::<(), StorageError>(())
+    }
+    .await;
+
+    match result {
+        Ok(()) => {
+            sqlx::query("COMMIT")
+                .execute(pool)
+                .await
+                .map_err(|e| StorageError::Migration(e.to_string()))?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = sqlx::query("ROLLBACK").execute(pool).await;
+            Err(e)
+        }
+    }
 }
 
 async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {

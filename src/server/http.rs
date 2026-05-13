@@ -166,10 +166,6 @@ pub async fn run_server(host: &str, port: u16) -> Result<(), crate::error::Serve
         .await
         .map_err(|e| crate::error::ServerRuntimeError::Shutdown(e.to_string()))?;
 
-    crate::session::schema::migrate(&pool)
-        .await
-        .map_err(|e| crate::error::ServerRuntimeError::Shutdown(e.to_string()))?;
-
     let config = crate::config::schema::Config::load().ok();
     let server_config = config.as_ref().and_then(|c| c.server.clone());
 
