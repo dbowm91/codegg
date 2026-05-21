@@ -1,4 +1,6 @@
 use futures::{SinkExt, StreamExt};
+use std::time::Duration;
+use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_tungstenite::tungstenite::http::Request;
 use tracing::{error, info};
@@ -28,9 +30,11 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
         .body(())
         .map_err(|e| ClientError::Connection(format!("invalid WebSocket request: {}", e)))?;
 
-    let (ws_stream, _) = connect_async(ws_request)
-        .await
-        .map_err(|e| ClientError::WebSocket(e.to_string()))?;
+    let ws_stream = match timeout(Duration::from_secs(30), connect_async(ws_request)).await {
+        Ok(Ok((stream, _))) => stream,
+        Ok(Err(e)) => return Err(ClientError::WebSocket(e.to_string())),
+        Err(_) => return Err(ClientError::Connection("WebSocket connection timed out".to_string())),
+    };
 
     info!("TUI WebSocket connected");
 
@@ -48,8 +52,16 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
         while let Some(msg) = ws_rx.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                        let _ = event_tx.send(event);
+                    match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(event) => {
+                            if event_tx.send(event).is_err() {
+                                tracing::debug!("event_tx closed, stopping event_task");
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to parse WebSocket message: {}", e);
+                        }
                     }
                 }
                 Ok(Message::Close(_)) => {

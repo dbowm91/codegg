@@ -606,16 +606,14 @@ async fn upgrade_tui(
                                 if matches!(event, AppEvent::PermissionPending { .. })
                                     || matches!(event, AppEvent::QuestionPending { .. })
                                 {
-                                    let resync_msg = serde_json::json!({
-                                        "type": "resync_required",
-                                        "pending_permissions": crate::bus::PermissionRegistry::pending_permission_ids(),
-                                        "pending_questions": crate::bus::QuestionRegistry::pending_question_ids(),
-                                    });
-                                    let _ = bus_tx_clone3.send(axum::extract::ws::Message::Text(
-                                        serde_json::to_string(&resync_msg)
-                                            .unwrap_or_default()
-                                            .into(),
-                                    ));
+                                    let resync_msg = TuiMessage::ResyncRequired {
+                                        reason: None,
+                                        pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(),
+                                        pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&resync_msg) {
+                                        let _ = bus_tx_clone3.send(axum::extract::ws::Message::Text(json.into()));
+                                    }
                                 }
                             }
                         }
@@ -623,17 +621,14 @@ async fn upgrade_tui(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     tracing::warn!("Event bus receiver lagged, sending resync");
-                    let resync_msg = serde_json::json!({
-                        "type": "resync_required",
-                        "reason": "lagged",
-                        "pending_permissions": crate::bus::PermissionRegistry::pending_permission_ids(),
-                        "pending_questions": crate::bus::QuestionRegistry::pending_question_ids(),
-                    });
-                    let _ = bus_tx_clone3.send(axum::extract::ws::Message::Text(
-                        serde_json::to_string(&resync_msg)
-                            .unwrap_or_default()
-                            .into(),
-                    ));
+                    let resync_msg = TuiMessage::ResyncRequired {
+                        reason: Some("lagged".to_string()),
+                        pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(),
+                        pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
+                    };
+                    if let Ok(json) = serde_json::to_string(&resync_msg) {
+                        let _ = bus_tx_clone3.send(axum::extract::ws::Message::Text(json.into()));
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     break;

@@ -680,7 +680,7 @@ impl App {
     }
 
     pub fn handle_remote_event(&mut self, event: serde_json::Value) {
-        let _event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let _event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
         debug_log!("handle_remote_event: type={}", _event_type);
 
         match serde_json::from_value::<RemoteTuiMessage>(event) {
@@ -747,6 +747,25 @@ impl App {
                 self.session_state.session_status = SessionStatus::Error;
                 self.footer.set_thinking(false, None);
                 self.messages_state.toasts.add(Toast::error(&message));
+            }
+            Ok(RemoteTuiMessage::ResyncRequired {
+                reason,
+                pending_permissions,
+                pending_questions,
+            }) => {
+                let reason_str = reason.unwrap_or_else(|| "client lagged".to_string());
+                self.messages_state.toasts.add(Toast::warning(&format!(
+                    "Resyncing: {} ({} pending permissions, {} pending questions)",
+                    reason_str,
+                    pending_permissions.len(),
+                    pending_questions.len()
+                )));
+                tracing::info!(
+                    "ResyncRequired: reason={}, pending_permissions={:?}, pending_questions={:?}",
+                    reason_str,
+                    pending_permissions,
+                    pending_questions
+                );
             }
             _ => {
                 debug_log!("handle_remote_event: unhandled type={}", _event_type);

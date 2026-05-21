@@ -61,6 +61,8 @@ These items were identified during module reviews and are important for future a
 - **TUI render.rs doesn't exist**: Only `mod.rs`, `types.rs`, and `commands.rs` exist in `src/tui/app/`
 - **Component trait**: All dialogs implement `Component` trait with `handle_key`, `update`, `render` methods
 - **Registration-before-publish pattern**: When publishing `PermissionPending` or `QuestionPending`, register the responder BEFORE publishing the event
+- **ResyncRequired serialization**: Server uses `TuiMessage::ResyncRequired` variant directly (not raw JSON)
+- **Client timeouts**: Health check has 10s timeout, WebSocket connection has 30s timeout
 
 ### Code Quality Issues (Lower Priority)
 - **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
@@ -95,6 +97,8 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 │   └── AGENTS.override.md        # Provider patterns, token estimation
 ├── security/
 │   └── AGENTS.override.md        # SSRF, symlink protection, Landlock
+├── server/
+│   └── AGENTS.override.md        # WebSocket, TuiMessage, ResyncRequired
 ├── shell/
 │   └── AGENTS.override.md        # Shell session management
 ├── tool/
@@ -134,5 +138,7 @@ When adding guidance for a new module:
 | Tool (path validation, async command) | `tool/AGENTS.override.md` |
 | Exec mode | `exec/AGENTS.override.md` |
 | Hooks system | `hooks/AGENTS.override.md` |
+| Client (remote TUI, WebSocket) | `.opencode/skills/client/SKILL.md` |
+| Server (WebSocket, TuiMessage serialization) | `server/AGENTS.override.md` |
 | Testing (E2E, unit, integration) | `meta/AGENTS.override.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |

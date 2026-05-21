@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::Client;
 
 use crate::error::ClientError;
@@ -34,6 +36,7 @@ impl RemoteClient {
         let resp = self
             .http
             .get(&url)
+            .timeout(Duration::from_secs(10))
             .send()
             .await
             .map_err(|e| ClientError::Connection(e.to_string()))?;
