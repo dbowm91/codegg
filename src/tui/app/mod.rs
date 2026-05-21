@@ -2642,7 +2642,8 @@ impl App {
             Some(InputAction::Send) => {
                 if let Some(cmd) = self.dialog_state.command_palette.selected() {
                     debug_log!("handle_command_key: executing command: {}", cmd.name);
-                    self.execute_command(cmd);
+                    let command_query = self.dialog_state.command_palette.query.clone();
+                    self.execute_command(cmd, Some(&command_query));
                     self.ui_state.command_mode = false;
                     self.dialog_state.command_palette.set_query("");
                     self.prompt_state.prompt.clear();
@@ -2673,10 +2674,42 @@ impl App {
         }
     }
 
-    fn execute_command(&mut self, cmd: &crate::tui::command::Command) {
+    fn execute_command(
+        &mut self,
+        cmd: &crate::tui::command::Command,
+        raw_input: Option<&str>,
+    ) {
         if let Some(dialog) = &cmd.dialog {
             self.ui_state.command_mode = false;
             self.open_dialog(dialog.clone());
+            return;
+        }
+        if let Some(template) = &cmd.template {
+            if self.prompt_state.pending_send {
+                self.messages_state
+                    .toasts
+                    .warning("Still waiting for previous prompt to finish");
+                return;
+            }
+            let args = raw_input
+                .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                .unwrap_or_default()
+                .to_string();
+            let mut variables = std::collections::HashMap::new();
+            variables.insert("args".to_string(), args);
+            let rendered = crate::command::execute_command_template(template, &variables);
+            self.messages_state
+                .messages
+                .add_user_message(rendered.clone(), Some(self.agent_state.plan_mode));
+            self.prompt_state.prompt.clear();
+            self.prompt_state.show_completions = false;
+            self.session_state.session_status = SessionStatus::Working;
+            if self.ui_state.remote_mode {
+                self.send_remote_message(RemoteTuiMessage::Input { text: rendered });
+                self.prompt_state.pending_send = false;
+            } else {
+                self.prompt_state.pending_send = true;
+            }
             return;
         }
         match cmd.name.as_str() {
@@ -3553,34 +3586,10 @@ impl App {
 
     fn handle_slash_command(&mut self, text: &str) -> bool {
         let trimmed = text.trim();
-        if trimmed == "/tree" {
-            self.open_tree_dialog();
-            return true;
+        if !trimmed.starts_with('/') {
+            return false;
         }
-        if trimmed == "/exit" {
-            self.ui_state.running = false;
-            let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
-            return true;
-        }
-        if trimmed == "/help" {
-            self.open_dialog(Dialog::Help);
-            return true;
-        }
-        if trimmed == "/model" || trimmed == "/models" {
-            self.open_dialog(Dialog::Model);
-            return true;
-        }
-        if trimmed == "/agent" {
-            self.open_dialog(Dialog::Agent);
-            return true;
-        }
-        if trimmed == "/clear" {
-            self.clear_session();
-            return true;
-        }
-        if trimmed == "/compact" {
-            return true;
-        }
+
         if trimmed.starts_with("/search ") {
             let query = trimmed.trim_start_matches("/search ").trim();
             if !query.is_empty() {
@@ -3588,6 +3597,17 @@ impl App {
             }
             return true;
         }
+        let command_name = trimmed
+            .split_whitespace()
+            .next()
+            .unwrap_or(trimmed)
+            .trim_start_matches('/');
+        if let Some(cmd) = crate::tui::command::COMMAND_REGISTRY.find_by_name_or_alias(command_name)
+        {
+            self.execute_command(cmd, Some(trimmed));
+            return true;
+        }
+
         false
     }
 

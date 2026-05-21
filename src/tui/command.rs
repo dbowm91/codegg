@@ -1,6 +1,8 @@
 use crate::tui::app::Dialog;
 use crate::util::fuzzy::fuzzy_score;
+use std::collections::HashSet;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +29,11 @@ pub struct Command {
     pub description: String,
     pub category: CommandCategory,
     pub dialog: Option<Dialog>,
+    pub template: Option<String>,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub subtask: Option<bool>,
+    pub source: Option<String>,
 }
 
 impl Command {
@@ -37,6 +44,11 @@ impl Command {
             description: String::new(),
             category,
             dialog,
+            template: None,
+            agent: None,
+            model: None,
+            subtask: None,
+            source: None,
         }
     }
 
@@ -63,7 +75,7 @@ pub struct CommandRegistry {
 
 impl CommandRegistry {
     pub fn new() -> Self {
-        let commands = vec![
+        let mut commands = vec![
             Command::new("/connect", CommandCategory::System, None)
                 .with_description("Connect provider"),
             Command::new("/exit", CommandCategory::System, None)
@@ -137,11 +149,85 @@ impl CommandRegistry {
             Command::new("/task-del", CommandCategory::Agent, None)
                 .with_description("Delete background task"),
         ];
+
+        Self::append_dynamic_commands(&mut commands);
         Self { commands }
+    }
+
+    fn append_dynamic_commands(commands: &mut Vec<Command>) {
+        let mut seen: HashSet<String> = commands
+            .iter()
+            .flat_map(|c| c.all_names().into_iter())
+            .map(|name| Self::normalize_name(name))
+            .collect();
+
+        for dynamic in Self::load_dynamic_commands() {
+            let normalized = Self::normalize_name(&dynamic.name);
+            if seen.contains(&normalized) {
+                continue;
+            }
+            seen.insert(normalized);
+            commands.push(dynamic);
+        }
+    }
+
+    fn normalize_name(name: &str) -> String {
+        name.trim().trim_start_matches('/').to_lowercase()
+    }
+
+    fn to_slash_name(name: &str) -> String {
+        if name.starts_with('/') {
+            name.to_string()
+        } else {
+            format!("/{}", name)
+        }
+    }
+
+    fn load_dynamic_commands() -> Vec<Command> {
+        let mut result = Vec::new();
+        let mut add = |cmd: crate::command::Command| {
+            result.push(Command {
+                name: Self::to_slash_name(&cmd.name),
+                aliases: Vec::new(),
+                description: cmd.description.unwrap_or_default(),
+                category: CommandCategory::Agent,
+                dialog: None,
+                template: Some(cmd.template),
+                agent: cmd.agent,
+                model: cmd.model,
+                subtask: cmd.subtask,
+                source: Some(cmd.source),
+            });
+        };
+
+        let config = crate::config::schema::Config::load().unwrap_or_default();
+        if let Some(config_commands) = config.commands.as_ref() {
+            for cmd in crate::command::resolve_commands_from_config(config_commands) {
+                add(cmd);
+            }
+        }
+
+        let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        for cmd in crate::command::find_command_files(&base) {
+            add(cmd);
+        }
+
+        result
     }
 
     pub fn commands(&self) -> &[Command] {
         &self.commands
+    }
+
+    pub fn find_by_name_or_alias(&self, name: &str) -> Option<&Command> {
+        let needle = Self::normalize_name(name);
+        self.commands.iter().find(|cmd| {
+            Self::normalize_name(&cmd.name) == needle
+                || cmd
+                    .aliases
+                    .iter()
+                    .any(|alias| Self::normalize_name(alias) == needle)
+        })
     }
 
     pub fn filter(&self, query: &str) -> Vec<(&Command, usize)> {
