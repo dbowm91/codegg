@@ -682,12 +682,7 @@ impl SessionStore {
     }
 
     pub async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        sqlx::query("DELETE FROM session WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
-
+        self.soft_delete(id).await?;
         Ok(())
     }
 
@@ -774,8 +769,8 @@ impl SessionStore {
             r#"
             INSERT INTO session (
                 id, project_id, workspace_id, parent_id, slug, directory,
-                title, version, time_created, time_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                title, version, time_created, time_updated, tags
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&child_id)
@@ -788,6 +783,7 @@ impl SessionStore {
         .bind(&version)
         .bind(now)
         .bind(now)
+        .bind(&serde_json::to_string(&parent.tags).unwrap_or_else(|_| "[]".to_string()))
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -1336,18 +1332,28 @@ impl SessionStore {
     pub async fn unshare_session(&self, session_id: &str) -> Result<Session, StorageError> {
         let now = Utc::now().timestamp_millis();
 
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
         let result = sqlx::query_as::<_, SessionRow>(
             "UPDATE session SET share_url = NULL, time_updated = ? WHERE id = ? RETURNING *",
         )
         .bind(now)
         .bind(session_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))?;
 
         sqlx::query("DELETE FROM session_share WHERE session_id = ?")
             .bind(session_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        tx.commit()
             .await
             .map_err(|e| StorageError::Database(e.to_string()))?;
 

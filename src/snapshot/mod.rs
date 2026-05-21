@@ -239,6 +239,68 @@ impl SnapshotManager {
             .to_string_lossy()
             .to_string()
     }
+
+    pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String> {
+        let project_root = self.project_root.clone();
+        let files = snapshot.files.clone();
+
+        tokio::task::spawn_blocking(move || {
+            for (rel_path, file_snapshot) in files {
+                let full_path = project_root.join(&rel_path);
+                if let Some(parent) = full_path.parent() {
+                    if !parent.exists() {
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    }
+                }
+                std::fs::write(&full_path, &file_snapshot.content).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    pub async fn restore_to_path(
+        &self,
+        snapshot: &SnapshotView,
+        target_path: &Path,
+    ) -> Result<(), String> {
+        let files = snapshot.files.clone();
+        let target = target_path.to_path_buf();
+
+        tokio::task::spawn_blocking(move || {
+            for (rel_path, file_snapshot) in files {
+                let full_path = target.join(&rel_path);
+                if let Some(parent) = full_path.parent() {
+                    if !parent.exists() {
+                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                    }
+                }
+                std::fs::write(&full_path, &file_snapshot.content).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    pub async fn delete_snapshot(&self, id: &str) -> Result<(), String> {
+        sqlx::query("DELETE FROM snapshot WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn delete_all_for_session(&self, session_id: &str) -> Result<(), String> {
+        sqlx::query("DELETE FROM snapshot WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 fn collect_files_sync(project_root: &Path, options: &SnapshotOptions) -> HashMap<String, FileSnapshot> {

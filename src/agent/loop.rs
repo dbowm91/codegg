@@ -40,13 +40,13 @@ use std::time::{Duration, Instant};
 
 static PATH_REDACTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
     let patterns = [
-        r"/home/[^/\s]+",
-        r"/Users/[^/\s]+",
-        r"/var/[^/\s]+",
-        r"/tmp/[^/\s]+",
-        r"C:\\Users\\[^\\]+",
-        r"C:\\Program Files\\[^\\]+",
-        r"C:\\Windows\\[^\\]+",
+        r"/home/[^\s/]+",
+        r"/Users/[^\s/]+",
+        r"/var/[^\s/]+",
+        r"/tmp/[^\s/]+",
+        r"C:\\Users\\[^\s\\]+",
+        r"C:\\Program Files\\[^\s\\]+",
+        r"C:\\Windows\\[^\s\\]+",
     ];
     patterns
         .iter()
@@ -1476,11 +1476,12 @@ impl AgentLoop {
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
                 let success = !content.starts_with("Error:");
+                let redacted_output = redact_local_paths(content);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),
                     tool_name,
                     session_id: self.session_id.clone(),
-                    output: content.clone(),
+                    output: redacted_output,
                     success,
                 });
             }
@@ -2094,6 +2095,7 @@ fn filter_tools_for_model<'a>(
         "webfetch",
         "lsp",
         "skill",
+        "plan_enter",
         "plan_exit",
     ];
 

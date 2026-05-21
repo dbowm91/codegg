@@ -25,6 +25,7 @@ pub enum ConnectionState {
     },
 }
 
+#[derive(Clone)]
 pub struct McpConnectionManager {
     client: RemoteClient,
     state: Arc<Mutex<ConnectionState>>,
@@ -35,6 +36,7 @@ pub struct McpConnectionManager {
     heartbeat_interval: Duration,
     heartbeat_task: Arc<AtomicBool>,
     shutdown: Arc<Notify>,
+    reconnect_needed: Arc<Notify>,
 }
 
 impl McpConnectionManager {
@@ -54,6 +56,7 @@ impl McpConnectionManager {
             heartbeat_interval: Duration::from_secs(30),
             heartbeat_task: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(Notify::default()),
+            reconnect_needed: Arc::new(Notify::default()),
         })
     }
 
@@ -71,6 +74,7 @@ impl McpConnectionManager {
         let running = Arc::clone(&self.heartbeat_task);
         let shutdown = Arc::clone(&self.shutdown);
         let state = Arc::clone(&self.state);
+        let reconnect_needed = Arc::clone(&self.reconnect_needed);
 
         running.store(true, Ordering::SeqCst);
         tokio::spawn(async move {
@@ -88,7 +92,8 @@ impl McpConnectionManager {
                         }
                         let mut c = client.lock().await;
                         if let Err(e) = c.send_notification("ping", json!({})).await {
-                            tracing::warn!("heartbeat failed: {}, will reconnect", e);
+                            tracing::warn!("heartbeat failed: {}, triggering reconnect", e);
+                            reconnect_needed.notify_one();
                             break;
                         }
                     }
@@ -151,7 +156,24 @@ impl McpConnectionManager {
         match state {
             ConnectionState::Connected => Ok(()),
             ConnectionState::Disconnected | ConnectionState::Reconnecting { .. } => {
-                self.connect().await
+                let reconnect_needed = Arc::clone(&self.reconnect_needed);
+                let reconnect_notify = Arc::clone(&self.reconnect_needed);
+                let mut reconnect = self.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = reconnect.reconnect().await {
+                        tracing::error!("MCP reconnection failed: {}", e);
+                    }
+                    reconnect_notify.notify_one();
+                });
+
+                reconnect_needed.notified().await;
+                let state = self.state.lock().await.clone();
+                if matches!(state, ConnectionState::Connected) {
+                    Ok(())
+                } else {
+                    self.connect().await
+                }
             }
         }
     }
