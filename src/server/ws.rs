@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::error::ServerRuntimeError;
+use crate::protocol::tui::{QuestionSpec, TuiMessage};
 
 #[derive(Clone, Debug)]
 pub struct WebSocketAuth {
@@ -212,76 +213,6 @@ pub struct RpcEvent {
     #[serde(rename = "type")]
     pub event_type: String,
     pub data: serde_json::Value,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "type")]
-pub enum TuiMessage {
-    Input {
-        text: String,
-    },
-    KeyDown {
-        key: String,
-        modifiers: Vec<String>,
-    },
-    MouseClick {
-        x: u16,
-        y: u16,
-    },
-    Resize {
-        w: u16,
-        h: u16,
-    },
-    PermissionResponse {
-        id: String,
-        choice: String,
-    },
-    QuestionResponse {
-        id: String,
-        answers: serde_json::Value,
-    },
-    RenderFrame {
-        content: String,
-    },
-    TextDelta {
-        delta: String,
-    },
-    PermissionPending {
-        id: String,
-        tool: String,
-        path: Option<String>,
-    },
-    QuestionPending {
-        id: String,
-        questions: Vec<QuestionSpec>,
-    },
-    SessionInfo {
-        id: String,
-        model: String,
-    },
-    SessionEnded {
-        stop_reason: String,
-    },
-    ToolCallStarted {
-        tool_name: String,
-        tool_id: String,
-        arguments: String,
-    },
-    ToolResult {
-        tool_id: String,
-        output: String,
-        success: bool,
-    },
-    Error {
-        message: String,
-    },
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct QuestionSpec {
-    pub id: String,
-    pub prompt: String,
-    pub default: Option<String>,
 }
 
 #[allow(dead_code)]

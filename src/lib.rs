@@ -20,6 +20,7 @@ pub mod lsp;
 pub mod mcp;
 pub mod permission;
 pub mod plugin;
+pub mod protocol;
 pub mod provider;
 pub mod pty;
 pub mod resilience;

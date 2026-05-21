@@ -1,76 +1,12 @@
 use futures::{SinkExt, StreamExt};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::tungstenite::http::Request;
 use tracing::{error, info};
 
+use crate::protocol::tui::TuiMessage;
 use crate::client::sdk::RemoteClient;
 use crate::error::ClientError;
 use crate::tui;
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(tag = "type")]
-pub enum TuiMessage {
-    Input {
-        text: String,
-    },
-    KeyDown {
-        key: String,
-        modifiers: Vec<String>,
-    },
-    MouseClick {
-        x: u16,
-        y: u16,
-    },
-    Resize {
-        w: u16,
-        h: u16,
-    },
-    PermissionResponse {
-        id: String,
-        choice: String,
-    },
-    QuestionResponse {
-        id: String,
-        answers: Vec<String>,
-    },
-    TextDelta {
-        delta: String,
-    },
-    PermissionPending {
-        id: String,
-        tool: String,
-        path: Option<String>,
-    },
-    QuestionPending {
-        id: String,
-        questions: Vec<QuestionSpec>,
-    },
-    SessionInfo {
-        id: String,
-        model: String,
-    },
-    SessionEnded {
-        stop_reason: String,
-    },
-    ToolCallStarted {
-        tool_name: String,
-        tool_id: String,
-        arguments: String,
-    },
-    ToolResult {
-        tool_id: String,
-        output: String,
-        success: bool,
-    },
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct QuestionSpec {
-    pub id: String,
-    pub prompt: String,
-    pub default: Option<String>,
-}
 
 pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientError> {
     let ws_url = build_tui_ws_url(url);
@@ -84,24 +20,32 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 
     info!("Connected, establishing TUI WebSocket...");
 
-    let (ws_stream, _) = connect_async(&ws_url)
+    let mut request = Request::builder().uri(&ws_url);
+    if let Some(t) = token {
+        request = request.header("Authorization", format!("Bearer {}", t));
+    }
+    let ws_request = request
+        .body(())
+        .map_err(|e| ClientError::Connection(format!("invalid WebSocket request: {}", e)))?;
+
+    let (ws_stream, _) = connect_async(ws_request)
         .await
         .map_err(|e| ClientError::WebSocket(e.to_string()))?;
 
     info!("TUI WebSocket connected");
 
-    let (tx, mut rx) = ws_stream.split();
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     let mut app = tui::App::new_remote(url.to_string());
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<TuiMessage>();
 
     app.set_remote_event_rx(event_rx);
-
-    let tx = Arc::new(Mutex::new(tx));
+    app.set_remote_send_tx(out_tx);
 
     let event_task = tokio::spawn(async move {
-        while let Some(msg) = rx.next().await {
+        while let Some(msg) = ws_rx.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
                     if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -121,12 +65,20 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
         }
     });
 
+    let send_task = tokio::spawn(async move {
+        while let Some(msg) = out_rx.recv().await {
+            if let Ok(json) = serde_json::to_string(&msg) {
+                if ws_tx.send(Message::Text(json.into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
     let result = tui::run_event_loop(&mut app).await;
 
     event_task.abort();
-
-    let mut tx = tx.lock().await;
-    let _ = tx.close().await;
+    send_task.abort();
 
     result.map_err(|e| ClientError::Connection(e.to_string()))
 }
@@ -134,7 +86,7 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 fn build_tui_ws_url(url: &str) -> String {
     let base = url.trim_end_matches('/');
     if base.starts_with("wss://") || base.starts_with("ws://") {
-        format!("{}/tui", base.replace("ws://", "wss://"))
+        format!("{}/tui", base)
     } else if base.starts_with("https://") {
         format!("{}/tui", base.replace("https://", "wss://"))
     } else if base.starts_with("http://") {

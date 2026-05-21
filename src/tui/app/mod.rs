@@ -32,6 +32,7 @@ use super::theme::Theme;
 use crate::agent::builtin_agents;
 use crate::agent::Agent;
 use crate::bus::{PermissionRegistry, QuestionRegistry};
+use crate::protocol::tui::TuiMessage as RemoteTuiMessage;
 use crate::config::schema::SessionTemplate;
 use crate::permission::PermissionRequest;
 use crate::provider::ChatEvent;
@@ -216,6 +217,7 @@ pub struct App {
     pub event_rx: Option<mpsc::Receiver<ChatEvent>>,
     pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
     pub remote_event_rx: Option<mpsc::UnboundedReceiver<serde_json::Value>>,
+    pub remote_send_tx: Option<mpsc::UnboundedSender<RemoteTuiMessage>>,
     pub config_watcher: Option<crate::config::ConfigWatcher>,
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
@@ -468,6 +470,7 @@ impl App {
             event_rx: None,
             tui_cmd_tx: None,
             remote_event_rx: None,
+            remote_send_tx: None,
             config_watcher: Some(crate::config::ConfigWatcher::new()),
             subagent_pool: None,
             bg_scheduler: None,
@@ -484,6 +487,7 @@ impl App {
         app.ui_state.remote_mode = true;
         app.ui_state.remote_status = Some("Connected".to_string());
         app.remote_event_rx = None;
+        app.remote_send_tx = None;
         app
     }
 
@@ -645,6 +649,7 @@ impl App {
             event_rx: None,
             tui_cmd_tx: None,
             remote_event_rx: None,
+            remote_send_tx: None,
             config_watcher: None, // No config watcher for tests
             subagent_pool: None,
             bg_scheduler: None,
@@ -660,110 +665,87 @@ impl App {
         self.remote_event_rx = Some(rx);
     }
 
-    pub fn handle_remote_event(&mut self, event: serde_json::Value) {
-        let event_type = event
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        debug_log!("handle_remote_event: type={}", event_type);
+    pub fn set_remote_send_tx(&mut self, tx: mpsc::UnboundedSender<RemoteTuiMessage>) {
+        self.remote_send_tx = Some(tx);
+    }
 
-        match event_type {
-            "TextDelta" => {
-                if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+    fn send_remote_message(&self, msg: RemoteTuiMessage) {
+        if let Some(ref tx) = self.remote_send_tx {
+            let _ = tx.send(msg);
+        }
+    }
+
+    pub fn handle_remote_event(&mut self, event: serde_json::Value) {
+        let _event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+        debug_log!("handle_remote_event: type={}", _event_type);
+
+        match serde_json::from_value::<RemoteTuiMessage>(event) {
+            Ok(RemoteTuiMessage::TextDelta { delta }) => {
+                self.messages_state.messages.add_assistant_text(delta);
+                if matches!(self.session_state.session_status, SessionStatus::Working) {
+                    self.footer.set_thinking(true, Some("Thinking...".to_string()));
+                }
+            }
+            Ok(RemoteTuiMessage::ToolCallStarted {
+                tool_id,
+                tool_name,
+                arguments,
+            }) => {
+                if let Ok(arguments) = serde_json::from_str::<serde_json::Value>(&arguments) {
                     self.messages_state
                         .messages
-                        .add_assistant_text(delta.to_string());
-                    if matches!(self.session_state.session_status, SessionStatus::Working) {
-                        self.footer
-                            .set_thinking(true, Some("Thinking...".to_string()));
-                    }
+                        .add_tool_call(tool_id, tool_name, arguments);
                 }
             }
-            "ToolCallStarted" => {
-                if let (Some(tool_id), Some(tool_name), Some(arguments)) = (
-                    event.get("tool_id").and_then(|v| v.as_str()),
-                    event.get("tool_name").and_then(|v| v.as_str()),
-                    event
-                        .get("arguments")
-                        .and_then(|v| serde_json::to_value(v).ok()),
-                ) {
-                    self.messages_state.messages.add_tool_call(
-                        tool_id.to_string(),
-                        tool_name.to_string(),
-                        arguments,
-                    );
-                }
+            Ok(RemoteTuiMessage::ToolResult {
+                tool_id,
+                output,
+                success,
+            }) => {
+                let status = if success {
+                    crate::session::message::ToolStatus::Completed
+                } else {
+                    crate::session::message::ToolStatus::Error
+                };
+                self.messages_state.messages.update_tool_call(
+                    &tool_id, output, status, None, None, None,
+                );
             }
-            "ToolResult" => {
-                if let (Some(tool_id), Some(output), Some(success)) = (
-                    event.get("tool_id").and_then(|v| v.as_str()),
-                    event.get("output").and_then(|v| v.as_str()),
-                    event.get("success").and_then(|v| v.as_bool()),
-                ) {
-                    let status = if success {
-                        crate::session::message::ToolStatus::Completed
-                    } else {
-                        crate::session::message::ToolStatus::Error
-                    };
-                    self.messages_state.messages.update_tool_call(
-                        tool_id,
-                        output.to_string(),
-                        status,
-                        None,
-                        None,
-                        None,
-                    );
-                }
+            Ok(RemoteTuiMessage::SessionInfo { model, .. }) => {
+                self.agent_state.current_model = model;
             }
-            "SessionInfo" => {
-                if let Some(info) = event.get("info") {
-                    if let Some(name) = info.get("name").and_then(|v| v.as_str()) {
-                        if let Some(ref mut session) = self.session_state.session {
-                            session.title = name.to_string();
-                        }
-                    }
-                }
-            }
-            "SessionEnded" => {
+            Ok(RemoteTuiMessage::SessionEnded { .. }) => {
                 self.session_state.session_status = SessionStatus::Idle;
                 self.footer.set_thinking(false, None);
             }
-            "PermissionPending" => {
-                if let (Some(perm_id), Some(tool), Some(path), Some(args)) = (
-                    event.get("perm_id").and_then(|v| v.as_str()),
-                    event.get("tool").and_then(|v| v.as_str()),
-                    event.get("path").and_then(|v| v.as_str()),
-                    event.get("args"),
-                ) {
-                    self.show_permission_dialog(
-                        perm_id.to_string(),
-                        PermissionRequest {
-                            tool: tool.to_string(),
-                            path: Some(path.to_string()),
-                            args: Some(args.clone()),
-                        },
-                    );
-                }
+            Ok(RemoteTuiMessage::PermissionPending { id, tool, path }) => {
+                self.show_permission_dialog(
+                    id,
+                    PermissionRequest {
+                        tool,
+                        path,
+                        args: None,
+                    },
+                );
             }
-            "QuestionPending" => {
-                if let (Some(session_id), Some(questions)) = (
-                    event.get("session_id").and_then(|v| v.as_str()),
-                    event
-                        .get("questions")
-                        .and_then(|v| serde_json::from_value::<Vec<QuestionSpec>>(v.clone()).ok()),
-                ) {
-                    self.show_question_dialog(questions, session_id.to_string());
-                }
+            Ok(RemoteTuiMessage::QuestionPending { id, questions }) => {
+                let questions = questions
+                    .into_iter()
+                    .map(|q| QuestionSpec {
+                        question: q.prompt,
+                        options: None,
+                        initial: q.default,
+                    })
+                    .collect();
+                self.show_question_dialog(questions, id);
             }
-            "Error" => {
-                if let Some(message) = event.get("message").and_then(|v| v.as_str()) {
-                    self.session_state.session_status = SessionStatus::Error;
-                    self.footer.set_thinking(false, None);
-                    self.messages_state.toasts.add(Toast::error(message));
-                }
+            Ok(RemoteTuiMessage::Error { message }) => {
+                self.session_state.session_status = SessionStatus::Error;
+                self.footer.set_thinking(false, None);
+                self.messages_state.toasts.add(Toast::error(&message));
             }
             _ => {
-                debug_log!("handle_remote_event: unhandled type={}", event_type);
+                debug_log!("handle_remote_event: unhandled type={}", _event_type);
             }
         }
     }
@@ -1651,9 +1633,22 @@ impl App {
                 };
                 if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
                     let perm_id = perm_id.clone();
-                    tokio::spawn(async move {
-                        PermissionRegistry::respond(perm_id, choice);
-                    });
+                    if self.ui_state.remote_mode {
+                        let choice = match choice {
+                            crate::permission::PermissionChoice::AllowOnce => "allow",
+                            crate::permission::PermissionChoice::AlwaysAllow => "always_allow",
+                            crate::permission::PermissionChoice::DenyOnce => "deny",
+                            crate::permission::PermissionChoice::AlwaysDeny => "always_deny",
+                        };
+                        self.send_remote_message(RemoteTuiMessage::PermissionResponse {
+                            id: perm_id,
+                            choice: choice.to_string(),
+                        });
+                    } else {
+                        tokio::spawn(async move {
+                            PermissionRegistry::respond(perm_id, choice);
+                        });
+                    }
                 }
                 self.dialog_state.permission_dialog = None;
                 self.dialog_state.permission_perm_id = None;
@@ -1662,9 +1657,18 @@ impl App {
             TuiMsg::SubmitQuestionAnswers { answers_json } => {
                 if let Some(session_id) = self.dialog_state.question_session_id.take() {
                     let answers = answers_json.clone();
-                    tokio::spawn(async move {
-                        QuestionRegistry::answer_question(session_id, answers);
-                    });
+                    if self.ui_state.remote_mode {
+                        let answers = serde_json::from_str::<serde_json::Value>(&answers)
+                            .unwrap_or(serde_json::Value::String(answers));
+                        self.send_remote_message(RemoteTuiMessage::QuestionResponse {
+                            id: session_id,
+                            answers,
+                        });
+                    } else {
+                        tokio::spawn(async move {
+                            QuestionRegistry::answer_question(session_id, answers);
+                        });
+                    }
                 }
                 self.dialog_state.question_dialog = None;
                 self.dialog_state.question_session_id = None;
@@ -2974,6 +2978,13 @@ impl App {
 
     pub fn on_resize(&mut self) {
         self.ui_state.auto_scroll = true;
+        if self.ui_state.remote_mode {
+            let (w, h) = crossterm::terminal::size().unwrap_or((0, 0));
+            self.send_remote_message(RemoteTuiMessage::Resize {
+                w,
+                h,
+            });
+        }
     }
 
     fn update_context_hint(&mut self, target: &ClickTarget) {
@@ -3513,10 +3524,19 @@ impl App {
         self.session_state.history = sorted.into();
         self.session_state.history_pos = None;
 
-        self.messages_state.messages.add_user_message(trimmed_text, Some(self.agent_state.plan_mode));
+        self.messages_state
+            .messages
+            .add_user_message(trimmed_text, Some(self.agent_state.plan_mode));
         self.prompt_state.prompt.clear();
         self.prompt_state.show_completions = false;
-        self.prompt_state.pending_send = true;
+        if self.ui_state.remote_mode {
+            self.send_remote_message(RemoteTuiMessage::Input {
+                text: text.trim().to_string(),
+            });
+            self.prompt_state.pending_send = false;
+        } else {
+            self.prompt_state.pending_send = true;
+        }
         self.session_state.session_status = SessionStatus::Working;
 
         // Navigate to session view when user sends a prompt

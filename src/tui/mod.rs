@@ -994,7 +994,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
 
         app.messages_state.toasts.tick();
 
-        if app.prompt_state.pending_send && processing_task.is_none() {
+        if !app.ui_state.remote_mode && app.prompt_state.pending_send && processing_task.is_none() {
             debug_log!("Event loop: pending_send=true, spawning agent task");
 
             if app.session_state.session.is_none() {
