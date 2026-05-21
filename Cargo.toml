@@ -101,6 +101,7 @@ sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 aes-gcm = "0.10"
+argon2 = "0.5"
 
 # Clipboard (optional, platform-specific)
 arboard = { version = "3", optional = true }

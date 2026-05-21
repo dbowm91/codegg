@@ -159,10 +159,7 @@ impl ProviderConfig {
 
         if let (Some(ref encrypted_api_key), Some(true)) = (&self.encrypted_api_key, self.encrypted)
         {
-            let master_key = std::env::var("CODEGG_MASTER_KEY")
-                .ok()
-                .or_else(|| std::env::var("CODEGG_ENCRYPTION_KEY").ok());
-            if let Some(password) = master_key {
+            if let Some(password) = crate::config::encryption::get_master_key() {
                 if let Ok(decrypted) =
                     crate::crypto::decrypt_from_string(encrypted_api_key, &password)
                 {
@@ -490,7 +487,15 @@ impl Config {
             })?;
         }
 
-        let content = serde_json::to_string_pretty(self).map_err(|e| {
+        let mut to_save = self.clone();
+        crate::config::encryption::encrypt_provider_keys(&mut to_save).map_err(|e| {
+            crate::error::ConfigError::Invalid(format!(
+                "Failed to encrypt/migrate provider keys before save: {}",
+                e
+            ))
+        })?;
+
+        let content = serde_json::to_string_pretty(&to_save).map_err(|e| {
             crate::error::ConfigError::Parse(format!("Failed to serialize config: {}", e))
         })?;
 

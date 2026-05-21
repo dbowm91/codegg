@@ -40,7 +40,10 @@ impl McpCli {
             std::fs::create_dir_all(parent)
                 .map_err(|e| AppError::Config(crate::error::ConfigError::Invalid(e.to_string())))?;
         }
-        let json = serde_json::to_string_pretty(config)
+        let mut to_save = config.clone();
+        crate::config::encryption::encrypt_provider_keys(&mut to_save)?;
+
+        let json = serde_json::to_string_pretty(&to_save)
             .map_err(|e| AppError::Config(crate::error::ConfigError::Parse(e.to_string())))?;
         std::fs::write(&self.config_path, json)
             .map_err(|e| AppError::Config(crate::error::ConfigError::Invalid(e.to_string())))?;
