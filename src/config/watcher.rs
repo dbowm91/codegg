@@ -157,3 +157,55 @@ impl Default for ConfigWatcher {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_config_watcher() {
+        let watcher = ConfigWatcher::new();
+        assert!(!watcher.started);
+        assert_eq!(watcher.debounce_duration, Duration::from_millis(500));
+        assert!(watcher.ignore_patterns.is_empty());
+    }
+
+    #[test]
+    fn test_with_config_debounce() {
+        let watcher_config = WatcherConfig {
+            ignore: Some(vec!["node_modules".to_string()]),
+            debounce_duration_ms: Some(1000),
+        };
+        let watcher = ConfigWatcher::new().with_config(&watcher_config);
+        assert_eq!(watcher.debounce_duration, Duration::from_millis(1000));
+        assert_eq!(watcher.ignore_patterns, vec!["node_modules".to_string()]);
+    }
+
+    #[test]
+    fn test_with_config_ignore_patterns() {
+        let watcher_config = WatcherConfig {
+            ignore: Some(vec![".git".to_string(), "target".to_string()]),
+            debounce_duration_ms: None,
+        };
+        let watcher = ConfigWatcher::new().with_config(&watcher_config);
+        assert_eq!(watcher.ignore_patterns, vec![".git".to_string(), "target".to_string()]);
+    }
+
+    #[test]
+    fn test_default_debounce_is_500ms() {
+        let watcher = ConfigWatcher::new();
+        assert_eq!(watcher.debounce_duration, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_started_initially_false() {
+        let watcher = ConfigWatcher::new();
+        assert!(!watcher.started);
+    }
+
+    #[test]
+    fn test_watched_paths_initially_empty() {
+        let watcher = ConfigWatcher::new();
+        assert!(watcher.watched_paths.is_empty());
+    }
+}

@@ -170,6 +170,45 @@ impl ProviderConfig {
 
         None
     }
+
+    pub fn merge(&mut self, other: &ProviderConfig) {
+        if other.api_key.is_some() {
+            self.api_key.clone_from(&other.api_key);
+        }
+        if other.encrypted_api_key.is_some() {
+            self.encrypted_api_key.clone_from(&other.encrypted_api_key);
+        }
+        if other.encrypted.is_some() {
+            self.encrypted.clone_from(&other.encrypted);
+        }
+        if other.base_url.is_some() {
+            self.base_url.clone_from(&other.base_url);
+        }
+        if other.enterprise_url.is_some() {
+            self.enterprise_url.clone_from(&other.enterprise_url);
+        }
+        if other.set_cache_key.is_some() {
+            self.set_cache_key.clone_from(&other.set_cache_key);
+        }
+        if other.timeout.is_some() {
+            self.timeout.clone_from(&other.timeout);
+        }
+        if other.chunk_timeout.is_some() {
+            self.chunk_timeout.clone_from(&other.chunk_timeout);
+        }
+        if other.whitelist.is_some() {
+            self.whitelist.clone_from(&other.whitelist);
+        }
+        if other.blacklist.is_some() {
+            self.blacklist.clone_from(&other.blacklist);
+        }
+        if other.models.is_some() {
+            self.models.clone_from(&other.models);
+        }
+        if other.options.is_some() {
+            self.options.clone_from(&other.options);
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -464,6 +503,9 @@ impl Config {
         let configs = configs?;
         let mut config = crate::config::paths::merge_configs(&configs);
 
+        crate::config::encryption::decrypt_provider_keys(&mut config)
+            .map_err(|e| crate::error::ConfigError::Invalid(e.to_string()))?;
+
         config.migrate();
 
         if let Err(errors) = config.validate() {
@@ -543,6 +585,15 @@ impl Config {
                 errors.push(format!(
                     "invalid small_model '{}': must be in format provider/model",
                     small_model
+                ));
+            }
+        }
+
+        if let Some(ref medium_model) = self.medium_model {
+            if !medium_model.contains('/') {
+                errors.push(format!(
+                    "invalid medium_model '{}': must be in format provider/model",
+                    medium_model
                 ));
             }
         }
@@ -696,7 +747,11 @@ impl Config {
     }
 
     fn migrate_from_v0(&mut self) {
-        tracing::info!("Migrating config from v0 to v1");
+        if let Some(ref version) = self.version {
+            if version == "0" {
+                tracing::info!("Migrating config from v0 to v1");
+            }
+        }
     }
 }
 

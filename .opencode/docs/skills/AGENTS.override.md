@@ -23,6 +23,7 @@ skills:
 |-------|---------|
 | `agent-loop` | AgentLoop integration, streaming, Provider trait, async patterns |
 | `client` | Remote TUI client via WebSocket, connection flow, timeouts |
+| `config` | Config loading, validation, encryption, file watching, ProviderConfig merge |
 | `event-bus` | GlobalEventBus pub/sub, all AppEvent types |
 | `mcp` | MCP client/server, local/remote connections, OAuth |
 | `permission` | Permission system, DoomLoopDetector, Mode system |

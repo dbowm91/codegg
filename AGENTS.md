@@ -55,6 +55,9 @@ These items were identified during module reviews and are important for future a
 - **`SubAgentPool` bounded concurrency**: Properly uses semaphore with default of 5
 - **Tool definition caching**: Properly versioned cache key (uses mcp_tool_count as proxy - see known limitation)
 - **DoomLoop detection**: Implementation correctly uses window-based counting (not consecutive), and docstring accurately describes this
+- **`decrypt_provider_keys()` is called in `Config::load()`**: API keys encrypted via `save()` are now automatically decrypted on load (fixed 2026-05-21)
+- **ProviderConfig merge is field-by-field**: When merging configs with same provider, fields are merged individually (fixed 2026-05-21)
+- **`medium_model` is validated**: Validates `provider/model` format like `model` and `small_model` (fixed 2026-05-21)
 
 ### Implementation Patterns
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -83,6 +86,8 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 │   └── AGENTS.override.md        # Event bus guidance
 ├── command/
 │   └── AGENTS.override.md        # Slash commands, templates, execution
+├── config/
+│   └── AGENTS.override.md        # Config loading, validation, encryption, file watching
 ├── crypto/
 │   └── AGENTS.override.md        # API key encryption
 ├── exec/
@@ -150,4 +155,5 @@ When adding guidance for a new module:
 | Skills (skill system overview) | `skills/AGENTS.override.md` |
 | Command (slash commands, templates, execution) | `command/AGENTS.override.md` |
 | Testing (E2E, unit, integration) | `meta/AGENTS.override.md` |
+| Config (loading, validation, encryption, watching) | `config/SKILL.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |

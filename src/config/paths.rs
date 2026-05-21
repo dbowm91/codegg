@@ -206,7 +206,11 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             match &mut merged.provider {
                 Some(ref mut existing) => {
                     for (k, v) in providers {
-                        existing.insert(k.clone(), v.clone());
+                        if let Some(existing) = existing.get_mut(k) {
+                            existing.merge(v);
+                        } else {
+                            existing.insert(k.clone(), v.clone());
+                        }
                     }
                 }
                 None => merged.provider = Some(providers.clone()),
@@ -518,6 +522,25 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_medium_model_format() {
+        let config = Config {
+            medium_model: Some("just-model".to_string()),
+            ..Default::default()
+        };
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("medium_model")));
+    }
+
+    #[test]
+    fn test_validate_medium_model_format_valid() {
+        let config = Config {
+            medium_model: Some("anthropic/claude-sonnet-4".to_string()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
     fn test_validate_agent_mode() {
         let mut agents = HashMap::new();
         agents.insert(
@@ -700,5 +723,43 @@ mod tests {
             merged.catalog.as_ref().and_then(|c| c.search_max_results),
             Some(25)
         );
+    }
+
+    #[test]
+    fn test_merge_configs_merges_provider_configs_field_by_field() {
+        let mut providers1 = HashMap::new();
+        providers1.insert(
+            "openai".to_string(),
+            crate::config::schema::ProviderConfig {
+                api_key: Some("key1".to_string()),
+                base_url: Some("https://api.openai.com".to_string()),
+                ..Default::default()
+            },
+        );
+        let c1 = Config {
+            provider: Some(providers1),
+            ..Default::default()
+        };
+
+        let mut providers2 = HashMap::new();
+        providers2.insert(
+            "openai".to_string(),
+            crate::config::schema::ProviderConfig {
+                api_key: Some("key2".to_string()),
+                timeout: Some(crate::config::schema::ProviderTimeout::Ms(5000)),
+                ..Default::default()
+            },
+        );
+        let c2 = Config {
+            provider: Some(providers2),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(&[c1, c2]);
+        let providers = merged.provider.unwrap();
+        let openai = providers.get("openai").unwrap();
+        assert_eq!(openai.api_key.as_deref(), Some("key2"));
+        assert_eq!(openai.base_url.as_deref(), Some("https://api.openai.com"));
+        assert!(matches!(openai.timeout, Some(crate::config::schema::ProviderTimeout::Ms(5000))));
     }
 }
