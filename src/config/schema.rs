@@ -159,7 +159,10 @@ impl ProviderConfig {
 
         if let (Some(ref encrypted_api_key), Some(true)) = (&self.encrypted_api_key, self.encrypted)
         {
-            if let Ok(password) = std::env::var("CODEGG_ENCRYPTION_KEY") {
+            let master_key = std::env::var("CODEGG_MASTER_KEY")
+                .ok()
+                .or_else(|| std::env::var("CODEGG_ENCRYPTION_KEY").ok());
+            if let Some(password) = master_key {
                 if let Ok(decrypted) =
                     crate::crypto::decrypt_from_string(encrypted_api_key, &password)
                 {
@@ -689,5 +692,29 @@ impl Config {
 
     fn migrate_from_v0(&mut self) {
         tracing::info!("Migrating config from v0 to v1");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderConfig;
+
+    #[test]
+    fn test_provider_api_key_supports_master_key_for_decryption() {
+        std::env::set_var("CODEGG_MASTER_KEY", "test-master-key");
+        std::env::remove_var("CODEGG_ENCRYPTION_KEY");
+
+        let encrypted = crate::crypto::encrypt_to_string("decrypted-value", "test-master-key")
+            .expect("encryption should succeed");
+        let provider = ProviderConfig {
+            encrypted_api_key: Some(encrypted),
+            encrypted: Some(true),
+            ..Default::default()
+        };
+
+        let key = provider.api_key("openai");
+        assert_eq!(key.as_deref(), Some("decrypted-value"));
+
+        std::env::remove_var("CODEGG_MASTER_KEY");
     }
 }

@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::config::paths::{find_project_config, global_config_path};
+use crate::config::paths::resolve_config_paths;
 use crate::config::schema::{Config, WatcherConfig};
 use crate::error::{AppError, ConfigError};
 
@@ -17,6 +17,7 @@ pub struct ConfigWatcher {
     started: bool,
     debounce_duration: Duration,
     last_hash: Option<u64>,
+    ignore_patterns: Vec<String>,
 }
 
 impl ConfigWatcher {
@@ -30,12 +31,16 @@ impl ConfigWatcher {
             started: false,
             debounce_duration: Duration::from_millis(500),
             last_hash: None,
+            ignore_patterns: Vec::new(),
         }
     }
 
     pub fn with_config(mut self, config: &WatcherConfig) -> Self {
         if let Some(ms) = config.debounce_duration_ms {
             self.debounce_duration = Duration::from_millis(ms);
+        }
+        if let Some(ignore) = &config.ignore {
+            self.ignore_patterns = ignore.clone();
         }
         self
     }
@@ -52,11 +57,18 @@ impl ConfigWatcher {
         }
 
         let tx = self.tx.clone();
+        let ignore_patterns = self.ignore_patterns.clone();
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
                     if event.kind.is_modify() || event.kind.is_create() {
-                        drop(tx.send(()));
+                        let ignored = event.paths.iter().any(|path| {
+                            let p = path.to_string_lossy();
+                            ignore_patterns.iter().any(|pattern| p.contains(pattern))
+                        });
+                        if !ignored {
+                            let _ = tx.blocking_send(());
+                        }
                     }
                 }
             },
@@ -103,19 +115,7 @@ impl ConfigWatcher {
     }
 
     fn collect_config_paths() -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-
-        if let Some(global) = global_config_path() {
-            if global.exists() {
-                paths.push(global);
-            }
-        }
-
-        if let Some(project) = find_project_config() {
-            paths.push(project);
-        }
-
-        paths
+        resolve_config_paths()
     }
 
     fn compute_config_hash() -> Option<u64> {

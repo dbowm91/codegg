@@ -471,7 +471,11 @@ impl App {
             tui_cmd_tx: None,
             remote_event_rx: None,
             remote_send_tx: None,
-            config_watcher: Some(crate::config::ConfigWatcher::new()),
+            config_watcher: Some(
+                cfg.and_then(|c| c.watcher.as_ref())
+                    .map(|w| crate::config::ConfigWatcher::new().with_config(w))
+                    .unwrap_or_default(),
+            ),
             subagent_pool: None,
             bg_scheduler: None,
             undo_session_id: None,

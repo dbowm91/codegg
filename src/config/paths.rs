@@ -172,6 +172,8 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             log_level,
             model,
             small_model,
+            medium_model,
+            auto_route_models,
             default_agent,
             username,
             share,
@@ -181,16 +183,24 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             enabled_providers,
             permission,
             compaction,
+            subagent,
             skills,
+            templates,
             layout,
             tools,
             formatter,
             lsp,
             watcher,
             snapshot,
+            snapshot_config,
             plugin,
             enterprise,
-            experimental
+            experimental,
+            keybinds,
+            vim_mode,
+            hooks,
+            notifications,
+            catalog
         );
         if let Some(ref providers) = config.provider {
             match &mut merged.provider {
@@ -612,6 +622,83 @@ mod tests {
         assert_eq!(
             merged.instructions,
             Some(vec!["instr1".to_string(), "instr2".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_merge_configs_merges_newly_covered_fields() {
+        let mut templates = HashMap::new();
+        templates.insert(
+            "default".to_string(),
+            crate::config::schema::SessionTemplate {
+                name: "Default".to_string(),
+                ..Default::default()
+            },
+        );
+        let mut keybinds = HashMap::new();
+        keybinds.insert("send".to_string(), "enter".to_string());
+
+        let c1 = Config {
+            medium_model: Some("provider/medium".to_string()),
+            auto_route_models: Some(true),
+            subagent: Some(crate::config::schema::SubagentConfig {
+                max_concurrent: Some(7),
+                max_depth: Some(3),
+            }),
+            templates: Some(templates),
+            snapshot_config: Some(crate::config::schema::SnapshotConfig {
+                max_files: 123,
+                max_file_bytes: 456,
+                max_total_bytes: 789,
+            }),
+            keybinds: Some(keybinds),
+            vim_mode: Some(true),
+            hooks: Some(vec![crate::config::schema::HookConfigEntry::default()]),
+            notifications: Some(crate::config::schema::NotificationConfig {
+                enabled: Some(true),
+                on_task_complete: Some(true),
+                on_error: Some(false),
+            }),
+            catalog: Some(crate::config::schema::CatalogConfig {
+                enabled: Some(true),
+                deferred_tools: Some(vec!["webfetch".to_string()]),
+                search_max_results: Some(25),
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(&[c1]);
+        assert_eq!(merged.medium_model, Some("provider/medium".to_string()));
+        assert_eq!(merged.auto_route_models, Some(true));
+        assert_eq!(
+            merged.subagent.as_ref().and_then(|s| s.max_concurrent),
+            Some(7)
+        );
+        assert!(merged
+            .templates
+            .as_ref()
+            .is_some_and(|templates| templates.contains_key("default")));
+        assert_eq!(
+            merged.snapshot_config.as_ref().map(|s| s.max_total_bytes),
+            Some(789)
+        );
+        assert_eq!(
+            merged
+                .keybinds
+                .as_ref()
+                .and_then(|k| k.get("send"))
+                .map(String::as_str),
+            Some("enter")
+        );
+        assert_eq!(merged.vim_mode, Some(true));
+        assert_eq!(merged.hooks.as_ref().map(Vec::len), Some(1));
+        assert_eq!(
+            merged.notifications.as_ref().and_then(|n| n.enabled),
+            Some(true)
+        );
+        assert_eq!(
+            merged.catalog.as_ref().and_then(|c| c.search_max_results),
+            Some(25)
         );
     }
 }
