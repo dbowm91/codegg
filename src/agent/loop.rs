@@ -955,12 +955,51 @@ impl AgentLoop {
         }
     }
 
+    fn infer_tool_from_prompt(prompt: &str) -> &'static str {
+        let p = prompt.to_lowercase();
+        if p.contains("debug")
+            || p.contains("analyze")
+            || p.contains("review")
+            || p.contains("architect")
+            || p.contains("investigate")
+        {
+            return "debug";
+        }
+        if p.contains("edit")
+            || p.contains("rewrite")
+            || p.contains("refactor")
+            || p.contains("patch")
+            || p.contains("modify")
+            || p.contains("update")
+            || p.contains("change")
+        {
+            return "edit";
+        }
+        if p.contains("write")
+            || p.contains("create")
+            || p.contains("implement")
+            || p.contains("add")
+            || p.contains("build")
+        {
+            return "write";
+        }
+        if p.contains("search") || p.contains("find") || p.contains("grep") {
+            return "search";
+        }
+        if p.contains("list") || p.contains("show") || p.contains("read") || p.contains("view") {
+            return "read";
+        }
+        "read"
+    }
+
     fn extract_first_prompt_and_tool(&self, request: &ChatRequest) -> (String, &'static str) {
         for msg in &request.messages {
             if let Message::User { content } = msg {
                 for part in content {
                     if let crate::provider::ContentPart::Text { text } = part {
-                        return (text.to_string(), "read");
+                        let prompt = text.to_string();
+                        let tool = Self::infer_tool_from_prompt(&prompt);
+                        return (prompt, tool);
                     }
                 }
             }
@@ -1832,7 +1871,7 @@ impl AgentLoop {
         Ok(ordered_results)
     }
 
-    /// Drains a single queued follow-up prompt, if one exists.
+    /// Drains queued follow-up prompts, if any are already queued.
     ///
     /// Uses non-blocking `try_recv()` - does NOT wait if no follow-up is queued.
     /// This means late-arriving follow-ups (after `run()` returns) are NOT processed
@@ -1843,36 +1882,37 @@ impl AgentLoop {
         all_events: &mut Vec<ChatEvent>,
         processor: &mut EventProcessor,
     ) {
-        // Check if a follow-up is already queued without blocking
-        let prompt = match self.follow_up_rx.try_recv() {
-            Ok(prompt) => {
-                tracing::info!("Processing follow-up: {}", prompt);
-                prompt
-            }
-            Err(mpsc::error::TryRecvError::Empty) => {
-                // No follow-up queued, return immediately without blocking
-                tracing::debug!("No follow-up queued, skipping drain");
-                return;
-            }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                tracing::info!("Follow-up channel disconnected");
-                return;
-            }
-        };
-
-        request.messages.push(Message::User {
-            content: vec![ContentPart::Text {
-                text: prompt.into(),
-            }],
-        });
-
-        // Continue processing until done (handles tool calls and follow-up responses)
-        let mut missing_structured_tool_call_retries: u8 = 0;
-        let mut post_tool_continuation_retry_budget: u8 = 0;
-        let mut just_executed_tools = false;
         loop {
-            self.compact_if_needed(&mut request.messages).await;
-            harden_history(&mut request.messages);
+            // Check if a follow-up is already queued without blocking
+            let prompt = match self.follow_up_rx.try_recv() {
+                Ok(prompt) => {
+                    tracing::info!("Processing follow-up: {}", prompt);
+                    prompt
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // No follow-up queued, return immediately without blocking
+                    tracing::debug!("No follow-up queued, skipping drain");
+                    return;
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    tracing::info!("Follow-up channel disconnected");
+                    return;
+                }
+            };
+
+            request.messages.push(Message::User {
+                content: vec![ContentPart::Text {
+                    text: prompt.into(),
+                }],
+            });
+
+            // Continue processing until done (handles tool calls and follow-up responses)
+            let mut missing_structured_tool_call_retries: u8 = 0;
+            let mut post_tool_continuation_retry_budget: u8 = 0;
+            let mut just_executed_tools = false;
+            loop {
+                self.compact_if_needed(&mut request.messages).await;
+                harden_history(&mut request.messages);
 
             let events = match self.stream_with_retry(request).await {
                 Ok(events) => events,
@@ -1987,7 +2027,8 @@ impl AgentLoop {
                 request.messages.push(msg);
             }
 
-            processor.reset();
+                processor.reset();
+            }
         }
     }
 
@@ -2032,9 +2073,8 @@ impl AgentLoop {
 /// codesearch, webfetch, lsp, skill, and plan_exit.
 ///
 /// For regular mode:
-/// - apply_patch is restricted to non-OSS models (GPT but not GPT-4) to prevent
-///   patching models that don't support it
-/// - edit and write are blocked for GPT models since GPT-4 has better write handling
+/// - apply_patch is restricted to models matching the current `is_gpt && is_non_oss` gate
+/// - edit and write are allowed
 /// - codesearch and websearch require EXA_API_KEY or EXA_CODE_API_KEY
 /// - lsp requires lsp_enabled flag
 /// - batch is always disabled

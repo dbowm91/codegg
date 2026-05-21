@@ -158,8 +158,8 @@ impl ModelRouter {
 
         match complexity {
             TaskComplexity::Simple => self.simple_model.clone(),
-            TaskComplexity::Medium => None,
-            TaskComplexity::Complex => None,
+            TaskComplexity::Medium => self.medium_model.clone(),
+            TaskComplexity::Complex => self.complex_model.clone(),
         }
     }
 }
