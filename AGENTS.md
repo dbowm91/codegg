@@ -70,12 +70,12 @@ These items were identified during module reviews and are important for future a
 
 ## Documentation Structure
 
-Agent guidance is **modularized** to reduce context pollution. Each module has its own `AGENTS.override.md` file in `.codegg/docs/<module>/`. The root `AGENTS.md` serves as an index only.
+Agent guidance is **modularized** to reduce context pollution. Each module has its own `AGENTS.override.md` file in `.opencode/docs/<module>/`. The root `AGENTS.md` serves as an index only.
 
 ### Directory Structure
 
 ```
-.codegg/docs/
+.opencode/docs/
 ├── AGENTS.md                     # Root index (this file)
 ├── agent/
 │   └── AGENTS.override.md        # AgentLoop, TuiCommand, TuiMsg, compaction, router, team
@@ -101,6 +101,10 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 │   └── AGENTS.override.md        # WebSocket, TuiMessage, ResyncRequired
 ├── shell/
 │   └── AGENTS.override.md        # Shell session management
+├── skills/
+│   └── AGENTS.override.md        # Skills system overview
+├── snapshot/
+│   └── AGENTS.override.md        # Snapshot capture and restore
 ├── tool/
 │   └── AGENTS.override.md        # Tool path validation, async command pattern
 ├── tui/
@@ -138,7 +142,9 @@ When adding guidance for a new module:
 | Tool (path validation, async command) | `tool/AGENTS.override.md` |
 | Exec mode | `exec/AGENTS.override.md` |
 | Hooks system | `hooks/AGENTS.override.md` |
-| Client (remote TUI, WebSocket) | `.opencode/skills/client/SKILL.md` |
+| Client (remote TUI, WebSocket) | `client/SKILL.md` |
 | Server (WebSocket, TuiMessage serialization) | `server/AGENTS.override.md` |
+| Snapshot (file state capture and restore) | `snapshot/AGENTS.override.md` |
+| Skills (skill system overview) | `skills/AGENTS.override.md` |
 | Testing (E2E, unit, integration) | `meta/AGENTS.override.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |

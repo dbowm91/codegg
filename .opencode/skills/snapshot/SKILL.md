@@ -32,6 +32,11 @@ pub struct SnapshotManager {
 impl SnapshotManager {
     pub fn new(project_root: PathBuf) -> Self;
     pub async fn capture(&mut self, session_id: &str, label: Option<String>) -> Result<Snapshot, String>;
+    pub async fn capture_incremental(&self, session_id: &str, label: Option<String>, file_changes: Vec<(String, Option<String>)>) -> Result<Option<Snapshot>, String>;
+    pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String>;  // NEW
+    pub async fn restore_to_path(&self, snapshot: &SnapshotView, target_path: &Path) -> Result<(), String>;  // NEW
+    pub async fn delete_snapshot(&self, id: &str) -> Result<(), String>;  // NEW
+    pub async fn delete_all_for_session(&self, session_id: &str) -> Result<(), String>;  // NEW
     pub fn get(&self, id: &str) -> Option<&Snapshot>;
     pub fn list_for_session(&self, session_id: &str) -> Vec<&Snapshot>;
     pub fn latest(&self, session_id: &str) -> Option<&Snapshot>;
@@ -124,13 +129,44 @@ The `ReplaceTool::execute()`:
 3. Associate with session_id
 4. Use for revert/restore operations
 
+## Restore Functionality (Implemented 2026-05-21)#
+
+SnapshotManager now supports restore operations:
+
+```rust
+pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String> {
+    // Restores all files from snapshot to project root
+    for (rel_path, file_snapshot) in files {
+        let full_path = project_root.join(&rel_path);
+        std::fs::write(&full_path, &file_snapshot.content)?;
+    }
+    Ok(())
+}
+
+pub async fn restore_to_path(
+    &self,
+    snapshot: &SnapshotView,
+    target_path: &Path,
+) -> Result<(), String> {
+    // Restores files to a custom target path (for migration/testing)
+}
+
+pub async fn delete_snapshot(&self, id: &str) -> Result<(), String> {
+    // Delete a specific snapshot
+}
+
+pub async fn delete_all_for_session(&self, session_id: &str) -> Result<(), String> {
+    // Delete all snapshots for a session (cleanup)
+}
+```
+
 ## Future Work#
 
 - ~~Create actual snapshot objects from `FileChanged` events~~ (Done: SnapshotManager wired to AgentLoop)
-- Implement revert functionality using snapshots
+- ~~Implement revert functionality using snapshots~~ (Done: restore() and restore_to_path() added 2026-05-21)
+- ~~Add snapshot cleanup (limit number of snapshots per session)~~ (Done: delete_snapshot() and delete_all_for_session() added)
 - Add snapshot UI (list, restore, delete)
-- Add snapshot cleanup (limit number of snapshots per session)
 
-Base directory for this skill: file:///home/sugarwookie/projects/coder/.opencode/skills/snapshot
+Base directory for this skill: file:///Users/davidbowman/projects/codegg/.opencode/skills/snapshot
 Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.
 Note: file list is sampled.

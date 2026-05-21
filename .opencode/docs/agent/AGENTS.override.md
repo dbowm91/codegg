@@ -318,3 +318,27 @@ MCP tool availability uses `mcp_arc.try_read()` to avoid blocking the agent loop
 - Debug logging is emitted for transient unavailability
 
 Cache invalidation for MCP tools uses count-based tracking. If MCP tool identities change without count changing, the cache may be stale - this is a known limitation documented in `src/agent/loop.rs`.
+
+## MCP Reconnect (Updated 2026-05-21)
+
+MCP reconnect is now wired up to heartbeat failures:
+
+- **Field**: `reconnect_needed: Arc<Notify>` in `McpConnectionManager`
+- **Heartbeat failure**: When ping fails, calls `reconnect_needed.notify_one()` and breaks
+- **ensure_connected()**: When disconnected, spawns a reconnect task and waits on `reconnect_needed.notified()`
+
+```rust
+// Heartbeat failure triggers reconnect
+if let Err(e) = c.send_notification("ping", json!({})).await {
+    tracing::warn!("heartbeat failed: {}, triggering reconnect", e);
+    reconnect_needed.notify_one();
+    break;
+}
+
+// ensure_connected spawns reconnect and waits
+tokio::spawn(async move {
+    reconnect.reconnect().await;
+    reconnect_needed.notify_one();
+});
+reconnect_needed.notified().await;
+```
