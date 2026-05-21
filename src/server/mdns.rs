@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_extract_host() {
-        let data = b"\x07codegg\x05local\x00";
+        let data = b"\x06codegg\x05local\x00";
         let host = extract_host(data).unwrap();
         assert_eq!(host, "codegg.local");
     }

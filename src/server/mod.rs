@@ -1,4 +1,3 @@
-mod error;
 mod http;
 mod mdns;
 mod middleware;
