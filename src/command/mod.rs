@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+use tracing::{debug, warn};
 use crate::config::schema::CommandConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,12 +23,27 @@ pub fn find_command_files(base: &Path) -> Vec<Command> {
         let dir = base.join(dir_name);
         if dir.is_dir() {
             for entry in std::fs::read_dir(&dir).ok().into_iter().flatten() {
-                let entry = entry
-                    .ok()
-                    .continue_if(|e| e.path().extension().is_none_or(|ext| ext == "md"));
-                if let Some(entry) = entry {
-                    if let Some(cmd) = load_command_from_file(&entry.path()) {
-                        commands.push(cmd);
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        warn!("Failed to read directory entry in {:?}: {}", dir, e);
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                if path.extension().is_none_or(|ext| ext == "md") {
+                    match load_command_from_file(&path) {
+                        Ok(cmd) => {
+                            if let Err(e) = validate_command_name(&cmd.name) {
+                                warn!("Invalid command name {:?} in {:?}: {}", cmd.name, path, e);
+                                continue;
+                            }
+                            debug!("Loaded command {:?} from {:?}", cmd.name, path);
+                            commands.push(cmd);
+                        }
+                        Err(e) => {
+                            warn!("Failed to load command from {:?}: {}", path, e);
+                        }
                     }
                 }
             }
@@ -37,50 +53,57 @@ pub fn find_command_files(base: &Path) -> Vec<Command> {
     commands
 }
 
-trait OptionExt<T> {
-    fn continue_if<F: FnOnce(&T) -> bool>(self, f: F) -> Option<T>;
-}
-
-impl<T> OptionExt<T> for Option<T> {
-    fn continue_if<F: FnOnce(&T) -> bool>(self, f: F) -> Option<T> {
-        self.filter(f)
+fn validate_command_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("empty name");
     }
+    if name.chars().any(|c| c.is_whitespace()) {
+        return Err("name contains whitespace");
+    }
+    if name.starts_with('/') {
+        return Err("name starts with /");
+    }
+    Ok(())
 }
 
-pub fn load_command_from_file(path: &Path) -> Option<Command> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let (frontmatter, body) = parse_frontmatter(&content)?;
+pub fn load_command_from_file(path: &Path) -> Result<Command, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read file: {}", e))?;
+    let (frontmatter, body) = parse_frontmatter(&content)
+        .ok_or_else(|| "missing frontmatter".to_string())?;
 
-    let mut template = body.trim().to_string();
     let name = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+
     let mut description = None;
     let mut agent = None;
     let mut model = None;
     let mut subtask = None;
+    let mut template = None;
 
     if let Ok(cfg) = serde_yaml::from_str::<CommandConfig>(&frontmatter) {
-        template = cfg.template;
         description = cfg.description;
+        if !cfg.template.is_empty() {
+            template = Some(cfg.template);
+        }
         agent = cfg.agent;
         model = cfg.model;
         subtask = cfg.subtask;
     } else if let Ok(cfg) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) {
-        if let Some(t) = cfg.get("template").and_then(|v| v.as_str()) {
-            template = t.to_string();
-        }
-        description = cfg
-            .get("description")
-            .and_then(|v| v.as_str())
-            .map(String::from);
+        template = cfg.get("template").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
+        description = cfg.get("description").and_then(|v| v.as_str()).map(String::from);
         agent = cfg.get("agent").and_then(|v| v.as_str()).map(String::from);
         model = cfg.get("model").and_then(|v| v.as_str()).map(String::from);
         subtask = cfg.get("subtask").and_then(|v| v.as_bool());
+    } else {
+        return Err("failed to parse frontmatter".to_string());
     }
 
-    Some(Command {
+    let template = template.unwrap_or_else(|| body.trim().to_string());
+
+    Ok(Command {
         name,
         description,
         template,
@@ -110,8 +133,11 @@ pub fn resolve_commands_from_config(
 
 pub fn execute_command_template(template: &str, variables: &HashMap<String, String>) -> String {
     let mut result = template.to_string();
-    for (key, value) in variables {
-        result = result.replace(&format!("{{{{{key}}}}}"), value);
+    let mut sorted_keys: Vec<_> = variables.keys().collect();
+    sorted_keys.sort();
+    for key in sorted_keys {
+        let value = variables.get(key).unwrap();
+        result = result.replace(&format!("{{{{{key}}}}}", ), value);
         result = result.replace(&format!("{{{key}}}"), value);
     }
     result
@@ -189,5 +215,28 @@ mod tests {
         std::fs::write(tmp.path().join("review.md"), "---\n---\nbody").unwrap();
         let cmd = load_command_from_file(&tmp.path().join("review.md")).unwrap();
         assert_eq!(cmd.name, "review");
+    }
+
+    #[test]
+    fn test_load_command_fallback_to_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("testcmd.md"), "---\ndescription: just desc\n---\nBody template here").unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("testcmd.md")).unwrap();
+        assert_eq!(cmd.template, "Body template here");
+    }
+
+    #[test]
+    fn test_validate_command_name() {
+        assert!(validate_command_name("valid").is_ok());
+        assert!(validate_command_name("").is_err());
+        assert!(validate_command_name("bad name").is_err());
+        assert!(validate_command_name("/leading").is_err());
+    }
+
+    #[test]
+    fn test_load_command_missing_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("nocfm.md"), "no frontmatter").unwrap();
+        assert!(load_command_from_file(&tmp.path().join("nocfm.md")).is_err());
     }
 }

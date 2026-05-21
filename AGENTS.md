@@ -81,6 +81,8 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 │   └── AGENTS.override.md        # AgentLoop, TuiCommand, TuiMsg, compaction, router, team
 ├── bus/
 │   └── AGENTS.override.md        # Event bus guidance
+├── command/
+│   └── AGENTS.override.md        # Slash commands, templates, execution
 ├── crypto/
 │   └── AGENTS.override.md        # API key encryption
 ├── exec/
@@ -146,5 +148,6 @@ When adding guidance for a new module:
 | Server (WebSocket, TuiMessage serialization) | `server/AGENTS.override.md` |
 | Snapshot (file state capture and restore) | `snapshot/AGENTS.override.md` |
 | Skills (skill system overview) | `skills/AGENTS.override.md` |
+| Command (slash commands, templates, execution) | `command/AGENTS.override.md` |
 | Testing (E2E, unit, integration) | `meta/AGENTS.override.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |

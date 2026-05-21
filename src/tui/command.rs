@@ -1,6 +1,6 @@
 use crate::tui::app::Dialog;
 use crate::util::fuzzy::fuzzy_score;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -155,20 +155,60 @@ impl CommandRegistry {
     }
 
     fn append_dynamic_commands(commands: &mut Vec<Command>) {
-        let mut seen: HashSet<String> = commands
-            .iter()
-            .flat_map(|c| c.all_names().into_iter())
-            .map(|name| Self::normalize_name(name))
-            .collect();
+        let mut seen: HashMap<String, String> = HashMap::new();
 
-        for dynamic in Self::load_dynamic_commands() {
-            let normalized = Self::normalize_name(&dynamic.name);
-            if seen.contains(&normalized) {
-                continue;
+        for cmd in commands.iter() {
+            for name in cmd.all_names() {
+                let normalized = Self::normalize_name(name);
+                seen.insert(normalized, cmd.name.clone());
             }
-            seen.insert(normalized);
-            commands.push(dynamic);
         }
+
+        let mut new_commands: Vec<Command> = Vec::new();
+
+        let config = crate::config::schema::Config::load().unwrap_or_default();
+        if let Some(config_commands) = config.commands.as_ref() {
+            for cmd in crate::command::resolve_commands_from_config(config_commands) {
+                let normalized = Self::normalize_name(&cmd.name);
+                if !seen.contains_key(&normalized) {
+                    seen.insert(normalized, cmd.name.clone());
+                    new_commands.push(Command {
+                        name: Self::to_slash_name(&cmd.name),
+                        aliases: Vec::new(),
+                        description: cmd.description.unwrap_or_default(),
+                        category: CommandCategory::Agent,
+                        dialog: None,
+                        template: Some(cmd.template),
+                        agent: cmd.agent,
+                        model: cmd.model,
+                        subtask: cmd.subtask,
+                        source: Some(cmd.source),
+                    });
+                }
+            }
+        }
+
+        let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        for cmd in crate::command::find_command_files(&base) {
+            let normalized = Self::normalize_name(&cmd.name);
+            if !seen.contains_key(&normalized) {
+                seen.insert(normalized, cmd.name.clone());
+                new_commands.push(Command {
+                    name: Self::to_slash_name(&cmd.name),
+                    aliases: Vec::new(),
+                    description: cmd.description.unwrap_or_default(),
+                    category: CommandCategory::Agent,
+                    dialog: None,
+                    template: Some(cmd.template),
+                    agent: cmd.agent,
+                    model: cmd.model,
+                    subtask: cmd.subtask,
+                    source: Some(cmd.source),
+                });
+            }
+        }
+
+        commands.append(&mut new_commands);
     }
 
     fn normalize_name(name: &str) -> String {
@@ -181,38 +221,6 @@ impl CommandRegistry {
         } else {
             format!("/{}", name)
         }
-    }
-
-    fn load_dynamic_commands() -> Vec<Command> {
-        let mut result = Vec::new();
-        let mut add = |cmd: crate::command::Command| {
-            result.push(Command {
-                name: Self::to_slash_name(&cmd.name),
-                aliases: Vec::new(),
-                description: cmd.description.unwrap_or_default(),
-                category: CommandCategory::Agent,
-                dialog: None,
-                template: Some(cmd.template),
-                agent: cmd.agent,
-                model: cmd.model,
-                subtask: cmd.subtask,
-                source: Some(cmd.source),
-            });
-        };
-
-        let config = crate::config::schema::Config::load().unwrap_or_default();
-        if let Some(config_commands) = config.commands.as_ref() {
-            for cmd in crate::command::resolve_commands_from_config(config_commands) {
-                add(cmd);
-            }
-        }
-
-        let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        for cmd in crate::command::find_command_files(&base) {
-            add(cmd);
-        }
-
-        result
     }
 
     pub fn commands(&self) -> &[Command] {
