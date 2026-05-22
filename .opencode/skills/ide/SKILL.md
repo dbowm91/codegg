@@ -1,7 +1,7 @@
 ---
 name: ide
 description: IDE integration for VS Code and JetBrains diff viewing
-version: 1.1.0
+version: 1.2.0
 tags:
   - ide
   - diff
@@ -69,6 +69,8 @@ open_diff(
 
 When line ranges are provided, content is sliced before opening in the IDE. Both VS Code and JetBrains handlers use temporary files for the sliced content.
 
+**Important**: Temporary files persist until the IDE process exits (RAII pattern via `tempfile` crate). Files are flushed before passing paths to the IDE to ensure content is visible.
+
 ## Diff Generation (for TUI display)
 
 ```rust
@@ -76,6 +78,13 @@ use crate::ide::generate_unified_diff;
 
 let diff = generate_unified_diff(old_content, new_content, "file.rs");
 // Returns unified diff format or "(no changes)" if identical
+```
+
+```rust
+use crate::ide::generate_side_by_side;
+
+let diff = generate_side_by_side(old_content, new_content, "file.rs");
+// Returns ANSI-colored side-by-side diff
 ```
 
 ## IDE-Specific Handlers
@@ -90,4 +99,11 @@ Uses `idea diff` or `idea.sh diff` CLI. Supports:
 - Windows: `%PROGRAMFILES%\JetBrains\<product>\bin\idea.bat`
 
 ### Generic Fallback
-If no IDE is detected, tries `code --diff` then `idea diff` from PATH.
+If no IDE is detected, uses `std::env::split_paths` to search PATH for `code`/`code.exe` then `idea`/`idea.bat`. Creates temporary files with content (unlike direct IDE handlers which use file paths).
+
+## Implementation Details
+
+- Uses `similar` crate for diff generation
+- Uses `tempfile` crate for secure temporary file creation
+- Temp file prefixes: `codegg_original_`, `codegg_modified_`
+- Line ranges are 1-indexed and end-inclusive, with bounds checking via `saturating_sub` and `min`

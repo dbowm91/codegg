@@ -114,6 +114,11 @@ These items were identified during module reviews and are important for future a
 - **Health endpoint fixed**: `RemoteClient::health()` now uses `GET /health` instead of `GET /api/providers`
 - **Health check error propagation**: Non-success HTTP status now returns `Err(ClientError::Unreachable)` instead of `Ok(false)`
 
+### IDE Module (2026-05-22)
+- **Temp file flushing fixed**: `open_diff_vscode()` and `open_diff_jetbrains()` now properly flush temp files via `as_file()` + `flush()` before passing paths to IDE. Previously wrote to `tempfile` without proper handle acquisition.
+- **open_diff_generic() fixed**: Now uses `std::env::split_paths()` (portable PATH parsing) and creates temp files with content instead of passing original paths directly. Matches behavior of IDE-specific handlers.
+- **Skill synchronized**: `.opencode/skills/ide/SKILL.md` updated to version 1.2.0
+
 ### LSP Module (2026-05-22)
 - **PATH parsing fixed**: `download.rs` now uses `std::env::split_paths()` instead of splitting by `MAIN_SEPARATOR` (which was broken on Unix where PATH uses `:` not `/`)
 - **PHP server mapping fixed**: `language.rs` now maps PHP to `php-language-server` instead of non-existent `intelephense`

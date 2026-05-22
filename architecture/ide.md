@@ -73,11 +73,12 @@ Generates a side-by-side diff view with ANSI color codes.
 
 ## VS Code Integration
 
-Uses VS Code's `--diff` CLI argument with temporary files:
+Uses VS Code's `--diff` CLI argument with temporary files. Files are flushed before passing to VS Code to ensure content is visible:
 
 ```rust
-Command::new("code")
-    .args(["--diff", original_path, modified_path])
+let mut original_file = original_temp.as_file();
+original_file.write_all(original_content.as_bytes())?;
+original_file.flush()?;
 ```
 
 ## JetBrains Integration
@@ -87,6 +88,10 @@ Uses JetBrains `idea` or `idea.sh` CLI with `diff` subcommand. Supports:
 - Unix paths: `/opt/intellij/bin/idea.sh`, `/usr/local/bin/idea`
 - Windows: `%PROGRAMFILES%\JetBrains\<product>\bin\idea.bat`
 - Falls back to `idea` in PATH
+
+## Generic Fallback (No IDE Detected)
+
+When no IDE is detected, `open_diff_generic()` searches PATH using `std::env::split_paths()` for `code` or `idea` binaries. Unlike IDE-specific handlers that use the original file paths, the generic fallback creates temporary files with the content (applying line range slicing if provided) and passes those to the IDE.
 
 ## See Also
 

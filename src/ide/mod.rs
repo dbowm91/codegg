@@ -56,21 +56,26 @@ fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<()
     use std::process::Command;
     use tempfile::Builder;
 
-    let mut original_temp = Builder::new()
+    let original_temp = Builder::new()
         .prefix("codegg_original_")
         .tempfile()
         .map_err(|e| format!("failed to create temp original: {}", e))?;
-    let mut modified_temp = Builder::new()
+    let modified_temp = Builder::new()
         .prefix("codegg_modified_")
         .tempfile()
         .map_err(|e| format!("failed to create temp modified: {}", e))?;
 
-    original_temp
+    let mut original_file = original_temp.as_file();
+    original_file
         .write_all(original_content.as_bytes())
         .map_err(|e| format!("failed to write temp original: {}", e))?;
-    modified_temp
+    original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+
+    let mut modified_file = modified_temp.as_file();
+    modified_file
         .write_all(modified_content.as_bytes())
         .map_err(|e| format!("failed to write temp modified: {}", e))?;
+    modified_file.flush().map_err(|e| format!("failed to flush temp modified: {}", e))?;
 
     let original_path = original_temp.path().to_owned();
     let modified_path = modified_temp.path().to_owned();
@@ -96,21 +101,26 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
     use std::process::Command;
     use tempfile::Builder;
 
-    let mut original_temp = Builder::new()
+    let original_temp = Builder::new()
         .prefix("codegg_original_")
         .tempfile()
         .map_err(|e| format!("failed to create temp original: {}", e))?;
-    let mut modified_temp = Builder::new()
+    let modified_temp = Builder::new()
         .prefix("codegg_modified_")
         .tempfile()
         .map_err(|e| format!("failed to create temp modified: {}", e))?;
 
-    original_temp
+    let mut original_file = original_temp.as_file();
+    original_file
         .write_all(original.as_bytes())
         .map_err(|e| format!("failed to write temp original: {}", e))?;
-    modified_temp
+    original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+
+    let mut modified_file = modified_temp.as_file();
+    modified_file
         .write_all(modified.as_bytes())
         .map_err(|e| format!("failed to write temp modified: {}", e))?;
+    modified_file.flush().map_err(|e| format!("failed to flush temp modified: {}", e))?;
 
     let original_path = original_temp.path().to_owned();
     let modified_path = modified_temp.path().to_owned();
@@ -158,15 +168,46 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn open_diff_generic(original: &str, modified: &str) -> Result<(), String> {
-    if std::env::var("PATH").ok().is_some_and(|path| {
-        path.split(':').any(|p| {
-            std::path::Path::new(p).join("code").exists()
-                || std::path::Path::new(p).join("code.exe").exists()
-        })
-    }) {
-        let output = std::process::Command::new("code")
-            .args(["--diff", original, modified])
+fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(), String> {
+    use std::env::split_paths;
+    use std::io::Write;
+    use std::process::Command;
+    use tempfile::Builder;
+
+    let has_code = split_paths(&std::env::var("PATH").unwrap_or_default())
+        .any(|p| p.join("code").exists() || p.join("code.exe").exists());
+
+    if has_code {
+        let original_temp = Builder::new()
+            .prefix("codegg_original_")
+            .tempfile()
+            .map_err(|e| format!("failed to create temp original: {}", e))?;
+        let modified_temp = Builder::new()
+            .prefix("codegg_modified_")
+            .tempfile()
+            .map_err(|e| format!("failed to create temp modified: {}", e))?;
+
+        let mut original_file = original_temp.as_file();
+        original_file
+            .write_all(original_content.as_bytes())
+            .map_err(|e| format!("failed to write temp original: {}", e))?;
+        original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+
+        let mut modified_file = modified_temp.as_file();
+        modified_file
+            .write_all(modified_content.as_bytes())
+            .map_err(|e| format!("failed to write temp modified: {}", e))?;
+        modified_file.flush().map_err(|e| format!("failed to flush temp modified: {}", e))?;
+
+        let original_path = original_temp.path().to_owned();
+        let modified_path = modified_temp.path().to_owned();
+
+        let output = Command::new("code")
+            .args([
+                "--diff",
+                original_path.to_str().unwrap(),
+                modified_path.to_str().unwrap(),
+            ])
             .output()
             .map_err(|e| format!("failed to open code: {}", e))?;
 
@@ -175,14 +216,36 @@ fn open_diff_generic(original: &str, modified: &str) -> Result<(), String> {
         }
     }
 
-    if std::env::var("PATH").ok().is_some_and(|path| {
-        path.split(':').any(|p| {
-            std::path::Path::new(p).join("idea").exists()
-                || std::path::Path::new(p).join("idea.bat").exists()
-        })
-    }) {
-        let output = std::process::Command::new("idea")
-            .args(["diff", original, modified])
+    let has_idea = split_paths(&std::env::var("PATH").unwrap_or_default())
+        .any(|p| p.join("idea").exists() || p.join("idea.bat").exists());
+
+    if has_idea {
+        let original_temp = Builder::new()
+            .prefix("codegg_original_")
+            .tempfile()
+            .map_err(|e| format!("failed to create temp original: {}", e))?;
+        let modified_temp = Builder::new()
+            .prefix("codegg_modified_")
+            .tempfile()
+            .map_err(|e| format!("failed to create temp modified: {}", e))?;
+
+        let mut original_file = original_temp.as_file();
+        original_file
+            .write_all(original_content.as_bytes())
+            .map_err(|e| format!("failed to write temp original: {}", e))?;
+        original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+
+        let mut modified_file = modified_temp.as_file();
+        modified_file
+            .write_all(modified_content.as_bytes())
+            .map_err(|e| format!("failed to write temp modified: {}", e))?;
+        modified_file.flush().map_err(|e| format!("failed to flush temp modified: {}", e))?;
+
+        let original_path = original_temp.path().to_owned();
+        let modified_path = modified_temp.path().to_owned();
+
+        let output = Command::new("idea")
+            .args(["diff", original_path.to_str().unwrap(), modified_path.to_str().unwrap()])
             .output()
             .map_err(|e| format!("failed to open idea: {}", e))?;
 
