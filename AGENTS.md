@@ -119,6 +119,7 @@ These items were identified during module reviews and are important for future a
 - **Plugin hook timeout errors include plugin_id**: Error message format changed from `"hook timeout: hook execution timed out"` to `"{plugin_id}: hook timeout: hook execution timed out"`.
 - **ShellCommandHook PATH fixed**: Now uses user's actual `PATH` via `std::env::var_os("PATH")` instead of hardcoded `/usr/local/bin:/usr/bin:/bin`.
 - **Early return bug fixed**: Stream errors now break the agent loop instead of returning early, ensuring `AgentEnd` and `SessionEnd` hooks always run.
+- **ShellCommandHook error messages improved**: Error messages now include event name for easier debugging (e.g., `"Hook command failed (event=pre_tool_execute): ..."`). ShellCommandHook now stores `event: HookEvent` field.
 
 ### MCP Module (2026-05-22)
 - **DNS rebinding protection fixed**: `validated_ips` changed to `Arc<Mutex<Option<Vec<IpAddr>>>>` so clones share state. `initialize()` now re-validates DNS on each call, preventing bypass after reconnects.

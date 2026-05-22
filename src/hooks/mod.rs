@@ -94,13 +94,15 @@ pub trait Hook: Send + Sync {
 pub struct ShellCommandHook {
     pub command: String,
     pub timeout: Duration,
+    pub event: HookEvent,
 }
 
 impl ShellCommandHook {
-    pub fn new(command: String, timeout_secs: Option<u64>) -> Self {
+    pub fn new(command: String, timeout_secs: Option<u64>, event: HookEvent) -> Self {
         Self {
             command,
             timeout: Duration::from_secs(timeout_secs.unwrap_or(30)),
+            event,
         }
     }
 }
@@ -129,16 +131,16 @@ impl Hook for ShellCommandHook {
                     Ok(())
                 } else {
                     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                    Err(AppError::Other(anyhow::anyhow!(
-                        "Hook command failed: {}",
-                        stderr
-                    )))
+                Err(AppError::Other(anyhow::anyhow!(
+                    "Hook command failed (event={}): {}",
+                    self.event.as_str(), stderr
+                )))
                 }
             }
             Ok(Err(e)) => Err(AppError::Io(e)),
             Err(_) => Err(AppError::Other(anyhow::anyhow!(
-                "Hook command timed out after {:?}",
-                self.timeout
+                "Hook command timed out after {:?} (event={})",
+                self.timeout, self.event.as_str()
             ))),
         }
     }
@@ -174,7 +176,7 @@ impl HookRegistry {
                 ConfigHookConfig::ShellCommand {
                     command,
                     timeout_secs,
-                } => Box::new(ShellCommandHook::new(command.clone(), *timeout_secs)),
+                } => Box::new(ShellCommandHook::new(command.clone(), *timeout_secs, event)),
                 #[allow(deprecated)]
                 ConfigHookConfig::InlineScript { .. } => {
                     warn!("InlineScript hook type is not implemented, skipping");

@@ -79,10 +79,11 @@ impl HookRegistry {
 pub struct ShellCommandHook {
     pub command: String,
     pub timeout: Duration,
+    pub event: HookEvent,
 }
 
 impl ShellCommandHook {
-    pub fn new(command: String, timeout_secs: Option<u64>) -> Self;
+    pub fn new(command: String, timeout_secs: Option<u64>, event: HookEvent) -> Self;
 }
 
 impl Hook for ShellCommandHook {
@@ -90,6 +91,7 @@ impl Hook for ShellCommandHook {
         // Spawns `sh -c <command>` with CODEGG_* env vars
         // Default timeout: 30 seconds
         // Uses user's actual PATH from environment
+        // Error messages include event name for debugging
     }
 }
 ```

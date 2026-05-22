@@ -1,7 +1,7 @@
 ---
 name: hooks
 description: Hooks system for agent loop lifecycle events in opencode-rs
-version: 1.2.0
+version: 1.3.0
 tags:
   - hooks
   - lifecycle
@@ -89,6 +89,17 @@ impl HookRegistry {
 pub struct ShellCommandHook {
     pub command: String,
     pub timeout: Duration,
+    pub event: HookEvent,
+}
+
+impl ShellCommandHook {
+    pub fn new(command: String, timeout_secs: Option<u64>, event: HookEvent) -> Self {
+        Self {
+            command,
+            timeout: Duration::from_secs(timeout_secs.unwrap_or(30)),
+            event,
+        }
+    }
 }
 
 #[async_trait]
@@ -109,12 +120,29 @@ impl Hook for ShellCommandHook {
         }
 
         let output = tokio::time::timeout(self.timeout, cmd.output()).await;
-        // ... error handling
+        match output {
+            Ok(Ok(out)) => {
+                if out.status.success() {
+                    Ok(())
+                } else {
+                    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                    Err(AppError::Other(anyhow::anyhow!(
+                        "Hook command failed (event={}): {}",
+                        self.event.as_str(), stderr
+                    )))
+                }
+            }
+            Ok(Err(e)) => Err(AppError::Io(e)),
+            Err(_) => Err(AppError::Other(anyhow::anyhow!(
+                "Hook command timed out after {:?} (event={})",
+                self.timeout, self.event.as_str()
+            ))),
+        }
     }
 }
 ```
 
-**Note**: As of 2026-05-22, `ShellCommandHook` uses the user's actual `PATH` from the environment instead of a hardcoded path.
+**Note**: As of 2026-05-22, `ShellCommandHook` uses the user's actual `PATH` from the environment instead of a hardcoded path. Error messages now include the event name for easier debugging.
 
 ### Configuration
 
