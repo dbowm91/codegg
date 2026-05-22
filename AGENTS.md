@@ -206,6 +206,13 @@ These items were identified during module reviews and are important for future a
 - **capture_incremental path validation**: Added validation that paths are within `project_root` before accepting
 - **Restore error messages improved**: Now include file path on failure (e.g., "failed to write /path/file: ...")
 
+### Storage Module (2026-05-22)
+- **Architecture doc updated**: `architecture/storage.md` now accurately reflects the implementation (was showing incorrect `init()` return type, wrong `cache_size`, missing pragmas)
+- **Skill created**: `.opencode/skills/storage/SKILL.md` created with module guidance
+- **Pragmas batched**: Individual PRAGMA queries consolidated into single query for efficiency
+- **Database struct is wrapper**: `Database` is simple wrapper around `SqlitePool` - most code uses `init()` directly
+- **Migrations in session module**: Actual migration logic lives in `src/session/schema.rs`, not storage module
+
 ### Skills Module (2026-05-22)
 - **Blocking fs calls fixed**: `load_dir()` and `parse_skill_file()` now use `tokio::fs` instead of `std::fs` for proper async I/O
 - **Architecture doc inaccurate**: `architecture/skills.md` showed `SkillIndex` with `RwLock<HashMap<String, Skill>>` but actual is `Vec<Skill>` with no RwLock
@@ -254,6 +261,7 @@ These items were identified during module reviews and are important for future a
 ├── session/SKILL.md             # Session storage, database schema
 ├── skills/SKILL.md              # Skill loading, activation, SkillIndex
 ├── snapshot/SKILL.md            # Snapshot capture and restore
+├── storage/SKILL.md             # SQLite database initialization, connection pooling
 ├── tool/SKILL.md                 # Tool path validation, async command
 └── tui/SKILL.md                  # Terminal UI, keyboard shortcuts
 ```
@@ -303,4 +311,5 @@ When adding guidance for a new module:
 | Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |
 | Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` |
+| Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` |
 | Skills (skill loading, activation, SkillIndex) | `.opencode/skills/skills/SKILL.md` |

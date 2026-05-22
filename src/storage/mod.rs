@@ -49,45 +49,21 @@ async fn connect_and_configure(path: &str) -> Result<SqlitePool, StorageError> {
         .await
         .map_err(|e| StorageError::Database(format!("failed to open database {}: {}", path, e)))?;
 
-    sqlx::query("PRAGMA journal_mode=WAL")
-        .execute(&pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
-
-    sqlx::query("PRAGMA wal_autocheckpoint = 1000")
-        .execute(&pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
-
-    sqlx::query("PRAGMA busy_timeout=5000")
-        .execute(&pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
-
-    sqlx::query("PRAGMA synchronous = NORMAL")
-        .execute(&pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
-
-    sqlx::query("PRAGMA mmap_size = 268435456")
-        .execute(&pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
-
-    sqlx::query("PRAGMA cache_size = -2000")
-        .execute(&pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
-
-    sqlx::query("PRAGMA temp_store = MEMORY")
-        .execute(&pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
-
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+    sqlx::query(
+        r#"
+        PRAGMA journal_mode=WAL;
+        PRAGMA wal_autocheckpoint = 1000;
+        PRAGMA busy_timeout=5000;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA mmap_size = 268435456;
+        PRAGMA cache_size = -2000;
+        PRAGMA temp_store = MEMORY;
+        PRAGMA foreign_keys = ON;
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| StorageError::Database(e.to_string()))?;
 
     Ok(pool)
 }
