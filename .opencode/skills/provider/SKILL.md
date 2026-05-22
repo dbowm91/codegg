@@ -1,7 +1,7 @@
 ---
 name: provider
 description: Provider system architecture and registration patterns in opencode-rs
-version: 1.0.0
+version: 1.1.0
 tags:
   - provider
   - llm

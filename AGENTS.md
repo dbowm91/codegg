@@ -153,6 +153,18 @@ These items were identified during module reviews and are important for future a
 - **API HookType serialization fixed**: `api::hooks::HookType::as_str()` now returns dot notation (e.g., `tool.execute.before`) matching actual `HookType` implementation
 - **Feature flag named correctly**: Uses `plugins` feature, not `plugin`
 
+### Provider Module (2026-05-22)
+- **Architecture doc updated**: `architecture/provider.md` now accurately reflects the implementation (was showing outdated Provider trait signature, wrong Message/ChatEvent types, incorrect ProviderRegistry methods)
+- **Skill synchronized**: `.opencode/skills/provider/SKILL.md` updated with accurate types (Arc<String> usage, async trait methods)
+- **Stale plan_registry.rs reference removed**: Architecture doc incorrectly referenced `wait_for_response()` bug in non-existent `plan_registry.rs`
+- **Message types use Arc<String>**: All content fields use `Arc<String>` for efficiency - use `.into()` when creating
+- **ChatEvent uses variants**: `TextDelta(Arc<String>)`, `ToolCall(ToolCall)`, `Finish{...}` - not the old struct variants shown in previous doc
+- **FallbackProvider exponential backoff**: Retry delay is `2^i` seconds (capped at 30s) - correctly implemented
+- **ProviderError::CircuitOpen**: Circuit breaker integration properly propagates open state via `CircuitError → ProviderError::CircuitOpen`
+
+### Resilienced Module (2026-05-22)
+- **CircuitBreaker is_available() TOCTOU**: There is a time-of-check-time-of-use race in `is_available()` between reading state and acquiring write lock. See `plans/plan.md:1.5` for planned fix.
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -220,7 +232,7 @@ When adding guidance for a new module:
 | Security (SSRF, symlinks, Landlock) | `security/AGENTS.override.md` |
 | WASM plugins | `.opencode/skills/plugin/SKILL.md` |
 | MCP connection manager | `mcp/AGENTS.override.md` |
-| Provider (token estimation) | `provider/AGENTS.override.md` |
+| Provider (LLM providers, Arc<String> types, FallbackProvider) | `.opencode/skills/provider/SKILL.md` |
 | Crypto (API key encryption, Argon2id key derivation) | [architecture/crypto.md](architecture/crypto.md) |
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `resilience/AGENTS.override.md` |
