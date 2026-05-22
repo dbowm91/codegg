@@ -61,6 +61,7 @@ These items were identified during module reviews and are important for future a
 - **`ProviderError::is_retryable()` implemented**: Centralizes retry logic for provider errors (added 2026-05-22)
 - **CircuitError → ProviderError::CircuitOpen conversion**: `From<CircuitError>` impl enables circuit breaker error propagation (added 2026-05-22)
 - **`FallbackProvider` uses `CircuitOpen`**: Circuit breaker errors now create `ProviderError::CircuitOpen` instead of generic `ProviderError::api()` (fixed 2026-05-22)
+- **SSE GlobalEventBus fixed**: SSE handler at `/api/event` now subscribes directly to `crate::bus::global::GlobalEventBus::subscribe()` instead of using isolated State parameter (fixed 2026-05-22)
 
 ### Implementation Patterns
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -146,6 +147,7 @@ When adding guidance for a new module:
 | Topic | Location |
 |-------|----------|
 | Agent (TuiCommand, TuiMsg, compaction, router, team) | `agent/AGENTS.override.md` |
+| Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
 | TUI (keyboard shortcuts) | `tui/AGENTS.override.md` |
 | Security (SSRF, symlinks, Landlock) | `security/AGENTS.override.md` |
 | WASM plugins | `plugin/AGENTS.override.md` |

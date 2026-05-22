@@ -1,110 +1,104 @@
 # Event Bus Module
 
-The `bus` module provides the inter-component communication system using an event-driven architecture.
+The `bus` module provides inter-component communication via an event-driven architecture.
 
 ## Overview
 
 **Location**: `src/bus/`
 
 **Key Responsibilities**:
-- Global event publishing and subscribing
-- Permission request/response pattern
-- Question/answer request/response pattern
+- Global event publishing and subscribing via broadcast channel
+- Permission request/response pattern via PermissionRegistry
+- Question/answer request/response pattern via QuestionRegistry
+
+**Files**:
+- `global.rs` - GlobalEventBus singleton
+- `events.rs` - AppEvent enum (40+ variants)
+- `mod.rs` - PermissionRegistry and QuestionRegistry
 
 ## Components
 
 ### global.rs - GlobalEventBus
 
-The central event distribution system using Tokio's broadcast channel:
+Central event distribution using tokio broadcast channel (capacity 2048):
 
 ```rust
+static GLOBAL_BUS: LazyLock<GlobalEventBus> = LazyLock::new(GlobalEventBus::new);
+
 pub struct GlobalEventBus {
     tx: broadcast::Sender<AppEvent>,
-    rx: broadcast::Receiver<AppEvent>,
+}
+
+impl GlobalEventBus {
+    pub fn publish(event: AppEvent) {
+        if GLOBAL_BUS.tx.send(event.clone()).is_err() {
+            tracing::warn!("No subscribers for event");
+        }
+    }
+
+    pub fn subscribe() -> broadcast::Receiver<AppEvent> {
+        GLOBAL_BUS.tx.subscribe()
+    }
+
+    pub fn subscriber_count() -> usize {
+        GLOBAL_BUS.tx.receiver_count()
+    }
 }
 ```
-
-**Key Methods**:
-- `publish(event)` - Broadcast event to all subscribers
-- `subscribe()` - Get a new receiver for events
-- `send(event, tx)` - Send event and await response (oneshot)
-
-**Implementation Notes**:
-- Uses `tokio::sync::broadcast` channel
-- If `REDIS_URL` is set → uses Redis; otherwise → uses in-memory broadcast
-- All subscribers receive events after publish
 
 ### events.rs - AppEvent Enum
 
-Defines all 40+ event types in the system:
+40+ event variants across categories:
 
-**Categories**:
+**Session Events**: `SessionCreated`, `SessionUpdated`, `SessionArchived`, `SessionForked`, `SessionShared`, `SessionUnshared`, `SessionReverted`
 
-#### Session Events
-- `SessionStarted`, `SessionEnded`, `SessionSelected`
-- `SessionCreated`, `SessionDeleted`, `SessionRenamed`
+**Message Events**: `MessageAdded`, `MessageDeleted`
 
-#### Message Events
-- `MessageAdded`, `MessageDeleted`, `MessageEdited`
-- `UserMessage`, `AssistantMessage`, `SystemMessage`
+**Tool Events**: `ToolCalled`, `ToolResult`, `ToolCallStarted`
 
-#### Tool Events
-- `ToolCallRequested`, `ToolCalled`, `ToolResult`
-- `ToolPermissionPending`, `ToolPermissionGranted`, `ToolPermissionDenied`
+**Permission Events**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied`, `PermissionPending`, `PermissionResponded`
 
-#### Permission Events
-- `PermissionPending` - Awaiting user decision
-- `PermissionGranted`, `PermissionDenied`
-- `PermissionSaved` - Decision cached
+**Question Events**: `QuestionPending`, `QuestionAnswered`
 
-#### MCP Events
-- `McpServerStarted`, `McpServerStopped`, `McpServerError`
-- `McpToolCall`, `McpToolResult`
+**Streaming Events**: `TextDelta` (Arc<str>), `ReasoningDelta` (Arc<str>), `AgentFinished`
 
-#### Subagent Events
-- `SubagentStarted`, `SubagentCompleted`, `SubagentFailed`
+**Subagent Events**: `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed`
 
-#### UI Events
-- `Notification`, `Toast`, `Indicator`, `Progress`
+**Other**: `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `DiffPending`, `DiffResponded`, `McpServerConnected`, `McpServerDisconnected`, `McpToolListChanged`
 
 ### mod.rs - PermissionRegistry & QuestionRegistry
 
-Enables request/response pattern for async decisions:
-
-#### PermissionRegistry
+Request/response pattern for async decisions using oneshot channels:
 
 ```rust
 pub struct PermissionRegistry {
-    pending: Arc<Mutex<HashMap<String, PendingPermission>>>,
+    senders: DashMap<String, (tokio::sync::oneshot::Sender<PermissionChoice>, Instant)>,
 }
 
-pub struct PendingPermission {
-    pub choice_tx: oneshot::Sender<PermissionChoice>,
-    pub details: PermissionDetails,
-}
-```
-
-**Flow**:
-1. Register permission request with responder channel BEFORE publishing
-2. Publish `PermissionPending` event
-3. Wait on channel for user response
-4. Return decision
-
-#### QuestionRegistry
-
-Similar pattern for user questions:
-```rust
 pub struct QuestionRegistry {
-    pending: Arc<Mutex<HashMap<String, PendingQuestion>>>,
-}
-
-pub enum QuestionOption {
-    Label(String),
-    Description(String),
+    senders: DashMap<String, (tokio::sync::oneshot::Sender<String>, Instant)>,
 }
 ```
 
-### PermissionChoice Enum
+Both use 300-second TTL with cleanup on each `register()` call.
+
+## Key Patterns
+
+### Registration-Before-Publish Pattern
+
+```rust
+// CORRECT: Register before publishing
+let (tx, rx) = oneshot::channel();
+PermissionRegistry::register(perm_id.clone(), tx);
+bus.publish(PermissionPending { ... });
+let choice = rx.await?;
+
+// WRONG: Race condition
+bus.publish(PermissionPending { ... });
+PermissionRegistry::register(perm_id.clone(), tx);
+```
+
+### Permission Choice Enum
 
 ```rust
 pub enum PermissionChoice {
@@ -115,70 +109,51 @@ pub enum PermissionChoice {
 }
 ```
 
-## Key Patterns
-
-### Registration-Before-Publish Pattern
-
-When publishing `PermissionPending` or `QuestionPending`:
-
-```rust
-// CORRECT: Register responder BEFORE publishing
-let (tx, rx) = oneshot::channel();
-registry.register(request_id, tx)?;
-bus.publish(PermissionPending { ... });
-let choice = rx.await?;
-
-// WRONG: Publish first, then register (race condition)
-bus.publish(PermissionPending { ... });
-registry.register(request_id, tx)?;  // Might miss response
-```
-
-### Broadcast vs Direct Send
-
-- `publish()` - Fire-and-forget to all subscribers
-- `send()` - Direct message to specific recipient with response
-
 ## Events Flow Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         AgentLoop                                │
-│                                                                  │
-│  ToolCallRequested ──► PermissionChecker::check()               │
-│                              │                                   │
-│         ┌───────────────────┼───────────────────┐                │
-│         ▼                   ▼                   ▼                │
-│  ┌────────────┐      ┌────────────┐      ┌────────────┐          │
-│  │   Allow    │      │    Ask     │      │    Deny    │          │
-│  │  (cached)  │      │ (pending)  │      │  (cached)  │          │
-│  └────────────┘      └─────┬──────┘      └────────────┘          │
-│                           │                                      │
-│                           ▼                                      │
-│                  PermissionRegistry::register()                  │
-│                           │                                      │
-│                           ▼                                      │
-│              GlobalEventBus::publish(PermissionPending)         │
-│                           │                                      │
-│                           ▼                                      │
-│                  TUI receives event                              │
-│                           │                                      │
-│                           ▼                                      │
-│                  User makes decision                            │
-│                           │                                      │
-│                           ▼                                      │
-│              PermissionRegistry::respond()                      │
-│                           │                                      │
-└───────────────────────────┼───────────────────────────────────────┘
-                            ▼
-                    Tool execution proceeds
+AgentLoop                    PermissionRegistry               GlobalEventBus                   TUI
+   │                               │                                │                           │
+   │──► check() ──────────────────►│                                │                           │
+   │                               │                                │                           │
+   │   (if pending)                │                                │                           │
+   │◄─────── cached ───────────────│                                │                           │
+   │                               │                                │                           │
+   │                               │ register(perm_id, tx)         │                           │
+   │                               │◄───────────────────────────────│                           │
+   │                               │                                │                           │
+   │                               │                    publish(PermissionPending)            │
+   │                               │                                │◄──────────────────────────│
+   │                               │                                │                           │
+   │                               │                                │              show dialog  │
+   │                               │                                │                           │◄── user decision
+   │                               │                                │                           │
+   │                               │        respond(perm_id, ch) ──►│                           │
+   │◄──────────────────────────────│                                │                           │
+   │   (choice)                    │                                │                           │
 ```
+
+## SSE Handler (`server/routes/event.rs`)
+
+The `/api/event` SSE endpoint subscribes to the global event bus:
+
+```rust
+pub async fn sse_handler(State(_bus): State<GlobalEventBus>) -> Sse<impl Stream<Item=Result<Event, Infallible>>> {
+    let mut rx = crate::bus::global::GlobalEventBus::subscribe();
+    // Formats events as: event: {event_type}\ndata: {json}\n\n
+    // Merged with 15-second heartbeat
+}
+```
+
+Note: SSE handler subscribes directly to the global bus, not the State parameter.
 
 ## Configuration
 
-No specific configuration options - uses system defaults for channel sizes.
+No specific configuration - uses tokio broadcast defaults with 2048 channel capacity.
 
 ## See Also
 
-- [agent.md](agent.md) - Agent loop that publishes/consumes events
+- [agent.md](agent.md) - Agent loop publishes/consumes events
 - [permission.md](permission.md) - Permission system using PermissionRegistry
-- [tui.md](tui.md) - TUI that subscribes to events and shows permission dialogs
+- [tui.md](tui.md) - TUI subscribes to events and shows permission dialogs
+- [server.md](server.md) - Server SSE endpoint architecture
