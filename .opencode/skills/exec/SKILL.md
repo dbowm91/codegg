@@ -80,6 +80,7 @@ Error:
 | `STREAM_ERROR` | Stream error |
 | `IO_ERROR` | I/O error |
 | `CONFIG_ERROR` | Configuration error |
+| `UPGRADE_ERROR` | Upgrade error |
 | `EXECUTION_ERROR` | Generic execution error |
 
 ## Module Implementation

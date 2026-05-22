@@ -72,7 +72,7 @@ pub async fn upgrade() -> Result<String, AppError> {
     let output = std::process::Command::new("curl")
         .args(["-fsSL", "https://codegg.ai/install.sh"])
         .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("INSTALL_VERSION", &target)
         .output()
         .map_err(|e| AppError::Upgrade(format!("failed to run installer: {e}")))?;

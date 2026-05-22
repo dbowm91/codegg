@@ -247,6 +247,13 @@ These items were identified during module reviews and are important for future a
 - **Error handling improved**: `speak()` now returns `Err(AppError::Io(...))` when `say` command fails instead of silently ignoring failures. Callers handle errors appropriately.
 - **Skill synchronized**: `.opencode/skills/tts/SKILL.md` updated with error handling documentation
 
+### Upgrade Module (2026-05-22)
+- **Architecture doc updated**: `architecture/upgrade.md` now accurately reflects the implementation (was showing outdated `ReleaseInfo` struct and `github_api::get_latest_release` function)
+- **Skill created**: `.opencode/skills/upgrade/SKILL.md` created with module guidance
+- **Hardcoded PATH fixed**: `upgrade()` now uses user's actual PATH via `std::env::var_os("PATH")` instead of hardcoded `/usr/local/bin:/usr/bin:/bin`
+- **Architecture missing `VersionInfo`**: Actual struct is `VersionInfo` with `current`, `latest`, `needs_update` fields (not `ReleaseInfo` with `version`, `tag_name`, `download_url`, `release_notes`)
+- **Upgrade configuration not implemented**: Architecture showed `[upgrade]` config section but no such configuration is loaded in the module
+
 ### TUI Module (2026-05-22)
 - **Architecture doc updated**: `architecture/tui.md` now accurately reflects the implementation (was showing outdated routes like Chat/Sessions/Settings, wrong App struct, missing FocusManager/Component)
 - **Routes accurate**: Actual routes are `Home` and `Session(String)` - not the `Chat`, `Sessions`, `Settings`, `Skills`, `Permissions` shown in old doc
@@ -286,7 +293,8 @@ These items were identified during module reviews and are important for future a
 ├── snapshot/SKILL.md            # Snapshot capture and restore
 ├── storage/SKILL.md             # SQLite database initialization, connection pooling
 ├── tool/SKILL.md                 # Tool path validation, async command
-└── tui/SKILL.md                  # Terminal UI, keyboard shortcuts
+├── tui/SKILL.md                  # Terminal UI, keyboard shortcuts
+└── upgrade/SKILL.md              # Self-upgrade functionality via GitHub releases
 ```
 
 ### Adding New Module Guidance
@@ -336,3 +344,4 @@ When adding guidance for a new module:
 | Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` |
 | Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` |
 | Skills (skill loading, activation, SkillIndex) | `.opencode/skills/skills/SKILL.md` |
+| Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` |

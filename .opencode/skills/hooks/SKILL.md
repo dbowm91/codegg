@@ -273,7 +273,7 @@ if let Some(ref ps) = plugin_service {
 1. **Command Injection** - Hook commands are executed with shell interpolation. Validate any user-provided data.
 2. **Timeouts** - Hooks have a default timeout of 30 seconds to prevent hanging.
 3. **Error Handling** - Hook failures should not crash the agent loop; errors are logged and ignored.
-4. **Environment** - Hooks run with `env_clear()` and minimal `PATH` (`/usr/local/bin:/usr/bin:/bin`).
+4. **Environment** - Hooks run with `env_clear()` and user's actual `PATH`.
 
 ### Plugin Hooks
 1. **Fuel Limits** - Per-plugin fuel budgets prevent runaway plugins.
