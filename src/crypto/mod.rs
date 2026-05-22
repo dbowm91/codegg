@@ -9,6 +9,10 @@ const NONCE_LEN: usize = 12;
 const SALT_LEN: usize = 32;
 const FORMAT_V2_PREFIX: &str = "v2:";
 
+const _: () = assert!(KEY_LEN == 32, "KEY_LEN must be 32 for AES-256");
+const _: () = assert!(NONCE_LEN == 12, "NONCE_LEN must be 12 for AES-GCM");
+const _: () = assert!(SALT_LEN == 32, "SALT_LEN must be 32 for Argon2id");
+
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
     #[error("encryption failed: {0}")]

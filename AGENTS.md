@@ -19,7 +19,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `client/` | Remote TUI client for WebSocket connections |
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher |
-| `crypto/` | AES-256-GCM encryption for API keys and secrets |
+| `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum, `ProviderError::is_retryable()`, error conversions |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
