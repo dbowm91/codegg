@@ -271,6 +271,14 @@ These items were identified during module reviews and are important for future a
 - **generate_slug now exported**: `generate_slug` helper function is now `pub` and re-exported from `session::mod.rs`
 - **Skill updated**: `.opencode/skills/session/SKILL.md` updated to version 1.1.0 with complete API documentation
 
+### Session Module (2026-05-26)
+- **Architecture doc updated**: `architecture/session.md` now accurately reflects implementation (includes `WorkingFile`, `ToolStatus`, `SessionStatus`, `SessionState`, undocumented methods)
+- **Skill updated**: `.opencode/skills/session/SKILL.md` updated to version 1.2.0 with all stores, helpers, and re-exports documented
+- **`has_unfinished` renamed**: `CheckpointStore::has_unfinished()` renamed to `has_checkpoint()` for clarity
+- **Event publishing clarified**: Only `SessionCreated` and `MessageAdded` events exist (not the 5 events previously listed in arch doc)
+- **Undocumented types added**: `WorkingFile`, `ToolStatus`, `SessionStatus`, `SessionState`, `compute_checksum`, `create_working_file`, `verify_file`
+- **Undocumented tables**: `session_share`, `task`, `snapshot`, `cached_models`, `migration_version` now documented
+
 ### Snapshot Module (2026-05-22)
 - **Architecture doc outdated**: `architecture/snapshot.md` was significantly out of date - updated to reflect actual implementation
 - **Skill synchronized**: `.opencode/skills/snapshot/SKILL.md` updated with correct API signatures
@@ -434,7 +442,7 @@ When adding guidance for a new module:
 | Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |
 | Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |
-| Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` |
+| Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` (v1.2.0) |
 | Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` |
 | Skills (skill loading, activation, SkillIndex) | `.opencode/skills/skills/SKILL.md` |
 | Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` |

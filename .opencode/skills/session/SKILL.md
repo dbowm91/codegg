@@ -1,7 +1,7 @@
 ---
 name: session
 description: Session storage, database schema, CRUD operations
-version: 1.1.0
+version: 1.2.0
 tags:
   - session
   - storage
@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS migration_version (
 ## Session Struct
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub project_id: String,
@@ -214,11 +214,14 @@ pub struct Session {
 }
 ```
 
+Note: `CreateSession` has `agent` and `model` fields that are accepted during creation but **not stored** in the database.
+
 ## Message Struct (internal JSON storage)
 
 Messages store data as serialized JSON:
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
     pub session_id: String,
@@ -227,19 +230,37 @@ pub struct Message {
     pub data: MessageData,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageData {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub session_id: String,
+    #[serde(rename = "messageID")]
+    #[serde(default)]
     pub message_id: String,
+    #[serde(default)]
     pub parts: Vec<PartInfo>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum PartData {
     Text { text: String },
     Reasoning { reasoning: String },
     ToolCall { id: String, name: String, input: Value, output: Option<String>, status: ToolStatus },
     Image { url: String },
     File { path: String, content: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    #[default]
+    Pending,
+    Running,
+    Completed,
+    Error,
 }
 ```
 
@@ -260,17 +281,25 @@ pub use checkpoint::CheckpointStore;
 impl SessionStore {
     // Session CRUD
     pub async fn create(&self, input: CreateSession) -> Result<Session, StorageError>
+    pub async fn create_from_template(&self, template: &SessionTemplate, project_id: &str, directory: &str) -> Result<Session, StorageError>
     pub async fn get(&self, id: &str) -> Result<Option<Session>, StorageError>
     pub async fn update(&self, id: &str, input: UpdateSession) -> Result<Session, StorageError>
     pub async fn delete(&self, id: &str) -> Result<(), StorageError>  // soft delete
 
     // Listing and search
     pub async fn list(&self, project_id: &str, limit: usize) -> Result<Vec<Session>, StorageError>
+    pub async fn list_with_offset(&self, project_id: &str, limit: usize, offset: usize) -> Result<Vec<Session>, StorageError>
     pub async fn list_all(&self, project_id: &str, limit: Option<usize>) -> Result<Vec<Session>, StorageError>
+    pub async fn list_all_with_offset(&self, project_id: &str, limit: Option<usize>, offset: usize) -> Result<Vec<Session>, StorageError>
     pub async fn search(&self, project_id: &str, query: &str) -> Result<Vec<Session>, StorageError>
     pub async fn search_all(&self, project_id: &str, query: &str) -> Result<Vec<Session>, StorageError>
     pub async fn find_by_tag(&self, project_id: &str, tag: &str) -> Result<Vec<Session>, StorageError>
     pub async fn all_tags(&self, project_id: &str) -> Result<Vec<String>, StorageError>
+
+    // Counts
+    pub async fn session_count(&self, project_id: &str) -> Result<usize, StorageError>
+    pub async fn message_count(&self, session_id: &str) -> Result<usize, StorageError>
+    pub async fn message_counts(&self, session_ids: &[String]) -> Result<HashMap<String, usize>, StorageError>
 
     // Soft delete/restore
     pub async fn soft_delete(&self, id: &str) -> Result<Session, StorageError>
@@ -309,11 +338,6 @@ impl SessionStore {
 
     // Analytics
     pub async fn get_analytics(&self, project_id: &str) -> Result<SessionAnalytics, StorageError>
-
-    // Counts
-    pub async fn session_count(&self, project_id: &str) -> Result<usize, StorageError>
-    pub async fn message_count(&self, session_id: &str) -> Result<usize, StorageError>
-    pub async fn message_counts(&self, session_ids: &[String]) -> Result<HashMap<String, usize>, StorageError>
 }
 ```
 
@@ -370,14 +394,20 @@ impl PermissionStore {
 
 ```rust
 impl CheckpointStore {
+    pub fn new(pool: SqlitePool) -> Self
     pub async fn save(&self, checkpoint: &Checkpoint) -> Result<(), StorageError>
     pub async fn load(&self, id: &str) -> Result<Option<Checkpoint>, StorageError>
     pub async fn load_latest(&self, session_id: &str) -> Result<Option<Checkpoint>, StorageError>
     pub async fn list(&self, session_id: &str) -> Result<Vec<Checkpoint>, StorageError>
     pub async fn delete(&self, id: &str) -> Result<(), StorageError>
     pub async fn delete_all(&self, session_id: &str) -> Result<(), StorageError>
-    pub async fn has_unfinished(&self, session_id: &str) -> Result<bool, StorageError>
+    pub async fn has_checkpoint(&self, session_id: &str) -> Result<bool, StorageError>
 }
+
+// Helper functions
+pub fn compute_checksum(content: &str) -> String;
+pub fn create_working_file(path: &str, pre_state: Option<String>) -> Option<WorkingFile>;
+pub fn verify_file(path: &str, expected_checksum: &str) -> bool;
 ```
 
 ## Query Constants
@@ -426,6 +456,7 @@ pub async fn restore(&self, id: &str) -> Result<Session, StorageError> {
     sqlx::query_as::<_, SessionRow>(
         "UPDATE session SET time_deleted = NULL, time_updated = ? WHERE id = ? RETURNING *"
     )
+    .bind(now)
     .bind(now)
     .bind(id)
     .fetch_one(&self.pool)
@@ -480,6 +511,30 @@ pub fn redact_for_export(value: Value) -> Value {
     // - tool_call inputs/outputs
     // - Specific keys: command, path, content, text, pattern, replacement,
     //   old_string, new_string, url, patch for sensitive tools (bash, write, read, edit, etc.)
+}
+```
+
+### parse_json_field
+
+Graceful JSON parsing helper that returns `Null` on failure (with warning logged):
+
+```rust
+pub(crate) fn parse_json_field(raw: &str) -> serde_json::Value {
+    match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            let preview = if raw.len() > 100 {
+                format!("{}...", &raw[..100])
+            } else {
+                raw.to_string()
+            };
+            warn!(
+                "failed to parse JSON field (input preview: {}): {}",
+                preview, e
+            );
+            serde_json::Value::Null
+        }
+    }
 }
 ```
 
@@ -570,5 +625,39 @@ pub enum StorageError {
 
     #[error("export error: {0}")]
     Export(String),
+}
+```
+
+## SessionStatus and SessionState (status.rs)
+
+For TUI state tracking:
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub enum SessionStatus {
+    #[default]
+    Idle,
+    Busy,
+    Error,
+    Compacting,
+    Exporting,
+}
+
+impl SessionStatus {
+    pub fn is_busy(&self) -> bool;  // true for Busy, Compacting, Exporting
+    pub fn is_terminal(&self) -> bool;  // true only for Error
+    pub fn label(&self) -> &'static str;
+    pub fn icon(&self) -> &'static str;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionState {
+    pub status: SessionStatus,
+    pub started_at: Option<SystemTime>,
+    pub last_activity: Option<SystemTime>,
+    pub turn_count: usize,
+    pub token_in: usize,
+    pub token_out: usize,
+    pub error_message: Option<String>,
 }
 ```

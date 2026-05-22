@@ -141,7 +141,7 @@ impl CheckpointStore {
         Ok(())
     }
 
-    pub async fn has_unfinished(&self, session_id: &str) -> Result<bool, StorageError> {
+    pub async fn has_checkpoint(&self, session_id: &str) -> Result<bool, StorageError> {
         let latest = self.load_latest(session_id).await?;
         Ok(latest.is_some())
     }
