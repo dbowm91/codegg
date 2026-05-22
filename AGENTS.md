@@ -161,6 +161,10 @@ These items were identified during module reviews and are important for future a
 - **Mode bug fixed**: `docs` mode incorrectly listed `write` as both allowed (line 171) and restricted (line 178) - removed from `restricted_tools` in `BuiltinModes::docs()`
 - **PermissionRegistry location noted**: Located in `src/bus/mod.rs`, not `src/permission/`
 
+### Permission Module (2026-05-22 - Session Review)
+- **PERMISSION_TYPES bug fixed**: Removed `external_directory` from `PERMISSION_TYPES` - it was incorrectly included and is not a real tool name (line 79 in mod.rs)
+- **check_external_directory marked as #[allow(dead_code)]**: Function exists but is unused; marked with attribute to suppress warnings while keeping for potential future use
+
 ### IDE Module (2026-05-22)
 - **Temp file flushing fixed**: `open_diff_vscode()` and `open_diff_jetbrains()` now properly flush temp files via `as_file()` + `flush()` before passing paths to IDE. Previously wrote to `tempfile` without proper handle acquisition.
 - **open_diff_generic() fixed**: Now uses `std::env::split_paths()` (portable PATH parsing) and creates temp files with content instead of passing original paths directly. Matches behavior of IDE-specific handlers.

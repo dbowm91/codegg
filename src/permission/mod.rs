@@ -76,7 +76,6 @@ pub const PERMISSION_TYPES: &[&str] = &[
     "bash",
     "git",
     "task",
-    "external_directory",
     "todowrite",
     "question",
     "webfetch",
@@ -1229,6 +1228,12 @@ impl DoomLoopDetector {
     }
 }
 
+/// Checks if a path is within a project root directory.
+/// This is a security utility function for path traversal prevention.
+///
+/// Returns `true` if the path is inside the project root (safe),
+/// `false` if the path is outside (potential security risk).
+#[allow(dead_code)]
 pub fn check_external_directory(path: &str, project_root: &str) -> bool {
     let path = Path::new(path);
     let root = Path::new(project_root);

@@ -12,6 +12,21 @@ Use the `/skill:Permission` command to load additional permissions context for f
 | ------------- | --------------------------------------------- |
 | `permission/` | Access control and path restrictions          |
 | `permission/modes.rs` | Mode system for specialized workflows |
+| `bus/mod.rs` | `PermissionRegistry` and `QuestionRegistry` |
+
+## Permission Types
+
+Defined in `src/permission/mod.rs`:
+
+```rust
+pub const PERMISSION_TYPES: &[&str] = &[
+    "read", "edit", "glob", "grep", "list", "bash", "git", "task",
+    "todowrite", "question", "webfetch", "websearch", "codesearch",
+    "lsp", "doom_loop", "skill",
+];
+```
+
+**Note**: `external_directory` was incorrectly included and has been removed (it is not a real tool name).
 
 ## Permission Architecture
 
@@ -141,6 +156,14 @@ mode:
       bash: "deny"
 ```
 
+**Built-in Modes** (defined in `BuiltinModes`):
+
+| Mode | Default | Allowed Tools | Restricted Tools |
+|------|---------|---------------|------------------|
+| `review` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, lsp | edit, bash, task, todowrite |
+| `debug` | Allow | read, glob, grep, list, bash, question, webfetch, websearch, codesearch, edit, lsp | task, todowrite |
+| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, write, lsp | bash, task, todowrite |
+
 ## PermissionChoice Enum
 
 Defined in `src/permission/mod.rs`:
@@ -252,6 +275,16 @@ QuestionRegistry::answer_question("test-session-123".to_string(), answers);  // 
 let response = rx.await.unwrap();
 assert!(response.contains("red"));
 ```
+
+## Security Utilities
+
+### check_external_directory
+
+```rust
+pub fn check_external_directory(path: &str, project_root: &str) -> bool
+```
+
+Security utility for path traversal prevention. Returns `true` if the path is inside the project root (safe), `false` if outside (potential security risk). Uses canonicalization to resolve symlinks.
 
 ## Reference
 
