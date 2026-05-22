@@ -148,7 +148,12 @@ impl ConfigWatcher {
             .collect();
 
         let configs = configs?;
-        Ok(crate::config::paths::merge_configs(&configs))
+        let mut config = crate::config::paths::merge_configs(&configs);
+
+        crate::config::encryption::decrypt_provider_keys(&mut config)
+            .map_err(|e| AppError::Config(ConfigError::Watch(e.to_string())))?;
+
+        Ok(config)
     }
 }
 

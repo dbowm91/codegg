@@ -8,124 +8,209 @@ The `config` module handles configuration loading, validation, and hot-reloading
 
 **Key Responsibilities**:
 - Configuration file discovery and loading
-- Schema validation
-- Hot-reload via file watching
-- Environment variable overrides
-- Config encryption
+- JSONC/JSON5 parsing with comment support
+- Schema validation (produces warnings, not errors)
+- Hot-reload via file watching with content hash deduplication
+- Environment variable interpolation
+- API key encryption/decryption
 
 ## Key Types
 
-### Config Schema
+### Config Schema (`schema.rs`)
 
 ```rust
 pub struct Config {
-    pub agent: AgentConfig,
-    pub provider: ProviderConfig,
-    pub tools: ToolsConfig,
-    pub permission: PermissionConfig,
-    pub mcp: McpConfig,
-    pub plugins: PluginsConfig,
-    pub session: SessionConfig,
-    pub ui: UIConfig,
+    pub version: Option<String>,
+    pub log_level: Option<String>,
+    pub model: Option<String>,
+    pub small_model: Option<String>,
+    pub medium_model: Option<String>,
+    pub auto_route_models: Option<bool>,
+    pub default_agent: Option<String>,
+    pub server: Option<ServerConfig>,
+    pub provider: Option<HashMap<String, ProviderConfig>>,
+    pub mcp: Option<HashMap<String, McpEntry>>,
+    pub permission: Option<PermissionConfig>,
+    pub compaction: Option<CompactionConfig>,
+    pub subagent: Option<SubagentConfig>,
+    pub skills: Option<SkillsConfig>,
+    pub commands: Option<HashMap<String, CommandConfig>>,
+    pub hooks: Option<Vec<HookConfigEntry>>,
+    pub watcher: Option<WatcherConfig>,
+    pub plugin: Option<Vec<PluginSpec>>,
+    pub experimental: Option<ExperimentalConfig>,
+    pub mode: Option<HashMap<String, ModeConfig>>,
+    pub keybinds: Option<HashMap<String, String>>,
+    pub vim_mode: Option<bool>,
+    pub notifications: Option<NotificationConfig>,
+    pub catalog: Option<CatalogConfig>,
 }
 ```
 
-### AgentConfig
+### ProviderConfig
 
 ```rust
-pub struct AgentConfig {
-    pub model: String,
-    pub temperature: Option<f32>,
-    pub max_tokens: Option<u32>,
-    pub system_prompt: String,
-    pub compaction_tokens: usize,
+pub struct ProviderConfig {
+    pub api_key: Option<String>,
+    pub encrypted_api_key: Option<String>,
+    pub encrypted: Option<bool>,
+    pub base_url: Option<String>,
+    pub timeout: Option<ProviderTimeout>,
+    pub models: Option<HashMap<String, ModelConfig>>,
+    pub options: Option<HashMap<String, serde_json::Value>>,
 }
 ```
+
+ProviderConfig has a `merge()` method for field-by-field merging.
 
 ## Components
 
 ### schema.rs - Config Definitions
 
-All configuration options with defaults and validation.
+- `Config::load()` - Loads and merges configs, decrypts keys, migrates, validates
+- `Config::save()` - Encrypts keys before saving
+- `Config::validate()` - Validates config values (warnings, not errors)
 
 ### paths.rs - Config Discovery
 
-```rust
-pub struct ConfigPaths {
-    pub global: PathBuf,    // ~/.config/codegg/config.toml
-    pub project: PathBuf,  // .codegg/config.toml
-}
-
-impl ConfigPaths {
-    pub fn discover() -> Result<Self>;
-    pub fn load() -> Result<Config>;
-}
-```
-
 **Discovery Order** (later overrides earlier):
-1. Global config: `~/.config/codegg/config.toml`
-2. Project config: `.codegg/config.toml`
-3. Environment variables: `CODAGG_*`
+1. `CODEGG_TUI_CONFIG` environment variable
+2. System config (`/Library/Application Support/codegg/codegg.json` on macOS, `/etc/codegg/codegg.json` on Unix)
+3. Global config (`~/.config/codegg/codegg.jsonc`)
+4. Project config (searches upward for `.codegg/codegg.json` or `.codegg/codegg.jsonc`)
+
+Key functions:
+- `resolve_config_paths()` - Collects all config file paths
+- `load_config()` - Parses a single config file
+- `parse_config()` - JSONC comment stripping + JSON5 parsing
+- `merge_configs()` - Combines multiple configs with field-by-field HashMap merge
+- `interpolate_env_vars()` - Expands `${VAR_NAME}` syntax
 
 ### watcher.rs - Hot Reload
 
 ```rust
 pub struct ConfigWatcher {
-    #[cfg(feature = "watch")]
-    watcher: RecommendedWatcher,
-}
-
-impl ConfigWatcher {
-    pub fn watch(&self, path: &Path) -> Result<()>;
+    watcher: Option<RecommendedWatcher>,
+    rx: mpsc::Receiver<()>,
+    tx: mpsc::Sender<()>,
+    watched_paths: Vec<PathBuf>,
+    started: bool,
+    debounce_duration: Duration,
+    last_hash: Option<u64>,
+    ignore_patterns: Vec<String>,
 }
 ```
 
-Uses `notify` crate for file system watching. Publishes `ConfigChanged` events via GlobalEventBus.
+Key methods:
+- `new()` - Creates watcher with default 500ms debounce
+- `with_config(&WatcherConfig)` - Configure debounce and ignore patterns
+- `start()` - Start watching config file directories (non-recursive)
+- `recv()` - Async receiver with content hash deduplication
+- `reload_now()` - Force immediate reload
+
+Uses `notify` crate for file system watching with content hash deduplication to avoid spurious reloads.
 
 ### encryption.rs - Config Encryption
 
 ```rust
-pub fn encrypt_config(config: &Config, key: &Key) -> Result<Vec<u8>>;
-pub fn decrypt_config(data: &[u8], key: &Key) -> Result<Config>;
+pub fn encrypt_provider_keys(config: &mut Config) -> Result<(), AppError>;
+pub fn decrypt_provider_keys(config: &mut Config) -> Result<(), AppError>;
+pub fn get_master_key() -> Option<String>;
 ```
 
-Used for encrypting API keys and secrets in config files.
+Master key lookup order:
+1. `CODEGG_MASTER_KEY`
+2. `CODEGG_ENCRYPTION_KEY`
+3. `OPENCODE_ENCRYPTION_KEY`
 
-## Configuration Example
+## Loading Flow
 
-```toml
-[agent]
-model = "claude-sonnet-4-20250514"
-temperature = 0.7
-compaction_tokens = 100000
+```
+Config::load()
+1. resolve_config_paths() → collect config file paths
+2. load_config() → parse each file (JSONC → JSON5)
+3. merge_configs() → later files override earlier (HashMaps merge field-by-field)
+4. decrypt_provider_keys() → decrypt API keys if encrypted
+5. migrate() → apply version migrations
+6. validate() → validate config values (warnings, not errors)
+```
 
-[provider]
-default = "anthropic"
+## Validation
 
-[providers.anthropic]
-api_key = "sk-ant-..."
+Validation failures produce **warnings** not errors - the app starts with a partially invalid config.
 
-[tools]
-allowed = ["bash", "read", "edit", "glob", "grep"]
-denied = ["rm"]
+Validated fields:
+- `log_level`: must be `debug|info|warn|error|trace`
+- `share`: must be `manual|auto|disabled`
+- `model`, `small_model`, `medium_model`: must be in `provider/model` format
+- `port`: must be >= 1024
+- Agent `mode`: must be `subagent|primary|all`
+- Agent `color`: must be hex color or theme color name
+- MCP server types: `local` requires `command`, `remote` requires `url`
 
-[permission]
-default_level = "Ask"
+## Configuration Example (JSONC)
 
-[mcp]
-enabled = true
+```jsonc
+{
+  // Model configuration
+  "model": "anthropic/claude-sonnet-4-20250514",
+  "small_model": "anthropic/claude-sonnet-4-20250514",
+  "medium_model": "anthropic/claude-opus-4-20250514",
+  "auto_route_models": true,
+
+  "server": {
+    "port": 18789
+  },
+
+  "provider": {
+    "anthropic": {
+      "api_key": "${ANTHROPIC_API_KEY}",
+      "encrypted": false
+    }
+  },
+
+  "permission": {
+    "default": "Ask"
+  },
+
+  "watcher": {
+    "debounce_duration_ms": 500,
+    "ignore": ["node_modules", ".git"]
+  },
+
+  "experimental": {
+    "memory_auto_consolidate": true
+  }
+}
 ```
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `CODAGG_AGENT_MODEL` | Default model |
-| `CODAGG_ANTHROPIC_API_KEY` | Anthropic API key |
-| `CODAGG_OPENAI_API_KEY` | OpenAI API key |
-| `CODAGG_CONFIG_PATH` | Custom config path |
+| `CODEGG_TUI_CONFIG` | Custom config path |
+| `CODEGG_MASTER_KEY` | Master key for encryption |
+| `{PROVIDER}_API_KEY` | Provider API key fallback (e.g., `ANTHROPIC_API_KEY`) |
+
+## Known Issues Fixed
+
+### Encrypted keys not decrypting on hot-reload
+**Bug**: API keys work after `save()` but fail on hot-reload (file watcher triggers reload).
+**Fix**: `ConfigWatcher::reload_config()` now calls `decrypt_provider_keys()` at `watcher.rs:153-154`.
+
+### Encrypted keys not decrypting on load
+**Bug**: API keys work after `save()` but fail on subsequent loads.
+**Fix**: `decrypt_provider_keys()` is called automatically in `Config::load()` at `schema.rs:508-509`.
+
+### Provider config fields lost during merge
+**Bug**: Provider settings from global config disappear when project config specifies the same provider.
+**Fix**: `ProviderConfig::merge()` method implemented for field-level merging at `schema.rs:175-212`.
+
+### medium_model not validated
+**Bug**: Invalid `medium_model` values not caught by validation.
+**Fix**: `medium_model` validation added at `schema.rs:594-601`.
 
 ## See Also
 
+- [crypto.md](crypto.md) - AES-256-GCM encryption details
 - [agent.md](agent.md) - Uses config
-- [crypto.md](crypto.md) - Config encryption

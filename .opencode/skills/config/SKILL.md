@@ -1,7 +1,7 @@
 ---
 name: config
 description: Configuration loading, validation, file watching, and encryption in opencode-rs
-version: 1.1.0
+version: 1.2.0
 tags:
   - config
   - loading
@@ -200,13 +200,21 @@ Instructions are concatenated, not replaced.
 
 ## Common Issues
 
+### Encrypted keys not decrypting on hot-reload
+
+**Symptom**: API keys work after `save()` but fail on hot-reload (file watcher triggers reload).
+
+**Cause**: `ConfigWatcher::reload_config()` was not calling `decrypt_provider_keys()`.
+
+**Fix**: Added `decrypt_provider_keys()` call at `watcher.rs:153-154`.
+
 ### Encrypted keys not decrypting on load
 
 **Symptom**: API keys work after `save()` but fail on subsequent loads.
 
 **Cause**: `decrypt_provider_keys()` was not being called in `Config::load()`.
 
-**Fix**: Now called automatically at `schema.rs:506-507`.
+**Fix**: Now called automatically at `schema.rs:508-509`.
 
 ### Provider config fields lost during merge
 

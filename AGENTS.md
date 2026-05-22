@@ -55,6 +55,7 @@ These items were identified during module reviews and are important for future a
 - **Tool definition caching**: Properly versioned cache key (uses mcp_tool_count as proxy - see known limitation)
 - **DoomLoop detection**: Implementation correctly uses window-based counting (not consecutive), and docstring accurately describes this
 - **`decrypt_provider_keys()` is called in `Config::load()`**: API keys encrypted via `save()` are now automatically decrypted on load (fixed 2026-05-21)
+- **`decrypt_provider_keys()` is called in `ConfigWatcher::reload_config()`**: Hot-reload now properly decrypts API keys (fixed 2026-05-22)
 - **ProviderConfig merge is field-by-field**: When merging configs with same provider, fields are merged individually (fixed 2026-05-21)
 - **`medium_model` is validated**: Validates `provider/model` format like `model` and `small_model` (fixed 2026-05-21)
 - **`ProviderError::is_retryable()` implemented**: Centralizes retry logic for provider errors (added 2026-05-22)
