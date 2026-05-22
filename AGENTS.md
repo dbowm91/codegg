@@ -181,6 +181,14 @@ These items were identified during module reviews and are important for future a
 - **validate_path_safety() symlink check**: Added symlink check before canonicalization to prevent symlink traversal attacks. Uses `path.symlink_metadata()` to detect if the path itself is a symlink.
 - **validate_path_safety() tests added**: Added `test_validate_path_safety` and `test_validate_path_safety_with_symlink` unit tests to verify path validation and symlink rejection.
 
+### Server Module (2026-05-22)
+- **WsRateLimiter shared**: `WsRateLimiter` in `ServerState` is now shared across all WebSocket connections (was created per-connection, causing inefficient rate limiting)
+- **SSE GlobalEventBus fixed**: SSE handler at `/api/event` now subscribes directly to `crate::bus::global::GlobalEventBus::subscribe()` instead of using isolated State parameter
+- **Dead EventBus removed**: `routes/event.rs` had an unused local `EventBus` struct - removed, SSE now uses `GlobalEventBus` directly
+- **Health route simplified**: `routes/health.rs` simplified to just `health_check()` function (unused `Router` builder removed)
+- **Auth deduplication**: `validate_ws_auth()` function now shared between `handle_ws` and `handle_tui` (was duplicated inline code)
+- **rpc.rs removed**: Unused `rpc.rs` module removed from `server/mod.rs`
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -218,6 +226,7 @@ These items were identified during module reviews and are important for future a
 ├── provider/SKILL.md            # Provider patterns, token estimation
 ├── resilience/SKILL.md           # Circuit breaker, FallbackProvider
 ├── security/SKILL.md            # SSRF, symlink protection, Landlock
+├── server/SKILL.md             # HTTP server, WebSocket, REST API, SSE
 ├── session/SKILL.md             # Session storage, database schema
 ├── snapshot/SKILL.md            # Snapshot capture and restore
 ├── tool/SKILL.md                 # Tool path validation, async command
@@ -258,8 +267,8 @@ When adding guidance for a new module:
 | Tool (path validation, async command) | `tool/AGENTS.override.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |
-| Client (remote TUI, WebSocket) | `client/SKILL.md` |
-| Server (WebSocket, TuiMessage serialization) | `server/AGENTS.override.md` |
+| Client (remote TUI, WebSocket) | `.opencode/skills/client/SKILL.md` |
+| Server (HTTP, WebSocket, REST API, SSE) | `.opencode/skills/server/SKILL.md` |
 | Snapshot (file state capture and restore) | `snapshot/AGENTS.override.md` |
 | Skills (skill system overview) | `skills/AGENTS.override.md` |
 | Command (slash commands, templates, execution) | `.opencode/skills/command/SKILL.md` |

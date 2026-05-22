@@ -1,6 +1,4 @@
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use axum::{
     extract::{ws::WebSocket, ConnectInfo, FromRequestParts, State, WebSocketUpgrade},
@@ -11,7 +9,6 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
-use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::error::ServerRuntimeError;
@@ -42,214 +39,47 @@ where
     }
 }
 
-#[allow(dead_code)]
-#[async_trait::async_trait]
-trait RateLimitBackend: Send + Sync {
-    async fn check_rate_limit(&self, key: &str) -> bool;
-}
+fn validate_ws_auth(auth: &WebSocketAuth) -> Result<(), StatusCode> {
+    let auth_required = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_err();
 
-#[derive(Clone)]
-pub(crate) struct RateLimiter {
-    backend: Arc<dyn RateLimitBackend>,
-}
-
-struct InMemoryRateLimiter {
-    cache: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
-    max_requests: usize,
-    window: Duration,
-    cleanup_interval: Duration,
-    last_cleanup: Arc<tokio::sync::Mutex<Instant>>,
-    max_entries: usize,
-}
-
-impl InMemoryRateLimiter {
-    fn new(max_requests: usize, window_secs: u64) -> Self {
-        Self {
-            cache: Arc::new(Mutex::new(HashMap::new())),
-            max_requests,
-            window: Duration::from_secs(window_secs),
-            cleanup_interval: Duration::from_secs(window_secs),
-            last_cleanup: Arc::new(tokio::sync::Mutex::new(Instant::now())),
-            max_entries: 10_000,
-        }
+    if !auth_required {
+        return Ok(());
     }
 
-    async fn cleanup_if_needed(&self) {
-        let now = Instant::now();
-        {
-            let mut last_cleanup = self.last_cleanup.lock().await;
-            if now.duration_since(*last_cleanup) < self.cleanup_interval {
-                return;
+    let client_token = auth
+        .authorization
+        .as_ref()
+        .and_then(|v| v.strip_prefix("Bearer ").map(|t| t.to_string()));
+
+    let expected = std::env::var("CODEGG_SERVER_TOKEN").ok();
+
+    match expected {
+        Some(expected_token) => {
+            let valid = client_token
+                .as_ref()
+                .map(|t| t.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1)
+                .unwrap_or(false);
+
+            if !valid {
+                return Err(StatusCode::UNAUTHORIZED);
             }
-            *last_cleanup = now;
         }
-
-        let now = Instant::now();
-        let mut cache = self.cache.lock().await;
-        cache.retain(|_, v| {
-            v.retain(|&t| now.duration_since(t) < self.window);
-            !v.is_empty()
-        });
-    }
-}
-
-#[async_trait::async_trait]
-impl RateLimitBackend for InMemoryRateLimiter {
-    async fn check_rate_limit(&self, key: &str) -> bool {
-        self.cleanup_if_needed().await;
-
-        let now = Instant::now();
-        let mut cache = self.cache.lock().await;
-
-        let key_to_remove = if cache.len() >= self.max_entries {
-            let mut oldest_key: Option<String> = None;
-            for (k, times) in cache.iter() {
-                if let Some(first_time) = times.first() {
-                    if let Some(ref oldest) = oldest_key {
-                        if let Some(oldest_times) = cache.get(oldest) {
-                            if let Some(oldest_first) = oldest_times.first() {
-                                if first_time < oldest_first {
-                                    oldest_key = Some(k.clone());
-                                }
-                            }
-                        }
-                    } else {
-                        oldest_key = Some(k.clone());
-                    }
-                }
-            }
-            oldest_key
-        } else {
-            None
-        };
-
-        if let Some(key) = key_to_remove {
-            cache.remove(key.as_str());
-        }
-
-        let requests = cache.entry(key.to_string()).or_insert_with(Vec::new);
-
-        requests.retain(|&t| now.duration_since(t) < self.window);
-
-        if requests.len() >= self.max_requests {
-            return false;
-        }
-
-        requests.push(now);
-        true
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct DistributedRateLimiter {
-    #[allow(dead_code)]
-    max_requests: usize,
-    #[allow(dead_code)]
-    window_secs: u64,
-}
-
-impl DistributedRateLimiter {
-    fn new(max_requests: usize, window_secs: u64) -> Self {
-        Self {
-            max_requests,
-            window_secs,
+        None => {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
+
+    Ok(())
 }
 
-#[allow(dead_code)]
-#[async_trait::async_trait]
-impl RateLimitBackend for DistributedRateLimiter {
-    async fn check_rate_limit(&self, _key: &str) -> bool {
-        tracing::warn!("distributed rate limiter not configured, rejecting request");
-        false
-    }
-}
-
-impl RateLimiter {
-    pub(crate) fn new(max_requests: usize, window_secs: u64) -> Self {
-        let backend: Arc<dyn RateLimitBackend> = if std::env::var("REDIS_URL").is_ok() {
-            tracing::info!("using distributed rate limiter with Redis");
-            Arc::new(DistributedRateLimiter::new(max_requests, window_secs))
-        } else {
-            tracing::info!("using in-memory rate limiter");
-            Arc::new(InMemoryRateLimiter::new(max_requests, window_secs))
-        };
-        Self { backend }
-    }
-
-    async fn check_rate_limit(&self, key: &str) -> bool {
-        self.backend.check_rate_limit(key).await
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RpcRequest {
-    pub jsonrpc: String,
-    pub id: serde_json::Value,
-    pub method: String,
-    pub params: Option<serde_json::Value>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RpcResponse {
-    pub jsonrpc: String,
-    pub id: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<RpcError>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RpcError {
-    pub code: i64,
-    pub message: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[allow(dead_code)]
-pub struct RpcEvent {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    pub data: serde_json::Value,
-}
-
-#[allow(dead_code)]
 pub async fn handle_ws(
     ws: WebSocketUpgrade,
     State(state): State<crate::server::state::ServerState>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     auth: WebSocketAuth,
 ) -> impl axum::response::IntoResponse {
-    let auth_required = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_err();
-
-    if auth_required {
-        let client_token = auth
-            .authorization
-            .and_then(|v| v.strip_prefix("Bearer ").map(|t| t.to_string()));
-
-        let expected = std::env::var("CODEGG_SERVER_TOKEN").ok();
-
-        match expected {
-            Some(expected_token) => {
-                let valid = client_token
-                    .as_ref()
-                    .map(|t| t.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1)
-                    .unwrap_or(false);
-
-                if !valid {
-                    return StatusCode::UNAUTHORIZED.into_response();
-                }
-            }
-            None => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Server misconfigured: CODEGG_SERVER_TOKEN not set",
-                )
-                    .into_response();
-            }
-        }
+    if let Err(res) = validate_ws_auth(&auth) {
+        return res.into_response();
     }
 
     ws.on_upgrade(move |socket| async move {
@@ -267,7 +97,7 @@ async fn upgrade_ws(
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<axum::extract::ws::Message>();
 
     let state_clone = state.clone();
-    let mut send_task = tokio::spawn(async move {
+    let send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         while let Some(msg) = out_rx.recv().await {
             let _ = ws_tx.send(msg).await;
@@ -275,9 +105,9 @@ async fn upgrade_ws(
         drop(state_clone);
     });
 
-    let rate_limiter = RateLimiter::new(100, 60);
+    let rate_limiter = state.ws_rate_limiter.clone();
 
-    let mut recv_task = tokio::spawn(async move {
+    let recv_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
         while let Some(Ok(msg)) = ws_rx.next().await {
             if let axum::extract::ws::Message::Text(text) = msg {
@@ -308,10 +138,10 @@ async fn upgrade_ws(
     });
 
     tokio::select! {
-        _ = (&mut send_task) => {
+        _ = send_task => {
             recv_task.abort();
         }
-        _ = (&mut recv_task) => {
+        _ = recv_task => {
             send_task.abort();
         }
     }
@@ -499,34 +329,8 @@ pub async fn handle_tui(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     auth: WebSocketAuth,
 ) -> impl axum::response::IntoResponse {
-    let auth_required = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_err();
-
-    if auth_required {
-        let client_token = auth
-            .authorization
-            .and_then(|v| v.strip_prefix("Bearer ").map(|t| t.to_string()));
-
-        let expected = std::env::var("CODEGG_SERVER_TOKEN").ok();
-
-        match expected {
-            Some(expected_token) => {
-                let valid = client_token
-                    .as_ref()
-                    .map(|t| t.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1)
-                    .unwrap_or(false);
-
-                if !valid {
-                    return StatusCode::UNAUTHORIZED.into_response();
-                }
-            }
-            None => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Server misconfigured: CODEGG_SERVER_TOKEN not set",
-                )
-                    .into_response();
-            }
-        }
+    if let Err(res) = validate_ws_auth(&auth) {
+        return res.into_response();
     }
 
     ws.on_upgrade(move |socket| async move {
@@ -548,7 +352,7 @@ async fn upgrade_tui(
     let bus_tx_clone2 = bus_tx.clone();
     let bus_tx_clone3 = bus_tx.clone();
 
-    let mut send_task = tokio::spawn(async move {
+let send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         loop {
             tokio::select! {
@@ -562,11 +366,11 @@ async fn upgrade_tui(
         }
     });
 
-    let rate_limiter = RateLimiter::new(100, 60);
+    let rate_limiter = state.ws_rate_limiter.clone();
 
     let session_state = Arc::new(Mutex::new(TuiSessionState::new(addr.to_string())));
 
-    let mut recv_task = tokio::spawn(async move {
+    let recv_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
         while let Some(Ok(msg)) = ws_rx.next().await {
             if let axum::extract::ws::Message::Text(text) = msg {

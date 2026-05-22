@@ -1,7 +1,6 @@
 pub mod config;
 pub mod event;
 pub mod file;
-pub mod health;
 pub mod mcp;
 pub mod permission;
 pub mod project;

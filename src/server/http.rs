@@ -20,7 +20,7 @@ use tracing::info;
 
 use super::middleware::auth::auth_middleware;
 use super::routes;
-use super::state::ServerState;
+use super::state::{ServerState, WsRateLimiter};
 use super::ws;
 
 #[derive(Clone)]
@@ -209,6 +209,7 @@ pub async fn run_server(host: &str, port: u16) -> Result<(), crate::error::Serve
         mcp_service: Arc::new(RwLock::new(mcp_service)),
         event_bus: routes::GlobalEventBus::new(),
         config: config.unwrap_or_default(),
+        ws_rate_limiter: Arc::new(WsRateLimiter::new(100, 60)),
     };
 
     let cors = build_cors(&server_config);

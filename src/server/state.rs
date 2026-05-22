@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use axum::extract::FromRef;
 use sqlx::SqlitePool;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::config::schema::Config;
 use crate::mcp::McpService;
@@ -14,6 +17,39 @@ pub struct ServerState {
     pub mcp_service: Arc<RwLock<McpService>>,
     pub event_bus: GlobalEventBus,
     pub config: Config,
+    pub ws_rate_limiter: Arc<WsRateLimiter>,
+}
+
+#[derive(Clone)]
+pub struct WsRateLimiter {
+    cache: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+    max_requests: usize,
+    window: Duration,
+}
+
+impl WsRateLimiter {
+    pub fn new(max_requests: usize, window_secs: u64) -> Self {
+        Self {
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            max_requests,
+            window: Duration::from_secs(window_secs),
+        }
+    }
+
+    pub async fn check_rate_limit(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let mut cache = self.cache.lock().await;
+
+        let requests = cache.entry(key.to_string()).or_insert_with(Vec::new);
+        requests.retain(|&t| now.duration_since(t) < self.window);
+
+        if requests.len() >= self.max_requests {
+            return false;
+        }
+
+        requests.push(now);
+        true
+    }
 }
 
 impl FromRef<ServerState> for SqlitePool {
