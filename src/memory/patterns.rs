@@ -58,7 +58,7 @@ impl PatternDetector {
                 PreferencePattern {
                     regex: regex::Regex::new(r"(?i)don't use ([^.]+)").unwrap(),
                     base_score: 8.0,
-                    negation_modifier: 0.0,
+                    negation_modifier: -3.0,
                 },
                 PreferencePattern {
                     regex: regex::Regex::new(r"(?i)never use ([^.]+)").unwrap(),
@@ -172,7 +172,11 @@ impl PatternDetector {
                     || full_match.to_lowercase().contains("never")
                     || full_match.to_lowercase().contains("not");
 
-                let base = if is_negation { pref.negation_modifier } else { pref.base_score };
+                let base = if is_negation {
+                    pref.base_score + pref.negation_modifier
+                } else {
+                    pref.base_score
+                };
 
                 matches.push(PatternMatch {
                     pattern_type: PatternType::UserPreference,

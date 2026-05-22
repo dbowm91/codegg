@@ -139,8 +139,10 @@ These items were identified during module reviews and are important for future a
 - **Consolidation system**: Rule-based pattern detection with importance scoring
 - **Memory commands implemented**: `/memory` dashboard, `/memory-search`, `/memory-list`, `/memory-remember`, `/memory-forget`, `/memory-consolidate`
 - **During-session memory**: `/memory-remember <text>` allows saving memories mid-session
-- **Negation scoring fixed**: Negations ("don't use", "never") now correctly reduce importance (was: documentation said +8, code actually subtracted)
+- **Negation scoring fixed**: Negations ("don't use", "never") now correctly use `base_score + negation_modifier` (was: only negation_modifier used)
 - **Auto-run**: `experimental.memory_auto_consolidate` config option enables automatic consolidation on session end
+- **Bug fixed - access_count tracking**: `get()` now increments `access_count` when retrieving (was: never incremented)
+- **Bug fixed - topic matching**: `consolidate_session()` now strips title prefixes before comparing topics for correct superseding
 
 ### Client Module (2026-05-22)
 - **Health endpoint fixed**: `RemoteClient::health()` now uses `GET /health` instead of `GET /api/providers`

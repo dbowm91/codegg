@@ -2,6 +2,12 @@
 
 The `memory` module provides persistent memory for session-to-session learning.
 
+## Bug Fixes (2026-05-22)
+
+- **Negation scoring corrected**: Negation patterns ("don't use", "never use") now use `base_score + negation_modifier` instead of just `negation_modifier`. "don't use eval" now scores 5.0 (was 0.0).
+- **access_count tracking**: `get()` now increments `access_count` when retrieving a memory.
+- **Topic matching fix**: `consolidate_session()` now strips title prefixes ("Preference: ", "Convention: ", etc.) before comparing topics, ensuring correct superseding behavior.
+
 ## Overview
 
 **Location**: `src/memory/`
@@ -45,7 +51,7 @@ impl MemoryStore {
     pub fn new() -> std::io::Result<Self>
     pub fn with_auto_save(auto_save: bool) -> std::io::Result<Self>
     pub fn add(&self, memory: Memory) -> Option<Memory>
-    pub fn get(&self, id: &str) -> Option<Memory>
+    pub fn get(&self, id: &str) -> Option<Memory>  // Increments access_count
     pub fn list(&self, namespace: &str) -> Vec<Memory>
     pub fn search(&self, query: &str) -> Vec<Memory>
     pub fn delete(&self, id: &str) -> Option<Memory>
@@ -112,14 +118,18 @@ Rule-based pattern detection identifies:
 |--------|--------|
 | Explicit preference ("I prefer X") | 10 |
 | "I always X" | 12 |
-| Negation/deprecation ("don't use Y") | -3 modifier |
-| Repeated occurrence | +2 each |
-| Coding convention match | 5 |
+| "don't use Y" | 8 base + -3 modifier = **5** |
+| "never use Y" | 10 base + -3 modifier = **7** |
+| "use X instead" | 9 |
+| "([^ ]+) is deprecated" | 7 |
+| "we use X" | 8 |
+| "our X follows Y" | 9 |
+| Coding convention match | 4-6 |
 | Deprecation notice | 7 |
 
 Final score = base + frequency_bonus. Only memories with score >= 8.0 are stored.
 
-**Note**: Negations ("don't use", "never use") reduce importance rather than increase it, as they represent deprecation rather than preference. This is intentional - we want positive preferences to rank higher.
+**Negation scoring**: When a negation pattern is detected ("don't", "never", "not"), the negation_modifier (-3.0) is ADDED to the base score, not used as a replacement. This ensures negations still have meaningful scores but rank lower than positive preferences.
 
 ### Superseding
 

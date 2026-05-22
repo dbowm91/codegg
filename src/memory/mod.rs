@@ -167,7 +167,13 @@ impl MemoryStore {
     }
 
     pub fn get(&self, id: &str) -> Option<Memory> {
-        self.memories.lock().get(id).cloned()
+        let mut memories = self.memories.lock();
+        if let Some(memory) = memories.get_mut(id) {
+            memory.access_count += 1;
+            Some(memory.clone())
+        } else {
+            None
+        }
     }
 
     pub fn list(&self, namespace: &str) -> Vec<Memory> {
@@ -213,7 +219,19 @@ impl MemoryStore {
         let existing = self.list(&namespace);
         let existing_by_topic: HashMap<String, &Memory> = existing
             .iter()
-            .map(|m| (m.title.as_deref().unwrap_or("").to_lowercase(), m))
+            .map(|m| {
+                let key = m.title
+                    .as_deref()
+                    .map(|t| t.replace("Preference: ", "")
+                        .replace("Convention: ", "")
+                        .replace("Naming: ", "")
+                        .replace("Architecture: ", "")
+                        .replace("Deprecated: ", "")
+                        .replace("Tool: ", "")
+                        .to_lowercase())
+                    .unwrap_or_else(|| m.content.to_lowercase());
+                (key, m)
+            })
             .collect();
 
         let mut new_memories = Vec::new();
