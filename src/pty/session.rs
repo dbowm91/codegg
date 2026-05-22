@@ -39,6 +39,16 @@ impl PtyManager {
         self.sessions.read().await.get(id).cloned()
     }
 
+    pub async fn update_cwd(&self, id: &str, cwd: &str) -> Result<PtySession, StorageError> {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(id)
+            .ok_or_else(|| StorageError::NotFound(format!("pty session {id}")))?;
+
+        session.cwd = cwd.to_string();
+        Ok(session.clone())
+    }
+
     pub async fn list(&self, project_id: &str) -> Vec<PtySession> {
         self.sessions
             .read()

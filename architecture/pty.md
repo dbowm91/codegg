@@ -1,45 +1,79 @@
 # PTY Module
 
-The `pty` module provides shell session metadata management.
+The `pty` module provides shell session metadata management for terminal sessions.
 
 ## Overview
 
 **Location**: `src/pty/`
 
-**Note**: This module does NOT create actual PTY sessions. It only manages in-memory session metadata.
+**Note**: This module does NOT create actual PTY sessions. It only manages in-memory session metadata. Actual shell execution is handled by `tool::terminal` which spawns a shell process directly.
 
 ## Key Types
 
 ### PtySession
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtySession {
     pub id: String,
-    pub cwd: PathBuf,
-    pub env: HashMap<String, String>,
-    pub created_at: DateTime<Utc>,
+    pub project_id: String,
+    pub cwd: String,
+    pub shell: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub created_at: i64,
 }
 ```
 
-### SessionManager
+### CreatePtySession
 
 ```rust
-pub struct SessionManager {
-    sessions: RwLock<HashMap<String, PtySession>>,
-}
-
-impl SessionManager {
-    pub fn create(&self, cwd: &Path) -> Result<String>;
-    pub fn get(&self, id: &str) -> Option<PtySession>;
-    pub fn update_cwd(&self, id: &str, cwd: &Path) -> Result<()>;
-    pub fn destroy(&self, id: &str) -> Result<()>;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePtySession {
+    pub project_id: String,
+    pub cwd: Option<String>,
+    pub shell: Option<String>,
+    pub cols: Option<u16>,
+    pub rows: Option<u16>,
 }
 ```
 
-## Note
+### PtyResize
 
-Actual shell execution is handled by `tool::bash` which spawns a shell process directly.
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyResize {
+    pub cols: u16,
+    pub rows: u16,
+}
+```
+
+### PtyManager
+
+```rust
+pub struct PtyManager {
+    sessions: Arc<RwLock<HashMap<String, PtySession>>>,
+}
+
+impl PtyManager {
+    pub fn new() -> Self;
+    pub async fn create(&self, input: CreatePtySession) -> Result<PtySession, StorageError>;
+    pub async fn get(&self, id: &str) -> Option<PtySession>;
+    pub async fn update_cwd(&self, id: &str, cwd: &str) -> Result<PtySession, StorageError>;
+    pub async fn list(&self, project_id: &str) -> Vec<PtySession>;
+    pub async fn resize(&self, id: &str, resize: PtyResize) -> Result<(), StorageError>;
+    pub async fn delete(&self, id: &str) -> Result<(), StorageError>;
+}
+```
+
+## Notes
+
+- Sessions are stored in-memory only (no persistence)
+- `created_at` uses milliseconds since epoch (i64)
+- `cwd` is stored as `String`, not `PathBuf`
+- Default terminal size is 80 columns x 24 rows
+- Default shell is `bash`
 
 ## See Also
 
-- [tool.md](tool.md) - Bash tool that executes shell commands
+- [tool.md](tool.md) - Terminal tool that executes shell commands

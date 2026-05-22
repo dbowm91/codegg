@@ -30,7 +30,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `permission/` | Access control, path restrictions, DoomLoop detection, mode system |
 | `plugin/` | WASM plugin system with hooks and TUI extensions |
 | `provider/` | LLM provider implementations (Anthropic, OpenAI, Google, etc.) |
-| `shell/` | Shell session management (in-memory session metadata, no actual PTY) |
+| `pty/` | Shell session metadata management (in-memory, no actual PTY) |
 | `resilience/` | Circuit breaker, retry mechanisms, and rate limiting |
 | `security/` | SSRF protection, internal IP validation, Landlock sandboxing |
 | `server/` | HTTP server (Axum) with WebSocket support for remote TUIs |
@@ -165,6 +165,11 @@ These items were identified during module reviews and are important for future a
 ### Resilienced Module (2026-05-22)
 - **CircuitBreaker is_available() TOCTOU**: There is a time-of-check-time-of-use race in `is_available()` between reading state and acquiring write lock. See `plans/plan.md:1.5` for planned fix.
 
+### PTY Module (2026-05-22)
+- **Architecture doc updated**: `architecture/pty.md` now accurately describes the implementation (was showing outdated `SessionManager` API with wrong field types)
+- **`update_cwd` method added**: `PtyManager::update_cwd()` now exists and returns `Result<PtySession, StorageError>` (was documented but not implemented)
+- **Skill created**: `.opencode/skills/pty/SKILL.md` created with module guidance
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -226,6 +231,7 @@ When adding guidance for a new module:
 
 | Topic | Location |
 |-------|----------|
+| PTY (shell session metadata) | `.opencode/skills/pty/SKILL.md` |
 | Agent (TuiCommand, TuiMsg, compaction, router, team) | `agent/AGENTS.override.md` |
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
 | TUI (keyboard shortcuts) | `tui/AGENTS.override.md` |
