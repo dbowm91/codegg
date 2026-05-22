@@ -7,33 +7,35 @@ The `resilience` module provides fault tolerance patterns.
 **Location**: `src/resilience/`
 
 **Key Responsibilities**:
-- Circuit breaker pattern
-- Retry mechanisms
-- Rate limiting
+- Circuit breaker pattern for provider fault tolerance
 
 ## Circuit Breaker
 
 ### CircuitBreaker
 
 ```rust
-pub struct CircuitBreaker {
-    state: Arc<AtomicU8>,
-    failure_count: Arc<AtomicUsize>,
-    last_failure: Arc<Mutex<Instant>>,
-    config: CircuitBreakerConfig,
+struct CircuitBreakerInner {
+    name: String,
+    state: TokioRwLock<CircuitState>,       // Uses TokioRwLock, not AtomicU8
+    failure_count: TokioRwLock<usize>,
+    success_count: TokioRwLock<usize>,
+    last_failure_time: TokioRwLock<Option<Instant>>,
+    failure_threshold: usize,
+    timeout_secs: u64,
+    success_threshold: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
+pub struct CircuitBreaker {
+    inner: Arc<CircuitBreakerInner>,
+}
+```
+
+**State Enum**:
+```rust
 pub enum CircuitState {
     Closed,    // Normal operation
     Open,      // Failing, reject requests
     HalfOpen,  // Testing if recovered
-}
-
-pub struct CircuitBreakerConfig {
-    pub failure_threshold: usize,
-    pub recovery_timeout: Duration,
-    pub half_open_max_calls: usize,
 }
 ```
 
@@ -49,7 +51,7 @@ pub struct CircuitBreakerConfig {
 └─────────┘     success in HalfOpen      │
     ▲                ▲                    │
     │                │                    │
-    │ recovery_timeout elapsed            │
+    │ recovery_timeout elapsed           │
     │                │                    │
     └────────┬───────┘                    │
              │                            │
@@ -61,40 +63,60 @@ pub struct CircuitBreakerConfig {
         └─────────┘
 ```
 
-### Usage
+### is_available() Implementation
+
+The `is_available()` method uses a write lock from the start to avoid TOCTOU race conditions:
 
 ```rust
-pub async fn call_with_circuit<F, Fut>(cb: &CircuitBreaker, f: F) -> Result<T>
-where
-    F: Fn() -> Fut,
-    Fut: Future<Output = Result<T>>,
-{
-    match cb.state() {
-        CircuitState::Open => Err(Error::CircuitOpen),
-        CircuitState::HalfOpen | CircuitState::Closed => {
-            let result = f().await;
-            cb.record_result(&result);
-            result
+pub async fn is_available(&self) -> bool {
+    let mut state = self.inner.state.write().await;
+    match *state {
+        CircuitState::Closed | CircuitState::HalfOpen => true,
+        CircuitState::Open => {
+            if let Some(last_failure) = *self.inner.last_failure_time.read().await {
+                let timeout = Duration::from_secs(self.inner.timeout_secs);
+                if last_failure.elapsed() >= timeout {
+                    *state = CircuitState::HalfOpen;
+                    tracing::info!(
+                        "circuit breaker {} transitioned to HalfOpen",
+                        self.inner.name
+                    );
+                    return true;
+                }
+            }
+            false
         }
     }
 }
 ```
 
-## Rate Limiting
+### Usage
 
 ```rust
-pub struct RateLimiter {
-    tokens: Arc<Mutex<f64>>,
-    last_refill: Instant,
-    config: RateLimitConfig,
-}
+pub async fn call<F, R, E>(&self, op: F) -> Result<R, E>
+where
+    F: Future<Output = Result<R, E>>,
+    E: From<CircuitError>,
+{
+    if !self.is_available().await {
+        let state = *self.inner.state.read().await;
+        if state == CircuitState::Open {
+            return Err(CircuitError::Open(self.inner.name.clone()).into());
+        }
+    }
 
-pub struct RateLimitConfig {
-    pub requests_per_second: f64,
-    pub burst: usize,
+    let result = op.await;
+
+    match &result {
+        Ok(_) => self.record_success().await,
+        Err(_) => self.record_failure().await,
+    }
+
+    result
 }
 ```
 
 ## See Also
 
-- [provider.md](provider.md) - Uses circuit breaker for API calls
+- [provider.md](provider.md) - Uses circuit breaker for API calls via FallbackProvider
+- `.opencode/skills/resilience/SKILL.md` - Skill with usage examples

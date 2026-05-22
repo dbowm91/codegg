@@ -73,20 +73,18 @@ impl CircuitBreaker {
     }
 
     pub async fn is_available(&self) -> bool {
-        let state = self.inner.state.read().await;
+        let mut state = self.inner.state.write().await;
         match *state {
             CircuitState::Closed | CircuitState::HalfOpen => true,
             CircuitState::Open => {
                 if let Some(last_failure) = *self.inner.last_failure_time.read().await {
                     let timeout = Duration::from_secs(self.inner.timeout_secs);
                     if last_failure.elapsed() >= timeout {
-                        drop(state);
-                        let mut state = self.inner.state.write().await;
-                        // Double-check state after acquiring write lock
-                        if *state == CircuitState::Open {
-                            *state = CircuitState::HalfOpen;
-                            tracing::info!("circuit breaker {} transitioned to HalfOpen", self.inner.name);
-                        }
+                        *state = CircuitState::HalfOpen;
+                        tracing::info!(
+                            "circuit breaker {} transitioned to HalfOpen",
+                            self.inner.name
+                        );
                         return true;
                     }
                 }
@@ -218,5 +216,25 @@ mod tests {
         let result: Result<(), CircuitError> = cb.call(async { Ok(()) }).await;
 
         assert!(matches!(result, Err(CircuitError::Open(_))));
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_halfopen_to_closed_recovery() {
+        let cb = CircuitBreaker::new("test", 3, 1, 2);
+
+        for _ in 0..3 {
+            let _: Result<(), CircuitError> = cb
+                .call(async { Err(CircuitError::Open("test".to_string())) })
+                .await;
+        }
+        assert_eq!(cb.state().await, CircuitState::Open);
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert!(cb.is_available().await);
+        assert_eq!(cb.state().await, CircuitState::HalfOpen);
+
+        let _: Result<(), CircuitError> = cb.call(async { Ok(()) }).await;
+        let _: Result<(), CircuitError> = cb.call(async { Ok(()) }).await;
+        assert_eq!(cb.state().await, CircuitState::Closed);
     }
 }

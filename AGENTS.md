@@ -162,8 +162,10 @@ These items were identified during module reviews and are important for future a
 - **FallbackProvider exponential backoff**: Retry delay is `2^i` seconds (capped at 30s) - correctly implemented
 - **ProviderError::CircuitOpen**: Circuit breaker integration properly propagates open state via `CircuitError → ProviderError::CircuitOpen`
 
-### Resilienced Module (2026-05-22)
-- **CircuitBreaker is_available() TOCTOU**: There is a time-of-check-time-of-use race in `is_available()` between reading state and acquiring write lock. See `plans/plan.md:1.5` for planned fix.
+### Resilience Module (2026-05-22)
+- **CircuitBreaker is_available() TOCTOU fixed**: Now uses write lock from the start instead of read-then-write, eliminating the time-of-check-time-of-use race. Implementation uses single `write().await` acquisition.
+- **FallbackProvider exponential backoff**: Retry delay is `2^i` seconds (capped at 30s) - correctly implemented
+- **ProviderError::CircuitOpen**: Circuit breaker integration properly propagates open state via `CircuitError → ProviderError::CircuitOpen`
 
 ### PTY Module (2026-05-22)
 - **Architecture doc updated**: `architecture/pty.md` now accurately describes the implementation (was showing outdated `SessionManager` API with wrong field types)

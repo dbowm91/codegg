@@ -130,41 +130,33 @@ let _ = response_tx;  // Then discard receiver
 ### 1.5 Resilience Circuit Breaker TOCTOU Race - HIGH
 **Module**: resilience/
 **Severity**: HIGH
-**File**: `src/resilience/circuit.rs:67-84`
+**File**: `src/resilience/circuit.rs:75-96`
+**Status**: FIXED (2026-05-22) - Uses write lock from the start
 
-**Problem**: `is_available()` has time-of-check-time-of-use race:
+**Problem**: `is_available()` had time-of-check-time-of-use race:
 1. Read lock acquired, checks state is Open and timeout elapsed
 2. Read lock released
-3. Another task can transition state
+3. Another task could transition state
 4. Write lock acquired, modifies state
 
-**Implementation**: Use atomic compare-and-swap pattern:
+**Fix Applied**: Use write lock from the start instead of read-then-write:
 ```rust
 pub async fn is_available(&self) -> bool {
-    let mut state = self.state.write().await;
+    let mut state = self.inner.state.write().await;  // Single write lock
     match *state {
-        CircuitState::Closed => true,
-        CircuitState::HalfOpen => true,
+        CircuitState::Closed | CircuitState::HalfOpen => true,
         CircuitState::Open => {
-            if let Some(last_failure) = *self.last_failure_time.read().await {
-                if last_failure.elapsed() >= Duration::from_secs(self.timeout_secs) {
+            if let Some(last_failure) = *self.inner.last_failure_time.read().await {
+                if last_failure.elapsed() >= Duration::from_secs(self.inner.timeout_secs) {
                     *state = CircuitState::HalfOpen;
-                    true
-                } else {
-                    false
+                    return true;
                 }
-            } else {
-                false
             }
+            false
         }
     }
 }
 ```
-
-**Files to Modify**:
-- `src/resilience/circuit.rs`
-
-**Verification**: Run concurrent access tests with multiple tasks calling `is_available()`.
 
 ---
 
