@@ -186,7 +186,7 @@ impl ExecMode {
         }
     }
 
-    fn classify_error(error: &AppError) -> (String, String) {
+fn classify_error(error: &AppError) -> (String, String) {
         match error {
             AppError::Permission(_) => (
                 "PERMISSION_ERROR".to_string(),
@@ -214,12 +214,47 @@ impl ExecMode {
             AppError::Provider(ProviderError::Stream(_)) => {
                 ("STREAM_ERROR".to_string(), "Stream error".to_string())
             }
+            AppError::Provider(ProviderError::NotFound(_)) => {
+                ("PROVIDER_NOT_FOUND".to_string(), "Provider not found".to_string())
+            }
             AppError::Io(_) => ("IO_ERROR".to_string(), "I/O error".to_string()),
             AppError::Config(_) => (
                 "CONFIG_ERROR".to_string(),
                 "Configuration error".to_string(),
             ),
-            _ => ("EXECUTION_ERROR".to_string(), "Execution error".to_string()),
+            AppError::Storage(_) => ("STORAGE_ERROR".to_string(), "Storage error".to_string()),
+            AppError::Tool(crate::error::ToolError::NotFound(_)) => {
+                ("TOOL_NOT_FOUND".to_string(), "Tool not found".to_string())
+            }
+            AppError::Tool(crate::error::ToolError::Timeout(_)) => {
+                ("TOOL_TIMEOUT".to_string(), "Tool timeout".to_string())
+            }
+            AppError::Tool(crate::error::ToolError::Permission(_)) => {
+                ("TOOL_PERMISSION".to_string(), "Tool permission denied".to_string())
+            }
+            AppError::Tool(crate::error::ToolError::Disabled(_)) => {
+                ("TOOL_DISABLED".to_string(), "Tool disabled".to_string())
+            }
+            AppError::Tool(_) => (
+                "TOOL_ERROR".to_string(),
+                "Tool execution error".to_string(),
+            ),
+            AppError::Mcp(_) => ("MCP_ERROR".to_string(), "MCP error".to_string()),
+            AppError::Lsp(_) => ("LSP_ERROR".to_string(), "LSP error".to_string()),
+            AppError::Plugin(_) => ("PLUGIN_ERROR".to_string(), "Plugin error".to_string()),
+            AppError::Agent(_) => ("AGENT_ERROR".to_string(), "Agent error".to_string()),
+            AppError::Json(_) => ("JSON_ERROR".to_string(), "JSON error".to_string()),
+            AppError::Http(_) => ("HTTP_ERROR".to_string(), "HTTP error".to_string()),
+            AppError::Other(_) => (
+                "EXECUTION_ERROR".to_string(),
+                "Execution error".to_string(),
+            ),
+            AppError::Worktree(_) => ("WORKTREE_ERROR".to_string(), "Worktree error".to_string()),
+            AppError::Upgrade(_) => ("UPGRADE_ERROR".to_string(), "Upgrade error".to_string()),
+            AppError::Clipboard(_) => {
+                ("CLIPBOARD_ERROR".to_string(), "Clipboard error".to_string())
+            }
+            AppError::Tui(_) => ("TUI_ERROR".to_string(), "TUI error".to_string()),
         }
     }
 

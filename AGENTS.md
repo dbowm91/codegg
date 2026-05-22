@@ -20,7 +20,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher |
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
-| `error/` | Centralized `AppError` enum, `ProviderError::is_retryable()`, error conversions |
+| `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
@@ -53,6 +53,13 @@ These items were identified during module reviews and are important for future a
 - **Crypto module updated**: architecture/crypto.md now accurately describes the implementation (Argon2id key derivation, v2 format with `v2:` prefix, legacy HMAC-SHA256 support)
 - **Skill synchronized**: `.opencode/skills/crypto/SKILL.md` updated to match implementation
 
+### Error Module (2026-05-22)
+- **Architecture updated**: architecture/error.md now accurately describes the implementation (all error variants, is_retryable methods, HTTP status mapping)
+- **Skill created**: `.opencode/skills/error/SKILL.md` created with comprehensive error handling guidance
+- **Exec mode error classification expanded**: All AppError variants now have distinct error codes (was using catch-all EXECUTION_ERROR for many cases)
+- **ProviderError::NotFound handled**: Added classification for provider not found errors
+- **ToolError variants handled**: NotFound, Timeout, Permission, Disabled now have distinct codes
+
 ### Verified Correct Items (not bugs)
 - **Subagent event publishing**: `SubagentStarted`/`SubagentProgress`/`SubagentCompleted`/`SubagentFailed` events properly published via `GlobalEventBus`
 - **`SubAgentPool` bounded concurrency**: Properly uses semaphore with default of 5, RAII guard pattern for active_count
@@ -63,6 +70,7 @@ These items were identified during module reviews and are important for future a
 - **ProviderConfig merge is field-by-field**: When merging configs with same provider, fields are merged individually (fixed 2026-05-21)
 - **`medium_model` is validated**: Validates `provider/model` format like `model` and `small_model` (fixed 2026-05-21)
 - **`ProviderError::is_retryable()` implemented**: Centralizes retry logic for provider errors (added 2026-05-22)
+- **`ToolError::is_retryable()` implemented**: Centralizes retry logic for tool errors (added 2026-05-22)
 - **CircuitError → ProviderError::CircuitOpen conversion**: `From<CircuitError>` impl enables circuit breaker error propagation (added 2026-05-22)
 - **`FallbackProvider` uses `CircuitOpen`**: Circuit breaker errors now create `ProviderError::CircuitOpen` instead of generic `ProviderError::api()` (fixed 2026-05-22)
 - **SSE GlobalEventBus fixed**: SSE handler at `/api/event` now subscribes directly to `crate::bus::global::GlobalEventBus::subscribe()` instead of using isolated State parameter (fixed 2026-05-22)
@@ -131,6 +139,7 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 ├── config/SKILL.md               # Config loading, validation, encryption, watching
 ├── crypto/SKILL.md               # API key encryption
 ├── event-bus/SKILL.md           # GlobalEventBus, PermissionRegistry, QuestionRegistry
+├── error/SKILL.md                # AppError, ProviderError, ToolError, is_retryable, conversions
 ├── exec/SKILL.md                # Exec mode
 ├── hooks/SKILL.md               # Hooks system
 ├── ide/SKILL.md                 # IDE integration (VS Code, JetBrains)
@@ -174,7 +183,7 @@ When adding guidance for a new module:
 | MCP connection manager | `mcp/AGENTS.override.md` |
 | Provider (token estimation) | `provider/AGENTS.override.md` |
 | Crypto (API key encryption, Argon2id key derivation) | [architecture/crypto.md](architecture/crypto.md) |
-| Error (AppError, ProviderError, is_retryable, CircuitOpen) | `error/AGENTS.override.md` |
+| Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `resilience/AGENTS.override.md` |
 | Permission (mode system) | `permission/AGENTS.override.md` |
 | LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` |
