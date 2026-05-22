@@ -99,7 +99,7 @@ impl Hook for ShellCommandHook {
         cmd.arg("-c")
             .arg(&self.command)
             .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -113,6 +113,8 @@ impl Hook for ShellCommandHook {
     }
 }
 ```
+
+**Note**: As of 2026-05-22, `ShellCommandHook` uses the user's actual `PATH` from the environment instead of a hardcoded path.
 
 ### Configuration
 

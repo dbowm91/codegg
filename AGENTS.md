@@ -93,6 +93,8 @@ These items were identified during module reviews and are important for future a
 - **ToolExecuteBefore/After plugin hooks called**: Both hooks ARE invoked in `execute_tool_calls()` at loop.rs:1764 and 1806. `ToolExecuteBefore` can block execution by returning `blocked: true`.
 - **Shell hook config validation added**: Invalid event names (e.g., typos) now log warnings instead of silently failing. InlineScript is now deprecated with warning.
 - **Plugin hook timeout errors include plugin_id**: Error message format changed from `"hook timeout: hook execution timed out"` to `"{plugin_id}: hook timeout: hook execution timed out"`.
+- **ShellCommandHook PATH fixed**: Now uses user's actual `PATH` via `std::env::var_os("PATH")` instead of hardcoded `/usr/local/bin:/usr/bin:/bin`.
+- **Early return bug fixed**: Stream errors now break the agent loop instead of returning early, ensuring `AgentEnd` and `SessionEnd` hooks always run.
 
 ### MCP Module (2026-05-22)
 - **DNS rebinding protection fixed**: `validated_ips` changed to `Arc<Mutex<Option<Vec<IpAddr>>>>` so clones share state. `initialize()` now re-validates DNS on each call, preventing bypass after reconnects.
@@ -199,7 +201,7 @@ When adding guidance for a new module:
 | LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` |
 | Tool (path validation, async command) | `tool/AGENTS.override.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
-| Hooks system | `hooks/AGENTS.override.md` |
+| Hooks system | `.opencode/skills/hooks/SKILL.md` |
 | Client (remote TUI, WebSocket) | `client/SKILL.md` |
 | Server (WebSocket, TuiMessage serialization) | `server/AGENTS.override.md` |
 | Snapshot (file state capture and restore) | `snapshot/AGENTS.override.md` |

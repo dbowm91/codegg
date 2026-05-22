@@ -1360,7 +1360,7 @@ impl AgentLoop {
                 Ok(events) => events,
                 Err(e) => {
                     tracing::error!("Stream error: {}", e);
-                    return Err(e);
+                    break;
                 }
             };
 

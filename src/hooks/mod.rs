@@ -113,7 +113,7 @@ impl Hook for ShellCommandHook {
         cmd.arg("-c")
             .arg(&self.command)
             .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -175,6 +175,7 @@ impl HookRegistry {
                     command,
                     timeout_secs,
                 } => Box::new(ShellCommandHook::new(command.clone(), *timeout_secs)),
+                #[allow(deprecated)]
                 ConfigHookConfig::InlineScript { .. } => {
                     warn!("InlineScript hook type is not implemented, skipping");
                     continue;
