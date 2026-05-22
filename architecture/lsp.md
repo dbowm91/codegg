@@ -67,18 +67,22 @@ pub struct LspClient {
     pub capabilities: Mutex<Option<ServerCapabilities>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
     pub diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,
+    pub notif_tx: mpsc::UnboundedSender<String>,
+    pub notif_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
 }
 
-impl LspClient {
-    pub async fn new(server: &LspServerDef, binary: &Path, root: &Path, env: &[(String, String)]) -> Result<Self, LspError>
-    pub async fn initialize(&self, init_opts: Option<serde_json::Value>) -> Result<ServerCapabilities, LspError>
-    pub async fn send_request(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, LspError>
-    pub async fn send_notification(&self, method: &str, params: serde_json::Value) -> Result<(), LspError>
-    pub async fn shutdown(&self) -> Result<(), LspError>
+pub struct DiagnosticEntry {
+    pub uri: String,
+    pub diagnostic: lsp_types::Diagnostic,
 }
 ```
 
-**Key operations**: `open_file`, `update_file`, `close_file`, `save_file`, `go_to_definition`, `find_references`, `hover`, `document_symbols`, `code_actions`, `completion`, `signature_help`
+**Key operations**:
+- File lifecycle: `open_file()`, `update_file()`, `close_file()`, `save_file()`
+- Code intelligence: `go_to_definition()`, `find_references()`, `hover()`, `document_symbols()`, `code_actions()`, `completion()`, `signature_help()`
+- Diagnostics: `get_diagnostics()`, `get_all_diagnostics()`, `process_notification()`
+- Communication: `send_request()`, `send_notification()`, `send_initialized()`
+- Utilities: `url_to_uri()`, `detect_language_id()`
 
 ### operations.rs - High-Level Operations
 
@@ -102,14 +106,26 @@ impl LspOperations {
 ### diagnostics.rs - Diagnostics Collection
 
 ```rust
+const DEBOUNCE_MS: u64 = 150;
+
+#[derive(Debug, Clone)]
+pub struct FileDiagnostic {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub message: String,
+    pub severity: DiagnosticSeverity,
+    pub source: Option<String>,
+    pub code: Option<String>,
+}
+
 pub struct DiagnosticsCollector {
     service: Arc<LspService>,
     last_update: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
-const DEBOUNCE_MS: u64 = 150;
-
 impl DiagnosticsCollector {
+    pub async fn should_debounce(&self, uri: &str) -> bool
     pub async fn get_diagnostics_for_file(&self, file_path: &Path) -> Result<Vec<FileDiagnostic>, LspError>
     pub async fn get_all_diagnostics(&self) -> Result<HashMap<String, Vec<FileDiagnostic>>, LspError>
     pub async fn has_errors(&self, file_path: &Path) -> Result<bool, LspError>
@@ -121,11 +137,20 @@ impl DiagnosticsCollector {
 ```rust
 pub async fn ensure_server_binary(server: &LspServerDef) -> Result<PathBuf, LspError>
 pub fn cache_dir() -> PathBuf
+
+async fn find_in_path(cmd: &str) -> Option<PathBuf>
+async fn is_executable(path: &Path) -> bool
+async fn download_server(server: &LspServerDef, spec: &DownloadSpec, dest: &Path) -> Result<PathBuf, LspError>
+fn resolve_url(spec: &DownloadSpec) -> String
+fn extract_zip(data: &[u8], dest: &Path, binary_name: &str) -> Result<PathBuf, LspError>
+fn extract_tar_gz(data: &[u8], dest: &Path, binary_name: &str) -> Result<PathBuf, LspError>
+fn extract_tar_xz(data: &[u8], dest: &Path, binary_name: &str) -> Result<PathBuf, LspError>
 ```
 
 1. First checks PATH for binary
 2. Falls back to cached download in `$HOME/.cache/codegg/lsp/`
 3. Only rust-analyzer has download specification currently
+4. Supports Zip, TarGz, TarXz, and Raw archive types
 
 ### launch.rs - Process Spawning
 
@@ -140,10 +165,13 @@ pub struct LspProcess {
 pub async fn spawn_server(command: &str, args: &[&str], env: &[(String, String)], cwd: Option<&Path>) -> Result<LspProcess, LspError>
 pub async fn send_request(process: &mut LspProcess, msg: &str) -> Result<(), LspError>
 pub async fn read_response(process: &mut LspProcess) -> Result<String, LspError>
+pub async fn read_notification(process: &mut LspProcess) -> Result<Option<String>, LspError>
 pub async fn drain_stderr(process: &mut LspProcess) -> String
+pub async fn terminate(process: &mut LspProcess)
+fn parse_content_length(header: &str) -> Option<usize>
 ```
 
-Uses Content-Length headers for LSP message framing.
+Uses Content-Length headers for LSP message framing. Preserves user's PATH from environment.
 
 ### language.rs - Language Detection
 
@@ -152,6 +180,8 @@ pub fn detect_language(path: &str) -> Option<&'static str>
 pub fn extension_to_language_id(ext: &str) -> Option<&'static str>
 pub fn language_id_to_server_id(lang_id: &str) -> Option<&'static str>
 ```
+
+Supports 50+ extensions including Rust, Python, JavaScript/TypeScript, Go, Java, C/C++, C#, Ruby, Kotlin, Scala, Dart, Swift, Haskell, Lua, PHP, Perl/Raku, and more.
 
 ### root.rs - Project Root Detection
 
@@ -174,13 +204,27 @@ pub struct LspServerDef {
     pub download: Option<DownloadSpec>,
 }
 
+pub struct DownloadSpec {
+    pub url_template: &'static str,
+    pub archive_type: ArchiveType,
+    pub binary_name: &'static str,
+}
+
+pub enum ArchiveType {
+    Zip,
+    TarGz,
+    TarXz,
+    Raw,
+}
+
 pub fn server_definitions() -> &'static [LspServerDef]
 pub fn find_server(id: &str) -> Option<&'static LspServerDef>
 pub fn find_server_for_language(lang: &str) -> Option<&'static LspServerDef>
 pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
+pub fn build_env_overrides(env: Option<&HashMap<String, String>>) -> Vec<(String, String)>
 ```
 
-## Supported Languages (30+)
+## Supported Languages (42 servers)
 
 | Language | Server | Command |
 |----------|--------|---------|
@@ -201,6 +245,9 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
 | PHP | php-language-server | php-language-server |
 | Perl/Raku | perl-language-server | perl-language-server |
 | Zig | zls | zls |
+| V | vls | vls |
+| Nim | nimlsp | nimlsp |
+| R | r-languageserver | R --slave -e library(languageserver) |
 | ... and more | | |
 
 ## Tool Integration
@@ -225,14 +272,16 @@ pub enum LspError {
 
 ## Recent Bug Fixes
 
-- **PATH parsing**: Fixed using `std::env::split_paths()` instead of splitting by `MAIN_SEPARATOR`
-- **PHP mapping**: Fixed `intelephense` → `php-language-server`
-- **Request timeout**: Added 30-second timeout to `send_request()`
-- **Hardcoded PATH**: Now preserves user's actual PATH instead of hardcoding
-- **Stderr logging**: Server stderr is now logged during initialization
-- **Notification loop redundancy**: Fixed duplicate notification handling in `send_request()`
-- **close_file race condition**: Fixed lock handling to use single write lock and properly update `opened_files`
-- **save_file race condition**: Fixed lock handling to use single write lock
+All documented bugs have been fixed in the current implementation:
+
+- **PATH parsing**: Uses `std::env::split_paths()` for correct cross-platform PATH handling
+- **PHP mapping**: Correctly maps to `php-language-server` (was incorrectly listed as intelephense)
+- **Request timeout**: 30-second timeout in `send_request()` with `LspError::RequestTimeout`
+- **Hardcoded PATH**: Preserves user's actual PATH from environment
+- **Stderr logging**: Server stderr is drained and logged during initialization
+- **Notification loop**: Clean notification handling in `send_request()`
+- **close_file race condition**: Fixed with single write lock pattern
+- **save_file race condition**: Fixed with single write lock pattern
 
 ## See Also
 

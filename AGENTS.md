@@ -168,15 +168,20 @@ These items were identified during module reviews and are important for future a
 - **Unused imports removed**: Consolidated `use` statements at module level (`std::io::Write`, `std::process::Command`, `tempfile::Builder`, `std::env::split_paths`)
 
 ### LSP Module (2026-05-22)
+- **Architecture doc updated**: `architecture/lsp.md` now reflects 9-field `LspClient` struct (was showing 8), `DiagnosticEntry` type, `FileDiagnostic` struct, `should_debounce()` method
+- **Skill updated**: `.opencode/skills/lsp/SKILL.md` updated to version 1.1.0 with accurate type documentation
 - **PATH parsing fixed**: `download.rs` now uses `std::env::split_paths()` instead of splitting by `MAIN_SEPARATOR` (which was broken on Unix where PATH uses `:` not `/`)
 - **PHP server mapping fixed**: `language.rs` now maps PHP to `php-language-server` instead of non-existent `intelephense`
-- **New server definitions added**: `perl-language-server`, `powershell-editor-services`, `graphql-language-server`, `buf-language-server`, `r-languageserver`, `nimlsp`, `vls`
+- **New server definitions added**: `perl-language-server`, `powershell-editor-services`, `graphql-language-server`, `buf-language-server`, `r-languageserver`, `nimlsp`, `vls` (42 total servers, was documented as "30+")
 - **Request timeout added**: `send_request()` in `client.rs` now has 30-second timeout with `LspError::RequestTimeout`
 - **Hardcoded PATH fixed**: `launch.rs` now preserves user's actual PATH instead of hardcoding `/usr/local/bin:/usr/bin:/bin`
 - **Stderr logging**: Server stderr is now drained and logged during LSP client initialization
 - **Notification loop redundancy fixed**: `send_request()` now has cleaner notification handling with proper error logging on send failure
 - **close_file race condition fixed**: Uses single write lock and properly removes file from `opened_files` after closing
 - **save_file race condition fixed**: Uses single write lock instead of drop-read-then-acquire-write pattern
+- **Undocumented types added to arch**: `DownloadSpec`, `ArchiveType`, `build_env_overrides()` now documented
+- **Undocumented functions added**: `read_notification()`, `terminate()`, `parse_content_length()` now documented
+- **`detect_language` signature fixed**: Takes `&str` not `&Path` as shown in old doc
 
 ### Plugin Module (2026-05-22)
 - **Architecture doc updated**: `architecture/plugin.md` now accurately describes the implementation (was showing outdated JSON manifest, wrong HookEvent/HookResult types)

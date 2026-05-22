@@ -1,7 +1,7 @@
 ---
 name: lsp
 description: LSP client-side integration for Language Server Protocol support
-version: 1.0.0
+version: 1.1.0
 tags:
   - lsp
   - language-server
@@ -68,7 +68,7 @@ pub struct LspClient {
 
 ### LspServerDef (`server.rs`)
 
-Server definition with 30+ implementations:
+Server definition with 42 server implementations:
 
 ```rust
 pub struct LspServerDef {
