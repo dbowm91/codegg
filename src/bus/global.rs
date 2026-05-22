@@ -15,11 +15,21 @@ impl GlobalEventBus {
     }
 
     pub fn publish(event: AppEvent) {
-        if GLOBAL_BUS.tx.send(event.clone()).is_err() {
-            tracing::warn!(
+        let discriminant = std::mem::discriminant(&event);
+        match GLOBAL_BUS.tx.send(event) {
+            Ok(0) => tracing::debug!(
                 "No subscribers for event: {:?}",
-                std::mem::discriminant(&event)
-            );
+                discriminant
+            ),
+            Ok(n) => tracing::trace!(
+                "Event published to {} subscribers: {:?}",
+                n,
+                discriminant
+            ),
+            Err(e) => tracing::warn!(
+                "Failed to publish event (channel closed): {:?}",
+                e
+            ),
         }
     }
 

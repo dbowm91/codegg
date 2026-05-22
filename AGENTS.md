@@ -49,6 +49,10 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 
 These items were identified during module reviews and are important for future agents to know:
 
+### Event Bus Module (2026-05-22)
+- **GlobalEventBus::publish() improved**: Now returns subscriber count on success, uses `trace` level for normal events (was `warn` for all cases). Channel closed errors properly distinguished.
+- **Event flow documentation accurate**: Registration-before-publish pattern correctly documented in both `architecture/event-bus.md` and `.opencode/skills/event-bus/SKILL.md`
+
 ### Crypto Module (2026-05-22)
 - **Crypto module updated**: architecture/crypto.md now accurately describes the implementation (Argon2id key derivation, v2 format with `v2:` prefix, legacy HMAC-SHA256 support)
 - **Skill synchronized**: `.opencode/skills/crypto/SKILL.md` updated to match implementation

@@ -31,8 +31,20 @@ pub struct GlobalEventBus {
 
 impl GlobalEventBus {
     pub fn publish(event: AppEvent) {
-        if GLOBAL_BUS.tx.send(event.clone()).is_err() {
-            tracing::warn!("No subscribers for event");
+        match GLOBAL_BUS.tx.send(event) {
+            Ok(0) => tracing::debug!(
+                "No subscribers for event: {:?}",
+                std::mem::discriminant(&event)
+            ),
+            Ok(n) => tracing::trace!(
+                "Event published to {} subscribers: {:?}",
+                n,
+                std::mem::discriminant(&event)
+            ),
+            Err(e) => tracing::warn!(
+                "Failed to publish event (channel closed): {:?}",
+                e
+            ),
         }
     }
 
