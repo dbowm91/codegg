@@ -52,7 +52,8 @@ These items were identified during module reviews and are important for future a
 ### Event Bus Module (2026-05-22)
 - **GlobalEventBus::publish() returns subscriber count on success**: Uses `trace` level for normal events (was `warn` for all cases). Channel closed errors properly distinguished.
 - **Event flow documentation accurate**: Registration-before-publish pattern correctly documented in both `architecture/event-bus.md` and `.opencode/skills/event-bus/SKILL.md`
-- **Dead events removed from skill**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied` removed from skill (never existed in code)
+- **Dead events removed**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied` removed from skill and architecture doc (never existed in code - only `PermissionPending`/`PermissionResponded` exist)
+- **AppEvent count corrected**: 38 variants (was incorrectly documented as 40+)
 
 ### Crypto Module (2026-05-22)
 - **Crypto module updated**: architecture/crypto.md now accurately describes the implementation (Argon2id key derivation, v2 format with `v2:` prefix, legacy HMAC-SHA256 support)

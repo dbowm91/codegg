@@ -13,7 +13,7 @@ The `bus` module provides inter-component communication via an event-driven arch
 
 **Files**:
 - `global.rs` - GlobalEventBus singleton
-- `events.rs` - AppEvent enum (40+ variants)
+- `events.rs` - AppEvent enum (38 variants) with `event_type()` method for SSE filtering
 - `mod.rs` - PermissionRegistry and QuestionRegistry
 
 ## Components
@@ -60,23 +60,27 @@ impl GlobalEventBus {
 
 ### events.rs - AppEvent Enum
 
-40+ event variants across categories:
+38 event variants across categories:
 
-**Session Events**: `SessionCreated`, `SessionUpdated`, `SessionArchived`, `SessionForked`, `SessionShared`, `SessionUnshared`, `SessionReverted`
+**Session Events (7)**: `SessionCreated`, `SessionUpdated`, `SessionArchived`, `SessionForked`, `SessionShared`, `SessionUnshared`, `SessionReverted`
 
-**Message Events**: `MessageAdded`, `MessageDeleted`
+**Message Events (2)**: `MessageAdded`, `MessageDeleted`
 
-**Tool Events**: `ToolCalled`, `ToolResult`, `ToolCallStarted`
+**Tool Events (3)**: `ToolCalled`, `ToolResult`, `ToolCallStarted`
 
-**Permission Events**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied`, `PermissionPending`, `PermissionResponded`
+**MCP Events (3)**: `McpServerConnected`, `McpServerDisconnected`, `McpToolListChanged`
 
-**Question Events**: `QuestionPending`, `QuestionAnswered`
+**Permission Events (2)**: `PermissionPending`, `PermissionResponded`
 
-**Streaming Events**: `TextDelta` (Arc<str>), `ReasoningDelta` (Arc<str>), `AgentFinished`
+**Question Events (2)**: `QuestionPending`, `QuestionAnswered`
 
-**Subagent Events**: `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed`
+**Streaming Events (3)**: `TextDelta` (Arc<str>), `ReasoningDelta`, `AgentFinished`
 
-**Other**: `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `DiffPending`, `DiffResponded`, `McpServerConnected`, `McpServerDisconnected`, `McpToolListChanged`
+**Subagent Events (4)**: `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed`
+
+**Diff Events (2)**: `DiffPending`, `DiffResponded`
+
+**Other Events (8)**: `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`
 
 ### mod.rs - PermissionRegistry & QuestionRegistry
 

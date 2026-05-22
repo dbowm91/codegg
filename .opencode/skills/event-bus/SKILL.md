@@ -68,18 +68,22 @@ if let Ok(event) = rx.try_recv() {
 
 ## AppEvent Types (`src/bus/events.rs`)
 
-All 40+ event variants with `event_type()` helper:
+All 38 event variants with `event_type()` helper:
 
 | Category | Events |
 |----------|--------|
-| Session | `SessionCreated`, `SessionUpdated`, `SessionArchived`, `SessionForked`, `SessionShared`, `SessionUnshared`, `SessionReverted` |
-| Message | `MessageAdded`, `MessageDeleted` |
-| Tool | `ToolCalled`, `ToolResult`, `ToolCallStarted` |
-| Permission | `PermissionPending`, `PermissionResponded` |
-| Question | `QuestionPending`, `QuestionAnswered` |
-| Streaming | `TextDelta` (Arc<str>), `ReasoningDelta`, `AgentFinished` |
-| Subagent | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
-| Other | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `DiffPending`, `DiffResponded`, `McpServerConnected`, `McpServerDisconnected`, `McpToolListChanged` |
+| Session (7) | `SessionCreated`, `SessionUpdated`, `SessionArchived`, `SessionForked`, `SessionShared`, `SessionUnshared`, `SessionReverted` |
+| Message (2) | `MessageAdded`, `MessageDeleted` |
+| Tool (3) | `ToolCalled`, `ToolResult`, `ToolCallStarted` |
+| MCP (3) | `McpServerConnected`, `McpServerDisconnected`, `McpToolListChanged` |
+| Permission (2) | `PermissionPending`, `PermissionResponded` |
+| Question (2) | `QuestionPending`, `QuestionAnswered` |
+| Streaming (3) | `TextDelta` (Arc<str>), `ReasoningDelta`, `AgentFinished` |
+| Subagent (4) | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
+| Diff (2) | `DiffPending`, `DiffResponded` |
+| Other (7) | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged` |
+
+Note: `event_type()` method returns string discriminants like `"session:created"` for SSE filtering.
 
 ## PermissionRegistry & QuestionRegistry (`src/bus/mod.rs`)
 
