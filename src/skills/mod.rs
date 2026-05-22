@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::{Path, PathBuf};
+use tokio::fs;
 
 use crate::error::AppError;
 
@@ -57,16 +57,15 @@ impl SkillIndex {
     }
 
     async fn load_dir(&mut self, dir: &Path) -> Result<(), AppError> {
-        let entries = fs::read_dir(dir).map_err(AppError::Io)?;
+        let mut entries = fs::read_dir(dir).await.map_err(AppError::Io)?;
 
-        for entry in entries {
-            let entry = entry.map_err(AppError::Io)?;
+        while let Some(entry) = entries.next_entry().await.map_err(AppError::Io)? {
             let path = entry.path();
 
             if path.is_dir() {
                 let skill_md = path.join("SKILL.md");
                 if skill_md.is_file() {
-                    if let Some(skill) = parse_skill_file(&skill_md)? {
+                    if let Some(skill) = parse_skill_file(&skill_md).await? {
                         self.skills.push(skill);
                     }
                 }
@@ -74,7 +73,7 @@ impl SkillIndex {
             }
 
             if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                if let Some(skill) = parse_skill_file(&path)? {
+                if let Some(skill) = parse_skill_file(&path).await? {
                     self.skills.push(skill);
                 }
             }
@@ -126,8 +125,10 @@ impl SkillIndex {
     }
 }
 
-fn parse_skill_file(path: &Path) -> Result<Option<Skill>, AppError> {
-    let content = fs::read_to_string(path).map_err(AppError::Io)?;
+async fn parse_skill_file(path: &Path) -> Result<Option<Skill>, AppError> {
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .map_err(AppError::Io)?;
     let Some((frontmatter, body)) = parse_frontmatter(&content) else {
         return Ok(None);
     };

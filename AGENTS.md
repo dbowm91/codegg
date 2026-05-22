@@ -195,6 +195,13 @@ These items were identified during module reviews and are important for future a
 - **generate_slug now exported**: `generate_slug` helper function is now `pub` and re-exported from `session::mod.rs`
 - **Skill updated**: `.opencode/skills/session/SKILL.md` updated to version 1.1.0 with complete API documentation
 
+### Skills Module (2026-05-22)
+- **Blocking fs calls fixed**: `load_dir()` and `parse_skill_file()` now use `tokio::fs` instead of `std::fs` for proper async I/O
+- **Architecture doc inaccurate**: `architecture/skills.md` showed `SkillIndex` with `RwLock<HashMap<String, Skill>>` but actual is `Vec<Skill>` with no RwLock
+- **SkillIndex methods differ**: Doc showed `load_from_dir()` and `search()` but actual are `load(project_dir)` and `find_matching(query)`
+- **Skill struct differs**: Actual has `source: PathBuf` and `version: Option<String>` not in doc
+- **Skill created**: `.opencode/skills/skills/SKILL.md` created with module guidance
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -234,6 +241,7 @@ These items were identified during module reviews and are important for future a
 ├── security/SKILL.md            # SSRF, symlink protection, Landlock
 ├── server/SKILL.md             # HTTP server, WebSocket, REST API, SSE
 ├── session/SKILL.md             # Session storage, database schema
+├── skills/SKILL.md              # Skill loading, activation, SkillIndex
 ├── snapshot/SKILL.md            # Snapshot capture and restore
 ├── tool/SKILL.md                 # Tool path validation, async command
 └── tui/SKILL.md                  # Terminal UI, keyboard shortcuts
@@ -284,3 +292,4 @@ When adding guidance for a new module:
 | Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |
 | Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` |
+| Skills (skill loading, activation, SkillIndex) | `.opencode/skills/skills/SKILL.md` |

@@ -1,26 +1,29 @@
 # Skills Module
 
-The `skills` module provides specialized capabilities activated via commands.
+The `skills` module provides specialized capabilities activated via `/skill:` commands.
 
 ## Overview
 
-**Location**: `src/skills/`
+**Location**: `src/skills/mod.rs`
 
 **Key Responsibilities**:
-- Skill loading from files
-- Skill activation via `/skill:` commands
-- System prompt augmentation with skills
+- Skill loading from markdown files with YAML frontmatter
+- Skill activation via `/skill:<name>` commands
+- System prompt augmentation with skill content
 
 ## Key Types
 
 ### Skill
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
     pub name: String,
     pub description: String,
-    pub body: String,
+    pub version: Option<String>,    // not in older docs
     pub tags: Vec<String>,
+    pub body: String,
+    pub source: PathBuf,            // not in older docs
 }
 ```
 
@@ -28,24 +31,29 @@ pub struct Skill {
 
 ```rust
 pub struct SkillIndex {
-    skills: RwLock<HashMap<String, Skill>>,
+    skills: Vec<Skill>,            // older docs incorrectly showed HashMap
 }
 
 impl SkillIndex {
-    pub fn load_from_dir(&self, path: &Path) -> Result<()>;
-    pub fn get(&self, name: &str) -> Option<Skill>;
-    pub fn search(&self, query: &str) -> Vec<Skill>;
+    pub fn new() -> Self;
+    pub async fn load(&mut self, project_dir: &str) -> Result<(), AppError>;
+    pub fn get(&self, name: &str) -> Option<&Skill>;
+    pub fn list(&self) -> &[Skill];
+    pub fn find_matching(&self, query: &str) -> Vec<&Skill>;  // older docs showed search()
+    pub fn build_system_prompt(&self) -> String;
+    pub fn activate(&self, name: &str) -> Option<String>;
 }
 ```
 
 ## Skill File Format
 
-Skills are stored as markdown files:
+Skills are stored as markdown files with YAML frontmatter:
 
 ```markdown
 ---
 name: git
 description: Advanced git operations
+version: 1.0.0
 tags: [vcs, git]
 ---
 
@@ -56,51 +64,50 @@ You have access to advanced git operations. Use these commands:
 ## Branches
 - `git branch -a` - List all branches
 - `git checkout -b <name>` - Create and switch to branch
-
-## Commits
-- `git commit -am "message"` - Stage and commit
-- `git rebase -i HEAD~n` - Interactive rebase
-
-## Tips
-- Always check `git status` before committing
 ```
-
-Frontmatter contains metadata; body contains instructions.
 
 ## Skill Loading
 
-Skills loaded from:
-- `~/.config/codegg/skills/` (global)
-- `.codegg/skills/` (project)
+Skills are loaded from two locations:
+- **Global**: `~/.config/codegg/skills/` (via `dirs::config_dir()`)
+- **Project**: `.codegg/skills/` (in project directory)
+
+Loading is recursive:
+- Direct `.md` files are loaded as skills
+- Directories containing `SKILL.md` are loaded as skills
 
 ## Activation
 
-User activates skill via command:
+User activates skill via `/skill:` command:
 
 ```
 /skill:git
 ```
 
-Skill instructions appended to system prompt.
+The `SkillTool` (`src/tool/skill.rs`) handles runtime skill loading:
+
+```rust
+// Execute with /skill:<name>
+let result = skill_tool.execute(json!({"name": "git"})).await;
+// Returns JSON with name, description, body, and resources
+```
 
 ## Usage in Agent
 
 ```rust
-pub fn build_system_prompt(config: &Config, active_skills: &[String]) -> String {
-    let mut prompt = config.agent.system_prompt.clone();
+// In main.rs - load at startup
+let mut skills = SkillIndex::new();
+skills.load(&project_dir).await?;
 
-    let skill_index = SkillIndex::new();
-    for skill_name in active_skills {
-        if let Some(skill) = skill_index.get(skill_name) {
-            prompt.push_str("\n\n");
-            prompt.push_str(&skill.body);
-        }
-    }
-
-    prompt
+// Activate from CLI flag
+if let Some(skill_body) = skills.activate(skill_name) {
+    app.prompt_state.prompt.set_text(skill_body);
 }
 ```
+
+The `assemble_system_prompt()` in `src/agent/prompt.rs` accepts skill names but skill bodies are injected separately via prompt modification.
 
 ## See Also
 
 - [tool.md](tool.md) - `/skill:` tool
+- `.opencode/skills/skills/SKILL.md` - Detailed skill system guide
