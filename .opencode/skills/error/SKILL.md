@@ -1,4 +1,4 @@
-# Error Module Skill
+# Error Module Skill (v1.1.0)
 
 ## Overview
 
@@ -50,7 +50,7 @@ impl ProviderError {
 }
 ```
 
-Used in `agent/loop.rs` for retry logic.
+Used in `agent/loop.rs` for retry logic and `tool/executor.rs` for tool retry.
 
 ### ToolError::is_retryable()
 
@@ -65,6 +65,21 @@ impl ToolError {
 }
 ```
 
+## Error Variants
+
+### StorageError Variants
+
+```rust
+pub enum StorageError {
+    Database(String),      // sqlx errors
+    Migration(String),     // schema migration errors
+    NotFound(String),      // resource not found
+    LlmOperation { operation: String, message: String },
+    Import(String),        // session import errors
+    Export(String),        // session export errors
+}
+```
+
 ## Error Conversions
 
 | From | To | Usage |
@@ -76,7 +91,16 @@ impl ToolError {
 
 ## Exec Mode Error Classification
 
-`exec.rs` classifies errors for JSON output:
+`exec.rs` classifies errors for JSON output. The `classify_error()` function uses direct type imports for cleaner pattern matching:
+
+```rust
+use crate::error::{AppError, ProviderError, ToolError};
+// ...
+AppError::Tool(ToolError::NotFound(_)) => { ... }
+AppError::Tool(ToolError::Timeout(_)) => { ... }
+AppError::Tool(ToolError::Permission(_)) => { ... }
+AppError::Tool(ToolError::Disabled(_)) => { ... }
+```
 
 | Error Type | Code | Message |
 |------------|------|---------|
@@ -116,9 +140,11 @@ When the server feature is enabled, `AppError` implements `IntoResponse` for Axu
 - 404: ConfigError::NotFound, StorageError::NotFound, ProviderError::NotFound/ModelNotFound, ToolError::NotFound, PluginError::NotFound, LspError::ServerNotFound, AgentError::NotFound
 - 409: LspError::NotInitialized
 - 429: ProviderError::RateLimit
-- 500: StorageError::Database/Migration/LlmOperation, ToolError::Execution/Format/Io/Network, PermissionError::Check, PluginError::LoadFailed/HookFailed/InstallFailed, LspError::Io/Json, ServerRuntimeError, Other/Io/Worktree/Upgrade/Clipboard/Tui variants
+- 500: StorageError::Database/Migration/LlmOperation/Import/Export, ToolError::Execution/Format/Io/Network, PermissionError::Check, PluginError::LoadFailed/HookFailed/InstallFailed, LspError::Io/Json, ServerRuntimeError, Other/Io/Worktree/Upgrade/Clipboard/Tui variants
 - 502: ProviderError::Api/Stream/CircuitOpen, ToolError (some), McpError::Connection/Server/ToolCall/Encryption, LspError::DownloadFailed/LaunchFailed/RequestFailed
 - 504: ProviderError::Timeout, ToolError::Timeout, McpError::Timeout
+
+Note: StorageError::Import and Export map to 500 (Internal Server Error).
 
 ## Security Note
 

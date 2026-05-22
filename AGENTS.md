@@ -64,6 +64,8 @@ These items were identified during module reviews and are important for future a
 - **Exec mode error classification expanded**: All AppError variants now have distinct error codes (was using catch-all EXECUTION_ERROR for many cases)
 - **ProviderError::NotFound handled**: Added classification for provider not found errors
 - **ToolError variants handled**: NotFound, Timeout, Permission, Disabled now have distinct codes
+- **StorageError documentation complete**: Import/Export variants now documented (architecture/error.md)
+- **classify_error cleanup**: Uses direct `ToolError` imports instead of `crate::error::ToolError` prefix
 
 ### Tool Module (2026-05-22)
 - **Skill updated**: `.opencode/skills/tool/SKILL.md` updated to version 1.1.0 with accurate `ToolCatalog` and error variants

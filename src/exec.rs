@@ -1,7 +1,7 @@
 use crate::agent::r#loop::AgentLoop;
 use crate::agent::{self, processor::EventProcessor};
 use crate::config::schema::Config;
-use crate::error::{AppError, ProviderError};
+use crate::error::{AppError, ProviderError, ToolError};
 use crate::permission::PermissionChecker;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message};
 use serde::{Deserialize, Serialize};
@@ -223,16 +223,16 @@ fn classify_error(error: &AppError) -> (String, String) {
                 "Configuration error".to_string(),
             ),
             AppError::Storage(_) => ("STORAGE_ERROR".to_string(), "Storage error".to_string()),
-            AppError::Tool(crate::error::ToolError::NotFound(_)) => {
+            AppError::Tool(ToolError::NotFound(_)) => {
                 ("TOOL_NOT_FOUND".to_string(), "Tool not found".to_string())
             }
-            AppError::Tool(crate::error::ToolError::Timeout(_)) => {
+            AppError::Tool(ToolError::Timeout(_)) => {
                 ("TOOL_TIMEOUT".to_string(), "Tool timeout".to_string())
             }
-            AppError::Tool(crate::error::ToolError::Permission(_)) => {
+            AppError::Tool(ToolError::Permission(_)) => {
                 ("TOOL_PERMISSION".to_string(), "Tool permission denied".to_string())
             }
-            AppError::Tool(crate::error::ToolError::Disabled(_)) => {
+            AppError::Tool(ToolError::Disabled(_)) => {
                 ("TOOL_DISABLED".to_string(), "Tool disabled".to_string())
             }
             AppError::Tool(_) => (

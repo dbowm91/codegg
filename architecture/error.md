@@ -171,7 +171,7 @@ pub enum PermissionError {
 ### Other Error Types
 
 - **ConfigError**: NotFound, Invalid, Parse, Merge, Watch
-- **StorageError**: Database, Migration, NotFound, LlmOperation
+- **StorageError**: Database, Migration, NotFound, LlmOperation, Import, Export
 - **AgentError**: NotFound, Invalid
 - **McpError**: Connection, Server, ToolCall, OAuth, Encryption, Timeout
 - **LspError**: ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json
