@@ -268,6 +268,114 @@ impl App {
                     self.messages_state.toasts.info("No background tasks");
                 }
             }
+            "/memory" => {
+                let parts: Vec<&str> = cmd.splitn(3, ' ').collect();
+                if parts.len() < 2 {
+                    self.messages_state.toasts.info("Usage: /memory <search|list|consolidate> [query]");
+                    return true;
+                }
+                let action = parts[1];
+                match action {
+                    "search" => {
+                        let query = parts.get(2).unwrap_or(&"");
+                        if let Some(ref store) = self.memory_store {
+                            let results = store.search(query);
+                            if results.is_empty() {
+                                self.messages_state
+                                    .toasts
+                                    .info(&format!("No memories found for: {}", query));
+                            } else {
+                                self.messages_state.toasts.info(&format!(
+                                    "Found {} memory(ies) for '{}': {}",
+                                    results.len(),
+                                    query,
+                                    results
+                                        .iter()
+                                        .take(5)
+                                        .map(|m| format!("[{}] {}", m.id, m.title.as_deref().unwrap_or("(untitled)")))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ));
+                            }
+                        } else {
+                            self.messages_state
+                                .toasts
+                                .warning("Memory store not available");
+                        }
+                    }
+                    "list" => {
+                        if let Some(ref store) = self.memory_store {
+                            let all_memories: Vec<_> = {
+                                let guard = store.list("user/preferences");
+                                guard
+                            };
+                            if all_memories.is_empty() {
+                                self.messages_state.toasts.info("No memories stored");
+                            } else {
+                                self.messages_state.toasts.info(&format!(
+                                    "Stored {} memory(ies)",
+                                    all_memories.len()
+                                ));
+                            }
+                        } else {
+                            self.messages_state
+                                .toasts
+                                .warning("Memory store not available");
+                        }
+                    }
+                    "consolidate" => {
+                        let scope = parts.get(2).map(|s| s.trim()).unwrap_or("session");
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Starting consolidation (scope: {})...", scope));
+
+                        let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+                        let session_store = self.session_store.clone();
+                        let memory_store = self.memory_store.clone();
+                        let messages_state = self.messages_state.clone();
+                        let project_dir = self.session_state.project_dir.clone();
+
+                        tokio::spawn(async move {
+                            let project_hash = format!("{:x}", md5::compute(project_dir.as_bytes()));
+
+                            let messages = if let (Some(sid), Some(store)) = (session_id, session_store) {
+                                match store.list(&sid).await {
+                                    Ok(msgs) => msgs,
+                                    Err(e) => {
+                                        messages_state.toasts.error(&format!("Failed to load session: {}", e));
+                                        return;
+                                    }
+                                }
+                            } else {
+                                messages_state.toasts.warning("No active session to consolidate");
+                                return;
+                            };
+
+                            if messages.is_empty() {
+                                messages_state.toasts.info("No messages to consolidate");
+                                return;
+                            }
+
+                            if let Some(ref mem_store) = memory_store {
+                                let new_memories = mem_store.consolidate_session(&messages, &project_hash);
+                                if new_memories.is_empty() {
+                                    messages_state.toasts.info("No new patterns found to store");
+                                } else {
+                                    messages_state.toasts.info(&format!(
+                                        "Stored {} new convention(s)",
+                                        new_memories.len()
+                                    ));
+                                }
+                            } else {
+                                messages_state.toasts.warning("Memory store not available");
+                            }
+                        });
+                    }
+                    _ => {
+                        self.messages_state.toasts.info("Usage: /memory <search|list|consolidate> [query]");
+                    }
+                }
+            }
             _ => return false,
         }
 

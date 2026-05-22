@@ -5,6 +5,7 @@ use codegg::config::paths;
 use codegg::config::schema::Config;
 use codegg::error::{AppError, ConfigError, StorageError};
 use codegg::exec::{ExecInput, ExecMode};
+use codegg::memory::MemoryStore;
 use codegg::mcp;
 use codegg::provider::{self, ProviderRegistry};
 use codegg::session::{MessageStore, Session, SessionStore};
@@ -766,6 +767,10 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     let pool = storage::init(&project_dir).await?;
     let session_store = Arc::new(SessionStore::new(pool.clone()));
     let message_store = Arc::new(MessageStore::new(pool.clone()));
+    let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|e| {
+        tracing::warn!("Failed to initialize memory store: {}, continuing without persistent memory", e);
+        MemoryStore::default()
+    }));
 
     let config = Config::load().unwrap_or_default();
     let notification_mgr = crate::tui::components::notification::NotificationManager::new(
@@ -792,6 +797,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     let mut app = tui::App::new(project_dir.clone());
     app.set_session_store(Arc::clone(&session_store));
     app.set_message_store(Arc::clone(&message_store));
+    app.set_memory_store(memory_store.clone());
     app.set_models(model_ids.clone());
     app.agent_state.agents = agents.clone();
     app.notification_manager = Some(notification_mgr);

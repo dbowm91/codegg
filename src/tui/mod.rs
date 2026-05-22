@@ -1053,6 +1053,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                 let config = config.clone();
                 let pool = app.session_store.as_ref().map(|s| s.pool());
                 let subagent_pool = app.subagent_pool.clone();
+                let memory_store = app.memory_store.clone();
 
                 async move {
                     use crate::agent::prompt::load_agent_prompt;
@@ -1091,11 +1092,33 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
 
                         let permission_checker = PermissionChecker::new(Some(&config), None);
 
-                        let system = Some(load_agent_prompt(
+                        let memory_context = memory_store.as_ref().map(|store| {
+                            let all_memories = store.list("user/preferences");
+                            if all_memories.is_empty() {
+                                String::new()
+                            } else {
+                                let summary: String = all_memories
+                                    .iter()
+                                    .take(10)
+                                    .map(|m| {
+                                        format!(
+                                            "- [{}] {}",
+                                            m.id,
+                                            m.title.as_deref().unwrap_or("(untitled)")
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                format!("\n\n## Learned Preferences\n{}\n", summary)
+                            }
+                        }).unwrap_or_default();
+
+                        let mut system = load_agent_prompt(
                             &agents[current_agent_idx],
                             &config,
                             &model_name,
-                        ));
+                        );
+                        system.push_str(&memory_context);
 
                         let mut agent_loop = AgentLoop::new(
                             agents,
@@ -1112,7 +1135,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             messages,
                             model: model_name,
                             tools: None,
-                            system,
+                            system: Some(system),
                             temperature: None,
                             top_p: None,
                             max_tokens: None,
@@ -1229,6 +1252,35 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             app.session_state.session_status = SessionStatus::Idle;
                             app.prompt_state.pending_send = false;
                             app.footer.set_thinking(false, None);
+
+                            if let Some(ref mem_store) = app.memory_store {
+                                let experimental = crate::config::schema::Config::load()
+                                    .ok()
+                                    .and_then(|c| c.experimental)
+                                    .and_then(|e| e.memory_auto_consolidate)
+                                    .unwrap_or(false);
+
+                                if experimental {
+                                    let session_id = app.session_state.session.as_ref().map(|s| s.id.clone());
+                                    let message_store = app.message_store.clone();
+                                    let memory_store = app.memory_store.clone();
+                                    let project_dir = app.session_state.project_dir.clone();
+
+                                    tokio::spawn(async move {
+                                        let project_hash = format!("{:x}", md5::compute(project_dir.as_bytes()));
+                                        if let (Some(sid), Some(store)) = (session_id, message_store) {
+                                            if let Ok(messages) = store.list(&sid).await {
+                                                if !messages.is_empty() {
+                                                    if let Some(ref mem) = memory_store {
+                                                        mem.consolidate_session(&messages, &project_hash);
+                                                        tracing::info!("Auto-consolidated session {} memories", messages.len());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
                         } else if matches!(app.session_state.session_status, SessionStatus::Working) {
                             app.footer.set_thinking(true, Some("Thinking...".to_string()));
                         }

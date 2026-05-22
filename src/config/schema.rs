@@ -457,6 +457,7 @@ pub struct ExperimentalConfig {
     pub primary_tools: Option<Vec<String>>,
     pub continue_loop_on_deny: Option<bool>,
     pub mcp_timeout: Option<u64>,
+    pub memory_auto_consolidate: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

@@ -32,6 +32,7 @@ use super::theme::Theme;
 use crate::agent::builtin_agents;
 use crate::agent::Agent;
 use crate::bus::{PermissionRegistry, QuestionRegistry};
+use crate::memory::MemoryStore;
 use crate::protocol::tui::TuiMessage as RemoteTuiMessage;
 use crate::config::schema::SessionTemplate;
 use crate::permission::PermissionRequest;
@@ -204,6 +205,7 @@ pub struct App {
     pub footer: FooterWidget,
     pub session_store: Option<Arc<SessionStore>>,
     pub message_store: Option<Arc<MessageStore>>,
+    pub memory_store: Option<Arc<MemoryStore>>,
     pub viewport_area: Option<Rect>,
     pub prompt_area: Option<Rect>,
     pub dialog_area: Option<Rect>,
@@ -457,6 +459,7 @@ impl App {
             footer: FooterWidget::new(Arc::clone(&theme)),
             session_store: None,
             message_store: None,
+            memory_store: None,
             viewport_area: None,
             prompt_area: None,
             dialog_area: None,
@@ -640,6 +643,7 @@ impl App {
             footer: FooterWidget::new(Arc::clone(&theme)),
             session_store: None,
             message_store: None,
+            memory_store: None,
             viewport_area: None,
             prompt_area: None,
             dialog_area: None,
@@ -4827,6 +4831,10 @@ impl App {
 
     pub fn set_message_store(&mut self, store: Arc<MessageStore>) {
         self.message_store = Some(store);
+    }
+
+    pub fn set_memory_store(&mut self, store: Arc<MemoryStore>) {
+        self.memory_store = Some(store);
     }
 
     pub fn set_models(&mut self, models: Vec<String>) {

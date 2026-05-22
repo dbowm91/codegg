@@ -78,6 +78,14 @@ These items were identified during module reviews and are important for future a
 - **Hardcoded PATH fixed**: `LocalClient::initialize()` now uses user's actual PATH via `std::env::var_os("PATH")`, falls back to safe default.
 - **Spawn timeout added**: Process spawn wrapped in `tokio::time::timeout` + `spawn_blocking`, capped at 10s to prevent hangs.
 
+### Memory Module (2026-05-22)
+- **File-based storage**: `~/.config/opencode/memory/` with namespace-based directories
+- **Memory persistence fixed**: All 8 fields now saved/loaded correctly (was: only 4 fields persisted)
+- **Hierarchical namespaces**: Namespaces like `user/preferences` and `project/{hash}/conventions` now work correctly
+- **Consolidation system**: Rule-based pattern detection with importance scoring
+- **`/memory` commands**: `search`, `list`, `consolidate`
+- **Auto-run**: `experimental.memory_auto_consolidate` config option enables automatic consolidation on session end
+
 ### LSP Module (2026-05-22)
 - **PATH parsing fixed**: `download.rs` now uses `std::env::split_paths()` instead of splitting by `MAIN_SEPARATOR` (which was broken on Unix where PATH uses `:` not `/`)
 - **PHP server mapping fixed**: `language.rs` now maps PHP to `php-language-server` instead of non-existent `intelephense`
@@ -109,28 +117,27 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 
 ```
 .opencode/skills/
-├── AGENTS.md                     # Root index (this file)
-├── agent-loop/SKILL.md          # AgentLoop, TuiCommand, TuiMsg, compaction, router, team
-├── client/SKILL.md              # Remote TUI client, WebSocket
-├── command/SKILL.md             # Slash commands, templates, execution
-├── config/SKILL.md             # Config loading, validation, encryption, watching
-├── crypto/SKILL.md              # API key encryption
+├── agent-loop/SKILL.md           # AgentLoop, TuiCommand, TuiMsg, compaction, router, team
+├── client/SKILL.md               # Remote TUI client, WebSocket
+├── command/SKILL.md              # Slash commands, templates, execution
+├── config/SKILL.md               # Config loading, validation, encryption, watching
+├── crypto/SKILL.md               # API key encryption
 ├── event-bus/SKILL.md           # GlobalEventBus, PermissionRegistry, QuestionRegistry
-├── exec/SKILL.md               # Exec mode
-├── hooks/SKILL.md              # Hooks system
-├── ide/SKILL.md                # IDE integration (VS Code, JetBrains)
-├── lsp/SKILL.md                # LSP client, diagnostics, code operations
-├── mcp/SKILL.md                # MCP connection manager
-├── permission/SKILL.md         # Mode system
+├── exec/SKILL.md                # Exec mode
+├── hooks/SKILL.md               # Hooks system
+├── ide/SKILL.md                 # IDE integration (VS Code, JetBrains)
+├── lsp/SKILL.md                 # LSP client, diagnostics, code operations
+├── memory/SKILL.md              # Memory system, consolidation, patterns
+├── mcp/SKILL.md                 # MCP connection manager
+├── permission/SKILL.md          # Mode system
 ├── plugin/SKILL.md             # WASM sandboxing, fuel tracking
-├── provider/SKILL.md           # Provider patterns, token estimation
-├── resilience/SKILL.md        # Circuit breaker, FallbackProvider
-├── security/SKILL.md           # SSRF, symlink protection, Landlock
-├── session/SKILL.md            # Session storage, database schema
-├── snapshot/SKILL.md           # Snapshot capture and restore
-├── tool/SKILL.md               # Tool path validation, async command
-├── tui/SKILL.md                # Terminal UI, keyboard shortcuts
-└── meta/SKILL.md               # Updates, roadmap, code quality
+├── provider/SKILL.md            # Provider patterns, token estimation
+├── resilience/SKILL.md           # Circuit breaker, FallbackProvider
+├── security/SKILL.md            # SSRF, symlink protection, Landlock
+├── session/SKILL.md             # Session storage, database schema
+├── snapshot/SKILL.md            # Snapshot capture and restore
+├── tool/SKILL.md                 # Tool path validation, async command
+└── tui/SKILL.md                  # Terminal UI, keyboard shortcuts
 ```
 
 ### Adding New Module Guidance
@@ -174,4 +181,5 @@ When adding guidance for a new module:
 | IDE (VS Code, JetBrains detection, diff viewing) | `.opencode/skills/ide/SKILL.md` |
 | Testing (E2E, unit, integration) | `meta/AGENTS.override.md` |
 | Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |
+| Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |
