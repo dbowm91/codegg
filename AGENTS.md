@@ -293,6 +293,12 @@ These items were identified during module reviews and are important for future a
 - **State inconsistency handling added**: `on_key()` now properly handles case when `dialog.is_open()` but `focus_manager.is_empty()` - logs error and resets state instead of panicking via debug_assert
 - **Skill updated**: `.opencode/skills/tui/SKILL.md` updated with `push_dialog()` method for temporary dialogs and defensive state consistency check
 
+### Command Module (2026-05-22)
+- **Async file loading**: `find_command_files()` and `load_command_from_file()` now use `tokio::fs` for async I/O (were using blocking `std::fs`)
+- **`subtask` field deprecated**: Added `#[deprecated]` attribute to `subtask` field since it's not yet implemented
+- **Architecture doc updated**: `architecture/command.md` now shows all 36 built-in commands (was showing 20)
+- **Skill updated**: `.opencode/skills/command/SKILL.md` updated to version 1.1.0 with accurate line numbers and async API documentation
+
 ## Documentation Structure
 
 ### Directory Structure

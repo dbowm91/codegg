@@ -23,7 +23,8 @@ pub struct Command {
     pub template: String,         // Template with {{variable}} or {variable} placeholders
     pub agent: Option<String>,   // Optional agent to route to
     pub model: Option<String>,   // Optional model override
-    pub subtask: Option<bool>,   // Optional subtask flag
+    #[deprecated(since = "2026-05-22", note = "not yet implemented")]
+    pub subtask: Option<bool>,   // Deprecated - not implemented
     pub source: String,          // "config" or file path
 }
 ```
@@ -44,8 +45,9 @@ pub struct CommandConfig {
 
 ### Sources (in priority order)
 
-1. **Config commands**: From `opencode.jsonc` `commands` section
-2. **File commands**: From `command/` or `commands/` directories in CWD
+1. **Built-in commands**: 36 hardcoded commands (highest priority)
+2. **Config commands**: From `opencode.jsonc` `commands` section
+3. **File commands**: From `command/` or `commands/` directories in CWD
 
 ### File Format (Markdown with YAML Frontmatter)
 
@@ -103,7 +105,7 @@ impl CommandRegistry {
 }
 ```
 
-### Built-in Commands
+### Built-in Commands (36 total)
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
@@ -114,19 +116,40 @@ impl CommandRegistry {
 | `/help` | | Help |
 | `/sessions` | `/resume`, `/continue` | Switch session |
 | `/new` | `/clear` | New session |
+| `/share` | | Share session |
+| `/unshare` | | Unshare session |
+| `/rename` | | Rename session |
 | `/compact` | `/summarize` | Compact session |
+| `/timeline` | | Jump to message |
+| `/fork` | | Fork from message |
+| `/undo` | | Undo previous message |
+| `/redo` | | Redo |
+| `/export` | | Export session transcript |
+| `/import` | | Import session |
+| `/timestamps` | `/toggle-timestamps` | Toggle timestamps |
+| `/thinking` | `/toggle-thinking` | Toggle thinking |
 | `/models` | | Switch model |
+| `/models-refresh` | `/refresh-models` | Refresh model list |
+| `/variants` | | Switch model variant |
 | `/agents` | | Switch agent |
 | `/mcps` | | Manage MCP servers |
+| `/workspaces` | | Manage workspaces |
 | `/tree` | | Show file tree |
 | `/editor` | | Open editor |
 | `/keybinds` | | Customize keybindings |
 | `/context` | | View context window usage |
 | `/cost` | | View token usage and cost |
 | `/usage` | | View rate limits and quota |
+| `/tui` | `/fullscreen` | Toggle fullscreen mode |
 | `/loop` | | Schedule periodic task |
 | `/tasks` | | List background tasks |
 | `/task-del` | | Delete background task |
+| `/memory` | | Memory dashboard |
+| `/memory-search` | | Search memories |
+| `/memory-list` | | List memories |
+| `/memory-remember` | | Remember something |
+| `/memory-forget` | | Forget a memory |
+| `/memory-consolidate` | | Consolidate session into memories |
 
 ### Dynamic Commands
 
@@ -150,8 +173,19 @@ When a command with a template is executed:
 - **Invalid command names**: Logged and skipped
 - **Config load failures**: Falls back to empty config (non-fatal)
 
+## Async File Operations
+
+Both `find_command_files()` and `load_command_from_file()` are async functions using `tokio::fs` for proper non-blocking I/O:
+
+```rust
+pub async fn find_command_files(base: &Path) -> Vec<Command>
+pub async fn load_command_from_file(path: &Path) -> Result<Command, String>
+```
+
 ## Recent Changes (2026-05-22)
 
+- **Async file loading**: `find_command_files()` and `load_command_from_file()` now use `tokio::fs` for async I/O
+- **`subtask` field deprecated**: Added `#[deprecated]` attribute to `subtask` field as it's not yet implemented
 - Fixed unused variable warnings in `load_command_from_file()` - refactored to tuple destructuring
 - Removed orphaned `src/tui/app/commands.rs` file (was never module-declared, contained duplicate command handlers)
 - Fixed non-deterministic HashMap iteration in template substitution (keys now sorted)

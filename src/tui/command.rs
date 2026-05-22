@@ -193,6 +193,7 @@ impl CommandRegistry {
                         template: Some(cmd.template),
                         agent: cmd.agent,
                         model: cmd.model,
+                        #[allow(deprecated)]
                         subtask: cmd.subtask,
                         source: Some(cmd.source),
                     });
@@ -201,7 +202,18 @@ impl CommandRegistry {
         }
 
         let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        for cmd in crate::command::find_command_files(&base) {
+        if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
+            let rt = runtime_handle;
+            rt.block_on(async {
+                Self::append_dynamic_commands_async(&base, &mut seen, &mut new_commands).await;
+            });
+        }
+
+        commands.append(&mut new_commands);
+    }
+
+    async fn append_dynamic_commands_async(base: &std::path::Path, seen: &mut HashMap<String, String>, new_commands: &mut Vec<Command>) {
+        for cmd in crate::command::find_command_files(base).await {
             let normalized = Self::normalize_name(&cmd.name);
             if !seen.contains_key(&normalized) {
                 seen.insert(normalized, cmd.name.clone());
@@ -214,13 +226,12 @@ impl CommandRegistry {
                     template: Some(cmd.template),
                     agent: cmd.agent,
                     model: cmd.model,
+                    #[allow(deprecated)]
                     subtask: cmd.subtask,
                     source: Some(cmd.source),
                 });
             }
         }
-
-        commands.append(&mut new_commands);
     }
 
     fn normalize_name(name: &str) -> String {

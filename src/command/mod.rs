@@ -12,27 +12,28 @@ pub struct Command {
     pub template: String,
     pub agent: Option<String>,
     pub model: Option<String>,
+    #[deprecated(since = "2026-05-22", note = "subtask field is not yet implemented")]
     pub subtask: Option<bool>,
     pub source: String,
 }
 
-pub fn find_command_files(base: &Path) -> Vec<Command> {
+pub async fn find_command_files(base: &Path) -> Vec<Command> {
     let mut commands = Vec::new();
 
     for dir_name in ["command", "commands"] {
         let dir = base.join(dir_name);
         if dir.is_dir() {
-            for entry in std::fs::read_dir(&dir).ok().into_iter().flatten() {
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(e) => {
-                        warn!("Failed to read directory entry in {:?}: {}", dir, e);
-                        continue;
-                    }
-                };
+            let mut entries = match tokio::fs::read_dir(&dir).await {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warn!("Failed to read directory entry in {:?}: {}", dir, e);
+                    continue;
+                }
+            };
+            while let Some(entry) = entries.next_entry().await.ok().flatten() {
                 let path = entry.path();
                 if path.extension().is_none_or(|ext| ext == "md") {
-                    match load_command_from_file(&path) {
+                    match load_command_from_file(&path).await {
                         Ok(cmd) => {
                             if let Err(e) = validate_command_name(&cmd.name) {
                                 warn!("Invalid command name {:?} in {:?}: {}", cmd.name, path, e);
@@ -66,8 +67,9 @@ fn validate_command_name(name: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn load_command_from_file(path: &Path) -> Result<Command, String> {
-    let content = std::fs::read_to_string(path)
+pub async fn load_command_from_file(path: &Path) -> Result<Command, String> {
+    let content = tokio::fs::read_to_string(path)
+        .await
         .map_err(|e| format!("failed to read file: {}", e))?;
     let (frontmatter, body) = parse_frontmatter(&content)
         .ok_or_else(|| "missing frontmatter".to_string())?;
@@ -77,7 +79,7 @@ pub fn load_command_from_file(path: &Path) -> Result<Command, String> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let (description, template, agent, model, subtask) =
+    let (description, template, agent, model, _subtask) =
         if let Ok(cfg) = serde_yaml::from_str::<CommandConfig>(&frontmatter) {
             (
                 cfg.description,
@@ -107,13 +109,14 @@ pub fn load_command_from_file(path: &Path) -> Result<Command, String> {
 
     let template = template.unwrap_or_else(|| body.trim().to_string());
 
+    #[allow(deprecated)]
     Ok(Command {
         name,
         description,
         template,
         agent,
         model,
-        subtask,
+        subtask: _subtask,
         source: path.to_string_lossy().to_string(),
     })
 }
@@ -129,6 +132,7 @@ pub fn resolve_commands_from_config(
             template: cfg.template.clone(),
             agent: cfg.agent.clone(),
             model: cfg.model.clone(),
+            #[allow(deprecated)]
             subtask: cfg.subtask,
             source: "config".to_string(),
         })
@@ -201,31 +205,31 @@ mod tests {
         assert!(parse_frontmatter("no frontmatter").is_none());
     }
 
-    #[test]
-    fn test_load_command_from_file() {
+    #[tokio::test]
+    async fn test_load_command_from_file() {
         let tmp = tempfile::tempdir().unwrap();
         let content = "---\ndescription: A test command\nagent: build\ntemplate: \"Review the file: {file}\"\n---\nFallback body\n";
-        std::fs::write(tmp.path().join("mycommand.md"), content).unwrap();
-        let cmd = load_command_from_file(&tmp.path().join("mycommand.md")).unwrap();
+        tokio::fs::write(tmp.path().join("mycommand.md"), content).await.unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("mycommand.md")).await.unwrap();
         assert_eq!(cmd.name, "mycommand");
         assert_eq!(cmd.description, Some("A test command".to_string()));
         assert_eq!(cmd.agent, Some("build".to_string()));
         assert_eq!(cmd.template, "Review the file: {file}");
     }
 
-    #[test]
-    fn test_load_command_uses_filename() {
+    #[tokio::test]
+    async fn test_load_command_uses_filename() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("review.md"), "---\n---\nbody").unwrap();
-        let cmd = load_command_from_file(&tmp.path().join("review.md")).unwrap();
+        tokio::fs::write(tmp.path().join("review.md"), "---\n---\nbody").await.unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("review.md")).await.unwrap();
         assert_eq!(cmd.name, "review");
     }
 
-    #[test]
-    fn test_load_command_fallback_to_body() {
+    #[tokio::test]
+    async fn test_load_command_fallback_to_body() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("testcmd.md"), "---\ndescription: just desc\n---\nBody template here").unwrap();
-        let cmd = load_command_from_file(&tmp.path().join("testcmd.md")).unwrap();
+        tokio::fs::write(tmp.path().join("testcmd.md"), "---\ndescription: just desc\n---\nBody template here").await.unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("testcmd.md")).await.unwrap();
         assert_eq!(cmd.template, "Body template here");
     }
 
@@ -237,10 +241,10 @@ mod tests {
         assert!(validate_command_name("/leading").is_err());
     }
 
-    #[test]
-    fn test_load_command_missing_frontmatter() {
+    #[tokio::test]
+    async fn test_load_command_missing_frontmatter() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("nocfm.md"), "no frontmatter").unwrap();
-        assert!(load_command_from_file(&tmp.path().join("nocfm.md")).is_err());
+        tokio::fs::write(tmp.path().join("nocfm.md"), "no frontmatter").await.unwrap();
+        assert!(load_command_from_file(&tmp.path().join("nocfm.md")).await.is_err());
     }
 }
