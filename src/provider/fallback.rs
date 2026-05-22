@@ -60,11 +60,7 @@ impl Provider for FallbackProvider {
                         provider.name(),
                         provider.id()
                     );
-                    let msg = format!("circuit_breaker open for {}", provider.name());
-                    last_error = Some(ProviderError::api(
-                        "circuit_breaker",
-                        &msg,
-                    ));
+                    last_error = Some(ProviderError::CircuitOpen(provider.name().to_string()));
                     continue;
                 }
             }

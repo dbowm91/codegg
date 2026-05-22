@@ -20,7 +20,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher |
 | `crypto/` | AES-256-GCM encryption for API keys and secrets |
-| `error/` | Centralized `AppError` enum using `thiserror` |
+| `error/` | Centralized `AppError` enum, `ProviderError::is_retryable()`, error conversions |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
@@ -58,6 +58,9 @@ These items were identified during module reviews and are important for future a
 - **`decrypt_provider_keys()` is called in `Config::load()`**: API keys encrypted via `save()` are now automatically decrypted on load (fixed 2026-05-21)
 - **ProviderConfig merge is field-by-field**: When merging configs with same provider, fields are merged individually (fixed 2026-05-21)
 - **`medium_model` is validated**: Validates `provider/model` format like `model` and `small_model` (fixed 2026-05-21)
+- **`ProviderError::is_retryable()` implemented**: Centralizes retry logic for provider errors (added 2026-05-22)
+- **CircuitError → ProviderError::CircuitOpen conversion**: `From<CircuitError>` impl enables circuit breaker error propagation (added 2026-05-22)
+- **`FallbackProvider` uses `CircuitOpen`**: Circuit breaker errors now create `ProviderError::CircuitOpen` instead of generic `ProviderError::api()` (fixed 2026-05-22)
 
 ### Implementation Patterns
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -90,6 +93,8 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 │   └── AGENTS.override.md        # Config loading, validation, encryption, file watching
 ├── crypto/
 │   └── AGENTS.override.md        # API key encryption
+├── error/
+│   └── AGENTS.override.md        # AppError, ProviderError, is_retryable, CircuitOpen
 ├── exec/
 │   └── AGENTS.override.md        # Exec mode
 ├── hooks/
@@ -102,6 +107,8 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 │   └── AGENTS.override.md        # WASM sandboxing, fuel tracking
 ├── provider/
 │   └── AGENTS.override.md        # Provider patterns, token estimation
+├── resilience/
+│   └── AGENTS.override.md        # Circuit breaker, FallbackProvider
 ├── security/
 │   └── AGENTS.override.md        # SSRF, symlink protection, Landlock
 ├── server/
@@ -145,6 +152,8 @@ When adding guidance for a new module:
 | MCP connection manager | `mcp/AGENTS.override.md` |
 | Provider (token estimation) | `provider/AGENTS.override.md` |
 | Crypto (API key encryption) | `crypto/AGENTS.override.md` |
+| Error (AppError, ProviderError, is_retryable, CircuitOpen) | `error/AGENTS.override.md` |
+| Resilience (CircuitBreaker, FallbackProvider) | `resilience/AGENTS.override.md` |
 | Permission (mode system) | `permission/AGENTS.override.md` |
 | Tool (path validation, async command) | `tool/AGENTS.override.md` |
 | Exec mode | `exec/AGENTS.override.md` |

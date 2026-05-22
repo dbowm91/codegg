@@ -152,6 +152,16 @@ impl ProviderError {
             url: url.into(),
         }
     }
+
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            ProviderError::RateLimit
+                | ProviderError::Timeout(_)
+                | ProviderError::Stream(_)
+                | ProviderError::CircuitOpen(_)
+        )
+    }
 }
 
 impl From<String> for ProviderError {
@@ -181,6 +191,16 @@ impl From<reqwest::Error> for ProviderError {
             code: "request_error".to_string(),
             message: e.to_string(),
             url,
+        }
+    }
+}
+
+impl From<crate::resilience::circuit::CircuitError> for ProviderError {
+    fn from(e: crate::resilience::circuit::CircuitError) -> Self {
+        match e {
+            crate::resilience::circuit::CircuitError::Open(name) => {
+                ProviderError::CircuitOpen(name)
+            }
         }
     }
 }

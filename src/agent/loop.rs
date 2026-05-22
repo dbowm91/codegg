@@ -806,10 +806,8 @@ impl AgentLoop {
                 Ok(events) => return Ok(events),
                 Err(e) => {
                     let is_retryable = matches!(
-                        e,
-                        AppError::Provider(ProviderError::RateLimit)
-                            | AppError::Provider(ProviderError::Timeout(_))
-                            | AppError::Provider(ProviderError::Stream(_))
+                        &e,
+                        AppError::Provider(p) if p.is_retryable()
                     );
                     if is_retryable {
                         last_retryable_err = Some(e);

@@ -386,14 +386,40 @@ let provider = Box::new(ScriptedProvider::new(responses));
 let requests = provider.get_requests().await;  // Inspect recorded requests
 ```
 
-## Recent Updates (2026-04-30)
+## Recent Updates (2026-05-22)
 
-The following items were verified complete in the plan pruning review:
+### ProviderError::is_retryable()
 
-- **ToolDefinition adapters**: `ToolDefinition::to_openai()` and `ToolDefinition::to_anthropic()` reduce code duplication in provider implementations
-- **Adaptive compaction strategy**: `auto_compact()` uses message characteristics to select the best compaction strategy
-- **filter_tools_for_model optimization**: Single lowercase call with cached result
-- **String Arc Migration (Wave 2.4)**: Message, ToolCall, ContentPart, and ChatEvent types now use `Arc<String>` for content fields to reduce cloning overhead
+`ProviderError` has an `is_retryable()` method for determining if a provider error should trigger retry logic:
+
+```rust
+impl ProviderError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            ProviderError::RateLimit
+                | ProviderError::Timeout(_)
+                | ProviderError::Stream(_)
+                | ProviderError::CircuitOpen(_)
+        )
+    }
+}
+```
+
+The agent loop uses this method at `src/agent/loop.rs:808-813` for retry determination.
+
+### CircuitOpen Integration (2026-05-22)
+
+`FallbackProvider` uses `ProviderError::CircuitOpen` when a circuit breaker is open:
+
+```rust
+if !cb.is_available().await {
+    last_error = Some(ProviderError::CircuitOpen(provider.name().to_string()));
+    continue;
+}
+```
+
+This propagates circuit-open errors properly, which map to HTTP 502 in the error module's `IntoResponse`.
 
 ## Message Types with Arc<String>
 

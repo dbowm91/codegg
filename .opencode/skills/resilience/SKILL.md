@@ -89,8 +89,22 @@ let stream = fallback.stream(&request).await;
 
 1. Try primary provider
 2. If error matches status codes, try next in chain
-3. If all fail, return last error
-4. Log each fallback attempt
+3. If circuit breaker is open for a provider, skip to next
+4. If all fail, return last error
+5. Log each fallback attempt
+
+### CircuitOpen Error (2026-05-22)
+
+When a circuit breaker is open, `FallbackProvider` returns `ProviderError::CircuitOpen`:
+
+```rust
+if !cb.is_available().await {
+    last_error = Some(ProviderError::CircuitOpen(provider.name().to_string()));
+    continue;
+}
+```
+
+`CircuitError::Open` from `CircuitBreaker::call()` automatically converts to `ProviderError::CircuitOpen` via the `From` trait in `error.rs:198-206`.
 
 ## Related Skills
 

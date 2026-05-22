@@ -3,7 +3,7 @@ use clap_complete::{generate, Shell};
 use codegg::agent;
 use codegg::config::paths;
 use codegg::config::schema::Config;
-use codegg::error::{AppError, ConfigError};
+use codegg::error::{AppError, ConfigError, StorageError};
 use codegg::exec::{ExecInput, ExecMode};
 use codegg::mcp;
 use codegg::provider::{self, ProviderRegistry};
@@ -423,7 +423,7 @@ async fn cmd_session_view(id: &str) -> Result<(), AppError> {
     let session = store
         .get(id)
         .await?
-        .ok_or_else(|| AppError::Other(anyhow::anyhow!("Session not found: {}", id)))?;
+        .ok_or_else(|| AppError::Storage(StorageError::NotFound(format!("session {}", id))))?;
 
     println!("Session: {}", session.title);
     println!("ID: {}", session.id);
@@ -486,7 +486,7 @@ async fn cmd_export(id: &str, output: Option<&str>) -> Result<(), AppError> {
     let session = session_store
         .get(id)
         .await?
-        .ok_or_else(|| AppError::Other(anyhow::anyhow!("Session not found: {}", id)))?;
+        .ok_or_else(|| AppError::Storage(StorageError::NotFound(format!("session {}", id))))?;
 
     let messages = message_store
         .list(id)
