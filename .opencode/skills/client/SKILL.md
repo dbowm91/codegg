@@ -144,7 +144,7 @@ Defined in `src/protocol/tui.rs`:
 
 ## TUI Integration
 
-### Remote App Initialization (`src/tui/app/mod.rs:489`)
+### Remote App Initialization (`src/tui/app/mod.rs:492`)
 ```rust
 pub fn new_remote(project_dir: String) -> Self {
     let mut app = Self::new(project_dir);
@@ -156,7 +156,7 @@ pub fn new_remote(project_dir: String) -> Self {
 }
 ```
 
-### Remote Event Handling (`src/tui/app/mod.rs:682`)
+### Remote Event Handling (`src/tui/app/mod.rs:686`)
 ```rust
 pub fn handle_remote_event(&mut self, event: serde_json::Value) {
     match serde_json::from_value::<RemoteTuiMessage>(event) {

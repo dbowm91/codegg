@@ -110,7 +110,7 @@ QuestionRegistry::unregister(&session_id);
 The SSE endpoint at `/api/event` subscribes to GlobalEventBus:
 
 ```rust
-pub async fn sse_handler(State(_bus): State<GlobalEventBus>) -> Sse<impl Stream<Item=Result<Event, Infallible>>> {
+pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = crate::bus::global::GlobalEventBus::subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|result| match result {
         Ok(event) => {
@@ -121,11 +121,15 @@ pub async fn sse_handler(State(_bus): State<GlobalEventBus>) -> Sse<impl Stream<
         }
         Err(_) => None,
     });
-    // ... merged with heartbeat
+    let heartbeat = tokio_stream::wrappers::IntervalStream::new(
+        tokio::time::interval(Duration::from_secs(15))
+    ).map(|_| Ok(Event::default().comment("heartbeat")));
+    Sse::new(stream.merge(heartbeat))
+        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)))
 }
 ```
 
-Note: The SSE handler subscribes directly to the global bus - it does NOT use the State parameter's isolated bus.
+Note: The SSE handler takes NO parameters - it subscribes directly to `GlobalEventBus::subscribe()`.
 
 ## Related Skills
 

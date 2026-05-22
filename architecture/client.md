@@ -89,7 +89,6 @@ The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag
 
 | Variant | Fields | Purpose |
 |---------|--------|---------|
-| `RenderFrame` | `content: String` | Rendered frame (legacy) |
 | `TextDelta` | `delta: String` | Incremental text update |
 | `PermissionPending` | `id: String`, `tool: String`, `path: Option<String>` | Permission request |
 | `QuestionPending` | `id: String`, `questions: Vec<QuestionSpec>` | Question request |
@@ -99,6 +98,8 @@ The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag
 | `ToolResult` | `tool_id: String`, `output: String`, `success: bool` | Tool execution result |
 | `Error` | `message: String` | Error message |
 | `ResyncRequired` | `reason: Option<String>`, `pending_permissions: Vec<String>`, `pending_questions: Vec<String>` | Client re-sync needed |
+
+**Note**: `RenderFrame` variant exists in the protocol but is not actively used by the server.
 
 ## Error Handling
 

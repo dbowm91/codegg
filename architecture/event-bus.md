@@ -150,14 +150,14 @@ AgentLoop                    PermissionRegistry               GlobalEventBus    
 The `/api/event` SSE endpoint subscribes to the global event bus:
 
 ```rust
-pub async fn sse_handler(State(_bus): State<GlobalEventBus>) -> Sse<impl Stream<Item=Result<Event, Infallible>>> {
+pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = crate::bus::global::GlobalEventBus::subscribe();
     // Formats events as: event: {event_type}\ndata: {json}\n\n
     // Merged with 15-second heartbeat
 }
 ```
 
-Note: SSE handler subscribes directly to the global bus, not the State parameter.
+Note: SSE handler takes NO parameters - subscribes directly to `GlobalEventBus::subscribe()`.
 
 ## Configuration
 

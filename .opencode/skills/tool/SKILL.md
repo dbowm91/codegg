@@ -428,7 +428,7 @@ cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");  // Hardcoded, not from environ
 cmd.args(&["log", "--oneline"]);
 ```
 
-**Critical**: Use hardcoded PATH `/usr/local/bin:/usr/bin:/bin` after `env_clear()`. Do NOT use `std::env::var("PATH")` as this restores the original unsafe PATH. This pattern is implemented in: bash.rs, commit.rs, formatter.rs, git.rs, terminal.rs, mcp/local.rs, lsp/launch.rs, hooks/mod.rs.
+**Critical**: Use hardcoded PATH `/usr/local/bin:/usr/bin:/bin` after `env_clear()`. Do NOT use `std::env::var("PATH")` as this restores the original unsafe PATH. This pattern is implemented in: bash.rs, commit.rs, formatter.rs, git.rs, terminal.rs, review.rs. Some tools use a fallback pattern (user's PATH with hardcoded fallback): mcp/local.rs, lsp/launch.rs, hooks/mod.rs, upgrade/mod.rs.
 
 ## Tool Definition Conversion
 

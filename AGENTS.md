@@ -50,7 +50,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 These items were identified during module reviews and are important for future agents to know:
 
 ### Event Bus Module (2026-05-22)
-- **GlobalEventBus::publish() improved**: Now returns subscriber count on success, uses `trace` level for normal events (was `warn` for all cases). Channel closed errors properly distinguished.
+- **GlobalEventBus::publish() returns subscriber count on success**: Uses `trace` level for normal events (was `warn` for all cases). Channel closed errors properly distinguished.
 - **Event flow documentation accurate**: Registration-before-publish pattern correctly documented in both `architecture/event-bus.md` and `.opencode/skills/event-bus/SKILL.md`
 - **Dead events removed from skill**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied` removed from skill (never existed in code)
 
@@ -141,6 +141,12 @@ These items were identified during module reviews and are important for future a
 - **Health endpoint fixed**: `RemoteClient::health()` now uses `GET /health` instead of `GET /api/providers`
 - **Health check error propagation**: Non-success HTTP status now returns `Err(ClientError::Unreachable)` instead of `Ok(false)`
 
+### Client Module Review (2026-05-22)
+- **Architecture doc accurate**: `architecture/client.md` correctly describes the implementation
+- **Client skill line numbers updated**: `new_remote()` at line 492, `handle_remote_event()` at line 686
+- **RenderFrame marked as legacy**: `RenderFrame` variant exists in `TuiMessage` but server doesn't send it
+- **Skills fixed**: event-bus, server, tool skills updated for accuracy
+
 ### Permission Module (2026-05-22)
 - **Architecture doc updated**: `architecture/permission.md` now accurately reflects the implementation
 - **Skill synchronized**: `.opencode/skills/permission/SKILL.md` updated to match implementation
@@ -215,7 +221,7 @@ These items were identified during module reviews and are important for future a
 - **Dead EventBus removed**: `routes/event.rs` had an unused local `EventBus` struct - removed, SSE now uses `GlobalEventBus` directly
 - **Health route simplified**: `routes/health.rs` simplified to just `health_check()` function (unused `Router` builder removed)
 - **Auth deduplication**: `validate_ws_auth()` function now shared between `handle_ws` and `handle_tui` (was duplicated inline code)
-- **rpc.rs removed**: Unused `rpc.rs` module removed from `server/mod.rs`
+- **rpc.rs status corrected**: `rpc.rs` is NOT unused - it defines `JsonRpcMessage` struct used by `ws.rs` for JSON-RPC responses
 
 ### Session Module (2026-05-22)
 - **StorageError variants expanded**: Added `Import` and `Export` error variants to `StorageError` enum (were using `Database` variant)
