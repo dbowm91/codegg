@@ -225,10 +225,10 @@ impl BackgroundScheduler {
                         for task in ready {
                             let prompt = format!("[Background] {}", task.message);
                             let request = crate::agent::worker::SubAgentRequest {
-                                task_id: rand::random::<u64>(),
+                                task_id: task.id.parse().unwrap_or_else(|_| rand::random::<u64>()),
                                 prompt,
                                 agent: "build".to_string(),
-                                parent_id: Some(task.session_id),
+                                parent_id: Some(task.session_id.clone()),
                                 denied_tools: Vec::new(),
                                 allowed_paths: Vec::new(),
                                 description: "Background loop task".to_string(),

@@ -280,8 +280,6 @@ impl SubAgentPool {
         });
     }
 
-    pub fn start_workers(&mut self) {}
-
     pub fn spawner(&self) -> SubAgentSpawner {
         SubAgentSpawner { pool: self.clone() }
     }
@@ -366,7 +364,52 @@ pub struct SubAgentSpawner {
 }
 
 impl SubAgentSpawner {
-    pub async fn send(&self, request: SubAgentRequest) -> Result<(), String> {
+    async fn handle_response(
+        task_id: u64,
+        result: Result<SubAgentResult, tokio::sync::oneshot::error::RecvError>,
+        task_store: Arc<TokioMutex<TaskStore>>,
+    ) {
+        match result {
+            Ok(result) => {
+                if result.success {
+                    task_store
+                        .lock()
+                        .await
+                        .set_result(task_id, result.result.clone())
+                        .await;
+                } else if result.result.contains("cancelled")
+                    || result.result.contains("Task cancelled")
+                {
+                    let store = task_store.lock().await;
+                    if let Some(task) = store.get_task(task_id).await {
+                        if task.status != crate::tool::task::TaskStatus::Interrupted {
+                            drop(store);
+                            task_store
+                                .lock()
+                                .await
+                                .set_failed(task_id, result.result.clone())
+                                .await;
+                        }
+                    }
+                } else {
+                    task_store
+                        .lock()
+                        .await
+                        .set_failed(task_id, result.result.clone())
+                        .await;
+                }
+            }
+            Err(e) => {
+                task_store
+                    .lock()
+                    .await
+                    .set_failed(task_id, format!("worker error: {}", e))
+                    .await;
+            }
+        }
+    }
+
+    fn enqueue_request(&self, request: SubAgentRequest) -> Result<oneshot::Receiver<SubAgentResult>, String> {
         if request.depth >= self.pool.max_depth {
             return Err(format!(
                 "subagent max depth {} exceeded (request depth: {})",
@@ -374,129 +417,39 @@ impl SubAgentSpawner {
             ));
         }
 
-        let task_id = request.task_id;
         let (response_tx, response_rx) = oneshot::channel();
-        let task_store = Arc::clone(&self.pool.task_store);
-
         let worker_request = WorkerRequest {
-            request: request.clone(),
+            request,
             response_tx,
         };
 
         self.pool
             .request_tx
-            .send(worker_request)
-            .await
+            .blocking_send(worker_request)
             .map_err(|e| format!("failed to queue request: {}", e))?;
 
+        Ok(response_rx)
+    }
+
+    pub async fn send(&self, request: SubAgentRequest) -> Result<(), String> {
+        let task_id = request.task_id;
+        let response_rx = self.enqueue_request(request)?;
+        let task_store = Arc::clone(&self.pool.task_store);
+
         tokio::spawn(async move {
-            match response_rx.await {
-                Ok(result) => {
-                    if result.success {
-                        task_store
-                            .lock()
-                            .await
-                            .set_result(task_id, result.result.clone())
-                            .await;
-                    } else if result.result.contains("cancelled")
-                        || result.result.contains("Task cancelled")
-                    {
-                        // Preserve Interrupted status - don't overwrite with set_failed
-                        let store = task_store.lock().await;
-                        if let Some(task) = store.get_task(task_id).await {
-                            if task.status != crate::tool::task::TaskStatus::Interrupted {
-                                drop(store); // Drop the lock before calling set_failed
-                                task_store
-                                    .lock()
-                                    .await
-                                    .set_failed(task_id, result.result.clone())
-                                    .await;
-                            }
-                        }
-                    } else {
-                        task_store
-                            .lock()
-                            .await
-                            .set_failed(task_id, result.result.clone())
-                            .await;
-                    }
-                }
-                Err(e) => {
-                    task_store
-                        .lock()
-                        .await
-                        .set_failed(task_id, format!("worker error: {}", e))
-                        .await;
-                }
-            }
+            Self::handle_response(task_id, response_rx.await, task_store).await;
         });
 
         Ok(())
     }
 
     pub async fn send_async(&self, request: SubAgentRequest) -> Result<(), String> {
-        if request.depth >= self.pool.max_depth {
-            return Err(format!(
-                "subagent max depth {} exceeded (request depth: {})",
-                self.pool.max_depth, request.depth
-            ));
-        }
-
         let task_id = request.task_id;
-        let (response_tx, response_rx) = oneshot::channel();
+        let response_rx = self.enqueue_request(request)?;
         let task_store = Arc::clone(&self.pool.task_store);
 
-        let worker_request = WorkerRequest {
-            request: request.clone(),
-            response_tx,
-        };
-
-        self.pool
-            .request_tx
-            .send(worker_request)
-            .await
-            .map_err(|e| format!("failed to queue request: {}", e))?;
-
         tokio::spawn(async move {
-            match response_rx.await {
-                Ok(result) => {
-                    if result.success {
-                        task_store
-                            .lock()
-                            .await
-                            .set_result(task_id, result.result.clone())
-                            .await;
-                    } else if result.result.contains("cancelled")
-                        || result.result.contains("Task cancelled")
-                    {
-                        // Preserve Interrupted status - don't overwrite with set_failed
-                        let store = task_store.lock().await;
-                        if let Some(task) = store.get_task(task_id).await {
-                            if task.status != crate::tool::task::TaskStatus::Interrupted {
-                                drop(store); // Drop the lock before calling set_failed
-                                task_store
-                                    .lock()
-                                    .await
-                                    .set_failed(task_id, result.result.clone())
-                                    .await;
-                            }
-                        }
-                    } else {
-                        task_store
-                            .lock()
-                            .await
-                            .set_failed(task_id, result.result.clone())
-                            .await;
-                    }
-                }
-                Err(e) => {
-                    task_store
-                        .lock()
-                        .await
-                        .set_failed(task_id, format!("worker error: {}", e))
-                        .await;
-                }
-            }
+            Self::handle_response(task_id, response_rx.await, task_store).await;
         });
 
         Ok(())

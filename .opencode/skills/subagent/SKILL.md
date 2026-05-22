@@ -36,10 +36,6 @@ impl SubAgentPool {
         pool
     }
 
-    pub fn start_workers(&mut self) {
-        // Kept for API compatibility - actual spawning happens in new()
-    }
-
     pub async fn shutdown(&self) {
         // 1. Signal cancellation via cancel_token
         // 2. Drop request_tx to stop accepting new work
@@ -50,17 +46,7 @@ impl SubAgentPool {
 }
 
 impl SubAgentPool {
-    pub fn new(config: Config) -> Self {
-        // Creates worker loop task on initialization
-        let pool = Self { ... };
-        pool.start_worker_loop(request_rx);
-        pool
-    }
-
-    pub fn start_workers(&mut self) {
-        // Kept for API compatibility - actual spawning happens in new()
-    }
-}
+    pub async fn new(config: Config) -> Self {
 ```
 
 **Key features**:
@@ -123,26 +109,45 @@ pub struct SubAgentSpawner {
 }
 
 impl SubAgentSpawner {
-    // Synchronous send (for backward compatibility in non-async contexts)
-    pub fn send(&self, request: SubAgentRequest) -> Result<(), String> {
-        // Checks max_depth before queueing
-        if request.depth >= self.pool.max_depth {
-            return Err(format!(
-                "subagent max depth {} exceeded (request depth: {})",
-                self.pool.max_depth, request.depth
-            ));
-        }
-        // ... sends to worker pool
+    // Internal helper to enqueue request (checks max_depth, sends to channel)
+    fn enqueue_request(&self, request: SubAgentRequest) -> Result<oneshot::Receiver<SubAgentResult>, String>;
+
+    // Shared response handler
+    async fn handle_response(
+        task_id: u64,
+        result: Result<SubAgentResult, tokio::sync::oneshot::error::RecvError>,
+        task_store: Arc<TokioMutex<TaskStore>>,
+    );
+
+    // Async send - queues request and spawns handler task
+    pub async fn send(&self, request: SubAgentRequest) -> Result<(), String> {
+        let task_id = request.task_id;
+        let response_rx = self.enqueue_request(request)?;
+        let task_store = Arc::clone(&self.pool.task_store);
+
+        tokio::spawn(async move {
+            Self::handle_response(task_id, response_rx.await, task_store).await;
+        });
+
+        Ok(())
     }
 
     // Async send for use from async contexts (e.g., TaskTool::execute())
-    // Added in Packet 10: Non-blocking async send
     pub async fn send_async(&self, request: SubAgentRequest) -> Result<(), String> {
-        // Same depth check, then async mpsc::send()
-        // Returns immediately after queueing (non-blocking)
+        let task_id = request.task_id;
+        let response_rx = self.enqueue_request(request)?;
+        let task_store = Arc::clone(&self.pool.task_store);
+
+        tokio::spawn(async move {
+            Self::handle_response(task_id, response_rx.await, task_store).await;
+        });
+
+        Ok(())
     }
 }
 ```
+
+**Note**: Both `send` and `send_async` are now async and share the same implementation via `handle_response`. The separate implementations were deduplicated in 2026-05-22.
 
 ### SubAgentPool Configuration
 

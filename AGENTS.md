@@ -76,6 +76,14 @@ These items were identified during module reviews and are important for future a
 - **Bug fixed**: `normalized` variable shadowing in `check_command_security()` - removed duplicate declaration
 - **Bug fixed**: Redundant `unrestricted` captures in `glob.rs` and `grep.rs` - now properly uses closure-captured value
 
+### Agent Module (2026-05-22)
+- **Architecture doc updated**: `architecture/agent.md` now accurately reflects the actual implementation
+- **AgentLoop struct fixed**: Architecture doc showed wrong field types (`agent: Agent` vs actual `agents: HashMap<String, Agent>`, `client: Client` didn't exist, `provider: Arc<ProviderRegistry>` vs actual `Box<dyn Provider>`)
+- **`start_workers()` removed**: Dead no-op method removed from `SubAgentPool`
+- **SubAgentSpawner code deduplication**: `send()` and `send_async()` now share implementation via `enqueue_request()` and `handle_response()` helpers
+- **BackgroundScheduler task_id fixed**: Uses `task.id.parse()` to use actual task ID instead of `rand::random()`
+- **Skill synchronized**: `.opencode/skills/subagent/SKILL.md` updated to reflect current API
+
 ### Verified Correct Items (not bugs)
 - **Subagent event publishing**: `SubagentStarted`/`SubagentProgress`/`SubagentCompleted`/`SubagentFailed` events properly published via `GlobalEventBus`
 - **`SubAgentPool` bounded concurrency**: Properly uses semaphore with default of 5, RAII guard pattern for active_count
@@ -288,6 +296,7 @@ These items were identified during module reviews and are important for future a
 ├── agent-loop/SKILL.md           # AgentLoop, TuiCommand, TuiMsg, compaction, router, team
 ├── client/SKILL.md               # Remote TUI client, WebSocket
 ├── command/SKILL.md             # Slash commands, templates, execution
+├── compaction/SKILL.md          # Context compaction strategies
 ├── config/SKILL.md               # Config loading, validation, encryption, watching
 ├── crypto/SKILL.md               # API key encryption
 ├── event-bus/SKILL.md           # GlobalEventBus, PermissionRegistry, QuestionRegistry
@@ -303,13 +312,18 @@ These items were identified during module reviews and are important for future a
 ├── plugin/SKILL.md             # WASM sandboxing, fuel tracking
 ├── provider/SKILL.md            # Provider patterns, token estimation
 ├── resilience/SKILL.md           # Circuit breaker, FallbackProvider
+├── router/SKILL.md              # Model auto-routing
+├── sandbox/SKILL.md             # Landlock filesystem sandboxing
 ├── security/SKILL.md            # SSRF, symlink protection, Landlock
 ├── server/SKILL.md             # HTTP server, WebSocket, REST API, SSE
 ├── session/SKILL.md             # Session storage, database schema
 ├── skills/SKILL.md              # Skill loading, activation, SkillIndex
 ├── snapshot/SKILL.md            # Snapshot capture and restore
 ├── storage/SKILL.md             # SQLite database initialization, connection pooling
+├── subagent/SKILL.md           # SubAgentPool, SubAgentSpawner, worker infrastructure
+├── team/SKILL.md               # Multi-agent team coordination
 ├── tool/SKILL.md                 # Tool path validation, async command
+├── tts/SKILL.md                # Text-to-speech module
 ├── tui/SKILL.md                  # Terminal UI, keyboard shortcuts
 ├── upgrade/SKILL.md              # Self-upgrade functionality via GitHub releases
 ├── util/SKILL.md                 # Clipboard, fuzzy matching, truncation, metrics
@@ -335,7 +349,7 @@ When adding guidance for a new module:
 | Topic | Location |
 |-------|----------|
 | PTY (shell session metadata) | `.opencode/skills/pty/SKILL.md` |
-| Agent (TuiCommand, TuiMsg, compaction, router, team) | `agent/AGENTS.override.md` |
+| Agent (AgentLoop, compaction, router, team) | `agent/AGENTS.override.md` |
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
 | TUI (keyboard shortcuts, FocusManager, Component trait) | `.opencode/skills/tui/SKILL.md` |
 | Security (SSRF, symlinks, Landlock) | `.opencode/skills/security/SKILL.md` |
@@ -365,3 +379,6 @@ When adding guidance for a new module:
 | Skills (skill loading, activation, SkillIndex) | `.opencode/skills/skills/SKILL.md` |
 | Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` |
 | Worktree (git worktrees, find_git_root) | `.opencode/skills/worktree/SKILL.md` |
+| Subagent (SubAgentPool, SubAgentSpawner, worker) | `.opencode/skills/subagent/SKILL.md` |
+| Compaction (context compaction strategies) | `.opencode/skills/compaction/SKILL.md` |
+| Router (model auto-routing) | `.opencode/skills/router/SKILL.md` |
