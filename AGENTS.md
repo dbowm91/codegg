@@ -137,6 +137,15 @@ These items were identified during module reviews and are important for future a
 - **close_file race condition fixed**: Uses single write lock and properly removes file from `opened_files` after closing
 - **save_file race condition fixed**: Uses single write lock instead of drop-read-then-acquire-write pattern
 
+### Plugin Module (2026-05-22)
+- **Architecture doc updated**: `architecture/plugin.md` now accurately describes the implementation (was showing outdated JSON manifest, wrong HookEvent/HookResult types)
+- **Skill synchronized**: `.opencode/skills/plugin/SKILL.md` updated to version 1.1.0
+- **WASM path fixed**: `execute_wasm_hook()` now correctly builds `plugins/{plugin_id}/plugin.wasm` path instead of using incorrect path format
+- **WASM path type fixed**: `wasm_path_str = wasm_path.to_string_lossy()` to pass `&str` to `get_or_compile()`
+- **Builtin handler registry fixed**: `BUILTIN_HANDLERS` now uses `LazyLock` with proper fn pointer casting to avoid fn item type mismatches
+- **API HookType serialization fixed**: `api::hooks::HookType::as_str()` now returns dot notation (e.g., `tool.execute.before`) matching actual `HookType` implementation
+- **Feature flag named correctly**: Uses `plugins` feature, not `plugin`
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -201,7 +210,7 @@ When adding guidance for a new module:
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
 | TUI (keyboard shortcuts) | `tui/AGENTS.override.md` |
 | Security (SSRF, symlinks, Landlock) | `security/AGENTS.override.md` |
-| WASM plugins | `plugin/AGENTS.override.md` |
+| WASM plugins | `.opencode/skills/plugin/SKILL.md` |
 | MCP connection manager | `mcp/AGENTS.override.md` |
 | Provider (token estimation) | `provider/AGENTS.override.md` |
 | Crypto (API key encryption, Argon2id key derivation) | [architecture/crypto.md](architecture/crypto.md) |

@@ -1,7 +1,7 @@
 ---
 name: plugin
 description: Plugin system, WASM execution, hooks, fuel tracking
-version: 1.0.0
+version: 1.1.0
 tags:
   - plugin
   - wasm
@@ -21,7 +21,10 @@ Plugin System
 ├── PluginLoader (WASM execution)
 ├── HookRegistry (hook registration)
 ├── FuelTracking (resource management)
-└── PluginService (management APIs)
+├── PluginService (management APIs)
+├── BuiltinPlugins (copilot, gitlab, codex, poe)
+├── MarketplaceService (local plugin discovery)
+└── PluginEventBus (event subscriptions)
 ```
 
 ## Project Structure
@@ -35,11 +38,12 @@ src/plugin/
 ├── manifest.rs      # PluginManifest parsing
 ├── service.rs       # PluginService implementation
 ├── install.rs       # Plugin installation from various sources
-├── api.rs           # External API for plugin management
-├── tui.rs           # TUI dialog for plugin management
+├── api.rs           # External API types (ApiVersion, Stability)
+├── tui.rs           # TUI plugin registry for routes/components
 ├── event_bus.rs     # Event bus integration
+├── marketplace.rs   # Local plugin discovery service
 └── builtin/         # Built-in plugins
-    ├── mod.rs
+    ├── mod.rs       # Plugin registry and builtin handler map
     ├── copilot.rs   # GitHub Copilot integration
     ├── codex.rs     # Anthropic Codex integration
     ├── gitlab.rs    # GitLab MR integration
@@ -48,24 +52,30 @@ src/plugin/
 
 ## Hook Types
 
-Hooks are extension points in the agent lifecycle:
+Hooks are extension points in the agent lifecycle. Hook types use dot notation (e.g., `tool.execute.before`):
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumString, Display, EnumIter)]
+#[strum(serialize_all = "snake_case")]
 pub enum HookType {
-    Auth,              # Authentication
-    Provider,          # Provider selection
-    ToolDefinition,    # Tool definition modification
-    ToolExecuteBefore, # Before tool execution
-    ToolExecuteAfter,  # After tool execution
-    ChatParams,       # Chat parameters
-    ChatHeaders,      # Chat headers
-    Event,            # Event handling
-    Config,           # Configuration
-    ShellEnv,         # Shell environment
-    TextComplete,     # Text completion
-    SessionCompacting,# Session compaction
-    MessagesTransform,# Message transformation
+    Auth,              // "auth"
+    Provider,          // "provider"
+    ToolDefinition,    // "tool.definition"
+    ToolExecuteBefore, // "tool.execute.before"
+    ToolExecuteAfter,  // "tool.execute.after"
+    ChatParams,       // "chat.params"
+    ChatHeaders,      // "chat.headers"
+    Event,            // "event"
+    Config,           // "config"
+    ShellEnv,         // "shell.env"
+    TextComplete,     // "text.complete"
+    SessionCompacting,// "session.compacting"
+    MessagesTransform,// "messages.transform"
+}
+
+impl HookType {
+    pub fn as_str(&self) -> &'static str { ... }  // Returns dot notation
+    pub fn parse(s: &str) -> Option<Self> { ... } // Parses dot notation
 }
 ```
 
@@ -99,7 +109,19 @@ name = "my-plugin"
 version = "1.0.0"
 description = "My plugin description"
 author = "Author Name"
-hooks = ["tool.execute.before", "tool.execute.after"]
+homepage = "https://example.com"
+license = "MIT"
+
+[[hooks]]
+type = "tool.execute.before"
+priority = 0
+
+[[hooks]]
+type = "tool.execute.after"
+priority = 0
+
+[config]
+some_setting = "value"
 ```
 
 ### Manifest Structure
@@ -110,17 +132,26 @@ pub struct PluginManifest {
     pub version: String,
     pub description: Option<String>,
     pub author: Option<String>,
-    pub hooks: Vec<String>,
+    pub homepage: Option<String>,
+    pub license: Option<String>,
+    pub hooks: Vec<HookSpec>,  // Hook specifications with priority
+    pub config: HashMap<String, serde_json::Value>,
+}
+
+pub struct HookSpec {
+    #[serde(rename = "type")]
+    pub hook_type: String,  // dot notation, e.g., "tool.execute.before"
+    pub priority: Option<i32>,
 }
 ```
 
 ## WASM Execution
 
-Plugins execute via WASMtime with module caching:
+Plugins execute via WASMtime with module caching. The execution path for WASM plugins:
 
 ```rust
 pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult {
-    use wasmtime::{Config, Engine, Linker, Module, Store};
+    use wasmtime::{Config, Engine, Linker, Module, Store, WasmBacktraceDetails};
 
     static ENGINE: once_cell::sync::Lazy<Engine> = once_cell::sync::Lazy::new(|| {
         let mut config = Config::new();
@@ -129,42 +160,96 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
         Engine::new(&config).unwrap()
     });
 
-    // Check fuel budget
-    check_and_reset_fuel_budget();
-    let current_budget = PLUGIN_FUEL_BUDGET.load(Ordering::Relaxed);
-    if current_budget >= MAX_PLUGIN_FUEL_BUDGET {
-        return HookResult::ok(ctx.input);  // Budget exhausted
+    // Check per-plugin fuel budget
+    let current_plugin_fuel = module_cache::CACHE.get_plugin_fuel(plugin_id);
+    if current_plugin_fuel >= MAX_PLUGIN_FUEL_BUDGET {
+        tracing::warn!(plugin = plugin_id, "plugin fuel budget exhausted");
+        return HookResult::ok(ctx.input);
     }
 
-    // Get module from cache (or compile if not cached/mtime changed)
-    let module = module_cache::CACHE.get_or_compile(&wasm_path, || {
+    let fuel_for_this_call = WASM_FUEL_PER_HOOK.min(current_plugin_fuel);
+
+    // Reserve fuel for this call
+    let Some(fuel_reserved) = module_cache::CACHE.reserve_fuel(plugin_id, fuel_for_this_call) else {
+        tracing::warn!(plugin = plugin_id, "plugin fuel reservation failed");
+        return HookResult::ok(ctx.input);
+    };
+
+    // Build WASM path: plugins/{plugin_id}/plugin.wasm
+    let wasm_path: PathBuf = format!("plugins/{}/plugin.wasm", plugin_id).into();
+    let wasm_path_str = wasm_path.to_string_lossy();
+
+    // Check WASM size limit (10MB)
+    let metadata = std::fs::metadata(&wasm_path)?;
+    if metadata.len() > MAX_WASM_SIZE as u64 { ... }
+
+    // Get module from cache (or compile if mtime changed)
+    let module = module_cache::CACHE.get_or_compile(&wasm_path_str, || {
         let wasm_bytes = std::fs::read(&wasm_path).ok()?;
         Module::new(&ENGINE, &wasm_bytes).ok()
-    });
+    })?;
 
-    // Create store with fuel
-    let mut store = Store::new(&ENGINE, ());
-    let fuel_for_this_call = WASM_FUEL_PER_HOOK.min(MAX_PLUGIN_FUEL_BUDGET - current_budget);
-    store.set_fuel(fuel_for_this_call).ok();
+    // Execute with fuel and timeout
+    let hook_result = timeout(WASM_HOOK_TIMEOUT, async {
+        let mut store = Store::new(&ENGINE, ());
+        store.set_fuel(fuel_reserved).ok();
 
-    // Instantiate and call hook function with timeout
-    let linker = Linker::new(&ENGINE);
-    let instance = linker.instantiate(&mut store, &module)?;
-    
-    // Map HookType to WASM function name
-    let func_name = match ctx.hook_type {
-        HookType::Auth => "on_auth",
-        HookType::ToolExecuteBefore => "on_tool_execute_before",
-        // ... etc
-    };
-    
-    timeout(WASM_HOOK_TIMEOUT, async {
-        let func = instance.get_func(&mut store, func_name)?;
-        func.call(&mut store, &[...], &mut result)?;
-        Ok(())
-    }).await?;
+        let mut linker = Linker::new(&ENGINE);
+        linker.allow_shadowing(true);
+        let instance = linker.instantiate(&mut store, &module)?;
+
+        // Map HookType to WASM function name
+        let func_name = match ctx.hook_type {
+            HookType::Auth => "on_auth",
+            HookType::Provider => "on_provider",
+            HookType::ToolDefinition => "on_tool_definition",
+            HookType::ToolExecuteBefore => "on_tool_execute_before",
+            HookType::ToolExecuteAfter => "on_tool_execute_after",
+            HookType::ChatParams => "on_chat_params",
+            HookType::ChatHeaders => "on_chat_headers",
+            HookType::Event => "on_event",
+            HookType::Config => "on_config",
+            HookType::ShellEnv => "on_shell_env",
+            HookType::TextComplete => "on_text_complete",
+            HookType::SessionCompacting => "on_session_compacting",
+            HookType::MessagesTransform => "on_messages_transform",
+        };
+
+        // Get memory and allocate function
+        let memory = instance.get_memory(&mut store, "memory")?;
+        let alloc_func = instance.get_func(&mut store, "allocate")?;
+
+        // Serialize input, write to WASM memory, call hook, read output
+        // ...
+    }).await;
+
+    // Handle result and return fuel
+    match hook_result {
+        Ok(Ok((result, remaining))) => {
+            let consumed = fuel_reserved.saturating_sub(remaining);
+            if consumed > 0 {
+                module_cache::CACHE.return_fuel(plugin_id, consumed);
+            }
+            result
+        }
+        Ok(Err(e)) => {
+            module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
+            HookResult::error(format!("WASM hook execution error: {}", e))
+        }
+        Err(_) => {
+            module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
+            HookResult::error("WASM hook timed out")
+        }
+    }
 }
 ```
+
+**WASM Plugin Contract:**
+- Plugin must export `memory` (Wasmtime memory)
+- Plugin must export `allocate(ptr, len) -> ptr` function
+- Plugin may export `deallocate(ptr, len)` function
+- Hook function names: `on_auth`, `on_provider`, `on_tool_execute_before`, etc.
+- Hook returns JSON: `{"output": {...}, "blocked": false, "error": null}`
 
 ## Fuel Tracking
 
@@ -346,28 +431,48 @@ pub fn register_hook(&self, plugin_id: &str, hook: HookType) -> Result<(), Regis
 
 ## Built-in Plugins
 
-### Copilot
+Built-in plugins are native Rust implementations that don't require WASM. They are registered via `register_builtins()` and use a static handler map for dispatch.
 
-GitHub Copilot integration.
+### Handler Registration
 
-### Codex
+```rust
+// In builtin/mod.rs
+static BUILTIN_HANDLERS: std::sync::LazyLock<
+    RwLock<HashMap<String, fn(HookContext) -> HookResult>>,
+> = std::sync::LazyLock::new(|| {
+    let mut handlers = HashMap::new();
+    handlers.insert("copilot".to_string(), copilot::handle_hook);
+    handlers.insert("gitlab".to_string(), gitlab::handle_hook);
+    handlers.insert("codex".to_string(), codex::handle_hook);
+    handlers.insert("poe".to_string(), poe::handle_hook);
+    RwLock::new(handlers)
+});
 
-Anthropic Codex integration.
+pub fn builtin_hook_handler(plugin_name: &str, ctx: HookContext) -> HookResult {
+    if let Ok(handlers) = BUILTIN_HANDLERS.read() {
+        if let Some(handler) = handlers.get(plugin_name) {
+            return handler(ctx);
+        }
+    }
+    HookResult::error(format!("unknown builtin plugin: {}", plugin_name))
+}
+```
 
-### GitLab
+### Available Builtins
 
-GitLab MR integration.
+- **copilot**: GitHub Copilot authentication provider (handles `auth` hook)
+- **gitlab**: GitLab authentication provider (handles `auth` hook)
+- **codex**: Anthropic Codex integration (built-in but hook not implemented)
+- **poe**: Poe API integration (built-in but hook not implemented)
 
-### Poe
-
-Poe API integration.
+**Note:** `register_builtins()` must be called during initialization to register the builtins with the PluginRegistry.
 
 ## Plugin Service
 
 ```rust
 pub struct PluginService {
     registry: Arc<PluginRegistry>,
-    hook_timeout: Duration,
+    hook_timeout: Duration,  // default 5 seconds
 }
 ```
 
@@ -378,34 +483,85 @@ impl PluginService {
     pub fn new(registry: Arc<PluginRegistry>) -> Self;
     pub fn with_hook_timeout(mut self, timeout: Duration) -> Self;
     pub fn registry(&self) -> &Arc<PluginRegistry>;
-    
+
     pub async fn load_and_register(&self, loaded: LoadedPlugin) -> Result<(), LoadError>;
     pub async fn dispatch_hook(&self, ctx: HookContext) -> HookResult;
+
+    // Individual dispatch methods for each hook type:
+    pub async fn dispatch_auth(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_provider(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_tool_definition(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_tool_execute_before(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_tool_execute_after(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_chat_params(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_chat_headers(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_event(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_config(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_shell_env(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_text_complete(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_session_compacting(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_messages_transform(&self, input: serde_json::Value) -> HookResult;
 }
 ```
+
+**Plugin IDs:**
+- WASM plugins: `plugin:{name}` (e.g., `plugin:my-plugin`)
+- Built-in plugins: `builtin:{name}` (e.g., `builtin:copilot`)
 
 **Note:** `PluginService` no longer holds a loader or event bus directly. Loading is done via `loader::load_plugin()`, and events use the global `PluginEventBus`.
 
 ## TUI Integration
 
-The TUI can manage plugins via the PluginDialog:
+Plugins can register TUI routes and components:
 
 ```rust
-pub struct PluginDialog {
-    plugins: Vec<PluginInfo>,
-    selected: usize,
-    scroll: CenteredScroll,
+pub struct TuiPluginRegistry {
+    routes: Arc<RwLock<Vec<TuiRoute>>>,
+    components: Arc<RwLock<Vec<TuiComponent>>>,
+    plugin_configs: Arc<RwLock<HashMap<String, serde_json::Value>>>,
+}
+
+pub struct TuiRoute {
+    pub path: String,
+    pub label: String,
+    pub plugin_id: String,
+    pub icon: Option<String>,
+}
+
+pub struct TuiComponent {
+    pub name: String,
+    pub plugin_id: String,
+    pub config: serde_json::Value,
+}
+```
+
+## Marketplace Service
+
+Local plugin discovery via filesystem scanning:
+
+```rust
+pub struct MarketplaceService {
+    plugins_dir: PathBuf,  // ~/.local/share/codegg/plugins
+}
+
+impl MarketplaceService {
+    pub async fn list_local_plugins(&self) -> Vec<MarketplacePlugin>;
+    pub async fn search_plugins(&self, query: &str) -> Vec<MarketplacePlugin>;
+    pub fn list_official_plugins() -> Vec<MarketplacePlugin>;  // TODO: not implemented
+    pub fn list_repository_plugins() -> Vec<MarketplacePlugin>;  // TODO: not implemented
 }
 ```
 
 ## Security Considerations
 
 1. **Fuel Limits**: Per-plugin budgets prevent runaway plugins. Unused fuel is returned after execution.
-2. **Timeout**: 5 second timeout per hook (configurable via `with_hook_timeout()`).
+2. **Timeout**: 5 second timeout per hook (configurable via `with_hook_timeout()`), 30 second timeout for WASM hook execution.
 3. **Timeout error includes plugin_id**: Error message format is `"{plugin_id}: hook timeout: {err}"`.
-4. **Memory Bounds**: Input validated against memory bounds
-5. **Output Size**: 10MB max output size
-6. **WASM Size**: 10MB max module size
+4. **Memory Bounds**: Input validated against memory bounds before writing to WASM.
+5. **Output Size**: 10MB max output size from WASM.
+6. **WASM Size**: 10MB max module size.
+7. **Path Traversal**: Archive extraction validates paths stay within destination.
+8. **Symlink Protection**: Symlinks not allowed in plugin archives or during installation.
 
 ## Error Handling
 
@@ -418,14 +574,53 @@ pub enum LoadError {
     Wasm(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("install error: {0}")]
+    Install(#[from] InstallError),
 }
 
+#[derive(Debug, thiserror::Error)]
 pub enum InstallError {
-    #[error("download error: {0}")]
-    Download(String),
-    #[error("invalid source: {0}")]
-    InvalidSource(String),
+    #[error("plugin already installed: {0}")]
+    AlreadyInstalled(String),
+    #[error("invalid plugin path: {0}")]
+    InvalidPath(String),
+    #[error("download failed: {0}")]
+    DownloadFailed(String),
+    #[error("manifest error: {0}")]
+    Manifest(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
+```
+
+## Configuration
+
+**Plugin Directory:** `~/.local/share/codegg/plugins/` (via `dirs::data_local_dir()`)
+
+**Plugin Structure:**
+```
+~/.local/share/codegg/plugins/
+├── my-plugin/
+│   ├── manifest.toml
+│   └── plugin.wasm    # or plugin.wasm32-wasi.wasm
+└── another-plugin/
+    ├── manifest.toml
+    └── plugin.wasm
+```
+
+**Installation:**
+```rust
+// From local path
+install_from_path(path: &Path) -> Result<PathBuf, InstallError>
+
+// From URL (downloads .wasm or .tar.gz)
+install_from_url(url: &str) -> Result<PathBuf, InstallError>
+
+// Uninstall
+uninstall(plugin_name: &str) -> Result<(), InstallError>
+
+// Get plugins directory
+plugins_dir() -> PathBuf  // ~/.local/share/codegg/plugins
 ```
 
 ## Configuration

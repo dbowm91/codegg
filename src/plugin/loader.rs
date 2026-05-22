@@ -274,7 +274,8 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
     };
 
     let plugin_dir = format!("plugins/{}", plugin_id);
-    let wasm_path = format!("{}/plugin.wasm", plugin_dir);
+    let wasm_path: PathBuf = format!("{}/plugin.wasm", plugin_dir).into();
+    let wasm_path_str = wasm_path.to_string_lossy();
 
     let metadata = match std::fs::metadata(&wasm_path) {
         Ok(m) => m,
@@ -294,7 +295,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
         return HookResult::ok(ctx.input);
     }
 
-    let module = module_cache::CACHE.get_or_compile(&wasm_path, || {
+    let module = module_cache::CACHE.get_or_compile(&wasm_path_str, || {
         let wasm_bytes = std::fs::read(&wasm_path).ok()?;
         Module::new(&ENGINE, &wasm_bytes).ok()
     });

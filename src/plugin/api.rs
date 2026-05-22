@@ -62,17 +62,17 @@ pub mod hooks {
             match self {
                 HookType::Auth => "auth",
                 HookType::Provider => "provider",
-                HookType::ToolDefinition => "tool_definition",
-                HookType::ToolExecuteBefore => "tool_execute_before",
-                HookType::ToolExecuteAfter => "tool_execute_after",
-                HookType::ChatParams => "chat_params",
-                HookType::ChatHeaders => "chat_headers",
+                HookType::ToolDefinition => "tool.definition",
+                HookType::ToolExecuteBefore => "tool.execute.before",
+                HookType::ToolExecuteAfter => "tool.execute.after",
+                HookType::ChatParams => "chat.params",
+                HookType::ChatHeaders => "chat.headers",
                 HookType::Event => "event",
                 HookType::Config => "config",
-                HookType::ShellEnv => "shell_env",
-                HookType::TextComplete => "text_complete",
-                HookType::SessionCompacting => "session_compacting",
-                HookType::MessagesTransform => "messages_transform",
+                HookType::ShellEnv => "shell.env",
+                HookType::TextComplete => "text.complete",
+                HookType::SessionCompacting => "session.compacting",
+                HookType::MessagesTransform => "messages.transform",
             }
         }
     }

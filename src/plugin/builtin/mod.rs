@@ -8,11 +8,35 @@ use crate::plugin::manifest::{HookSpec, PluginManifest};
 use crate::plugin::registry::PluginInfo;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 pub struct BuiltinPlugin {
     pub manifest: PluginManifest,
     pub handler: fn(HookContext) -> HookResult,
 }
+
+static BUILTIN_HANDLERS: std::sync::LazyLock<
+    RwLock<HashMap<String, fn(HookContext) -> HookResult>>,
+> = std::sync::LazyLock::new(|| {
+    let mut handlers = HashMap::new();
+    handlers.insert(
+        "copilot".to_string(),
+        copilot::handle_hook as fn(HookContext) -> HookResult,
+    );
+    handlers.insert(
+        "gitlab".to_string(),
+        gitlab::handle_hook as fn(HookContext) -> HookResult,
+    );
+    handlers.insert(
+        "codex".to_string(),
+        codex::handle_hook as fn(HookContext) -> HookResult,
+    );
+    handlers.insert(
+        "poe".to_string(),
+        poe::handle_hook as fn(HookContext) -> HookResult,
+    );
+    RwLock::new(handlers)
+});
 
 pub fn get_builtin_plugins() -> Vec<BuiltinPlugin> {
     vec![
@@ -51,18 +75,21 @@ pub async fn register_builtins(registry: &crate::plugin::registry::PluginRegistr
     }
 }
 
-fn register_builtin_handler(_id: &str, _handler: fn(HookContext) -> HookResult) {
-    tracing::info!(id = _id, "registered builtin plugin handler");
+fn register_builtin_handler(id: &str, handler: fn(HookContext) -> HookResult) {
+    let plugin_name = id.strip_prefix("builtin:").unwrap_or(id);
+    if let Ok(mut handlers) = BUILTIN_HANDLERS.write() {
+        handlers.insert(plugin_name.to_string(), handler);
+    }
+    tracing::info!(id = id, "registered builtin plugin handler");
 }
 
 pub fn builtin_hook_handler(plugin_name: &str, ctx: HookContext) -> HookResult {
-    match plugin_name {
-        "copilot" => copilot::handle_hook(ctx),
-        "gitlab" => gitlab::handle_hook(ctx),
-        "codex" => codex::handle_hook(ctx),
-        "poe" => poe::handle_hook(ctx),
-        _ => HookResult::error(format!("unknown builtin plugin: {}", plugin_name)),
+    if let Ok(handlers) = BUILTIN_HANDLERS.read() {
+        if let Some(handler) = handlers.get(plugin_name) {
+            return handler(ctx);
+        }
     }
+    HookResult::error(format!("unknown builtin plugin: {}", plugin_name))
 }
 
 pub fn make_builtin_info(
