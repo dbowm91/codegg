@@ -299,6 +299,12 @@ These items were identified during module reviews and are important for future a
 - **Architecture doc updated**: `architecture/command.md` now shows all 36 built-in commands (was showing 20)
 - **Skill updated**: `.opencode/skills/command/SKILL.md` updated to version 1.1.0 with accurate line numbers and async API documentation
 
+### Config Module (2026-05-22)
+- **Dead code removed**: `find_tui_config()` and `load_tui_config()` removed from `paths.rs` and `mod.rs` - these functions were never used anywhere in the codebase
+- **Skill updated**: `.opencode/skills/config/SKILL.md` updated to version 1.3.0 with accurate Config struct fields, ProviderConfig.api_key() method, and ConfigWatcher field documentation
+- **Config struct complete**: Actual struct has ~45 fields (was documented with incomplete list showing ~20) - skill updated to reflect full schema
+- **Architecture doc accurate**: `architecture/config.md` accurately describes the implementation after multiple review fixes
+
 ## Documentation Structure
 
 ### Directory Structure

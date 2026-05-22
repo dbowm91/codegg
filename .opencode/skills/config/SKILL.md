@@ -1,7 +1,7 @@
 ---
 name: config
 description: Configuration loading, validation, file watching, and encryption in opencode-rs
-version: 1.2.0
+version: 1.3.0
 tags:
   - config
   - loading
@@ -27,7 +27,7 @@ src/config/
 
 ## Config Struct (`schema.rs`)
 
-Central configuration type with ~40 optional fields:
+Central configuration type with ~45 optional fields:
 
 ```rust
 pub struct Config {
@@ -38,17 +38,38 @@ pub struct Config {
     pub medium_model: Option<String>,
     pub auto_route_models: Option<bool>,
     pub default_agent: Option<String>,
+    pub username: Option<String>,
+    pub share: Option<String>,
+    pub autoupdate: Option<AutoupdateConfig>,
     pub server: Option<ServerConfig>,
     pub provider: Option<HashMap<String, ProviderConfig>>,
+    pub disabled_providers: Option<Vec<String>>,
+    pub enabled_providers: Option<Vec<String>>,
+    pub agent: Option<HashMap<String, AgentConfig>>,
     pub mcp: Option<HashMap<String, McpEntry>>,
     pub permission: Option<PermissionConfig>,
     pub compaction: Option<CompactionConfig>,
     pub subagent: Option<SubagentConfig>,
     pub skills: Option<SkillsConfig>,
     pub commands: Option<HashMap<String, CommandConfig>>,
-    pub hooks: Option<Vec<HookConfigEntry>>,
+    pub templates: Option<HashMap<String, SessionTemplate>>,
+    pub instructions: Option<Vec<String>>,
+    pub layout: Option<String>,
+    pub tools: Option<HashMap<String, bool>>,
+    pub formatter: Option<FormatterConfig>,
+    pub lsp: Option<LspConfig>,
     pub watcher: Option<WatcherConfig>,
-    // ... 20+ more fields
+    pub snapshot: Option<bool>,
+    pub snapshot_config: Option<SnapshotConfig>,
+    pub plugin: Option<Vec<PluginSpec>>,
+    pub enterprise: Option<EnterpriseConfig>,
+    pub experimental: Option<ExperimentalConfig>,
+    pub mode: Option<HashMap<String, ModeConfig>>,
+    pub keybinds: Option<HashMap<String, String>>,
+    pub vim_mode: Option<bool>,
+    pub hooks: Option<Vec<HookConfigEntry>>,
+    pub notifications: Option<NotificationConfig>,
+    pub catalog: Option<CatalogConfig>,
 }
 ```
 
@@ -81,13 +102,18 @@ pub struct ProviderConfig {
     pub encrypted_api_key: Option<String>,
     pub encrypted: Option<bool>,
     pub base_url: Option<String>,
+    pub enterprise_url: Option<String>,
+    pub set_cache_key: Option<bool>,
     pub timeout: Option<ProviderTimeout>,
+    pub chunk_timeout: Option<u64>,
+    pub whitelist: Option<Vec<String>>,
+    pub blacklist: Option<Vec<String>>,
     pub models: Option<HashMap<String, ModelConfig>>,
     pub options: Option<HashMap<String, serde_json::Value>>,
 }
 ```
 
-ProviderConfig has a `merge()` method for field-by-field merging when multiple configs define the same provider.
+ProviderConfig has a `merge()` method for field-by-field merging when multiple configs define the same provider. The `api_key()` method checks environment variables first, then falls back to decrypted or plain api_key.
 
 ### WatcherConfig
 
@@ -162,6 +188,9 @@ Hot-reload watcher using `notify` crate:
 pub struct ConfigWatcher {
     watcher: Option<RecommendedWatcher>,
     rx: mpsc::Receiver<()>,
+    tx: mpsc::Sender<()>,
+    watched_paths: Vec<PathBuf>,
+    started: bool,
     debounce_duration: Duration,
     last_hash: Option<u64>,
     ignore_patterns: Vec<String>,
@@ -174,6 +203,8 @@ Key methods:
 - `start()` - Start watching config file directories (non-recursive)
 - `recv()` - Async receiver with content hash deduplication
 - `reload_now()` - Force immediate reload
+
+Note: `reload_config()` (called by both `recv()` and `reload_now()`) decrypts provider keys, so hot-reloaded configs work correctly with encrypted API keys.
 
 ### Content Hash Deduplication
 

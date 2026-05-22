@@ -27,21 +27,36 @@ pub struct Config {
     pub medium_model: Option<String>,
     pub auto_route_models: Option<bool>,
     pub default_agent: Option<String>,
+    pub username: Option<String>,
+    pub share: Option<String>,
+    pub autoupdate: Option<AutoupdateConfig>,
     pub server: Option<ServerConfig>,
     pub provider: Option<HashMap<String, ProviderConfig>>,
+    pub disabled_providers: Option<Vec<String>>,
+    pub enabled_providers: Option<Vec<String>>,
+    pub agent: Option<HashMap<String, AgentConfig>>,
     pub mcp: Option<HashMap<String, McpEntry>>,
     pub permission: Option<PermissionConfig>,
     pub compaction: Option<CompactionConfig>,
     pub subagent: Option<SubagentConfig>,
     pub skills: Option<SkillsConfig>,
     pub commands: Option<HashMap<String, CommandConfig>>,
-    pub hooks: Option<Vec<HookConfigEntry>>,
+    pub templates: Option<HashMap<String, SessionTemplate>>,
+    pub instructions: Option<Vec<String>>,
+    pub layout: Option<String>,
+    pub tools: Option<HashMap<String, bool>>,
+    pub formatter: Option<FormatterConfig>,
+    pub lsp: Option<LspConfig>,
     pub watcher: Option<WatcherConfig>,
+    pub snapshot: Option<bool>,
+    pub snapshot_config: Option<SnapshotConfig>,
     pub plugin: Option<Vec<PluginSpec>>,
+    pub enterprise: Option<EnterpriseConfig>,
     pub experimental: Option<ExperimentalConfig>,
     pub mode: Option<HashMap<String, ModeConfig>>,
     pub keybinds: Option<HashMap<String, String>>,
     pub vim_mode: Option<bool>,
+    pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub catalog: Option<CatalogConfig>,
 }
@@ -55,13 +70,18 @@ pub struct ProviderConfig {
     pub encrypted_api_key: Option<String>,
     pub encrypted: Option<bool>,
     pub base_url: Option<String>,
+    pub enterprise_url: Option<String>,
+    pub set_cache_key: Option<bool>,
     pub timeout: Option<ProviderTimeout>,
+    pub chunk_timeout: Option<u64>,
+    pub whitelist: Option<Vec<String>>,
+    pub blacklist: Option<Vec<String>>,
     pub models: Option<HashMap<String, ModelConfig>>,
     pub options: Option<HashMap<String, serde_json::Value>>,
 }
 ```
 
-ProviderConfig has a `merge()` method for field-by-field merging.
+ProviderConfig has a `merge()` method for field-by-field merging and an `api_key()` method that checks environment variables first.
 
 ## Components
 
@@ -209,6 +229,10 @@ Validated fields:
 ### medium_model not validated
 **Bug**: Invalid `medium_model` values not caught by validation.
 **Fix**: `medium_model` validation added at `schema.rs:594-601`.
+
+### Dead tui_config code removed
+**Bug**: `find_tui_config()` and `load_tui_config()` were exported but never used anywhere in the codebase.
+**Fix**: Removed from `paths.rs` and `mod.rs` to clean up dead code (2026-05-22).
 
 ## See Also
 

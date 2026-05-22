@@ -293,22 +293,6 @@ pub fn interpolate_env_vars(content: &str) -> String {
     result
 }
 
-pub fn find_tui_config() -> Option<PathBuf> {
-    let config_dir = dirs::config_dir()?;
-    let tui_path = config_dir.join("codegg").join("tui.json");
-    if tui_path.exists() {
-        Some(tui_path)
-    } else {
-        None
-    }
-}
-
-pub fn load_tui_config() -> Option<serde_json::Value> {
-    let path = find_tui_config()?;
-    let content = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
