@@ -179,6 +179,14 @@ These items were identified during module reviews and are important for future a
 - **FallbackProvider exponential backoff**: Retry delay is `2^i` seconds (capped at 30s) - correctly implemented
 - **ProviderError::CircuitOpen**: Circuit breaker integration properly propagates open state via `CircuitError → ProviderError::CircuitOpen`
 
+### Worktree Module (2026-05-22)
+- **find_git_root() bug fixed**: Now correctly detects worktrees by checking if `.git` is a file containing `gitdir:` prefix, not just a directory. Previously would fail to find git root when called from inside a worktree.
+- **Architecture doc updated**: `architecture/worktree.md` now accurately reflects the implementation
+- **Skill created**: `.opencode/skills/worktree/SKILL.md` created with module guidance
+- **`Worktree` struct differs from doc**: `is_locked` and `is_main` are not implemented; actual fields are `path`, `branch`, `is_current`, `is_detached`
+- **`remove_worktree()` signature differs**: Does not have `force` parameter as shown in old doc
+- **`create_worktree()` signature differs**: Has `create_branch: bool` parameter (not shown in old doc)
+
 ### PTY Module (2026-05-22)
 - **Architecture doc updated**: `architecture/pty.md` now accurately describes the implementation (was showing outdated `SessionManager` API with wrong field types)
 - **`update_cwd` method added**: `PtyManager::update_cwd()` now exists and returns `Result<PtySession, StorageError>` (was documented but not implemented)
@@ -304,7 +312,8 @@ These items were identified during module reviews and are important for future a
 ├── tool/SKILL.md                 # Tool path validation, async command
 ├── tui/SKILL.md                  # Terminal UI, keyboard shortcuts
 ├── upgrade/SKILL.md              # Self-upgrade functionality via GitHub releases
-└── util/SKILL.md                 # Clipboard, fuzzy matching, truncation, metrics
+├── util/SKILL.md                 # Clipboard, fuzzy matching, truncation, metrics
+└── worktree/SKILL.md            # Git worktree management, find_git_root
 ```
 
 ### Adding New Module Guidance
@@ -355,4 +364,4 @@ When adding guidance for a new module:
 | Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` |
 | Skills (skill loading, activation, SkillIndex) | `.opencode/skills/skills/SKILL.md` |
 | Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` |
-| Util (clipboard, fuzzy matching, truncation, metrics) | `.opencode/skills/util/SKILL.md` |
+| Worktree (git worktrees, find_git_root) | `.opencode/skills/worktree/SKILL.md` |

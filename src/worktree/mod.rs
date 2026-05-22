@@ -157,7 +157,8 @@ pub fn remove_worktree(git_root: &Path, path: &Path) -> Result<(), AppError> {
 pub fn find_git_root(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
     loop {
-        if current.join(".git").exists() {
+        let git_path = current.join(".git");
+        if git_path.exists() || is_git_file(&git_path) {
             return Some(current);
         }
         if !current.pop() {
@@ -165,4 +166,12 @@ pub fn find_git_root(start: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn is_git_file(git_path: &Path) -> bool {
+    if let Ok(content) = std::fs::read_to_string(git_path) {
+        content.starts_with("gitdir:")
+    } else {
+        false
+    }
 }
