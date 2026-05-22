@@ -1177,16 +1177,10 @@ impl App {
         let popup_area = centered_rect(60, 50, area);
         frame.render_widget(Clear, popup_area);
 
-        // Phase 3: Use FocusManager first
         if !self.focus_manager.is_empty() {
             self.focus_manager
                 .render(frame, popup_area, &self.ui_state.theme);
-            return;
         }
-
-        // Legacy rendering - only reached when no focused dialogs and dialog is open
-        // This is dead code for Help/Context/Cost/Usage which are now handled via FocusManager
-        {}
     }
 
     fn render_completions(&self, frame: &mut Frame, prompt_area: Rect) {
@@ -1794,7 +1788,11 @@ impl App {
         }
 
         if self.ui_state.dialog.is_open() {
-            debug_assert!(false, "handle_dialog_key fallback should be unreachable - dialog opened without FocusManager");
+            if self.focus_manager.is_empty() {
+                tracing::error!("FocusManager is empty but dialog is open - this indicates a state inconsistency");
+                self.ui_state.dialog = Dialog::None;
+                return;
+            }
             self.handle_dialog_key(key);
             return;
         }

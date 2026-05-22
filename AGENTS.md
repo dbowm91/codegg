@@ -247,6 +247,14 @@ These items were identified during module reviews and are important for future a
 - **Error handling improved**: `speak()` now returns `Err(AppError::Io(...))` when `say` command fails instead of silently ignoring failures. Callers handle errors appropriately.
 - **Skill synchronized**: `.opencode/skills/tts/SKILL.md` updated with error handling documentation
 
+### TUI Module (2026-05-22)
+- **Architecture doc updated**: `architecture/tui.md` now accurately reflects the implementation (was showing outdated routes like Chat/Sessions/Settings, wrong App struct, missing FocusManager/Component)
+- **Routes accurate**: Actual routes are `Home` and `Session(String)` - not the `Chat`, `Sessions`, `Settings`, `Skills`, `Permissions` shown in old doc
+- **Dialog variants fixed**: Doc now shows all 21 Dialog variants including Context, Cost, Usage, Goto, Plan, Diff, Confirm
+- **Dead code removed**: `render_dialog()` no longer has unreachable `{}` block after FocusManager render
+- **State inconsistency handling added**: `on_key()` now properly handles case when `dialog.is_open()` but `focus_manager.is_empty()` - logs error and resets state instead of panicking via debug_assert
+- **Skill updated**: `.opencode/skills/tui/SKILL.md` updated with `push_dialog()` method for temporary dialogs and defensive state consistency check
+
 ## Documentation Structure
 
 ### Directory Structure
@@ -302,8 +310,8 @@ When adding guidance for a new module:
 | PTY (shell session metadata) | `.opencode/skills/pty/SKILL.md` |
 | Agent (TuiCommand, TuiMsg, compaction, router, team) | `agent/AGENTS.override.md` |
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
-| TUI (keyboard shortcuts) | `tui/AGENTS.override.md` |
-| Security (SSRF, symlinks, Landlock) | `security/AGENTS.override.md` |
+| TUI (keyboard shortcuts, FocusManager, Component trait) | `.opencode/skills/tui/SKILL.md` |
+| Security (SSRF, symlinks, Landlock) | `.opencode/skills/security/SKILL.md` |
 | WASM plugins | `.opencode/skills/plugin/SKILL.md` |
 | MCP connection manager | `mcp/AGENTS.override.md` |
 | Provider (LLM providers, Arc<String> types, FallbackProvider) | `.opencode/skills/provider/SKILL.md` |

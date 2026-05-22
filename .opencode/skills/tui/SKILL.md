@@ -90,6 +90,35 @@ if let Some(active) = self.focus_manager.top_mut() {
 
 **Critical**: `set_visible_height()` must be called before every render, as popup size can change.
 
+### push_dialog for Temporary Dialogs
+
+For confirm-style dialogs that need to be created on-demand and pushed onto the FocusManager, use `push_dialog()`:
+
+```rust
+self.push_dialog(
+    Dialog::Confirm,
+    Box::new(ConfirmDialog::new("Delete Session".to_string(), msg)),
+);
+```
+
+This sets `ui_state.dialog` and pushes the component onto the FocusManager stack. The `close_dialog()` method handles cleanup automatically.
+
+### Defensive State Consistency Check
+
+The `on_key()` handler includes a defensive check for FocusManager/dialog state inconsistency:
+
+```rust
+if self.ui_state.dialog.is_open() {
+    if self.focus_manager.is_empty() {
+        tracing::error!("FocusManager is empty but dialog is open");
+        self.ui_state.dialog = Dialog::None;
+        return;
+    }
+    self.handle_dialog_key(key);
+    return;
+}
+```
+
 ## Component Trait Architecture
 
 All dialogs implement the `Component` trait from `src/tui/components/component.rs`:
