@@ -148,6 +148,18 @@ impl CommandRegistry {
                 .with_description("List background tasks"),
             Command::new("/task-del", CommandCategory::Agent, None)
                 .with_description("Delete background task"),
+            Command::new("/memory", CommandCategory::Session, None)
+                .with_description("Memory dashboard"),
+            Command::new("/memory-search", CommandCategory::Session, None)
+                .with_description("Search memories (args: query)"),
+            Command::new("/memory-list", CommandCategory::Session, None)
+                .with_description("List memories (args: namespace)"),
+            Command::new("/memory-remember", CommandCategory::Agent, None)
+                .with_description("Remember something (args: text)"),
+            Command::new("/memory-forget", CommandCategory::Agent, None)
+                .with_description("Forget a memory (args: id)"),
+            Command::new("/memory-consolidate", CommandCategory::Session, None)
+                .with_description("Consolidate session into memories"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

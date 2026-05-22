@@ -108,11 +108,13 @@ These items were identified during module reviews and are important for future a
 - **Tool definition cache staleness**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
 
 ### Memory Module (2026-05-22)
-- **File-based storage**: `~/.config/opencode/memory/` with namespace-based directories
+- **File-based storage**: `~/.config/codegg/memory/` with namespace-based directories
 - **Memory persistence fixed**: All 8 fields now saved/loaded correctly (was: only 4 fields persisted)
 - **Hierarchical namespaces**: Namespaces like `user/preferences` and `project/{hash}/conventions` now work correctly
 - **Consolidation system**: Rule-based pattern detection with importance scoring
-- **`/memory` commands**: `search`, `list`, `consolidate`
+- **Memory commands implemented**: `/memory` dashboard, `/memory-search`, `/memory-list`, `/memory-remember`, `/memory-forget`, `/memory-consolidate`
+- **During-session memory**: `/memory-remember <text>` allows saving memories mid-session
+- **Negation scoring fixed**: Negations ("don't use", "never") now correctly reduce importance (was: documentation said +8, code actually subtracted)
 - **Auto-run**: `experimental.memory_auto_consolidate` config option enables automatic consolidation on session end
 
 ### Client Module (2026-05-22)

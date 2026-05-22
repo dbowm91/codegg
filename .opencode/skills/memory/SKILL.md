@@ -1,7 +1,7 @@
 ---
 name: memory
 description: Persistent memory system for session-to-session learning in opencode-rs
-version: 1.1.0
+version: 1.2.0
 tags:
   - memory
   - persistence
@@ -41,7 +41,7 @@ pub struct Memory {
 ## File Structure
 
 ```
-~/.config/opencode/memory/
+~/.config/codegg/memory/
 ├── user/
 │   └── preferences/
 │       └── MEMORY.md
@@ -53,30 +53,36 @@ pub struct Memory {
 
 ## Commands
 
-### `/memory search <query>`
+### `/memory`
+Show memory dashboard with counts and recent memories.
+
+### `/memory-search <query>`
 Search stored memories for a specific term.
 ```
-/memory search snake_case
-/memory search "I prefer"
+/memory-search snake_case
+/memory-search "I prefer"
 ```
 
-### `/memory list`
-List all stored memories.
+### `/memory-list [namespace]`
+List memories by namespace (defaults to user/preferences and project).
 
-### `/memory consolidate`
+### `/memory-remember <text>`
+Remember something mid-session. Creates a new memory with the given text.
+```
+/memory-remember I prefer concise code
+/memory-remember Always run tests before committing
+```
+
+### `/memory-forget <id>`
+Delete a specific memory by ID (use `/memory` to see IDs).
+
+### `/memory-consolidate`
 Extract patterns from the current session and store them as memories.
 Uses rule-based pattern detection to identify:
 - User preferences ("I prefer X", "don't use Y")
 - Coding conventions (naming patterns, file organization)
 - Deprecation notices
 - Tool preferences
-
-Patterns are scored based on:
-- Base importance (explicit statements = higher)
-- Frequency bonus (repeated mentions)
-- Cross-turn confirmation
-
-Only patterns scoring >= 8.0 are stored. Old memories on the same topic are superseded (linked, not deleted).
 
 ## Configuration
 
@@ -97,16 +103,19 @@ When enabled, the system automatically runs consolidation after each completed s
 | Signal | Points |
 |--------|--------|
 | Explicit preference ("I prefer X") | 10 |
-| Negation/deprecation ("don't use Y") | -3 |
+| "I always X" | 12 |
+| Negation/deprecation ("don't use Y") | -3 modifier |
 | Repeated occurrence | +2 each |
 | Coding convention match | 5 |
 | Deprecation notice | 7 |
 
 Final score = base + frequency_bonus. Memories with score < 8.0 are discarded.
 
+**Note**: Negations ("don't use", "never use") reduce importance rather than increase it, as they represent deprecation rather than preference.
+
 ## Memory Lifecycle
 
-1. **Creation**: New memories are created by consolidation or manual add
+1. **Creation**: New memories are created by consolidation or manual `/memory-remember`
 2. **Superseding**: When a new memory on the same topic has higher importance, the old one gets `superseded_by` set
 3. **Retrieval**: Superseded memories are excluded from search results but preserved for audit trail
 4. **Pruning**: Max 20 active memories per namespace
@@ -135,7 +144,8 @@ let new_memories = store.consolidate_session(&messages, "project_hash");
 
 ## Integration Points
 
-- Memory injected into system prompt (compact summary of top memories)
+- Memory injected into system prompt at session start (top memories from `user/preferences`)
 - Auto-consolidation runs after session end (when enabled)
-- Manual consolidation via `/memory consolidate` command
-- Search available via `/memory search <query>` command
+- Manual consolidation via `/memory-consolidate` command
+- Search available via `/memory-search <query>` command
+- Mid-session memory via `/memory-remember <text>`

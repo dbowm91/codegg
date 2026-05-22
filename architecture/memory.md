@@ -11,6 +11,7 @@ The `memory` module provides persistent memory for session-to-session learning.
 - Namespace-based organization (`user/preferences`, `project/{hash}/conventions`)
 - Importance scoring and pattern-based consolidation
 - Memory superseding to prevent unbounded growth
+- During-session memory creation for immediate learning
 
 ## Key Types
 
@@ -59,7 +60,7 @@ impl MemoryStore {
 Memories stored as Markdown files with YAML frontmatter:
 
 ```
-~/.config/opencode/memory/
+~/.config/codegg/memory/
 ├── user/
 │   └── preferences/
 │       └── MEMORY.md
@@ -110,12 +111,15 @@ Rule-based pattern detection identifies:
 | Signal | Points |
 |--------|--------|
 | Explicit preference ("I prefer X") | 10 |
-| Negation/deprecation ("don't use Y") | -3 |
+| "I always X" | 12 |
+| Negation/deprecation ("don't use Y") | -3 modifier |
 | Repeated occurrence | +2 each |
 | Coding convention match | 5 |
 | Deprecation notice | 7 |
 
 Final score = base + frequency_bonus. Only memories with score >= 8.0 are stored.
+
+**Note**: Negations ("don't use", "never use") reduce importance rather than increase it, as they represent deprecation rather than preference. This is intentional - we want positive preferences to rank higher.
 
 ### Superseding
 
@@ -147,9 +151,12 @@ let summary = memory_store.get_memory_summary("user/preferences", 10);
 
 | Command | Description |
 |---------|-------------|
-| `/memory search <query>` | Search stored memories |
-| `/memory list` | List all stored memories |
-| `/memory consolidate` | Extract patterns from current session |
+| `/memory` | Show memory dashboard with counts and recent memories |
+| `/memory-search <query>` | Search stored memories |
+| `/memory-list [namespace]` | List memories by namespace |
+| `/memory-remember <text>` | Remember something mid-session |
+| `/memory-forget <id>` | Delete a specific memory by ID |
+| `/memory-consolidate` | Extract patterns from current session |
 
 ## Auto-Consolidation Flow
 

@@ -3014,6 +3014,28 @@ impl App {
                         .warning("Scheduler not available");
                 }
             }
+            "/memory" => {
+                self.handle_memory_command(None);
+            }
+            "/memory-search" => {
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                self.handle_memory_command(Some(("search", &query)));
+            }
+            "/memory-list" => {
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                self.handle_memory_command(Some(("list", &query)));
+            }
+            "/memory-remember" => {
+                let text = self.dialog_state.command_palette.query.trim().to_string();
+                self.handle_memory_command(Some(("remember", &text)));
+            }
+            "/memory-forget" => {
+                let id = self.dialog_state.command_palette.query.trim().to_string();
+                self.handle_memory_command(Some(("forget", &id)));
+            }
+            "/memory-consolidate" => {
+                self.handle_memory_command(Some(("consolidate", "")));
+            }
             _ => {}
         }
     }
@@ -4201,6 +4223,119 @@ impl App {
             }
             Err(e) => {
                 self.messages_state.toasts.info(&format!("Error: {}", e));
+            }
+        }
+    }
+
+    fn handle_memory_command(&mut self, action: Option<(&str, &str)>) {
+        let mem_store = match &self.memory_store {
+            Some(s) => s,
+            None => {
+                self.messages_state.toasts.error("Memory store not available");
+                return;
+            }
+        };
+
+        let project_hash = format!("{:x}", md5::compute(self.session_state.project_dir.as_bytes()));
+        let project_namespace = format!("project/{}", project_hash);
+
+        match action {
+            None | Some(("list", "")) => {
+                let prefs = mem_store.list("user/preferences");
+                let proj = mem_store.list(&project_namespace);
+                let total = prefs.len() + proj.len();
+                if total == 0 {
+                    self.messages_state.toasts.info("No memories yet. Use /memory-remember <text> to save something.");
+                } else {
+                    let mut lines = vec![format!("Memory Summary ({} total):", total)];
+                    if !prefs.is_empty() {
+                        lines.push(format!("  user/preferences ({}):", prefs.len()));
+                        for m in prefs.iter().take(5) {
+                            let title = m.title.as_deref().unwrap_or("(untitled)");
+                            lines.push(format!("    - [{}] {}", m.id.chars().take(8).collect::<String>(), title));
+                        }
+                        if prefs.len() > 5 {
+                            lines.push(format!("    ... and {} more", prefs.len() - 5));
+                        }
+                    }
+                    if !proj.is_empty() {
+                        lines.push(format!("  {} ({}):", project_namespace, proj.len()));
+                        for m in proj.iter().take(5) {
+                            let title = m.title.as_deref().unwrap_or("(untitled)");
+                            lines.push(format!("    - [{}] {}", m.id.chars().take(8).collect::<String>(), title));
+                        }
+                        if proj.len() > 5 {
+                            lines.push(format!("    ... and {} more", proj.len() - 5));
+                        }
+                    }
+                    self.messages_state.toasts.info(&lines.join("\n"));
+                }
+            }
+            Some(("search", query)) => {
+                if query.is_empty() {
+                    self.messages_state.toasts.warning("Usage: /memory-search <query>");
+                    return;
+                }
+                let results = mem_store.search(query);
+                if results.is_empty() {
+                    self.messages_state.toasts.info(&format!("No memories found matching '{}'", query));
+                } else {
+                    let lines: Vec<String> = results.iter().take(10).map(|m| {
+                        let title = m.title.as_deref().unwrap_or("(untitled)");
+                        format!("- [{}] {}", m.id.chars().take(8).collect::<String>(), title)
+                    }).collect();
+                    let msg = if results.len() > 10 {
+                        format!("Found {} memories (showing 10):\n{}", results.len(), lines.join("\n"))
+                    } else {
+                        format!("Found {} memory:\n{}", results.len(), lines.join("\n"))
+                    };
+                    self.messages_state.toasts.info(&msg);
+                }
+            }
+            Some(("remember", text)) => {
+                if text.is_empty() {
+                    self.messages_state.toasts.warning("Usage: /memory-remember <text to remember>");
+                    return;
+                }
+                let memory = crate::memory::Memory::new("user/preferences", text);
+                mem_store.add(memory);
+                self.messages_state.toasts.info("Remembered");
+            }
+            Some(("forget", id)) => {
+                if id.is_empty() {
+                    self.messages_state.toasts.warning("Usage: /memory-forget <id>");
+                    return;
+                }
+                if mem_store.delete(id).is_some() {
+                    self.messages_state.toasts.info("Memory deleted");
+                } else {
+                    self.messages_state.toasts.warning(&format!("Memory '{}' not found", id));
+                }
+            }
+            Some(("consolidate", _)) => {
+                let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+                let message_store = self.message_store.clone();
+                let mem_store_clone = mem_store.clone();
+                let project_hash_clone = project_hash.clone();
+                self.messages_state.toasts.info("Consolidating session memories...");
+                tokio::spawn(async move {
+                    let messages = if let (Some(sid), Some(store)) = (session_id.as_ref(), message_store.as_ref()) {
+                        match store.list(sid).await {
+                            Ok(msgs) => msgs,
+                            Err(_) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+                    if messages.is_empty() {
+                        return;
+                    }
+                    let new_memories = mem_store_clone.consolidate_session(&messages, &project_hash_clone);
+                    tracing::info!("Manual consolidation: {} new memories", new_memories.len());
+                });
+            }
+            Some((cmd, _)) => {
+                self.messages_state.toasts.warning(&format!("Unknown memory command: /{}", cmd));
             }
         }
     }

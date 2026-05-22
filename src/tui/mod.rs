@@ -137,8 +137,8 @@ use std::time::{Duration, Instant};
 use crate::permission::PermissionChecker;
 use crate::provider::{ChatRequest, ContentPart, Message, ProviderRegistry};
 use crate::session::CreateSession;
-
 use crate::tui::app::SessionStatus;
+use md5;
 use rand;
 use std::fs::OpenOptions;
 use tokio::sync::mpsc;
@@ -1253,7 +1253,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             app.prompt_state.pending_send = false;
                             app.footer.set_thinking(false, None);
 
-                            if let Some(ref mem_store) = app.memory_store {
+                            if let Some(ref _mem_store) = app.memory_store {
                                 let experimental = crate::config::schema::Config::load()
                                     .ok()
                                     .and_then(|c| c.experimental)
