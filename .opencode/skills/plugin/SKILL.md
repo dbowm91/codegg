@@ -401,10 +401,11 @@ pub struct PluginDialog {
 ## Security Considerations
 
 1. **Fuel Limits**: Per-plugin budgets prevent runaway plugins. Unused fuel is returned after execution.
-2. **Timeout**: 30 second timeout per hook
-3. **Memory Bounds**: Input validated against memory bounds
-4. **Output Size**: 10MB max output size
-5. **WASM Size**: 10MB max module size
+2. **Timeout**: 5 second timeout per hook (configurable via `with_hook_timeout()`).
+3. **Timeout error includes plugin_id**: Error message format is `"{plugin_id}: hook timeout: {err}"`.
+4. **Memory Bounds**: Input validated against memory bounds
+5. **Output Size**: 10MB max output size
+6. **WASM Size**: 10MB max module size
 
 ## Error Handling
 

@@ -1718,6 +1718,7 @@ impl AgentLoop {
         let sem = Arc::new(tokio::sync::Semaphore::new(effective_max));
         let mut futures = Vec::with_capacity(regular_tool_count);
         let hook_registry = self.hook_registry.as_ref().map(Arc::clone);
+        let plugin_service = self.plugin_service.as_ref().map(Arc::clone);
         for (orig_idx, tc) in regular_tools {
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);
@@ -1725,6 +1726,7 @@ impl AgentLoop {
             let tool_name = tc_arc.name.clone();
             let timeout = self.get_tool_timeout(&tool_name);
             let hook_registry = hook_registry.clone();
+            let plugin_service = plugin_service.clone();
             let session_id = self.session_id.clone();
             let idx_for_results = orig_idx;
             futures.push(async move {
@@ -1753,6 +1755,23 @@ impl AgentLoop {
                     }
                 }
 
+                if let Some(ref ps) = plugin_service {
+                    let input = serde_json::json!({
+                        "tool_name": tool_name,
+                        "arguments": tc_arc.arguments,
+                        "session_id": session_id,
+                    });
+                    let hook_result = ps.dispatch_tool_execute_before(input).await;
+                    if hook_result.blocked {
+                        tracing::warn!("Tool execution blocked by plugin hook");
+                        drop(permit);
+                        return (idx_for_results, id, Err(ToolError::Execution("blocked by plugin hook".to_string())));
+                    }
+                    if let Some(err) = hook_result.error {
+                        tracing::warn!("ToolExecuteBefore hook error: {}", err);
+                    }
+                }
+
                 let result = {
                     let tc_inner = Arc::clone(&tc_arc);
                     let tool = registry
@@ -1776,6 +1795,19 @@ impl AgentLoop {
                         Err(e) => Err(e),
                     }
                 };
+
+                if let Some(ref ps) = plugin_service {
+                    let input = serde_json::json!({
+                        "tool_name": tool_name,
+                        "arguments": tc_arc.arguments,
+                        "session_id": session_id,
+                        "result": result.as_ref().ok(),
+                    });
+                    let hook_result = ps.dispatch_tool_execute_after(input).await;
+                    if let Some(err) = hook_result.error {
+                        tracing::warn!("ToolExecuteAfter hook error: {}", err);
+                    }
+                }
 
                 let post_ctx = crate::hooks::HookContext {
                     event: crate::hooks::HookEvent::PostToolExecute,

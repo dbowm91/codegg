@@ -67,6 +67,11 @@ These items were identified during module reviews and are important for future a
 - **Exec mode config errors**: Config loading errors now properly returned as `CONFIG_ERROR` instead of silently using defaults (fixed 2026-05-22)
 - **Exec mode question channel**: `setup_question_channel()` is now called in exec mode for proper question tool handling (fixed 2026-05-22)
 
+### Hooks System (2026-05-22)
+- **ToolExecuteBefore/After plugin hooks now called**: Previously `dispatch_tool_execute_before/after()` existed but were never invoked in `execute_tool_calls()`. Now both are called around tool execution. `ToolExecuteBefore` can block execution by returning `blocked: true`.
+- **Shell hook config validation added**: Invalid event names (e.g., typos) now log warnings instead of silently failing. InlineScript is now deprecated with warning.
+- **Plugin hook timeout errors include plugin_id**: Error message format changed from `"hook timeout: hook execution timed out"` to `"{plugin_id}: hook timeout: hook execution timed out"`.
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism

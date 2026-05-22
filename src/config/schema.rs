@@ -108,6 +108,7 @@ pub enum HookConfig {
         #[serde(default)]
         timeout_secs: Option<u64>,
     },
+    #[deprecated(note = "InlineScript is not implemented. Use ShellCommand instead.")]
     InlineScript {
         script: String,
         #[serde(default)]

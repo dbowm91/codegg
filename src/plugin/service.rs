@@ -105,7 +105,7 @@ impl PluginService {
                         error = err,
                         "hook execution failed"
                     );
-                    return HookResult::error(format!("hook timeout: {}", err));
+                    return HookResult::error(format!("{}: hook timeout: {}", hook.plugin_id, err));
                 }
             }
         }

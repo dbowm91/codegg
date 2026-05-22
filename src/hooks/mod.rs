@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,14 +165,20 @@ impl HookRegistry {
         for def in hook_defs {
             let event = match def.event.parse::<HookEvent>() {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(_) => {
+                    warn!(event = %def.event, "invalid hook event name, skipping");
+                    continue;
+                }
             };
             let hook: Box<dyn Hook> = match &def.hook {
                 ConfigHookConfig::ShellCommand {
                     command,
                     timeout_secs,
                 } => Box::new(ShellCommandHook::new(command.clone(), *timeout_secs)),
-                ConfigHookConfig::InlineScript { .. } => continue,
+                ConfigHookConfig::InlineScript { .. } => {
+                    warn!("InlineScript hook type is not implemented, skipping");
+                    continue;
+                }
             };
             registry.register(event, hook);
         }
