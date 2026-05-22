@@ -1,7 +1,7 @@
 ---
 name: tool
 description: Tool trait, registration, execution flow, adding new tools
-version: 1.0.0
+version: 1.1.0
 tags:
   - tool
   - trait
@@ -96,6 +96,7 @@ Manages tool registration and lookup:
 ```rust
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
+    catalog: ToolCatalog,
 }
 
 impl ToolRegistry {
@@ -105,6 +106,27 @@ impl ToolRegistry {
     pub fn get(&self, name: &str) -> Option<&dyn Tool>;
     pub fn list(&self) -> Vec<&dyn Tool>;
     pub fn definitions(&self) -> Vec<ToolDefinition>;
+    pub fn filter_out(&mut self, denied_tools: &[String]);
+    pub fn catalog(&self) -> &ToolCatalog;
+}
+```
+
+### ToolCatalog
+
+The `ToolCatalog` maintains metadata about tools and supports deferred loading:
+
+```rust
+pub struct ToolCatalog {
+    tools: HashMap<String, ToolMetadata>,
+    deferred_load: Vec<String>,
+}
+
+impl ToolCatalog {
+    pub fn register(&mut self, tool: &dyn Tool);
+    pub fn search(&self, query: &str) -> Vec<&ToolMetadata>;
+    pub fn get(&self, name: &str) -> Option<&ToolMetadata>;
+    pub fn list(&self) -> Vec<&ToolMetadata>;
+    pub fn deferred_tools(&self) -> Vec<&ToolMetadata>;
 }
 ```
 
@@ -148,6 +170,8 @@ impl ToolRegistry {
 |------|-------------|
 | `plan_enter` | Enter plan mode (read-only, allows plan file editing) |
 | `plan_exit` | Exit plan mode and switch to build mode |
+
+Note: These are two separate tools (`PlanEnterTool` and `PlanExitTool`) registered individually.
 
 ### Other Tools
 
@@ -283,26 +307,29 @@ impl ToolExecutor {
 ```rust
 #[derive(Error, Debug)]
 pub enum ToolError {
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
+    #[error("tool not found: {0}")]
+    NotFound(String),
 
-    #[error("execution error: {0}")]
+    #[error("tool execution failed: {0}")]
     Execution(String),
 
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("tool timeout: {0}")]
+    Timeout(String),
 
     #[error("permission denied: {0}")]
     Permission(String),
 
-    #[error("not found: {0}")]
-    NotFound(String),
+    #[error("tool formatting failed: {0}")]
+    Format(String),
+
+    #[error("tool disabled: {0}")]
+    Disabled(String),
+
+    #[error("I/O error: {0}")]
+    Io(String),
 
     #[error("network error: {0}")]
     Network(String),
-
-    #[error("timeout: {0}")]
-    Timeout(String),
 }
 
 impl ToolError {
@@ -312,6 +339,12 @@ impl ToolError {
     }
 }
 ```
+
+## ToolContext
+
+**Note**: The architecture documentation shows a `ToolContext` struct that is passed to tool execution. This is **outdated**. The actual implementation passes only `serde_json::Value` as input directly to `execute()`.
+
+The tools receive input directly without a context struct. Any context information (like `session_id`, `workspace_dir`, `permission_checker`) would need to be accessed through other means if needed.
 
 ## Tool Result
 

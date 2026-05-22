@@ -124,7 +124,6 @@ impl Tool for GrepTool {
             .build();
 
         let canonical_search = canonical_search.clone();
-        let unrestricted = self.unrestricted;
 
         let (entries, truncated) = tokio::task::spawn_blocking(move || {
             let mut entries = Vec::new();

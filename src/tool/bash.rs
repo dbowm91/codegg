@@ -188,8 +188,6 @@ impl BashTool {
 
         // Check allowlist - must check entire command string
         if let Some(ref allowlist) = self.allowlist {
-            let normalized = parts.join(" ");
-
             let mut cmd_parts = parts.iter().copied();
             let mut cmd = cmd_parts.next().unwrap_or("");
 

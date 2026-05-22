@@ -92,8 +92,6 @@ impl Tool for GlobTool {
             validate_path(search_path, &allowed_root)?
         };
 
-        let unrestricted = self.unrestricted;
-
         let glob = GlobBuilder::new(pattern)
             .case_insensitive(false)
             .build()

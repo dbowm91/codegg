@@ -65,6 +65,17 @@ These items were identified during module reviews and are important for future a
 - **ProviderError::NotFound handled**: Added classification for provider not found errors
 - **ToolError variants handled**: NotFound, Timeout, Permission, Disabled now have distinct codes
 
+### Tool Module (2026-05-22)
+- **Skill updated**: `.opencode/skills/tool/SKILL.md` updated to version 1.1.0 with accurate `ToolCatalog` and error variants
+- **Tool trait accurately documented**: `execute()` takes only `serde_json::Value` (not `ToolContext` as shown in architecture doc)
+- **ToolResult matches implementation**: Actual struct has `tool_name`, `input`, `output`, `success` (not the `content`, `error`, `metadata` shown in architecture)
+- **ToolCatalog added**: Registry now includes `ToolCatalog` for metadata and deferred loading
+- **plan_enter/plan_exit split**: Two separate tools in `plan.rs`, not a single `plan` tool
+- **ToolExecutor with retry**: Exponential backoff with jitter for transient errors
+- **BashTool security**: Regex-based blocked patterns for dangerous commands, optional Landlock sandboxing
+- **Bug fixed**: `normalized` variable shadowing in `check_command_security()` - removed duplicate declaration
+- **Bug fixed**: Redundant `unrestricted` captures in `glob.rs` and `grep.rs` - now properly uses closure-captured value
+
 ### Verified Correct Items (not bugs)
 - **Subagent event publishing**: `SubagentStarted`/`SubagentProgress`/`SubagentCompleted`/`SubagentFailed` events properly published via `GlobalEventBus`
 - **`SubAgentPool` bounded concurrency**: Properly uses semaphore with default of 5, RAII guard pattern for active_count
@@ -297,7 +308,7 @@ When adding guidance for a new module:
 | Resilience (CircuitBreaker, FallbackProvider) | `resilience/AGENTS.override.md` |
 | Permission (mode system, PermissionChecker, DoomLoop, PermissionRegistry) | `.opencode/skills/permission/SKILL.md` |
 | LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` |
-| Tool (path validation, async command) | `tool/AGENTS.override.md` |
+| Tool (path validation, async command, ToolExecutor, ToolCatalog) | `.opencode/skills/tool/SKILL.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |
 | Client (remote TUI, WebSocket) | `.opencode/skills/client/SKILL.md` |
