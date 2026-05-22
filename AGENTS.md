@@ -83,6 +83,12 @@ These items were identified during module reviews and are important for future a
 - **Exec mode config errors**: Config loading errors now properly returned as `CONFIG_ERROR` instead of silently using defaults (fixed 2026-05-22)
 - **Exec mode question channel**: `setup_question_channel()` is now called in exec mode for proper question tool handling (fixed 2026-05-22)
 
+### Exec Module (2026-05-22)
+- **architecture/exec.md updated**: Now accurately describes the implementation (was showing outdated API with `task`/`workspace`/`context` fields)
+- **ExecInput uses `prompt` field**: Not `task` as shown in previous architecture doc
+- **`_duration_ms` fixed**: Error path now uses duration_ms instead of silently ignoring it
+- **Skill synchronized**: `.opencode/skills/exec/SKILL.md` updated to match implementation
+
 ### Hooks System (2026-05-22)
 - **ToolExecuteBefore/After plugin hooks called**: Both hooks ARE invoked in `execute_tool_calls()` at loop.rs:1764 and 1806. `ToolExecuteBefore` can block execution by returning `blocked: true`.
 - **Shell hook config validation added**: Invalid event names (e.g., typos) now log warnings instead of silently failing. InlineScript is now deprecated with warning.
@@ -192,7 +198,7 @@ When adding guidance for a new module:
 | Permission (mode system) | `permission/AGENTS.override.md` |
 | LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` |
 | Tool (path validation, async command) | `tool/AGENTS.override.md` |
-| Exec mode | `exec/AGENTS.override.md` |
+| Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `hooks/AGENTS.override.md` |
 | Client (remote TUI, WebSocket) | `client/SKILL.md` |
 | Server (WebSocket, TuiMessage serialization) | `server/AGENTS.override.md` |
