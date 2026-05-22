@@ -71,12 +71,13 @@ pub struct ModelRouter {
 
 Processes `ChatEvent` types from the provider:
 
-**ChatEvent Types**:
-- `Text` - Plain text response
+**ChatEvent Types** (from `provider/mod.rs`):
+- `TextDelta` - Text content streamed
+- `ReasoningDelta` - Reasoning content streamed  
 - `ToolCall` - Request to execute a tool
-- `ToolResult` - Tool execution result
+- `ToolResult` - Tool execution result with tool_call_id and content
+- `Finish` - End of message marker with stop_reason and token usage
 - `Error` - Error occurred
-- `Eom` - End of message marker
 
 ### team.rs / worker.rs - Subagent Pool
 
@@ -84,14 +85,33 @@ Manages concurrent subagent execution:
 
 ```rust
 pub struct SubAgentPool {
-    semaphore: Semaphore,
+    shutdown_tx: broadcast::Sender<()>,
+    active_count: Arc<AtomicUsize>,
     max_concurrent: usize,  // default: 5
+    max_depth: usize,      // default: 3
+    task_store: Arc<TokioMutex<TaskStore>>,
+    workers: Arc<TokioMutex<Vec<tokio::task::JoinHandle<()>>>>,
+    request_tx: mpsc::Sender<WorkerRequest>,
+    agents: Arc<Vec<Agent>>,
+    provider_registry: Arc<ProviderRegistry>,
+    config: Arc<Config>,
+    session_store: Arc<SessionStore>,
+    cancel_token: CancellationToken,
+    active_handles: Arc<TokioMutex<Vec<tokio::task::JoinHandle<()>>>>,
+    pool: Option<SqlitePool>,
 }
 ```
 
+**Key Types**:
+- `SubAgentRequest` - Task request with task_id, prompt, agent, parent_id, denied_tools, allowed_paths, description, depth
+- `SubAgentResult` - Task result with task_id, success, result
+- `SubAgentSpawner` - Cloneable handle for sending requests to pool
+
 **Key Functions**:
-- `process_request()` - Execute subagent task
-- Returns `SubAgentResult::success()` with `SubagentCompleted` event
+- `SubAgentPool::new()` - Creates new pool with semaphore-based concurrency control
+- `SubAgentSpawner::send()` - Sends subagent request (async version available)
+- Subagent execution publishes `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`/`SubagentFailed` events
+- RAII guard pattern (`ActiveCountGuard`) ensures proper active_count management
 
 ### mention.rs - Agent Mentions
 
@@ -107,12 +127,19 @@ Loads and manages prompt templates from files.
 
 ```rust
 pub struct Agent {
-    pub id: String,
     pub name: String,
-    pub model: String,
-    pub system_prompt: String,
-    pub permission_level: PermissionLevel,
+    pub description: String,
     pub mode: AgentMode,
+    pub mode_name: Option<String>,
+    pub model: Option<String>,
+    pub variant: Option<String>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub color: Option<String>,
+    pub steps: Option<usize>,
+    pub system_prompt: Option<String>,
+    pub permissions: HashMap<String, String>,
+    pub hidden: bool,
 }
 ```
 
@@ -166,10 +193,11 @@ Related configurations in `config/`:
 
 ## Known Implementation Notes
 
-1. **`process_request()` is implemented** - Properly publishes `SubagentStarted`/`SubagentCompleted` events
-2. **`SubAgentPool` bounded concurrency** - Uses semaphore with default of 5
-3. **Tool definition caching** - Cache key includes version for proper invalidation
-4. **DoomLoop doc mismatch** - Comment says "consecutive" but implementation uses window-based counting
+1. **Subagent event publishing** - `SubagentStarted`/`SubagentCompleted`/`SubagentFailed` events properly published via `GlobalEventBus`
+2. **`SubAgentPool` bounded concurrency** - Uses semaphore with default of 5, RAII guard pattern for active_count
+3. **Tool definition caching** - Cache key includes mcp_tool_count, permission_version for proper invalidation
+4. **DoomLoop detection** - Uses window-based counting (not consecutive), correctly documented
+5. **ToolExecuteBefore/After hooks** - Both hooks ARE invoked in `execute_tool_calls()` at loop.rs:1764 and 1806
 
 ## See Also
 

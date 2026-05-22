@@ -50,9 +50,8 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 These items were identified during module reviews and are important for future agents to know:
 
 ### Verified Correct Items (not bugs)
-- **WebSocket rate limiter**: If `REDIS_URL` is set → use Redis; otherwise → use in-memory. Proper fallback behavior.
-- **`process_request()` is implemented**: It publishes `SubagentStarted`/`SubagentCompleted` events and returns `SubAgentResult::success()`.
-- **`SubAgentPool` bounded concurrency**: Properly uses semaphore with default of 5
+- **Subagent event publishing**: `SubagentStarted`/`SubagentProgress`/`SubagentCompleted`/`SubagentFailed` events properly published via `GlobalEventBus`
+- **`SubAgentPool` bounded concurrency**: Properly uses semaphore with default of 5, RAII guard pattern for active_count
 - **Tool definition caching**: Properly versioned cache key (uses mcp_tool_count as proxy - see known limitation)
 - **DoomLoop detection**: Implementation correctly uses window-based counting (not consecutive), and docstring accurately describes this
 - **`decrypt_provider_keys()` is called in `Config::load()`**: API keys encrypted via `save()` are now automatically decrypted on load (fixed 2026-05-21)
@@ -68,7 +67,7 @@ These items were identified during module reviews and are important for future a
 - **Exec mode question channel**: `setup_question_channel()` is now called in exec mode for proper question tool handling (fixed 2026-05-22)
 
 ### Hooks System (2026-05-22)
-- **ToolExecuteBefore/After plugin hooks now called**: Previously `dispatch_tool_execute_before/after()` existed but were never invoked in `execute_tool_calls()`. Now both are called around tool execution. `ToolExecuteBefore` can block execution by returning `blocked: true`.
+- **ToolExecuteBefore/After plugin hooks called**: Both hooks ARE invoked in `execute_tool_calls()` at loop.rs:1764 and 1806. `ToolExecuteBefore` can block execution by returning `blocked: true`.
 - **Shell hook config validation added**: Invalid event names (e.g., typos) now log warnings instead of silently failing. InlineScript is now deprecated with warning.
 - **Plugin hook timeout errors include plugin_id**: Error message format changed from `"hook timeout: hook execution timed out"` to `"{plugin_id}: hook timeout: hook execution timed out"`.
 
