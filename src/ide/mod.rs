@@ -2,10 +2,15 @@ use similar::{ChangeTag, TextDiff};
 
 pub fn is_vscode() -> bool {
     std::env::var("VSCODE_IPC_HOOK").is_ok()
+        || std::env::var("VSCODE_INJECTED_ENVIRONMENT").is_ok()
+        || std::env::var("TERM_PROGRAM").is_ok_and(|v| v == "vscode")
 }
 
 pub fn is_jetbrains() -> bool {
     std::env::var("JETBRAINS_REMOTE").is_ok()
+        || std::env::var("JB_PRODUCT_READINESS").is_ok()
+        || std::env::var("IDEA_INITIAL_DIRECTORY").is_ok()
+        || std::env::var("WEBCLBROWSER_HOST").is_ok()
 }
 
 pub fn is_ide() -> bool {
@@ -40,7 +45,7 @@ pub fn open_diff(
     if is_vscode() {
         open_diff_vscode(&original_content, &modified_content)
     } else if is_jetbrains() {
-        open_diff_jetbrains(_original, _modified)
+        open_diff_jetbrains(&original_content, &modified_content)
     } else {
         open_diff_generic(_original, _modified)
     }
@@ -87,23 +92,59 @@ fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<()
 }
 
 fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
+    use std::io::Write;
     use std::process::Command;
+    use tempfile::Builder;
+
+    let mut original_temp = Builder::new()
+        .prefix("codegg_original_")
+        .tempfile()
+        .map_err(|e| format!("failed to create temp original: {}", e))?;
+    let mut modified_temp = Builder::new()
+        .prefix("codegg_modified_")
+        .tempfile()
+        .map_err(|e| format!("failed to create temp modified: {}", e))?;
+
+    original_temp
+        .write_all(original.as_bytes())
+        .map_err(|e| format!("failed to write temp original: {}", e))?;
+    modified_temp
+        .write_all(modified.as_bytes())
+        .map_err(|e| format!("failed to write temp modified: {}", e))?;
+
+    let original_path = original_temp.path().to_owned();
+    let modified_path = modified_temp.path().to_owned();
+
+    let tool = if let Ok(tool) = std::env::var("JETBRAINS_TOOL") {
+        Some(tool)
+    } else if std::path::Path::new("/opt/intellij/bin/idea.sh").exists() {
+        Some("/opt/intellij/bin/idea.sh".to_string())
+    } else if std::path::Path::new("/usr/local/bin/idea").exists() {
+        Some("/usr/local/bin/idea".to_string())
+    } else if cfg!(windows) {
+        let program_files = std::env::var("PROGRAMFILES").unwrap_or_default();
+        let jetbrains_path = std::path::Path::new(&program_files).join("JetBrains");
+        if jetbrains_path.exists() {
+            let tool_path = jetbrains_path
+                .read_dir()
+                .ok()
+                .and_then(|entries| entries.filter_map(|e| e.ok()).find(|e| e.path().is_dir()))
+                .map(|e| e.path().join("bin\\idea.bat"));
+            tool_path.and_then(|p| p.exists().then_some(p)).map(|p| p.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let tool = tool.unwrap_or_else(|| "idea".to_string());
 
     let args = vec![
         "diff".to_string(),
-        original.to_string(),
-        modified.to_string(),
+        original_path.to_string_lossy().to_string(),
+        modified_path.to_string_lossy().to_string(),
     ];
-
-    let tool = if let Ok(tool) = std::env::var("JETBRAINS_TOOL") {
-        tool
-    } else if std::path::Path::new("/opt/intellij/bin/idea.sh").exists() {
-        "/opt/intellij/bin/idea.sh".to_string()
-    } else if std::path::Path::new("/usr/local/bin/idea").exists() {
-        "/usr/local/bin/idea".to_string()
-    } else {
-        "idea".to_string()
-    };
 
     let output = Command::new(&tool)
         .args(&args)

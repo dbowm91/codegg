@@ -1,7 +1,7 @@
 ---
 name: ide
 description: IDE integration for VS Code and JetBrains diff viewing
-version: 1.0.0
+version: 1.1.0
 tags:
   - ide
   - diff
@@ -15,38 +15,79 @@ This skill covers IDE integration for diff viewing in opencode-rs.
 
 ## Overview
 
-Detects IDE presence and generates diffs for VS Code and JetBrains IDEs.
+Detects IDE presence and generates diffs for VS Code and JetBrains IDEs. Supports line range slicing for focused diff viewing.
 
-## VS Code Detection
+## Detection Functions
 
 ```rust
-use crate::ide::is_vscode;
+use crate::ide::{is_vscode, is_jetbrains, is_ide};
 
 if is_vscode() {
     // VS Code is running
 }
-```
-
-## JetBrains Detection
-
-```rust
-use crate::ide::is_jetbrains;
 
 if is_jetbrains() {
     // JetBrains IDE is running
 }
+
+if is_ide() {
+    // Any supported IDE is running
+}
 ```
 
-## Diff Generation
+## VS Code Detection
+
+Checks for:
+- `VSCODE_IPC_HOOK` - Set when VS Code IPC server is active
+- `VSCODE_INJECTED_ENVIRONMENT` - Set in VS Code integrated terminal
+- `TERM_PROGRAM=vscode` - Terminal program detection
+
+## JetBrains Detection
+
+Checks for:
+- `JETBRAINS_REMOTE` - Set when JetBrains remote mode is active
+- `JB_PRODUCT_READINESS` - JetBrains product readiness flag
+- `IDEA_INITIAL_DIRECTORY` - JetBrains initial working directory
+- `WEBCLBROWSER_HOST` - JetBrains web client host
+
+## Opening Diff Views
 
 ```rust
-use crate::ide::{generate_unified_diff, generate_side_by_side};
+use crate::ide::open_diff;
 
-let diff = generate_unified_diff(old_content, new_content, "file.rs");
-let side_by_side = generate_side_by_side(old_content, new_content);
+// Open full diff
+open_diff("/path/to/original", "/path/to/modified", None, None)?;
+
+// Open diff with line ranges (1-indexed, end-inclusive)
+open_diff(
+    "/path/to/original",
+    "/path/to/modified",
+    Some((10, 50)),  // original lines 10-50
+    Some((10, 50)),  // modified lines 10-50
+)?;
 ```
 
-## Environment Variables
+When line ranges are provided, content is sliced before opening in the IDE. Both VS Code and JetBrains handlers use temporary files for the sliced content.
 
-- `VSCODE_IPC_HOOK` - Set when VS Code is running
-- `JETBRAINS_REMOTE` - Set when JetBrains remote mode is active
+## Diff Generation (for TUI display)
+
+```rust
+use crate::ide::generate_unified_diff;
+
+let diff = generate_unified_diff(old_content, new_content, "file.rs");
+// Returns unified diff format or "(no changes)" if identical
+```
+
+## IDE-Specific Handlers
+
+### VS Code
+Uses `code --diff` CLI with temporary files.
+
+### JetBrains
+Uses `idea diff` or `idea.sh diff` CLI. Supports:
+- `$JETBRAINS_TOOL` environment variable override
+- Unix paths: `/opt/intellij/bin/idea.sh`, `/usr/local/bin/idea`
+- Windows: `%PROGRAMFILES%\JetBrains\<product>\bin\idea.bat`
+
+### Generic Fallback
+If no IDE is detected, tries `code --diff` then `idea diff` from PATH.

@@ -17,8 +17,9 @@ The `ide` module provides integration with VS Code and JetBrains IDEs for diff v
 
 ```rust
 pub fn is_vscode() -> bool {
-    // Check VSCODE_INJECTED_ENVIRONMENT variable
-    // Or check for .vscode-server directory
+    std::env::var("VSCODE_IPC_HOOK").is_ok()
+        || std::env::var("VSCODE_INJECTED_ENVIRONMENT").is_ok()
+        || std::env::var("TERM_PROGRAM").is_ok_and(|v| v == "vscode")
 }
 ```
 
@@ -26,63 +27,66 @@ pub fn is_vscode() -> bool {
 
 ```rust
 pub fn is_jetbrains() -> bool {
-    // Check for JetBrains-specific env vars
-    // JB_PRODUCT_READINESS
-    // IDEA_INITIAL_DIRECTORY
+    std::env::var("JETBRAINS_REMOTE").is_ok()
+        || std::env::var("JB_PRODUCT_READINESS").is_ok()
+        || std::env::var("IDEA_INITIAL_DIRECTORY").is_ok()
+        || std::env::var("WEBCLBROWSER_HOST").is_ok()
+}
+```
+
+### is_ide()
+
+```rust
+pub fn is_ide() -> bool {
+    is_vscode() || is_jetbrains()
 }
 ```
 
 ### open_diff()
 
 ```rust
-pub fn open_diff(original: &Path, modified: &Path, original_name: &str, modified_name: &str) -> Result<()>;
+pub fn open_diff(
+    _original: &str,
+    _modified: &str,
+    original_lines: Option<(usize, usize)>,
+    modified_lines: Option<(usize, usize)>,
+) -> Result<(), String>
 ```
 
-Opens the IDE's diff viewer with two files.
+Opens the IDE's diff viewer with two files. When line ranges are provided, the content is sliced before opening in the IDE. Uses temp files for JetBrains and VS Code diffs.
 
 ### generate_unified_diff()
 
 ```rust
-pub fn generate_unified_diff(original: &str, modified: &str, original_name: &str, modified_name: &str) -> String;
+pub fn generate_unified_diff(old: &str, new: &str, path: &str) -> String
 ```
 
-Generates a unified diff string.
+Generates a unified diff string (--- a/path, +++ b/path format).
 
 ### generate_side_by_side()
 
 ```rust
-pub fn generate_side_by_side(original: &str, modified: &str, width: usize) -> String;
+pub fn generate_side_by_side(old: &str, new: &str, path: &str) -> String
 ```
 
-Generates a side-by-side diff view.
+Generates a side-by-side diff view with ANSI color codes.
 
 ## VS Code Integration
 
-Uses VS Code's IPC mechanism:
+Uses VS Code's `--diff` CLI argument with temporary files:
 
 ```rust
-#[derive(Serialize)]
-struct VsCodeCommand {
-    command: String,
-    args: Vec<Value>,
-}
+Command::new("code")
+    .args(["--diff", original_path, modified_path])
 ```
-
-Commands sent via stdio to VS Code.
 
 ## JetBrains Integration
 
-Uses JetBrains' remote mode API:
-
-```rust
-#[derive(Serialize)]
-struct JetBrainsRequest {
-    action: String,
-    params: Value,
-}
-```
-
-HTTP requests to JetBrains gateway.
+Uses JetBrains `idea` or `idea.sh` CLI with `diff` subcommand. Supports:
+- `$JETBRAINS_TOOL` environment variable override
+- Unix paths: `/opt/intellij/bin/idea.sh`, `/usr/local/bin/idea`
+- Windows: `%PROGRAMFILES%\JetBrains\<product>\bin\idea.bat`
+- Falls back to `idea` in PATH
 
 ## See Also
 

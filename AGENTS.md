@@ -175,6 +175,7 @@ When adding guidance for a new module:
 | Snapshot (file state capture and restore) | `snapshot/AGENTS.override.md` |
 | Skills (skill system overview) | `skills/AGENTS.override.md` |
 | Command (slash commands, templates, execution) | `command/AGENTS.override.md` |
+| IDE (VS Code, JetBrains detection, diff viewing) | `.opencode/skills/ide/SKILL.md` |
 | Testing (E2E, unit, integration) | `meta/AGENTS.override.md` |
-| Config (loading, validation, encryption, watching) | `config/SKILL.md` |
+| Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |
