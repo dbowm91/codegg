@@ -247,6 +247,15 @@ These items were identified during module reviews and are important for future a
 - **Error handling improved**: `speak()` now returns `Err(AppError::Io(...))` when `say` command fails instead of silently ignoring failures. Callers handle errors appropriately.
 - **Skill synchronized**: `.opencode/skills/tts/SKILL.md` updated with error handling documentation
 
+### Util Module (2026-05-22)
+- **Architecture doc updated**: `architecture/util.md` now accurately reflects the implementation (was showing incorrect function signatures and types)
+- **Skill created**: `.opencode/skills/util/SKILL.md` created with module guidance
+- **clipboard.rs naming differs**: Actual functions are `copy_to_clipboard()` / `read_from_clipboard()` (not `copy()` / `paste()` as shown in doc)
+- **fuzzy.rs API differs**: `fuzzy_match()` takes `&[String]` candidates returning `Vec<(String, usize)>`, not `Option<(usize, usize)>`. `fuzzy_score()` returns `usize`, not a `FuzzyScore` struct
+- **truncate.rs differs**: Actual functions are `truncate_lines()` / `truncate_bytes()` (not `truncate()` / `truncate_with_ellipsis()` as shown in doc)
+- **stat_core.rs misnamed**: Contains metrics infrastructure (Counter, Gauge, Histogram), not file statistics as name suggests
+- **Feature gate noted**: Clipboard requires `arboard` feature flag
+
 ### Upgrade Module (2026-05-22)
 - **Architecture doc updated**: `architecture/upgrade.md` now accurately reflects the implementation (was showing outdated `ReleaseInfo` struct and `github_api::get_latest_release` function)
 - **Skill created**: `.opencode/skills/upgrade/SKILL.md` created with module guidance
@@ -294,7 +303,8 @@ These items were identified during module reviews and are important for future a
 ├── storage/SKILL.md             # SQLite database initialization, connection pooling
 ├── tool/SKILL.md                 # Tool path validation, async command
 ├── tui/SKILL.md                  # Terminal UI, keyboard shortcuts
-└── upgrade/SKILL.md              # Self-upgrade functionality via GitHub releases
+├── upgrade/SKILL.md              # Self-upgrade functionality via GitHub releases
+└── util/SKILL.md                 # Clipboard, fuzzy matching, truncation, metrics
 ```
 
 ### Adding New Module Guidance
@@ -345,3 +355,4 @@ When adding guidance for a new module:
 | Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` |
 | Skills (skill loading, activation, SkillIndex) | `.opencode/skills/skills/SKILL.md` |
 | Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` |
+| Util (clipboard, fuzzy matching, truncation, metrics) | `.opencode/skills/util/SKILL.md` |
