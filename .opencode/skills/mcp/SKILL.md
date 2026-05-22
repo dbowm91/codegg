@@ -1,7 +1,7 @@
 ---
 name: mcp
 description: MCP client/server system, local vs remote, OAuth flow
-version: 1.0.0
+version: 1.1.0
 tags:
   - mcp
   - model context protocol
@@ -142,36 +142,13 @@ pub enum ConnectionState {
 let mut manager = McpConnectionManager::new(url, headers, timeout)?;
 manager.connect().await?;
 
-// Watch for state changes
-let mut state_watcher = manager.watch();
-while let Some(state) = state_watcher.recv().await {
-    tracing::info!("Connection state: {:?}", state);
-}
-
 // Ensure connected before making requests
 manager.ensure_connected().await?;
 ```
 
-**Features:**
-- Exponential backoff: 1s → 2s → 4s → ... → max 60s
-- Max 5 retry attempts before giving up
-- Heartbeat every 30s to keep connection alive
-- State notification via watch channel
-
-**Usage:**
-```rust
-let mut manager = McpConnectionManager::new(client);
-manager.start_connection_manager().await;
-
-// Watch for state changes
-let mut stateWatcher = manager.watch();
-while let Some(state) = stateWatcher.recv().await {
-    tracing::info!("Connection state: {:?}", state);
-}
-```
+**DNS Rebinding Protection Details:**
 
 ```rust
-// Validation at connection time in validate_url_host()
 fn validate_url_host(url: &str) -> Result<(String, Vec<IpAddr>), McpError> {
     let parsed = reqwest::Url::parse(url)?;
     let host = parsed.host_str().ok_or_else(|| ...)?;
@@ -222,7 +199,7 @@ pub struct IdeServer {
 impl IdeServer {
     pub fn new() -> Self;
     pub async fn run_stdio(&self) -> Result<(), McpError>;
-    pub async fn run_unix_socket(&self, path: &str) -> Result<(), McpError>;
+    pub async fn run_socket(&self, socket_path: &str) -> Result<(), McpError>;
 }
 ```
 
@@ -406,3 +383,11 @@ pub enum McpError {
 2. **Internal IP Blocking**: Only HTTP/HTTPS schemes allowed; internal IPs blocked
 3. **OAuth Token Storage**: Tokens stored in memory, refreshed automatically
 4. **Header Validation**: Custom headers validated at connection time
+
+## Known Limitations
+
+1. **Tool definition cache staleness**: Uses `mcp_tool_count` as proxy for MCP tool changes. If tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
+
+2. **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
+
+3. **OAuthManager structure**: The skill documentation showed an outdated `pending_auths`/`completed_flows` structure. Actual implementation uses `token_store` and `servers` HashMap for token persistence.

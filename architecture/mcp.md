@@ -51,64 +51,128 @@ pub enum McpAuth {
 Stdio-based communication with local MCP servers:
 
 ```rust
-pub struct LocalMcpClient {
+pub struct LocalClient {
     command: String,
     args: Vec<String>,
-    process: Child,
-    writer: ChildStdin,
-    reader: ChildStdout,
+    env: HashMap<String, String>,
+    timeout: u64,
+    child: Option<Child>,
+    stdin: Option<tokio::process::ChildStdin>,
+    pending: PendingSenders,
+    shutdown_notify: Arc<Notify>,
+    request_id: AtomicU64,
 }
 ```
 
 **Protocol**: JSON-RPC over stdio
+
+**Features:**
+- Uses `std::env::var_os("PATH")` to preserve user's actual PATH
+- Process spawn wrapped in 10s timeout to prevent hangs
+- Graceful shutdown via `shutdown_notify` Notify mechanism
 
 ### remote.rs - Remote MCP Clients
 
 HTTP-based communication with remote MCP servers:
 
 ```rust
-pub struct RemoteMcpClient {
-    url: Url,
-    auth: Option<McpAuth>,
-    http_client: Client,
+pub struct RemoteClient {
+    url: String,
+    headers: HashMap<String, String>,
+    client: reqwest::Client,
+    session_id: Mutex<Option<String>>,
+    sse_url: Mutex<Option<String>>,
+    oauth_token: Mutex<Option<String>>,
+    sse_events: Arc<Mutex<Vec<serde_json::Value>>>,
+    request_id: AtomicU64,
+    shutdown: Arc<Mutex<bool>>,
+    sse_shutdown: Arc<Notify>,
+    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,
 }
 ```
 
-**Features**:
+**Features:**
 - Bearer token authentication
 - OAuth flow support
-- `reconnect()` method exists at line 470 but NOT wired to auto-retry
+- DNS rebinding protection (IP re-validation on each request)
+- SSE (Server-Sent Events) support for server-initiated messages
+
+### McpConnectionManager - Auto-reconnect wrapper
+
+```rust
+pub struct McpConnectionManager {
+    client: RemoteClient,
+    state: Arc<Mutex<ConnectionState>>,
+    retry_count: Arc<AtomicU64>,
+    max_retries: u64,
+    base_delay: Duration,
+    max_delay: Duration,
+    heartbeat_interval: Duration,
+    heartbeat_task: Arc<AtomicBool>,
+    shutdown: Arc<Notify>,
+    reconnect_needed: Arc<Notify>,
+}
+
+pub enum ConnectionState {
+    Connected,
+    Disconnected,
+    Reconnecting { attempt: u32 },
+}
+```
+
+**Features:**
+- Exponential backoff: 1s → 2s → 4s → ... → max 60s
+- Max 5 retry attempts before giving up
+- Heartbeat every 30s to keep connection alive
+- `ensure_connected()` spawns reconnection in background task
 
 ### auth.rs - OAuth Token Management
 
 ```rust
-pub struct AuthManager {
-    clients: HashMap<String, AuthState>,
+pub struct OAuthManager {
+    token_store: PathBuf,
+    used_codes_store: PathBuf,
+    servers: HashMap<String, ServerTokens>,
+    used_codes: HashMap<String, UsedCode>,
 }
 
-pub enum AuthState {
-    Pending { verifier: String },
-    Authorized { access_token: String },
-    Refreshed { access_token: String },
+pub struct ServerTokens {
+    pub server_url: String,
+    pub tokens: TokenSet,
 }
 ```
+
+**Token Encryption:**
+- Tokens encrypted with AES-256-GCM using `CODEGG_TOKEN_KEY` env var
+- Uses `CODEGG_ENC_v1` magic bytes prefix for version detection
 
 ### McpService - Connection Manager
 
 ```rust
 pub struct McpService {
-    clients: HashMap<String, McpClient>,
-    tools: HashMap<String, McpTool>,
+    servers: HashMap<String, McpServer>,
+    oauth: OAuthManager,
 }
 
-impl McpService {
-    pub async fn connect(&self, server_id: &str, config: &McpServerConfig) -> Result<()>;
-    pub async fn disconnect(&self, server_id: &str) -> Result<()>;
-    pub async fn reconnect(&self, server_id: &str) -> Result<()>;  // Not auto-wired
-    pub fn list_tools(&self) -> Vec<McpTool>;
-    pub async fn call_tool(&self, server: &str, tool: &str, params: Value) -> Result<Value>;
+pub struct McpServer {
+    pub name: String,
+    pub status: McpServerStatus,
+    pub tools: Vec<McpTool>,
+    pub client: McpClientType,
+}
+
+pub enum McpClientType {
+    Local(Arc<RwLock<LocalClient>>),
+    Remote(Arc<RwLock<McpConnectionManager>>),
 }
 ```
+
+**Connection methods:**
+- `connect_stdio()` - Local servers via stdio
+- `connect_http()` - Remote servers via HTTP
+- `connect_from_config()` - Config-based connection (used by server startup)
+- `disconnect()` - Gracefully disconnect a server
+- `shutdown_all()` - Disconnect all servers
 
 ## McpTool
 
@@ -187,9 +251,21 @@ auth = { type = "bearer", token = "..." }
 - `McpToolCall` - Tool called
 - `McpToolResult` - Tool result
 
+## Events Published
+
+- `McpServerStarted` - Server connected
+- `McpServerStopped` - Server disconnected
+- `McpServerError` - Server error
+- `McpToolCall` - Tool called
+- `McpToolResult` - Tool result
+
 ## Known Implementation Issues
 
-1. **`reconnect()` not wired**: `remote.rs::reconnect()` exists at line 470 but needs to be wired up to auto-retry mechanism
+1. **Tool definition cache staleness**: Uses `mcp_tool_count` as proxy for MCP tool changes. If tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
+
+2. **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
+
+3. **Remote reconnection via spawn**: `ensure_connected()` spawns reconnection in a background task and waits for notification. If the spawned task fails silently, the wait may timeout.
 
 ## See Also
 

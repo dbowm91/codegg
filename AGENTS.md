@@ -101,6 +101,11 @@ These items were identified during module reviews and are important for future a
 - **Race condition in ensure_connected()**: Refactored to clone all fields before `tokio::spawn`, avoiding borrow after spawn.
 - **Hardcoded PATH fixed**: `LocalClient::initialize()` now uses user's actual PATH via `std::env::var_os("PATH")`, falls back to safe default.
 - **Spawn timeout added**: Process spawn wrapped in `tokio::time::timeout` + `spawn_blocking`, capped at 10s to prevent hangs.
+- **Auto-reconnect via McpConnectionManager**: Exponential backoff (1s→2s→4s→...→max 60s), max 5 retries, heartbeat every 30s. `ensure_connected()` spawns reconnection in background task.
+
+### Known Issues (Lower Priority)
+- **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
+- **Tool definition cache staleness**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
 
 ### Memory Module (2026-05-22)
 - **File-based storage**: `~/.config/opencode/memory/` with namespace-based directories
@@ -140,14 +145,9 @@ These items were identified during module reviews and are important for future a
 - **Registration-before-publish pattern**: When publishing `PermissionPending` or `QuestionPending`, register the responder BEFORE publishing the event
 - **ResyncRequired serialization**: Server uses `TuiMessage::ResyncRequired` variant directly (not raw JSON)
 - **Client timeouts**: Health check has 10s timeout, WebSocket connection has 30s timeout
-
-### Code Quality Issues (Lower Priority)
 - **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
-- **Tool definition cache staleness**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
 
 ## Documentation Structure
-
-Agent guidance is **modularized** to reduce context pollution. Each module has its own `SKILL.md` file in `.opencode/skills/<module>/`. The root `AGENTS.md` serves as an index only.
 
 ### Directory Structure
 
