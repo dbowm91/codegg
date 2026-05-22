@@ -11,7 +11,7 @@ The `mcp` module implements the Model Context Protocol client for connecting to 
 - Server connection management
 - OAuth authentication support
 - Tool exposure to AgentLoop
-- Auto-reconnection (exists but not fully wired)
+- Auto-reconnection with exponential backoff
 
 ## MCP Overview
 
@@ -19,32 +19,43 @@ MCP (Model Context Protocol) allows external tools and resources to be exposed t
 
 ## Client Types
 
-### McpClientType
+### McpClientType (in `mod.rs`)
 
 ```rust
 pub enum McpClientType {
-    Local {
-        command: String,
-        args: Vec<String>,
-        env: HashMap<String, String>,
-    },
-    Remote {
-        url: Url,
-        auth: Option<McpAuth>,
-    },
+    Local(Arc<RwLock<LocalClient>>),
+    Remote(Arc<RwLock<McpConnectionManager>>),
 }
 ```
 
-### McpAuth
-
-```rust
-pub enum McpAuth {
-    Bearer { token: String },
-    OAuth { client_id: String, client_secret: String },
-}
-```
+Note: `Local` and `Remote` variants wrap Arc<RwLock> to allow shared access across the application.
 
 ## Key Components
+
+### mod.rs - McpService
+
+Main entry point for managing MCP servers:
+
+```rust
+pub struct McpService {
+    servers: HashMap<String, McpServer>,
+    oauth: OAuthManager,
+}
+
+pub struct McpServer {
+    pub name: String,
+    pub status: McpServerStatus,
+    pub tools: Vec<McpTool>,
+    pub client: McpClientType,
+}
+```
+
+**Connection methods:**
+- `connect_stdio()` - Local servers via stdio
+- `connect_http()` - Remote servers via HTTP
+- `connect_from_config()` - Config-based connection (used by server startup)
+- `disconnect()` - Gracefully disconnect a server
+- `shutdown_all()` - Disconnect all servers
 
 ### local.rs - Local MCP Clients
 
@@ -70,8 +81,9 @@ pub struct LocalClient {
 - Uses `std::env::var_os("PATH")` to preserve user's actual PATH
 - Process spawn wrapped in 10s timeout to prevent hangs
 - Graceful shutdown via `shutdown_notify` Notify mechanism
+- Pending request map for correlating JSON-RPC responses
 
-### remote.rs - Remote MCP Clients
+### remote.rs - Remote MCP Clients + McpConnectionManager
 
 HTTP-based communication with remote MCP servers:
 
@@ -87,17 +99,11 @@ pub struct RemoteClient {
     request_id: AtomicU64,
     shutdown: Arc<Mutex<bool>>,
     sse_shutdown: Arc<Notify>,
-    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,
+    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,  // Arc<Mutex<...>> for Clone semantics
 }
 ```
 
-**Features:**
-- Bearer token authentication
-- OAuth flow support
-- DNS rebinding protection (IP re-validation on each request)
-- SSE (Server-Sent Events) support for server-initiated messages
-
-### McpConnectionManager - Auto-reconnect wrapper
+**Auto-reconnect wrapper:**
 
 ```rust
 pub struct McpConnectionManager {
@@ -113,18 +119,24 @@ pub struct McpConnectionManager {
     reconnect_needed: Arc<Notify>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum ConnectionState {
     Connected,
+    #[default]
     Disconnected,
     Reconnecting { attempt: u32 },
 }
 ```
 
 **Features:**
+- Bearer token authentication
+- OAuth flow support
+- DNS rebinding protection (IP re-validation on each request)
+- SSE (Server-Sent Events) support for server-initiated messages
 - Exponential backoff: 1s → 2s → 4s → ... → max 60s
 - Max 5 retry attempts before giving up
 - Heartbeat every 30s to keep connection alive
-- `ensure_connected()` spawns reconnection in background task
+- `ensure_connected()` spawns reconnection in background task when disconnected
 
 ### auth.rs - OAuth Token Management
 
@@ -140,50 +152,71 @@ pub struct ServerTokens {
     pub server_url: String,
     pub tokens: TokenSet,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenSet {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub token_type: String,
+    pub expires_at: Option<u64>,
+    pub scope: Option<String>,
+}
 ```
 
 **Token Encryption:**
 - Tokens encrypted with AES-256-GCM using `CODEGG_TOKEN_KEY` env var
 - Uses `CODEGG_ENC_v1` magic bytes prefix for version detection
+- PKCE support for OAuth authorization code flow
+- Replay protection via used codes store
 
-### McpService - Connection Manager
+### cli.rs - MCP CLI Commands
+
+CLI commands for managing MCP servers:
 
 ```rust
-pub struct McpService {
-    servers: HashMap<String, McpServer>,
-    oauth: OAuthManager,
-}
-
-pub struct McpServer {
-    pub name: String,
-    pub status: McpServerStatus,
-    pub tools: Vec<McpTool>,
-    pub client: McpClientType,
-}
-
-pub enum McpClientType {
-    Local(Arc<RwLock<LocalClient>>),
-    Remote(Arc<RwLock<McpConnectionManager>>),
+pub struct McpCli {
+    config_path: PathBuf,
 }
 ```
 
-**Connection methods:**
-- `connect_stdio()` - Local servers via stdio
-- `connect_http()` - Remote servers via HTTP
-- `connect_from_config()` - Config-based connection (used by server startup)
-- `disconnect()` - Gracefully disconnect a server
-- `shutdown_all()` - Disconnect all servers
+**Commands:**
+- `add` - Add a new MCP server to configuration
+- `list` - List configured MCP servers
+- `remove` - Remove an MCP server from configuration
+- `enable` - Enable or disable an MCP server
+- `debug` - Test connection to an MCP server
+
+### ide_server.rs - IDE MCP Server
+
+IDE integration server providing diff viewing via MCP protocol:
+
+```rust
+pub struct IdeServer {
+    tools: HashMap<String, ToolHandler>,
+    pending: PendingRequests,
+    shutdown: Arc<Mutex<bool>>,
+    shutdown_notify: Arc<Notify>,
+}
+```
+
+**Supported Tools:**
+- `openDiff` - Opens file diff in IDE (VS Code extension, JetBrains plugin)
+
+**Transport Modes:**
+- stdio mode (for IDE extensions)
+- Unix socket mode
 
 ## McpTool
 
 Tool definition from MCP server:
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTool {
     pub name: String,
     pub description: String,
-    pub input_schema: Value,
-    pub server_id: String,
+    pub input_schema: serde_json::Value,
+    pub server: String,  // Note: not server_id as shown in old doc
 }
 ```
 
@@ -192,7 +225,9 @@ pub struct McpTool {
 ## McpServerStatus
 
 ```rust
+#[derive(Debug, Clone, Default)]
 pub enum McpServerStatus {
+    #[default]
     Disconnected,
     Connecting,
     Connected,
@@ -230,42 +265,48 @@ pub enum McpServerStatus {
 
 ## Server Configuration
 
-```toml
-[mcp.servers.my-server]
-type = "local"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem"]
-cwd = "/workspace"
+MCP servers configured in `config.json`:
 
-[mcp.servers.remote-server]
-type = "remote"
-url = "https://api.example.com/mcp"
-auth = { type = "bearer", token = "..." }
+```json
+{
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "type": "local",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+      },
+      "github": {
+        "type": "remote",
+        "url": "https://api.github.com/mcp",
+        "headers": {
+          "Authorization": "Bearer ${GITHUB_TOKEN}"
+        }
+      }
+    }
+  }
+}
 ```
 
-## Events Published
+## DNS Rebinding Protection
 
-- `McpServerStarted` - Server connected
-- `McpServerStopped` - Server disconnected
-- `McpServerError` - Server error
-- `McpToolCall` - Tool called
-- `McpToolResult` - Tool result
+RemoteClient validates DNS at connection time AND before each request:
 
-## Events Published
+```rust
+fn validate_url_host(url: &str) -> Result<String, String>  // Called on RemoteClient::new()
+fn validate_host_ip(host: &str, port: u16) -> Result<Vec<IpAddr>, String>  // Validates IPs
+fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result<(), String>  // Called before each request
+```
 
-- `McpServerStarted` - Server connected
-- `McpServerStopped` - Server disconnected
-- `McpServerError` - Server error
-- `McpToolCall` - Tool called
-- `McpToolResult` - Tool result
+- `initialize()` re-validates DNS on each call (prevents bypass via DNS changes between connections)
+- IPv4-mapped IPv6 addresses are handled correctly
+- Internal IPs (loopback, private, link-local) are blocked
 
 ## Known Implementation Issues
 
 1. **Tool definition cache staleness**: Uses `mcp_tool_count` as proxy for MCP tool changes. If tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
 
 2. **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
-
-3. **Remote reconnection via spawn**: `ensure_connected()` spawns reconnection in a background task and waits for notification. If the spawned task fails silently, the wait may timeout.
 
 ## See Also
 

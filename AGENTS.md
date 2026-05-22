@@ -385,7 +385,7 @@ When adding guidance for a new module:
 | TUI (keyboard shortcuts, FocusManager, Component trait) | `.opencode/skills/tui/SKILL.md` |
 | Security (SSRF, symlinks, Landlock) | `.opencode/skills/security/SKILL.md` |
 | WASM plugins | `.opencode/skills/plugin/SKILL.md` |
-| MCP connection manager | `mcp/AGENTS.override.md` |
+| MCP (Model Context Protocol) | `.opencode/skills/mcp/SKILL.md` |
 | Provider (LLM providers, Arc<String> types, FallbackProvider) | `.opencode/skills/provider/SKILL.md` |
 | Crypto (API key encryption, Argon2id key derivation) | [architecture/crypto.md](architecture/crypto.md) |
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |

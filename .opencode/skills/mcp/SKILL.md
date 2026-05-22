@@ -1,7 +1,7 @@
 ---
 name: mcp
 description: MCP client/server system, local vs remote, OAuth flow
-version: 1.1.0
+version: 1.2.0
 tags:
   - mcp
   - model context protocol
@@ -205,34 +205,56 @@ impl IdeServer {
 
 ### OAuthManager (`src/mcp/auth.rs`)
 
-Handles OAuth 2.0 authorization code flow:
+Handles OAuth 2.0 authorization code flow with token encryption:
 
 ```rust
 pub struct OAuthManager {
-    pending_auths: Arc<tokio::sync::Mutex<HashMap<String, PendingAuth>>>,
-    completed_flows: Arc<RwLock<HashMap<String, TokenInfo>>>,
+    token_store: PathBuf,
+    used_codes_store: PathBuf,
+    servers: std::collections::HashMap<String, ServerTokens>,
+    used_codes: std::collections::HashMap<String, UsedCode>,
 }
 
-pub struct PendingAuth {
+pub struct ServerTokens {
     pub server_url: String,
-    pub client_id: String,
-    pub redirect_uri: String,
-    pub code_verifier: String,
-    pub state: String,
-    pub initiated_at: Instant,
+    pub tokens: TokenSet,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenSet {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub token_type: String,
+    pub expires_at: Option<u64>,
+    pub scope: Option<String>,
 }
 ```
 
+**Token Encryption:**
+- Tokens encrypted with AES-256-GCM using `CODEGG_TOKEN_KEY` env var
+- Uses `CODEGG_ENC_v1` magic bytes prefix for version detection
+- Legacy unencrypted format supported for migration
+
+**PKCE Support:**
+- `generate_pkce_pair()` creates code_verifier and code_challenge
+- S256 code challenge method used
+
+**Replay Protection:**
+- Used authorization codes tracked to prevent replay attacks
+- Codes expire after 600 seconds
+
 **OAuth Flow:**
-1. Server returns 401 with auth URL
-2. `initiate_auth()` opens browser for user authorization
-3. Callback received with authorization code
-4. `exchange_code()` exchanges code for tokens
-5. Tokens stored and refreshed automatically
+1. `build_authorization_url()` creates OAuth URL with PKCE
+2. `start_callback_server()` starts local server to receive callback
+3. `exchange_code_for_tokens_with_replay_protection()` exchanges code for tokens
+4. `refresh_tokens()` refreshes expired tokens
+5. `revoke_token()` revokes tokens when logging out
 
 ```rust
-pub fn initiate_auth(&self, server_url: &str, config: &OAuthConfig) -> Result<String, McpError>;
-pub async fn exchange_code(&self, server_url: &str, code: String) -> Result<TokenInfo, McpError>;
+pub fn generate_pkce_pair() -> (String, String);
+pub fn build_authorization_url(&self, auth_url: &str, client_id: &str, code_challenge: &str, redirect_uri: &str, scope: &str) -> Result<String, McpError>;
+pub async fn exchange_code_for_tokens_with_replay_protection(&mut self, token_url: &str, client_id: &str, client_secret: Option<&str>, code: &str, code_verifier: &str, redirect_uri: &str) -> Result<TokenSet, McpError>;
+pub async fn refresh_tokens(&self, token_url: &str, client_id: &str, client_secret: Option<&str>, refresh_token: &str) -> Result<TokenSet, McpError>;
 pub fn get_token_for_server(&self, server_url: &str) -> Option<String>;
 ```
 
@@ -364,18 +386,24 @@ MCP servers can be managed via TUI dialogs (`src/tui/components/dialogs/mcp.rs`)
 ## Error Handling
 
 ```rust
-#[derive(Debug, thiserror::Error)]
+#[derive(Error, Debug)]
 pub enum McpError {
+    #[error("connection error: {0}")]
+    Connection(String),
     #[error("server error: {0}")]
     Server(String),
-    #[error("connection error: {0}")]
-    Connection(#[from] reqwest::Error),
+    #[error("tool call failed: {0}")]
+    ToolCall(String),
     #[error("oauth error: {0}")]
     OAuth(String),
-    #[error("invalid URL: {0}")]
-    InvalidUrl(String),
+    #[error("encryption error: {0}")]
+    Encryption(String),
+    #[error("timeout: {0}")]
+    Timeout(String),
 }
 ```
+
+Note: `McpError` is defined in `src/error.rs` and re-exported in the `mcp` module.
 
 ## Security Considerations
 

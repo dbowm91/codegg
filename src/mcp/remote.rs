@@ -188,11 +188,10 @@ impl McpConnectionManager {
 
                 reconnect_needed.notified().await;
                 let current_state = self.state.lock().await.clone();
-                if matches!(current_state, ConnectionState::Connected) {
-                    Ok(())
-                } else {
-                    self.connect().await
+                if !matches!(current_state, ConnectionState::Connected) {
+                    self.connect().await?;
                 }
+                Ok(())
             }
         }
     }

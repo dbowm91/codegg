@@ -115,33 +115,8 @@ impl OAuthManager {
         };
 
         let _ = manager.load_used_codes_sync();
-        if manager.used_codes_store.exists() {
-            let _ = manager.load_tokens_sync();
-        }
-        manager
-    }
-
-    pub async fn new_async() -> Self {
-        let token_store = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("codegg")
-            .join("mcp_tokens.json");
-
-        let used_codes_store = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("codegg")
-            .join("mcp_used_codes.json");
-
-        let mut manager = Self {
-            token_store,
-            used_codes_store,
-            servers: std::collections::HashMap::new(),
-            used_codes: std::collections::HashMap::new(),
-        };
-
-        let _ = manager.load_used_codes_async().await;
         if manager.token_store.exists() {
-            let _ = manager.load_tokens_async().await;
+            let _ = manager.load_tokens_sync();
         }
         manager
     }
