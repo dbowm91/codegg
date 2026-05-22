@@ -1,7 +1,7 @@
 ---
 name: ide
 description: IDE integration for VS Code and JetBrains diff viewing
-version: 1.2.0
+version: 1.3.0
 tags:
   - ide
   - diff

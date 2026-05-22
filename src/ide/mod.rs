@@ -1,4 +1,7 @@
 use similar::{ChangeTag, TextDiff};
+use std::io::Write;
+use std::process::Command;
+use tempfile::Builder;
 
 pub fn is_vscode() -> bool {
     std::env::var("VSCODE_IPC_HOOK").is_ok()
@@ -52,10 +55,6 @@ pub fn open_diff(
 }
 
 fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<(), String> {
-    use std::io::Write;
-    use std::process::Command;
-    use tempfile::Builder;
-
     let original_temp = Builder::new()
         .prefix("codegg_original_")
         .tempfile()
@@ -65,42 +64,51 @@ fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<()
         .tempfile()
         .map_err(|e| format!("failed to create temp modified: {}", e))?;
 
-    let mut original_file = original_temp.as_file();
-    original_file
-        .write_all(original_content.as_bytes())
-        .map_err(|e| format!("failed to write temp original: {}", e))?;
-    original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+    {
+        let mut original_file = original_temp.as_file();
+        original_file
+            .write_all(original_content.as_bytes())
+            .map_err(|e| format!("failed to write temp original: {}", e))?;
+        original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+    }
 
-    let mut modified_file = modified_temp.as_file();
-    modified_file
-        .write_all(modified_content.as_bytes())
-        .map_err(|e| format!("failed to write temp modified: {}", e))?;
-    modified_file.flush().map_err(|e| format!("failed to flush temp modified: {}", e))?;
+    {
+        let mut modified_file = modified_temp.as_file();
+        modified_file
+            .write_all(modified_content.as_bytes())
+            .map_err(|e| format!("failed to write temp modified: {}", e))?;
+        modified_file
+            .flush()
+            .map_err(|e| format!("failed to flush temp modified: {}", e))?;
+    }
 
     let original_path = original_temp.path().to_owned();
     let modified_path = modified_temp.path().to_owned();
 
+    drop(original_temp);
+    drop(modified_temp);
+
     let output = Command::new("code")
         .args([
             "--diff",
-            original_path.to_str().unwrap(),
-            modified_path.to_str().unwrap(),
+            original_path.to_string_lossy().as_ref(),
+            modified_path.to_string_lossy().as_ref(),
         ])
         .output()
         .map_err(|e| format!("failed to open vscode: {}", e))?;
 
     if !output.status.success() {
-        return Err("vscode failed to open diff".to_string());
+        return Err(format!(
+            "vscode diff failed (exit {}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     Ok(())
 }
 
 fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
-    use std::io::Write;
-    use std::process::Command;
-    use tempfile::Builder;
-
     let original_temp = Builder::new()
         .prefix("codegg_original_")
         .tempfile()
@@ -110,20 +118,31 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
         .tempfile()
         .map_err(|e| format!("failed to create temp modified: {}", e))?;
 
-    let mut original_file = original_temp.as_file();
-    original_file
-        .write_all(original.as_bytes())
-        .map_err(|e| format!("failed to write temp original: {}", e))?;
-    original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+    {
+        let mut original_file = original_temp.as_file();
+        original_file
+            .write_all(original.as_bytes())
+            .map_err(|e| format!("failed to write temp original: {}", e))?;
+        original_file
+            .flush()
+            .map_err(|e| format!("failed to flush temp original: {}", e))?;
+    }
 
-    let mut modified_file = modified_temp.as_file();
-    modified_file
-        .write_all(modified.as_bytes())
-        .map_err(|e| format!("failed to write temp modified: {}", e))?;
-    modified_file.flush().map_err(|e| format!("failed to flush temp modified: {}", e))?;
+    {
+        let mut modified_file = modified_temp.as_file();
+        modified_file
+            .write_all(modified.as_bytes())
+            .map_err(|e| format!("failed to write temp modified: {}", e))?;
+        modified_file
+            .flush()
+            .map_err(|e| format!("failed to flush temp modified: {}", e))?;
+    }
 
     let original_path = original_temp.path().to_owned();
     let modified_path = modified_temp.path().to_owned();
+
+    drop(original_temp);
+    drop(modified_temp);
 
     let tool = if let Ok(tool) = std::env::var("JETBRAINS_TOOL") {
         Some(tool)
@@ -150,31 +169,28 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
 
     let tool = tool.unwrap_or_else(|| "idea".to_string());
 
-    let args = vec![
-        "diff".to_string(),
-        original_path.to_string_lossy().to_string(),
-        modified_path.to_string_lossy().to_string(),
-    ];
-
     let output = Command::new(&tool)
-        .args(&args)
+        .args([
+            "diff",
+            original_path.to_string_lossy().as_ref(),
+            modified_path.to_string_lossy().as_ref(),
+        ])
         .output()
         .map_err(|e| format!("failed to open jetbrains: {}", e))?;
 
     if !output.status.success() {
-        return Err("jetbrains failed to open diff".to_string());
+        return Err(format!(
+            "jetbrains diff failed (exit {}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
 
     Ok(())
 }
 
 fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(), String> {
-    use std::env::split_paths;
-    use std::io::Write;
-    use std::process::Command;
-    use tempfile::Builder;
-
-    let has_code = split_paths(&std::env::var("PATH").unwrap_or_default())
+    let has_code = std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
         .any(|p| p.join("code").exists() || p.join("code.exe").exists());
 
     if has_code {
@@ -187,26 +203,37 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
             .tempfile()
             .map_err(|e| format!("failed to create temp modified: {}", e))?;
 
-        let mut original_file = original_temp.as_file();
-        original_file
-            .write_all(original_content.as_bytes())
-            .map_err(|e| format!("failed to write temp original: {}", e))?;
-        original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+        {
+            let mut original_file = original_temp.as_file();
+            original_file
+                .write_all(original_content.as_bytes())
+                .map_err(|e| format!("failed to write temp original: {}", e))?;
+            original_file
+                .flush()
+                .map_err(|e| format!("failed to flush temp original: {}", e))?;
+        }
 
-        let mut modified_file = modified_temp.as_file();
-        modified_file
-            .write_all(modified_content.as_bytes())
-            .map_err(|e| format!("failed to write temp modified: {}", e))?;
-        modified_file.flush().map_err(|e| format!("failed to flush temp modified: {}", e))?;
+        {
+            let mut modified_file = modified_temp.as_file();
+            modified_file
+                .write_all(modified_content.as_bytes())
+                .map_err(|e| format!("failed to write temp modified: {}", e))?;
+            modified_file
+                .flush()
+                .map_err(|e| format!("failed to flush temp modified: {}", e))?;
+        }
 
         let original_path = original_temp.path().to_owned();
         let modified_path = modified_temp.path().to_owned();
 
+        drop(original_temp);
+        drop(modified_temp);
+
         let output = Command::new("code")
             .args([
                 "--diff",
-                original_path.to_str().unwrap(),
-                modified_path.to_str().unwrap(),
+                original_path.to_string_lossy().as_ref(),
+                modified_path.to_string_lossy().as_ref(),
             ])
             .output()
             .map_err(|e| format!("failed to open code: {}", e))?;
@@ -216,7 +243,7 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
         }
     }
 
-    let has_idea = split_paths(&std::env::var("PATH").unwrap_or_default())
+    let has_idea = std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
         .any(|p| p.join("idea").exists() || p.join("idea.bat").exists());
 
     if has_idea {
@@ -229,23 +256,38 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
             .tempfile()
             .map_err(|e| format!("failed to create temp modified: {}", e))?;
 
-        let mut original_file = original_temp.as_file();
-        original_file
-            .write_all(original_content.as_bytes())
-            .map_err(|e| format!("failed to write temp original: {}", e))?;
-        original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+        {
+            let mut original_file = original_temp.as_file();
+            original_file
+                .write_all(original_content.as_bytes())
+                .map_err(|e| format!("failed to write temp original: {}", e))?;
+            original_file
+                .flush()
+                .map_err(|e| format!("failed to flush temp original: {}", e))?;
+        }
 
-        let mut modified_file = modified_temp.as_file();
-        modified_file
-            .write_all(modified_content.as_bytes())
-            .map_err(|e| format!("failed to write temp modified: {}", e))?;
-        modified_file.flush().map_err(|e| format!("failed to flush temp modified: {}", e))?;
+        {
+            let mut modified_file = modified_temp.as_file();
+            modified_file
+                .write_all(modified_content.as_bytes())
+                .map_err(|e| format!("failed to write temp modified: {}", e))?;
+            modified_file
+                .flush()
+                .map_err(|e| format!("failed to flush temp modified: {}", e))?;
+        }
 
         let original_path = original_temp.path().to_owned();
         let modified_path = modified_temp.path().to_owned();
 
+        drop(original_temp);
+        drop(modified_temp);
+
         let output = Command::new("idea")
-            .args(["diff", original_path.to_str().unwrap(), modified_path.to_str().unwrap()])
+            .args([
+                "diff",
+                original_path.to_string_lossy().as_ref(),
+                modified_path.to_string_lossy().as_ref(),
+            ])
             .output()
             .map_err(|e| format!("failed to open idea: {}", e))?;
 

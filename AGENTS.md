@@ -162,7 +162,10 @@ These items were identified during module reviews and are important for future a
 ### IDE Module (2026-05-22)
 - **Temp file flushing fixed**: `open_diff_vscode()` and `open_diff_jetbrains()` now properly flush temp files via `as_file()` + `flush()` before passing paths to IDE. Previously wrote to `tempfile` without proper handle acquisition.
 - **open_diff_generic() fixed**: Now uses `std::env::split_paths()` (portable PATH parsing) and creates temp files with content instead of passing original paths directly. Matches behavior of IDE-specific handlers.
-- **Skill synchronized**: `.opencode/skills/ide/SKILL.md` updated to version 1.2.0
+- **Skill synchronized**: `.opencode/skills/ide/SKILL.md` updated to version 1.3.0
+- **Temp file handle bug fixed**: `open_diff_vscode()`, `open_diff_jetbrains()`, and `open_diff_generic()` now drop temp files before invoking IDE. Previously, file handles could still be open when passing paths to the IDE, causing failures on some platforms.
+- **Error messages improved**: IDE diff failures now include exit status and stderr output (e.g., `"vscode diff failed (exit 1): error message"`)
+- **Unused imports removed**: Consolidated `use` statements at module level (`std::io::Write`, `std::process::Command`, `tempfile::Builder`, `std::env::split_paths`)
 
 ### LSP Module (2026-05-22)
 - **PATH parsing fixed**: `download.rs` now uses `std::env::split_paths()` instead of splitting by `MAIN_SEPARATOR` (which was broken on Unix where PATH uses `:` not `/`)
