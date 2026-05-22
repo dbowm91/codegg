@@ -1,7 +1,7 @@
 ---
 name: resilience
 description: Circuit breaker and resilience patterns in opencode-rs
-version: 1.1.0
+version: 1.2.0
 tags:
   - resilience
   - circuit-breaker
@@ -96,6 +96,15 @@ if let Some(cb) = self.circuit_breakers.get(i) {
 
 ## Provider Fallback (`src/provider/fallback.rs`)
 
+### FallbackProvider Configuration
+
+`FallbackProvider` creates circuit breakers with fixed default parameters:
+- `failure_threshold`: 3
+- `timeout_secs`: 60
+- `success_threshold`: 2
+
+These cannot be configured externally (intentionally opinionated).
+
 ### Usage
 
 ```rust
@@ -116,6 +125,7 @@ let stream = fallback.stream(&request).await;
 3. If circuit breaker is open for a provider, skip to next
 4. If all fail, return last error
 5. Log each fallback attempt
+6. **Exponential backoff** between providers: `2^i` seconds, capped at 30s
 
 ### CircuitOpen Error (2026-05-22)
 
@@ -128,7 +138,7 @@ if !cb.is_available().await {
 }
 ```
 
-`CircuitError::Open` from `CircuitBreaker::call()` automatically converts to `ProviderError::CircuitOpen` via the `From` trait in `error.rs:198-206`.
+`CircuitError::Open` from `CircuitBreaker::call()` automatically converts to `ProviderError::CircuitOpen` via the `From` trait in `error.rs:204-212`.
 
 ## Related Skills
 

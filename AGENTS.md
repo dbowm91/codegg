@@ -226,6 +226,11 @@ These items were identified during module reviews and are important for future a
 - **FallbackProvider exponential backoff**: Retry delay is `2^i` seconds (capped at 30s) - correctly implemented
 - **ProviderError::CircuitOpen**: Circuit breaker integration properly propagates open state via `CircuitError → ProviderError::CircuitOpen`
 
+### Resilience Module Review (2026-05-26)
+- **Architecture doc accurate**: `architecture/resilience.md` correctly reflects implementation
+- **Skill updated**: `.opencode/skills/resilience/SKILL.md` updated to v1.2.0 with FallbackProvider default parameters and exponential backoff documentation
+- **No bugs found**: Core implementation correct, error conversion properly wired
+
 ### Worktree Module (2026-05-22)
 - **find_git_root() bug fixed**: Now correctly detects worktrees by checking if `.git` is a file containing `gitdir:` prefix, not just a directory. Previously would fail to find git root when called from inside a worktree.
 - **Architecture doc updated**: `architecture/worktree.md` now accurately reflects the implementation

@@ -116,6 +116,26 @@ where
 }
 ```
 
+### record_success() and record_failure()
+
+The `record_success()` method (circuit.rs:119-137):
+- **Closed**: Resets failure_count to 0
+- **HalfOpen**: Increments success_count; transitions to Closed when success_threshold reached
+- **Open**: No action
+
+The `record_failure()` method (circuit.rs:139-165):
+- **Closed**: Increments failure_count; transitions to Open when failure_threshold exceeded
+- **HalfOpen**: Transitions to Open immediately
+- **Open**: No action
+
+### FallbackProvider Integration
+
+`FallbackProvider` (provider/fallback.rs) creates a `CircuitBreaker` for each provider:
+- Default parameters: `failure_threshold=3`, `timeout_secs=60`, `success_threshold=2`
+- Checks `is_available()` before calling provider
+- Records success/failure after each call
+- Exponential backoff between providers: `2^i` seconds, capped at 30s
+
 ## See Also
 
 - [provider.md](provider.md) - Uses circuit breaker for API calls via FallbackProvider
