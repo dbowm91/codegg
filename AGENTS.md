@@ -172,6 +172,11 @@ These items were identified during module reviews and are important for future a
 - **`update_cwd` method added**: `PtyManager::update_cwd()` now exists and returns `Result<PtySession, StorageError>` (was documented but not implemented)
 - **Skill created**: `.opencode/skills/pty/SKILL.md` created with module guidance
 
+### Security Module (2026-05-22)
+- **revalidate_dns() IPv6 fix**: Fixed to handle IPv4-mapped IPv6 addresses. When DNS returns IPv6 address that maps to an already-validated IPv4, it now correctly continues instead of false positive DNS rebinding detection. The check uses `ipv6_segments_to_ipv4()` to detect mapped addresses.
+- **Architecture doc inaccurate**: `architecture/security.md` showed `is_internal_ip(&str)` and `validate_url_host(&Url)` but actual signatures are `is_internal_ip(&IpAddr)` and `validate_url_host(&str)`. SSRFChecker and LandlockSandbox structs don't exist - actual structs are standalone functions and `SandboxConfig`.
+- **Skill synchronized**: `.opencode/skills/security/SKILL.md` and `.opencode/skills/sandbox/SKILL.md` updated with accurate types and function signatures.
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism

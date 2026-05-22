@@ -390,8 +390,16 @@ fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result<(),
     let current_ips: Vec<IpAddr> = current_addrs.iter().map(|addr| addr.ip()).collect();
 
     // Check if any IP has changed since initial validation
-    for ip in current_ips {
-        if !validated_ips.contains(&ip) {
+    for ip in &current_ips {
+        if !validated_ips.contains(ip) {
+            // Check if IPv6 address maps to an IPv4 that was validated
+            if let IpAddr::V6(ipv6) = ip {
+                if let Some(v4) = ipv6_segments_to_ipv4(ipv6) {
+                    if validated_ips.contains(&IpAddr::V4(v4)) {
+                        continue;  // IPv4-mapped address, same as already validated
+                    }
+                }
+            }
             return Err(ToolError::Execution(
                 "DNS rebinding attack detected: IP address changed".to_string(),
             ));
@@ -856,24 +864,25 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 The bash tool supports OS-level filesystem sandboxing via Landlock (Linux 5.13+):
 
 ```rust
-use crate::security::sandbox::{LandlockSandbox, SandboxConfig};
+use crate::security::sandbox::{SandboxConfig, get_default_allowed_paths, get_sensitive_paths};
 
 // Create sandbox configuration
-let config = SandboxConfig {
-    enabled: true,
-    allowed_paths: vec![
-        "/home/user/project".to_string(),
-        "/tmp/opencode".to_string(),
-    ],
-    deny_paths: vec![
-        "/etc".to_string(),
-        "/root".to_string(),
-    ],
-};
+let config = SandboxConfig::new()
+    .with_enabled(true)
+    .with_allowed_paths(get_default_allowed_paths())
+    .with_deny_paths(get_sensitive_paths());
 
 // Enforce sandbox before bash execution
-enforce(&config)?;
+config.enforce()?;
 ```
+
+Note: `SandboxConfig` is the struct (not `LandlockSandbox`). The struct has builder methods:
+- `new()` - creates default config
+- `with_enabled(bool)` - enable/disable sandbox
+- `with_allowed_paths(Vec<String>)` - set allowed paths
+- `with_deny_paths(Vec<String>)` - set denied paths
+- `is_available()` - check if Landlock is supported on this system
+- `enforce()` - apply the sandbox restrictions
 
 The sandbox uses Linux Landlock syscalls to restrict filesystem access. On unsupported systems, it falls back gracefully.
 

@@ -101,8 +101,15 @@ pub fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result
 
     let current_ips: Vec<IpAddr> = current_addrs.iter().map(|addr| addr.ip()).collect();
 
-    for ip in current_ips {
-        if !validated_ips.contains(&ip) {
+    for ip in &current_ips {
+        if !validated_ips.contains(ip) {
+            if let IpAddr::V6(ipv6) = ip {
+                if let Some(v4) = ipv6_segments_to_ipv4(ipv6) {
+                    if validated_ips.contains(&IpAddr::V4(v4)) {
+                        continue;
+                    }
+                }
+            }
             return Err(format!(
                 "DNS rebinding attack detected: IP address changed for {}",
                 host
