@@ -34,8 +34,13 @@ pub async fn spawn_server(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+        .env_clear();
+
+    if let Some(user_path) = std::env::var_os("PATH") {
+        cmd.env("PATH", user_path);
+    } else {
+        cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+    }
 
     for (k, v) in env {
         cmd.env(k, v);

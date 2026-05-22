@@ -93,7 +93,7 @@ pub fn language_id_to_server_id(lang_id: &str) -> Option<&'static str> {
         "kotlin" => Some("kotlin-language-server"),
         "c" | "cpp" => Some("clangd"),
         "csharp" => Some("omnisharp"),
-        "php" => Some("intelephense"),
+        "php" => Some("php-language-server"),
         "ruby" => Some("ruby-lsp"),
         "swift" => Some("sourcekit-lsp"),
         "objective-c" | "objective-cpp" => Some("clangd"),

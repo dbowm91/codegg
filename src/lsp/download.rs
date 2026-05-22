@@ -48,9 +48,10 @@ async fn find_in_path(cmd: &str) -> Option<std::path::PathBuf> {
         return None;
     }
 
-    let paths = std::env::var("PATH").ok()?;
-    for dir in paths.split(std::path::MAIN_SEPARATOR) {
-        let candidate = std::path::Path::new(dir).join(cmd);
+    let path_var = std::env::var("PATH").ok()?;
+    let paths = std::env::split_paths(&path_var);
+    for dir in paths {
+        let candidate = dir.join(cmd);
         if is_executable(&candidate).await {
             return Some(candidate);
         }

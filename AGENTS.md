@@ -72,6 +72,14 @@ These items were identified during module reviews and are important for future a
 - **Shell hook config validation added**: Invalid event names (e.g., typos) now log warnings instead of silently failing. InlineScript is now deprecated with warning.
 - **Plugin hook timeout errors include plugin_id**: Error message format changed from `"hook timeout: hook execution timed out"` to `"{plugin_id}: hook timeout: hook execution timed out"`.
 
+### LSP Module (2026-05-22)
+- **PATH parsing fixed**: `download.rs` now uses `std::env::split_paths()` instead of splitting by `MAIN_SEPARATOR` (which was broken on Unix where PATH uses `:` not `/`)
+- **PHP server mapping fixed**: `language.rs` now maps PHP to `php-language-server` instead of non-existent `intelephense`
+- **New server definitions added**: `perl-language-server`, `powershell-editor-services`, `graphql-language-server`, `buf-language-server`, `r-languageserver`, `nimlsp`, `vls`
+- **Request timeout added**: `send_request()` in `client.rs` now has 30-second timeout with `LspError::RequestTimeout`
+- **Hardcoded PATH fixed**: `launch.rs` now preserves user's actual PATH instead of hardcoding `/usr/local/bin:/usr/bin:/bin`
+- **Stderr logging**: Server stderr is now drained and logged during LSP client initialization
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -87,55 +95,34 @@ These items were identified during module reviews and are important for future a
 
 ## Documentation Structure
 
-Agent guidance is **modularized** to reduce context pollution. Each module has its own `AGENTS.override.md` file in `.opencode/docs/<module>/`. The root `AGENTS.md` serves as an index only.
+Agent guidance is **modularized** to reduce context pollution. Each module has its own `SKILL.md` file in `.opencode/skills/<module>/`. The root `AGENTS.md` serves as an index only.
 
 ### Directory Structure
 
 ```
-.opencode/docs/
+.opencode/skills/
 ├── AGENTS.md                     # Root index (this file)
-├── agent/
-│   └── AGENTS.override.md        # AgentLoop, TuiCommand, TuiMsg, compaction, router, team
-├── bus/
-│   └── AGENTS.override.md        # Event bus guidance
-├── command/
-│   └── AGENTS.override.md        # Slash commands, templates, execution
-├── config/
-│   └── AGENTS.override.md        # Config loading, validation, encryption, file watching
-├── crypto/
-│   └── AGENTS.override.md        # API key encryption
-├── error/
-│   └── AGENTS.override.md        # AppError, ProviderError, is_retryable, CircuitOpen
-├── exec/
-│   └── AGENTS.override.md        # Exec mode
-├── hooks/
-│   └── AGENTS.override.md        # Hooks system
-├── mcp/
-│   └── AGENTS.override.md        # MCP connection manager
-├── permission/
-│   └── AGENTS.override.md        # Mode system
-├── plugin/
-│   └── AGENTS.override.md        # WASM sandboxing, fuel tracking
-├── provider/
-│   └── AGENTS.override.md        # Provider patterns, token estimation
-├── resilience/
-│   └── AGENTS.override.md        # Circuit breaker, FallbackProvider
-├── security/
-│   └── AGENTS.override.md        # SSRF, symlink protection, Landlock
-├── server/
-│   └── AGENTS.override.md        # WebSocket, TuiMessage, ResyncRequired
-├── shell/
-│   └── AGENTS.override.md        # Shell session management
-├── skills/
-│   └── AGENTS.override.md        # Skills system overview
-├── snapshot/
-│   └── AGENTS.override.md        # Snapshot capture and restore
-├── tool/
-│   └── AGENTS.override.md        # Tool path validation, async command pattern
-├── tui/
-│   └── AGENTS.override.md        # Keyboard shortcuts
-└── meta/
-    └── AGENTS.override.md        # Updates, roadmap, code quality
+├── agent-loop/SKILL.md          # AgentLoop, TuiCommand, TuiMsg, compaction, router, team
+├── client/SKILL.md              # Remote TUI client, WebSocket
+├── command/SKILL.md             # Slash commands, templates, execution
+├── config/SKILL.md             # Config loading, validation, encryption, watching
+├── crypto/SKILL.md              # API key encryption
+├── event-bus/SKILL.md           # GlobalEventBus, PermissionRegistry, QuestionRegistry
+├── exec/SKILL.md               # Exec mode
+├── hooks/SKILL.md              # Hooks system
+├── ide/SKILL.md                # IDE integration (VS Code, JetBrains)
+├── lsp/SKILL.md                # LSP client, diagnostics, code operations
+├── mcp/SKILL.md                # MCP connection manager
+├── permission/SKILL.md         # Mode system
+├── plugin/SKILL.md             # WASM sandboxing, fuel tracking
+├── provider/SKILL.md           # Provider patterns, token estimation
+├── resilience/SKILL.md        # Circuit breaker, FallbackProvider
+├── security/SKILL.md           # SSRF, symlink protection, Landlock
+├── session/SKILL.md            # Session storage, database schema
+├── snapshot/SKILL.md           # Snapshot capture and restore
+├── tool/SKILL.md               # Tool path validation, async command
+├── tui/SKILL.md                # Terminal UI, keyboard shortcuts
+└── meta/SKILL.md               # Updates, roadmap, code quality
 ```
 
 ### Adding New Module Guidance
@@ -167,6 +154,7 @@ When adding guidance for a new module:
 | Error (AppError, ProviderError, is_retryable, CircuitOpen) | `error/AGENTS.override.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `resilience/AGENTS.override.md` |
 | Permission (mode system) | `permission/AGENTS.override.md` |
+| LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` |
 | Tool (path validation, async command) | `tool/AGENTS.override.md` |
 | Exec mode | `exec/AGENTS.override.md` |
 | Hooks system | `hooks/AGENTS.override.md` |

@@ -62,7 +62,12 @@ impl LspClient {
                 binary.display()
             ))
         })?;
-        let process = launch::spawn_server(binary_str, &args, env, Some(root)).await?;
+        let mut process = launch::spawn_server(binary_str, &args, env, Some(root)).await?;
+
+        let stderr_output = launch::drain_stderr(&mut process).await;
+        if !stderr_output.is_empty() {
+            info!(server = server.id, stderr = %stderr_output, "LSP server stderr");
+        }
 
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -443,6 +448,8 @@ impl LspClient {
         self.send_notification("exit", serde_json::json!({})).await
     }
 
+    const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
     pub async fn send_request(
         &self,
         method: &str,
@@ -450,7 +457,6 @@ impl LspClient {
     ) -> Result<serde_json::Value, LspError> {
         let mut id = self.request_id.fetch_add(1, Ordering::SeqCst);
         if id == 0 {
-            // Never use 0 as an ID, it's often reserved
             id = self.request_id.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -467,33 +473,44 @@ impl LspClient {
             launch::send_request(&mut proc, &msg_str).await?;
         }
 
-        loop {
-            let resp_str = {
-                let mut proc = self.process.lock().await;
-                launch::read_response(&mut proc).await?
-            };
-            let resp: serde_json::Value = serde_json::from_str(&resp_str)?;
+        let result = tokio::time::timeout(Self::REQUEST_TIMEOUT, async {
+            loop {
+                let resp_str = {
+                    let mut proc = self.process.lock().await;
+                    launch::read_response(&mut proc).await?
+                };
+                let resp: serde_json::Value = serde_json::from_str(&resp_str)?;
 
-            if let Some(resp_id) = resp.get("id") {
-                if resp_id.as_i64() == Some(id) {
-                    if let Some(err) = resp.get("error") {
-                        return Err(LspError::RequestFailed(format!(
-                            "LSP error {}: {}",
-                            err.get("code").map(|c| c.to_string()).unwrap_or_default(),
-                            err.get("message")
-                                .map(|m| m.to_string())
-                                .unwrap_or_default()
-                        )));
+                if let Some(resp_id) = resp.get("id") {
+                    if resp_id.as_i64() == Some(id) {
+                        if let Some(err) = resp.get("error") {
+                            return Err(LspError::RequestFailed(format!(
+                                "LSP error {}: {}",
+                                err.get("code").map(|c| c.to_string()).unwrap_or_default(),
+                                err.get("message")
+                                    .map(|m| m.to_string())
+                                    .unwrap_or_default()
+                            )));
+                        }
+                        return Ok(resp
+                            .get("result")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null));
                     }
-                    return Ok(resp
-                        .get("result")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null));
+                    let _ = self.notif_tx.send(resp_str);
+                } else {
+                    let _ = self.notif_tx.send(resp_str);
                 }
-                let _ = self.notif_tx.send(resp_str);
-            } else {
-                let _ = self.notif_tx.send(resp_str);
             }
+        }).await;
+
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(LspError::RequestTimeout(format!(
+                "LSP request '{}' timed out after {:?}",
+                method,
+                Self::REQUEST_TIMEOUT
+            ))),
         }
     }
 

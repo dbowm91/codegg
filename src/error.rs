@@ -395,6 +395,9 @@ pub enum LspError {
     #[error("request failed: {0}")]
     RequestFailed(String),
 
+    #[error("request timeout: {0}")]
+    RequestTimeout(String),
+
     #[error("unsupported language: {0}")]
     UnsupportedLanguage(String),
 
