@@ -198,6 +198,11 @@ These items were identified during module reviews and are important for future a
 - **API HookType serialization fixed**: `api::hooks::HookType::as_str()` now returns dot notation (e.g., `tool.execute.before`) matching actual `HookType` implementation
 - **Feature flag named correctly**: Uses `plugins` feature, not `plugin`
 
+### Plugin Module (2026-05-22 - Session Review)
+- **hooks_for() sorting removed**: `PluginRegistry::hooks_for()` no longer sorts hooks since `register()` already sorts them via `sort_hooks()`. Removed redundant sort (was sorting twice on every call).
+- **Builtin plugin handlers documented**: All 4 builtins (copilot, gitlab, codex, poe) have working `auth` hook handlers that inject Bearer tokens. Previously undocumented.
+- **Skill updated**: `.opencode/skills/plugin/SKILL.md` updated with builtin handler details
+
 ### Provider Module (2026-05-22)
 - **Architecture doc updated**: `architecture/provider.md` now accurately reflects the implementation (was showing outdated Provider trait signature, wrong Message/ChatEvent types, incorrect ProviderRegistry methods)
 - **Skill synchronized**: `.opencode/skills/provider/SKILL.md` updated with accurate types (Arc<String> usage, async trait methods)

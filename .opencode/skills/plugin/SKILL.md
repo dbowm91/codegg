@@ -460,12 +460,12 @@ pub fn builtin_hook_handler(plugin_name: &str, ctx: HookContext) -> HookResult {
 
 ### Available Builtins
 
-- **copilot**: GitHub Copilot authentication provider (handles `auth` hook)
-- **gitlab**: GitLab authentication provider (handles `auth` hook)
-- **codex**: Anthropic Codex integration (built-in but hook not implemented)
-- **poe**: Poe API integration (built-in but hook not implemented)
+- **copilot**: GitHub Copilot authentication provider. Handles `auth` hook by injecting `Bearer {token}` into Authorization header when provider is "copilot" or "github".
+- **gitlab**: GitLab authentication provider. Handles `auth` hook by injecting `Bearer {token}` into Authorization header when provider is "gitlab".
+- **codex**: OpenAI Codex authentication provider. Handles `auth` hook by injecting `Bearer {token}` into Authorization header when provider is "codex" or "openai".
+- **poe**: Poe API authentication provider. Handles `auth` hook by injecting `Bearer {token}` into Authorization header when provider is "poe".
 
-**Note:** `register_builtins()` must be called during initialization to register the builtins with the PluginRegistry.
+All builtins handle only their specific provider and pass through unchanged for others via `HookResult::ok(ctx.input)`.
 
 ## Plugin Service
 

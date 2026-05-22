@@ -346,7 +346,7 @@ PluginService::dispatch_tool_execute_before(input)
 PluginService::dispatch_hook(ctx)
   │
   ├──► PluginRegistry::hooks_for(hook_type) → Vec<HookRegistration>
-  │    (sorted by priority)
+  │    (hooks sorted by priority at registration time)
   │
   └──► For each hook registration:
           │

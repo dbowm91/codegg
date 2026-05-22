@@ -58,16 +58,13 @@ impl PluginRegistry {
     }
 
     pub async fn hooks_for(&self, hook_type: HookType) -> Vec<HookRegistration> {
-        let mut hooks = self
-            .hooks
+        self.hooks
             .read()
             .await
             .iter()
             .filter(|h| h.hook_type == hook_type)
             .cloned()
-            .collect::<Vec<_>>();
-        hooks.sort_by_key(|h| h.priority);
-        hooks
+            .collect::<Vec<_>>()
     }
 
     pub async fn is_enabled(&self, id: &str) -> bool {
