@@ -212,6 +212,15 @@ These items were identified during module reviews and are important for future a
 - **FallbackProvider exponential backoff**: Retry delay is `2^i` seconds (capped at 30s) - correctly implemented
 - **ProviderError::CircuitOpen**: Circuit breaker integration properly propagates open state via `CircuitError → ProviderError::CircuitOpen`
 
+### Provider Module (2026-05-26)
+- **ping() method added to Provider trait**: `async fn ping(&self) -> Result<bool, ProviderError>` at mod.rs:70-72, returns `models().await.map(|m| !m.is_empty())`
+- **ModelCatalog struct corrected**: architecture doc showed wrong fields (`cache`, `ttl_secs`) - actual has `models: HashMap`, `last_fetch: Option<Instant>`, `cache_ttl: Duration`
+- **SseParser struct corrected**: Added 3 undocumented fields: `is_openai: bool`, `current_tool: Option<(String, String, String)>`, `args_buffer: String`
+- **create_http_client() corrected**: Actual has `.inspect_err()` and `.unwrap_or_default()` not shown in doc
+- **register_builtin() documented**: Function at mod.rs:262-309 registers providers from env vars (15 total) - was undocumented
+- **Additional providers complete**: Added missing `create_codegg_go()` to documentation
+- **ProviderError::api_with_url() documented**: Constructor method exists at error.rs:150-160 but was undocumented
+
 ### Resilience Module (2026-05-22)
 - **CircuitBreaker is_available() TOCTOU fixed**: Now uses write lock from the start instead of read-then-write, eliminating the time-of-check-time-of-use race. Implementation uses single `write().await` acquisition.
 - **FallbackProvider exponential backoff**: Retry delay is `2^i` seconds (capped at 30s) - correctly implemented

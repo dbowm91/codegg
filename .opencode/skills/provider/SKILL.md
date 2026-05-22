@@ -34,12 +34,25 @@ pub trait Provider: Send + Sync {
     async fn discover_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
         self.models().await
     }
+    async fn ping(&self) -> Result<bool, ProviderError> {
+        self.models().await.map(|m| !m.is_empty())
+    }
 }
 ```
 
 ## Registration Helper Functions
 
-The provider registration system in `src/provider/mod.rs` uses two helper functions to reduce code duplication:
+The provider registration system in `src/provider/mod.rs` uses helper functions to reduce code duplication:
+
+### register_builtin
+
+Registers providers from environment variables (no config required). Called automatically if `register_builtin_with_config` finds no providers:
+
+```rust
+pub fn register_builtin(registry: &mut ProviderRegistry);
+```
+
+Providers registered: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, CODEGG_ZEN_API_KEY, MISTRAL_API_KEY, GROQ_API_KEY, DEEPINFRA_API_KEY, CEREBRAS_API_KEY, COHERE_API_KEY, TOGETHERAI_API_KEY, PERPLEXITY_API_KEY, XAI_API_KEY, VENICE_API_KEY, MINIMAX_API_KEY
 
 ### register_config_provider
 
@@ -107,23 +120,25 @@ if disabled.map(|d| !d.contains(&"mistral".to_string())).unwrap_or(true) {
 ```
 src/provider/
 ├── mod.rs              # Provider trait, registration helpers, constants
-├── additional.rs       # Additional providers (Mistral, Groq, DeepInfra, Cerebras, Cohere, Together, Perplexity, xAI, Venice, etc.)
+├── additional.rs       # Additional providers (Mistral, Groq, DeepInfra, etc.)
 ├── anthropic.rs       # Anthropic Claude provider
 ├── azure.rs           # Azure OpenAI provider
 ├── bedrock.rs         # AWS Bedrock provider
-├── catalog.rs         # Model catalog
+├── catalog.rs         # Model catalog (seeds from embedded models)
+├── cache.rs           # Response caching
 ├── cloudflare.rs      # Cloudflare Workers AI
+├── codegg_zen.rs      # Codegg Zen provider
 ├── copilot.rs         # GitHub Copilot
-├── discovery.rs       # Provider discovery
-├── fallback.rs        # Multi-provider fallback chain
+├── discovery.rs       # ModelDiscoveryService for provider discovery
+├── fallback.rs        # Multi-provider fallback chain with circuit breaker
 ├── gitlab.rs          # GitLab AI
 ├── google.rs          # Google AI / Vertex
-├── models.rs          # Model definitions
+├── models.rs          # Embedded model definitions
 ├── openai.rs          # OpenAI provider
-├── openai_compatible.rs  # OpenAI-compatible APIs
-├── opencode_zen.rs    # OpenCode Zen provider
+├── openai_compatible.rs  # OpenAI-compatible provider
 ├── openrouter.rs     # OpenRouter aggregator
 ├── sse_parser.rs     # SSE parsing utilities
+├── text_tool_parser.rs  # Text-to-tool-call parsing
 └── vertex.rs         # Google Vertex AI
 ```
 
@@ -142,10 +157,12 @@ src/provider/
 - **DeepInfra**: `DEEPINFRA_API_KEY` via `create_deepinfra()`
 - **Cerebras**: `CEREBRAS_API_KEY` via `create_cerebras()`
 - **Cohere**: `COHERE_API_KEY` via `create_cohere()`
-- **Together AI**: `TOGETHER_API_KEY` via `create_together()`
+- **Together AI**: `TOGETHERAI_API_KEY` via `create_together()`
 - **Perplexity**: `PERPLEXITY_API_KEY` via `create_perplexity()`
 - **xAI**: `XAI_API_KEY` via `create_xai()`
 - **Venice**: `VENICE_API_KEY` via `create_venice()`
+- **MiniMax**: `MINIMAX_API_KEY` via `create_minimax()`
+- **Codegg Go**: `CODEGG_GO_API_KEY` via `create_codegg_go()`
 
 ### Config-Based Providers (require base_url)
 - **SAP AI Core**: via `SAP_AI_CORE_*` config

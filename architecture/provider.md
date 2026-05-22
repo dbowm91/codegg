@@ -26,7 +26,7 @@ The `provider` module provides a unified interface for interacting with various 
 | **Vertex** | `vertex.rs` | Google Vertex AI |
 | **Bedrock** | `bedrock.rs` | AWS Bedrock (Claude, Llama, Mistral) |
 | **OpenRouter** | `openrouter.rs` | Aggregated models |
-| **CodeggZen** | `codegg_zen.rs` | Codegg Zen models |
+| **CodeggZen** | `codegg_zen.rs` | big-pickle, minimax-m2.5-free, nemotron-3-super-free, qwen3.6-plus-free |
 
 ### Additional Providers (in `additional.rs`)
 
@@ -45,6 +45,7 @@ The `provider` module provides a unified interface for interacting with various 
 | SAP AI Core | `create_sap_ai_core()` |
 | Zenmux | `create_zenmux()` |
 | Kilo | `create_kilo()` |
+| Codegg Go | `create_codegg_go()` |
 | Vercel AI Gateway | `create_vercel_ai_gateway()` |
 
 ### Discovery Providers
@@ -70,6 +71,9 @@ pub trait Provider: Send + Sync {
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError>;
     async fn discover_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
         self.models().await
+    }
+    async fn ping(&self) -> Result<bool, ProviderError> {
+        self.models().await.map(|m| !m.is_empty())
     }
 }
 ```
@@ -201,10 +205,13 @@ Maintains registry of available models with TTL-based caching:
 
 ```rust
 pub struct ModelCatalog {
-    cache: HashMap<String, (ModelInfo, Instant)>,
-    ttl_secs: u64,
+    models: HashMap<String, ModelInfo>,
+    last_fetch: Option<Instant>,
+    cache_ttl: Duration,
 }
 ```
+
+Note: The catalog seeds from embedded models (`models.rs`) and can fetch live model data from `https://models.dev/api/models`.
 
 ### discovery.rs - Provider Discovery
 
@@ -241,7 +248,10 @@ Unified SSE parser for OpenAI and Anthropic streaming formats:
 pub struct SseParser {
     buffer: String,
     delimiter: &'static str,
+    is_openai: bool,
     pending_tool_calls: VecDeque<ToolCall>,
+    current_tool: Option<(String, String, String)>,
+    args_buffer: String,
     openai_tool_states: HashMap<usize, OpenAiToolState>,
 }
 
@@ -250,6 +260,16 @@ pub fn parse_anthropic_buffer(buffer: &mut String) -> Option<Result<ChatEvent, P
 ```
 
 ## Registration Patterns
+
+### register_builtin
+
+Registers providers from environment variables (no config required):
+
+```rust
+pub fn register_builtin(registry: &mut ProviderRegistry);
+```
+
+Providers registered: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, CODEGG_ZEN_API_KEY, MISTRAL_API_KEY, GROQ_API_KEY, DEEPINFRA_API_KEY, CEREBRAS_API_KEY, COHERE_API_KEY, TOGETHERAI_API_KEY, PERPLEXITY_API_KEY, XAI_API_KEY, VENICE_API_KEY, MINIMAX_API_KEY
 
 ### register_config_provider
 
@@ -305,6 +325,8 @@ pub enum ProviderError {
 }
 
 impl ProviderError {
+    pub fn api(code: impl Into<String>, message: impl Into<String>) -> Self;
+    pub fn api_with_url(code: impl Into<String>, message: impl Into<String>, url: impl Into<String>) -> Self;
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -391,8 +413,12 @@ pub fn create_http_client() -> reqwest::Client {
         .pool_idle_timeout(Duration::from_secs(30))
         .tcp_keepalive(Duration::from_secs(30))
         .build()
+        .inspect_err(|e| tracing::warn!("HTTP client builder failed, using default: {}", e))
+        .unwrap_or_default()
 }
 ```
+
+Note: Uses `.inspect_err()` for warning logging and `.unwrap_or_default()` for graceful fallback on build failure.
 
 ## See Also
 
