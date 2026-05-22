@@ -49,9 +49,10 @@ AgentTool permissions are checked at the AgentLoop level before any tool execute
 
 ### PermissionStore
 
-The `PermissionStore` persists decisions using SQLite:
-- `add_decision(tool, path, level)` stores Allow/Deny
-- `get_decision(tool, path)` retrieves cached decisions
+The `PermissionStore` persists decisions to a JSON file at `~/.config/codegg/permissions.json`:
+- `add_decision(tool, path, level)` stores Allow/Deny with HMAC signature
+- `get_decision(tool, path)` retrieves cached decisions with signature verification
+- Session-specific decisions are checked first, then global decisions
 
 ### ToolRule Pattern Matching
 
@@ -165,7 +166,7 @@ The `PermissionRegistry` in `src/bus/mod.rs` manages pending permission requests
 
 ```rust
 pub struct PermissionRegistry {
-    senders: DashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>,
+    senders: DashMap<String, (tokio::sync::oneshot::Sender<PermissionChoice>, Instant)>,
 }
 
 impl PermissionRegistry {
@@ -173,8 +174,11 @@ impl PermissionRegistry {
     pub fn respond(perm_id: String, choice: PermissionChoice) -> bool;
     pub fn unregister(perm_id: &str);
     pub fn is_registered(perm_id: &str) -> bool;
+    pub fn pending_permission_ids() -> Vec<String>;
 }
 ```
+
+**Note**: All methods are synchronous (`fn`), NOT async. Entries have a 300s TTL.
 
 ### Test Patterns
 

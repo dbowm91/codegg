@@ -122,7 +122,6 @@ impl BuiltinModes {
             ],
             restricted_tools: vec![
                 "edit".to_string(),
-                "write".to_string(),
                 "bash".to_string(),
                 "task".to_string(),
                 "todowrite".to_string(),

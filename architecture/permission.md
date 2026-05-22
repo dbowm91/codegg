@@ -12,6 +12,8 @@ The `permission` module enforces access control for tool execution and path acce
 - DoomLoop detection (repetitive tool call detection)
 - Mode-based permissions (Review/Debug/Docs)
 
+**Note**: `PermissionRegistry` is located in `src/bus/mod.rs`, not in the permission module.
+
 ## Key Types
 
 ### PermissionLevel
@@ -30,13 +32,13 @@ pub enum PermissionLevel {
 pub enum PermissionResult {
     Allow,
     Deny,
-    Ask(Request),
+    Ask(PermissionRequest),
 }
 
-pub struct Request {
-    pub tool_name: String,
-    pub params: Value,
-    pub reason: String,
+pub struct PermissionRequest {
+    pub tool: String,
+    pub path: Option<String>,
+    pub args: Option<serde_json::Value>,
 }
 ```
 
@@ -44,18 +46,16 @@ pub struct Request {
 
 ```rust
 pub struct PermissionRuleset {
+    pub default: PermissionLevel,
     pub tool_rules: Vec<ToolRule>,
     pub path_rules: Vec<PathRule>,
 }
 
 pub struct ToolRule {
-    pub pattern: String,
-    pub permission: PermissionLevel,
-}
-
-pub struct PathRule {
-    pub pattern: String,
-    pub permission: PermissionLevel,
+    pub tool: String,              // Tool name (supports glob patterns)
+    pub level: PermissionLevel,
+    pub paths: Option<Vec<String>>,     // Path restrictions (canonicalized)
+    pub bash_patterns: Option<Vec<String>>, // Bash command patterns
 }
 ```
 
@@ -67,79 +67,106 @@ Main enforcement point:
 
 ```rust
 pub struct PermissionChecker {
-    rules: PermissionRuleset,
-    store: PermissionStore,
-    doom_loop: DoomLoopDetector,
+    config_rules: PermissionRuleset,
+    session_rules: PermissionRuleset,
+    agent_rules: PermissionRuleset,
+    store: Arc<RwLock<PermissionStore>>,
+    compiled_globs: Vec<(globset::GlobMatcher, PermissionLevel)>,
+    canonicalized_config_tool_rules: Vec<CanonicalizedToolRule>,
+    canonicalized_session_tool_rules: Vec<CanonicalizedToolRule>,
+    canonicalized_agent_tool_rules: Vec<CanonicalizedToolRule>,
+    path_cache: Arc<RwLock<HashMap<String, (PathBuf, Instant)>>>,
 }
 
 impl PermissionChecker {
-    pub async fn check(&self, request: ToolRequest) -> Result<PermissionResult>;
-    pub fn check_sync(&self, request: &ToolRequest) -> PermissionResult;
+    pub async fn check(&self, tool: &str, path: Option<&str>, session_id: Option<&str>) -> PermissionResult;
+    pub async fn check_bash(&self, path: Option<&str>, command: Option<&str>, session_id: Option<&str>) -> PermissionResult;
+    pub async fn check_git(&self, path: Option<&str>, subcommand: Option<&str>, session_id: Option<&str>) -> PermissionResult;
+    pub async fn always_allow(&self, tool: &str, path: Option<&str>, session_id: Option<&str>);
+    pub async fn always_deny(&self, tool: &str, path: Option<&str>, session_id: Option<&str>);
 }
 ```
 
 **Check Flow**:
-1. Check PermissionStore (cached decisions)
-2. Check rules (agent > session > config priority)
-3. Check path globs
-4. If `Ask`, register with PermissionRegistry and return pending
+1. Check PermissionStore (cached decisions with HMAC verification)
+2. Check tool rules (agent > session > config priority)
+3. Check path globs (on canonicalized paths)
+4. Return default if no rule matches
+5. If `Ask`, return `PermissionResult::Ask(...)` - caller handles registration
+
+**Important**: `PermissionChecker::check()` does NOT directly register with `PermissionRegistry`. The caller (`agent/loop.rs`) handles the ask flow by:
+1. Checking permission
+2. If `Ask`, registering with `PermissionRegistry` and publishing `PermissionPending`
+3. Waiting for user response
 
 ### PermissionStore
 
-Caches permission decisions:
+HMAC-signed persistent decision cache:
 
 ```rust
 pub struct PermissionStore {
-    decisions: Arc<Mutex<HashMap<DecisionKey, Decision>>>,
+    decisions: Vec<PersistentDecision>,  // Uses Vec, not HashMap
+    store_path: Option<PathBuf>,
 }
 
-#[derive(Hash, Clone)]
-pub struct DecisionKey {
-    pub tool_name: String,
-    pub params_hash: u64,
-    pub session_id: String,
+pub struct PersistentDecision {
+    pub tool: String,
+    pub path: Option<String>,
+    pub level: PermissionLevel,
+    pub created_at: i64,
+    pub signature: String,           // HMAC-SHA256 signature
+    pub session_id: Option<String>,  // Per-session isolation
 }
 ```
 
 **Features**:
-- HMAC signature to prevent tampering
-- TTL-based expiration
-- Per-session isolation
+- HMAC signature to prevent tampering (uses `CODEGG_PERM_KEY` env var)
+- Per-session isolation (session-specific decisions checked first)
+- Persists to `~/.config/codegg/permissions.json`
 
 ### DoomLoopDetector
 
-Detects repetitive tool call patterns:
+Detects repetitive tool call patterns using window-based counting:
 
 ```rust
 pub struct DoomLoopDetector {
-    window: usize,       // Number of calls to track
-    threshold: usize,     // Threshold for detection
+    history: VecDeque<String>,        // Ordered recent calls
+    counts: HashMap<String, usize>,  // O(1) count lookups
+    max_window: usize,               // Max history size (capped at 1000)
+    threshold: usize,                // Detection threshold (capped at 100)
 }
 
 impl DoomLoopDetector {
-    pub fn check(&self, tool_name: &str) -> bool;
+    pub fn record_tool_call(&mut self, tool_name: &str);
+    pub fn is_doom_loop(&self) -> bool;  // Returns true if last tool has count >= threshold
+    pub fn reset(&mut self);
 }
 ```
 
-**Implementation Note**: Comment says "consecutive" but implementation uses window-based counting.
+**Implementation**: Uses window-based counting (NOT consecutive). The `is_doom_loop()` check returns true if the **most recent** tool has been called `threshold` or more times anywhere in the window.
 
-### modes.rs - Mode System
+### Mode System (modes.rs)
 
 Specialized permission workflows:
 
 ```rust
-pub enum Mode {
-    Review,  // Code review mode
-    Debug,   // Debugging mode
-    Docs,    // Documentation mode
-}
-
-pub struct ModeConfig {
-    pub default_tools: Vec<String>,
+pub struct ModeDefinition {
+    pub name: String,
+    pub description: String,
+    pub default: PermissionLevel,
+    pub allowed_tools: Vec<String>,
     pub restricted_tools: Vec<String>,
-    pub auto_allow_paths: Vec<String>,
+    pub tool_overrides: Vec<(String, PermissionLevel)>,
 }
 ```
+
+**Built-in Modes**:
+
+| Mode | Default | Allowed Tools | Restricted Tools |
+|------|---------|---------------|------------------|
+| `review` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, lsp | edit, bash, task, todowrite |
+| `debug` | Allow | read, glob, grep, list, bash, question, webfetch, websearch, codesearch, edit, lsp | task, todowrite |
+| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, write, lsp | bash, task, todowrite |
 
 ## Permission Flow
 
@@ -154,83 +181,117 @@ PermissionChecker::check()
     │         ├── Allow → Return Allow
     │         └── Deny  → Return Deny
     │
-    ├──► Check rules (agent > session > config)
+    ├──► Check tool rules (agent > session > config)
     │         │
-    │         ├── Allow → Cache & Return Allow
-    │         ├── Deny  → Cache & Return Deny
+    │         ├── Allow → Return Allow
+    │         ├── Deny  → Return Deny
     │         └── Ask   → Continue
     │
-    ├──► Check path globs
+    ├──► Check path globs (on canonicalized paths)
     │         │
     │         ├── Allow → Continue
     │         └── Deny  → Return Deny
     │
-    └──► Ask user
-              │
-              ▼
-        PermissionRegistry::register()
-              │
-              ▼
-        GlobalEventBus::publish(PermissionPending)
-              │
-              ▼
-        TUI shows dialog
-              │
-              ▼
-        User responds
-              │
-              ▼
-        PermissionRegistry::respond()
-              │
-              ▼
-        Cache decision & Return
+    └──► Return default (Ask/Allow/Deny)
+
+--- If result is Ask, AgentLoop handles the dialog: ---
+
+AgentLoop::check_tool_permission()
+    │
+    ├──► Create oneshot channel
+    │
+    ├──► PermissionRegistry::register(perm_id, tx)  [Registration-before-publish]
+    │
+    ├──► GlobalEventBus::publish(PermissionPending { ... })
+    │
+    ├──► Wait for response (300s timeout)
+    │
+    ├──► User responds → PermissionRegistry::respond(perm_id, choice)
+    │
+    └──► Cache decision if AlwaysAllow/AlwaysDeny
 ```
 
 ## Rule Priority
 
 Rules are evaluated in order:
-1. **Agent-level rules** - Most specific
-2. **Session-level rules** - Per-session overrides
+1. **Agent-level rules** - Most specific (via `with_agent_rules()`)
+2. **Session-level rules** - Per-session overrides (via `with_session_rules()`)
 3. **Config rules** - Default configuration
 
 ## Registration-Before-Publish Pattern
 
-When asking user:
+When asking user for permission:
 
 ```rust
 // CORRECT
-let (tx, rx) = oneshot::channel();
-registry.register(request_id, tx).await?;
-bus.publish(PermissionPending { ... });
-let choice = rx.await?;
+let (tx, rx) = tokio::sync::oneshot::channel();
+PermissionRegistry::register(perm_id.clone(), tx);
+GlobalEventBus::publish(AppEvent::PermissionPending { ... });
+let choice = match tokio::time::timeout(Duration::from_secs(300), rx).await {
+    Ok(Ok(choice)) => choice,
+    _ => PermissionChoice::DenyOnce,
+};
+PermissionRegistry::unregister(&perm_id);
 ```
 
 ## Configuration
 
 ```toml
 [permission]
-default_level = "Ask"
+default = "ask"
 
-[permission.tools]
-"bash" = "Ask"
-"read" = "Allow"
-"delete" = "Deny"
+[permission]
+read = "allow"
+edit = "ask"
+glob = "allow"
+grep = "allow"
+list = "allow"
+bash = "ask"
+task = "ask"
+lsp = "ask"
+skill = "allow"
+todowrite = "ask"
+question = "ask"
+webfetch = "ask"
+websearch = "ask"
+codesearch = "ask"
+doom_loop = "ask"
+
+[permission]
+tools = { "custom_tool" = "deny" }
 
 [permission.paths]
-"/home/user/project" = "Allow"
-"/etc" = "Deny"
+"/home/user/project/**" = "ask"
 
-[permission.doom_loop]
-window = 10
-threshold = 5
+[permission.doomloop_threshold]
+5  # Threshold for DoomLoopDetector (default: 5)
 ```
 
 ## Security Features
 
-1. **HMAC-signed decisions** - Prevents tampering with cached permissions
-2. **Per-session isolation** - Decisions scoped to sessions
-3. **Path canonicalization** - Resolves symlinks before checking
-4. **DoomLoop detection** - Prevents infinite loops
+1. **HMAC-signed decisions** - Prevents tampering with cached permissions via `CODEGG_PERM_KEY`
+2. **Per-session isolation** - Decisions scoped to sessions, session-specific checked first
+3. **Path canonicalization** - Resolves symlinks before checking (cached with 1s TTL)
+4. **DoomLoop detection** - Prevents infinite loops via window-based counting
+5. **Glob pattern matching** - Supports `*` for tool names and bash commands
+
+## PermissionRegistry (in bus/mod.rs)
+
+```rust
+pub struct PermissionRegistry {
+    senders: DashMap<String, (tokio::sync::oneshot::Sender<PermissionChoice>, Instant)>,
+}
+
+impl PermissionRegistry {
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>);
+    pub fn respond(perm_id: String, choice: PermissionChoice) -> bool;
+    pub fn unregister(perm_id: &str);
+    pub fn is_registered(perm_id: &str) -> bool;
+    pub fn pending_permission_ids() -> Vec<String>;
+}
+```
+
+**Note**: All methods are synchronous (`fn`), NOT async. TTL of 300s for entries.
 
 ## See Also
 

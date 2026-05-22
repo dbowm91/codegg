@@ -37,12 +37,6 @@ pub enum AppEvent {
         output: String,
         success: bool,
     },
-    /// Permission was requested for a tool/path combination.
-    PermissionRequested { tool: String, path: Option<String> },
-    /// Permission was granted, optionally persisting the decision.
-    PermissionGranted { tool: String, persist: bool },
-    /// Permission was denied.
-    PermissionDenied { tool: String },
     /// An MCP server connected.
     McpServerConnected { name: String },
     /// An MCP server disconnected.
@@ -166,9 +160,6 @@ impl AppEvent {
             AppEvent::MessageDeleted { .. } => "message:deleted",
             AppEvent::ToolCalled { .. } => "tool:called",
             AppEvent::ToolResult { .. } => "tool:result",
-            AppEvent::PermissionRequested { .. } => "permission:requested",
-            AppEvent::PermissionGranted { .. } => "permission:granted",
-            AppEvent::PermissionDenied { .. } => "permission:denied",
             AppEvent::McpServerConnected { .. } => "mcp:connected",
             AppEvent::McpServerDisconnected { .. } => "mcp:disconnected",
             AppEvent::McpToolListChanged { .. } => "mcp:tool_list_changed",

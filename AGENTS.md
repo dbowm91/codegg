@@ -121,6 +121,13 @@ These items were identified during module reviews and are important for future a
 - **Health endpoint fixed**: `RemoteClient::health()` now uses `GET /health` instead of `GET /api/providers`
 - **Health check error propagation**: Non-success HTTP status now returns `Err(ClientError::Unreachable)` instead of `Ok(false)`
 
+### Permission Module (2026-05-22)
+- **Architecture doc updated**: `architecture/permission.md` now accurately reflects the implementation
+- **Skill synchronized**: `.opencode/skills/permission/SKILL.md` updated to match implementation
+- **Dead events removed**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied` were never used - removed from `AppEvent` (they were different from `PermissionPending`/`PermissionResponded`)
+- **Mode bug fixed**: `docs` mode incorrectly listed `write` as both allowed (line 171) and restricted (line 178) - removed from `restricted_tools` in `BuiltinModes::docs()`
+- **PermissionRegistry location noted**: Located in `src/bus/mod.rs`, not `src/permission/`
+
 ### IDE Module (2026-05-22)
 - **Temp file flushing fixed**: `open_diff_vscode()` and `open_diff_jetbrains()` now properly flush temp files via `as_file()` + `flush()` before passing paths to IDE. Previously wrote to `tempfile` without proper handle acquisition.
 - **open_diff_generic() fixed**: Now uses `std::env::split_paths()` (portable PATH parsing) and creates temp files with content instead of passing original paths directly. Matches behavior of IDE-specific handlers.
@@ -177,7 +184,8 @@ These items were identified during module reviews and are important for future a
 ├── lsp/SKILL.md                 # LSP client, diagnostics, code operations
 ├── memory/SKILL.md              # Memory system, consolidation, patterns
 ├── mcp/SKILL.md                 # MCP connection manager
-├── permission/SKILL.md          # Mode system
+├── mode/SKILL.md                # Mode system (Review/Debug/Docs)
+├── permission/SKILL.md          # PermissionChecker, DoomLoop, PermissionRegistry
 ├── plugin/SKILL.md             # WASM sandboxing, fuel tracking
 ├── provider/SKILL.md            # Provider patterns, token estimation
 ├── resilience/SKILL.md           # Circuit breaker, FallbackProvider
@@ -216,7 +224,7 @@ When adding guidance for a new module:
 | Crypto (API key encryption, Argon2id key derivation) | [architecture/crypto.md](architecture/crypto.md) |
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `resilience/AGENTS.override.md` |
-| Permission (mode system) | `permission/AGENTS.override.md` |
+| Permission (mode system, PermissionChecker, DoomLoop, PermissionRegistry) | `.opencode/skills/permission/SKILL.md` |
 | LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` |
 | Tool (path validation, async command) | `tool/AGENTS.override.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
