@@ -26,14 +26,13 @@ use super::launch::{self, LspProcess};
 use super::server::LspServerDef;
 use crate::error::LspError;
 
-#[derive(Debug, Clone)]
+pub fn url_to_uri(url: &Url) -> Result<Uri, LspError> {
+    Uri::from_str(url.as_str()).map_err(|e| LspError::RequestFailed(format!("invalid URL: {e}")))
+}
+
 pub struct DiagnosticEntry {
     pub uri: String,
     pub diagnostic: lsp_types::Diagnostic,
-}
-
-pub fn url_to_uri(url: &Url) -> Result<Uri, LspError> {
-    Uri::from_str(url.as_str()).map_err(|e| LspError::RequestFailed(format!("invalid URL: {e}")))
 }
 
 pub struct LspClient {
@@ -497,9 +496,9 @@ impl LspClient {
                             .cloned()
                             .unwrap_or(serde_json::Value::Null));
                     }
-                    let _ = self.notif_tx.send(resp_str);
-                } else {
-                    let _ = self.notif_tx.send(resp_str);
+                }
+                if let Err(e) = self.notif_tx.send(resp_str) {
+                    warn!(error = %e, "failed to send notification to channel");
                 }
             }
         }).await;

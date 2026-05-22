@@ -126,6 +126,9 @@ These items were identified during module reviews and are important for future a
 - **Request timeout added**: `send_request()` in `client.rs` now has 30-second timeout with `LspError::RequestTimeout`
 - **Hardcoded PATH fixed**: `launch.rs` now preserves user's actual PATH instead of hardcoding `/usr/local/bin:/usr/bin:/bin`
 - **Stderr logging**: Server stderr is now drained and logged during LSP client initialization
+- **Notification loop redundancy fixed**: `send_request()` now has cleaner notification handling with proper error logging on send failure
+- **close_file race condition fixed**: Uses single write lock and properly removes file from `opened_files` after closing
+- **save_file race condition fixed**: Uses single write lock instead of drop-read-then-acquire-write pattern
 
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.

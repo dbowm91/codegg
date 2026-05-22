@@ -257,6 +257,86 @@ if !stderr_output.is_empty() {
 }
 ```
 
+## Additional Bug Fixes (2026-05-22 - Session Review)
+
+### Notification Loop Redundancy Fixed (`client.rs`)
+
+The `send_request` method had redundant notification handling:
+
+```rust
+// ❌ Before - duplicate branches, silent ignore on send failure
+if let Some(resp_id) = resp.get("id") {
+    if resp_id.as_i64() == Some(id) { ... }
+    let _ = self.notif_tx.send(resp_str);  // Always runs after match
+} else {
+    let _ = self.notif_tx.send(resp_str);  // Duplicate branch
+}
+
+// ✅ After - cleaner logic, logged send failures
+if let Some(resp_id) = resp.get("id") {
+    if resp_id.as_i64() == Some(id) { ... }
+}
+if let Err(e) = self.notif_tx.send(resp_str) {
+    warn!(error = %e, "failed to send notification to channel");
+}
+```
+
+### close_file Race Condition Fixed (`service.rs`)
+
+The `close_file` method had lock handling issues that could cause race conditions:
+
+```rust
+// ❌ Before - dropped read lock before acquiring write lock (race!)
+let clients = self.clients.read().await;
+let key = { /* find key */ };
+drop(clients);  // Lock dropped here
+if let Some(key) = key {
+    let mut clients = self.clients.write().await;  // Another task could modify between
+    // ...
+}
+
+// ✅ After - uses single write lock, removes from opened_files
+let client_idx = {
+    let clients = self.clients.read().await;
+    // find client index
+};
+// ...
+let mut clients = self.clients.write().await;
+if let Some(entry) = clients.values_mut().nth(client_idx) {
+    let was_open = entry.client.opened_files.lock().await.contains_key(&uri_str);
+    if was_open {
+        let _ = entry.client.close_file(&uri).await;
+        entry.client.opened_files.lock().await.remove(&uri_str);
+    }
+}
+```
+
+### save_file Race Condition Fixed (`service.rs`)
+
+Similar fix for `save_file`:
+
+```rust
+// ❌ Before - dropped read lock before acquiring write lock
+let clients = self.clients.read().await;
+let key = { /* find key */ };
+drop(clients);
+if let Some(key) = key {
+    let mut clients = self.clients.write().await;
+    // ...
+}
+
+// ✅ After - uses single write lock
+let client_idx = {
+    let clients = self.clients.read().await;
+    // find client index
+};
+// ...
+let mut clients = self.clients.write().await;
+if let Some(entry) = clients.values_mut().nth(client_idx) {
+    return entry.client.save_file(&uri, text).await;
+}
+```
+
 ## Error Handling
 
 ```rust

@@ -150,26 +150,35 @@ impl LspService {
             .map(|u| u.to_string())
             .unwrap_or_default();
 
-        let clients = self.clients.read().await;
-        let key = {
-            let mut found = None;
-            for (k, e) in clients.iter() {
+        let client_idx = {
+            let clients = self.clients.read().await;
+            let mut found_idx = None;
+            for (i, (_, e)) in clients.iter().enumerate() {
                 if e.client.opened_files.lock().await.contains_key(&uri_str) {
-                    found = Some(k.clone());
+                    found_idx = Some(i);
                     break;
                 }
             }
-            found
+            found_idx
         };
-        drop(clients);
 
-        if let Some(key) = key {
+        let client_idx = match client_idx {
+            Some(idx) => idx,
+            None => return Ok(()),
+        };
+
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+
+        {
             let mut clients = self.clients.write().await;
-            if let Some(entry) = clients.get_mut(&key) {
-                let uri = Url::from_file_path(file_path).map_err(|_| {
-                    LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
-                })?;
-                return entry.client.close_file(&uri).await;
+            if let Some(entry) = clients.values_mut().nth(client_idx) {
+                let was_open = entry.client.opened_files.lock().await.contains_key(&uri_str);
+                if was_open {
+                    let _ = entry.client.close_file(&uri).await;
+                    entry.client.opened_files.lock().await.remove(&uri_str);
+                }
             }
         }
         Ok(())
@@ -180,27 +189,30 @@ impl LspService {
             .map(|u| u.to_string())
             .unwrap_or_default();
 
-        let clients = self.clients.read().await;
-        let key = {
-            let mut found = None;
-            for (k, e) in clients.iter() {
+        let client_idx = {
+            let clients = self.clients.read().await;
+            let mut found_idx = None;
+            for (i, (_, e)) in clients.iter().enumerate() {
                 if e.client.opened_files.lock().await.contains_key(&uri_str) {
-                    found = Some(k.clone());
+                    found_idx = Some(i);
                     break;
                 }
             }
-            found
+            found_idx
         };
-        drop(clients);
 
-        if let Some(key) = key {
-            let mut clients = self.clients.write().await;
-            if let Some(entry) = clients.get_mut(&key) {
-                let uri = Url::from_file_path(file_path).map_err(|_| {
-                    LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
-                })?;
-                return entry.client.save_file(&uri, text).await;
-            }
+        let client_idx = match client_idx {
+            Some(idx) => idx,
+            None => return Ok(()),
+        };
+
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+
+        let mut clients = self.clients.write().await;
+        if let Some(entry) = clients.values_mut().nth(client_idx) {
+            return entry.client.save_file(&uri, text).await;
         }
         Ok(())
     }

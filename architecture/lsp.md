@@ -230,6 +230,9 @@ pub enum LspError {
 - **Request timeout**: Added 30-second timeout to `send_request()`
 - **Hardcoded PATH**: Now preserves user's actual PATH instead of hardcoding
 - **Stderr logging**: Server stderr is now logged during initialization
+- **Notification loop redundancy**: Fixed duplicate notification handling in `send_request()`
+- **close_file race condition**: Fixed lock handling to use single write lock and properly update `opened_files`
+- **save_file race condition**: Fixed lock handling to use single write lock
 
 ## See Also
 
