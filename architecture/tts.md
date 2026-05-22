@@ -8,7 +8,7 @@ The `tts` module provides text-to-speech functionality.
 
 **Key Responsibilities**:
 - Text-to-speech output
-- Platform-specific implementation
+- Platform-specific implementation (macOS-only)
 
 ## Key Types
 
@@ -16,21 +16,40 @@ The `tts` module provides text-to-speech functionality.
 
 ```rust
 pub struct Tts {
-    engine: Box<dyn TtsEngine>,
+    speaking: std::sync::atomic::AtomicBool,
 }
 
+impl Clone for Tts { /* ... */ }
+
+impl Default for Tts { /* ... */ }
+
 impl Tts {
-    pub fn speak(&self, text: &str) -> Result<()>;
-    pub fn stop(&self) -> Result<()>;
+    pub fn new() -> Self;
+    pub fn init(&mut self, provider: TtsProvider) -> Result<(), AppError>;
+    pub async fn speak(&self, text: &str) -> Result<(), AppError>;
+    pub async fn stop(&self) -> Result<(), AppError>;
+    pub fn is_speaking(&self) -> bool;
 }
 ```
 
 ### TtsEngine Trait
 
 ```rust
+#[async_trait]
 pub trait TtsEngine: Send + Sync {
-    fn speak(&self, text: &str) -> Result<()>;
-    fn stop(&self) -> Result<()>;
+    async fn speak(&self, text: &str) -> Result<(), AppError>;
+    async fn stop(&self) -> Result<(), AppError>;
+    fn is_speaking(&self) -> bool;
+}
+```
+
+### TtsProvider
+
+```rust
+#[derive(Debug, Default)]
+pub enum TtsProvider {
+    #[default]
+    None,  // Currently only supported provider
 }
 ```
 
@@ -38,39 +57,59 @@ pub trait TtsEngine: Send + Sync {
 
 ### macOS
 
-Uses the built-in `say` command:
+Uses the built-in `say` command via `tokio::process::Command`:
 
 ```rust
-pub struct MacOSTtsEngine;
-
-impl TtsEngine for MacOSTtsEngine {
-    fn speak(&self, text: &str) -> Result<()> {
-        Command::new("say")
-            .arg(text)
-            .spawn()?;
-        Ok(())
+pub async fn speak(&self, text: &str) -> Result<(), AppError> {
+    self.speaking.store(true, Ordering::SeqCst);
+    let output = tokio::process::Command::new("say")
+        .arg(text)
+        .output()
+        .await
+        .map_err(AppError::Io)?;
+    self.speaking.store(false, Ordering::SeqCst);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!("say command failed: {}", stderr);
+        return Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("say command failed: {}", stderr),
+        )));
     }
+    Ok(())
 }
 ```
 
 **Note**: Currently hardcoded to macOS `say` command. Cross-platform support not yet implemented.
 
-## Usage
+## Error Handling
 
-```rust
-let tts = Tts::new();
-tts.speak("Task completed successfully")?;
-```
+When `say` fails, `speak()` returns `Err(AppError::Io(...))` with the stderr message. Callers should handle these errors appropriately.
 
 ## Configuration
 
 ```toml
 [tts]
-enabled = true
-voice = "Alex"  # macOS voice name
-rate = 1.0       # Speech rate multiplier
+enabled = true  # User preference, not implemented in code
 ```
+
+**Note**: Configuration options like `voice` and `rate` mentioned in config are not implemented.
+
+## Usage
+
+```rust
+let tts = Tts::new();
+tts.speak("Task completed successfully").await?;
+```
+
+## Keybindings
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Y` | Toggle TTS (speak selected message) |
+| `Ctrl+Shift+Y` | Stop TTS playback |
 
 ## See Also
 
+- [.opencode/skills/tts/SKILL.md](../.opencode/skills/tts/SKILL.md) - TTS skill with UI integration details
 - [tui.md](tui.md) - TUI notifications that could trigger TTS

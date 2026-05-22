@@ -13,10 +13,11 @@ Location: `src/tts/mod.rs`
 ### Core Components
 
 ```rust
-#[derive(Debug, Clone)]
 pub struct Tts {
     speaking: std::sync::atomic::AtomicBool,
 }
+
+impl Clone for Tts { /* ... */ }
 
 #[async_trait]
 pub trait TtsEngine: Send + Sync {
@@ -29,6 +30,10 @@ pub enum TtsProvider {
     None,  // Currently only supported provider
 }
 ```
+
+### Error Handling
+
+When `say` fails, `speak()` now returns `Err(AppError::Io(...))` with the stderr message instead of silently ignoring the failure. Callers should handle these errors appropriately.
 
 ### TTS State in UI
 

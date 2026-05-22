@@ -243,6 +243,10 @@ These items were identified during module reviews and are important for future a
 - **Client timeouts**: Health check has 10s timeout, WebSocket connection has 30s timeout
 - **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
 
+### TTS Module (2026-05-22)
+- **Error handling improved**: `speak()` now returns `Err(AppError::Io(...))` when `say` command fails instead of silently ignoring failures. Callers handle errors appropriately.
+- **Skill synchronized**: `.opencode/skills/tts/SKILL.md` updated with error handling documentation
+
 ## Documentation Structure
 
 ### Directory Structure

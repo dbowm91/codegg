@@ -56,7 +56,12 @@ impl Tts {
         self.speaking
             .store(false, std::sync::atomic::Ordering::SeqCst);
         if !output.status.success() {
-            tracing::debug!("say command failed: {:?}", output.stderr);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("say command failed: {}", stderr);
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("say command failed: {}", stderr),
+            )));
         }
         Ok(())
     }
