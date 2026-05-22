@@ -340,17 +340,38 @@ pub fn validate_path(path: &str, base_dir: &Path) -> Result<PathBuf, ToolError> 
 ```rust
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
+    #[error("tool not found: {0}")]
+    NotFound(String),
 
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("tool execution failed: {0}")]
+    Execution(String),
+
+    #[error("tool timeout: {0}")]
+    Timeout(String),
 
     #[error("permission denied: {0}")]
     Permission(String),
 
-    #[error("not found: {0}")]
-    NotFound(String),
+    #[error("tool formatting failed: {0}")]
+    Format(String),
+
+    #[error("tool disabled: {0}")]
+    Disabled(String),
+
+    #[error("I/O error: {0}")]
+    Io(String),
+
+    #[error("network error: {0}")]
+    Network(String),
+}
+
+impl ToolError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            ToolError::Io(_) | ToolError::Network(_) | ToolError::Timeout(_)
+        )
+    }
 }
 ```
 

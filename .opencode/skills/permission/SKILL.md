@@ -223,11 +223,13 @@ pub struct QuestionRegistry {
 }
 
 impl QuestionRegistry {
-    pub async fn register(question_id: String, tx: tokio::sync::oneshot::Sender<String>);
-    pub async fn answer_question(question_id: String, answers: String) -> bool;
-    pub async fn unregister(question_id: &str);
+    pub fn register(question_id: String, tx: tokio::sync::oneshot::Sender<String>);
+    pub fn answer_question(question_id: String, answers: String) -> bool;
+    pub fn unregister(question_id: &str);
 }
 ```
+
+**Important**: These are synchronous functions (`fn`), NOT async. Do NOT use `await` when calling these.
 
 Example usage in tests:
 ```rust
@@ -236,11 +238,11 @@ agent_loop.set_session_id("test-session-123");
 
 // Register question
 let (tx, rx) = tokio::sync::oneshot::channel();
-QuestionRegistry::register("test-session-123".to_string(), tx).await;
+QuestionRegistry::register("test-session-123".to_string(), tx);  // NOT async
 
 // Answer the question
 let answers = serde_json::json!({"q1": "red"}).to_string();
-QuestionRegistry::answer_question("test-session-123".to_string(), answers).await;
+QuestionRegistry::answer_question("test-session-123".to_string(), answers);  // NOT async
 
 // Verify response
 let response = rx.await.unwrap();

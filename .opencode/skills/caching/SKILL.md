@@ -81,4 +81,4 @@ pub struct ProviderConfig {
 - No `lazy_static!` - `ProviderCache` uses `DashMap` which handles concurrent access
 - `clear()` is a self-contained method that removes expired entries
 
-Base directory for this skill: file:///home/sugarwookie/projects/coder/.opencode/skills/caching
+Base directory for this skill: file:///Users/davidbowman/projects/codegg/.opencode/skills/caching
