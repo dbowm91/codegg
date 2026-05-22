@@ -261,6 +261,8 @@ processing_task = Some(tokio::spawn({
                 permission_checker,
                 tool_registry,
                 config,
+                None, // mcp_service
+                None, // pool
             );
             agent_loop.set_session_id(&session_id);
 
@@ -293,12 +295,12 @@ pub struct PermissionRegistry {
 }
 
 impl PermissionRegistry {
-    // Note: These are async functions
-    pub async fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>) {
+    // Note: These are synchronous functions (NOT async)
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>) {
         PERMISSION_REGISTRY.senders.insert(perm_id, tx);
     }
 
-    pub async fn respond(perm_id: String, choice: PermissionChoice) -> bool {
+    pub fn respond(perm_id: String, choice: PermissionChoice) -> bool {
         if let Some((_, tx)) = PERMISSION_REGISTRY.senders.remove(&perm_id) {
             let _ = tx.send(choice);
             true
@@ -315,16 +317,14 @@ impl PermissionRegistry {
 // In TUI, when user responds to permission dialog:
 pub fn submit_permission_response(&mut self, allowed: bool) {
     if let Some(perm_id) = self.dialog_state.permission_perm_id {
-        // Call async respond function
-        tokio::spawn(async move {
-            PermissionRegistry::respond(
-                perm_id,
-                match allowed {
-                    true => PermissionChoice::AllowOnce,
-                    false => PermissionChoice::DenyOnce,
-                },
-            ).await;
-        });
+        // Call sync respond function (NOT async)
+        PermissionRegistry::respond(
+            perm_id,
+            match allowed {
+                true => PermissionChoice::AllowOnce,
+                false => PermissionChoice::DenyOnce,
+            },
+        );
     }
 }
 ```
@@ -340,12 +340,12 @@ pub struct QuestionRegistry {
 }
 
 impl QuestionRegistry {
-    // Note: These are async functions
-    pub async fn register(question_id: String, tx: tokio::sync::oneshot::Sender<String>) {
+    // Note: These are synchronous functions (NOT async)
+    pub fn register(question_id: String, tx: tokio::sync::oneshot::Sender<String>) {
         QUESTION_REGISTRY.senders.insert(question_id, tx);
     }
 
-    pub async fn answer_question(question_id: String, answers: String) -> bool {
+    pub fn answer_question(question_id: String, answers: String) -> bool {
         if let Some((_, tx)) = QUESTION_REGISTRY.senders.remove(&question_id) {
             let _ = tx.send(answers);
             true
@@ -359,9 +359,8 @@ impl QuestionRegistry {
 pub fn submit_question_answers(&mut self) {
     if let Some(session_id) = self.dialog_state.question_session_id.take() {
         let answers = self.dialog_state.question_dialog.as_ref().unwrap().answers_json();
-        tokio::spawn(async move {
-            QuestionRegistry::answer_question(session_id, answers).await;
-        });
+        // Call sync answer function (NOT async)
+        QuestionRegistry::answer_question(session_id, answers);
     }
 }
 ```

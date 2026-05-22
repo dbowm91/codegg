@@ -62,8 +62,13 @@ These items were identified during module reviews and are important for future a
 - **CircuitError → ProviderError::CircuitOpen conversion**: `From<CircuitError>` impl enables circuit breaker error propagation (added 2026-05-22)
 - **`FallbackProvider` uses `CircuitOpen`**: Circuit breaker errors now create `ProviderError::CircuitOpen` instead of generic `ProviderError::api()` (fixed 2026-05-22)
 - **SSE GlobalEventBus fixed**: SSE handler at `/api/event` now subscribes directly to `crate::bus::global::GlobalEventBus::subscribe()` instead of using isolated State parameter (fixed 2026-05-22)
+- **Exec mode session_id**: `session_id` parameter in `ExecMode::new()` is now properly used (was ignored before, now falls back to UUID if None) (fixed 2026-05-22)
+- **Exec mode error classification**: `CircuitOpen`, `Api`, and `Stream` errors now properly classified with distinct error codes (fixed 2026-05-22)
+- **Exec mode config errors**: Config loading errors now properly returned as `CONFIG_ERROR` instead of silently using defaults (fixed 2026-05-22)
+- **Exec mode question channel**: `setup_question_channel()` is now called in exec mode for proper question tool handling (fixed 2026-05-22)
 
 ### Implementation Patterns
+- **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
 - **TUI render.rs doesn't exist**: Only `mod.rs`, `types.rs`, and `commands.rs` exist in `src/tui/app/`
 - **Component trait**: All dialogs implement `Component` trait with `handle_key`, `update`, `render` methods

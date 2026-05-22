@@ -4,12 +4,7 @@ use crate::config::schema::Config;
 use crate::error::{AppError, ProviderError};
 use crate::permission::PermissionChecker;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message};
-#[allow(unused_imports)]
-use crate::session;
-#[allow(unused_imports)]
-use crate::storage;
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,7 +61,6 @@ impl ExecOutput {
 pub struct ExecMode {
     quiet: bool,
     json_output: bool,
-    #[allow(dead_code)]
     session_id: Option<String>,
 }
 
@@ -86,7 +80,7 @@ impl ExecMode {
             eprintln!("Starting exec mode...");
         }
 
-        let config = Config::load().unwrap_or_default();
+        let config = Config::load().map_err(|e| AppError::Config(e))?;
         let mut registry = crate::provider::ProviderRegistry::new();
         crate::provider::register_builtin_with_config(&mut registry, &config);
 
@@ -101,19 +95,11 @@ impl ExecMode {
             AppError::Other(anyhow::anyhow!("Provider not found: {}", provider_id))
         })?;
 
-        let project_dir = env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let _pool = storage::init(&project_dir).await?;
-
         let all_agents = agent::resolve_agents(&config)?;
         let agent_name = input.agent.unwrap_or_else(|| "build".to_string());
-        let _agent_config = all_agents
-            .iter()
-            .find(|a| a.name == agent_name)
-            .ok_or_else(|| AppError::Other(anyhow::anyhow!("Agent not found: {}", agent_name)))?;
+        if !all_agents.iter().any(|a| a.name == agent_name) {
+            return Err(AppError::Other(anyhow::anyhow!("Agent not found: {}", agent_name)));
+        }
 
         let permission_checker = PermissionChecker::new(Some(&config), None);
         let tool_registry = crate::tool::ToolRegistry::with_defaults();
@@ -130,8 +116,9 @@ impl ExecMode {
             None,
         );
 
-        let session_id = uuid::Uuid::new_v4().to_string();
+        let session_id = self.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         loop_instance.set_session_id(&session_id);
+        loop_instance.setup_question_channel();
 
         let messages = vec![Message::User {
             content: vec![ContentPart::Text {
@@ -217,6 +204,15 @@ impl ExecMode {
             }
             AppError::Provider(ProviderError::ModelNotFound(_)) => {
                 ("MODEL_NOT_FOUND".to_string(), "Model not found".to_string())
+            }
+            AppError::Provider(ProviderError::CircuitOpen(name)) => {
+                ("CIRCUIT_OPEN".to_string(), format!("Provider circuit open: {}", name))
+            }
+            AppError::Provider(ProviderError::Api { code, message, .. }) => {
+                ("API_ERROR".to_string(), format!("API error [{}]: {}", code, message))
+            }
+            AppError::Provider(ProviderError::Stream(_)) => {
+                ("STREAM_ERROR".to_string(), "Stream error".to_string())
             }
             AppError::Io(_) => ("IO_ERROR".to_string(), "I/O error".to_string()),
             AppError::Config(_) => (

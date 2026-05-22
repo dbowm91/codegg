@@ -107,7 +107,7 @@ pub struct DoomLoopDetector {
 }
 ```
 
-**Important**: DoomLoopDetector tracks CONSECUTIVE repetitions. When a different tool interrupts, the consecutive count resets.
+**Important**: DoomLoopDetector uses window-based counting (O(1) HashMap), NOT consecutive repetitions. The count reflects how many times a tool has been called within the window, regardless of whether other tools interrupted it.
 
 ### Mode System
 
@@ -169,9 +169,9 @@ pub struct PermissionRegistry {
 }
 
 impl PermissionRegistry {
-    pub async fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>);
-    pub async fn respond(perm_id: String, choice: PermissionChoice) -> bool;
-    pub async fn unregister(perm_id: &str);
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>);
+    pub fn respond(perm_id: String, choice: PermissionChoice) -> bool;
+    pub fn unregister(perm_id: &str);
     pub fn is_registered(perm_id: &str) -> bool;
 }
 ```
@@ -182,13 +182,13 @@ impl PermissionRegistry {
 ```rust
 // Register permission request
 let (tx, rx) = tokio::sync::oneshot::channel();
-PermissionRegistry::register("test-perm-1".to_string(), tx).await;
+PermissionRegistry::register("test-perm-1".to_string(), tx);
 
 // Verify registered
 assert!(PermissionRegistry::is_registered("test-perm-1"));
 
 // Respond with AllowOnce
-PermissionRegistry::respond("test-perm-1".to_string(), PermissionChoice::AllowOnce).await;
+PermissionRegistry::respond("test-perm-1".to_string(), PermissionChoice::AllowOnce);
 
 // Verify response received
 let response = rx.await.unwrap();
@@ -198,10 +198,10 @@ assert!(response.allowed());
 **Ask/Deny Pattern**:
 ```rust
 let (tx, rx) = tokio::sync::oneshot::channel();
-PermissionRegistry::register("test-perm-2".to_string(), tx).await;
+PermissionRegistry::register("test-perm-2".to_string(), tx);
 
 // Respond with DenyOnce
-PermissionRegistry::respond("test-perm-2".to_string(), PermissionChoice::DenyOnce).await;
+PermissionRegistry::respond("test-perm-2".to_string(), PermissionChoice::DenyOnce);
 
 let response = rx.await.unwrap();
 assert!(matches!(response, PermissionChoice::DenyOnce));
@@ -209,7 +209,7 @@ assert!(matches!(response, PermissionChoice::DenyOnce));
 
 **Always Allow Pattern** (persists decision):
 ```rust
-PermissionRegistry::respond("test-perm".to_string(), PermissionChoice::AlwaysAllow).await;
+PermissionRegistry::respond("test-perm".to_string(), PermissionChoice::AlwaysAllow);
 // Decision is persisted - future calls to same tool/path will auto-allow
 ```
 
