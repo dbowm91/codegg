@@ -25,7 +25,7 @@ pub fn escape_sql_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
-pub(crate) fn generate_slug(title: &Option<String>) -> String {
+pub fn generate_slug(title: &Option<String>) -> String {
     title
         .as_ref()
         .map(|t| {
@@ -443,7 +443,7 @@ impl SessionStore {
         validate_import_size(&data)?;
 
         let import: SessionImport = serde::Deserialize::deserialize(data)
-            .map_err(|e| StorageError::Database(format!("invalid import format: {}", e)))?;
+            .map_err(|e| StorageError::Import(format!("invalid import format: {}", e)))?;
 
         let id = Uuid::new_v4().to_string();
         let project_id = new_project_id

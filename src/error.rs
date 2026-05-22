@@ -93,6 +93,12 @@ pub enum StorageError {
 
     #[error("llm operation failed: {operation}: {message}")]
     LlmOperation { operation: String, message: String },
+
+    #[error("import error: {0}")]
+    Import(String),
+
+    #[error("export error: {0}")]
+    Export(String),
 }
 
 impl From<sqlx::Error> for StorageError {

@@ -83,19 +83,19 @@ pub fn validate_import_size(data: &serde_json::Value) -> Result<usize, StorageEr
     let total_bytes = serde_json::to_vec(data).map(|v| v.len()).unwrap_or(0);
 
     if msg_count > MAX_IMPORT_MESSAGES {
-        return Err(StorageError::Database(format!(
+        return Err(StorageError::Import(format!(
             "import validation failed: too many messages ({} > {})",
             msg_count, MAX_IMPORT_MESSAGES
         )));
     }
     if part_count > MAX_IMPORT_PARTS {
-        return Err(StorageError::Database(format!(
+        return Err(StorageError::Import(format!(
             "import validation failed: too many parts ({} > {})",
             part_count, MAX_IMPORT_PARTS
         )));
     }
     if total_bytes > MAX_TOTAL_IMPORT_BYTES {
-        return Err(StorageError::Database(format!(
+        return Err(StorageError::Import(format!(
             "import validation failed: import size ({} bytes) exceeds limit ({} bytes)",
             total_bytes, MAX_TOTAL_IMPORT_BYTES
         )));

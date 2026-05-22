@@ -23,8 +23,9 @@ pub use models::{
 };
 pub use row::{MessageRow, PartRow, PermissionRow, SessionRow, TodoRow};
 pub use store::{
-    escape_sql_like, MessageStore, PartStore, PermissionStore, SessionStore, TodoStore,
+    escape_sql_like, generate_slug, MessageStore, PartStore, PermissionStore, SessionStore, TodoStore,
 };
+pub use checkpoint::CheckpointStore;
 
 const SESSION_COLUMNS: &str = r#"id, project_id, workspace_id, parent_id, slug, directory,
     title, version, share_url, summary_additions, summary_deletions,

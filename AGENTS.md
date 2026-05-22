@@ -189,6 +189,12 @@ These items were identified during module reviews and are important for future a
 - **Auth deduplication**: `validate_ws_auth()` function now shared between `handle_ws` and `handle_tui` (was duplicated inline code)
 - **rpc.rs removed**: Unused `rpc.rs` module removed from `server/mod.rs`
 
+### Session Module (2026-05-22)
+- **StorageError variants expanded**: Added `Import` and `Export` error variants to `StorageError` enum (were using `Database` variant)
+- **CheckpointStore now exported**: `CheckpointStore` is now re-exported from `session::mod.rs` for use by other modules
+- **generate_slug now exported**: `generate_slug` helper function is now `pub` and re-exported from `session::mod.rs`
+- **Skill updated**: `.opencode/skills/session/SKILL.md` updated to version 1.1.0 with complete API documentation
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
@@ -277,3 +283,4 @@ When adding guidance for a new module:
 | Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |
 | Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
 | Updates, roadmap, code quality | `meta/AGENTS.override.md` |
+| Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` |
