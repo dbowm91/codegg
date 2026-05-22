@@ -56,7 +56,6 @@ pub struct ServerState {
     pub project_dir: String,
     pub pool: SqlitePool,
     pub mcp_service: Arc<RwLock<McpService>>,
-    pub event_bus: GlobalEventBus,  // Local instance for SSE
     pub config: Config,
     pub ws_rate_limiter: Arc<WsRateLimiter>,  // Shared across WebSockets
 }
@@ -67,6 +66,8 @@ pub struct WsRateLimiter {
     window: Duration,
 }
 ```
+
+Note: `event_bus` field was removed - SSE handler (`/api/event`) and TUI WebSocket (`/tui`) directly use `GlobalEventBus::subscribe()` from `crate::bus::global`.
 
 ### ws.rs - WebSocket Handlers
 
