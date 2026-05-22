@@ -32,14 +32,21 @@ impl RemoteClient {
     }
 
     pub async fn health(&self) -> Result<bool, ClientError> {
-        let url = format!("{}/api/providers", self.base_url);
+        let url = format!("{}/health", self.base_url);
         let resp = self
             .http
             .get(&url)
             .timeout(Duration::from_secs(10))
             .send()
             .await
-            .map_err(|e| ClientError::Connection(e.to_string()))?;
-        Ok(resp.status().is_success())
+            .map_err(|e| ClientError::Unreachable(e.to_string()))?;
+        if resp.status().is_success() {
+            Ok(true)
+        } else {
+            Err(ClientError::Unreachable(format!(
+                "health check failed: {}",
+                resp.status()
+            )))
+        }
     }
 }

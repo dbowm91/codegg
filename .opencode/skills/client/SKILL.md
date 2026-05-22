@@ -40,7 +40,7 @@ let http_url = build_http_url(url);   // WS/WSS → HTTP/HTTPS
 ### 2. Health Check (with 10s timeout)
 ```rust
 let client = RemoteClient::new(&http_url, token)?;
-client.health().await?;  // Uses /api/providers endpoint
+client.health().await?;  // Uses /health endpoint
 ```
 
 ### 3. WebSocket Connection (with 30s timeout)
@@ -96,12 +96,21 @@ impl RemoteClient {
     pub fn new(base_url: &str, token: Option<&str>) -> Result<Self, ClientError>
 
     pub async fn health(&self) -> Result<bool, ClientError> {
-        // Uses GET /api/providers with 10s timeout
-        let url = format!("{}/api/providers", self.base_url);
-        self.http.get(&url)
+        // Uses GET /health with 10s timeout
+        let url = format!("{}/health", self.base_url);
+        let resp = self.http.get(&url)
             .timeout(Duration::from_secs(10))
             .send()
             .await
+            .map_err(ClientError::Unreachable)?;
+        if resp.status().is_success() {
+            Ok(true)
+        } else {
+            Err(ClientError::Unreachable(format!(
+                "health check failed: {}",
+                resp.status()
+            )))
+        }
     }
 }
 ```

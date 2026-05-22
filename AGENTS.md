@@ -85,6 +85,10 @@ These items were identified during module reviews and are important for future a
 - **`/memory` commands**: `search`, `list`, `consolidate`
 - **Auto-run**: `experimental.memory_auto_consolidate` config option enables automatic consolidation on session end
 
+### Client Module (2026-05-22)
+- **Health endpoint fixed**: `RemoteClient::health()` now uses `GET /health` instead of `GET /api/providers`
+- **Health check error propagation**: Non-success HTTP status now returns `Err(ClientError::Unreachable)` instead of `Ok(false)`
+
 ### LSP Module (2026-05-22)
 - **PATH parsing fixed**: `download.rs` now uses `std::env::split_paths()` instead of splitting by `MAIN_SEPARATOR` (which was broken on Unix where PATH uses `:` not `/`)
 - **PHP server mapping fixed**: `language.rs` now maps PHP to `php-language-server` instead of non-existent `intelephense`
