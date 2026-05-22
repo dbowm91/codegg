@@ -1,7 +1,7 @@
 ---
 name: security
 description: Guide for security implementations in opencode-rs
-version: 1.0.0
+version: 1.1.0
 tags:
   - security
   - permissions

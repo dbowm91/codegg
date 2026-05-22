@@ -369,7 +369,11 @@ impl Tool for BashTool {
             };
             let mut cmd = Command::new(program);
             cmd.env_clear();
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            if let Some(path) = std::env::var_os("PATH") {
+                cmd.env("PATH", path);
+            } else {
+                cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            }
             cmd.args(args);
             if let Some(ref dir) = canonical_workdir {
                 cmd.current_dir(dir);

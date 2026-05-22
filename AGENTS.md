@@ -253,6 +253,10 @@ These items were identified during module reviews and are important for future a
 - **validate_path_safety() symlink check**: Added symlink check before canonicalization to prevent symlink traversal attacks. Uses `path.symlink_metadata()` to detect if the path itself is a symlink.
 - **validate_path_safety() tests added**: Added `test_validate_path_safety` and `test_validate_path_safety_with_symlink` unit tests to verify path validation and symlink rejection.
 
+### Security Module (2026-05-26)
+- **validate_url_host() returns lowercase**: Fixed to return host normalized to lowercase for case-insensitive comparison consistency.
+- **BashTool PATH fixed**: Now uses user's actual PATH via `std::env::var_os("PATH")` instead of hardcoded `/usr/local/bin:/usr/bin:/bin`.
+
 ### Server Module (2026-05-22)
 - **WsRateLimiter shared**: `WsRateLimiter` in `ServerState` is now shared across all WebSocket connections (was created per-connection, causing inefficient rate limiting)
 - **SSE GlobalEventBus fixed**: SSE handler at `/api/event` now subscribes directly to `crate::bus::global::GlobalEventBus::subscribe()` instead of using isolated State parameter

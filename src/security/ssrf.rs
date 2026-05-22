@@ -141,5 +141,5 @@ pub fn validate_url_host(url: &str) -> Result<String, String> {
 
     validate_host_ip(&host, port)?;
 
-    Ok(host)
+    Ok(host.to_lowercase())
 }

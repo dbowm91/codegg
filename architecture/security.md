@@ -70,6 +70,7 @@ pub fn validate_url_host(url: &str) -> Result<String, String> {
     // 1. Parse URL
     // 2. Check scheme (http/https only)
     // 3. Validate host via validate_host_ip()
+    // 4. Returns host normalized to lowercase
 }
 ```
 
