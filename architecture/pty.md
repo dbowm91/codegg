@@ -73,6 +73,7 @@ impl PtyManager {
 - `cwd` is stored as `String`, not `PathBuf`
 - Default terminal size is 80 columns x 24 rows
 - Default shell is `bash`
+- Unit tests added (11 tests covering all PtyManager operations)
 
 ## See Also
 
