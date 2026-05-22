@@ -113,10 +113,12 @@ codegg exec --json '{"prompt": "fix the bug"}' --json-output
 ```json
 {
   "success": false,
-  "error": "Permission denied: Tool 'bash' denied by permissions",
+  "error": "Permission denied: Tool 'bash' denied by permissions (1234ms)",
   "code": "PERMISSION_ERROR"
 }
 ```
+
+Note: Error messages include execution duration in milliseconds for debugging purposes.
 
 ## Error Codes
 

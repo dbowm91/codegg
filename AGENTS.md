@@ -111,6 +111,7 @@ These items were identified during module reviews and are important for future a
 - **ExecInput uses `prompt` field**: Not `task` as shown in previous architecture doc
 - **`_duration_ms` fixed**: Error path now uses duration_ms instead of silently ignoring it
 - **Skill synchronized**: `.opencode/skills/exec/SKILL.md` updated to match implementation
+- **Error messages include duration**: Error output now includes execution duration in milliseconds for debugging (e.g., `"Permission denied: Tool 'bash' denied by permissions (1234ms)"`)
 
 ### Hooks System (2026-05-22)
 - **ToolExecuteBefore/After plugin hooks called**: Both hooks ARE invoked in `execute_tool_calls()` at loop.rs:1764 and 1806. `ToolExecuteBefore` can block execution by returning `blocked: true`.

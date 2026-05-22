@@ -171,9 +171,9 @@ impl ExecMode {
                 ))
             }
             Err(e) => {
-                let _duration_ms = start.elapsed().as_millis() as u64;
+                let duration_ms = start.elapsed().as_millis() as u64;
                 let (code, msg) = Self::classify_error(&e);
-                Ok(ExecOutput::error(format!("{}: {}", msg, e), code))
+                Ok(ExecOutput::error(format!("{}: {} ({}ms)", msg, e, duration_ms), code))
             }
         }
     }
