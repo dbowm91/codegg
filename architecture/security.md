@@ -8,8 +8,8 @@ The `security` module provides security features for URL validation, IP checking
 
 **Key Responsibilities**:
 - SSRF protection (Server-Side Request Forgery)
-- Internal IP validation
-- Path safety validation
+- Internal IP validation (IPv4 and IPv6 including IPv4-mapped)
+- Symlink detection for path safety
 - Landlock sandboxing (Linux)
 
 ## Key Functions
@@ -24,40 +24,33 @@ pub fn is_internal_ip(ip: &IpAddr) -> bool {
     // - 172.16.0.0/12 (private)
     // - 192.168.0.0/16 (private)
     // - 169.254.0.0/16 (link-local)
-    // - 0.0.0.0/32 (unspecified)
-    // - 100.64.0.0/10 (CGNAT)
+    // - 0.0.0.0/8 (current network)
+    // - 100.64.0.0/10 (carrier-grade NAT)
     // - 198.18.0.0/15 (benchmark)
     // - 224.0.0.0/4 (multicast)
     // - ::1 (IPv6 loopback)
-    // - fe80::/10 (unicast link-local)
     // - fc00::/7 (IPv6 unique local)
-    // - :: (IPv6 unspecified)
-    // - IPv4-mapped IPv6 addresses
+    // - ff00::/8 (IPv6 multicast)
+    // - IPv4-mapped IPv6 (::ffff:x.x.x.x)
 }
 ```
 
-Note: Takes `&IpAddr`, not `&str` as shown in older documentation.
-
-### validate_url_host()
+### ipv6_segments_to_ipv4()
 
 ```rust
-pub fn validate_url_host(url: &str) -> Result<String, String> {
-    // 1. Parse URL
-    // 2. Check scheme (http/https only)
-    // 3. Resolve DNS
-    // 4. Check IP against internal ranges
+pub fn ipv6_segments_to_ipv4(ipv6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    // Converts IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) to IPv4
+    // Also handles pure IPv6 addresses with segments[5] == 0
 }
 ```
-
-Note: Takes `&str`, not `&Url` as shown in older documentation.
 
 ### validate_host_ip()
 
 ```rust
 pub fn validate_host_ip(host: &str, port: u16) -> Result<Vec<IpAddr>, String> {
-    // 1. Resolve host to IP addresses
-    // 2. Check each IP against internal ranges
-    // 3. Return validated IPs for later revalidation
+    // 1. Resolve DNS
+    // 2. Check all resolved IPs against internal ranges
+    // 3. Also check if host string itself is an internal IP
 }
 ```
 
@@ -65,10 +58,18 @@ pub fn validate_host_ip(host: &str, port: u16) -> Result<Vec<IpAddr>, String> {
 
 ```rust
 pub fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result<(), String> {
-    // 1. Re-resolve host
-    // 2. Compare with previously validated IPs
-    // 3. Detect DNS rebinding attacks
-    // 4. Handles IPv4-mapped IPv6 addresses
+    // Re-resolves DNS and checks IP hasn't changed (DNS rebinding protection)
+    // Handles IPv4-mapped IPv6 equivalence
+}
+```
+
+### validate_url_host()
+
+```rust
+pub fn validate_url_host(url: &str) -> Result<String, String> {
+    // 1. Parse URL
+    // 2. Check scheme (http/https only)
+    // 3. Validate host via validate_host_ip()
 }
 ```
 
@@ -76,34 +77,33 @@ pub fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result
 
 ```rust
 pub fn validate_path_safety(path: &Path, allowed_paths: &[String]) -> Result<(), ToolError> {
-    // 1. Canonicalize path
-    // 2. Check against allowed paths
-    // 3. Return error if outside allowed paths
+    // 1. Check if path itself is a symlink
+    // 2. Canonicalize path
+    // 3. Check against allowed paths
 }
 ```
-
-Path safety for file operations.
 
 ## Components
 
 ### ssrf.rs - SSRF Protection
 
-Prevents requests to internal infrastructure. Contains standalone functions (no `SSRFChecker` struct):
+Prevents requests to internal infrastructure:
 
-| Function | Description |
-|----------|-------------|
-| `is_internal_ip()` | Check if IP is internal |
-| `ipv6_segments_to_ipv4()` | Extract IPv4 from IPv4-mapped IPv6 |
-| `validate_host_ip()` | Resolve host and validate IPs |
-| `validate_url_host()` | Parse URL and validate host |
-| `revalidate_dns()` | Detect DNS rebinding attacks |
+```rust
+pub fn is_internal_ip(ip: &IpAddr) -> bool
+pub fn ipv6_segments_to_ipv4(ipv6: &Ipv6Addr) -> Option<Ipv4Addr>
+pub fn validate_host_ip(host: &str, port: u16) -> Result<Vec<IpAddr>, String>
+pub fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result<(), String>
+pub fn validate_url_host(url: &str) -> Result<String, String>
+```
+
+Used by: `webfetch`, `websearch`, `codesearch`, `mcp/remote`
 
 ### sandbox.rs - Landlock Sandboxing
 
 Linux-specific filesystem sandboxing using Landlock LSM:
 
 ```rust
-#[derive(Clone, Debug, Default)]
 pub struct SandboxConfig {
     pub enabled: bool,
     pub allowed_paths: Vec<String>,
@@ -111,26 +111,28 @@ pub struct SandboxConfig {
 }
 
 impl SandboxConfig {
-    pub fn new() -> Self;
-    pub fn with_enabled(mut self, enabled: bool) -> Self;
-    pub fn with_allowed_paths(mut self, paths: Vec<String>) -> Self;
-    pub fn with_deny_paths(mut self, paths: Vec<String>) -> Self;
-    pub fn is_available() -> bool;  // Check if Landlock is supported
-    pub fn enforce(&self) -> Result<(), ToolError>;  // Apply restrictions
+    pub fn new() -> Self
+    pub fn with_enabled(mut self, enabled: bool) -> Self
+    pub fn with_allowed_paths(mut self, paths: Vec<String>) -> Self
+    pub fn with_deny_paths(mut self, paths: Vec<String>) -> Self
+    pub fn is_available() -> bool  // Linux 5.13+ with landlock support
+    pub fn enforce(&self) -> Result<(), ToolError>
 }
 ```
 
-**Access Flags** (via Landlock syscalls):
-- `READ` - Read files (1<<0)
-- `WRITE` - Write files (1<<1)
-- `EXEC` - Execute files (1<<2)
+**Access Flags**:
+- `READ` - Read files
+- `WRITE` - Write files
+- `EXEC` - Execute files
 
-**Key helper functions**:
+Helper functions:
 ```rust
-pub fn validate_path_safety(path: &Path, allowed_paths: &[String]) -> Result<(), ToolError>;
-pub fn get_default_allowed_paths() -> Vec<String>;
-pub fn get_sensitive_paths() -> Vec<String>;
+pub fn validate_path_safety(path: &Path, allowed_paths: &[String]) -> Result<(), ToolError>
+pub fn get_default_allowed_paths() -> Vec<String>
+pub fn get_sensitive_paths() -> Vec<String>
 ```
+
+Used by: `bash` tool for Landlock sandbox enforcement
 
 ## Security Flow
 
@@ -142,98 +144,65 @@ WebFetch tool
     ▼
 validate_url_host(url)
     │
-    ├── Parse URL (check http/https)
-    ├── DNS resolution
-    ├── IP check (is_internal_ip?)
-    │     │
-    │     ├── Internal → Error
-    │     └── External → Continue
-    └── Return host
-
-Then before HTTP request:
-revalidate_dns(host, port, validated_ips)
-    │
-    ├── Re-resolve DNS
-    ├── Compare with validated IPs
-    ├── IPv4-mapped IPv6 handled
-    │     │
-    │     ├── Same IPv4 → Continue
-    │     └── Different → Error (DNS rebinding)
-    └── Proceed with request
-```
-
-### File Operation Security
-
-```
-File tool
+    ├── Parse URL (scheme check: http/https only)
+    ├── validate_host_ip(host, port)
+    │     ├── DNS resolution
+    │     └── Check IPs against internal ranges
     │
     ▼
+validate_host_ip() returns validated_ips
+    │
+    ▼
+revalidate_dns() before HTTP request
+    │ (detects DNS rebinding attacks)
+    ▼
+HTTP request
+```
+
+### Path Safety Validation
+
+```
 validate_path_safety(path, allowed_paths)
     │
-    ├── Canonicalize (resolve symlinks)
-    ├── Check against allowed paths
-    │     │
-    │     ├── In allowed → Continue
-    │     └── Not in allowed → Error
-    └── Return (allow operation)
-```
-
-### BashTool Landlock Enforcement
-
-```
-BashTool::execute()
+    ├── Check if path is symlink → reject
     │
     ▼
-check_command_security()
+Canonicalize path
     │
-    ├── Check blocked commands (HashSet)
-    ├── Check allowlist if configured
-    ├── Check blocked patterns (Regex)
-    └── All pass → Continue
-
-Then if landlock_sandbox enabled:
-sandbox_config.enforce()
+    ▼
+Check against allowed_paths
     │
-    ├── Check is_available()
-    ├── Create Landlock ruleset (syscall 451)
-    ├── Add allowed path rules (syscall 452)
-    ├── Add deny path rules
-    ├── restrict_self (syscall 453)
-    └── Enforce sandbox
+    ├── Match → Allow
+    └── No match → Reject
 ```
 
-## Error Handling
+## Internal IP Ranges Blocked
 
-All security failures use `ToolError::Permission`:
-```rust
-ToolError::Permission("access to internal addresses not allowed".to_string())
-ToolError::Permission("DNS rebinding attack detected".to_string())
-ToolError::Permission("path is not in allowed paths".to_string())
-```
-
-This maps to HTTP 403 Forbidden in the server.
+| Range | Description |
+|-------|-------------|
+| `127.0.0.0/8` | Loopback |
+| `10.0.0.0/8` | Private |
+| `172.16.0.0/12` | Private |
+| `192.168.0.0/16` | Private |
+| `169.254.0.0/16` | Link-local |
+| `0.0.0.0/8` | Current network |
+| `100.64.0.0/10` | Carrier-grade NAT |
+| `198.18.0.0/15` | Benchmark |
+| `224.0.0.0/4` | Multicast |
+| `::1` | IPv6 loopback |
+| `fc00::/7` | IPv6 unique local |
+| `ff00::/8` | IPv6 multicast |
+| `::ffff:x.x.x.x` | IPv4-mapped IPv6 |
 
 ## Configuration
 
-Security settings are passed programmatically via builder pattern:
-
-```rust
-// Via BashTool
-BashTool::new()
-    .with_landlock_sandbox(true)  // Uses default paths
-    .with_landlock_sandbox_custom(config)  // Custom config
-
-// Or via SandboxConfig directly
-let config = SandboxConfig::new()
-    .with_enabled(true)
-    .with_allowed_paths(get_default_allowed_paths())
-    .with_deny_paths(get_sensitive_paths());
-config.enforce()?;
+```toml
+[security]
+ssrf_protection = true
 ```
 
 ## See Also
 
 - [tool.md](tool.md) - Uses security validation
 - [permission.md](permission.md) - Path permissions
-- `.opencode/skills/sandbox/SKILL.md` - Sandboxing details
-- `.opencode/skills/security/SKILL.md` - Security implementation guide
+- [sandbox skill](../../.opencode/skills/sandbox/SKILL.md) - Sandboxing details

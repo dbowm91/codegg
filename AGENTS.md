@@ -177,6 +177,10 @@ These items were identified during module reviews and are important for future a
 - **Architecture doc inaccurate**: `architecture/security.md` showed `is_internal_ip(&str)` and `validate_url_host(&Url)` but actual signatures are `is_internal_ip(&IpAddr)` and `validate_url_host(&str)`. SSRFChecker and LandlockSandbox structs don't exist - actual structs are standalone functions and `SandboxConfig`.
 - **Skill synchronized**: `.opencode/skills/security/SKILL.md` and `.opencode/skills/sandbox/SKILL.md` updated with accurate types and function signatures.
 
+### Security Module (2026-05-22 - fixes)
+- **validate_path_safety() symlink check**: Added symlink check before canonicalization to prevent symlink traversal attacks. Uses `path.symlink_metadata()` to detect if the path itself is a symlink.
+- **validate_path_safety() tests added**: Added `test_validate_path_safety` and `test_validate_path_safety_with_symlink` unit tests to verify path validation and symlink rejection.
+
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism

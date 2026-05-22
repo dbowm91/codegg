@@ -233,6 +233,13 @@ fn enforce_landlock(allowed_paths: &[String], deny_paths: &[String]) -> Result<(
 }
 
 pub fn validate_path_safety(path: &Path, allowed_paths: &[String]) -> Result<(), ToolError> {
+    if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+        return Err(ToolError::Permission(format!(
+            "path '{}' is a symlink",
+            path.display()
+        )));
+    }
+
     let canonical = std::fs::canonicalize(path).map_err(|_| {
         ToolError::Permission(format!("path '{}' could not be resolved", path.display()))
     })?;
@@ -313,9 +320,33 @@ mod tests {
             "/home/user/project".to_string(),
         ];
         let result = validate_path_safety(&temp_path, &allowed);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "path inside temp_dir should be allowed: {:?}", result);
 
         let result = validate_path_safety(Path::new("/etc/passwd"), &allowed);
-        assert!(result.is_err());
+        assert!(result.is_err(), "path outside allowed should be rejected");
+    }
+
+    #[test]
+    fn test_validate_path_safety_with_symlink() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let real = temp_dir.path().join("real");
+        let link = temp_dir.path().join("link");
+        std::fs::create_dir_all(&real).expect("real dir should be created");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).expect("symlink should be created");
+
+        #[cfg(not(unix))]
+        {
+            return;
+        }
+
+        let allowed = vec![temp_dir.path().to_string_lossy().to_string()];
+        let result = validate_path_safety(&link, &allowed);
+        assert!(
+            result.is_err(),
+            "symlink in path should be rejected: {:?}",
+            result
+        );
     }
 }
