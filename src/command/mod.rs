@@ -77,29 +77,33 @@ pub fn load_command_from_file(path: &Path) -> Result<Command, String> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let mut description = None;
-    let mut agent = None;
-    let mut model = None;
-    let mut subtask = None;
-    let mut template = None;
-
-    if let Ok(cfg) = serde_yaml::from_str::<CommandConfig>(&frontmatter) {
-        description = cfg.description;
-        if !cfg.template.is_empty() {
-            template = Some(cfg.template);
-        }
-        agent = cfg.agent;
-        model = cfg.model;
-        subtask = cfg.subtask;
-    } else if let Ok(cfg) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) {
-        template = cfg.get("template").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from);
-        description = cfg.get("description").and_then(|v| v.as_str()).map(String::from);
-        agent = cfg.get("agent").and_then(|v| v.as_str()).map(String::from);
-        model = cfg.get("model").and_then(|v| v.as_str()).map(String::from);
-        subtask = cfg.get("subtask").and_then(|v| v.as_bool());
-    } else {
-        return Err("failed to parse frontmatter".to_string());
-    }
+    let (description, template, agent, model, subtask) =
+        if let Ok(cfg) = serde_yaml::from_str::<CommandConfig>(&frontmatter) {
+            (
+                cfg.description,
+                if cfg.template.is_empty() {
+                    None
+                } else {
+                    Some(cfg.template)
+                },
+                cfg.agent,
+                cfg.model,
+                cfg.subtask,
+            )
+        } else if let Ok(cfg) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) {
+            (
+                cfg.get("description").and_then(|v| v.as_str()).map(String::from),
+                cfg.get("template")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+                cfg.get("agent").and_then(|v| v.as_str()).map(String::from),
+                cfg.get("model").and_then(|v| v.as_str()).map(String::from),
+                cfg.get("subtask").and_then(|v| v.as_bool()),
+            )
+        } else {
+            return Err("failed to parse frontmatter".to_string());
+        };
 
     let template = template.unwrap_or_else(|| body.trim().to_string());
 

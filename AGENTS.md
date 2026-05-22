@@ -122,7 +122,7 @@ Agent guidance is **modularized** to reduce context pollution. Each module has i
 .opencode/skills/
 ├── agent-loop/SKILL.md           # AgentLoop, TuiCommand, TuiMsg, compaction, router, team
 ├── client/SKILL.md               # Remote TUI client, WebSocket
-├── command/SKILL.md              # Slash commands, templates, execution
+├── command/SKILL.md             # Slash commands, templates, execution
 ├── config/SKILL.md               # Config loading, validation, encryption, watching
 ├── crypto/SKILL.md               # API key encryption
 ├── event-bus/SKILL.md           # GlobalEventBus, PermissionRegistry, QuestionRegistry
@@ -180,7 +180,7 @@ When adding guidance for a new module:
 | Server (WebSocket, TuiMessage serialization) | `server/AGENTS.override.md` |
 | Snapshot (file state capture and restore) | `snapshot/AGENTS.override.md` |
 | Skills (skill system overview) | `skills/AGENTS.override.md` |
-| Command (slash commands, templates, execution) | `command/AGENTS.override.md` |
+| Command (slash commands, templates, execution) | `.opencode/skills/command/SKILL.md` |
 | IDE (VS Code, JetBrains detection, diff viewing) | `.opencode/skills/ide/SKILL.md` |
 | Testing (E2E, unit, integration) | `meta/AGENTS.override.md` |
 | Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |

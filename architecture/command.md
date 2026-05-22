@@ -150,8 +150,10 @@ When a command with a template is executed:
 - **Invalid command names**: Logged and skipped
 - **Config load failures**: Falls back to empty config (non-fatal)
 
-## Recent Changes (2026-05-21)
+## Recent Changes (2026-05-22)
 
+- Fixed unused variable warnings in `load_command_from_file()` - refactored to tuple destructuring
+- Removed orphaned `src/tui/app/commands.rs` file (was never module-declared, contained duplicate command handlers)
 - Fixed non-deterministic HashMap iteration in template substitution (keys now sorted)
 - Added command name validation (rejects empty, whitespace, leading `/`)
 - Added logging for command loading failures
@@ -160,5 +162,7 @@ When a command with a template is executed:
 
 ## See Also
 
+- [.opencode/skills/command/SKILL.md](../.opencode/skills/command/SKILL.md) - Agent guidance for command module
+- [.opencode/docs/command/AGENTS.override.md](../.opencode/docs/command/AGENTS.override.md) - Module-specific override
 - [tui.md](tui.md) - TUI command input handling
-- [agent-loop/SKILL.md](../skills/agent-loop/SKILL.md) - Agent execution with command templates
+- [agent-loop/SKILL.md](../.opencode/skills/agent-loop/SKILL.md) - Agent execution with command templates
