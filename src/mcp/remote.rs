@@ -157,19 +157,38 @@ impl McpConnectionManager {
             ConnectionState::Connected => Ok(()),
             ConnectionState::Disconnected | ConnectionState::Reconnecting { .. } => {
                 let reconnect_needed = Arc::clone(&self.reconnect_needed);
-                let reconnect_notify = Arc::clone(&self.reconnect_needed);
-                let mut reconnect = self.clone();
+                let state = Arc::clone(&self.state);
+                let retry_count = Arc::clone(&self.retry_count);
+                let heartbeat_task = Arc::clone(&self.heartbeat_task);
+                let shutdown = Arc::clone(&self.shutdown);
+                let client = self.client.clone();
+                let max_retries = self.max_retries;
+                let base_delay = self.base_delay;
+                let max_delay = self.max_delay;
+                let heartbeat_interval = self.heartbeat_interval;
+                let reconnect_for_spawn = Arc::clone(&reconnect_needed);
 
                 tokio::spawn(async move {
+                    let mut reconnect = McpConnectionManager {
+                        client,
+                        state,
+                        retry_count,
+                        max_retries,
+                        base_delay,
+                        max_delay,
+                        heartbeat_interval,
+                        heartbeat_task,
+                        shutdown,
+                        reconnect_needed: reconnect_for_spawn,
+                    };
                     if let Err(e) = reconnect.reconnect().await {
                         tracing::error!("MCP reconnection failed: {}", e);
                     }
-                    reconnect_notify.notify_one();
                 });
 
                 reconnect_needed.notified().await;
-                let state = self.state.lock().await.clone();
-                if matches!(state, ConnectionState::Connected) {
+                let current_state = self.state.lock().await.clone();
+                if matches!(current_state, ConnectionState::Connected) {
                     Ok(())
                 } else {
                     self.connect().await
@@ -287,7 +306,7 @@ pub struct RemoteClient {
     request_id: AtomicU64,
     shutdown: Arc<Mutex<bool>>,
     sse_shutdown: Arc<Notify>,
-    validated_ips: Mutex<Option<Vec<IpAddr>>>,
+    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,
 }
 
 impl Clone for RemoteClient {
@@ -303,7 +322,7 @@ impl Clone for RemoteClient {
             request_id: AtomicU64::new(1),
             shutdown: Arc::clone(&self.shutdown),
             sse_shutdown: Arc::clone(&self.sse_shutdown),
-            validated_ips: Mutex::new(None),
+            validated_ips: Arc::clone(&self.validated_ips),
         }
     }
 }
@@ -374,7 +393,7 @@ impl RemoteClient {
             request_id: AtomicU64::new(1),
             shutdown: Arc::new(Mutex::new(false)),
             sse_shutdown: Arc::new(Notify::default()),
-            validated_ips: Mutex::new(Some(validated_ips)),
+            validated_ips: Arc::new(Mutex::new(Some(validated_ips))),
         })
     }
 
@@ -387,6 +406,19 @@ impl RemoteClient {
     }
 
     pub async fn initialize(&mut self) -> Result<(), McpError> {
+        let parsed = reqwest::Url::parse(&self.url)
+            .map_err(|e| McpError::Connection(format!("invalid URL: {}", e)))?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| McpError::Connection("URL must have a host".to_string()))?
+            .to_string();
+        let port = parsed
+            .port()
+            .unwrap_or_else(|| if parsed.scheme() == "https" { 443 } else { 80 });
+        let validated_ips = validate_host_ip(&host, port).map_err(McpError::Connection)?;
+
+        *self.validated_ips.lock().await = Some(validated_ips);
+
         let init_params = json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},

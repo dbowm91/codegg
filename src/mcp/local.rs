@@ -83,16 +83,45 @@ impl LocalClient {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
-            .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            .env_clear();
+
+        if let Some(user_path) = std::env::var_os("PATH") {
+            cmd.env("PATH", user_path);
+        } else {
+            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+        }
 
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| McpError::Connection(format!("failed to spawn {}: {e}", self.command)))?;
+        let spawn_timeout = Duration::from_millis(self.timeout.min(10000));
+        let mut child = match tokio::time::timeout(
+            spawn_timeout,
+            tokio::task::spawn_blocking(move || cmd.spawn()),
+        )
+        .await
+        {
+            Ok(Ok(Ok(child))) => child,
+            Ok(Ok(Err(e))) => {
+                return Err(McpError::Connection(format!(
+                    "failed to spawn {}: {e}",
+                    self.command
+                )));
+            }
+            Ok(Err(e)) => {
+                return Err(McpError::Connection(format!(
+                    "failed to spawn {}: task join error: {e}",
+                    self.command
+                )));
+            }
+            Err(_) => {
+                return Err(McpError::Connection(format!(
+                    "failed to spawn {}: timeout after {:?}",
+                    self.command, spawn_timeout
+                )));
+            }
+        };
 
         let stdin = child
             .stdin

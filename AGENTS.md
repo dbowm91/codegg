@@ -72,6 +72,12 @@ These items were identified during module reviews and are important for future a
 - **Shell hook config validation added**: Invalid event names (e.g., typos) now log warnings instead of silently failing. InlineScript is now deprecated with warning.
 - **Plugin hook timeout errors include plugin_id**: Error message format changed from `"hook timeout: hook execution timed out"` to `"{plugin_id}: hook timeout: hook execution timed out"`.
 
+### MCP Module (2026-05-22)
+- **DNS rebinding protection fixed**: `validated_ips` changed to `Arc<Mutex<Option<Vec<IpAddr>>>>` so clones share state. `initialize()` now re-validates DNS on each call, preventing bypass after reconnects.
+- **Race condition in ensure_connected()**: Refactored to clone all fields before `tokio::spawn`, avoiding borrow after spawn.
+- **Hardcoded PATH fixed**: `LocalClient::initialize()` now uses user's actual PATH via `std::env::var_os("PATH")`, falls back to safe default.
+- **Spawn timeout added**: Process spawn wrapped in `tokio::time::timeout` + `spawn_blocking`, capped at 10s to prevent hangs.
+
 ### LSP Module (2026-05-22)
 - **PATH parsing fixed**: `download.rs` now uses `std::env::split_paths()` instead of splitting by `MAIN_SEPARATOR` (which was broken on Unix where PATH uses `:` not `/`)
 - **PHP server mapping fixed**: `language.rs` now maps PHP to `php-language-server` instead of non-existent `intelephense`
@@ -83,6 +89,8 @@ These items were identified during module reviews and are important for future a
 ### Implementation Patterns
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
+- **MCP DNS re-validation**: `RemoteClient::initialize()` re-validates DNS on each call (connect/reconnect), keeping `validated_ips` current
+- **MCP ensure_connected()**: Clones all fields before `tokio::spawn` to avoid borrow-after-spawn issues
 - **TUI render.rs doesn't exist**: Only `mod.rs`, `types.rs`, and `commands.rs` exist in `src/tui/app/`
 - **Component trait**: All dialogs implement `Component` trait with `handle_key`, `update`, `render` methods
 - **Registration-before-publish pattern**: When publishing `PermissionPending` or `QuestionPending`, register the responder BEFORE publishing the event

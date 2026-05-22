@@ -51,6 +51,11 @@ pub struct LocalClient {
     args: Vec<String>,
     env: HashMap<String, String>,
     timeout: u64,
+    child: Option<Child>,
+    stdin: Option<tokio::process::ChildStdin>,
+    pending: PendingSenders,
+    shutdown_notify: Arc<Notify>,
+    request_id: AtomicU64,
 }
 ```
 
@@ -66,6 +71,12 @@ client.initialize().await?;
 let tools = client.discover_tools().await?;
 ```
 
+**Implementation Notes:**
+- Uses `std::env::var_os("PATH")` to preserve user's actual PATH (not hardcoded)
+- Spawn timeout: process spawn is wrapped in `tokio::time::timeout` (capped at 10s) to prevent hangs
+- Read loop runs in spawned task, handles JSON-RPC responses via pending request map
+- Graceful shutdown via `shutdown_notify` Notify mechanism
+
 ### RemoteClient (`src/mcp/remote.rs`)
 
 For remote MCP servers via HTTP with DNS rebinding protection:
@@ -80,12 +91,16 @@ pub struct RemoteClient {
     oauth_token: Mutex<Option<String>>,
     sse_events: Arc<Mutex<Vec<serde_json::Value>>>,
     request_id: AtomicU64,
+    shutdown: Arc<Mutex<bool>>,
+    sse_shutdown: Arc<Notify>,
+    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,  // Arc<Mutex<...>> for Clone semantics
 }
 ```
 
 **DNS Rebinding Protection:**
 - `validate_url_host()` validates DNS at connection time, blocks internal IPs
 - `revalidate_dns()` revalidates DNS before each HTTP request
+- **IP re-validation on reconnect**: `initialize()` re-validates DNS on each call, preventing bypass via DNS changes between connections
 - Detects IPv4-mapped IPv6 addresses
 - Blocks loopback, private, link-local, and reserved IP ranges
 
@@ -96,18 +111,45 @@ Automatic reconnection with exponential backoff and heartbeat:
 ```rust
 pub struct McpConnectionManager {
     client: RemoteClient,
-    state: ConnectionState,
-    retry_count: usize,
-    max_retries: usize,
-    backoff_secs: u64,
+    state: Arc<Mutex<ConnectionState>>,
+    retry_count: Arc<AtomicU64>,
+    max_retries: u64,
+    base_delay: Duration,
+    max_delay: Duration,
+    heartbeat_interval: Duration,
+    heartbeat_task: Arc<AtomicBool>,
+    shutdown: Arc<Notify>,
+    reconnect_needed: Arc<Notify>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConnectionState {
     Connected,
     Disconnected,
-    Reconnecting,
+    Reconnecting { attempt: u32 },
 }
+```
+
+**Features:**
+- Exponential backoff: 1s → 2s → 4s → ... → max 60s
+- Max 5 retry attempts before giving up
+- Heartbeat every 30s to keep connection alive
+- State notification via watch channel
+- **ensure_connected()**: Spawns reconnection in background task, waits for notification, falls back to direct connect if needed
+
+**Usage:**
+```rust
+let mut manager = McpConnectionManager::new(url, headers, timeout)?;
+manager.connect().await?;
+
+// Watch for state changes
+let mut state_watcher = manager.watch();
+while let Some(state) = state_watcher.recv().await {
+    tracing::info!("Connection state: {:?}", state);
+}
+
+// Ensure connected before making requests
+manager.ensure_connected().await?;
 ```
 
 **Features:**
