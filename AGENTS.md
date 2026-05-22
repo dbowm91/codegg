@@ -52,6 +52,7 @@ These items were identified during module reviews and are important for future a
 ### Event Bus Module (2026-05-22)
 - **GlobalEventBus::publish() improved**: Now returns subscriber count on success, uses `trace` level for normal events (was `warn` for all cases). Channel closed errors properly distinguished.
 - **Event flow documentation accurate**: Registration-before-publish pattern correctly documented in both `architecture/event-bus.md` and `.opencode/skills/event-bus/SKILL.md`
+- **Dead events removed from skill**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied` removed from skill (never existed in code)
 
 ### Crypto Module (2026-05-22)
 - **Crypto module updated**: architecture/crypto.md now accurately describes the implementation (Argon2id key derivation, v2 format with `v2:` prefix, legacy HMAC-SHA256 support)
@@ -194,6 +195,16 @@ These items were identified during module reviews and are important for future a
 - **CheckpointStore now exported**: `CheckpointStore` is now re-exported from `session::mod.rs` for use by other modules
 - **generate_slug now exported**: `generate_slug` helper function is now `pub` and re-exported from `session::mod.rs`
 - **Skill updated**: `.opencode/skills/session/SKILL.md` updated to version 1.1.0 with complete API documentation
+
+### Snapshot Module (2026-05-22)
+- **Architecture doc outdated**: `architecture/snapshot.md` was significantly out of date - updated to reflect actual implementation
+- **Skill synchronized**: `.opencode/skills/snapshot/SKILL.md` updated with correct API signatures
+- **`Snapshot` struct field `data`**: Stores files as JSON string, not as direct `HashMap` field
+- **`SnapshotView` has `files`**: The `files: HashMap<String, FileSnapshot>` field is on `SnapshotView`, not `Snapshot`
+- **`SnapshotManager::new()` requires `SqlitePool`**: Constructor signature is `new(pool, project_root)`, not just `new(project_root)`
+- **restore() takes SnapshotView**: `restore(&self, snapshot: &SnapshotView)` not `restore(&self, id: &str)`
+- **capture_incremental path validation**: Added validation that paths are within `project_root` before accepting
+- **Restore error messages improved**: Now include file path on failure (e.g., "failed to write /path/file: ...")
 
 ### Skills Module (2026-05-22)
 - **Blocking fs calls fixed**: `load_dir()` and `parse_skill_file()` now use `tokio::fs` instead of `std::fs` for proper async I/O

@@ -120,6 +120,15 @@ impl SnapshotManager {
             let Some(content) = old_content else {
                 continue;
             };
+            let path_buf = PathBuf::from(&path);
+            let abs_path = if path_buf.is_absolute() {
+                path_buf
+            } else {
+                self.project_root.join(&path)
+            };
+            if !abs_path.starts_with(&self.project_root) {
+                continue;
+            }
             let rel_path = self.to_relative_path(&path);
             let hash = format!("{:x}", md5::compute(content.as_bytes()));
             files.insert(
@@ -242,17 +251,21 @@ impl SnapshotManager {
 
     pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String> {
         let project_root = self.project_root.clone();
-        let files = snapshot.files.clone();
+        let files: Vec<(String, FileSnapshot)> = snapshot.files.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         tokio::task::spawn_blocking(move || {
             for (rel_path, file_snapshot) in files {
                 let full_path = project_root.join(&rel_path);
                 if let Some(parent) = full_path.parent() {
                     if !parent.exists() {
-                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
                     }
                 }
-                std::fs::write(&full_path, &file_snapshot.content).map_err(|e| e.to_string())?;
+                std::fs::write(&full_path, &file_snapshot.content)
+                    .map_err(|e| format!("failed to write {}: {}", full_path.display(), e))?;
             }
             Ok(())
         })
@@ -265,7 +278,9 @@ impl SnapshotManager {
         snapshot: &SnapshotView,
         target_path: &Path,
     ) -> Result<(), String> {
-        let files = snapshot.files.clone();
+        let files: Vec<(String, FileSnapshot)> = snapshot.files.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let target = target_path.to_path_buf();
 
         tokio::task::spawn_blocking(move || {
@@ -273,10 +288,12 @@ impl SnapshotManager {
                 let full_path = target.join(&rel_path);
                 if let Some(parent) = full_path.parent() {
                     if !parent.exists() {
-                        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
                     }
                 }
-                std::fs::write(&full_path, &file_snapshot.content).map_err(|e| e.to_string())?;
+                std::fs::write(&full_path, &file_snapshot.content)
+                    .map_err(|e| format!("failed to write {}: {}", full_path.display(), e))?;
             }
             Ok(())
         })

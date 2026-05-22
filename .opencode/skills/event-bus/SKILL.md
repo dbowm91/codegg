@@ -75,7 +75,7 @@ All 40+ event variants with `event_type()` helper:
 | Session | `SessionCreated`, `SessionUpdated`, `SessionArchived`, `SessionForked`, `SessionShared`, `SessionUnshared`, `SessionReverted` |
 | Message | `MessageAdded`, `MessageDeleted` |
 | Tool | `ToolCalled`, `ToolResult`, `ToolCallStarted` |
-| Permission | `PermissionRequested`, `PermissionGranted`, `PermissionDenied`, `PermissionPending`, `PermissionResponded` |
+| Permission | `PermissionPending`, `PermissionResponded` |
 | Question | `QuestionPending`, `QuestionAnswered` |
 | Streaming | `TextDelta` (Arc<str>), `ReasoningDelta`, `AgentFinished` |
 | Subagent | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |

@@ -7,39 +7,63 @@ The `snapshot` module provides file state capture and restore functionality.
 **Location**: `src/snapshot/`
 
 **Key Responsibilities**:
-- Capture file state before modifications
-- Store snapshots in SQLite
+- Capture file state before modifications (full or incremental)
+- Store snapshots in SQLite with JSON-serialized file data
 - Restore files to previous state
-- Snapshot comparison
+- Snapshot comparison via diff module
 
 ## Key Types
 
+### SnapshotOptions
+
+Limits for capture operations:
+
+```rust
+pub struct SnapshotOptions {
+    pub max_files: usize,        // default: 5_000
+    pub max_file_bytes: u64,      // default: 1_000_000 (1MB)
+    pub max_total_bytes: u64,     // default: 20_000_000 (20MB)
+}
+```
+
+### FileSnapshot
+
+Individual file state within a snapshot:
+
+```rust
+pub struct FileSnapshot {
+    pub path: String,
+    pub content: String,
+    pub hash: String,
+    pub timestamp: i64,
+}
+```
+
 ### Snapshot
+
+Database representation (raw data field):
 
 ```rust
 pub struct Snapshot {
     pub id: String,
     pub session_id: String,
-    pub created_at: DateTime<Utc>,
-    pub description: Option<String>,
-}
-
-pub struct SnapshotFile {
-    pub snapshot_id: String,
-    pub path: String,
-    pub content: String,
-    pub hash: String,
+    pub created_at: i64,          // milliseconds since epoch
+    pub label: Option<String>,
+    pub data: String,            // JSON serialized HashMap<String, FileSnapshot>
 }
 ```
 
 ### SnapshotView
 
-Complete snapshot with all files:
+Deserialized snapshot with file map (returned by API):
 
 ```rust
 pub struct SnapshotView {
-    pub snapshot: Snapshot,
-    pub files: Vec<SnapshotFile>,
+    pub id: String,
+    pub session_id: String,
+    pub files: HashMap<String, FileSnapshot>,
+    pub created_at: i64,
+    pub label: Option<String>,
 }
 ```
 
@@ -47,60 +71,155 @@ pub struct SnapshotView {
 
 ```rust
 pub struct SnapshotManager {
-    store: SqlitePool,
+    pool: SqlitePool,
+    project_root: PathBuf,
+    options: SnapshotOptions,
 }
 
 impl SnapshotManager {
-    pub async fn create(&self, session_id: &str, paths: &[&Path]) -> Result<SnapshotView>;
-    pub async fn get(&self, id: &str) -> Result<Option<SnapshotView>>;
-    pub async fn restore(&self, id: &str) -> Result<()>;
-    pub async fn list(&self, session_id: &str) -> Result<Vec<Snapshot>>;
-    pub async fn delete(&self, id: &str) -> Result<()>;
+    pub fn new(pool: SqlitePool, project_root: PathBuf) -> Self;
+    pub fn new_with_options(pool: SqlitePool, project_root: PathBuf, options: SnapshotOptions) -> Self;
+    
+    pub async fn capture(&mut self, session_id: &str, label: Option<String>) -> Result<SnapshotView, String>;
+    pub async fn capture_incremental(&self, session_id: &str, label: Option<String>, file_changes: Vec<(String, Option<String>)>) -> Result<Option<SnapshotView>, String>;
+    pub async fn get(&self, id: &str) -> Result<Option<SnapshotView>, String>;
+    pub async fn list_for_session(&self, session_id: &str) -> Result<Vec<SnapshotView>, String>;
+    pub async fn latest(&self, session_id: &str) -> Result<Option<SnapshotView>, String>;
+    pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String>;
+    pub async fn restore_to_path(&self, snapshot: &SnapshotView, target_path: &Path) -> Result<(), String>;
+    pub async fn delete_snapshot(&self, id: &str) -> Result<(), String>;
+    pub async fn delete_all_for_session(&self, session_id: &str) -> Result<(), String>;
 }
 ```
 
 ## Usage Flow
 
+### Full Capture
+
 ```
 Tool execution (edit, write, delete)
     │
     ▼
-SnapshotManager::create(session_id, paths)
+SnapshotManager::capture(session_id, label)
     │
     ▼
-Store files in snapshot (content + hash)
+Collect all files from project_root (respecting limits)
+    │
+    ▼
+Store as JSON in snapshot.data column
     │
     ▼
 Execute tool modification
     │
     ▼
-If error → SnapshotManager::restore(id)
+If error → SnapshotManager::restore(snapshot_view)
+```
+
+### Incremental Capture
+
+```
+FileChanged event with old_content
+    │
+    ▼
+AgentLoop drains file change events
+    │
+    ▼
+SnapshotManager::capture_incremental(session_id, label, changes)
+    │
+    ▼
+For each (path, old_content):
+  - Validate path is within project_root
+  - Store in snapshot if valid
+    │
+    ▼
+If no files, return None
 ```
 
 ## Integration with AgentLoop
 
 ```rust
 impl AgentLoop {
-    async fn execute_tool(&self, tool: &dyn Tool, params: Value) -> ToolResult {
-        // Capture state before modification
-        if tool.modifies_files() {
-            let snapshot = self.snapshot_manager
-                .create(&self.session_id, tool.affected_paths(&params))
+    async fn capture_snapshot_if_needed(&mut self) {
+        if let Some(ref mut snapshot_manager) = self.snapshot_manager {
+            let snapshot = snapshot_manager
+                .capture(&self.session_id, None)
                 .await?;
-
-            // Store snapshot_id in context for potential rollback
+            tracing::info!("Snapshot captured: {}", snapshot.id);
         }
-
-        // Execute tool
-        let result = tool.execute(params, context).await;
-
-        // If failed, restore snapshot
-        if result.is_err() {
-            self.snapshot_manager.restore(&snapshot.id).await?;
-        }
-
-        result
     }
+
+    async fn capture_incremental_snapshot_if_needed(&mut self, label: Option<String>) {
+        let changes = self.drain_file_change_events();
+        if changes.is_empty() {
+            return;
+        }
+        if let Some(ref snapshot_manager) = self.snapshot_manager {
+            snapshot_manager
+                .capture_incremental(&self.session_id, label, changes)
+                .await?;
+        }
+    }
+}
+```
+
+## Database Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS snapshot (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    label TEXT,
+    data TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS snapshot_session_idx ON snapshot(session_id);
+```
+
+## Diff Module (`src/snapshot/diff.rs`)
+
+Provides diff computation for snapshot comparison:
+
+```rust
+pub struct FileDiff {
+    pub path: String,
+    pub hunks: Vec<DiffHunk>,
+}
+
+pub struct DiffHunk {
+    pub old_start: usize,
+    pub new_start: usize,
+    pub lines: Vec<DiffLine>,
+}
+
+pub struct DiffLine {
+    pub kind: DiffKind,
+    pub content: String,
+}
+
+pub enum DiffKind {
+    Context,
+    Added,
+    Removed,
+}
+
+pub fn diff_files(old: &str, new: &str, path: &str) -> Vec<FileDiff>;
+pub fn format_unified_diff(old: &str, new: &str, old_path: &str, new_path: &str) -> String;
+```
+
+## Configuration
+
+Snapshot can be enabled via config:
+
+```json
+{
+  "snapshot": true,
+  "snapshot_config": {
+    "max_files": 5000,
+    "max_file_bytes": 1000000,
+    "max_total_bytes": 20000000
+  }
 }
 ```
 
@@ -108,3 +227,4 @@ impl AgentLoop {
 
 - [agent.md](agent.md) - Integration with agent loop
 - [tool.md](tool.md) - File-modifying tools
+- `.opencode/skills/snapshot/SKILL.md` - Skill guide for agents

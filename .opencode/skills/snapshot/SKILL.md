@@ -25,21 +25,23 @@ The `snapshot/` module provides:
 
 ```rust
 pub struct SnapshotManager {
-    snapshots: Vec<Snapshot>,
+    pool: SqlitePool,
     project_root: PathBuf,
+    options: SnapshotOptions,
 }
 
 impl SnapshotManager {
-    pub fn new(project_root: PathBuf) -> Self;
-    pub async fn capture(&mut self, session_id: &str, label: Option<String>) -> Result<Snapshot, String>;
-    pub async fn capture_incremental(&self, session_id: &str, label: Option<String>, file_changes: Vec<(String, Option<String>)>) -> Result<Option<Snapshot>, String>;
-    pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String>;  // NEW
-    pub async fn restore_to_path(&self, snapshot: &SnapshotView, target_path: &Path) -> Result<(), String>;  // NEW
-    pub async fn delete_snapshot(&self, id: &str) -> Result<(), String>;  // NEW
-    pub async fn delete_all_for_session(&self, session_id: &str) -> Result<(), String>;  // NEW
-    pub fn get(&self, id: &str) -> Option<&Snapshot>;
-    pub fn list_for_session(&self, session_id: &str) -> Vec<&Snapshot>;
-    pub fn latest(&self, session_id: &str) -> Option<&Snapshot>;
+    pub fn new(pool: SqlitePool, project_root: PathBuf) -> Self;
+    pub fn new_with_options(pool: SqlitePool, project_root: PathBuf, options: SnapshotOptions) -> Self;
+    pub async fn capture(&mut self, session_id: &str, label: Option<String>) -> Result<SnapshotView, String>;
+    pub async fn capture_incremental(&self, session_id: &str, label: Option<String>, file_changes: Vec<(String, Option<String>)>) -> Result<Option<SnapshotView>, String>;
+    pub async fn get(&self, id: &str) -> Result<Option<SnapshotView>, String>;
+    pub async fn list_for_session(&self, session_id: &str) -> Result<Vec<SnapshotView>, String>;
+    pub async fn latest(&self, session_id: &str) -> Result<Option<SnapshotView>, String>;
+    pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String>;
+    pub async fn restore_to_path(&self, snapshot: &SnapshotView, target_path: &Path) -> Result<(), String>;
+    pub async fn delete_snapshot(&self, id: &str) -> Result<(), String>;
+    pub async fn delete_all_for_session(&self, session_id: &str) -> Result<(), String>;
 }
 ```
 
@@ -49,7 +51,15 @@ impl SnapshotManager {
 pub struct Snapshot {
     pub id: String,
     pub session_id: String,
-    pub files: HashMap<String, FileSnapshot>,
+    pub created_at: i64,
+    pub label: Option<String>,
+    pub data: String,  // JSON serialized HashMap<String, FileSnapshot>
+}
+
+pub struct SnapshotView {
+    pub id: String,
+    pub session_id: String,
+    pub files: HashMap<String, FileSnapshot>,  // Deserialized from data
     pub created_at: i64,
     pub label: Option<String>,
 }
@@ -131,34 +141,14 @@ The `ReplaceTool::execute()`:
 
 ## Restore Functionality (Implemented 2026-05-21)#
 
-SnapshotManager now supports restore operations:
+SnapshotManager supports restore operations:
 
-```rust
-pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String> {
-    // Restores all files from snapshot to project root
-    for (rel_path, file_snapshot) in files {
-        let full_path = project_root.join(&rel_path);
-        std::fs::write(&full_path, &file_snapshot.content)?;
-    }
-    Ok(())
-}
+- `restore(&self, snapshot: &SnapshotView)` - Restores all files from snapshot to project root
+- `restore_to_path(&self, snapshot: &SnapshotView, target_path: &Path)` - Restores files to a custom target path
+- `delete_snapshot(&self, id: &str)` - Delete a specific snapshot
+- `delete_all_for_session(&self, session_id: &str)` - Delete all snapshots for a session (cleanup)
 
-pub async fn restore_to_path(
-    &self,
-    snapshot: &SnapshotView,
-    target_path: &Path,
-) -> Result<(), String> {
-    // Restores files to a custom target path (for migration/testing)
-}
-
-pub async fn delete_snapshot(&self, id: &str) -> Result<(), String> {
-    // Delete a specific snapshot
-}
-
-pub async fn delete_all_for_session(&self, session_id: &str) -> Result<(), String> {
-    // Delete all snapshots for a session (cleanup)
-}
-```
+**Error handling**: Restore operations now include detailed error messages with file paths on failure.
 
 ## Future Work#
 
