@@ -1,6 +1,6 @@
 # Crypto Module
 
-The `crypto` module provides AES-256-GCM encryption for sensitive data.
+The `crypto` module provides AES-256-GCM encryption for sensitive data using Argon2id key derivation.
 
 ## Overview
 
@@ -8,65 +8,104 @@ The `crypto` module provides AES-256-GCM encryption for sensitive data.
 
 **Key Responsibilities**:
 - AES-256-GCM encryption/decryption
-- HMAC-SHA256 key derivation
-- Secure string handling
+- Argon2id key derivation (v2 format)
+- HMAC-SHA256 key derivation (legacy format, pre-v2)
+- Secure string handling with hex encoding
 
 ## Key Functions
 
 ### encrypt()
 
 ```rust
-pub fn encrypt(plaintext: &[u8], key: &Key) -> Result<Vec<u8>>;
+pub fn encrypt(plaintext: &str, password: &str) -> Result<EncryptedData, CryptoError>;
 ```
+
+Returns `EncryptedData` containing `salt`, `nonce`, and `ciphertext`.
 
 ### decrypt()
 
 ```rust
-pub fn decrypt(ciphertext: &[u8], key: &Key) -> Result<Vec<u8>>;
+pub fn decrypt(encrypted: &EncryptedData, password: &str) -> Result<String, CryptoError>;
 ```
 
 ### encrypt_to_string()
 
 ```rust
-pub fn encrypt_to_string(plaintext: &str, key: &Key) -> Result<String>;
-// Returns base64-encoded ciphertext
+pub fn encrypt_to_string(plaintext: &str, password: &str) -> Result<String, CryptoError>;
+// Returns: "v2:" prefix + hex(salt[32] || nonce[12] || ciphertext)
 ```
 
 ### decrypt_from_string()
 
 ```rust
-pub fn decrypt_from_string(ciphertext: &str, key: &Key) -> Result<String>;
-// Expects base64-encoded ciphertext
+pub fn decrypt_from_string(encrypted_str: &str, password: &str) -> Result<String, CryptoError>;
+// Accepts both v2 format ("v2:" prefix) and legacy format
 ```
 
 ## Implementation Details
 
-### Key Derivation
-
-Uses HMAC-SHA256 for key derivation:
+### EncryptedData Struct
 
 ```rust
-fn derive_key(master: &Key, purpose: &str) -> [u8; 32] {
-    let hmac = HmacSha256::new_from_slice(master.as_bytes())
-        .expect("HMAC can take key of any size");
-    // Use hmac.tag() for derived key
+pub struct EncryptedData {
+    pub salt: Vec<u8>,       // 32 bytes (Argon2id salt)
+    pub nonce: Vec<u8>,     // 12 bytes (AES-GCM nonce)
+    pub ciphertext: Vec<u8>, // Variable length
+}
+```
+
+### Key Derivation (v2 format)
+
+Uses Argon2id for strong memory-hard key derivation:
+
+```rust
+fn derive_key_argon2id(password: &str, salt: &[u8]) -> Result<[u8; 32], CryptoError> {
+    // Params: m=19,456 KiB, t=2 iterations, p=1 degree
+    let params = Params::new(19_456, 2, 1, Some(32))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    // ...
+}
+```
+
+### Key Derivation (Legacy)
+
+Pre-v2 ciphertexts used HMAC-SHA256:
+
+```rust
+fn derive_key_legacy(password: &str, salt: &[u8]) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+    // ...
 }
 ```
 
 ### AES-256-GCM
 
 - 256-bit key size
-- 96-bit nonce (never reused)
+- 96-bit (12-byte) nonce (never reused)
 - 128-bit authentication tag
 
-### Key Type
+### Format
+
+```
+v2:<hex(salt[32] || nonce[12] || ciphertext)>
+```
+
+Legacy format (pre-v2) is raw hex without prefix.
+
+## Error Types
 
 ```rust
-pub struct Key([u8; 32]);
-
-impl Key {
-    pub fn from_password(password: &str) -> Self;
-    pub fn from_bytes(bytes: [u8; 32]) -> Self;
+pub enum CryptoError {
+    #[error("encryption failed: {0}")]
+    EncryptionFailed(String),
+    #[error("decryption failed: {0}")]
+    DecryptionFailed(String),
+    #[error("invalid data format")]
+    InvalidFormat,
+    #[error("key derivation failed")]
+    KeyDerivationFailed,
 }
 ```
 
@@ -75,35 +114,43 @@ impl Key {
 ### Encrypting API Keys
 
 ```rust
-use crate::crypto::{encrypt_to_string, Key};
+use crate::crypto::{encrypt_to_string, decrypt_from_string};
 
-let key = Key::from_password("my-master-password");
-let encrypted = encrypt_to_string("sk-ant-api-key...", &key)?;
+let encrypted = encrypt_to_string("sk-ant-api-key...", &master_key)?;
 // Store encrypted string in config
 ```
 
 ### Decrypting
 
 ```rust
-use crate::crypto::{decrypt_from_string, Key};
+use crate::crypto::{decrypt_from_string, decrypt_from_string};
 
-let key = Key::from_password("my-master-password");
-let api_key = decrypt_from_string(encrypted, &key)?;
+let api_key = decrypt_from_string(&encrypted, &master_key)?;
 ```
 
 ## Security Notes
 
 1. **Never log plaintext** - Always handle securely
-2. **Key management** - Master key should be from secure source
-3. **Nonce uniqueness** - Each encryption generates fresh nonce
-4. **Authentication tag** - Any tampering is detected
+2. **Key management** - Master key should be from secure source (environment variable)
+3. **Nonce uniqueness** - Each encryption generates fresh random nonce
+4. **Authentication tag** - Any tampering is detected via AES-GCM authentication
+5. **Memory-hard derivation** - Argon2id resists GPU/ASIC attacks
+6. **Legacy migration** - Legacy ciphertexts automatically migrated to v2 on save
 
 ## Used By
 
-- `config/encryption.rs` - Encrypting config secrets
-- `permission/` - HMAC signatures on permission decisions
+- `config/encryption.rs` - Encrypting config secrets (provider API keys)
+- `config/schema.rs` - `ProviderConfig::api_key()` method for on-demand decryption
+
+## Dependencies
+
+- `aes-gcm` - AES-256-GCM authenticated encryption
+- `argon2` - Argon2id key derivation
+- `hmac`, `sha2` - Legacy key derivation
+- `rand` - Random salt/nonce generation
+- `hex` - Hex encoding for string format
 
 ## See Also
 
-- [config.md](config.md) - Config encryption
+- [config.md](config.md) - Config encryption integration
 - [security.md](security.md) - Additional security measures

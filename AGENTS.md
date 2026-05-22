@@ -49,6 +49,10 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 
 These items were identified during module reviews and are important for future agents to know:
 
+### Crypto Module (2026-05-22)
+- **Crypto module updated**: architecture/crypto.md now accurately describes the implementation (Argon2id key derivation, v2 format with `v2:` prefix, legacy HMAC-SHA256 support)
+- **Skill synchronized**: `.opencode/skills/crypto/SKILL.md` updated to match implementation
+
 ### Verified Correct Items (not bugs)
 - **Subagent event publishing**: `SubagentStarted`/`SubagentProgress`/`SubagentCompleted`/`SubagentFailed` events properly published via `GlobalEventBus`
 - **`SubAgentPool` bounded concurrency**: Properly uses semaphore with default of 5, RAII guard pattern for active_count
@@ -169,7 +173,7 @@ When adding guidance for a new module:
 | WASM plugins | `plugin/AGENTS.override.md` |
 | MCP connection manager | `mcp/AGENTS.override.md` |
 | Provider (token estimation) | `provider/AGENTS.override.md` |
-| Crypto (API key encryption) | `crypto/AGENTS.override.md` |
+| Crypto (API key encryption, Argon2id key derivation) | [architecture/crypto.md](architecture/crypto.md) |
 | Error (AppError, ProviderError, is_retryable, CircuitOpen) | `error/AGENTS.override.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `resilience/AGENTS.override.md` |
 | Permission (mode system) | `permission/AGENTS.override.md` |
