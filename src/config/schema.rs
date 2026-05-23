@@ -341,6 +341,7 @@ pub struct CompactionConfig {
     pub max_tokens: Option<usize>,
     pub threshold: Option<f64>,
     pub reserved: Option<usize>,
+    pub summarize_model: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

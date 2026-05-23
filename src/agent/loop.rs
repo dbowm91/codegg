@@ -1219,12 +1219,18 @@ impl AgentLoop {
             if auto {
                 let limit = self.context_tracker.context_limit();
                 let threshold = self.context_tracker.threshold();
+                let model = self
+                    .config
+                    .compaction
+                    .as_ref()
+                    .and_then(|c| c.summarize_model.as_deref());
                 let compacted = auto_compact_async(
                     messages,
                     limit,
                     threshold,
                     prune,
                     Some(self.provider.as_ref()),
+                    model,
                 )
                 .await;
                 *messages = compacted;

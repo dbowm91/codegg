@@ -267,6 +267,7 @@ pub async fn compact_messages_async(
     messages: Vec<Message>,
     strategy: CompactionStrategy,
     provider: &dyn Provider,
+    model: &str,
 ) -> Vec<Message> {
     if messages.len() <= 2 {
         return messages;
@@ -285,7 +286,7 @@ pub async fn compact_messages_async(
 
     let compacted = match strategy {
         CompactionStrategy::TruncateToolOutputs => truncate_tool_outputs(non_system),
-        CompactionStrategy::SummarizeOldTurns => summarize_old_turns(non_system, provider).await,
+        CompactionStrategy::SummarizeOldTurns => summarize_old_turns(non_system, provider, model).await,
         CompactionStrategy::DropMiddleMessages => drop_middle_messages(non_system),
     };
 
@@ -317,7 +318,7 @@ fn truncate_tool_outputs(messages: Vec<Message>) -> Vec<Message> {
         .collect()
 }
 
-async fn summarize_old_turns(messages: Vec<Message>, provider: &dyn Provider) -> Vec<Message> {
+async fn summarize_old_turns(messages: Vec<Message>, provider: &dyn Provider, model: &str) -> Vec<Message> {
     if messages.len() <= 6 {
         return messages;
     }
@@ -325,7 +326,7 @@ async fn summarize_old_turns(messages: Vec<Message>, provider: &dyn Provider) ->
     let keep_count = 4;
     let mut result = Vec::new();
 
-    let summary = match llm_summarize(&messages, provider).await {
+    let summary = match llm_summarize(&messages, provider, model).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("LLM summarization failed, using fallback: {}", e);
@@ -344,6 +345,7 @@ async fn summarize_old_turns(messages: Vec<Message>, provider: &dyn Provider) ->
 pub async fn llm_summarize(
     messages: &[Message],
     provider: &dyn Provider,
+    model: &str,
 ) -> Result<String, crate::error::AppError> {
     let messages_to_summarize: Vec<Message> = messages
         .iter()
@@ -411,7 +413,7 @@ pub async fn llm_summarize(
                 text: summary_prompt.into(),
             }],
         }],
-        model: "gpt-4o-mini".to_string(),
+        model: model.to_string(),
         tools: None,
         system: Some(
             "You are a concise summarizer. Return only the summary text, no formatting."
@@ -624,6 +626,7 @@ pub async fn auto_compact_async(
     threshold: f64,
     prune: bool,
     provider: Option<&dyn Provider>,
+    model: Option<&str>,
 ) -> Vec<Message> {
     let mut tracker = ContextTracker::new(context_limit, threshold);
     tracker.add_messages(messages);
@@ -647,7 +650,8 @@ pub async fn auto_compact_async(
 
         if strategy == CompactionStrategy::SummarizeOldTurns {
             if let Some(p) = provider {
-                result = compact_messages_async(result, strategy, p).await;
+                let model = model.unwrap_or("gpt-4o-mini");
+                result = compact_messages_async(result, strategy, p, model).await;
             } else {
                 result = compact_messages_sync(result, CompactionStrategy::DropMiddleMessages);
             }
