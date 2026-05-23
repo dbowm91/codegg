@@ -271,10 +271,17 @@ impl SnapshotManager {
             .collect();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let canonical_project_root = project_root.canonicalize()
+            .map_err(|e| format!("failed to canonicalize project root {}: {}", project_root.display(), e))?;
         tokio::task::spawn_blocking(move || {
             let result: Result<(), String> = (|| {
                 for (rel_path, file_snapshot) in files {
                     let full_path = project_root.join(&rel_path);
+                    let canonical_path = full_path.canonicalize()
+                        .unwrap_or_else(|_| full_path.clone());
+                    if !canonical_path.starts_with(&canonical_project_root) {
+                        return Err(format!("path traversal attempt detected: {}", full_path.display()));
+                    }
                     if let Some(parent) = full_path.parent() {
                         if !parent.exists() {
                             std::fs::create_dir_all(parent)
