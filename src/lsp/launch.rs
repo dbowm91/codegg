@@ -9,6 +9,8 @@
 use std::path::Path;
 use std::process::Stdio;
 
+use std::io::ErrorKind;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, error, info};
@@ -136,7 +138,8 @@ pub async fn read_notification(process: &mut LspProcess) -> Result<Option<String
     let mut buf = [0u8; 1];
     match process.stdout.read_exact(&mut buf).await {
         Ok(_) => {}
-        Err(_) => return Ok(None),
+        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(LspError::RequestFailed(format!("read notification failed: {}", e))),
     }
 
     let mut header_buf = vec![buf[0]];

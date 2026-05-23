@@ -567,11 +567,18 @@ impl LspClient {
             if let Some(params) = val.get("params") {
                 if let Some(uri) = params.get("uri").and_then(|u| u.as_str()) {
                     if let Some(diags) = params.get("diagnostics") {
-                        let diags: Vec<lsp_types::Diagnostic> =
-                            serde_json::from_value(diags.clone()).unwrap_or_default();
-                        let count = diags.len();
-                        self.diagnostics.lock().await.insert(uri.to_string(), diags);
-                        debug!(uri, count, "received diagnostics");
+                        let parse_result: Result<Vec<lsp_types::Diagnostic>, _> =
+                            serde_json::from_value(diags.clone());
+                        match parse_result {
+                            Ok(diags) => {
+                                let count = diags.len();
+                                self.diagnostics.lock().await.insert(uri.to_string(), diags);
+                                debug!(uri, count, "received diagnostics");
+                            }
+                            Err(e) => {
+                                warn!("Failed to parse diagnostics for {}: {}", uri, e);
+                            }
+                        }
                     }
                 }
             }
