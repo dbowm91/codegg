@@ -403,34 +403,6 @@ These items were identified during module reviews and are important for future a
 - **Config struct complete**: Actual struct has ~45 fields (was documented with incomplete list showing ~20) - skill updated to reflect full schema
 - **Architecture doc accurate**: `architecture/config.md` accurately describes the implementation after multiple review fixes
 
-### Session Review Findings (2026-05-23)
-
-The following bugs were identified and verified against the codebase. Some items previously marked as bugs in review files were **NOT CONFIRMED** after direct code inspection:
-
-#### Confirmed Bugs (require fixes):
-- **TTS speak() error path**: `map_err` causes early return before `speaking` flag reset at lines 58-59
-- **TTS race condition**: Concurrent speak()/stop() on `AtomicBool` without synchronization
-- **TTS stop() ignores pkill failure**: Result discarded with `let _`
-- **Resilience last_failure_time**: Not cleared when circuit recovers from HalfOpen→Closed
-- **Resilience HalfOpen timeout**: No maximum duration for HalfOpen state
-- **Snapshot error swallowing**: `spawn_blocking` inner closure errors silently discarded
-- **Snapshot TOCTOU race**: canonicalize check then write leaves race window
-- **TUI hardcoded PATH**: `get_git_branch()` and `check_git_dirty()` use `/usr/local/bin:/usr/bin:/bin`
-- **TUI SelectTreeSession dead code**: Result stored but never used
-- **TUI InfoDialog memory leak**: `info_dialog` never set to None on close
-- **Server submit_permission**: Function validates but never actually calls `PermissionRegistry::respond()`
-- **Server auth logic inconsistent**: WebSocket vs HTTP auth validation differs
-- **Provider Google ToolCall ID**: Response ID discarded, new UUID generated
-- **Provider Anthropic Beta header**: Hardcoded, not configurable
-
-#### NOT CONFIRMED (claimed bugs do not exist):
-- **SSE Parser Drain**: Code is correct, no off-by-one error
-- **ProviderCache clock skew**: Uses regular subtraction, no `saturating_sub`
-- **status_code() panic**: Uses `.ok()` to safely handle non-numeric codes
-
-#### Key Lesson: Always Verify Against Codebase
-When reviewing documentation or claims about bugs, read the actual code to confirm. Several items in review files were marked as bugs that turned out to be correctly implemented after direct inspection.
-
 ## Documentation Structure
 
 ### Directory Structure
