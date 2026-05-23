@@ -182,7 +182,82 @@ Note: These are two separate tools (`PlanEnterTool` and `PlanExitTool`) register
 | `todo` | Manage TODO list |
 | `skill` | Load and use skills |
 | `batch` | Execute multiple operations |
-| `lsp` | LSP (Language Server Protocol) integration |
+
+## Extended Tool Modules
+
+These tools require separate registration (not included in `with_defaults()`).
+
+### Team Tools (`src/tool/teams.rs`)
+
+Multi-agent coordination via team-based communication:
+
+```rust
+pub struct TeamTools {
+    pub team_create: TeamCreateTool,
+    pub send_message: SendMessageTool,
+    pub list_messages: ListMessagesTool,
+    pub team_status: TeamStatusTool,
+    pub list_teams: ListTeamsTool,
+}
+```
+
+| Tool | Description |
+|------|-------------|
+| `team_create` | Create a new team |
+| `send_message` | Send message to a team |
+| `list_messages` | List messages in a team |
+| `team_status` | Get team status |
+| `list_teams` | List all teams |
+
+Register via `TeamTools::register_all()`:
+```rust
+let team_tools = TeamTools::new(manager, base_dir);
+team_tools.register_all(&mut registry);
+```
+
+### LSP Tool (`src/tool/lsp.rs`)
+
+Language Server Protocol integration for code intelligence:
+
+```rust
+pub struct LspTool {
+    service: Arc<crate::lsp::service::LspService>,
+    allowed_root: PathBuf,
+}
+```
+
+| Operation | Description |
+|-----------|-------------|
+| `goToDefinition` | Jump to symbol definition |
+| `findReferences` | Find all references to a symbol |
+| `hover` | Get hover information |
+| `documentSymbol` | List symbols in a document |
+| `workspaceSymbol` | Search symbols across workspace |
+| `goToImplementation` | Jump to implementation |
+| `prepareCallHierarchy` | Prepare call hierarchy |
+| `incomingCalls` | List incoming calls |
+| `outgoingCalls` | List outgoing calls |
+| `codeAction` | Get code actions |
+| `codeLens` | Get code lenses |
+
+Parameters: `operation` (required), `file_path`, `line`, `column`, `end_line`, `end_column`, `symbol`
+
+### Formatter (`src/tool/formatter.rs`)
+
+Code formatting via external formatters (not a Tool, used internally):
+
+```rust
+pub struct Formatter {
+    rules: HashMap<String, FormatterRule>,
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `format_file(path)` | Run formatter on file |
+| `has_rule(ext)` | Check if formatter exists for extension |
+
+Configured via `FormatterConfig` with rules for each file extension. Uses user's actual PATH when spawning formatter process.
 
 ## Adding a New Tool
 
