@@ -402,11 +402,4 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef> {
         .find(|s| s.extensions.contains(&ext))
 }
 
-pub fn build_env_overrides(env: Option<&HashMap<String, String>>) -> Vec<(String, String)> {
-    env.map(|e| {
-        e.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect::<Vec<_>>()
-    })
-    .unwrap_or_default()
-}
+
