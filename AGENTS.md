@@ -69,7 +69,7 @@ These items were identified during module reviews and are important for future a
 - **classify_error cleanup**: Uses direct `ToolError` imports instead of `crate::error::ToolError` prefix
 
 ### Tool Module (2026-05-22)
-- **Skill updated**: `.opencode/skills/tool/SKILL.md` updated to version 1.1.0 with accurate `ToolCatalog` and error variants
+- **Skill updated**: `.opencode/skills/tool/SKILL.md` updated to version 1.2.0 with accurate `ToolCatalog` and error variants
 - **Tool trait accurately documented**: `execute()` takes only `serde_json::Value` (not `ToolContext` as shown in architecture doc)
 - **ToolResult matches implementation**: Actual struct has `tool_name`, `input`, `output`, `success` (not the `content`, `error`, `metadata` shown in architecture)
 - **ToolCatalog added**: Registry now includes `ToolCatalog` for metadata and deferred loading
@@ -78,6 +78,7 @@ These items were identified during module reviews and are important for future a
 - **BashTool security**: Regex-based blocked patterns for dangerous commands, optional Landlock sandboxing
 - **Bug fixed**: `normalized` variable shadowing in `check_command_security()` - removed duplicate declaration
 - **Bug fixed**: Redundant `unrestricted` captures in `glob.rs` and `grep.rs` - now properly uses closure-captured value
+- **Subprocess PATH fixed**: All tools now use user's actual PATH via `std::env::var_os("PATH")` instead of hardcoded paths (bash.rs, git.rs, terminal.rs, commit.rs, review.rs, formatter.rs) - fixes Homebrew/cargo/pyenv tool discovery
 
 ### Agent Module (2026-05-22)
 - **Architecture doc updated**: `architecture/agent.md` now accurately reflects the actual implementation
@@ -255,7 +256,6 @@ These items were identified during module reviews and are important for future a
 
 ### Security Module (2026-05-26)
 - **validate_url_host() returns lowercase**: Fixed to return host normalized to lowercase for case-insensitive comparison consistency.
-- **BashTool PATH fixed**: Now uses user's actual PATH via `std::env::var_os("PATH")` instead of hardcoded `/usr/local/bin:/usr/bin:/bin`.
 
 ### Server Module (2026-05-22)
 - **WsRateLimiter shared**: `WsRateLimiter` in `ServerState` is now shared across all WebSocket connections (was created per-connection, causing inefficient rate limiting)

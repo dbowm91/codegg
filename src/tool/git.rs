@@ -115,10 +115,14 @@ impl Tool for GitTool {
         );
 
         let output = tokio::time::timeout(timeout, async {
-            Command::new("git")
-                .env_clear()
-                .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-                .args(&full_args)
+            let mut cmd = Command::new("git");
+            cmd.env_clear();
+            if let Some(path) = std::env::var_os("PATH") {
+                cmd.env("PATH", path);
+            } else {
+                cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            }
+            cmd.args(&full_args)
                 .current_dir(&workdir)
                 .output()
                 .await

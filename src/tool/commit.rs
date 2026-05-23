@@ -33,10 +33,14 @@ impl CommitTool {
             vec!["diff", "HEAD"]
         };
 
-        let output = Command::new("git")
-            .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .args(&args)
+        let mut cmd = Command::new("git");
+        cmd.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        } else {
+            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+        }
+        let output = cmd.args(&args)
             .current_dir(&self.workdir)
             .output()
             .await
@@ -55,10 +59,14 @@ impl CommitTool {
     }
 
     async fn stage_all(&self) -> Result<(), ToolError> {
-        let output = Command::new("git")
-            .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .args(["add", "-A"])
+        let mut cmd = Command::new("git");
+        cmd.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        } else {
+            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+        }
+        let output = cmd.args(&["add", "-A"])
             .current_dir(&self.workdir)
             .output()
             .await
@@ -157,10 +165,14 @@ impl CommitTool {
             args.push("--amend");
         }
 
-        let output = Command::new("git")
-            .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .args(&args)
+        let mut cmd = Command::new("git");
+        cmd.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        } else {
+            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+        }
+        let output = cmd.args(&args)
             .current_dir(&self.workdir)
             .output()
             .await

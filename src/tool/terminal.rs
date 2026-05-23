@@ -283,7 +283,11 @@ impl Tool for TerminalTool {
         let output = tokio::time::timeout(timeout, async {
             let mut cmd = Command::new(command);
             cmd.env_clear();
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            if let Some(path) = std::env::var_os("PATH") {
+                cmd.env("PATH", path);
+            } else {
+                cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            }
             cmd.args(&args);
 
             for (key, value) in env_vars {

@@ -47,8 +47,12 @@ impl Formatter {
         let mut cmd = std::process::Command::new(&command[0]);
         cmd.args(&command[1..])
             .arg(path)
-            .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            .env_clear();
+        if let Some(path_value) = std::env::var_os("PATH") {
+            cmd.env("PATH", path_value);
+        } else {
+            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+        }
 
         if let Some(env) = &rule.environment {
             for (k, v) in env {

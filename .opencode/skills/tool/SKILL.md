@@ -1,7 +1,7 @@
 ---
 name: tool
 description: Tool trait, registration, execution flow, adding new tools
-version: 1.1.0
+version: 1.2.0
 tags:
   - tool
   - trait
@@ -417,18 +417,22 @@ impl ToolError {
 
 ### Subprocess Security
 
-When spawning external processes, always use `env_clear()` with a minimal safe PATH:
+When spawning external processes, always use `env_clear()` with the user's actual PATH:
 
 ```rust
 use std::process::Command;
 
 let mut cmd = Command::new("git");
 cmd.env_clear();
-cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");  // Hardcoded, not from environment
+if let Some(path) = std::env::var_os("PATH") {
+    cmd.env("PATH", path);
+} else {
+    cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+}
 cmd.args(&["log", "--oneline"]);
 ```
 
-**Critical**: Use hardcoded PATH `/usr/local/bin:/usr/bin:/bin` after `env_clear()`. Do NOT use `std::env::var("PATH")` as this restores the original unsafe PATH. This pattern is implemented in: bash.rs, commit.rs, formatter.rs, git.rs, terminal.rs, review.rs. Some tools use a fallback pattern (user's PATH with hardcoded fallback): mcp/local.rs, lsp/launch.rs, hooks/mod.rs, upgrade/mod.rs.
+**Critical**: Use the user's actual PATH via `std::env::var_os("PATH")` after `env_clear()`. Never hardcode PATH as this breaks tools installed in non-standard locations (e.g., Homebrew, cargo, pyenv). This pattern is implemented in: bash.rs, commit.rs, formatter.rs, git.rs, terminal.rs, review.rs.
 
 ## Tool Definition Conversion
 

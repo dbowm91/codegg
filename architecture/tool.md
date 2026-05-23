@@ -230,6 +230,7 @@ pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolEr
 4. **Snapshot before modify** - File state captured before destructive operations
 5. **SSRF protection** - WebFetch validates URLs against internal IP ranges
 6. **BashTool blocked patterns** - Regex-based detection of dangerous commands
+7. **Subprocess PATH** - External processes use user's actual PATH (not hardcoded)
 
 ## Configuration
 
