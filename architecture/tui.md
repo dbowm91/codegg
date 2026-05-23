@@ -56,6 +56,7 @@ tui/
 │   ├── completion_overlay.rs # Slash/file/agent completion popups
 │   ├── diff.rs             # DiffViewer (diff visualization)
 │   ├── footer.rs           # FooterWidget (status bar)
+│   ├── help_overlay.rs     # HelpOverlay (keyboard shortcuts overlay)
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
 │   ├── notification.rs     # NotificationManager (desktop notifications)
@@ -63,11 +64,12 @@ tui/
 │   ├── scroll.rs           # CenteredScroll (reusable scrolling)
 │   ├── sidebar.rs          # SidebarWidget (side panel, git info)
 │   ├── spinner.rs          # SpinnerWidget (busy indicator)
-│   └── toast.rs            # ToastManager (notifications)
+│   ├── toast.rs            # ToastManager (notifications)
+│   └── tool_output.rs      # ToolOutput (tool execution output display)
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── route.rs                # Route/RouteManager (Home, Session routes)
-├── theme.rs                # Theme definitions (30+ themes)
+├── theme.rs                # Theme definitions (31 themes)
 ├── command.rs              # Slash command registry
 └── mod.rs                  # TUI entry point, event loop, GlobalEventBus
 ```
@@ -95,6 +97,10 @@ pub struct UiState {
     pub bindings: HashMap<(KeyModifiers, KeyCode), InputAction>,
     pub keybinds: Option<KeybindConfig>, // Raw keybind config
     pub remote_mode: bool,              // Cline compatibility
+    pub remote_status: Option<String>,  // Remote connection status
+    pub running: bool,                  // Event loop running flag
+    pub timeline_visible: bool,         // Timeline visibility
+    pub timeline_selected: usize,       // Timeline selection index
     pub tts: Tts,                       // Text-to-speech
     pub tts_enabled: bool,
     pub fullscreen: bool,               // DEC 1049 alternate screen
@@ -114,13 +120,20 @@ pub struct SessionState {
     pub token_out: u64,
     pub reasoning_tokens: usize,
     pub history: VecDeque<HistoryEntry>,
+    pub history_pos: Option<usize>,     // History navigation position
     pub indexed_files: Arc<RwLock<Vec<String>>>,
     pub project_dir: String,
+    pub last_edited_file: Option<String>, // Most recently edited file path
     pub changed_files: Vec<ChangedFile>,
     pub mcp_servers: Vec<(String, String)>,
     pub context_tokens: usize,
     pub context_limit: usize,
     pub compaction_count: usize,
+    pub rpm_limit: Option<u64>,         // Requests per minute limit
+    pub tpm_limit: Option<u64>,         // Tokens per minute limit
+    pub rpm_remaining: Option<u64>,     // RPM remaining in current window
+    pub tpm_remaining: Option<u64>,     // TPM remaining in current window
+    pub permission_pending: bool,       // Permission dialog is pending
     pub subagent_count: usize,
 }
 ```
