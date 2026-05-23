@@ -4,7 +4,7 @@ The `pty` module provides shell session metadata management for terminal session
 
 ## Overview
 
-**Location**: `src/pty/`
+**Location**: `src/pty_session/`
 
 **Note**: This module does NOT create actual PTY sessions. It only manages in-memory session metadata. Actual shell execution is handled by `tool::terminal` which spawns a shell process directly.
 

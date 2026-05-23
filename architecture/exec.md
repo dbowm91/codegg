@@ -132,6 +132,7 @@ Note: Error messages include execution duration in milliseconds for debugging pu
 | `CIRCUIT_OPEN` | Provider circuit breaker open |
 | `API_ERROR` | API error with code and message |
 | `STREAM_ERROR` | Stream error |
+| `PROVIDER_NOT_FOUND` | Provider not found |
 | `IO_ERROR` | I/O error |
 | `CONFIG_ERROR` | Configuration error |
 | `STORAGE_ERROR` | Storage error |
