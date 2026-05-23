@@ -241,7 +241,7 @@ impl MemoryStore {
                 continue;
             }
 
-            let topic_key = scored_mem.matched_text.to_lowercase();
+            let topic_key = format!("{}:{}", scored_mem.pattern_type, scored_mem.matched_text.to_lowercase());
 
             if let Some(existing_mem) = existing_by_topic.get(&topic_key) {
                 if existing_mem.importance >= scored_mem.score / 20.0 {
