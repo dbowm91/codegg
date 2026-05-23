@@ -341,6 +341,12 @@ These items were identified during module reviews and are important for future a
 - **stat_core.rs misnamed**: Contains metrics infrastructure (Counter, Gauge, Histogram), not file statistics as name suggests
 - **Feature gate noted**: Clipboard requires `arboard` feature flag
 
+### Util Module (2026-05-26)
+- **Skill updated**: `.opencode/skills/util/SKILL.md` updated to v1.1.0 with accurate integration points
+- **Integration verified**: 5 usage locations confirmed (fuzzy_score: 3, clipboard: 2)
+- **Tests passing**: 24 unit tests across fuzzy (11) and truncate (13) modules
+- **No bugs found**: Implementation is correct; stat_core metrics not actively used but available for future observability needs
+
 ### Upgrade Module (2026-05-22)
 - **Architecture doc updated**: `architecture/upgrade.md` now accurately reflects the implementation (was showing outdated `ReleaseInfo` struct and `github_api::get_latest_release` function)
 - **Skill created**: `.opencode/skills/upgrade/SKILL.md` created with module guidance
@@ -483,3 +489,4 @@ When adding guidance for a new module:
 | Subagent (SubAgentPool, SubAgentSpawner, worker) | `.opencode/skills/subagent/SKILL.md` |
 | Compaction (context compaction strategies) | `.opencode/skills/compaction/SKILL.md` |
 | Router (model auto-routing) | `.opencode/skills/router/SKILL.md` |
+| Util (clipboard, fuzzy matching, truncation, metrics) | `.opencode/skills/util/SKILL.md` (v1.1.0) |

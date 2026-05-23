@@ -1,14 +1,24 @@
-# Util Module
+---
+name: util
+description: Utility functions for clipboard, fuzzy matching, text truncation, and metrics collection
+version: 1.1.0
+tags:
+  - clipboard
+  - fuzzy
+  - truncate
+  - metrics
+  - utilities
+---
 
-The `util` module provides common utility functions.
+# Util Module Guide
+
+This skill covers the utility functions in opencode-rs for common operations.
 
 ## Overview
 
-**Location**: `src/util/`
-
-**Key Responsibilities**:
-- Clipboard operations (feature-gated)
-- Fuzzy string matching and scoring
+The `src/util/` module provides:
+- Clipboard operations (feature-gated with `arboard`)
+- Fuzzy string matching and scoring (using `strsim`)
 - Text truncation (by lines or bytes)
 - Metrics collection (counters, gauges, histograms)
 
@@ -27,17 +37,17 @@ pub fn read_from_clipboard() -> Option<String>;
 
 ### fuzzy.rs
 
-Fuzzy string matching utilities using `strsim` crate for Levenshtein distance.
+Fuzzy string matching using Levenshtein distance and weighted scoring.
 
 ```rust
 pub fn fuzzy_match(query: &str, candidates: &[String]) -> Vec<(String, usize)>;
 pub fn fuzzy_score(query: &str, target: &str) -> usize;
 ```
 
-- `fuzzy_match`: Returns candidates sorted by Levenshtein distance (lower is better)
+- `fuzzy_match`: Returns all candidates sorted by Levenshtein distance (lower is better)
 - `fuzzy_score`: Returns weighted score for single target (case-insensitive, bonuses for start-of-string and consecutive matches)
 
-**Dependencies**: `strsim`
+**Dependencies**: `strsim` crate for Levenshtein distance
 
 ### truncate.rs
 
@@ -115,9 +125,30 @@ let truncated = truncate_lines("line1\nline2\n...", 10);
 let truncated = truncate_bytes("very long text...", 10);
 ```
 
-## See Also
+## Integration Points
 
-- [tool.md](tool.md) - Tools using utilities
-- [tui.md](tui.md) - TUI uses fuzzy scoring for command matching
+| Location | Usage |
+|----------|-------|
+| `src/tui/app/mod.rs:44` | Uses `fuzzy_score` for command filtering |
+| `src/tui/command.rs:2` | Uses `fuzzy_score` for slash command matching |
+| `src/tui/components/completion_overlay.rs:10` | Uses `fuzzy_score` for completion filtering |
+| `src/tui/components/dialogs/share.rs:12` | Uses `clipboard` for URL copying |
+| `src/tui/mod.rs:454` | Uses `clipboard` for session export to clipboard |
 
-(Metadata: reviewed 2026-05-26)
+## Testing
+
+Run util tests:
+```bash
+cargo test --lib -- util
+```
+
+Tests include:
+- `fuzzy::tests::*` - Fuzzy matching and scoring tests
+- `truncate::tests::*` - Line and byte truncation tests
+- `stat_core::inner::tests::gauge_dec_saturates_at_zero` - Metrics tests
+
+## Dependencies
+
+- `arboard` (optional, requires `arboard` feature) - Clipboard operations
+- `strsim` - Levenshtein distance for fuzzy matching
+- `parking_lot` - Synchronization for metrics
