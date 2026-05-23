@@ -164,6 +164,32 @@ These items were identified during module reviews and are important for future a
 #### Skills Updated
 - **TTS skill**: Fixed `Tts.speaking` type to show `Mutex<AtomicBool>` wrapper
 
+### Architecture Review Session (2026-05-23)
+
+The following findings were identified during the May 2026 architecture review consolidation:
+
+#### Verified Already Fixed (No Action Needed)
+- **IDE line range slicing**: Verified correctly passes sliced content at `src/ide/mod.rs:91`
+- **external_directory in PERMISSION_TYPES**: Verified NOT present (lines 70-87)
+- **TTS speak()**: Verified no duplicate `speaking.store(false)` (different execution paths)
+- **TTS stop()**: Verified checks `is_speaking()` before pkill (lines 85-88)
+- **TTS init()**: Verified `TtsProvider` enum only has `None` variant (exhaustive match)
+- **PTY location**: Verified module is at `src/pty_session/`, not `src/pty/`
+
+#### Real Bug Found
+- **FocusManager pop_dialog() index bug**: `src/tui/components/component/focus.rs:33-46`
+  - `position()` returns index from front (0 = first)
+  - Code computes `idx_rev = stack.len() - 1 - idx` and removes `idx_rev`
+  - Example: stack `[A,B,C,D,E]`, searching for `B` gives `idx=1`, `idx_rev=3`, removes `D` not `B`
+  - **Fix**: Use `pos` directly instead of `idx_rev`
+
+#### New Documentation Items Identified
+- **`list_skill_resources()` function**: Document in skills skill
+- **`FORMAT_V2_PREFIX` constant**: Document in crypto skill
+- **Tool modules undocumented**: teams.rs (5 TeamTools), lsp.rs (11 operations), formatter.rs - need documentation
+- **Resilience half_open fields**: `half_open_start_time` and `max_half_open_duration` not documented
+- **fuzzy_match vs fuzzy_score**: Clarify distance vs similarity metrics
+
 ### Memory Module (2026-05-22)
 - **File-based storage**: `~/.config/codegg/memory/` with namespace-based directories
 - **Memory persistence fixed**: All 8 fields now saved/loaded correctly (was: only 4 fields persisted)
