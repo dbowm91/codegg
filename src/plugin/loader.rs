@@ -273,8 +273,8 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
         return HookResult::ok(ctx.input);
     };
 
-    let plugin_dir = format!("plugins/{}", plugin_id);
-    let wasm_path: PathBuf = format!("{}/plugin.wasm", plugin_dir).into();
+    let plugin_name = plugin_id.strip_prefix("plugin:").unwrap_or(plugin_id);
+    let wasm_path = crate::plugin::install::plugins_dir().join(plugin_name).join("plugin.wasm");
     let wasm_path_str = wasm_path.to_string_lossy();
 
     let metadata = match std::fs::metadata(&wasm_path) {
