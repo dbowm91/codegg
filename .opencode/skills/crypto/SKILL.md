@@ -21,7 +21,7 @@ The `src/crypto/mod.rs` module provides AES-256-GCM encryption for storing sensi
 - **Key derivation**: Argon2id (v2 format) for strong memory-hard key derivation
 - **Legacy key derivation**: HMAC-SHA256 (pre-v2 format) for backward compatibility
 - **Encryption**: AES-256-GCM with random 12-byte nonce
-- **Format**: `v2:` prefix + hex(salt[32] || nonce[12] || ciphertext)
+- **Format**: `FORMAT_V2_PREFIX` (`"v2:"`) + hex(salt[32] || nonce[12] || ciphertext)
 
 ## Usage
 
@@ -71,7 +71,7 @@ Decrypts encrypted data using password-derived key.
 
 Same as `encrypt()` but returns hex-encoded string for easy storage.
 
-**Format**: `v2:` prefix + hex(salt || nonce || ciphertext)
+**Format**: `FORMAT_V2_PREFIX` (`"v2:"`) + hex(salt || nonce || ciphertext)
 
 ### `decrypt_from_string(encrypted_str: &str, password: &str) -> Result<String, CryptoError>`
 

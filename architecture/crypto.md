@@ -88,6 +88,8 @@ fn derive_key_legacy(password: &str, salt: &[u8]) -> [u8; 32] {
 
 ### Format
 
+The `FORMAT_V2_PREFIX` constant (`"v2:"`) identifies the v2 encryption format:
+
 ```
 v2:<hex(salt[32] || nonce[12] || ciphertext)>
 ```
