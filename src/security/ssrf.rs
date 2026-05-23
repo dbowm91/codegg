@@ -143,3 +143,126 @@ pub fn validate_url_host(url: &str) -> Result<String, String> {
 
     Ok(host.to_lowercase())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_internal_ip_loopback() {
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(127, 255, 255, 255))));
+        assert!(is_internal_ip(&IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))));
+    }
+
+    #[test]
+    fn test_is_internal_ip_private_class_a() {
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(10, 255, 255, 255))));
+    }
+
+    #[test]
+    fn test_is_internal_ip_private_class_b() {
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(172, 20, 0, 0))));
+    }
+
+    #[test]
+    fn test_is_internal_ip_private_class_c() {
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(192, 168, 255, 255))));
+    }
+
+    #[test]
+    fn test_is_internal_ip_link_local() {
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(169, 254, 0, 0))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(169, 254, 255, 255))));
+        assert!(is_internal_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn test_is_internal_ip_multicast() {
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(224, 0, 0, 0))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(239, 255, 255, 255))));
+    }
+
+    #[test]
+    fn test_is_internal_ip_cgnat() {
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255))));
+    }
+
+    #[test]
+    fn test_is_internal_ip_ipv4_mapped_ipv6() {
+        let ipv4_mapped = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0001);
+        assert!(is_internal_ip(&IpAddr::V6(ipv4_mapped)));
+    }
+
+    #[test]
+    fn test_is_internal_ip_site_local() {
+        let site_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0);
+        assert!(is_internal_ip(&IpAddr::V6(site_local)));
+    }
+
+    #[test]
+    fn test_is_internal_ip_unicast_link_local() {
+        let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        assert!(is_internal_ip(&IpAddr::V6(link_local)));
+    }
+
+    #[test]
+    fn test_is_internal_ip_public() {
+        assert!(!is_internal_ip(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!is_internal_ip(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+        assert!(!is_internal_ip(&IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0, 0x2000, 0, 0, 0, 0))));
+    }
+
+    #[test]
+    fn test_ipv6_segments_to_ipv4() {
+        let ipv4_mapped = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0001);
+        assert_eq!(ipv6_segments_to_ipv4(&ipv4_mapped), Some(Ipv4Addr::new(192, 168, 0, 1)));
+
+        let ipv4_compatible = Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0xc0a8, 0x0001);
+        assert_eq!(ipv6_segments_to_ipv4(&ipv4_compatible), Some(Ipv4Addr::new(192, 168, 0, 1)));
+
+        let regular_ipv6 = Ipv6Addr::new(0x2001, 0x4860, 0, 0x2000, 0, 0, 0, 0);
+        assert_eq!(ipv6_segments_to_ipv4(&regular_ipv6), None);
+    }
+
+    #[test]
+    fn test_validate_url_host_https() {
+        assert_eq!(validate_url_host("https://8.8.8.8").unwrap(), "8.8.8.8");
+        assert_eq!(validate_url_host("https://1.1.1.1").unwrap(), "1.1.1.1");
+    }
+
+    #[test]
+    fn test_validate_url_host_http() {
+        assert_eq!(validate_url_host("http://8.8.8.8").unwrap(), "8.8.8.8");
+    }
+
+    #[test]
+    fn test_validate_url_host_with_port() {
+        assert_eq!(validate_url_host("https://8.8.8.8:8443").unwrap(), "8.8.8.8");
+    }
+
+    #[test]
+    fn test_validate_url_host_unsupported_scheme() {
+        assert!(validate_url_host("ftp://8.8.8.8").is_err());
+        assert!(validate_url_host("file:///etc/passwd").is_err());
+        assert!(validate_url_host("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn test_validate_url_host_no_host() {
+        assert!(validate_url_host("https://").is_err());
+    }
+
+    #[test]
+    fn test_validate_url_host_internal_blocked() {
+        assert!(validate_url_host("https://127.0.0.1").is_err());
+        assert!(validate_url_host("https://192.168.1.1").is_err());
+        assert!(validate_url_host("https://10.0.0.1").is_err());
+        assert!(validate_url_host("https://172.16.0.1").is_err());
+    }
+}

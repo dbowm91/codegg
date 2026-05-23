@@ -121,8 +121,6 @@ pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError> {
 
     let pool = connect_and_configure(&db_path_str).await?;
 
-    crate::session::schema::migrate(&pool).await?;
-
     info!(
         "database initialized successfully at: {}",
         db_path.display()

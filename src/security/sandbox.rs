@@ -1,5 +1,7 @@
 use crate::error::ToolError;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 #[derive(Clone, Debug, Default)]
 pub struct SandboxConfig {
@@ -232,6 +234,28 @@ fn enforce_landlock(allowed_paths: &[String], deny_paths: &[String]) -> Result<(
     Ok(())
 }
 
+static CANONICAL_PATHS_CACHE: Mutex<Option<HashMap<Vec<String>, Vec<PathBuf>>>> = Mutex::new(None);
+
+fn get_canonical_paths(allowed_paths: &[String]) -> Vec<PathBuf> {
+    let mut cache = CANONICAL_PATHS_CACHE.lock().unwrap();
+    if cache.is_none() {
+        *cache = Some(HashMap::new());
+    }
+    let cache = cache.as_mut().unwrap();
+
+    if let Some(canonical) = cache.get(allowed_paths) {
+        return canonical.clone();
+    }
+
+    let canonical: Vec<PathBuf> = allowed_paths
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .collect();
+
+    cache.insert(allowed_paths.to_vec(), canonical.clone());
+    canonical
+}
+
 pub fn validate_path_safety(path: &Path, allowed_paths: &[String]) -> Result<(), ToolError> {
     if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
         return Err(ToolError::Permission(format!(
@@ -244,11 +268,9 @@ pub fn validate_path_safety(path: &Path, allowed_paths: &[String]) -> Result<(),
         ToolError::Permission(format!("path '{}' could not be resolved", path.display()))
     })?;
 
-    for allowed in allowed_paths {
-        let allowed_canonical = std::fs::canonicalize(allowed).map_err(|_| {
-            ToolError::Permission(format!("allowed path '{}' could not be resolved", allowed))
-        })?;
-        if canonical.starts_with(&allowed_canonical) {
+    let allowed_canonical = get_canonical_paths(allowed_paths);
+    for allowed in &allowed_canonical {
+        if canonical.starts_with(allowed) {
             return Ok(());
         }
     }
