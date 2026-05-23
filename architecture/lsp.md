@@ -63,7 +63,7 @@ pub struct LspClient {
     pub server_id: String,
     pub root: PathBuf,
     pub process: tokio::sync::Mutex<LspProcess>,
-    pub request_id: AtomicI64,
+    pub request_id: AtomicU64,
     pub capabilities: Mutex<Option<ServerCapabilities>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
     pub diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,

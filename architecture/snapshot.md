@@ -94,6 +94,46 @@ impl SnapshotManager {
 
 ## Usage Flow
 
+### Two-Phase Capture
+
+The snapshot system uses a two-phase capture approach integrated with the AgentLoop:
+
+#### Phase 1: Pre-Execution Capture (loop.rs:1655)
+```
+Before tool execution
+    │
+    ▼
+AgentLoop::capture_snapshot_if_needed()
+    │
+    ▼
+SnapshotManager::capture(session_id, None)
+    │
+    ▼
+Store full project state as snapshot
+    │
+    ▼
+Execute tool modification
+    │
+    ▼
+If error → SnapshotManager::restore(snapshot_view)
+```
+
+#### Phase 2: Post-Execution Incremental Capture (loop.rs:1853)
+```
+After tool execution (success)
+    │
+    ▼
+AgentLoop::capture_incremental_snapshot_if_needed()
+    │
+    ▼
+SnapshotManager::capture_incremental(session_id, label, changes)
+    │
+    ▼
+For each file change:
+  - Validate path is within project_root
+  - Store incremental changes
+```
+
 ### Full Capture
 
 ```
