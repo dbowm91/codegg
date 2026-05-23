@@ -141,6 +141,29 @@ These items were identified during module reviews and are important for future a
 - **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
 - **Tool definition cache staleness**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
 
+### Wave 4 Fixes (2026-05-26)
+
+#### Code Bugs Fixed
+- **IDE line range slicing**: `open_diff_generic()` in generic fallback now receives sliced content instead of original file paths (`src/ide/mod.rs:91`)
+- **TTS duplicate store**: Removed duplicate `speaking.store(false)` call after command completion
+- **TTS stop() guard**: Added `is_speaking()` check to avoid pkill error when nothing is playing
+- **TTS stop() error handling**: Returns `Ok(())` on pkill failure since stop success doesn't require process to exist
+
+#### Documentation Fixed
+- **event-bus.md**: Fixed Other Events count from 9 to 8 (AgentFinished was listed twice)
+- **client.md**: Moved RenderFrame from Server→Client note to Client→Server table
+- **permission.md**: Clarified two PermissionResponse types (HTTP API vs internal)
+- **pty.md**: Fixed location from `src/pty/` to `src/pty_session/`
+- **tui.md**: Fixed theme count from 42 to 31
+- **exec.md**: Added missing PROVIDER_NOT_FOUND error code
+- **command.md**: Removed duplicate built-in commands table, fixed alias format
+
+#### New Documentation
+- **architecture/compaction.md**: Created comprehensive architecture documentation for the compaction module
+
+#### Skills Updated
+- **TTS skill**: Fixed `Tts.speaking` type to show `Mutex<AtomicBool>` wrapper
+
 ### Memory Module (2026-05-22)
 - **File-based storage**: `~/.config/codegg/memory/` with namespace-based directories
 - **Memory persistence fixed**: All 8 fields now saved/loaded correctly (was: only 4 fields persisted)
