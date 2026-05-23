@@ -33,7 +33,7 @@ pub async fn get_workspace(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "default".to_string());
 
-    let is_wt = is_git_worktree(&state.project_dir).await;
+    let is_wt = crate::worktree::is_git_file(&std::path::PathBuf::from(&state.project_dir).join(".git"));
 
     Ok(Json(WorkspaceInfo {
         id: state.project_dir.clone(),
@@ -53,7 +53,7 @@ pub async fn list_workspaces(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "default".to_string()),
         path: state.project_dir.clone(),
-        is_worktree: is_git_worktree(&state.project_dir).await,
+        is_worktree: crate::worktree::is_git_file(&std::path::PathBuf::from(&state.project_dir).join(".git")),
     };
 
     let mut workspaces = vec![current];
@@ -61,7 +61,7 @@ pub async fn list_workspaces(
     if let Ok(entries) = std::fs::read_dir(&state.project_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() && is_git_worktree(path.to_str().unwrap_or("")).await {
+            if path.is_dir() && crate::worktree::is_git_worktree(&path) {
                 workspaces.push(WorkspaceInfo {
                     id: path.to_string_lossy().to_string(),
                     name: path
@@ -90,7 +90,7 @@ pub async fn create_workspace(
             .map_err(AppError::Io)?;
     }
 
-    let is_wt = is_git_worktree(&req.path).await;
+    let is_wt = crate::worktree::is_git_worktree(&validated);
 
     Ok((
         StatusCode::CREATED,
@@ -103,14 +103,4 @@ pub async fn create_workspace(
     ))
 }
 
-async fn is_git_worktree(dir: &str) -> bool {
-    let git = PathBuf::from(dir).join(".git");
-    if !git.exists() {
-        return false;
-    }
-    if let Ok(content) = tokio::fs::read_to_string(&git).await {
-        content.starts_with("gitdir:")
-    } else {
-        false
-    }
-}
+

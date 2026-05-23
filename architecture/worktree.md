@@ -11,6 +11,7 @@ The `worktree` module provides Git worktree management.
 - Create new worktrees
 - Remove worktrees
 - Find git root (walks up directory tree looking for `.git`)
+- Check if a directory is a git worktree
 
 ## Key Functions
 
@@ -51,6 +52,22 @@ pub fn find_git_root(start: &Path) -> Option<PathBuf>
 
 Walks up the directory tree looking for `.git` directory or `.git` file (which indicates a worktree). Returns the path containing the `.git` entry.
 
+### is_git_worktree()
+
+```rust
+pub fn is_git_worktree(dir: &Path) -> bool
+```
+
+Checks if a directory is a Git worktree by detecting a `.git` file with `gitdir:` prefix. Returns `true` if the directory is a worktree, `false` otherwise (including regular git repos with `.git` directories).
+
+### is_git_file()
+
+```rust
+pub fn is_git_file(git_path: &Path) -> bool
+```
+
+Checks if a `.git` path is a file (indicating a worktree) rather than a directory. Returns `true` if the file exists and starts with `gitdir:`.
+
 ## Data Structures
 
 ```rust
@@ -65,7 +82,34 @@ pub struct Worktree {
 
 Note: `is_locked` and `is_main` shown in some older docs are **not implemented**.
 
+## Usage
+
+```rust
+use crate::worktree::{list_worktrees, create_worktree, remove_worktree, find_git_root, is_git_worktree, Worktree};
+
+// Find the git root for a directory
+if let Some(git_root) = find_git_root(&some_path) {
+    // List all worktrees
+    let worktrees = list_worktrees(&git_root)?;
+    for wt in worktrees {
+        println!("{} - {} (current: {})", wt.path, wt.branch, wt.is_current);
+    }
+
+    // Create a new worktree
+    create_worktree(&git_root, &Path::new("/path/to/new"), "feature-branch", true)?;
+
+    // Remove a worktree
+    remove_worktree(&git_root, &Path::new("/path/to/new"))?;
+
+    // Check if a directory is a worktree
+    if is_git_worktree(&Path::new("/some/dir")) {
+        println!("This is a worktree!");
+    }
+}
+```
+
 ## See Also
 
 - [tool.md](tool.md) - Git operations tool
-- `src/server/routes/workspace.rs` - Server workspace routes with `is_git_worktree()` helper
+- `src/server/routes/workspace.rs` - Uses `is_git_worktree()` for workspace detection
+- `src/server/routes/project.rs` - Uses `find_git_root()` for project git root discovery

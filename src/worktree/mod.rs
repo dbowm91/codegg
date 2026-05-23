@@ -168,10 +168,15 @@ pub fn find_git_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
-fn is_git_file(git_path: &Path) -> bool {
+pub fn is_git_file(git_path: &Path) -> bool {
     if let Ok(content) = std::fs::read_to_string(git_path) {
         content.starts_with("gitdir:")
     } else {
         false
     }
+}
+
+pub fn is_git_worktree(dir: &Path) -> bool {
+    let git_path = dir.join(".git");
+    git_path.exists() && is_git_file(&git_path)
 }

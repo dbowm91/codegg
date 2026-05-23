@@ -138,3 +138,51 @@ fn test_create_and_remove_worktree() {
         "removed worktree still present in list"
     );
 }
+
+#[test]
+fn test_is_git_worktree_with_git_dir() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let git_dir = temp_dir.path().join(".git");
+    std::fs::create_dir_all(&git_dir).expect("failed to create .git dir");
+
+    let result = codegg::worktree::is_git_worktree(temp_dir.path());
+    assert!(!result, "regular .git directory should not be detected as worktree");
+}
+
+#[test]
+fn test_is_git_worktree_with_git_file() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let git_file = temp_dir.path().join(".git");
+    std::fs::write(&git_file, "gitdir: /tmp/fake-gitdir\n").expect("failed to create .git file");
+
+    let result = codegg::worktree::is_git_worktree(temp_dir.path());
+    assert!(result, ".git file with gitdir: prefix should be detected as worktree");
+}
+
+#[test]
+fn test_is_git_worktree_non_git_dir() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+
+    let result = codegg::worktree::is_git_worktree(temp_dir.path());
+    assert!(!result, "non-git directory should not be detected as worktree");
+}
+
+#[test]
+fn test_is_git_file_with_gitdir_prefix() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let git_file = temp_dir.path().join(".git");
+    std::fs::write(&git_file, "gitdir: /tmp/fake-gitdir\n").expect("failed to create .git file");
+
+    let result = codegg::worktree::is_git_file(&git_file);
+    assert!(result, "file with gitdir: prefix should return true");
+}
+
+#[test]
+fn test_is_git_file_without_gitdir_prefix() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let git_file = temp_dir.path().join(".git");
+    std::fs::write(&git_file, "just some content\n").expect("failed to create .git file");
+
+    let result = codegg::worktree::is_git_file(&git_file);
+    assert!(!result, "file without gitdir: prefix should return false");
+}

@@ -32,7 +32,8 @@ pub async fn get_project(State(state): State<ServerState>) -> Result<Json<Projec
         .map(|sessions| sessions.len())
         .unwrap_or(0);
 
-    let git_root = find_git_root(&state.project_dir).await;
+    let git_root = crate::worktree::find_git_root(std::path::Path::new(&state.project_dir))
+        .map(|p| p.to_string_lossy().to_string());
     let name = std::path::Path::new(&state.project_dir)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -103,7 +104,8 @@ pub async fn create_project(
             .map_err(AppError::Io)?;
     }
 
-    let git_root = find_git_root(&req.path).await;
+    let git_root = crate::worktree::find_git_root(&full)
+        .map(|p| p.to_string_lossy().to_string());
     let abs = full
         .canonicalize()
         .ok()
@@ -121,15 +123,4 @@ pub async fn create_project(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
-async fn find_git_root(dir: &str) -> Option<String> {
-    let mut cur = std::path::PathBuf::from(dir);
-    loop {
-        if cur.join(".git").exists() {
-            return Some(cur.to_string_lossy().to_string());
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    None
-}
+

@@ -1,7 +1,7 @@
 ---
 name: worktree
 description: Git worktree management for listing, creating, and removing worktrees in opencode-rs
-version: 1.0.0
+version: 1.1.0
 tags:
   - git
   - worktree
@@ -73,6 +73,22 @@ pub fn find_git_root(start: &Path) -> Option<PathBuf>
 
 Walks up the directory tree looking for `.git` directory OR `.git` file (which indicates a worktree). Returns the path containing the git entry, or `None` if not found.
 
+### is_git_worktree()
+
+```rust
+pub fn is_git_worktree(dir: &Path) -> bool
+```
+
+Checks if a directory is a Git worktree by detecting a `.git` file with `gitdir:` prefix. Returns `true` if the directory is a worktree, `false` otherwise (including regular git repos with `.git` directories).
+
+### is_git_file()
+
+```rust
+pub fn is_git_file(git_path: &Path) -> bool
+```
+
+Checks if a `.git` path is a file (indicating a worktree) rather than a directory. Returns `true` if the file exists and starts with `gitdir:`.
+
 ## Error Handling
 
 All functions return `AppError::Worktree(String)` on failure:
@@ -84,7 +100,7 @@ AppError::Worktree("failed to run git worktree list: ...".to_string())
 ## Usage Example
 
 ```rust
-use crate::worktree::{list_worktrees, create_worktree, remove_worktree, find_git_root, Worktree};
+use crate::worktree::{list_worktrees, create_worktree, remove_worktree, find_git_root, is_git_worktree, Worktree};
 
 // Find the git root for a directory
 if let Some(git_root) = find_git_root(&some_path) {
@@ -99,6 +115,11 @@ if let Some(git_root) = find_git_root(&some_path) {
 
     // Remove a worktree
     remove_worktree(&git_root, &Path::new("/path/to/new"))?;
+
+    // Check if a directory is a worktree
+    if is_git_worktree(&Path::new("/some/dir")) {
+        println!("This is a worktree!");
+    }
 }
 ```
 
@@ -108,7 +129,9 @@ The worktree module is accessed via the `/worktree` TUI command, implemented in 
 
 ## Server Integration
 
-The server has a separate `is_git_worktree()` helper in `src/server/routes/workspace.rs` that checks if a directory is a worktree by reading the `.git` file and checking for `gitdir:` prefix.
+The worktree module provides `is_git_worktree()` and `find_git_root()` which are used by server routes:
+- `src/server/routes/workspace.rs` - Uses `is_git_worktree()` for workspace detection
+- `src/server/routes/project.rs` - Uses `find_git_root()` for project git root discovery
 
 ## Notes
 
@@ -116,9 +139,11 @@ The server has a separate `is_git_worktree()` helper in `src/server/routes/works
 - Detached HEAD state is formatted as `detached@<sha>` or `detached@<path>`
 - `find_git_root()` correctly handles both `.git` directories (main repo) and `.git` files (worktrees)
 - The `is_current` detection uses canonical path comparison to handle relative paths correctly
+- `is_git_worktree()` only returns `true` for worktrees (`.git` files), not regular repos (`.git` directories)
 
 ## Relationship to Other Modules
 
 - **session/** - Stores `worktree` field in project table (git root path)
-- **server/routes/workspace.rs** - Has separate `is_git_worktree()` for workspace detection
+- **server/routes/workspace.rs** - Uses `is_git_worktree()` for workspace detection
+- **server/routes/project.rs** - Uses `find_git_root()` for project git root discovery
 - **tool** - Git operations tool uses worktree functions indirectly

@@ -232,6 +232,14 @@ These items were identified during module reviews and are important for future a
 - **Skill updated**: `.opencode/skills/resilience/SKILL.md` updated to v1.2.0 with FallbackProvider default parameters and exponential backoff documentation
 - **No bugs found**: Core implementation correct, error conversion properly wired
 
+### Worktree Module (2026-05-23)
+- **is_git_worktree() added**: New public function to check if a directory is a Git worktree by detecting `.git` file with `gitdir:` prefix
+- **is_git_file() made public**: Function changed from `pub(crate)` to `pub` for reuse by other modules
+- **Duplicate is_git_worktree() removed**: `src/server/routes/workspace.rs` had a local async version - now uses `worktree::is_git_worktree()` directly
+- **Duplicate find_git_root() removed**: `src/server/routes/project.rs` had a local async version - now uses `worktree::find_git_root()` directly
+- **Tests added**: 3 new tests for `is_git_worktree()` and 2 for `is_git_file()` in `tests/worktree.rs`
+- **Skill updated**: `.opencode/skills/worktree/SKILL.md` updated to v1.1.0 with new functions documented
+
 ### Worktree Module (2026-05-22)
 - **find_git_root() bug fixed**: Now correctly detects worktrees by checking if `.git` is a file containing `gitdir:` prefix, not just a directory. Previously would fail to find git root when called from inside a worktree.
 - **Architecture doc updated**: `architecture/worktree.md` now accurately reflects the implementation
