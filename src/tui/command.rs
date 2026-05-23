@@ -202,24 +202,20 @@ impl CommandRegistry {
         }
 
         let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
-            let rt = runtime_handle;
-            rt.block_on(async {
-                let base_async = tokio::fs::canonicalize(&base)
-                    .await
-                    .unwrap_or_else(|_| base.clone());
-                Self::append_dynamic_commands_async(&base_async, &mut seen, &mut new_commands).await;
-            });
-        } else {
-            tracing::warn!("Cannot load dynamic commands: no Tokio runtime");
-        }
-
-        commands.append(&mut new_commands);
-    }
-
-    async fn append_dynamic_commands_async(base: &std::path::Path, seen: &mut HashMap<String, String>, new_commands: &mut Vec<Command>) {
-        for cmd in crate::command::find_command_files(base).await {
-            let normalized = Self::normalize_name(&cmd.name);
+        let base = base.canonicalize().unwrap_or(base);
+        let dynamic_commands = std::thread::scope(|s| {
+            s.spawn(|| {
+                crate::command::find_command_files_sync(&base)
+                    .into_iter()
+                    .filter_map(|r| r.ok())
+                    .map(|cmd| {
+                        let normalized = Self::normalize_name(&cmd.name);
+                        (normalized, cmd)
+                    })
+                    .collect::<HashMap<_, _>>()
+            }).join().unwrap_or_default()
+        });
+        for (normalized, cmd) in dynamic_commands {
             if !seen.contains_key(&normalized) {
                 seen.insert(normalized, cmd.name.clone());
                 new_commands.push(Command {
@@ -237,6 +233,8 @@ impl CommandRegistry {
                 });
             }
         }
+
+        commands.append(&mut new_commands);
     }
 
     fn normalize_name(name: &str) -> String {

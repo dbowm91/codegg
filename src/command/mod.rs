@@ -18,32 +18,40 @@ pub struct Command {
 }
 
 pub async fn find_command_files(base: &Path) -> Vec<Command> {
+    find_command_files_sync(base).into_iter().map(|r| r.unwrap_or_else(|e| {
+        warn!("Failed to load command: {}", e);
+        panic!("expected")
+    })).collect()
+}
+
+pub fn find_command_files_sync(base: &Path) -> Vec<Result<Command, String>> {
     let mut commands = Vec::new();
 
     for dir_name in ["command", "commands"] {
         let dir = base.join(dir_name);
         if dir.is_dir() {
-            let mut entries = match tokio::fs::read_dir(&dir).await {
+            let entries = match std::fs::read_dir(&dir) {
                 Ok(entries) => entries,
                 Err(e) => {
                     warn!("Failed to read directory entry in {:?}: {}", dir, e);
                     continue;
                 }
             };
-            while let Some(entry) = entries.next_entry().await.ok().flatten() {
+            for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_none_or(|ext| ext == "md") {
-                    match load_command_from_file(&path).await {
+                    match load_command_from_file_sync(&path) {
                         Ok(cmd) => {
                             if let Err(e) = validate_command_name(&cmd.name) {
                                 warn!("Invalid command name {:?} in {:?}: {}", cmd.name, path, e);
                                 continue;
                             }
                             debug!("Loaded command {:?} from {:?}", cmd.name, path);
-                            commands.push(cmd);
+                            commands.push(Ok(cmd));
                         }
                         Err(e) => {
                             warn!("Failed to load command from {:?}: {}", path, e);
+                            commands.push(Err(e));
                         }
                     }
                 }
@@ -71,7 +79,17 @@ pub async fn load_command_from_file(path: &Path) -> Result<Command, String> {
     let content = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| format!("failed to read file: {}", e))?;
-    let (frontmatter, body) = parse_frontmatter(&content)
+    parse_command_content(path, &content)
+}
+
+pub fn load_command_from_file_sync(path: &Path) -> Result<Command, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read file: {}", e))?;
+    parse_command_content(path, &content)
+}
+
+fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> {
+    let (frontmatter, body) = parse_frontmatter(content)
         .ok_or_else(|| "missing frontmatter".to_string())?;
 
     let name = path
