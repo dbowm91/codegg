@@ -270,22 +270,25 @@ impl SnapshotManager {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::task::spawn_blocking(move || {
-            for (rel_path, file_snapshot) in files {
-                let full_path = project_root.join(&rel_path);
-                if let Some(parent) = full_path.parent() {
-                    if !parent.exists() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
+            let result: Result<(), String> = (|| {
+                for (rel_path, file_snapshot) in files {
+                    let full_path = project_root.join(&rel_path);
+                    if let Some(parent) = full_path.parent() {
+                        if !parent.exists() {
+                            std::fs::create_dir_all(parent)
+                                .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
+                        }
                     }
+                    std::fs::write(&full_path, &file_snapshot.content)
+                        .map_err(|e| format!("failed to write {}: {}", full_path.display(), e))?;
                 }
-                std::fs::write(&full_path, &file_snapshot.content)
-                    .map_err(|e| format!("failed to write {}: {}", full_path.display(), e))?;
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|e| e.to_string())?
+                Ok(())
+            })();
+            let _ = tx.send(result);
+        }).await.map_err(|e| e.to_string())?;
+        rx.await.map_err(|e| e.to_string())?
     }
 
     pub async fn restore_to_path(
@@ -298,29 +301,35 @@ impl SnapshotManager {
             .collect();
         let target = target_path.to_path_buf();
 
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let canonical_target = target.canonicalize()
+            .map_err(|e| format!("failed to canonicalize target {}: {}", target.display(), e))?;
         tokio::task::spawn_blocking(move || {
-            for (rel_path, file_snapshot) in files {
-                let full_path = target.join(&rel_path);
-                let canonical_target = std::fs::canonicalize(&target)
-                    .map_err(|e| format!("failed to canonicalize target {}: {}", target.display(), e))?;
-                let canonical_path = full_path.canonicalize()
-                    .unwrap_or_else(|_| full_path.clone());
-                if !canonical_path.starts_with(&canonical_target) {
-                    return Err(format!("path traversal attempt detected: {}", full_path.display()));
-                }
-                if let Some(parent) = full_path.parent() {
-                    if !parent.exists() {
-                        std::fs::create_dir_all(parent)
-                            .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
+            let result: Result<(), String> = (|| {
+                for (rel_path, file_snapshot) in files {
+                    let full_path = target.join(&rel_path);
+                    let canonical_path = full_path.canonicalize()
+                        .unwrap_or_else(|_| full_path.clone());
+                    if !canonical_path.starts_with(&canonical_target) {
+                        return Err(format!("path traversal attempt detected: {}", full_path.display()));
                     }
+                    if let Some(parent) = full_path.parent() {
+                        if !parent.exists() {
+                            std::fs::create_dir_all(parent)
+                                .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
+                        }
+                    }
+                    let temp_path = full_path.with_extension("tmp");
+                    std::fs::write(&temp_path, &file_snapshot.content)
+                        .map_err(|e| format!("failed to write {}: {}", temp_path.display(), e))?;
+                    std::fs::rename(&temp_path, &full_path)
+                        .map_err(|e| format!("failed to rename {}: {}", temp_path.display(), e))?;
                 }
-                std::fs::write(&full_path, &file_snapshot.content)
-                    .map_err(|e| format!("failed to write {}: {}", full_path.display(), e))?;
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|e| e.to_string())?
+                Ok(())
+            })();
+            let _ = tx.send(result);
+        }).await.map_err(|e| e.to_string())?;
+        rx.await.map_err(|e| e.to_string())?
     }
 
     pub async fn delete_snapshot(&self, id: &str) -> Result<(), String> {
