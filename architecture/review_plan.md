@@ -1,6 +1,11 @@
 # Architecture Review Plan
 
 Generated: 2026-05-23
+Last Updated: 2026-05-26
+
+## Status: INCOMPLETE
+
+This plan is maintained for iterative improvement. See below for review completion status.
 
 ## Overview
 
@@ -9,6 +14,42 @@ This plan orchestrates parallel review of all architecture documents (excluding 
 2. Verify claims against source code
 3. Identify bugs, inconsistencies, and improvement opportunities
 4. Write findings to `plans/<module>.md`
+
+## Review Completion Status
+
+| Module | Status | Notes |
+|--------|--------|-------|
+| agent | Pass | Minor line number updates needed |
+| client | Partial | RenderFrame table placement fixed |
+| command | Partial | Duplicate table removed, alias format fixed |
+| compaction | New Doc | architecture/compaction.md created |
+| config | Pass | Minor WatcherConfig field naming |
+| crypto | Pass | - |
+| error | Pass | - |
+| event-bus | Pass | Other Events count fixed (9→8) |
+| exec | Pass | PROVIDER_NOT_FOUND added |
+| hooks | Pass | - |
+| ide | Pass | Line range slicing bug fixed |
+| lsp | Pass | - |
+| mcp | Partial | Missing documentation items |
+| memory | Pass | - |
+| permission | Pass | PermissionResponse clarification |
+| plugin | Pass | - |
+| provider | Pass | - |
+| pty | Pass | Location path fixed |
+| resilience | Pass | - |
+| security | Pass | - |
+| server | Partial | SSE ResyncRequired issue noted |
+| session | Pass | - |
+| skills | Pass | - |
+| snapshot | Partial | Restore flow documentation |
+| storage | Pass | - |
+| tool | Partial | Missing teams/lsp tools |
+| tts | Pass | TTS bugs fixed, skill updated |
+| tui | Pass | Theme count fixed |
+| upgrade | Pass | - |
+| util | Pass | - |
+| worktree | Pass | - |
 
 ## Modules and Assignments
 
