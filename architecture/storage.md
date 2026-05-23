@@ -25,6 +25,8 @@ impl Database {
     pub async fn new(path: &str) -> Result<Self, StorageError>;
     pub fn pool(&self) -> &SqlitePool;
     pub async fn migrate(&self) -> Result<(), StorageError>;
+    pub async fn health_check(&self) -> Result<(), StorageError>;
+    pub async fn close(self);
 }
 ```
 
@@ -75,7 +77,27 @@ PRAGMA foreign_keys = ON;
 
 ## Connection Pool
 
-Uses `sqlx::SqlitePool` with hardcoded max connections of 10.
+Uses `sqlx::SqlitePool` with:
+- Hardcoded max connections of 10
+- `acquire_timeout(Duration::from_secs(30))` for connection acquisition timeout
+
+## Additional Methods
+
+### health_check()
+
+```rust
+pub async fn health_check(&self) -> Result<(), StorageError>
+```
+
+Verifies database connectivity by executing `SELECT 1`. Returns `Ok(())` if healthy, or `StorageError::Database` on failure.
+
+### close()
+
+```rust
+pub async fn close(self)
+```
+
+Gracefully closes the connection pool using async pool shutdown. The `self` parameter consumes the struct to ensure cleanup happens exactly once.
 
 ## Migrations
 

@@ -6,6 +6,7 @@
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::{debug, info};
 
 use crate::error::StorageError;
@@ -28,6 +29,18 @@ impl Database {
     pub async fn migrate(&self) -> Result<(), StorageError> {
         crate::session::schema::migrate(&self.pool).await
     }
+
+    pub async fn health_check(&self) -> Result<(), StorageError> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn close(self) {
+        self.pool.close().await;
+    }
 }
 
 fn get_db_path(project_dir: &str) -> PathBuf {
@@ -45,6 +58,7 @@ fn get_db_path(project_dir: &str) -> PathBuf {
 async fn connect_and_configure(path: &str) -> Result<SqlitePool, StorageError> {
     let pool = SqlitePoolOptions::new()
         .max_connections(10)
+        .acquire_timeout(Duration::from_secs(30))
         .connect(path)
         .await
         .map_err(|e| StorageError::Database(format!("failed to open database {}: {}", path, e)))?;
@@ -87,18 +101,16 @@ pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError> {
         })?;
     }
 
-    if dir
-        .metadata()
+    let dir_metadata = tokio::fs::metadata(dir).await
         .map_err(|e| {
             StorageError::Database(format!(
                 "cannot access database directory {}: {}",
                 dir.display(),
                 e
             ))
-        })?
-        .permissions()
-        .readonly()
-    {
+        })?;
+
+    if dir_metadata.permissions().readonly() {
         return Err(StorageError::Database(format!(
             "database directory {} is read-only",
             dir.display()

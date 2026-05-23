@@ -301,6 +301,13 @@ These items were identified during module reviews and are important for future a
 - **Database struct is wrapper**: `Database` is simple wrapper around `SqlitePool` - most code uses `init()` directly
 - **Migrations in session module**: Actual migration logic lives in `src/session/schema.rs`, not storage module
 
+### Storage Module (2026-05-26)
+- **health_check() added**: `Database::health_check()` method to verify database connectivity via `SELECT 1`
+- **close() added**: `Database::close()` method for graceful connection pool shutdown using async pool close
+- **acquire_timeout configured**: `SqlitePoolOptions::acquire_timeout(Duration::from_secs(30))` for connection acquisition timeout
+- **Sync fs bug fixed**: `init()` now uses `tokio::fs::metadata()` instead of blocking `std::fs::metadata()` for read-only check
+- **Skill updated**: `.opencode/skills/storage/SKILL.md` updated to version 1.1.0 with new methods documented
+
 ### Skills Module (2026-05-22)
 - **Blocking fs calls fixed**: `load_dir()` and `parse_skill_file()` now use `tokio::fs` instead of `std::fs` for proper async I/O
 - **Architecture doc inaccurate**: `architecture/skills.md` showed `SkillIndex` with `RwLock<HashMap<String, Skill>>` but actual is `Vec<Skill>` with no RwLock
@@ -459,7 +466,7 @@ When adding guidance for a new module:
 | Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |
 | Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
 | Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` (v1.2.0) |
-| Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` |
+| Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` (v1.1.0) |
 | Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` |
 | Worktree (git worktrees, find_git_root) | `.opencode/skills/worktree/SKILL.md` |
 | Subagent (SubAgentPool, SubAgentSpawner, worker) | `.opencode/skills/subagent/SKILL.md` |
