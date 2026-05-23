@@ -48,15 +48,16 @@ pub fn encrypt_provider_keys(config: &mut Config) -> Result<(), AppError> {
     };
 
     if let Some(providers) = config.provider.as_mut() {
+        let mut encryptions: Vec<(String, String)> = Vec::new();
+        let mut migrations: Vec<(String, String)> = Vec::new();
         let mut failures = Vec::new();
+
         for (name, provider) in providers.iter_mut() {
             if let Some(ref api_key) = provider.api_key {
                 if provider.encrypted != Some(true) {
                     match crate::crypto::encrypt_to_string(api_key, &master_key) {
                         Ok(encrypted) => {
-                            provider.encrypted_api_key = Some(encrypted);
-                            provider.encrypted = Some(true);
-                            provider.api_key = None;
+                            encryptions.push((name.clone(), encrypted));
                         }
                         Err(e) => {
                             failures.push(format!("{name}: {e}"));
@@ -71,8 +72,7 @@ pub fn encrypt_provider_keys(config: &mut Config) -> Result<(), AppError> {
                         match crate::crypto::decrypt_from_string(encrypted_key, &master_key) {
                             Ok(decrypted) => match crate::crypto::encrypt_to_string(&decrypted, &master_key) {
                                 Ok(migrated) => {
-                                    provider.encrypted_api_key = Some(migrated);
-                                    provider.api_key = None;
+                                    migrations.push((name.clone(), migrated));
                                 }
                                 Err(e) => failures.push(format!("{name}: {e}")),
                             },
@@ -82,11 +82,26 @@ pub fn encrypt_provider_keys(config: &mut Config) -> Result<(), AppError> {
                 }
             }
         }
+
         if !failures.is_empty() {
             return Err(AppError::Config(ConfigError::Invalid(format!(
                 "failed to encrypt provider API key(s): {}",
                 failures.join("; ")
             ))));
+        }
+
+        for (name, encrypted) in encryptions {
+            if let Some(provider) = providers.get_mut(&name) {
+                provider.encrypted_api_key = Some(encrypted);
+                provider.encrypted = Some(true);
+                provider.api_key = None;
+            }
+        }
+
+        for (name, migrated) in migrations {
+            if let Some(provider) = providers.get_mut(&name) {
+                provider.encrypted_api_key = Some(migrated);
+            }
         }
     }
     Ok(())
