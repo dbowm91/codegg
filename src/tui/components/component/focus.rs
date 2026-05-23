@@ -36,9 +36,8 @@ impl FocusManager {
             .iter()
             .position(|c| c.dialog_type() == dialog_type);
         if let Some(idx) = pos {
-            let idx_rev = self.stack.len() - 1 - idx;
-            if idx_rev < self.stack.len() {
-                let removed = self.stack.remove(idx_rev).unwrap();
+            if idx < self.stack.len() {
+                let removed = self.stack.remove(idx).unwrap();
                 return Some(removed);
             }
         }
