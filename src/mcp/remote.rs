@@ -2,13 +2,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::join;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
 use crate::mcp::{McpPrompt, McpResource, McpResourceContent, PromptArgument};
@@ -34,7 +35,8 @@ pub struct McpConnectionManager {
     base_delay: Duration,
     max_delay: Duration,
     heartbeat_interval: Duration,
-    heartbeat_task: Arc<AtomicBool>,
+    heartbeat_token: CancellationToken,
+    heartbeat_cancellation: Arc<Mutex<Option<CancellationToken>>>,
     shutdown: Arc<Notify>,
     reconnect_needed: Arc<Notify>,
 }
@@ -54,7 +56,8 @@ impl McpConnectionManager {
             base_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(60),
             heartbeat_interval: Duration::from_secs(30),
-            heartbeat_task: Arc::new(AtomicBool::new(false)),
+            heartbeat_token: CancellationToken::new(),
+            heartbeat_cancellation: Arc::new(Mutex::new(None)),
             shutdown: Arc::new(Notify::default()),
             reconnect_needed: Arc::new(Notify::default()),
         })
@@ -71,21 +74,24 @@ impl McpConnectionManager {
     async fn start_heartbeat(&self) {
         let client = Arc::new(Mutex::new(self.client.clone()));
         let interval = self.heartbeat_interval;
-        let running = Arc::clone(&self.heartbeat_task);
+        let cancel_token = CancellationToken::new();
+        let child_token = cancel_token.clone();
         let shutdown = Arc::clone(&self.shutdown);
         let state = Arc::clone(&self.state);
         let reconnect_needed = Arc::clone(&self.reconnect_needed);
 
-        running.store(true, Ordering::SeqCst);
+        let old_cancel = self.heartbeat_cancellation.lock().await.replace(cancel_token);
+        if let Some(old) = old_cancel {
+            old.cancel();
+        }
+
         tokio::spawn(async move {
             let mut interval_timer = tokio::time::interval(interval);
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => break,
+                    _ = child_token.cancelled() => break,
                     _ = interval_timer.tick() => {
-                        if !running.load(Ordering::SeqCst) {
-                            break;
-                        }
                         let current_state = state.lock().await.clone();
                         if !matches!(current_state, ConnectionState::Connected) {
                             break;
@@ -99,7 +105,6 @@ impl McpConnectionManager {
                     }
                 }
             }
-            running.store(false, Ordering::SeqCst);
         });
     }
 
@@ -159,7 +164,8 @@ impl McpConnectionManager {
                 let reconnect_needed = Arc::clone(&self.reconnect_needed);
                 let state = Arc::clone(&self.state);
                 let retry_count = Arc::clone(&self.retry_count);
-                let heartbeat_task = Arc::clone(&self.heartbeat_task);
+                let heartbeat_token = self.heartbeat_token.clone();
+                let heartbeat_cancellation = Arc::clone(&self.heartbeat_cancellation);
                 let shutdown = Arc::clone(&self.shutdown);
                 let client = self.client.clone();
                 let max_retries = self.max_retries;
@@ -177,7 +183,8 @@ impl McpConnectionManager {
                         base_delay,
                         max_delay,
                         heartbeat_interval,
-                        heartbeat_task,
+                        heartbeat_token,
+                        heartbeat_cancellation,
                         shutdown,
                         reconnect_needed: reconnect_for_spawn,
                     };
@@ -186,7 +193,12 @@ impl McpConnectionManager {
                     }
                 });
 
-                reconnect_needed.notified().await;
+                tokio::select! {
+                    _ = reconnect_needed.notified() => {}
+                    _ = sleep(Duration::from_secs(30)) => {
+                        tracing::warn!("MCP reconnection timed out after 30s, attempting direct connect");
+                    }
+                }
                 let current_state = self.state.lock().await.clone();
                 if !matches!(current_state, ConnectionState::Connected) {
                     self.connect().await?;
@@ -209,7 +221,9 @@ impl McpConnectionManager {
     }
 
     pub async fn shutdown(&self) {
-        self.heartbeat_task.store(false, Ordering::SeqCst);
+        if let Some(cancel) = self.heartbeat_cancellation.lock().await.take() {
+            cancel.cancel();
+        }
         self.shutdown.notify_one();
         self.client.shutdown().await;
         *self.state.lock().await = ConnectionState::Disconnected;
