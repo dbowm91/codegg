@@ -286,6 +286,13 @@ impl SnapshotManager {
         tokio::task::spawn_blocking(move || {
             for (rel_path, file_snapshot) in files {
                 let full_path = target.join(&rel_path);
+                let canonical_target = std::fs::canonicalize(&target)
+                    .map_err(|e| format!("failed to canonicalize target {}: {}", target.display(), e))?;
+                let canonical_path = full_path.canonicalize()
+                    .unwrap_or_else(|_| full_path.clone());
+                if !canonical_path.starts_with(&canonical_target) {
+                    return Err(format!("path traversal attempt detected: {}", full_path.display()));
+                }
                 if let Some(parent) = full_path.parent() {
                     if !parent.exists() {
                         std::fs::create_dir_all(parent)

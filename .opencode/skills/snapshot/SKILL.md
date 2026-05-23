@@ -1,7 +1,7 @@
 ---
 name: snapshot
 description: Snapshot support for file state capture and restore
-version: 1.0.0
+version: 1.1.0
 tags:
   - snapshot
   - checkpoint
@@ -139,7 +139,7 @@ The `ReplaceTool::execute()`:
 3. Associate with session_id
 4. Use for revert/restore operations
 
-## Restore Functionality (Implemented 2026-05-21)#
+## Restore Functionality (Implemented 2026-05-21, secured 2026-05-23)#
 
 SnapshotManager supports restore operations:
 
@@ -150,11 +150,14 @@ SnapshotManager supports restore operations:
 
 **Error handling**: Restore operations now include detailed error messages with file paths on failure.
 
+**Security**: `restore_to_path()` validates that restored paths don't escape the target directory via path traversal (e.g., `../../etc/passwd`). Uses `canonicalize()` to resolve symlinks and validate paths stay within target.
+
 ## Future Work#
 
 - ~~Create actual snapshot objects from `FileChanged` events~~ (Done: SnapshotManager wired to AgentLoop)
 - ~~Implement revert functionality using snapshots~~ (Done: restore() and restore_to_path() added 2026-05-21)
 - ~~Add snapshot cleanup (limit number of snapshots per session)~~ (Done: delete_snapshot() and delete_all_for_session() added)
+- ~~Path traversal validation in restore_to_path()~~ (Done: added canonicalize check 2026-05-23)
 - Add snapshot UI (list, restore, delete)
 
 Base directory for this skill: file:///Users/davidbowman/projects/codegg/.opencode/skills/snapshot

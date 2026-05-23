@@ -164,6 +164,8 @@ impl AgentLoop {
 
 ## Database Schema
 
+> **Note**: The `snapshot` table is defined in `src/session/schema.rs` (migration v13), not in the snapshot module itself.
+
 ```sql
 CREATE TABLE IF NOT EXISTS snapshot (
     id TEXT PRIMARY KEY,
@@ -176,6 +178,22 @@ CREATE TABLE IF NOT EXISTS snapshot (
 
 CREATE INDEX IF NOT EXISTS snapshot_session_idx ON snapshot(session_id);
 ```
+
+## Security
+
+### Path Traversal Prevention
+
+`restore_to_path()` validates that restored paths don't escape the target directory:
+
+```rust
+let canonical_target = std::fs::canonicalize(&target)?;
+let canonical_path = full_path.canonicalize()?;
+if !canonical_path.starts_with(&canonical_target) {
+    return Err("path traversal attempt detected");
+}
+```
+
+This prevents attacks like `../../etc/passwd` from writing files outside the intended target directory.
 
 ## Diff Module (`src/snapshot/diff.rs`)
 

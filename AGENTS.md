@@ -279,6 +279,10 @@ These items were identified during module reviews and are important for future a
 - **Undocumented types added**: `WorkingFile`, `ToolStatus`, `SessionStatus`, `SessionState`, `compute_checksum`, `create_working_file`, `verify_file`
 - **Undocumented tables**: `session_share`, `task`, `snapshot`, `cached_models`, `migration_version` now documented
 
+### Snapshot Module (2026-05-23)
+- **Path traversal fix**: `restore_to_path()` now validates restored paths don't escape target directory via `canonicalize()` check (e.g., `../../etc/passwd` blocked)
+- **Skill updated**: SKILL.md v1.1.0 documents security improvement
+
 ### Snapshot Module (2026-05-22)
 - **Architecture doc outdated**: `architecture/snapshot.md` was significantly out of date - updated to reflect actual implementation
 - **Skill synchronized**: `.opencode/skills/snapshot/SKILL.md` updated with correct API signatures
@@ -288,6 +292,7 @@ These items were identified during module reviews and are important for future a
 - **restore() takes SnapshotView**: `restore(&self, snapshot: &SnapshotView)` not `restore(&self, id: &str)`
 - **capture_incremental path validation**: Added validation that paths are within `project_root` before accepting
 - **Restore error messages improved**: Now include file path on failure (e.g., "failed to write /path/file: ...")
+- **Snapshot table in session schema**: Database table defined in `src/session/schema.rs` migration v13, not in snapshot module
 
 ### Storage Module (2026-05-22)
 - **Architecture doc updated**: `architecture/storage.md` now accurately reflects the implementation (was showing incorrect `init()` return type, wrong `cache_size`, missing pragmas)
