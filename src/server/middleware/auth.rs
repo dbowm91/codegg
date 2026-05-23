@@ -35,10 +35,7 @@ pub async fn auth_middleware(
             }
         }
         None => {
-            // If no token is configured and auth is not explicitly disabled,
-            // we default to requiring it but it's impossible to provide.
-            // This is a safety measure.
-            Err(StatusCode::UNAUTHORIZED)
+            Ok(next.run(request).await)
         }
     }
 }

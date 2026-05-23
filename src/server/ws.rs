@@ -458,8 +458,7 @@ let send_task = tokio::spawn(async move {
 #[derive(Clone)]
 struct TuiSessionState {
     session_id: Option<String>,
-    #[allow(dead_code)]
-    model: String,
+    model: Option<String>,
     rate_limit_key: String,
 }
 
@@ -467,7 +466,7 @@ impl TuiSessionState {
     fn new(rate_limit_key: String) -> Self {
         Self {
             session_id: None,
-            model: "anthropic/claude-sonnet-4-20250514".to_string(),
+            model: None,
             rate_limit_key,
         }
     }
@@ -538,7 +537,11 @@ async fn handle_tui_message(
             let mut state_guard = state.lock().await;
             state_guard.session_id = Some(id.clone());
             state_guard.model = model;
-            state_guard.rate_limit_key = format!("session:{}", id);
+            state_guard.rate_limit_key = if id.is_empty() {
+                "session:unknown".to_string()
+            } else {
+                format!("session:{}", id)
+            };
         }
         _ => {}
     }

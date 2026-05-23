@@ -20,6 +20,7 @@ use tracing::info;
 
 use super::middleware::auth::auth_middleware;
 use super::routes;
+use super::routes::health::health_check;
 use super::state::{ServerState, WsRateLimiter};
 use super::ws;
 
@@ -106,10 +107,6 @@ async fn rate_limit_middleware(
     );
 
     response
-}
-
-async fn health_check() -> &'static str {
-    "ok"
 }
 
 fn build_cors(config: &Option<crate::config::schema::ServerConfig>) -> CorsLayer {
