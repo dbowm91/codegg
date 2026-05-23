@@ -41,8 +41,10 @@ impl Tts {
         }
     }
 
-    pub fn init(&mut self, _provider: TtsProvider) -> Result<(), AppError> {
-        Ok(())
+    pub fn init(&mut self, provider: TtsProvider) -> Result<(), AppError> {
+        match provider {
+            TtsProvider::None => Ok(()),
+        }
     }
 
     pub async fn speak(&self, text: &str) -> Result<(), AppError> {

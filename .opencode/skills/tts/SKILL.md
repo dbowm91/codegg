@@ -68,29 +68,45 @@ When TTS is enabled, the footer displays a speaker icon:
 
 ### Usage in App
 
+TTS is controlled via two methods in `src/tui/app/mod.rs`:
+
 ```rust
-// src/tui/app/mod.rs - toggle_tts method
 fn toggle_tts(&mut self) {
     self.ui_state.tts_enabled = !self.ui_state.tts_enabled;
     if self.ui_state.tts_enabled {
         if let Some(idx) = self.messages_state.messages.sel_msg {
             if let Some(msg) = self.messages_state.messages.get_message(idx) {
                 let text = msg.text_content();
-                let tts = self.ui_state.tts.clone();
-                tokio::spawn(async move {
-                    let _ = tts.speak(&text).await;
-                });
+                if !text.is_empty() {
+                    let tts = self.ui_state.tts.clone();
+                    let text = text.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = tts.speak(&text).await {
+                            tracing::debug!("TTS speak error: {}", e);
+                        }
+                    });
+                }
             }
         }
         self.messages_state.toasts.info("TTS enabled");
     } else {
-        self.ui_state.tts.stop();
+        let tts = self.ui_state.tts.clone();
+        tokio::spawn(async move {
+            if let Err(e) = tts.stop().await {
+                tracing::debug!("TTS stop error: {}", e);
+            }
+        });
         self.messages_state.toasts.info("TTS disabled");
     }
 }
 
 fn stop_tts(&mut self) {
-    self.ui_state.tts.stop();
+    let tts = self.ui_state.tts.clone();
+    tokio::spawn(async move {
+        if let Err(e) = tts.stop().await {
+            tracing::debug!("TTS stop error: {}", e);
+        }
+    });
     self.messages_state.toasts.info("TTS stopped");
 }
 ```
