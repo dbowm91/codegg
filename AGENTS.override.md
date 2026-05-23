@@ -8,21 +8,6 @@ When a subagent works in a subdirectory that contains its own `AGENTS.md`, the s
 
 **Rule**: More specific (deeper path) AGENTS.md overrides less specific (root) AGENTS.md.
 
-## Planning Implementation Items
-
-When implementing large plans that span multiple modules:
-
-1. **Organize by waves based on dependencies**:
-   - Wave 1: Documentation-only (no code changes) - parallelizable
-   - Wave 2: Independent bugs (no interdependencies) - parallelizable  
-   - Wave 3: Bugs with dependencies (requires coordination)
-
-2. **Include verification checklist** - agents should verify claims against actual code before implementing
-
-3. **Be specific about file locations and line numbers** - future agents may need exact references
-
-4. **Include context for subagents** - if a task requires understanding of overall flow, include that context in the plan
-
 ## Session-to-Session Continuity
 
 When continuing work from a previous session:
