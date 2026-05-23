@@ -82,6 +82,7 @@ The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag
 | `KeyDown` | `key: String`, `modifiers: Vec<String>` | Keyboard events |
 | `MouseClick` | `x: u16`, `y: u16` | Mouse clicks |
 | `Resize` | `w: u16`, `h: u16` | Terminal resize |
+| `RenderFrame` | `content: String` | Frame content (unused) |
 | `PermissionResponse` | `id: String`, `choice: String` | Permission answer |
 | `QuestionResponse` | `id: String`, `answers: serde_json::Value` | Question answer |
 
@@ -98,8 +99,6 @@ The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag
 | `ToolResult` | `tool_id: String`, `output: String`, `success: bool` | Tool execution result |
 | `Error` | `message: String` | Error message |
 | `ResyncRequired` | `reason: Option<String>`, `pending_permissions: Vec<String>`, `pending_questions: Vec<String>` | Client re-sync needed |
-
-**Note**: `RenderFrame` variant exists in the protocol but is not actively used by the server.
 
 ## Error Handling
 

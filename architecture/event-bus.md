@@ -80,7 +80,7 @@ impl GlobalEventBus {
 
 **Diff Events (2)**: `DiffPending`, `DiffResponded`
 
-**Other Events (9)**: `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `AgentFinished`
+**Other Events (8)**: `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`
 
 ### mod.rs - PermissionRegistry & QuestionRegistry
 
