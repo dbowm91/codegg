@@ -752,6 +752,12 @@ impl App {
                 self.footer.set_thinking(false, None);
                 self.messages_state.toasts.add(Toast::error(&message));
             }
+            Ok(RemoteTuiMessage::RenderFrame { content }) => {
+                tracing::warn!(
+                    "RenderFrame received ({} bytes) but rendering not implemented",
+                    content.len()
+                );
+            }
             Ok(RemoteTuiMessage::ResyncRequired {
                 reason,
                 pending_permissions,
