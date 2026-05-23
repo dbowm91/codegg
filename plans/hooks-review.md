@@ -1,85 +1,128 @@
-# Hooks Module Architecture Review
+# Hooks Architecture Review
 
-## Verification Results
+## Verified Claims
 
-### Claims
+### Shell Command Hooks (`src/hooks/mod.rs`)
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| HookEvent enum: PreToolExecute, PostToolExecute, SessionStart, SessionEnd, AgentStart, AgentEnd | VERIFIED | src/hooks/mod.rs:17-24 |
-| HookContext struct with event, session_id, tool_name, tool_arguments, tool_result, timestamp | VERIFIED | src/hooks/mod.rs:55-63 |
-| HookRegistry with HashMap<HookEvent, Vec<Box<dyn Hook>>> | VERIFIED | src/hooks/mod.rs:150-152 |
-| Hook trait: async fn execute(&self, ctx: &HookContext) -> Result<(), AppError> | VERIFIED | src/hooks/mod.rs:89-92 |
-| run_hooks returns Vec<AppError>, collects errors not early-returned | VERIFIED | src/hooks/mod.rs:191-201 |
-| ShellCommandHook struct with command, timeout, event fields | VERIFIED | src/hooks/mod.rs:94-98 |
-| ShellCommandHook::new() with default 30 second timeout | VERIFIED | src/hooks/mod.rs:101-107 |
-| ShellCommandHook uses user's actual PATH from environment | VERIFIED | src/hooks/mod.rs:118 |
-| HookConfigEntry and HookConfig structs in config/schema.rs | VERIFIED | config/schema.rs:85-117 |
-| InlineScript deprecated with warning | VERIFIED | src/hooks/mod.rs:181-183 |
-| Integration point: SessionStart at loop.rs:1255 | VERIFIED | loop.rs:1255 |
-| Integration point: AgentStart at loop.rs:1351 | VERIFIED | loop.rs:1351 |
-| Integration point: AgentEnd at loop.rs:1524 | VERIFIED | loop.rs:1524 |
-| Integration point: SessionEnd at loop.rs:1545 | VERIFIED | loop.rs:1545 |
-| Integration point: PreToolExecute at loop.rs:1751 | VERIFIED | loop.rs:1751 |
-| Integration point: PostToolExecute at loop.rs:1825 | VERIFIED | loop.rs:1825 |
-| HookType enum: Auth, Provider, ToolDefinition, ToolExecuteBefore, ToolExecuteAfter, etc. | VERIFIED | src/plugin/hooks.rs:6-20 |
-| HookResult struct with output, blocked, error | VERIFIED | src/plugin/hooks.rs:67-72 |
-| HookResult::ok(), ::blocked(), ::error() constructors | VERIFIED | src/plugin/hooks.rs:74-97 |
-| Two hook systems: src/hooks/mod.rs (shell) and src/plugin/hooks.rs (WASM) | VERIFIED | Verified both files exist |
-| Shell command hooks never block | VERIFIED | No blocking mechanism in run_hooks |
-| Plugin hooks can block (ToolExecuteBefore, SessionCompacting) | VERIFIED | loop.rs:1765-1768, 1207-1209 |
-| Integration: SessionCompacting at loop.rs:1157 | VERIFIED | loop.rs:1198 (arch doc shows 1157) |
-| Integration: ToolExecuteBefore at loop.rs:1764 | VERIFIED | loop.rs:1764 |
-| Integration: ToolExecuteAfter at loop.rs:1806 | VERIFIED | loop.rs:1806 |
-| PreAgentRun and PostAgentRun not implemented (documented but missing) | VERIFIED | No such variants in HookEvent |
-| Stream errors break loop ensuring AgentEnd/SessionEnd hooks run | VERIFIED | AGENTS.md confirmed fix |
+1. **HookEvent enum** - Matches exactly. All 6 variants present: `PreToolExecute`, `PostToolExecute`, `SessionStart`, `SessionEnd`, `AgentStart`, `AgentEnd`. Serde `snake_case` conversion correct.
 
-## Bugs Found
+2. **HookContext struct** - Matches exactly. Fields: `event`, `session_id`, `tool_name`, `tool_arguments`, `tool_result`, `timestamp`.
 
-### Critical
-None identified.
+3. **HookRegistry struct** - Matches. `HashMap<HookEvent, Vec<Box<dyn Hook>>>`.
 
-### High
-None identified.
+4. **Hook trait** - Matches. `async fn execute(&self, ctx: &HookContext) -> Result<(), AppError>`.
 
-### Medium
+5. **ShellCommandHook** - Matches. Public fields: `command`, `timeout`, `event`. `new()` method signature correct with `timeout_secs: Option<u64>`, defaults to 30s.
 
-1. **HookRegistry not thread-safe for mutation**: `HookRegistry` uses `HashMap` without synchronization. While current usage pattern (`&self` references) appears safe, if the registry were ever shared across async tasks or threads, there could be race conditions on `register()` calls. Consider using `Mutex` or `RwLock` if future sharing is intended.
+6. **ShellCommandHook::execute()** - Implementation details correct:
+   - Spawns `sh -c <command>`
+   - Sets `PATH` from `std::env::var_os("PATH")`
+   - Uses `env_clear()` then adds PATH explicitly
+   - Default timeout: 30 seconds
+   - Error messages include event name
 
-2. **No ordering/priority for shell command hooks**: Hooks execute in registration order with no priority mechanism. If multiple hooks are registered for the same event, there's no way to control execution order. The plugin hooks system has `priority` field (`HookRegistration` at plugin/hooks.rs:104) but shell command hooks do not.
+7. **HookRegistry::run_hooks()** - Returns `Vec<AppError>`, collects all errors instead of early-returning. Correct.
 
-3. **Architecture doc line numbers are stale**: The integration table in architecture/hooks.md (lines 180-188, 193-198) shows line numbers that were accurate at time of writing but are now outdated (e.g., SessionCompacting shows line 1157 but actual is 1198). Line numbers drift with every code change.
+8. **HookRegistry::from_config()** - Correctly skips invalid event names with warning, handles `InlineScript` with deprecation warning.
+
+9. **HookContext::to_env_vars()** - All env vars present: `CODEGG_HOOK_EVENT`, `CODEGG_SESSION_ID`, `CODEGG_TOOL_NAME`, `CODEGG_TOOL_ARGUMENTS`, `CODEGG_TOOL_RESULT`, `CODEGG_TIMESTAMP`.
+
+### Plugin Hooks (`src/plugin/hooks.rs`)
+
+1. **HookType enum** - All 14 variants present and correct. Serialization uses `snake_case`.
+
+2. **HookResult struct** - Matches exactly. `output`, `blocked`, `error` fields. `ok()`, `blocked()`, `error()` constructors present.
+
+3. **HookRegistration struct** - Present with `plugin_id`, `hook_type`, `priority` fields.
+
+### Integration Points in AgentLoop (`src/agent/loop.rs`)
+
+| Event | Location | Verified |
+|-------|----------|----------|
+| `SessionStart` | Line 1249-1263 | ✅ Runs after `run()` entry, before agent processing |
+| `AgentStart` | Line 1345-1360 | ✅ Runs at start of each loop iteration |
+| `PreToolExecute` (shell) | Line 1744-1762 | ✅ Runs before tool execution |
+| `ToolExecuteBefore` (plugin) | Line 1764-1779 | ✅ Can block execution if `blocked: true` |
+| `ToolExecuteAfter` (plugin) | Line 1805-1816 | ✅ Runs after tool execution |
+| `PostToolExecute` (shell) | Line 1818-1836 | ✅ Runs after tool execution |
+| `AgentEnd` | Line 1518-1533 | ✅ Runs at end of each loop iteration |
+| `SessionEnd` | Line 1539-1554 | ✅ Runs before returning from `run()` |
+| `SessionCompacting` | Line 1197-1217 | ✅ Can block compaction if `blocked: true` |
+
+### Config Schema (`src/config/schema.rs`)
+
+1. **HookConfigEntry** - Matches. `event: String`, `hook: HookConfig`.
+2. **HookConfig enum** - Matches. `ShellCommand { command, timeout_secs }` and deprecated `InlineScript`.
+
+---
+
+## Bugs/Discrepancies Found
+
+### 1. **Documentation shows deprecated `args` field for hook config** (Medium)
+
+**File**: `architecture/hooks.md` line 115
+```toml
+[[hooks.post_agent_run]]
+args = ["-X", "POST", "https://example.com/hook"]
+```
+
+**Actual**: `HookConfig::ShellCommand` only has `command` and `timeout_secs` fields. The `args` field does not exist in the config schema.
+
+### 2. **Integration table has incorrect "Can Block?" column for shell hooks** (Low - doc inconsistency)
+
+**File**: `architecture/hooks.md` line 180-187
+
+The table shows all shell command hooks as "No" for blocking, which is accurate, but it doesn't clarify that plugin hooks (`ToolExecuteBefore`, `SessionCompacting`) CAN block. This is clarified in the Plugin Hooks table (lines 193-198), but could be more explicit.
+
+### 3. **HookType::as_str() uses dot notation not documented** (Low - doc gap)
+
+**File**: `architecture/hooks.md` lines 28-29
+```rust
+HookType::ToolExecuteBefore => "tool.execute.before",
+HookType::ToolExecuteAfter => "tool.execute.after",
+```
+
+The `as_str()` returns dot notation (e.g., `tool.execute.before`) but the documentation doesn't explicitly state this format. The HookType enum's `parse()` method confirms it expects dot notation when parsing from strings.
+
+---
 
 ## Improvement Suggestions
 
-### Performance
-None identified - the hook execution is straightforward and efficient.
+### High Priority
 
-### Correctness
-1. **Consider configurable default timeout**: The 30-second default timeout in `ShellCommandHook::new()` is hardcoded. Consider making this configurable via `HookRegistry::new()` or a config setting.
+1. **Fix config example in architecture/hooks.md (line 115)**
+   - Remove `args = [...]` - this field doesn't exist in `HookConfig::ShellCommand`
+   - Replace with proper example showing only `command` and optionally `timeout_secs`
 
-2. **Hook error handling consistency**: Shell command hook errors are logged as `error!` level in loop.rs, while plugin hook errors are logged as `warn!` level (loop.rs:1771, 1808). Consider unifying the log level approach.
+### Medium Priority
 
-### Maintainability
+2. **Add `has_hooks()` method to documentation**
+   - The `HookRegistry::has_hooks()` method at `src/hooks/mod.rs:203-205` is undocumented in architecture
+   - It provides a fast check if any hooks are registered for an event
 
-1. **Remove hardcoded line numbers from architecture doc**: The integration table should describe logical locations (e.g., "before tool execution" or "in execute_tool_calls()") rather than line numbers which become stale.
+3. **Document plugin hook timeout**
+   - `PluginService` has a 5-second timeout for hook execution (`hook_timeout: Duration::from_secs(5)`)
+   - Error messages include plugin_id: `"{}: hook timeout: {}"` (line 108 of service.rs)
+   - This should be documented
 
-2. **Add hook execution metrics**: No instrumentation for hook execution duration or success/failure rates. Consider adding tracing spans or metrics for observability.
+### Low Priority
 
-3. **Hook retry mechanism missing**: If a hook fails due to transient conditions, there's no retry logic. Consider adding optional retry with backoff for shell command hooks.
+4. **Clarify event name format in config**
+   - Documentation shows `"pre_tool_execute"` but doesn't explicitly state this must match the snake_case format
+   - Could add a note about the expected format since `HookEvent::from_str()` is strict
 
-4. **Missing PreAgentRun/PostAgentRun events**: These are documented but not implemented. Either implement them or remove from documentation to avoid confusion.
+5. **Add missing hook lifecycle note**
+   - The integration points table mentions stream errors break the loop ensuring `AgentEnd`/`SessionEnd` hooks run
+   - This behavior is noted at line 189 but could be more prominent since it's a key reliability feature
 
-5. **No maximum hook count limit**: `run_hooks()` will execute all registered hooks for an event. If many hooks are registered, this could cause delays. Consider setting a reasonable maximum.
+---
 
-## Priority Actions (top 5 items to fix)
+## Summary
 
-1. **Remove line numbers from architecture integration tables** - Replace with logical location descriptions to prevent future staleness.
+The hooks architecture documentation is **largely accurate**. The two hook systems (shell command and WASM plugin) are correctly described with matching implementations. The main issues are:
 
-2. **Add priority field to ShellCommandHook** - Mirror the `priority` field from plugin `HookRegistration` to allow ordering control.
+1. One concrete bug in the config example (`args` field doesn't exist)
+2. Some undocumented API surface (`has_hooks()`, plugin timeout behavior)
+3. Minor clarity improvements possible
 
-3. **Make HookRegistry thread-safe** - Add `Mutex` wrapper to `hooks` HashMap for future-proofing against concurrent access.
-
-4. **Implement PreAgentRun/PostAgentRun OR remove from docs** - Either add these missing HookEvent variants or clean up the documentation.
-
-5. **Unify hook error log levels** - Change plugin hook error logs from `warn!` to `error!` to match shell command hook handling.
+The implementation quality is high - the code correctly implements error collection, PATH handling, event name formatting, blocking behavior for plugin hooks, and proper integration with the agent loop lifecycle.

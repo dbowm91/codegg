@@ -1,160 +1,172 @@
 # Tool Module Architecture Review
 
-## Verification Results
+## Verified Claims
 
-### Claims
+### Tool Trait (mod.rs:54-60)
+- `#[async_trait]` pattern matches documentation
+- `name()`, `description()`, `parameters()`, `execute()` signatures all match
+- Tool receives only `serde_json::Value` (NOT `ToolContext`) - **documentation is correct**
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| Tool trait signature: `async fn execute(&self, input: serde_json::Value)` | VERIFIED | `src/tool/mod.rs:59` - matches exactly |
-| ToolResult has fields: tool_name, input, output, success | VERIFIED | `src/tool/mod.rs:63-68` - matches exactly |
-| ToolRegistry has tools HashMap and catalog ToolCatalog | VERIFIED | `src/tool/mod.rs:70-73` - matches |
-| ToolCatalog has tools HashMap and deferred_load Vec | VERIFIED | `src/tool/catalog.rs:37-40` - matches |
-| plan_enter and plan_exit are separate tools | VERIFIED | `src/tool/plan.rs` - PlanEnterTool and PlanExitTool are distinct structs |
-| ToolExecutor provides retry with exponential backoff | VERIFIED | `src/tool/executor.rs:29-56` - backoff with jitter implemented |
-| ToolError::is_retryable matches Io/Network/Timeout | VERIFIED | `src/error.rs:349-354` - matches exactly |
-| Path validation checks symlinks and allowed_root | VERIFIED | `src/tool/util.rs:5-20` - validates symlinks then checks canonical starts with root |
-| BashTool blocked patterns regex-based detection | VERIFIED | `src/tool/bash.rs:17-67` - comprehensive regex patterns |
-| Subprocess PATH uses user's actual PATH | VERIFIED | `src/tool/bash.rs:372-375`, `git.rs:120-123`, `terminal.rs:286-289` - all use `std::env::var_os("PATH")` |
-| Built-in tools count 33+ | VERIFIED | `src/tool/mod.rs:89-119` - 30 tools registered, plus team tools (5) = 35 total |
-| Tool definition caching with version | VERIFIED | `mod.rs:148-157` definitions() uses mcp_tool_count as version proxy (see known limitation in AGENTS.md) |
-| Built-in Tools Table (10 File Operations) | VERIFIED | read, write, edit, glob, grep, list, diff, replace, multiedit, apply_patch all exist |
-| Built-in Tools Table (4 Shell Execution) | VERIFIED | bash, terminal, git, commit all exist |
-| Built-in Tools Table (3 Code Operations) | VERIFIED | codesearch, review, lsp all exist |
-| Built-in Tools Table (2 Web Operations) | VERIFIED | webfetch, websearch both exist |
-| Built-in Tools Table (Task Management) | VERIFIED | task, todo, plan_enter, plan_exit all exist (5 tools including batch, skill, tool_search) |
-| Security: SSRF protection in WebFetch | VERIFIED | `src/tool/webfetch.rs:90-103` - validates host IP and revalidates DNS |
-| Security: BashTool blocked patterns | VERIFIED | `src/tool/bash.rs:17-67` - 40+ patterns including command injection vectors |
-| ToolCatalog.search() returns tools matching name or description | VERIFIED | `src/tool/catalog.rs:66-76` - case-insensitive search on both fields |
+### ToolResult (mod.rs:62-68)
+- Fields: `tool_name`, `input`, `output`, `success` - **matches documentation**
 
-### Unverified / Incorrec
+### ToolRegistry (mod.rs:70-157)
+- `tools: HashMap<String, Box<dyn Tool>>` - **matches**
+- `catalog: catalog::ToolCatalog` - **matches**
+- All documented methods exist and have correct signatures:
+  - `new()`, `with_defaults()`, `register()`, `get()`, `list()`, `definitions()`, `filter_out()`, `catalog()`
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| Document says "33+ tools" | SLIGHTLY INACCURATE | Actually 30 built-in tools registered in with_defaults(), plus team tools makes 35 |
-| ToolCatalog.deferred_load documented but deferred loading not fully wired | INCORRECT | ToolCatalog has defer_load field but nothing actually sets it to true; no actual deferred loading mechanism |
+### ToolCatalog (catalog.rs)
+- `tools: HashMap<String, ToolMetadata>` - **matches**
+- `deferred_load: Vec<String>` - **matches**
+- Methods match: `register()`, `search()`, `get()`, `list()`
+- Additional undocumented methods found: `deferred_tools()`, `is_deferred()`
 
-## Bugs Found
+### ToolExecutor (executor.rs:8-56)
+- Fields: `max_attempts`, `base_delay`, `max_delay` - **matches**
+- `execute_with_retry()` signature and retry logic - **matches**
+- Exponential backoff with jitter calculation - **matches**
 
-### Critical
+### ToolError (error.rs:323-356)
+- All 8 variants match documentation: `NotFound`, `Execution`, `Timeout`, `Permission`, `Format`, `Disabled`, `Io`, `Network`
+- `is_retryable()` implementation - **matches** (returns true for `Io`, `Network`, `Timeout`)
 
-1. **GrepTool: Missing permission check for denied_paths**
-   - `src/tool/grep.rs:140-148` - Files are validated after WalkDir traversal, but there's no `allowed_paths` configuration like bash.rs has
-   - Any tool with `allowed_paths` restriction is bypassed in grep
+### Built-in Tools (mod.rs:89-119)
+- 26 tools registered in `with_defaults()` - **BUT documentation claims 33+**
+- `plan_enter` and `plan_exit` are **separate tools** - **matches** (lines 113-114)
 
-2. **GlobTool: Same issue - no allowed_paths enforcement**
-   - `src/tool/glob.rs:128-129` - Only checks if path starts with canonical_search, but `allowed_paths` field doesn't exist on GlobTool
-   - User can configure allowed_paths in Config but GlobTool ignores it
+### Path Validation (util.rs)
+- `validate_path()` - **matches** documentation
+- Symlink check via `check_path_for_symlinks()` - **matches**
+- `canonicalize_path()` - **matches**
 
-### High
+### Security Features
+- BashTool BLOCKED_PATTERN regex - **matches** "Regex-based blocked patterns" claim
+- BashTool uses `std::env::var_os("PATH")` (line 372) - **matches** "Subprocess PATH" claim
+- WebFetchTool uses `validate_url_host()`, `validate_host_ip()`, `revalidate_dns()` for SSRF protection - **matches**
 
-3. **BashTool: allowlist bypass via path traversal in blocked check**
-   - `src/tool/bash.rs:176-186` - Blocked command check uses `normalized.starts_with(blocked_cmd)` which can be bypassed with `echo "rm -rf /" #`
-   - Comments after blocked command would bypass the check
+### plan.rs
+- `PlanEnterTool` and `PlanExitTool` are separate structs - **matches documentation**
+- `detect_plan_mode_change()` function exists and returns `PlanModeChange` enum - **undocumented but correct**
 
-4. **ReplaceTool: Reports "all" instead of actual match count**
-   - `src/tool/replace.rs:195-198` - Always prints "Replaced all occurrence(s)" even when printing the hardcoded string "all" instead of actual count
-   - `_matches_len` is computed but never used in output
+---
 
-5. **EditTool: Missing FileChanged event on edit failure**
-   - `src/tool/edit.rs:143-148` - FileChanged event is published even if the edit failed (the spawn_blocking returned Ok but try_edit returned None)
-   - Only publishes on success path
+## Bugs/Discrepancies Found
 
-6. **ListTool: No symlink check in validate_path helper**
-   - `src/tool/list.rs:46-67` - Custom validate_path doesn't call `check_path_for_symlinks()` unlike all other file tools
-   - Symlink traversal protection inconsistent
+### 1. Tool Definition Caching Claim is Inaccurate (medium priority)
 
-### Medium
+**File**: architecture/tool.md line 251
+> "**Tool definition caching**: Cache key includes version for proper invalidation"
 
-7. **WriteTool: Auto-formatting not actually called**
-   - `src/tool/write.rs:131-132` - Reads file back after write but never calls Formatter
-   - Comment says "Runs auto-formatting after write" but code just reads content
+**Actual**: Looking at `ToolRegistry::definitions()` (mod.rs:148-157), there is no explicit caching mechanism visible. The tool definitions are generated on demand from `self.tools.values()`. While the skill mentions "proper invalidation", the actual implementation does not show version-based cache keys.
 
-8. **WebFetchTool: Cloudflare retry uses wrong User-Agent**
-   - `src/tool/webfetch.rs:142` - Retry uses Chrome UA but still gets blocked if original was Cloudflare-protected
-   - Should use actual Chrome browser headers properly
+### 2. Skill doc shows `deferred_tools()` but architecture doesn't mention it (low priority)
 
-9. **TerminalTool: Missing workdir validation against allowed_paths**
-   - `src/tool/terminal.rs:297-299` - Sets workdir but no validation that it falls within allowed paths
-   - Inconsistent with BashTool which validates workdir
+**File**: .opencode/skills/tool/SKILL.md line 129
+```rust
+pub fn deferred_tools(&self) -> Vec<&ToolMetadata>;
+```
 
-10. **CodeSearchTool: Input sanitization removes too many characters**
-    - `src/tool/codesearch.rs:60-66` - Removes single/double quotes which may be needed in code queries
-    - Query `class "MyClass"` becomes `class MyClass` which changes semantics
+**Actual**: `ToolCatalog` has `deferred_tools()` method (catalog.rs:84-89) but `architecture/tool.md` only shows 4 methods (`register`, `search`, `get`, `list`) without mentioning deferred loading functionality.
+
+### 3. Documentation lists 33+ tools but only 26 exist (medium priority - MISMATCH)
+
+**File**: architecture/tool.md line 11
+> "Built-in tool implementations (33+ tools)"
+
+**Actual**: `ToolRegistry::with_defaults()` registers **exactly 26 tools**:
+1. BashTool
+2. ReadTool
+3. EditTool
+4. WriteTool
+5. GlobTool
+6. GrepTool
+7. ListTool
+8. TaskTool
+9. WebFetchTool
+10. WebSearchTool
+11. CodeSearchTool
+12. QuestionTool
+13. TodoTool
+14. SkillTool
+15. ApplyPatchTool
+16. DiffTool
+17. ReplaceTool
+18. ReviewTool
+19. BatchTool
+20. TerminalTool
+21. GitTool
+22. CommitTool
+23. PlanEnterTool
+24. PlanExitTool
+25. InvalidTool
+26. ToolSearchTool
+
+Note: The architecture's Built-in Tools table also doesn't list `tool_search`, `invalid`, `codesearch`, `terminal`, or `lsp` (which exists but isn't registered).
+
+### 4. `lsp` tool documented but NOT registered (medium priority - MISMATCH)
+
+**File**: architecture/tool.md line 75
+> "| **lsp** | `lsp.rs` | LSP tool wrapper |"
+
+**Actual**: `LspTool` exists in `lsp.rs` with full `Tool` implementation, BUT it is **NOT registered** in `ToolRegistry::with_defaults()`. The tool requires an `LspService` in its constructor, so it must be instantiated separately with proper service configuration. This appears to be intentional (LSP needs service injection) but the architecture lists it as a built-in tool.
+
+### 5. `terminal` tool in architecture table (line 65) matches but with wrong name context
+
+**File**: architecture/tool.md line 65
+> "| **terminal** | `terminal.rs` | Terminal operations |"
+
+**Actual**: `TerminalTool` is registered and works, but it's for executing terminal commands similar to `BashTool`. The description "Terminal operations" is vague.
+
+### 6. Architecture doesn't document `ToolSearchTool` (medium priority)
+
+**File**: architecture/tool.md (general)
+
+**Actual**: `ToolSearchTool` (registered at mod.rs:117) provides on-demand tool discovery. It's not listed in the Built-in Tools table under External Integrations (which only shows `question`, `skill`, `batch`, `tool_search`).
+
+### 7. `InvalidTool` not documented (low priority)
+
+**File**: architecture/tool.md (general)
+
+**Actual**: `InvalidTool` (registered at mod.rs:115) handles invalid tool call requests. Not listed in the Built-in Tools table.
+
+---
 
 ## Improvement Suggestions
 
-### Performance
+### High Priority
 
-1. **GrepTool: Batch processing could use bounded parallelism**
-   - `src/tool/grep.rs:167-234` - Uses `join_all` on chunks which could spawn unlimited futures
-   - Consider using `futures::stream` with bounded concurrency
+1. **Update tool count claim**: Change "33+ tools" to accurate count (~26) or "26 built-in tools" and update the table to be exhaustive.
 
-2. **ToolRegistry::definitions() allocates on every call**
-   - `src/tool/mod.rs:148-157` - Creates new Vec with ToolDefinitions each time
-   - Should cache definitions and invalidate on tool registration changes
+2. **Document `lsp` tool availability**: Either register `lsp` in `ToolRegistry::with_defaults()` if it should be available, or remove it from the architecture table.
 
-3. **ReadTool: spawn_blocking for all ops including small reads**
-   - `src/tool/read.rs:211-301` - Even trivial reads go through spawn_blocking
-   - Could use `tokio::fs` directly for async I/O
+### Medium Priority
 
-### Correctness
+3. **Add `deferred_tools()` and `is_deferred()` to architecture doc**: These methods exist in `ToolCatalog` but aren't documented.
 
-4. **ToolError::NotFound used inconsistently**
-   - Some tools return `ToolError::NotFound("tool_name")` (string as arg)
-   - Others return `ToolError::Execution("unknown tool: name")`
-   - Should standardize NotFound variant usage
+4. **Investigate tool definition caching**: Either remove the caching claim from the architecture or implement proper version-based cache invalidation.
 
-5. **WebSearchTool: API key env var names inconsistent**
-   - `src/tool/websearch.rs:30` uses `EXA_API_KEY`
-   - `src/tool/codesearch.rs:74-76` checks `EXA_API_KEY` then `EXA_CODE_API_KEY`
-   - Should use consistent naming
+5. **Document `ToolSearchTool`**: Add this tool to the External Integrations table since it provides on-demand tool discovery.
 
-6. **BatchTool: Tool name validation regex is too permissive**
-   - `src/tool/batch.rs:86-93` allows alphanumeric, underscore, hyphen
-   - But `ToolRegistry::get()` does exact match, so this is fine actually
+### Low Priority
 
-### Maintainability
+6. **Document `InvalidTool`**: Add to table or explain its purpose.
 
-7. **Duplicated blocked_pattern regex in bash.rs and terminal.rs**
-   - `src/tool/bash.rs:17-67` and `src/tool/terminal.rs:31-78` have nearly identical patterns
-   - Should extract to shared `tool::util` module
+7. **Clarify `terminal` tool description**: "Terminal operations" is vague. Consider "Execute terminal commands (interactive)" similar to bash.
 
-8. **Duplicated truncate_output function in bash.rs and terminal.rs**
-   - `src/tool/bash.rs:421-441` and `src/tool/terminal.rs:338-358` are identical
-   - Should be shared utility
+8. **Add `detect_plan_mode_change()` and `PlanModeChange` to documentation**: These are public API elements used by other parts of the system but not documented in the architecture.
 
-9. **Inconsistent error messages across tools**
-   - Some tools say "missing 'X' parameter", others "X is required", others use different formats
-   - Consider standardizing error message format
+9. **Update Skill doc**: The skill doc at `.opencode/skills/tool/SKILL.md` is more complete (includes `deferred_tools()`) - sync these improvements back to `architecture/tool.md`.
 
-10. **Tool constructors inconsistent**
-    - Some tools have `new()`, `with_*()` builder pattern (BashTool)
-    - Others only have `new()` with Default (ReadTool)
-    - Makes it hard to configure tools uniformly
+---
 
-## Priority Actions (top 5 items to fix)
+## Summary
 
-1. **Fix replace.rs to report actual match count** (High) - Currently always prints "all" instead of the actual number
-2. **Add allowed_paths to GlobTool and GrepTool** (Critical) - These tools bypass path restrictions configured by user
-3. **Extract duplicated blocked_pattern regex to shared util** (Medium) - Maintenance issue, keep in sync
-4. **Extract duplicated truncate_output to shared util** (Medium) - Maintenance issue, duplicate code
-5. **Add symlink check to ListTool::validate_path** (Medium) - Inconsistent with other file tools
+The core architecture is **accurate** - the Tool trait, ToolRegistry, ToolCatalog, ToolExecutor, ToolError, and security features all match the implementation. Main issues are:
 
-## Additional Observations
+- Tool count is overstated (33+ vs 26)
+- `lsp` tool listed but not registered
+- `deferred_tools()`/`is_deferred()` methods undocumented
+- `ToolSearchTool` and `InvalidTool` not in documentation
 
-### Architecture Accuracy
-The architecture document is largely accurate. The main discrepancies are:
-- Tool count is actually 35 (including team tools), not "33+"
-- deferred_load mechanism exists in catalog but is not actually used by any tool
-
-### Security Notes
-- Overall security is strong: symlink protection, SSRF protection, blocked patterns for bash
-- Main gaps are in allowed_paths enforcement for glob/grep/list tools
-- PATH handling correctly uses user's actual PATH in all shell-invoking tools
-
-### Code Quality
-- Good use of spawn_blocking for filesystem operations
-- Consistent error handling with ToolError enum
-- Good test coverage in executor.rs, apply_patch.rs
-- Some tools (review, commit) call Config::load() directly which may not respect hot-reload
+The codebase is well-structured and the documentation is generally accurate for the parts that are documented.

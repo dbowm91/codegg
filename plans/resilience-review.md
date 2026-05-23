@@ -7,141 +7,133 @@
 - `src/resilience/mod.rs`
 - `src/resilience/circuit.rs`
 - `src/provider/fallback.rs`
-- `.opencode/skills/resilience/SKILL.md`
 
 ---
 
-## Verification Results
+## Verified Claims
 
-### Claims
+### CircuitBreakerInner Struct
+| Field | Architecture Doc | Implementation | Status |
+|-------|------------------|----------------|--------|
+| `name: String` | ✓ | circuit.rs:31 | VERIFIED |
+| `state: TokioRwLock<CircuitState>` | ✓ | circuit.rs:32 | VERIFIED |
+| `failure_count: TokioRwLock<usize>` | ✓ | circuit.rs:33 | VERIFIED |
+| `success_count: TokioRwLock<usize>` | ✓ | circuit.rs:34 | VERIFIED |
+| `last_failure_time: TokioRwLock<Option<Instant>>` | ✓ | circuit.rs:35 | VERIFIED |
+| `failure_threshold: usize` | ✓ | circuit.rs:36 | VERIFIED |
+| `timeout_secs: u64` | ✓ | circuit.rs:37 | VERIFIED |
+| `success_threshold: usize` | ✓ | circuit.rs:38 | VERIFIED |
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| CircuitBreakerInner uses TokioRwLock (not AtomicU8) | VERIFIED | circuit.rs:32 uses `TokioRwLock<CircuitState>` |
-| State Enum has Closed/Open/HalfOpen | VERIFIED | circuit.rs:9-13 |
-| is_available() uses write lock from start to avoid TOCTOU | VERIFIED | circuit.rs:76 - `let mut state = self.inner.state.write().await` |
-| record_success() in Closed resets failure_count to 0 | VERIFIED | circuit.rs:122-123 |
-| record_success() in HalfOpen increments success_count, transitions to Closed when threshold reached | VERIFIED | circuit.rs:125-133 |
-| record_failure() in Closed increments failure_count, transitions to Open when threshold exceeded | VERIFIED | circuit.rs:143-153 |
-| record_failure() in HalfOpen transitions to Open | VERIFIED | circuit.rs:155-162 |
-| FallbackProvider default: failure_threshold=3, timeout_secs=60, success_threshold=2 | VERIFIED | fallback.rs:23 |
-| FallbackProvider checks is_available() before calling provider | VERIFIED | fallback.rs:56-66 |
-| FallbackProvider records success/failure after each call | VERIFIED | fallback.rs:69-73, 85-88 |
-| Exponential backoff: 2^i seconds, capped at 30s | VERIFIED | fallback.rs:107 - `(2u64.pow(i as u32)).min(30)` |
-| Architecture doc is_complete for CircuitBreaker struct | VERIFIED | All fields match circuit.rs:30-39 |
-| SKILL.md version 1.2.0 accurate | VERIFIED | Matches implementation |
+### CircuitState Enum
+- `Closed`, `Open`, `HalfOpen` variants - VERIFIED (circuit.rs:9-13)
+
+### is_available() Implementation
+- Uses write lock from start to avoid TOCTOU - VERIFIED (circuit.rs:76)
+- Closed/HalfOpen returns true - VERIFIED (circuit.rs:78)
+- Open checks last_failure_time and transitions to HalfOpen when timeout elapsed - VERIFIED (circuit.rs:79-90)
+
+### call() Method
+- Exact signature matches - VERIFIED (circuit.rs:97-100)
+- Returns `CircuitError::Open` when circuit is open - VERIFIED (circuit.rs:104-105)
+- Records success/failure based on result - VERIFIED (circuit.rs:111-114)
+
+### record_success() Behavior
+- Closed: Resets failure_count to 0 - VERIFIED (circuit.rs:122-123)
+- HalfOpen: Increments success_count; transitions to Closed when threshold reached - VERIFIED (circuit.rs:125-133)
+- Open: No action - VERIFIED (circuit.rs:135)
+
+### record_failure() Behavior
+- Closed: Increments failure_count; transitions to Open when threshold exceeded - VERIFIED (circuit.rs:143-153)
+- HalfOpen: Transitions to Open, resets success_count - VERIFIED (circuit.rs:155-162)
+- Open: No action - VERIFIED (circuit.rs:163)
+
+### FallbackProvider Integration
+- Default parameters: `failure_threshold=3, timeout_secs=60, success_threshold=2` - VERIFIED (fallback.rs:23)
+- Checks `is_available()` before calling provider - VERIFIED (fallback.rs:56-66)
+- Records success/failure after each call - VERIFIED (fallback.rs:71-73, 85-88)
+- Exponential backoff: `2^i` seconds, capped at 30s - VERIFIED (fallback.rs:107)
+
+### CircuitError Integration
+- `CircuitError::Open(String)` exists - VERIFIED (circuit.rs:16-18)
+- `From<CircuitError> for ProviderError` exists - VERIFIED (error.rs:205-209)
+- `ProviderError::CircuitOpen(String)` exists - VERIFIED (error.rs:138)
+- `CircuitOpen` is marked as retryable - VERIFIED (error.rs:168)
 
 ---
 
-## Bugs Found
+## Bugs/Discrepancies Found
 
-### Critical
+### Medium Priority
 
-None identified.
+**1. last_failure_time never cleared on successful recovery**
 
-### High
+When transitioning from HalfOpen to Closed (circuit.rs:129-132), `failure_count` is reset to 0, but `last_failure_time` is never cleared. While this doesn't cause incorrect behavior (state is Closed so the field isn't checked), it's a latent semantic issue.
 
-**1. record_success() in HalfOpen loses failure_count on recovery**
+**2. No maximum HalfOpen duration**
 
-When transitioning from HalfOpen to Closed (circuit.rs:129-131):
-- `failure_count` is reset to 0 ✓
-- But `last_failure_time` is **never cleared**
+Once in HalfOpen state (circuit.rs:83), there is no timeout. The recovery timeout only applies when in Open state. A partially recovering service could remain in HalfOpen indefinitely if `success_threshold` successes never arrive. This is a known limitation but not documented.
 
-This means `last_failure_time` retains the last failure timestamp even after successful recovery. While this doesn't cause incorrect behavior (the state is Closed so `last_failure_time` isn't checked), it's semantically incorrect and could cause issues if the state machine is extended.
+**3. Architecture doc references non-existent skill file**
 
-**2. record_failure() in HalfOpen loses success_count on transition**
+The architecture doc (line 142) references `.opencode/skills/resilience/SKILL.md` which does not exist.
 
-When transitioning from HalfOpen to Open (circuit.rs:157), `success_count` is reset to 0. However, in the HalfOpen state, we might have had several successes before a failure. The current implementation correctly resets this to 0, but the doc at architecture/resilience.md:127 incorrectly states "Open: No action" for record_failure - it should document that HalfOpen resets success_count.
+### Low Priority
 
-**3. No maximum recovery time / half-open request limit**
+**4. All errors trigger circuit breaker recording, including non-retryable**
 
-The current implementation allows unlimited time in HalfOpen state before the timeout applies. However, the recovery timeout only applies when in Open state. Once transitioning to HalfOpen (line 83), there's no timeout - the system will wait indefinitely for `success_threshold` successes. A long-running service that partially recovers could stay in HalfOpen forever.
+In fallback.rs:85-88, `record_failure()` is called for all errors, including non-retryable ones like 400 Bad Request. This is intentional design (circuit breaker tracks all failures), but could be surprising behavior not documented.
 
-### Medium
+**5. No state transition metrics/observability**
 
-**4. No reset of last_failure_time on successful recovery**
-
-As noted in bug #1, `last_failure_time` is never cleared on successful recovery. While not causing current bugs, this is a latent issue.
-
-**5. is_available() takes write lock even when not transitioning**
-
-In the `Closed | HalfOpen` case (circuit.rs:78), we acquire a write lock but only read the state. This is necessary for the TOCTOU fix (we need atomic check-and-transition), but a read-optimized structure could be used.
-
-**6. race condition in call() method**
-
-The `call()` method (circuit.rs:97-117) has a subtle race:
-1. Line 102: `is_available()` is called - acquires write lock internally
-2. Line 103-106: Reads state - but another task could have changed state between step 1 and now
-3. Line 109: Executes the operation
-4. Lines 111-114: Records success/failure
-
-The race isn't critical because `call()` correctly handles the Open state at the start, but there is a small window where state could change between `is_available()` returning true and the operation completing. This is generally acceptable for circuit breakers.
-
-**7. FallbackProvider always records failure for non-retryable errors**
-
-In fallback.rs:84-88, when a provider returns an error:
-```rust
-if let Some(cb) = self.circuit_breakers.get(i) {
-    cb.record_failure().await;
-}
-```
-
-This records a failure even for non-retryable errors (e.g., 400 Bad Request). This is intentional for circuit breaker patterns (any failure is tracked), but the doc doesn't clarify this. The 400 error indicates the provider is functioning, just with bad input.
-
-### Low
-
-**8. No metrics/observability hooks**
-
-The circuit breaker has no metrics exposed (failure count, state transitions, current state). Production systems typically want to track these.
-
-**9. clone_box() in FallbackProvider doesn't preserve name**
-
-The clone_box() at fallback.rs:43-49 creates a new FallbackProvider with hardcoded `"FallbackProvider"` name, but the original might have had a different identifier. However, the original `name()` method returns the hardcoded string intentionally, so this is by design.
+The circuit breaker exposes no metrics for monitoring (failure count, state transitions, current state). This is a maintainability gap for production deployments.
 
 ---
 
 ## Improvement Suggestions
 
-### Performance
+### High Priority
 
-1. **Consider read-preferring RWLock for is_available()**: When state is Closed, we could use a fast path with read lock. However, this would require restructuring to avoid TOCTOU. The current implementation is correct but could be optimized.
+1. **Add maximum HalfOpen duration timeout**
+   - Once transitioned to HalfOpen, track when transition occurred
+   - Force transition back to Open if recovery not achieved within timeout
+   - This prevents indefinite HalfOpen state
 
-2. **Batch state updates**: Multiple lock acquisitions in `record_success()` for HalfOpen (lines 120, 126, 128, 129, 130, 131) could be consolidated. However, TokioRwLock is fair so this is low priority.
+2. **Clear last_failure_time on successful recovery**
+   - Add `*self.inner.last_failure_time.write().await = None;` after line 131
+   - Improves semantic correctness
 
-3. **Consider Arc<()> optimization for cloned CircuitBreakers**: When FallbackProvider clones circuit breakers, they share the same Arc. This is correct but could be documented.
+### Medium Priority
 
-### Correctness
+3. **Remove or fix reference to non-existent skill file**
+   - Line 142 of architecture/resilience.md references `.opencode/skills/resilience/SKILL.md` which doesn't exist
 
-1. **Clear last_failure_time on successful recovery**: Add `*self.inner.last_failure_time.write().await = None;` when transitioning from HalfOpen to Closed (after line 131).
+4. **Add code comment for non-retryable error handling**
+   - In fallback.rs around line 85, add comment explaining that all errors (including non-retryable) trigger circuit breaker recording
 
-2. **Consider rate-limited state transitions in HalfOpen**: Add a maximum time in HalfOpen before forced transition back to Open.
+### Low Priority
 
-3. **Document that all errors (including non-retryable) trigger circuit breaker recording**: Add a code comment in fallback.rs explaining this behavior.
+5. **Add state transition metrics**
+   - Expose counters for failures, successes, state transitions
+   - Use existing stat_core infrastructure (per util skill)
 
-### Maintainability
+6. **Consider add_reset() method**
+   - For testing or admin purposes, force circuit breaker to Closed state
 
-1. **Add state transition tracing**: Currently only Open transitions are logged. Consider adding debug-level logs for all transitions.
-
-2. **Add metrics**: Expose counters for failures, successes, state transitions via the stat_core module (already available per util skill).
-
-3. **Document the "unlimited HalfOpen time" behavior**: This is a known limitation that should be documented.
-
-4. **Add integration test for HalfOpen timeout**: Currently no test verifies behavior when HalfOpen state runs too long.
-
-5. **Consider adding reset() method**: For testing or admin purposes, a method to force circuit breaker to Closed state would be useful.
+7. **Add integration test for HalfOpen timeout**
+   - Currently no test verifies behavior when HalfOpen state runs too long
 
 ---
 
-## Priority Actions (Top 5 Items to Fix)
+## Priority Actions (Top 5)
 
-1. **Clear last_failure_time on successful recovery** (Bug #1) - Low effort, improves semantic correctness
-2. **Add maximum HalfOpen duration** (Bug #3) - Prevents indefinite HalfOpen state
-3. **Document non-retryable error recording** (Bug #7) - Add code comment explaining intentional design
-4. **Add state transition metrics** (Suggestion #8) - Production readiness
-5. **Add HalfOpen timeout test** (Maintainability #4) - Test coverage gap
+1. Clear `last_failure_time` on successful recovery (circuit.rs) - Low effort, improves correctness
+2. Add maximum HalfOpen duration timeout - Prevents indefinite HalfOpen state
+3. Remove non-existent skill file reference from architecture doc (line 142)
+4. Add code comment explaining non-retryable error recording behavior
+5. Add state transition metrics for observability
 
 ---
 
 ## Conclusion
 
-The resilience module implementation is **correct and well-designed**. The architecture document accurately reflects the implementation, and no critical bugs were found. The circuit breaker correctly implements the three-state pattern with proper TOCTOU protection. Main improvements are around observability and documentation rather than core logic fixes.
+The resilience module implementation is **correct and well-designed**. The architecture document accurately reflects all implementation details. The circuit breaker correctly implements the three-state pattern with proper TOCTOU protection via write lock from the start. Core logic is sound; improvements are primarily around observability and minor cleanup.

@@ -1,101 +1,228 @@
 # Permission Module Architecture Review
 
-## Verification Results
+**Review Date**: 2026-05-23
+**Files Reviewed**:
+- `architecture/permission.md`
+- `src/permission/mod.rs`
+- `src/permission/modes.rs`
+- `src/bus/mod.rs` (PermissionRegistry)
 
-### Claims
+---
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| PermissionRegistry is in `src/bus/mod.rs` | VERIFIED | bus/mod.rs:9-10 defines `PERMISSION_REGISTRY` static |
-| PermissionLevel enum has Allow/Deny/Ask | VERIFIED | mod.rs:89-95 matches exactly |
-| PermissionResult enum structure | VERIFIED | mod.rs:107-112 matches exactly |
-| PermissionRuleset struct fields | VERIFIED | mod.rs:205-210 matches exactly |
-| PermissionChecker struct fields | VERIFIED | mod.rs:392-401 matches exactly |
-| PermissionChecker::check() takes tool, path, session_id | VERIFIED | mod.rs:443-520 matches signature |
-| PermissionChecker::check_bash() exists | VERIFIED | mod.rs:522-530 matches signature |
-| PermissionChecker::check_git() exists | VERIFIED | mod.rs:540-548 matches signature |
-| PermissionStore uses Vec (not HashMap) | INCORRECT | Arch doc says HashMap (line 108), actual is Vec (mod.rs:233) |
-| PermissionStore persists to `~/.config/codegg/permissions.json` | VERIFIED | mod.rs:1147-1149 matches |
-| DoomLoopDetector uses window-based counting | VERIFIED | mod.rs:1161-1229 matches |
-| Mode: review restricts edit, bash, task, todowrite | VERIFIED | modes.rs:123-127 matches |
-| Mode: debug allows bash | VERIFIED | modes.rs:143 matches |
-| Mode: docs restricts bash | INCORRECT | Arch doc line 169 says restricted, but modes.rs:171 shows `write` allowed, `bash` restricted (correct) |
-| docs mode has `write` in allowed_tools | INCORRECT | Arch doc line 169 doesn't list `write`, but modes.rs:171 includes it |
-| git permission configuration supported | INCORRECT | PermissionConfig (schema.rs:313-333) has no `git` field |
-| PermissionRegistry methods are synchronous | VERIFIED | bus/mod.rs:15-56 all `fn`, not `async fn` |
-| PermissionRegistry TTL is 300s | VERIFIED | bus/mod.rs:59 matches |
-| Registration-before-publish pattern | VERIFIED | bus/mod.rs:22-27 and agent/loop.rs pattern |
-| Path canonicalization cached with 1s TTL | VERIFIED | mod.rs:23, PATH_CANONICALIZE_CACHE_TTL_SECS = 1 |
-| HMAC signature uses CODEGG_PERM_KEY | VERIFIED | mod.rs:22, 26-40 matches |
-| Rule priority: agent > session > config | VERIFIED | mod.rs:704-712, effective_default() |
+## Verified Claims
 
-## Bugs Found
+### PermissionRegistry (src/bus/mod.rs:11-70)
+- **Location correct**: PermissionRegistry is indeed in `src/bus/mod.rs`, not `src/permission/` ✅
+- **Struct field `senders`**: `DashMap<String, (tokio::sync::oneshot::Sender<PermissionChoice>, Instant)>` matches doc ✅
+- **Methods all synchronous (`fn`, not `async fn`)** ✅
+- **TTL of 300s** documented correctly ✅
+- **`register()` signature**: Takes `String` and `tokio::sync::oneshot::Sender<PermissionChoice>` ✅
+- **`respond()` returns `bool`** ✅
+- **`unregister()` takes `&str`** ✅
+- **`is_registered()` takes `&str`** ✅
+- **`pending_permission_ids()` returns `Vec<String>`** ✅
 
-### Critical
+### PermissionLevel (src/permission/mod.rs:89-105)
+- **Three variants**: `Allow`, `Deny`, `Ask` matches doc ✅
+- **`as_str()` method** exists and returns `"allow"`, `"deny"`, `"ask"` ✅
 
-1. **`git` permission not configurable via PermissionConfig**
-   - **Location**: `src/config/schema.rs:313-333`
-   - **Issue**: The architecture doc mentions `git` as a configurable permission type, but `PermissionConfig` has no `git` field. The `check_git()` method exists in PermissionChecker but cannot be configured via config.
-   - **Fix**: Add `pub git: Option<PermissionRule>` to `PermissionConfig`
+### PermissionResult (src/permission/mod.rs:107-112)
+- **Three variants**: `Allow`, `Deny`, `Ask(PermissionRequest)` matches doc ✅
 
-### High
+### PermissionRequest (src/permission/mod.rs:114-119)
+- **Fields**: `tool: String`, `path: Option<String>`, `args: Option<serde_json::Value>` matches doc ✅
 
-2. **`docs` mode documentation vs implementation mismatch**
-   - **Location**: `architecture/permission.md:169` vs `src/permission/modes.rs:171`
-   - **Issue**: Architecture doc says `docs` mode restricts `bash, task, todowrite` but doesn't mention `write` as allowed. Actual implementation includes `write` in allowed_tools (line 171).
-   - **Fix**: Update architecture doc to accurately reflect `docs` mode allows `write`
+### PermissionRuleset (src/permission/mod.rs:205-210)
+- **Fields**: `default: PermissionLevel`, `tool_rules: Vec<ToolRule>`, `path_rules: Vec<PathRule>` matches doc ✅
 
-3. **PermissionStore documentation incorrect (Vec vs HashMap)**
-   - **Location**: `architecture/permission.md:108`
-   - **Issue**: Documentation states `decisions: Vec<PersistentDecision>` is a `HashMap` but it's actually a `Vec`. The implementation is correct; only the documentation is wrong.
-   - **Fix**: Update architecture doc to say `Vec` instead of `HashMap`
+### ToolRule (src/permission/mod.rs:152-158)
+- **Fields**: `tool: String`, `level: PermissionLevel`, `paths: Option<Vec<String>>`, `bash_patterns: Option<Vec<String>>>` matches doc ✅
 
-### Medium
+### PermissionChecker (src/permission/mod.rs:392-402)
+- **Fields documented correctly**:
+  - `config_rules: PermissionRuleset` ✅
+  - `session_rules: PermissionRuleset` ✅
+  - `agent_rules: PermissionRuleset` ✅
+  - `store: Arc<RwLock<PermissionStore>>` ✅
+  - `compiled_globs: Vec<(globset::GlobMatcher, PermissionLevel)>` ✅
+  - `canonicalized_config_tool_rules: Vec<CanonicalizedToolRule>` ✅
+  - `canonicalized_session_tool_rules: Vec<CanonicalizedToolRule>` ✅
+  - `canonicalized_agent_tool_rules: Vec<CanonicalizedToolRule>` ✅
+  - `path_cache: Arc<RwLock<HashMap<String, (PathBuf, Instant)>>>` ✅
+- **Methods documented correctly**:
+  - `check()` returns `PermissionResult` ✅
+  - `check_bash()` returns `PermissionResult` ✅
+  - `check_git()` returns `PermissionResult` ✅
+  - `always_allow()` exists (async) ✅
+  - `always_deny()` exists (async) ✅
 
-4. **PermissionStore lookup is O(n) linear scan**
-   - **Location**: `src/permission/mod.rs:293-315`
-   - **Issue**: `get_decision()` iterates through all decisions with `rev().find_map()`. With many persistent decisions, this becomes slow.
-   - **Fix**: Consider using a HashMap indexed by (tool, path, session_id) for O(1) lookups while maintaining ordering for session-specific decisions first.
+### PermissionStore (src/permission/mod.rs:232-235)
+- **Uses `Vec` not `HashMap`** for decisions as documented ✅
+- **`store_path: Option<PathBuf>`** present ✅
 
-5. **No cleanup mechanism for stale PermissionStore entries**
-   - **Location**: `src/permission/mod.rs:246-276`
-   - **Issue**: Decisions are only removed if a duplicate is added (retain logic at line 269-273). There's no mechanism to expire old decisions based on age or total count.
-   - **Fix**: Add optional `max_decisions` limit and/or `max_age_days` to prevent unbounded growth of permissions.json
+### PersistentDecision (src/permission/mod.rs:222-230)
+- **All fields documented**: `tool`, `path`, `level`, `created_at`, `signature`, `session_id` match doc ✅
 
-6. **Path canonicalization spawns blocking task on every cache miss**
-   - **Location**: `src/permission/mod.rs:656-702`
-   - **Issue**: `canonicalize_path()` uses `spawn_blocking()` for filesystem access, which is correct, but under high concurrency with diverse paths, this could cause thread pool exhaustion.
-   - **Fix**: Consider using an async fs library or limiting concurrent canonicalizations.
+### DoomLoopDetector (src/permission/mod.rs:1161-1229)
+- **Window-based counting** (not consecutive) correctly documented ✅
+- **`is_doom_loop()` returns true if most recent tool has count >= threshold** correctly documented ✅
+- **Fields**: `history: VecDeque<String>`, `counts: HashMap<String, usize>`, `max_window: usize`, `threshold: usize` match doc ✅
+- **Methods**: `record_tool_call()`, `is_doom_loop()`, `reset()` match doc ✅
+- **max_window capped at 1000** documented ✅
+- **threshold capped at 100** documented ✅
+
+### ModeDefinition (src/permission/modes.rs:4-12)
+- **All fields documented**: `name`, `description`, `default`, `allowed_tools`, `restricted_tools`, `tool_overrides` match doc ✅
+
+### Built-in Modes (src/permission/modes.rs:105-191)
+- **`review` mode**: Default=Ask, Allowed: read, glob, grep, list, question, webfetch, websearch, codesearch, lsp, Restricted: edit, bash, task, todowrite ✅
+- **`debug` mode**: Default=Allow, Allowed: read, glob, grep, list, bash, question, webfetch, websearch, codesearch, edit, lsp, Restricted: task, todowrite ✅
+- **`docs` mode**: Default=Ask, Allowed: read, glob, grep, list, question, webfetch, websearch, codesearch, edit, write, lsp, Restricted: bash, task, todowrite ✅
+
+### Check Flow (src/permission/mod.rs:443-520)
+- **5-step check flow** documented accurately ✅
+- **Priority**: Agent > Session > Config rules correctly documented ✅
+- **Path canonicalization with caching** correctly documented ✅
+
+### Registration-Before-Publish Pattern
+- **Pattern correctly documented** in architecture doc ✅
+
+### HMAC Signature Feature
+- **Uses `CODEGG_PERM_KEY` env var** correctly documented ✅
+- **Per-session isolation** correctly documented ✅
+- **Persists to `~/.config/codegg/permissions.json`** correctly documented ✅
+
+---
+
+## Bugs/Discrepancies Found
+
+### 1. PermissionChecker Missing `clear_decisions()` in Documentation
+**Priority**: Low
+**Location**: `architecture/permission.md:82-87`
+
+The documentation lists 5 methods for PermissionChecker but `clear_decisions()` is missing:
+```rust
+// Documented:
+pub async fn check(&self, tool: &str, path: Option<&str>, session_id: Option<&str>) -> PermissionResult;
+pub async fn check_bash(&self, path: Option<&str>, command: Option<&str>, session_id: Option<&str>) -> PermissionResult;
+pub async fn check_git(&self, path: Option<&str>, subcommand: Option<&str>, session_id: Option<&str>) -> PermissionResult;
+pub async fn always_allow(&self, tool: &str, path: Option<&str>, session_id: Option<&str>);
+pub async fn always_deny(&self, tool: &str, path: Option<&str>, session_id: Option<&str>);
+
+// Actual (src/permission/mod.rs:652-654):
+pub async fn clear_decisions(&self);
+```
+
+**Fix**: Add `clear_decisions(&self)` to the impl block documentation.
+
+### 2. `check_external_directory` Undocumented
+**Priority**: Low
+**Location**: `src/permission/mod.rs:1236-1248`
+
+The function `check_external_directory` is marked `#[allow(dead_code)]` and is a security utility for path traversal prevention. It is not documented in the architecture doc.
+
+**Fix**: Add to architecture doc under "Security Features" or as a utility function.
+
+### 3. `PermissionChoice` Type Not Documented
+**Priority**: Low
+**Location**: `architecture/permission.md`
+
+The `PermissionChoice` enum is used by `PermissionRegistry::respond()` but its definition is not shown in the architecture doc:
+```rust
+// Actual (src/permission/mod.rs:128-134):
+pub enum PermissionChoice {
+    AllowOnce,
+    AlwaysAllow,
+    DenyOnce,
+    AlwaysDeny,
+}
+```
+
+**Fix**: Add `PermissionChoice` definition to the PermissionRegistry section.
+
+### 4. `PermissionResponse` Type Not Documented
+**Priority**: Low
+**Location**: `architecture/permission.md`
+
+A `PermissionResponse` struct exists at `src/permission/mod.rs:1141-1145` that is not documented:
+```rust
+pub struct PermissionResponse {
+    pub level: PermissionLevel,
+    pub persist: bool,
+}
+```
+
+**Fix**: Document or note this type if it's used in the permission flow.
+
+### 5. `check_legacy` Methods Not Documented
+**Priority**: Low
+**Location**: `architecture/permission.md`
+
+Two legacy methods exist but are not in the docs:
+- `check_legacy()` at `src/permission/mod.rs:439-441`
+- `check_bash_legacy()` at `src/permission/mod.rs:532-538`
+- `always_allow_legacy()` at `src/permission/mod.rs:637-639`
+- `always_deny_legacy()` at `src/permission/mod.rs:648-650`
+
+These appear to be backward-compatible wrappers that don't pass session_id.
+
+**Fix**: Either document these or note they are internal legacy methods.
+
+### 6. `canonicalize_path` TTL Behavior Undocumented
+**Priority**: Low
+**Location**: `architecture/permission.md`
+
+The `canonicalize_path` function has special TTL handling for non-existent paths (`PATH_CANONICALIZE_NOT_FOUND_TTL_SECS = 1` vs `PATH_CANONICALIZE_CACHE_TTL_SECS = 1`). This is an implementation detail but could be noted.
+
+---
 
 ## Improvement Suggestions
 
-### Performance
+### High Priority
 
-1. **Index PermissionStore decisions**: Add HashMap index for O(1) lookups while preserving Vec ordering for decision precedence.
-2. **Batch canonicalization**: Allow checking multiple paths in a single spawn_blocking call.
-3. **Pre-compile glob patterns at config load**: Currently glob patterns for path rules are compiled on every PermissionChecker creation. Consider caching compiled globs.
+1. **Add `clear_decisions()` to PermissionChecker documentation**
+   - Location: `architecture/permission.md:86`
+   - Current impl block is missing this method
+   - Impact: Users reading the doc won't know this method exists
 
-### Correctness
+### Medium Priority
 
-1. **Add `git` field to PermissionConfig**: Enable git permission configuration via config file.
-2. **Update architecture doc for `docs` mode**: Add `write` to allowed tools list.
-3. **Fix PermissionStore documentation**: Change "HashMap" to "Vec" in arch doc.
+2. **Document `PermissionChoice` enum**
+   - Location: `architecture/permission.md` (PermissionRegistry section)
+   - Currently the enum used by `respond()` is not shown
+   - Impact: Incomplete API documentation
 
-### Maintainability
+3. **Clarify "Allowed Tools" vs "Restricted Tools" precedence in modes**
+   - Location: `src/permission/modes.rs:15-52` (`to_ruleset()` method)
+   - Currently `restricted_tools` entries are added AFTER `allowed_tools`, so deny rules override allow rules
+   - This is correct behavior but worth documenting explicitly
+   - Impact: May be confusing to users configuring modes
 
-1. **Add unit tests for DoomLoopDetector**: Test window eviction, threshold behavior, and reset functionality.
-2. **Add integration tests for PermissionChecker**: Test rule priority, path matching, and session isolation.
-3. **Document PermissionChoice variants**: Add doc comments explaining AllowOnce vs AlwaysAllow semantics.
-4. **Add debug logging for permission decisions**: Track which rule matched and why (trace level).
+### Low Priority
 
-## Priority Actions (top 5 items to fix)
+4. **Add `check_external_directory` to architecture doc**
+   - Location: Security Features section
+   - This is a security utility that validates paths stay within project root
+   - Impact: Missing security feature documentation
 
-1. **Add `git` field to PermissionConfig** (High) - Enables git-specific permission configuration that the architecture promises but doesn't implement.
+5. **Document legacy methods or mark them as internal**
+   - `check_legacy()`, `check_bash_legacy()`, `always_allow_legacy()`, `always_deny_legacy()`
+   - Location: PermissionChecker section
+   - These are compatibility wrappers
+   - Impact: Low, but users may wonder where these fit in the API
 
-2. **Update architecture doc for `docs` mode** (High) - Documentation has been wrong since `write` tool was added; current doc misrepresents the implementation.
+6. **Add note about path canonicalization TTL**
+   - Both valid and non-existent paths use 1s TTL (same value)
+   - Could document the caching strategy
+   - Impact: Low, implementation detail
 
-3. **Fix PermissionStore documentation (Vec vs HashMap)** (Medium) - Documentation error that could confuse readers about the actual data structure.
+---
 
-4. **Add PermissionStore size limit with cleanup** (Medium) - Prevents unbounded growth of permissions.json over time.
+## Summary
 
-5. **Add unit tests for DoomLoopDetector** (Medium) - Critical component for preventing infinite loops has no test coverage.
+The architecture document is **highly accurate** - most claims match the implementation exactly. The only meaningful discrepancies are:
+1. Missing `clear_decisions()` method in PermissionChecker documentation
+2. Missing types (`PermissionChoice`, `PermissionResponse`) that should be documented
+3. Missing `check_external_directory` security utility
+
+All core behaviors (DoomLoop detection, permission flow, HMAC signatures, mode system) are correctly documented. The document serves well as a reference; the fixes above would make it complete.

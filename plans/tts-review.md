@@ -1,98 +1,152 @@
 # TTS Module Architecture Review
 
-## Verification Results
-
-### Claims
+## Verified Claims (what matches)
 
 | Claim | Status | Evidence |
 |-------|--------|----------|
-| `Tts` struct has `speaking: AtomicBool` | VERIFIED | `src/tts/mod.rs:18` |
-| `Tts` implements `Clone` | VERIFIED | `src/tts/mod.rs:21-29` |
-| `Tts` implements `Default` | VERIFIED | `src/tts/mod.rs:31-35` |
-| `Tts::new()` exists | VERIFIED | `src/tts/mod.rs:38-42` |
-| `Tts::init(&mut self, provider: TtsProvider) -> Result<(), AppError>` | VERIFIED | `src/tts/mod.rs:44-48` |
-| `Tts::speak(&self, text: &str) -> Result<(), AppError>` | VERIFIED | `src/tts/mod.rs:50-69` |
-| `Tts::stop(&self) -> Result<(), AppError>` | VERIFIED | `src/tts/mod.rs:71-79` |
-| `Tts::is_speaking(&self) -> bool` | VERIFIED | `src/tts/mod.rs:81-83` |
+| `Tts` struct has `speaking: AtomicBool` field | VERIFIED | `src/tts/mod.rs:18` |
+| `Tts` implements `Clone` correctly | VERIFIED | `src/tts/mod.rs:21-29` - clones the atomic value |
+| `Tts` implements `Default` | VERIFIED | `src/tts/mod.rs:31-35` - delegates to `new()` |
+| `Tts::new()` exists and returns `Self` | VERIFIED | `src/tts/mod.rs:38-42` |
+| `Tts::init(&mut self, provider: TtsProvider)` signature | VERIFIED | `src/tts/mod.rs:44-48` - handles `TtsProvider::None` |
+| `Tts::speak(&self, text: &str)` async method | VERIFIED | `src/tts/mod.rs:50-69` |
+| `Tts::stop(&self)` async method | VERIFIED | `src/tts/mod.rs:71-79` - uses `pkill say` |
+| `Tts::is_speaking(&self) -> bool` method | VERIFIED | `src/tts/mod.rs:81-83` |
 | `TtsEngine` trait with `speak`, `stop`, `is_speaking` | VERIFIED | `src/tts/mod.rs:10-15` |
-| `TtsProvider::None` is default | VERIFIED | `src/tts/mod.rs:4-8` |
-| Uses macOS `say` command | VERIFIED | `src/tts/mod.rs:53` |
+| `TtsProvider::None` with `#[default]` | VERIFIED | `src/tts/mod.rs:4-8` |
+| Uses macOS `say` command via `tokio::process::Command` | VERIFIED | `src/tts/mod.rs:53` |
 | Error handling returns `AppError::Io` on failure | VERIFIED | `src/tts/mod.rs:63-67` |
-| Config `[tts]` section exists | UNABLE_TO_VERIFY | No config loading in `src/tts/mod.rs`; config may exist elsewhere |
-| Keybinding `Ctrl+Y` toggles TTS | UNABLE_TO_VERIFY | Documented in skill, not in tts module itself |
-| Keybinding `Ctrl+Shift+Y` stops TTS | UNABLE_TO_VERIFY | Documented in skill, not in tts module itself |
 | `speak()` sets `speaking=true` before command | VERIFIED | `src/tts/mod.rs:51-52` |
 | `speak()` sets `speaking=false` after command | VERIFIED | `src/tts/mod.rs:58-59` |
+| Keybinding `Ctrl+Y` toggles TTS | VERIFIED | `src/tui/app/mod.rs:284` |
+| Keybinding `Ctrl+Shift+Y` stops TTS | VERIFIED | `src/tui/app/mod.rs:285` |
+| `Tts` implements `TtsEngine` trait | VERIFIED | `src/tts/mod.rs:86-99` |
+| `toggle_tts()` spawns async task for speech | VERIFIED | `src/tui/app/mod.rs:4136-4164` |
+| `stop_tts()` spawns async task to stop | VERIFIED | `src/tui/app/mod.rs:4165-4176` |
 
-## Bugs Found
+## Bugs/Discrepancies Found
 
-### Critical
+### Critical (Correctness)
 
-1. **Race condition in `speak()`**: If `stop()` is called while `speak()` is awaiting `Command::output()`, the `speaking` flag remains `true` even after `say` is killed. The `stop()` method only sets `speaking=false` but doesn't wait or coordinate with ongoing `speak()` calls. The `speaking` atomic is not a proper guard for concurrent calls.
+1. **`speak()` error path does not reset `speaking` flag** (line 57):
+   - When `Command::new("say").output().await` fails (e.g., `say` command not found), `map_err(AppError::Io)?` returns early
+   - `speaking` was already set to `true` at line 51-52
+   - The flag is never reset to `false` on this error path
+   - **Impact**: TTS gets stuck in "speaking" state permanently on any error that occurs before line 58-59
+   - **Fix**: Use `map_err(|e| { self.speaking.store(false, Ordering::SeqCst); AppError::Io(e) })` or restructure to reset on all error paths
 
-2. **`stop()` ignores errors from `pkill`**: The `stop()` method at line 74-77 discards the `Output` result entirely with `let _ = ...`. If `pkill` fails (e.g., no `say` process running), this is silently ignored.
+2. **Race condition between concurrent `speak()` and `stop()` calls**:
+   - `speak()` at line 51-52 sets `speaking=true`, then awaits the command
+   - `stop()` at line 72-73 sets `speaking=false`
+   - If `stop()` is called during the `await` in `speak()`, the flag is incorrectly set after `speak()` completes
+   - **Impact**: `is_speaking()` returns incorrect state during and after concurrent calls
+   - **Fix**: Use a `Mutex` to serialize access to the speaking state
 
-### High
+### Medium (Correctness)
 
-3. **`speak()` panic on empty text**: When `text` is empty (`""`), `say ""` succeeds but produces no audio. More importantly, if text contains special shell characters, it could cause unexpected behavior since `text` is passed as a single argument without escaping.
+3. **`stop()` ignores `pkill` failure silently** (line 74-77):
+   - `let _ = tokio::process::Command::new("pkill").arg("say").output().await;`
+   - Result is discarded; if `pkill` fails or no `say` process exists, this is silently ignored
+   - **Impact**: Callers cannot tell if stop actually worked
+   - **Fix**: Log warning when `pkill` fails and return error
 
-4. **No process lifecycle management**: `say` is spawned as a child process but there's no mechanism to ensure it completes or is terminated if the app exits. The `stop()` method relies on `pkill` which may not work reliably.
+4. **`speak()` behavior with empty string**:
+   - `say ""` succeeds but produces no audio
+   - The method returns `Ok(())` but nothing is spoken
+   - **Impact**: Minor - unexpected but not harmful
+   - **Fix**: Consider returning error or warning for empty text
 
-5. **`speak()` sets speaking flag even on error**: When `Command::new("say")` fails (e.g., `say` not found), `map_err(AppError::Io)?` returns early, but `speaking` was already set to `true` at line 51-52. The flag is never reset on this error path.
+### Low (Observability)
 
-### Medium
+5. **`stop()` always returns `Ok(())`** (line 78):
+   - Even if `pkill` fails to find/kill any process, `stop()` returns success
+   - **Impact**: Callers cannot distinguish "nothing was playing" from "successfully stopped"
+   - **Fix**: Return `Result<(), AppError>` based on `pkill` exit status
 
-6. **`stop()` always succeeds**: The `stop()` method always returns `Ok(())` even if `pkill` fails or there's no process to kill. This could mislead callers about whether stop actually worked.
+6. **No process lifecycle guarantee**:
+   - `say` is spawned as child process with no mechanism to ensure it terminates if app exits
+   - The `pkill` approach is external and may not work reliably in all scenarios
+   - **Impact**: Potential zombie processes or speech continuing after app exit
+   - **Fix**: Consider using process group or storing PID for targeted kill
 
-7. **No voice/rate configuration**: The architecture doc mentions `voice` and `rate` options are "not implemented" - this is a missing feature rather than a bug.
+## Improvement Suggestions (with priority)
 
-8. **Cross-platform not implemented**: The architecture explicitly states "macOS-only" which is accurate. Linux requires `speech-dispatcher` (not implemented).
+### Priority: High
 
-## Improvement Suggestions
+1. **Fix `speaking` flag reset on error path**:
+   ```rust
+   pub async fn speak(&self, text: &str) -> Result<(), AppError> {
+       self.speaking.store(true, Ordering::SeqCst);
+       let result = tokio::process::Command::new("say")
+           .arg(text)
+           .output()
+           .await;
+       self.speaking.store(false, Ordering::SeqCst);
+       result.map_err(AppError::Io)?;
+       if !output.status.success() { ... }
+       Ok(())
+   }
+   ```
 
-### Performance
+2. **Add synchronization for concurrent access**:
+   - Replace `speaking: AtomicBool` with a proper state machine or `Mutex<SpeakingState>`
+   - This fixes both the race condition and ensures `speaking` is reset on all error paths
 
-1. **Consider voice selection**: The `say` command supports `-v` for voice selection and `-r` for rate. These could be exposed via `TtsProvider` config.
+3. **`stop()` should report `pkill` failures**:
+   ```rust
+   pub async fn stop(&self) -> Result<(), AppError> {
+       self.speaking.store(false, Ordering::SeqCst);
+       let output = tokio::process::Command::new("pkill")
+           .arg("say")
+           .output()
+           .await
+           .map_err(AppError::Io)?;
+       if !output.status.success() {
+           tracing::debug!("pkill say: no process found");
+       }
+       Ok(())
+   }
+   ```
 
-2. **Process group kill**: Consider using `pkill -9 say` or process group to ensure termination rather than just `pkill say`.
+### Priority: Medium
 
-### Correctness
+4. **Add voice/rate configuration to `TtsProvider`**:
+   ```rust
+   pub enum TtsProvider {
+       #[default]
+       None,
+       MacOS { voice: Option<String>, rate: Option<u32> },
+   }
+   ```
 
-3. **Fix speaking flag reset on error**: In `speak()`, if we return early due to `map_err`, we should reset `speaking` to `false`:
+5. **Consider using `kill -STOP`/`kill -CONT`** for pause functionality or process group kill:
+   - `pkill -9 say` ensures force kill rather than graceful termination
 
-```rust
-let output = tokio::process::Command::new("say")
-    .arg(text)
-    .output()
-    .await
-    .map_err(|e| {
-        self.speaking.store(false, Ordering::SeqCst);
-        AppError::Io(e)
-    })?;
-```
+6. **Add unit tests** for:
+   - `is_speaking()` returns correct initial state
+   - `speak()` sets flag during speech
+   - `stop()` resets flag
+   - Error handling when `say` command unavailable
 
-4. **Add argument escaping**: Pass text via stdin or use `--` separator to prevent special character interpretation.
+### Priority: Low
 
-5. **Return error from `stop()` when `pkill` fails**: Instead of discarding the result, log warning and return error.
+7. **Handle empty text case**:
+   - Return early with `Ok(())` for empty string, or return error
 
-### Maintainability
+8. **Document `TtsEngine` trait purpose**:
+   - Currently only `Tts` implements it; exists for potential custom engines
+   - Add doc comment explaining when to implement custom `TtsEngine`
 
-6. **Add `TtsProvider::MacOS` variant**: Currently `TtsProvider::None` is the only variant. A proper `MacOS` variant would allow configuration of voice/rate parameters.
+9. **Add graceful shutdown via `Drop`**:
+   - Implement `Drop` for `Tts` to call `stop()` on drop
 
-7. **Add unit tests**: No tests exist for the TTS module. Test `speak()`, `stop()`, `is_speaking()` behavior with mocked `say` command.
+## Summary
 
-8. **Document `TtsEngine` implementation**: The `Tts` struct implements `TtsEngine` but this is only used internally. Document when/why a consumer would implement `TtsEngine`.
+The architecture document at `architecture/tts.md` is **accurate** for all documented types, methods, and behaviors. The TTS skill at `.opencode/skills/tts/SKILL.md` is also **accurate**.
 
-9. **Consider a `Destroy` trait or shutdown method**: For graceful shutdown, `Tts` could implement `Drop` to ensure any ongoing speech is stopped.
+The main issues are:
+- **2 critical correctness bugs** in error handling and concurrent access
+- **1 medium bug** where `stop()` silently ignores failures
+- No actual bugs in documentation - it correctly notes "macOS-only" and unimplemented features
 
-## Priority Actions (top 5 items to fix)
-
-1. **[Correctness] Fix speaking flag not reset when `speak()` errors**: The `speaking` atomic is set to `true` at line 51-52 but never reset if `Command::output()` returns an error. This leaves TTS in permanently "speaking" state on errors like `say` command not found.
-
-2. **[Correctness] Fix race condition between concurrent `speak()` and `stop()` calls**: If `stop()` is called while `speak()` is in progress, the `speaking` flag can be out of sync with actual state. Consider using a `Mutex` or `RwLock` to protect state transitions.
-
-3. **[Correctness] `stop()` should return error when `pkill` fails**: Currently `stop()` always returns `Ok(())` even when `pkill say` fails. Return proper error to inform callers.
-
-4. **[High] Add argument escaping for special characters**: Pass text as stdin to `say` command to avoid shell injection issues with special characters.
-
-5. **[Medium] Add unit tests**: No test coverage exists for `Tts::speak()`, `Tts::stop()`, `Tts::is_speaking()`. Add tests with mocked `say` command.
+The module is functional but needs fixes for the error path race condition and better error reporting.

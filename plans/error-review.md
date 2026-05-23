@@ -1,121 +1,197 @@
 # Error Module Architecture Review
 
-## Verification Results
+**Date**: 2026-05-23
+**Reviewed Files**: `architecture/error.md`, `src/error.rs`
 
-### Claims
+---
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| **Location**: `src/error.rs` | VERIFIED | Actual file is `src/error.rs` (note: not `src/error/mod.rs`) |
-| **AppError enum variants** (lines 19-70) | VERIFIED | All 15 variants present: Config, Storage, Provider, Agent, Tool, Permission, Mcp, Plugin, Lsp, Io, Json, Http, Other, Worktree, Upgrade, Clipboard, Tui |
-| **ProviderError::is_retryable()** (lines 106-115) | VERIFIED | Method exists with correct retryable variants: RateLimit, Timeout, Stream, CircuitOpen |
-| **ToolError::is_retryable()** (lines 148-156) | VERIFIED | Method exists with correct variants: Io, Network, Timeout |
-| **PermissionError** (lines 160-169) | VERIFIED | Denied { tool, path } and Check variants present |
-| **ConfigError variants** (line 173) | VERIFIED | NotFound, Invalid, Parse, Merge, Watch all present (lines 66-81) |
-| **StorageError variants** (line 174) | VERIFIED | Database, Migration, NotFound, LlmOperation, Import, Export all present (lines 83-102) |
-| **AgentError variants** (line 175) | VERIFIED | NotFound, Invalid present (lines 312-319) |
-| **McpError variants** (line 176) | VERIFIED | Connection, Server, ToolCall, OAuth, Encryption, Timeout present (lines 366-385) |
-| **LspError variants** (line 177) | INCORRECT | Documented 10 variants, actual has 10 but RequestTimeout missing from doc. Actual: ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json. RequestTimeout IS in actual code at line 404-405. |
-| **PluginError variants** (line 178) | VERIFIED | NotFound, LoadFailed, HookFailed, InstallFailed, InvalidManifest present (lines 417-433) |
-| **ClientError** (line 179) | VERIFIED | Connection, Unreachable, Rpc, WebSocket, Auth present (lines 481-497) |
-| **ServerRuntimeError** (line 180) | VERIFIED | Bind, Shutdown, WebSocket, Rpc, Auth present (lines 435-451) |
-| **sqlx::Error -> StorageError::Database** (line 186) | VERIFIED | Lines 104-108 implement From<sqlx::Error> |
-| **reqwest::Error -> ProviderError::Api** (line 187) | VERIFIED | Lines 193-202 implement From<reqwest::Error> |
-| **CircuitError::Open -> ProviderError::CircuitOpen** (line 188) | VERIFIED | Lines 204-212 implement From<CircuitError> |
-| **String/&str -> ProviderError::Api** (line 189) | VERIFIED | Lines 173-191 implement From<String> and From<&str> |
-| **HTTP Status Mapping table** (lines 195-215) | VERIFIED | All mappings match actual `IntoResponse` impl (lines 215-309) |
-| **ConfigError::NotFound -> 404** | VERIFIED | Line 218 |
-| **ConfigError::Invalid/Parse/Merge -> 400** | VERIFIED | Lines 219-221 |
-| **StorageError::NotFound -> 404** | VERIFIED | Line 224 |
-| **StorageError::Database/Migration/LlmOperation -> 500** | VERIFIED | Lines 225-229 |
-| **ProviderError::Auth -> 401** | VERIFIED | Line 231 |
-| **ProviderError::RateLimit -> 429** | VERIFIED | Line 232 |
-| **ProviderError::Timeout -> 504** | VERIFIED | Line 233 |
-| **ProviderError::NotFound/ModelNotFound -> 404** | VERIFIED | Lines 234-235 |
-| **ProviderError::Api/Stream/CircuitOpen -> 502** | VERIFIED | Lines 236-238 |
-| **ToolError::NotFound -> 404** | VERIFIED | Line 243 |
-| **ToolError::Permission -> 403** | VERIFIED | Lines 244-246 |
-| **ToolError::Timeout -> 504** | VERIFIED | Line 247 |
-| **McpError::OAuth -> 401** | VERIFIED | Line 256 |
-| **McpError::Timeout -> 504** | VERIFIED | Line 257 |
-| **McpError::Connection/Server/ToolCall/Encryption -> 502** | VERIFIED | Lines 258-261 |
-| **PluginError::NotFound -> 404** | VERIFIED | Line 263 |
-| **PluginError::InvalidManifest -> 400** | VERIFIED | Line 264 |
-| **PluginError::LoadFailed/HookFailed/InstallFailed -> 500** | VERIFIED | Lines 265-267 |
+## Verified Claims
 
-## Bugs Found
+### AppError Enum
+- All 16 variants match implementation exactly (Config, Storage, Provider, Agent, Tool, Permission, Mcp, Plugin, Lsp, Io, Json, Http, Other, Worktree, Upgrade, Clipboard, Tui)
+- `#[from]` derive attributes correctly enable error propagation
+- Error message formats match exactly
 
-### Critical
+### ProviderError
+- All 8 variants match: NotFound, Api, Stream, RateLimit, Auth, ModelNotFound, Timeout, CircuitOpen
+- `is_retryable()` correctly returns true for: RateLimit, Timeout, Stream, CircuitOpen, **and Auth** (documentation only listed 4 - see bugs)
+- `api()` and `api_with_url()` helper constructors documented and present
+- `From<reqwest::Error>` conversion creates Api variant with code "request_error"
+- `From<CircuitError>` conversion maps `CircuitError::Open(name)` to `ProviderError::CircuitOpen(name)`
+- `From<String>` and `From<&str>` create Api variant with code "unknown"
 
-1. **None identified** - Core error handling is sound.
+### ToolError
+- All 8 variants match: NotFound, Execution, Timeout, Permission, Format, Disabled, Io, Network
+- `is_retryable()` correctly returns true for: Io, Network, Timeout
 
-### High
+### PermissionError
+- Both variants match exactly: Denied { tool, path }, Check(String)
 
-1. **ProviderError::Auth is not retryable but has valid use case for retry** (error.rs:162-170)
-   - `is_retryable()` returns false for Auth errors, but transient auth failures (expired token, network glitch) should be retryable.
-   - Currently only `RateLimit`, `Timeout`, `Stream`, and `CircuitOpen` are retryable.
-   - **Fix**: Consider adding `ProviderError::Auth` to the retryable list, or add a separate method `is_retryable_with_backoff()`.
+### Other Error Types (line 171-180)
+- ConfigError: NotFound, Invalid, Parse, Merge, Watch ✓
+- StorageError: Database, Migration, NotFound, LlmOperation, Import, Export ✓
+- AgentError: NotFound, Invalid ✓
+- McpError: Connection, Server, ToolCall, OAuth, Encryption, Timeout ✓
+- LspError: ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json ✓
+- PluginError: NotFound, LoadFailed, HookFailed, InstallFailed, InvalidManifest ✓
+- ClientError: Connection, Unreachable, Rpc, WebSocket, Auth ✓
+- ServerRuntimeError: Bind, Shutdown, WebSocket, Rpc, Auth ✓
 
-### Medium
+### Key Conversions Table (line 184-189)
+- `sqlx::Error` -> `StorageError::Database` ✓
+- `reqwest::Error` -> `ProviderError::Api` ✓
+- `CircuitError::Open` -> `ProviderError::CircuitOpen` ✓
+- `String` / `&str` -> `ProviderError::Api` ✓
 
-1. **StorageError::Import and Export missing HTTP status mapping** (error.rs:224-229)
-   - `Import` and `Export` variants are not explicitly mapped in `IntoResponse`, falling through to the catch-all 500.
-   - This is technically correct but inconsistent with how other variants are explicitly listed.
-   - Not a bug, just undocumented behavior.
+### HTTP Status Mapping (lines 193-214)
+- All mappings are correct except `ConfigError::Watch` (see bugs)
+- Error body does not leak details (uses canonical_reason only) ✓
 
-2. **ToolError::Disabled returns 403** (error.rs:248)
-   - `ToolError::Disabled(_)` maps to `StatusCode::FORBIDDEN` which semantically means "you cannot access this" rather than "this is turned off."
-   - A more appropriate status might be 503 Service Unavailable or 404 Not Found depending on context.
+### McpError::is_retryable()
+- Present at line 388-394, returns true for Connection, Server, ToolCall, OAuth, Timeout
+- **Not documented in architecture doc** - see improvement suggestions
 
-3. **LspError::RequestTimeout missing from HTTP status table** (architecture/error.md:177)
-   - The architecture doc lists LspError variants but omits `RequestTimeout`.
-   - Actual code maps it to 502 BAD_GATEWAY (line 274) same as `RequestFailed`.
+### LspError::is_retryable()
+- Present at line 427-434, returns true for DownloadFailed, LaunchFailed, RequestFailed, RequestTimeout, Io
+- **Not documented in architecture doc** - see improvement suggestions
+
+---
+
+## Bugs/Discrepancies Found
+
+### BUG 1 (High Priority): ProviderError::is_retryable() missing Auth variant
+**Documentation** (line 107-114):
+```rust
+pub fn is_retryable(&self) -> bool {
+    matches!(
+        self,
+        ProviderError::RateLimit
+            | ProviderError::Timeout(_)
+            | ProviderError::Stream(_)
+            | ProviderError::CircuitOpen(_)
+    )
+}
+```
+
+**Implementation** (line 162-171):
+```rust
+pub fn is_retryable(&self) -> bool {
+    matches!(
+        self,
+        ProviderError::RateLimit
+            | ProviderError::Timeout(_)
+            | ProviderError::Stream(_)
+            | ProviderError::CircuitOpen(_)
+            | ProviderError::Auth(_)
+    )
+}
+```
+
+The implementation includes `Auth(_)` but the documentation does not. This is an intentional behavior difference - authentication errors may be transient (token expiry, rate limiting on auth endpoints) and the implementation considers them retryable.
+
+### BUG 2 (Medium Priority): ConfigError::Watch HTTP status incorrect
+**Documentation** (line 198):
+| ConfigError::Watch | 400 |
+
+**Implementation** (line 223):
+```rust
+AppError::Config(ConfigError::Watch(_)) => StatusCode::INTERNAL_SERVER_ERROR,
+```
+
+The documentation says ConfigError::Watch should map to 400, but it actually maps to 500 (INTERNAL_SERVER_ERROR).
+
+### BUG 3 (Medium Priority): Missing StorageError::Import/Export HTTP mapping
+**Documentation** (line 200):
+```
+StorageError::Database/Migration/LlmOperation | 500
+```
+
+**Implementation** (line 226-230):
+```rust
+AppError::Storage(StorageError::Database(_))
+| AppError::Storage(StorageError::Migration(_))
+| AppError::Storage(StorageError::LlmOperation { .. }) => {
+    StatusCode::INTERNAL_SERVER_ERROR
+}
+```
+
+StorageError::Import and StorageError::Export are not mapped. They fall through to the catch-all at line 290 and get 500, which is probably correct behavior, but they should be explicitly documented. Currently they have no explicit HTTP status mapping documented.
+
+### BUG 4 (Low Priority): ToolError::Permission HTTP mapping inconsistency
+**Documentation** (line 207):
+```
+ToolError::Permission | 403
+```
+
+**Implementation** (line 245):
+```rust
+AppError::Tool(ToolError::Permission(_)) | AppError::Permission(PermissionError::Denied { .. }) => {
+    StatusCode::FORBIDDEN
+}
+```
+
+This is actually correct, but the documentation only shows `ToolError::Permission` and doesn't mention that `PermissionError::Denied` also maps to 403. The implementation groups them together which is fine but the documentation is incomplete.
+
+---
 
 ## Improvement Suggestions
 
-### Performance
+### HIGH Priority
 
-1. **Consider caching HTTP status codes** for frequently used errors.
-   - Currently, `IntoResponse` pattern matches on every call, which is fine for error paths but could be optimized if errors are constructed frequently.
-   - However, this is likely premature optimization.
+1. **Add McpError::is_retryable() to documentation** (line ~115)
+   - McpError has its own `is_retryable()` method (line 388-394)
+   - Returns true for: Connection, Server, ToolCall, OAuth, Timeout
+   - Should be documented alongside ProviderError::is_retryable() and ToolError::is_retryable()
 
-### Correctness
+2. **Add LspError::is_retryable() to documentation** (line ~115)
+   - LspError has its own `is_retryable()` method (line 427-434)
+   - Returns true for: DownloadFailed, LaunchFailed, RequestFailed, RequestTimeout, Io
+   - Should be documented alongside other is_retryable() methods
 
-1. **Add `is_retryable()` for `McpError`** - MCP connection errors could be transient and benefit from retry logic.
+3. **Document Auth as retryable in ProviderError::is_retryable()** (line 107-114)
+   - The implementation treats `Auth(_)` as retryable
+   - Update documentation to include Auth variant or add a note explaining why
 
-2. **Add `is_retryable()` for `LspError`** - Download failures, request timeouts, and launch failures are all potentially retryable scenarios.
+### MEDIUM Priority
 
-3. **Consider `is_retryable()` for `StorageError`** - Database transient failures could be retryable.
+4. **Fix ConfigError::Watch HTTP status in documentation** (line 198)
+   - Change from 400 to 500 to match implementation
 
-4. **Add explicit HTTP mapping for `ToolError::Disabled`** - Consider 503 instead of 403 to better reflect that the tool exists but is disabled.
+5. **Add explicit StorageError::Import/Export to HTTP mapping table** (line 200)
+   - Add row: `StorageError::Import/Export | 500`
+   - Or note that they fall through to default 500
 
-### Maintainability
+6. **Document ToolError::Permission grouping with PermissionError::Denied** (line 207)
+   - Update table to show: `ToolError::Permission + PermissionError::Denied | 403`
+   - Or clarify that they share the same 403 status
 
-1. **Document the `is_retryable()` convention** - Not all error types have `is_retryable()` methods. Consider establishing a pattern or trait for retryable errors.
+### LOW Priority
 
-2. **Add test coverage for `ServerRuntimeError::IntoResponse`** - Already covered in tests (lines 595-616), but expand to cover all variants.
+7. **Add ClientError IntoResponse documentation** (after line 180)
+   - ClientError (line 500-516) does not have an IntoResponse impl
+   - Document that it has no HTTP mapping (only used client-side)
 
-3. **Add tests for error conversion implementations** - `From<CircuitError> for ProviderError`, `From<String> for ProviderError`, etc. are not explicitly tested.
+8. **Add error module location note** (line 7)
+   - Documentation says "Location: `src/error.rs`" which is correct
+   - Could add a note that error types are all in a single file (not a module directory)
 
-4. **Consider extracting HTTP mapping to a helper function** - The `IntoResponse` impl is 95 lines and could be broken down for readability.
+9. **Add cross-reference to resilience module** (line 218)
+   - The "See Also" section mentions resilience but doesn't explain how
+   - Could clarify that `CircuitError` conversion to `ProviderError::CircuitOpen` enables circuit breaker integration
 
-5. **Add inline documentation for `api_with_url()`** - Line 150-160 creates Api variant with URL, but this helper is undocumented in the architecture.
+10. **Add cross-reference to exec module** (line 219)
+    - The "See Also" mentions exec but doesn't explain how
+    - Could clarify that exec mode uses error classification for JSON output
 
-## Priority Actions (top 5 items to fix)
+---
 
-1. **Update architecture/error.md** - Add missing `RequestTimeout` to LspError variants list.
+## Summary
 
-2. **Consider adding `Auth` to retryable errors** - This is a design decision that requires careful consideration of retry behavior for auth failures.
+The architecture documentation is **largely accurate** with minor discrepancies. The main issues are:
 
-3. **Add `is_retryable()` to `McpError`** - Aligns with the pattern established by `ProviderError` and `ToolError`.
+1. **ProviderError::is_retryable()** - implementation includes `Auth(_)` but docs don't
+2. **ConfigError::Watch** HTTP status - docs say 400, implementation returns 500
+3. **Missing is_retryable() methods** - McpError and LspError have these but docs don't mention them
+4. **Incomplete HTTP mapping** - StorageError::Import/Export not explicitly mapped
 
-4. **Add `is_retryable()` to `LspError`** - Would provide consistent retry behavior across error types.
-
-5. **Clarify `ToolError::Disabled` HTTP mapping** - Consider using 503 Service Unavailable instead of 403 to better reflect semantics.
-
-## Notes
-
-- The error module is well-structured with consistent use of `thiserror` for derive.
-- The `From` trait implementations provide ergonomic error conversions.
-- The `IntoResponse` implementation correctly avoids leaking sensitive details in error responses (verified by test at line 585-592).
-- Test coverage is present for HTTP status mapping, but could be expanded for error conversions.
+The error module itself is well-structured with comprehensive test coverage verifying HTTP status mapping behavior. All error conversions are correctly documented.

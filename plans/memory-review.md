@@ -1,112 +1,151 @@
 # Memory Module Architecture Review
 
-## Verification Results
+Date: 2026-05-26
+Reviewed: `architecture/memory.md` vs `src/memory/mod.rs` and `src/memory/patterns.rs`
 
-### Claims
+---
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| **Key Types**: Memory struct with 10 fields (id, namespace, title, content, uri, created_at, updated_at, access_count, importance, superseded_by) | VERIFIED | `src/memory/mod.rs:14-26` - Memory struct matches exactly |
-| **Key Types**: MemoryStore struct with fields (root, memories, auto_save) | VERIFIED | `src/memory/mod.rs:50-54` - MemoryStore struct matches |
-| **MemoryStore::new()** returns `std::io::Result<Self>` | VERIFIED | `src/memory/mod.rs:79` |
-| **MemoryStore::get()** increments access_count | VERIFIED | `src/memory/mod.rs:169-177` - correctly increments `access_count` |
-| **Storage**: File-based in `~/.config/codegg/memory/` | VERIFIED | `src/memory/mod.rs:84-87` - uses `dirs::config_dir()` |
-| **Storage**: Markdown files with YAML frontmatter | VERIFIED | `src/memory/mod.rs:329-359` - save_unlocked writes MEMORY.md with frontmatter |
-| **Namespace**: `user/preferences` for user-specific preferences | VERIFIED | TUI uses this namespace (`app/mod.rs:4242`) |
-| **Namespace**: `project/{hash}/conventions` for project conventions | VERIFIED | `src/memory/mod.rs:217` - namespace created from project_hash |
-| **Scoring**: "I prefer X" = 10 points | VERIFIED | `patterns.rs:49-52` - base_score 10.0 |
-| **Scoring**: "I always X" = 12 points | VERIFIED | `patterns.rs:54-57` - base_score 12.0 |
-| **Scoring**: "don't use Y" = 5 points (8 + -3) | VERIFIED | `patterns.rs:59-62` - base 8.0, negation_modifier -3.0, combined correctly |
-| **Scoring**: "never use Y" = 7 points (10 + -3 modifier = 7) | INCORRECT | `patterns.rs:64-67` - base 10.0, negation_modifier 0.0 (NOT -3.0). Doc incorrectly says -3.0 modifier |
-| **Scoring**: "use X instead" = 9 points | VERIFIED | `patterns.rs:69-72` - base_score 9.0 |
-| **Scoring**: "([^ ]+) is deprecated" = 7 points | VERIFIED | `patterns.rs:74-77` - base_score 7.0 |
-| **Scoring**: "we use X" = 8 points | VERIFIED | `patterns.rs:79-82` - base_score 8.0 |
-| **Scoring**: "our X follows Y" = 9 points | VERIFIED | `patterns.rs:84-87` - base_score 9.0 |
-| **Negation scoring**: negation_modifier ADDED to base (not replacement) | VERIFIED | `patterns.rs:175-179` - code correctly adds modifier for negations |
-| **Max 20 active memories per namespace** | VERIFIED | `src/memory/mod.rs:239` - `take(20)` |
-| **Threshold**: Only memories with score >= 8.0 stored | VERIFIED | `src/memory/mod.rs:240-242` - checks `scored_mem.score < 8.0` |
-| **Consolidation threshold** documented in flow | VERIFIED | `architecture/memory.md:182` matches code at `mod.rs:240` |
-| **Auto-consolidation via `experimental.memory_auto_consolidate`** | VERIFIED | `src/tui/mod.rs:1260` - config check exists |
-| **TUI Commands**: `/memory`, `/memory-search`, `/memory-list`, `/memory-remember`, `/memory-forget`, `/memory-consolidate` | PARTIAL | `/memory` and `/memory-search` not found; others verified in `app/mod.rs:3026-3036` |
-| **Superseding**: Old memory gets `superseded_by` set when new higher-importance memory exists | VERIFIED | `src/memory/mod.rs:246-259` |
-| **Topic matching**: Strips title prefixes before comparing | VERIFIED | `src/memory/mod.rs:223-232` - strips "Preference: ", "Convention: ", etc. |
-| **Pattern Detection**: User preferences, coding conventions, deprecation, tool preferences | VERIFIED | `patterns.rs:18-25` - PatternType enum includes all 6 types |
-| **Auto-consolidation flow**: AgentFinished → load messages → PatternDetector → score → store | VERIFIED | `src/tui/mod.rs:1256-1283` |
+## Verified Claims
 
-### Documentation Discrepancies
+### Memory struct (mod.rs:14-26)
+- All 10 fields match: `id`, `namespace`, `title`, `content`, `uri`, `created_at`, `updated_at`, `access_count`, `importance`, `superseded_by`
+- Types are correct
 
-| Item | Doc Says | Code Actually Does |
-|------|----------|-------------------|
-| "never use Y" scoring | 10 base + -3 modifier = **7** | 10 base + 0 modifier = **10** |
-| `/memory` command | Listed in TUI Commands table | NOT IMPLEMENTED - not found in codebase |
-| `/memory-search` command | Listed in TUI Commands table | NOT IMPLEMENTED - not found in codebase |
-| `/memory-list [namespace]` command | Listed in TUI Commands table | Partial: command exists in TUI but uses default namespaces |
+### MemoryStore API (mod.rs:78-363)
+- `new()`, `with_auto_save()`, `add()`, `get()`, `list()`, `search()`, `delete()`, `save()`, `consolidate_session()`, `get_memory_summary()` all exist with correct signatures
+- `get()` correctly increments `access_count` (mod.rs:172)
 
-## Bugs Found
+### Negation Scoring (patterns.rs:184-192)
+- "don't use X" = 8.0 + (-3.0) = 5.0 (correct, matches docs line 121)
+- "never use X" = 10.0 + (-3.0) = 7.0 (correct, matches docs line 123)
+- Negation modifier is ADDED to base score, not replacing it
 
-### Critical
+### Topic Matching (mod.rs:222-232)
+- `consolidate_session()` correctly strips prefixes: "Preference: ", "Convention: ", "Naming: ", "Architecture: ", "Deprecated: ", "Tool: " before comparing topics
 
-1. **"never use Y" negation modifier is 0.0 instead of -3.0**
-   - **Location**: `src/memory/patterns.rs:64-67`
-   - **Description**: The "never use" pattern has `negation_modifier: 0.0` but documentation claims it should be -3.0 (same as "don't use"). This is inconsistent - "never use" statements are equally strong negations and should score 7 (10-3), not 10.
-   - **Impact**: "never use eval" scores 10 instead of 7, potentially stored when it shouldn't be, or ranking higher than intended.
+### Pattern Detection (patterns.rs)
+- All 6 PatternType variants present: UserPreference, CodingConvention, Deprecation, NamingPattern, Architecture, ToolPreference
 
-### High
+### File Format (mod.rs:344-355)
+- YAML frontmatter correctly stored with all fields: id, title, uri, created_at, updated_at, importance, access_count, superseded_by
+- Content section follows `---` delimiter
 
-2. **Missing `/memory` and `/memory-search` commands**
-   - **Location**: `src/tui/app/mod.rs:3020-3038` - command handling
-   - **Description**: Architecture doc lists 6 memory commands but only 4 are implemented (`/memory-remember`, `/memory-forget`, `/memory-consolidate`, `/memory-list`). The dashboard (`/memory`) and search (`/memory-search`) commands are missing.
-   - **Impact**: Users cannot access memory dashboard or search memories via TUI commands.
+### Auto-Consolidation (tui/mod.rs:1256-1282)
+- Config option `experimental.memory_auto_consolidate` is read and used correctly
+- Runs after `AgentFinished` with `stop_reason == "completed"`
 
-3. **Dead code: `is_safe_namespace_single_component()` function**
-   - **Location**: `src/memory/mod.rs:366-368` and `mod.rs:124`
-   - **Description**: `is_safe_namespace_single_component()` is defined but never called directly. At line 124, the code calls `is_safe_namespace_single_component()` but this function doesn't exist - only `is_safe_namespace()` exists. This should cause a compile error, yet it compiles. This suggests the file was refactored incorrectly.
-   - **Impact**: If `is_safe_namespace()` was intended to be used, there's potential for incorrect validation.
+### TUI Commands
+- `/memory`, `/memory-search`, `/memory-list`, `/memory-remember`, `/memory-forget`, `/memory-consolidate` all implemented in `src/tui/app/mod.rs:3021-3041`
 
-### Medium
+---
 
-4. **Importance score overflow handling in superseding check**
-   - **Location**: `src/memory/mod.rs:247`
-   - **Description**: At line 247, `existing_mem.importance >= scored_mem.score / 20.0` compares importance (which is `score/20` capped at 1.0) against `scored_mem.score / 20.0`. This is comparing normalized scores, but if `scored_mem.score` is very high (e.g., 100), dividing by 20 gives 5.0, which gets capped to 1.0 when stored. The comparison might not work as intended.
-   - **Impact**: Low - edge case where very high scores get capped and may incorrectly supersede existing memories.
+## Bugs/Discrepancies Found
 
-5. **Test for negation score assertion is incorrect**
-   - **Location**: `patterns.rs:320` - test `test_negation_detection`
-   - **Description**: Test expects `matches[0].score < 8.0` for "Don't use eval in JavaScript". With the current code (base 8.0 + negation_modifier 0.0), score is 8.0, which is NOT < 8.0. The test passes but for the wrong reason - it passes because the code uses 0.0 modifier, not because negation is properly applied.
-   - **Impact**: Test doesn't catch the bug where "never use" has wrong modifier.
+### 1. **Storage Directory Structure Mismatch** (medium)
 
-6. **Topic key collision potential**
-   - **Location**: `src/memory/mod.rs:244`
-   - **Description**: Topic key is created using `scored_mem.matched_text.to_lowercase()`. For "I prefer snake_case" and "snake_case" convention pattern, both would produce "snake_case" key and get merged incorrectly.
-   - **Impact**: Different pattern types and contexts get conflated when they share matched text.
+**Documentation (architecture/memory.md:69-77)**:
+```
+~/.config/codegg/memory/
+├── user/
+│   └── preferences/
+│       └── MEMORY.md
+└── projects/
+    └── {project_hash}/
+        └── conventions/
+            └── MEMORY.md
+```
+
+**Actual (mod.rs:217)**:
+```rust
+let namespace = format!("project/{}", project_hash);
+```
+
+The documentation shows `projects/` (plural) with a `conventions/` subdirectory, but actual code uses `project/` (singular) directly with no `conventions/` subdirectory.
+
+**Impact**: Users following the docs would look in wrong location.
+
+### 2. **Missing `set_auto_save()` Method** (low)
+
+**Documentation (architecture/memory.md:50-61)**: Lists 10 methods for MemoryStore
+
+**Actual (mod.rs:102-104)**:
+```rust
+pub fn set_auto_save(&self, enabled: bool) {
+    *self.auto_save.lock() = enabled;
+}
+```
+
+This method exists but is undocumented. Minor but should be documented if public API.
+
+### 3. **`/memory-list` Behavior Not Documented** (low)
+
+**Documentation (architecture/memory.md:165)**:
+```
+| `/memory-list [namespace]` | List memories by namespace |
+```
+
+**Actual (app/mod.rs:3028-3030)**: When query is empty, shows BOTH `user/preferences` AND project memories, not a single namespace.
+
+```rust
+Some(("list", "")) => {
+    let prefs = mem_store.list("user/preferences");
+    let proj = mem_store.list(&project_namespace);
+    // Shows both
+}
+```
+
+The documentation doesn't describe this dual-display behavior when no namespace is provided.
+
+### 4. **Scoring Table Missing ConventionPatterns** (low)
+
+**Documentation (architecture/memory.md:117-130)**: Shows scoring table only for preference patterns.
+
+**Actual (patterns.rs:102-148)**: ConventionPatterns also exist with different scores:
+- `barrel file` = 6.0 (Architecture)
+- `index.` = 4.0 (Architecture)
+- `test in X` = 5.0 (CodingConvention)
+- `mock()` = 4.0 (ToolPreference)
+- `linter|ESLint|clippy|ruff` = 5.0 (ToolPreference)
+
+The documentation only shows preference pattern scoring, not convention pattern scoring.
+
+### 5. **Memory Default Importance Not Documented** (low)
+
+**Documentation (architecture/memory.md:36)**: Shows `importance: f64` only
+
+**Actual (mod.rs:40)**: `Memory::new()` sets `importance: 0.5` by default
+
+---
 
 ## Improvement Suggestions
 
-### Performance
+### High Priority
 
-1. **Lock contention in `save()`**: The `save()` method holds a lock on `.lock` file and then `self.memories.lock()`. Consider using `RwLock` for memories to allow concurrent reads during save operations.
-2. **Incremental save**: Currently `save()` rewrites all namespace files. Consider tracking dirty namespaces and only saving those.
-3. **Regex compilation**: All regex patterns are compiled on every `PatternDetector::new()`. Consider using lazy compilation or once_cell for patterns.
+1. **Fix storage directory documentation**:
+   - Change `projects/{project_hash}/conventions/` to `project/{project_hash}/`
+   - The actual namespace format is `project/{hash}` not `project/{hash}/conventions`
 
-### Correctness
+### Medium Priority
 
-1. **Fix "never use Y" negation modifier**: Change `negation_modifier: 0.0` to `negation_modifier: -3.0` at `patterns.rs:66`.
-2. **Add missing `/memory` and `/memory-search` commands**: Implement dashboard and search functionality.
-3. **Fix superseding comparison logic**: The comparison at line 247 should compare raw scores, not normalized importance values.
-4. **Test coverage for negation scoring**: Add explicit test for "never use" vs "don't use" scoring to catch future regressions.
+2. **Document `set_auto_save()` method** in MemoryStore API section
 
-### Maintainability
+3. **Document `/memory-list` dual-display behavior**:
+   - When no namespace given, shows both user/preferences AND project memories
 
-1. **Documentation for pattern scoring table**: The architecture doc shows a scoring table that doesn't match actual implementation (never use has 0.0 modifier, not -3.0). Update doc to match code or fix code to match doc.
-2. **Extract common prefix stripping logic**: The prefix stripping in `consolidate_session()` (`mod.rs:224-231`) is duplicated elsewhere potentially. Consider centralizing.
-3. **Add integration tests**: Current tests are basic unit tests. Add integration tests for full flow: consolidate → save → reload → verify.
-4. **Error handling in file operations**: `load_memories_from_file()` silently ignores parse errors. Consider logging or returning errors for debugging.
-5. **Namespace validation consistency**: `is_safe_namespace()` and `is_safe_namespace_single_component()` have overlapping logic. Consolidate or clarify which is used when.
+### Low Priority
 
-## Priority Actions (top 5 items to fix)
+4. **Add convention pattern scoring to table** (or note that convention patterns have fixed scores 4-6)
 
-1. **[High] Fix "never use Y" negation modifier**: Set `negation_modifier: -3.0` at `patterns.rs:66` to match documented behavior.
-2. **[High] Add missing `/memory` command**: Implement memory dashboard to display memory summary.
-3. **[High] Add missing `/memory-search` command**: Implement search functionality for memory queries.
-4. **[Medium] Fix test for negation detection**: Update `test_negation_detection` to assert the correct expected score based on actual behavior.
-5. **[Low] Add integration test for save/load cycle**: Verify memories persist correctly across save and reload.
+5. **Document default importance value** of 0.5 for `Memory::new()`
+
+6. **Clarify file structure**: Show actual path mapping for namespace to filesystem
+
+---
+
+## Summary
+
+The core implementation matches the documentation well. The bug fixes from 2026-05-22 (negation scoring, access_count tracking, topic matching) are all correctly implemented.
+
+The main discrepancy is the storage directory structure where documentation shows `projects/{hash}/conventions/` but actual uses `project/{hash}/`. This is the only medium-priority issue.
+
+All other issues are low priority documentation gaps rather than actual bugs.

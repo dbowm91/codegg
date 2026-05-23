@@ -1,79 +1,84 @@
 # Exec Module Architecture Review
 
-## Verification Results
+## Verified Claims
 
-### Claims
+### Key Types (ExecInput, ExecOutput)
+- Struct definitions match exactly: `prompt`, `model`, `agent` fields present
+- `ExecOutput` fields match: `success`, `result`, `tools_used`, `tokens_used`, `duration_ms`, `error`, `code`
+- Serialization with `#[serde(rename_all = "camelCase")]` confirmed
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| Location: `src/exec.rs` | VERIFIED | Line 1: `use crate::agent::r#loop::AgentLoop;` |
-| ExecInput with `prompt`, `model`, `agent` fields | VERIFIED | src/exec.rs:12-16 - exact match |
-| ExecOutput with `success`, `result`, `tools_used`, `tokens_used`, `duration_ms`, `error`, `code` | VERIFIED | src/exec.rs:18-28 - exact match |
-| Execution Flow: Load Config → Init AgentLoop → Run agent → Capture results | VERIFIED | src/exec.rs:76-178 |
-| Session ID: Provided via `ExecMode::new()` or generated UUID | VERIFIED | src/exec.rs:119 |
-| Question Channel: `setup_question_channel()` called | VERIFIED | src/exec.rs:121 |
-| Question tool timeout is 300 seconds | VERIFIED | agent/loop.rs:483 (matches interactive mode) |
-| Config errors returned as `CONFIG_ERROR` | VERIFIED | src/exec.rs:83 - `map_err(\|e\| AppError::Config(e))` |
-| MCP service hardcoded to `None` | VERIFIED | src/exec.rs:107 |
-| Error codes: PERMISSION_ERROR, AUTH_ERROR, RATE_LIMIT, TIMEOUT, MODEL_NOT_FOUND, CIRCUIT_OPEN, API_ERROR, STREAM_ERROR, IO_ERROR, CONFIG_ERROR, STORAGE_ERROR, TOOL_NOT_FOUND, TOOL_TIMEOUT, TOOL_PERMISSION, TOOL_DISABLED, TOOL_ERROR, MCP_ERROR, LSP_ERROR, PLUGIN_ERROR, AGENT_ERROR, JSON_ERROR, HTTP_ERROR, EXECUTION_ERROR, WORKTREE_ERROR, UPGRADE_ERROR, CLIPBOARD_ERROR, TUI_ERROR | VERIFIED | src/exec.rs:189-258 |
-| Input via stdin, file, or --json flag | VERIFIED | main.rs:663-671 |
-| Output includes duration_ms in error messages | VERIFIED | src/exec.rs:176 |
-| Default agent is "build" | VERIFIED | src/exec.rs:99 |
-| Model parsing with provider/model-name format | VERIFIED | src/exec.rs:181-186 |
-| Exit code 0 for success, 1 for failure | VERIFIED | src/exec.rs:277-283 |
+### Execution Flow
+- Config loading via `Config::load()` with error → `CONFIG_ERROR` mapping (line 83)
+- `AgentLoop::new()` signature matches: agents, provider, permission_checker, tool_registry, config, mcp_service, pool (lines 109-117)
+- `setup_question_channel()` called at line 121
+- `session_id` handling: uses provided or generates UUID (line 119)
+- `set_session_id()` called on loop_instance (line 120)
 
-## Bugs Found
+### Error Classification
+Major error codes verified:
+- `PERMISSION_ERROR`, `AUTH_ERROR`, `RATE_LIMIT`, `TIMEOUT`, `MODEL_NOT_FOUND`
+- `CIRCUIT_OPEN`, `API_ERROR`, `STREAM_ERROR`, `IO_ERROR`, `CONFIG_ERROR`
+- `STORAGE_ERROR`, `TOOL_NOT_FOUND`, `TOOL_TIMEOUT`, `TOOL_PERMISSION`, `TOOL_DISABLED`
+- `TOOL_ERROR`, `MCP_ERROR`, `LSP_ERROR`, `PLUGIN_ERROR`, `AGENT_ERROR`
+- `JSON_ERROR`, `HTTP_ERROR`, `EXECUTION_ERROR`, `WORKTREE_ERROR`, `UPGRADE_ERROR`
+- `CLIPBOARD_ERROR`, `TUI_ERROR`
 
-### Critical
-None identified.
+### Session ID
+- `session_id` parameter in `ExecMode::new()` is properly used (line 119)
 
-### High
-None identified.
+### MCP Service
+- Confirmed hardcoded to `None` (line 107)
 
-### Medium
+### Duration in Error Messages
+- Error messages include duration: `format!("{}: {} ({}ms)", msg, e, duration_ms)` (line 176)
 
-1. **Unused `question_sender()` method**: `AgentLoop::question_sender()` is public but never called in exec mode or elsewhere. The question channel setup at exec.rs:121 stores both tx/rx but only rx is used for receiving answers.
+## Bugs/Discrepancies Found
 
-2. **Mismatch between documentation and CLI**: Architecture doc shows `codegg exec --json` but main.rs:167 shows `--json` (not `-j`). CLI is correct, documentation matches.
+### HIGH PRIORITY
 
-3. **NotFound error maps to PROV`IDER_NOT_FOUND` but doc doesn't list it**: `ProviderError::NotFound` in classify_error maps to "PROVIDER_NOT_FOUND" which is not in the architecture doc error codes table. This could confuse users expecting standardized codes.
+1. **Missing `PROVIDER_NOT_FOUND` error code in documentation**
+   - Implementation at `src/exec.rs:217-218` classifies `ProviderError::NotFound(_)` as `"PROVIDER_NOT_FOUND"`
+   - Architecture doc error code table does NOT list `PROVIDER_NOT_FOUND`
+   - This is a gap - the code handles it but docs don't mention it
 
-### Low
+### MEDIUM PRIORITY
 
-4. **`ProviderError::NotFound` is not a documented error code**: Architecture doc shows 27 error codes but exec.rs:217-218 adds `PROVIDER_NOT_FOUND` which is not listed.
+2. **Architecture doc says `src/exec.rs` but should be `src/exec.rs` (with module file)**
+   - The architecture at line 7 says **Location**: `src/exec.rs`
+   - The actual file is `src/exec.rs` (the module root)
+   - This is technically correct but inconsistent with how other modules are referenced (they use `mod.rs` pattern in subdirs)
 
-5. **Error messages include duration in error path but not in success path**: The error path at line 176 includes duration_ms but success path doesn't add it to output (only in stderr via `eprintln`).
+3. **Skill doc outdated error code list**
+   - SKILL.md at line 71-86 lists only 11 error codes vs 26 in implementation
+   - Missing: `STORAGE_ERROR`, `TOOL_NOT_FOUND`, `TOOL_TIMEOUT`, `TOOL_PERMISSION`, `TOOL_DISABLED`, `TOOL_ERROR`, `MCP_ERROR`, `LSP_ERROR`, `PLUGIN_ERROR`, `AGENT_ERROR`, `JSON_ERROR`, `HTTP_ERROR`, `WORKTREE_ERROR`, `CLIPBOARD_ERROR`, `TUI_ERROR`, `PROVIDER_NOT_FOUND`
 
 ## Improvement Suggestions
 
-### Performance
-1. **Consider streaming output for long-running exec**: Currently waits for complete execution before outputting. Could stream results incrementally for better UX in CI/CD.
+### HIGH PRIORITY
 
-### Correctness
-1. **Add validation for ExecInput**: Currently only parses JSON, doesn't validate required fields (e.g., empty prompt).
+1. **Update error codes table in architecture/exec.md**
+   - Add `PROVIDER_NOT_FOUND` - Provider not found
 
-2. **Document the undocumented `PROVIDER_NOT_FOUND` error code**: Add to error codes table or remove from classify_error.
+2. **Update .opencode/skills/exec/SKILL.md error codes section**
+   - Add all missing error codes to match implementation
 
-### Maintainability
-1. **Consider extracting classify_error to error module**: The error classification logic could be centralized to avoid duplication between exec and other error handlers.
+### MEDIUM PRIORITY
 
-2. **Add integration test for exec mode**: No tests found for exec module - should add tests for JSON parsing, error classification, and exit codes.
+3. **Document the private `classify_error` function**
+   - The `classify_error` function at lines 189-259 is `fn` (not `pub fn`)
+   - It could be made `pub(crate)` if extensibility is desired
 
-## Priority Actions (top 5 items to fix)
+4. **Add `INTERNAL_ERROR` code handling**
+   - `print_output()` uses `"INTERNAL_ERROR"` code for JSON serialization failures (line 263)
+   - This code is not documented anywhere
 
-1. **Add ExecInput validation** - Validate prompt is not empty, model format is correct
-2. **Document or remove PROV`IDER_NOT_FOUND`** - Either add to architecture doc or use existing `MODEL_NOT_FOUND`
-3. **Add unit tests for exec module** - Test error classification, output formatting, exit codes
-4. **Consider making question_sender private** - It's unused and clutters the public API
-5. **Add integration test for JSON I/O round-trip** - Verify stdin/stdout works correctly in CI scenarios
+### LOW PRIORITY
 
-## Additional Notes
+5. **CLI flag inconsistency check**
+   - Architecture doc shows `--json-output` flag at line 86
+   - Verified: `json_output` field and flag exists in main.rs (lines 175, 659, 676)
+   - The flag format and implementation match correctly
 
-The exec module implementation is largely correct and matches the architecture documentation. The core flow is sound:
-- Config loading with proper error propagation
-- Agent initialization with correct defaults
-- Question channel setup for interactive question tool
-- Comprehensive error classification
-- Clean exit code handling
-
-The module properly handles the CI/CD use case with JSON I/O and appropriate error codes.
+6. **`print_output()` uses undocumented `INTERNAL_ERROR` code**
+   - At line 263 of exec.rs: `serde_json::to_string(output)` failure returns `INTERNAL_ERROR`
+   - This error code is not listed in any documentation

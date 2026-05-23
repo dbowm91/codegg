@@ -42,7 +42,7 @@
 | IPv6 link-local (fe80::/10) via `is_unicast_link_local()` | UNDOCUMENTED | Code handles it but arch doc doesn't list fe80::/10 |
 | IPv4-mapped detection for non-0xffff case | UNDOCUMENTED | segments[5]==0 path handles pure IPv4-mapped too |
 
-## Bugs Found
+## Bugs/Discrepancies Found
 
 ### Medium
 
@@ -73,42 +73,42 @@
 
 ### Performance
 
-1. **Canonicalize allowed_paths once at initialization**
+1. **Canonicalize allowed_paths once at initialization** (priority: low)
    - Currently `validate_path_safety()` canonicalizes all allowed_paths on every call
    - Change: `validate_path_safety()` should accept pre-canonicalized paths
    - Impact: Reduces syscalls significantly in high-frequency path validation scenarios
 
-2. **Consider caching DNS resolution results**
+2. **Consider caching DNS resolution results** (priority: low)
    - `validate_host_ip()` and `revalidate_dns()` both call `to_socket_addrs()`
    - For repeated checks to same host, could cache briefly (TTL of a few seconds)
    - Impact: Reduces DNS lookups, but adds complexity and cache invalidation concerns
 
 ### Correctness
 
-1. **Add comprehensive SSRF tests**
+1. **Add comprehensive SSRF tests** (priority: medium)
    - Test all internal IP ranges are blocked
    - Test IPv4-mapped addresses are properly handled
    - Test DNS rebinding detection works
    - Test URL scheme validation (http/https only)
 
-2. **Document IPv6 link-local handling in architecture**
+2. **Document IPv6 link-local handling in architecture** (priority: low)
    - The code correctly blocks fe80::/10 via `ipv6.is_unicast_link_local()` (line 21)
    - But architecture doc only mentions `fc00::/7` and `ff00::/8` for IPv6 ranges
    - Should document that `fe80::/10` (IPv6 link-local) is also blocked
 
 ### Maintainability
 
-1. **Add inline documentation for complex IPv4-mapped handling**
+1. **Add inline documentation for complex IPv4-mapped handling** (priority: low)
    - ssrf.rs:55-62 handles segments[5]==0 case (non-0xffff mapped)
    - This is for cases like ::ffff:0.0.0.0/104 but the logic is subtle
    - Add comment explaining when this path is taken
 
-2. **Consider extracting IP range checks to a helper struct**
+2. **Consider extracting IP range checks to a helper struct** (priority: low)
    - `is_internal_ip()` has many inline range checks
    - A `IpRange` struct with `contains(&IpAddr) -> bool` could improve readability
    - But this is optional - current inline checks are clear
 
-3. **Add integration test for Landlock sandbox enforcement**
+3. **Add integration test for Landlock sandbox enforcement** (priority: low)
    - Current tests only cover `validate_path_safety()` logic
    - No tests for actual Landlock syscall sequence
    - Would require root/CAP_SYS_ADMIN in CI to test

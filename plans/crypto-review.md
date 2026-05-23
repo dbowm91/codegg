@@ -1,88 +1,104 @@
 # Crypto Module Architecture Review
 
-## Verification Results
+## Verified Claims
 
-### Claims
+### Function Signatures (lines 20-42 in arch, lines 60-120 in src/crypto/mod.rs)
+- `encrypt()`, `decrypt()`, `encrypt_to_string()`, `decrypt_from_string()` all match
+- Return types correct: `EncryptedData` struct for `encrypt()`, `Result<String, CryptoError>` for decrypt variants
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| `encrypt()` returns `EncryptedData` with salt/nonce/ciphertext | VERIFIED | `src/crypto/mod.rs:60-78` - `encrypt` returns struct with all three fields |
-| `decrypt()` signature `fn decrypt(encrypted: &EncryptedData, password: &str) -> Result<String, CryptoError>` | VERIFIED | `src/crypto/mod.rs:80-100` - exact match |
-| `encrypt_to_string()` returns `"v2:"` prefix + hex(salt\|\|nonce\|\|ciphertext) | VERIFIED | `src/crypto/mod.rs:102-109` - `FORMAT_V2_PREFIX` constant + hex encoding |
-| `decrypt_from_string()` accepts v2 and legacy formats | VERIFIED | `src/crypto/mod.rs:111-120` - strips prefix for v2, falls back to legacy |
-| `EncryptedData` struct has salt (32 bytes), nonce (12 bytes), ciphertext | VERIFIED | `src/crypto/mod.rs:28-32` - struct definition matches |
-| Argon2id params m=19,456 KiB, t=2, p=1 | VERIFIED | `src/crypto/mod.rs:35` - `Params::new(19_456, 2, 1, Some(KEY_LEN))` |
-| Legacy HMAC-SHA256 key derivation exists | VERIFIED | `src/crypto/mod.rs:45-58` - `derive_key_legacy()` function implemented |
-| AES-256-GCM (256-bit key, 12-byte nonce, 128-bit auth tag) | VERIFIED | `src/crypto/mod.rs:63` - `Aes256Gcm::new_from_slice`, `NONCE_LEN = 12` |
-| Error enum variants: EncryptionFailed, DecryptionFailed, InvalidFormat, KeyDerivationFailed | VERIFIED | `src/crypto/mod.rs:16-26` - all four variants present |
-| Legacy ciphertexts automatically migrated to v2 on save | VERIFIED | `src/config/encryption.rs:68-81` - checks prefix and re-encrypts |
-| `decrypt_provider_keys()` called on config load | VERIFIED | `schema.rs:508`, `watcher.rs:153` - both call decrypt on load |
-| `encrypt_provider_keys()` called on config save | VERIFIED | `schema.rs:535` - called before save |
-| `ProviderConfig::api_key()` decrypts on-demand | VERIFIED | `schema.rs:161-169` - uses `decrypt_from_string` with master key |
-| Dependencies: aes-gcm, argon2, hmac, sha2, rand, hex | VERIFIED | `Cargo.toml` - all present |
-| Format: `v2:<hex(salt[32] || nonce[12] || ciphertext)>` | VERIFIED | `src/crypto/mod.rs:102-109` - implementation matches doc |
-| Nonce uniqueness (fresh random per encryption) | VERIFIED | `src/crypto/mod.rs:66` - `rand::random()` for nonce |
-| Memory-hard Argon2id resists GPU/ASIC | VERIFIED | `argon2` crate used with Argon2id algorithm |
-| Used by config/encryption.rs | VERIFIED | `encryption.rs:23,55,71,164` - all crypto functions used |
-| Used by config/schema.rs ProviderConfig::api_key() | VERIFIED | `schema.rs:165` - `decrypt_from_string` called |
+### EncryptedData Struct (lines 47-55 in arch, lines 28-32 in src/crypto/mod.rs)
+- Struct definition matches exactly: `salt`, `nonce`, `ciphertext` as `Vec<u8>`
+- Salt: 32 bytes (line 9: `SALT_LEN = 32`)
+- Nonce: 12 bytes (line 8: `NONCE_LEN = 12`)
+- Key: 32 bytes (line 7: `KEY_LEN = 32`)
 
----
+### Key Derivation (v2 format)
+- Argon2id params match: `Params::new(19_456, 2, 1, Some(32))` at mod.rs:35
+- Algorithm: `Argon2id`, Version: `V0x13` (line 37)
+- HMAC-SHA256 legacy derivation correctly documented (lines 74-81)
 
-## Bugs Found
+### AES-256-GCM
+- Key size: 256-bit (32 bytes)
+- Nonce: 96-bit (12 bytes)
+- Authentication tag included via AES-GCM (lines 63-70)
 
-### Critical
-None identified - crypto implementation is sound.
+### Format
+- `v2:` prefix constant exported: `pub const FORMAT_V2_PREFIX: &str = "v2:"` (mod.rs:10)
+- Format string at arch line 92 matches implementation
 
-### High
-None identified.
+### Error Types (lines 97-110 in arch, lines 16-26 in src/crypto/mod.rs)
+- `CryptoError` enum variants match exactly: `EncryptionFailed`, `DecryptionFailed`, `InvalidFormat`, `KeyDerivationFailed`
+- Error message formats match
 
-### Medium
+### Dependencies Listed
+- `aes-gcm`, `argon2`, `hmac`, `sha2`, `rand`, `hex` all used
 
-1. **Duplicate prefix constants** (`config/encryption.rs:4` vs `src/crypto/mod.rs:10`)
-   - `encryption.rs` defines `CRYPTO_V2_PREFIX: &str = "v2:";` locally
-   - `crypto/mod.rs` defines `FORMAT_V2_PREFIX: &str = "v2:";`
-   - If one is changed without the other, behavior diverges
-   - **Fix**: Export `FORMAT_V2_PREFIX` from `crypto/mod.rs` and import in `encryption.rs`
+### Legacy Format
+- Legacy decryption via HMAC-SHA256 implemented (mod.rs:45-58, 140-177)
+- Legacy format auto-detection works via lack of `v2:` prefix (mod.rs:111-120)
+- Migration on save: non-v2 prefixed ciphertexts are re-encrypted to v2 (encryption.rs:68-82)
 
----
+## Bugs/Discrepancies Found
+
+### Discrepancy 1: `api_key()` method documentation
+**Priority: Medium**
+
+The architecture doc at line 143 states:
+> `config/schema.rs` - `ProviderConfig::api_key()` method for on-demand decryption
+
+The documentation example shows `decrypt_from_string(decrypted, &master_key)` being called from `api_key()` but the actual implementation at schema.rs:183-205 shows `api_key(self, prefix: &str)` takes a `prefix` parameter for environment variable lookup (`{PREFIX}_API_KEY`). The method does use `decrypt_from_string` but with `get_master_key()` not a passed master key.
+
+The doc at lines 125-128 shows an incorrect example:
+```rust
+use crate::crypto::{decrypt_from_string, decrypt_from_string};
+```
+
+This duplicates `decrypt_from_string` and doesn't show the actual `ProviderConfig::api_key()` usage pattern.
+
+### Discrepancy 2: Legacy migration documentation
+**Priority: Low**
+
+Arch doc line 138 states:
+> Legacy ciphertexts automatically migrated to v2 on save
+
+This is partially correct but the implementation in `encryption.rs:encrypt_provider_keys()` only migrates when `encrypt_provider_keys()` is explicitly called, not on every save. The migration logic exists (lines 68-82) but is gated on calling that function.
 
 ## Improvement Suggestions
 
-### Performance
-- Consider adding `#[inline]` hints to small functions like `derive_key_legacy` and constant-time comparison helpers if profiling indicates benefit
+### Priority: Medium
 
-### Correctness
-1. **Export v2 prefix constant** - prevent the duplicate constant issue described above
-2. **Add direct test for `decrypt_legacy()`** - currently only tested indirectly via `decrypt_from_string` with legacy hex input
+1. **Fix `decrypt_from_string` import typo** (architecture/crypto.md:125-126)
+   - Shows `use crate::crypto::{decrypt_from_string, decrypt_from_string};`
+   - Should demonstrate `ProviderConfig::api_key()` method usage or remove duplicate import
 
-### Maintainability
+2. **Clarify migration behavior** (architecture/crypto.md:138)
+   - "automatically migrated to v2 on save" is misleading
+   - Should say "migrated when `encrypt_provider_keys()` is called (e.g., on config save)"
 
-1. **Re-export format prefix from crypto module**
-   ```rust
-   // src/crypto/mod.rs
-   pub const FORMAT_V2_PREFIX: &str = "v2:";
-   
-   // src/config/encryption.rs
-   use crate::crypto::FORMAT_V2_PREFIX;
-   ```
-   This ensures the v2 prefix stays synchronized.
+### Priority: Low
 
-2. **Add integration test for legacy round-trip** - `test_legacy_format_still_decrypts` in crypto/mod.rs tests via `decrypt_from_string`; consider also testing `decrypt_legacy` directly for completeness
+3. **Add missing security note about environment variables**
+   - The `get_master_key()` function checks `CODEGG_MASTER_KEY`, `CODEGG_ENCRYPTION_KEY`, and `OPENCODE_ENCRYPTION_KEY` env vars (encryption.rs:5-10)
+   - Should document which env var takes precedence
 
-3. **Document the migration flow in code comments** - the relationship between `encrypt_provider_keys` migration logic and the legacy detection in `decrypt_from_string` is spread across two files; a doc comment would help future maintainers
+4. **Document that `decrypt_provider_keys()` and `encrypt_provider_keys()` are idempotent**
+   - `decrypt_provider_keys()` skips providers where `encrypted != Some(true)`
+   - `encrypt_provider_keys()` only encrypts providers where `encrypted != Some(true)`
+   - Safe to call multiple times
 
----
+### Priority: Informational
 
-## Priority Actions (top 5 items to fix)
-
-1. **Export `FORMAT_V2_PREFIX` from crypto module** - eliminates duplicate constant risk (Medium priority)
-2. **Add `#[inline]` to small hot-path functions if profiling shows benefit** (Low priority)
-3. **Add direct unit test for `decrypt_legacy()` function** - improves test coverage (Low priority)
-4. **Consider adding `encrypt_to_string` test with empty plaintext edge case** - verifies behavior when ciphertext length is 0 (unlikely but defensive)
-5. **Add doc comment to `decrypt_legacy` explaining it's for pre-v2 ciphertexts** - improves code clarity (Low priority)
-
----
+5. **Consider adding test coverage for edge cases**
+   - No test for corrupted hex input
+   - No test for truncated ciphertext
+   - No test for wrong-length salt/nonce
 
 ## Summary
 
-The crypto module implementation is **correct and secure**. All claims in the architecture document are verified accurate. The only issue found is a maintainability concern: duplicate `v2:` prefix constants in `crypto/mod.rs` and `config/encryption.rs` that must be kept synchronized manually. No logic errors, edge case failures, or race conditions identified.
+The crypto module architecture documentation is **largely accurate**. All function signatures, type definitions, key derivation parameters, and error types match the implementation. The main issues are:
+
+1. A typo in the usage example (duplicate import)
+2. Slightly misleading wording about "automatic" migration
+3. Incomplete documentation of `ProviderConfig::api_key()` signature
+
+These are documentation quality issues rather than implementation bugs. The crypto implementation itself appears correct and well-tested with legacy format compatibility working as documented.

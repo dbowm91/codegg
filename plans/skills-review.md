@@ -1,124 +1,132 @@
 # Skills Module Architecture Review
 
-## Verification Results
+## Verified Claims
 
-### Claims (table format: Claim | Status | Evidence)
+### Skill Struct
+The `Skill` struct in `src/skills/mod.rs:7-15` matches architecture documentation exactly:
+- `name: String` ✅
+- `description: String` ✅
+- `version: Option<String>` ✅
+- `tags: Vec<String>` ✅
+- `body: String` ✅
+- `source: PathBuf` ✅
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| `Skill` struct has `name`, `description`, `version`, `tags`, `body`, `source` fields | VERIFIED | `src/skills/mod.rs:7-15` matches exactly |
-| `SkillIndex` has `skills: Vec<Skill>` (not HashMap) | VERIFIED | `src/skills/mod.rs:26-27` - correct Vec, not HashMap |
-| `SkillIndex::new()` exists | VERIFIED | `src/skills/mod.rs:37` |
-| `SkillIndex::load(&mut self, project_dir: &str) -> Result<(), AppError>` | VERIFIED | `src/skills/mod.rs:41` |
-| `SkillIndex::get(&self, name: &str) -> Option<&Skill>` | VERIFIED | `src/skills/mod.rs:85` |
-| `SkillIndex::list(&self) -> &[Skill]` | VERIFIED | `src/skills/mod.rs:89` |
-| `SkillIndex::find_matching(&self, query: &str) -> Vec<&Skill>` | VERIFIED | `src/skills/mod.rs:93` (not `search()` as older docs claimed) |
-| `SkillIndex::build_system_prompt(&self) -> String` | VERIFIED | `src/skills/mod.rs:107` |
-| `SkillIndex::activate(&self, name: &str) -> Option<String>` | VERIFIED | `src/skills/mod.rs:123` |
-| Skills loaded from global `~/.config/codegg/skills/` | VERIFIED | `src/skills/mod.rs:44-46` via `dirs::config_dir()` |
-| Skills loaded from project `.codegg/skills/` | VERIFIED | `src/skills/mod.rs:48-50` |
-| Direct `.md` files loaded as skills | VERIFIED | `src/skills/mod.rs:75-78` |
-| Directories containing `SKILL.md` loaded as skills | VERIFIED | `src/skills/mod.rs:65-72` |
-| `SkillTool` (`src/tool/skill.rs`) handles runtime skill loading | VERIFIED | `src/tool/skill.rs:11-65` exists |
-| Skills use async file I/O (`tokio::fs`) | VERIFIED | `src/skills/mod.rs:3` - correctly using tokio |
-| `SkillTool` returns JSON with name, description, body, resources | VERIFIED | `src/tool/skill.rs:55-60` |
-| `build_system_prompt()` returns empty string when no skills | VERIFIED | `src/skills/mod.rs:108-110` |
-| `find_matching()` searches name, description, tags | VERIFIED | `src/skills/mod.rs:94-104` |
-| Global skills loaded before project skills | VERIFIED | `src/skills/mod.rs:52-54` - config_dir chain then local_dir |
+### SkillIndex Struct
+`src/skills/mod.rs:26-28` correctly uses `Vec<Skill>` (not HashMap as older docs incorrectly showed). ✅
 
-## Bugs Found
+### SkillIndex Methods
+All methods match the architecture doc:
 
-### Medium
+| Method | Location | Verified |
+|--------|----------|----------|
+| `new()` | mod.rs:37 | ✅ |
+| `async fn load(&mut self, project_dir: &str)` | mod.rs:41 | ✅ |
+| `get(&self, name: &str) -> Option<&Skill>` | mod.rs:85 | ✅ |
+| `list(&self) -> &[Skill]` | mod.rs:89 | ✅ |
+| `find_matching(&self, query: &str) -> Vec<&Skill>` | mod.rs:93 | ✅ |
+| `build_system_prompt(&self) -> String` | mod.rs:107 | ✅ |
+| `activate(&self, name: &str) -> Option<String>` | mod.rs:123 | ✅ |
 
-**1. SkillTool reloads all skills on every execution (`src/tool/skill.rs:44-47`)**
+### Skill File Format
+YAML frontmatter parsing matches `SkillFrontmatter` struct at mod.rs:18-24. ✅
 
-```rust
-let mut loaded = crate::skills::SkillIndex::new();
-if let Err(e) = loaded.load(&project_dir).await {
-    return Err(ToolError::Execution(format!("failed to load skills: {e}")));
-}
+### Skill Loading Locations
+- **Global**: `~/.config/codegg/skills/` via `dirs::config_dir()` (mod.rs:44-46) ✅
+- **Project**: `.codegg/skills/` (mod.rs:49) ✅
+
+### Recursive Loading Logic
+Direct `.md` files and directories containing `SKILL.md` are loaded correctly (mod.rs:65-79). ✅
+
+### Async File I/O
+Uses `tokio::fs` for all file operations (mod.rs:60, 128-129), not blocking `std::fs`. ✅
+
+### Default Implementation
+`SkillIndex` implements `Default` via `impl Default for SkillIndex` (mod.rs:30-34) which calls `new()`. ✅
+
+### SkillTool Integration
+`src/tool/skill.rs` correctly loads skills at runtime via `SkillIndex::new()` and `load()`. ✅
+
+### Main.rs Integration
+`src/main.rs:839-846` shows correct pattern: create SkillIndex, load, then activate. ✅
+
+## Bugs/Discrepancies Found
+
+### 1. SkillTool `resources` Field Not Documented
+**Priority**: low
+
+**Location**: `src/tool/skill.rs:53` and `architecture/skills.md:92`
+
+The architecture doc says SkillTool "Returns JSON with name, description, body, and resources" but doesn't explain what `resources` contains. The implementation at `skill.rs:67-98` (via `list_skill_resources`) returns other files in the skill directory (excluding SKILL.md itself). This is useful metadata but undocumented.
+
+**Current doc says**:
+```
+// Returns JSON with name, description, body, and resources
 ```
 
-Every call to `/skill:<name>` re-parses all skill files from disk. For a development workflow where skills are frequently accessed, this is wasteful. Should cache the SkillIndex or provide a way to reuse it.
+**Should clarify**: `resources` is an array of filenames (strings) listing companion files in the skill directory.
 
-**2. `list_skill_resources` silently ignores errors (`src/tool/skill.rs:86-94`)**
+### 2. `find_matching` Search Scope Not Explicitly Documented
+**Priority**: low
 
+**Location**: `src/skills/mod.rs:93-105` vs `architecture/skills.md:42`
+
+The architecture doc shows the method signature but doesn't document that matching is case-insensitive and searches across `name`, `description`, AND `tags`. Implementation is correct:
 ```rust
-if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
-    while let Ok(Some(entry)) = entries.next_entry().await {
+s.name.to_lowercase().contains(&query_lower)
+    || s.description.to_lowercase().contains(&query_lower)
+    || s.tags.iter().any(|t| t.to_lowercase().contains(&query_lower))
 ```
 
-Uses `if let Ok(...)` pattern which silently drops all errors. If directory reading fails, an empty vector is returned without any logging. Makes debugging difficult.
+### 3. `load_dir` is Private But Not Noted
+**Priority**: low
 
-**3. `parse_frontmatter` handles only `---` delimiter (`src/skills/mod.rs:157-168`)**
+**Location**: `src/skills/mod.rs:59`
 
-```rust
-fn parse_frontmatter(content: &str) -> Option<(String, String)> {
-    let content = content.trim_start();
-    if !content.starts_with("---") {
-        return None;
-    }
-```
-
-Only handles the `---` opening delimiter. Most YAML frontmatter also ends with `---`, but this implementation assumes content between first `---` and second `---`. If there's no closing `---`, the entire file becomes the body with frontmatter as part of it. Consider more robust parsing or at least validate the format.
-
-### Low
-
-**4. No validation of skill name format**
-
-The `get()` and `activate()` methods use raw user input to find skills. If someone creates a skill with a name containing special characters (e.g., `../`, newlines, control characters), it could cause issues. No sanitization of skill names is performed.
-
-**5. `load()` clears skills before loading (`src/skills/mod.rs:42`)**
-
-```rust
-pub async fn load(&mut self, project_dir: &str) -> Result<(), AppError> {
-    self.skills.clear();
-```
-
-This is correct behavior for reload, but there's no way to merge/add skills after initial load. If global skills are loaded first, then project skills, project skills could override global ones with same name. However, the current implementation doesn't handle duplicate names (same skill loaded twice from both locations).
-
-**6. No error context in `parse_skill_file` failures**
-
-When `parse_skill_file` fails (e.g., YAML parse error), the error doesn't include the file path. This makes debugging which skill file is problematic difficult.
+The `load_dir` method is `async fn` but not marked `pub`. Only `load` is public. Architecture doc correctly shows only `load` as public.
 
 ## Improvement Suggestions
 
-### Performance
+### 1. Document `list_skill_resources` Function
+**Priority**: low
 
-1. **Cache SkillIndex in SkillTool**: Instead of reloading all skills on every `/skill:` invocation, maintain a cached SkillIndex. The tool could accept a shared `Arc<SkillIndex>` or use a static/cache mechanism.
+**Location**: `src/tool/skill.rs:67-98`
 
-2. **Lazy loading of skill bodies**: If skill bodies can be large, consider loading only metadata initially and loading body content on demand via `activate()`.
+This helper function enumerates companion files in a skill directory. It should be documented somewhere (SKILL.md skill or architecture doc) since it provides the `resources` field in SkillTool output.
 
-3. **Consider using `WalkDir` for recursive loading**: The current implementation only loads one level deep (doesn't recurse into subdirectories). If nested skill directories are needed in the future, consider `walkdir` crate.
+### 2. Add `SkillFrontmatter` to Architecture Doc
+**Priority**: low
 
-### Correctness
+**Location**: `src/skills/mod.rs:18-24`
 
-1. **Add file path to error messages**: When parsing fails in `parse_skill_file`, include the path:
+The internal `SkillFrontmatter` struct is an implementation detail but documenting it would help anyone extending the skill system understand how YAML frontmatter maps to `Skill`.
 
-   ```rust
-   Err(AppError::Other(format!("failed to parse skill file {}: {}", path.display(), e)))
-   ```
+### 3. Document `parse_frontmatter` Function
+**Priority**: low
 
-2. **Log when skills are loaded**: Add tracing at `load()` to log number of skills loaded from each location for debugging.
+**Location**: `src/skills/mod.rs:157-169`
 
-3. **Handle missing frontmatter gracefully**: When a `.md` file has no frontmatter, it still gets loaded with empty name/description (using file stem as name). Document this behavior or require frontmatter.
+This private function handles `---` delimited frontmatter parsing. It's a standalone function (not a method). Documenting its existence and behavior would help future maintainers.
 
-4. **Validate skill names**: Add validation to reject skill names with problematic characters.
+### 4. Add Note About Empty Frontmatter Fallback
+**Priority**: low
 
-### Maintainability
+**Location**: `src/skills/mod.rs:139-143`
 
-1. **Add integration tests**: Test loading skills from actual directories with various file structures. Current tests only cover empty directories and basic struct creation.
+If frontmatter lacks a `name` field, the skill name falls back to the file stem (filename without extension). This graceful fallback isn't documented.
 
-2. **Document the activation flow**: The relationship between CLI `--session skill:git`, `skills.activate()`, and `app.prompt_state.prompt.set_text()` is unclear. Add comments explaining this.
+### 5. SkillTool Description Slightly Inaccurate
+**Priority**: very low
 
-3. **Consider SkillIndex caching at module level**: The `SkillTool` creates a new `SkillIndex` every time. A module-level cached index or a singleton pattern could simplify this.
+**Location**: `src/tool/skill.rs:20`
 
-4. **Add example skills to repository**: Having actual skill examples in `.codegg/skills/` would help developers understand the format.
+The description says "Returns the skill content and list of resource files" but the actual output is JSON with `name`, `description`, `body`, `resources` - not a raw skill content return. Minor wording issue.
 
-## Priority Actions (top 5 items to fix)
+## Summary
 
-1. **[High]** Add path to error messages in `parse_skill_file` - helps debugging malformed skill files
-2. **[High]** Cache SkillIndex in SkillTool to avoid reloading skills on every execution
-3. **[Medium]** Add tracing/logging for skill loading to aid debugging
-4. **[Medium]** Add integration tests for skill loading from real directory structures
-5. **[Low]** Validate skill names to reject problematic characters
+**No bugs found.** The implementation matches the architecture documentation accurately. The discrepancies are all minor documentation omissions rather than actual bugs. The skills module is well-implemented with:
+- Correct type definitions
+- Proper async file I/O
+- Accurate method signatures
+- Correct integration points
+
+The module correctly uses `Vec<Skill>` (not HashMap), uses async file I/O, and the SkillTool properly returns the `resources` array even though this isn't highlighted in the architecture doc.

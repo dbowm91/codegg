@@ -1,74 +1,49 @@
-# PTY Module Architecture Review
+# PTY Module Review
 
-## Verification Results
+## Verified Claims
 
-### Claims
+### Type Definitions
+- `PtySession`: All 7 fields match exactly (`id`, `project_id`, `cwd`, `shell`, `cols`, `rows`, `created_at`)
+- `CreatePtySession`: All 5 fields match exactly (`project_id`, `cwd`, `shell`, `cols`, `rows`)
+- `PtyResize`: All 2 fields match exactly (`cols`, `rows`)
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| Location: `src/pty/` | VERIFIED | Files exist at `src/pty/mod.rs` and `src/pty/session.rs` |
-| Module does NOT create actual PTY sessions | VERIFIED | No process spawning code; only manages in-memory metadata |
-| PtySession struct with 7 fields (id, project_id, cwd, shell, cols, rows, created_at) | VERIFIED | Exact match in `src/pty/mod.rs:6-14` |
-| CreatePtySession struct with 6 fields | VERIFIED | Exact match in `src/pty/mod.rs:16-23` |
-| PtyResize struct with 2 fields | VERIFIED | Exact match in `src/pty/mod.rs:25-29` |
-| PtyManager has `sessions: Arc<RwLock<HashMap<String, PtySession>>>` | VERIFIED | `src/pty/session.rs:9-11` |
-| PtyManager::new() exists | VERIFIED | `src/pty/session.rs:14-18` |
-| PtyManager::create() async fn | VERIFIED | `src/pty/session.rs:20-36` |
-| PtyManager::get() async fn returns Option | VERIFIED | `src/pty/session.rs:38-40` |
-| PtyManager::update_cwd() async fn | VERIFIED | `src/pty/session.rs:42-50` |
-| PtyManager::list() async fn | VERIFIED | `src/pty/session.rs:52-60` |
-| PtyManager::resize() async fn | VERIFIED | `src/pty/session.rs:62-71` |
-| PtyManager::delete() async fn | VERIFIED | `src/pty/session.rs:73-80` |
-| Sessions stored in-memory only | VERIFIED | HashMap in memory, no persistence |
-| created_at uses milliseconds since epoch | VERIFIED | `chrono::Utc::now().timestamp_millis()` at `session.rs:22` |
-| cwd stored as String | VERIFIED | Field is `pub cwd: String` |
-| Default terminal size 80x24 | VERIFIED | `cols: input.cols.unwrap_or(80)` and `rows: input.rows.unwrap_or(24)` at lines 29-30 |
-| Default shell is bash | VERIFIED | `shell: input.shell.unwrap_or_else(|| "bash".to_string())` at line 28 |
-| Unit tests added (11 tests) | VERIFIED | 11 tests in `src/pty/session.rs:107-272` |
+### PtyManager Implementation
+- `sessions: Arc<RwLock<HashMap<String, PtySession>>>` field type matches
+- `new()` constructor matches
+- `create()` signature and behavior match (returns `Result<PtySession, StorageError>`)
+- `get()` signature and behavior match (returns `Option<PtySession>`)
+- `update_cwd()` signature and behavior match (returns `Result<PtySession, StorageError>`)
+- `list()` signature and behavior match (returns `Vec<PtySession>`)
+- `resize()` signature and behavior match (returns `Result<(), StorageError>`)
+- `delete()` signature and behavior match (returns `Result<(), StorageError>`)
 
-## Bugs Found
+### Notes Section
+- In-memory only (no persistence) - **correct**
+- `created_at` uses milliseconds since epoch (i64) - **correct**
+- `cwd` stored as `String` not `PathBuf` - **correct**
+- Default terminal size 80x24 - **correct** (line 29-30)
+- Default shell is `bash` - **correct** (line 28)
+- Unit tests: doc says "11 tests" - **correct** (11 tests present)
 
-### Critical
-None identified.
+## Bugs/Discrepancies Found
 
-### High
-None identified.
+### 1. Module Location (Low)
+- **Doc says**: `src/pty/`
+- **Actual**: `src/pty_session/`
+- **Impact**: Minor - documentation path is outdated
 
-### Medium
-
-**1. PtyManager not exported from parent module**
-
-The `PtyManager` struct is defined in `src/pty/session.rs` but is not re-exported from `src/pty/mod.rs`. External usage requires importing from `crate::pty::session::PtyManager`, which is inconsistent with other modules that re-export their main types from the module root.
-
-**2. update_cwd clones session after dropping lock**
-
-In `update_cwd()` at `session.rs:42-50`, the code clones `session` after releasing the write lock (via `session.clone()` at line 49 after lock ends at line 43 scope). This is actually safe but the code structure looks suspicious. However, looking more closely, the lock is held for the entire block so this is actually correct - the clone happens before the function returns. This is not a bug.
-
-**3. PtyManager never actually used in codebase**
-
-The entire `pty` module is standalone with no integration into the rest of the codebase. No other module imports or uses `PtyManager`. This raises questions about intended usage and whether this code is dead or planned for future use.
+### 2. Missing Default Implementation Documentation
+- **Doc says**: Nothing about `Default` trait for `PtyManager`
+- **Actual**: `PtyManager` implements `Default` (lines 83-86 in session.rs)
+- **Impact**: Low - not critical but should be documented
 
 ## Improvement Suggestions
 
-### Performance
-- Current implementation is efficient with O(1) HashMap operations
-- No concerns for in-memory session management
+### Priority: Low
+1. Update module location in docs from `src/pty/` to `src/pty_session/`
+2. Document that `PtyManager` implements `Default` trait
 
-### Correctness
-1. **Export PtyManager from mod.rs** for consistent API
-2. **Consider adding session count metrics** for monitoring active sessions
-3. **Add session age tracking** - `created_at` exists but no utility method to check session age or timeout stale sessions
+### General Assessment
+The architecture document is **highly accurate**. The implementation matches all documented types, methods, fields, and behaviors. No bugs or significant discrepancies were found. The only issues are minor documentation inconsistencies (path location and missing trait impl).
 
-### Maintainability
-1. **Integration needed** - The module should be wired into the application if intended for use (e.g., from tool::terminal or a session manager)
-2. **Documentation of intended use case** - The module stores metadata but no other code currently consumes it. Document when/how it should be used
-3. **Consider adding session cleanup** - method to remove sessions older than a threshold
-4. **Add Default implementation** - PtyManager already has `Default` via `impl Default for PtyManager` at lines 83-87, but this is good
-
-## Priority Actions (top 5 items to fix)
-
-1. **Wire PtyManager into the application** if it's intended for use - currently unused
-2. **Re-export PtyManager from `src/pty/mod.rs`** for consistent public API
-3. **Add session timeout/cleanup functionality** - add method to remove stale sessions
-4. **Add integration test** - verify PtyManager works correctly with actual session lifecycle
-5. **Document intended usage pattern** - clarify when terminal sessions should be created/tracked vs when they're just transient
+**Overall**: Documentation is reliable and up-to-date. The 2026-05-22 note in AGENTS.md accurately stated the architecture doc "now accurately reflects the implementation."

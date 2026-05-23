@@ -1,129 +1,111 @@
 # Command Module Architecture Review
 
-## Verification Results
+## Verified Claims (what matches)
 
-### Claims
+### Command struct in `src/command/mod.rs`
+- Fields: `name`, `description`, `template`, `agent`, `model`, `subtask` (deprecated), `source` - all match
+- `#[deprecated]` attribute on `subtask` field is correctly documented
 
-| Claim | Status | Evidence |
-|-------|--------|----------|
-| Command struct has name, description, template, agent, model, subtask, source | VERIFIED | src/command/mod.rs:9-18 |
-| CommandConfig has template, description, agent, model, subtask | VERIFIED | src/config/schema.rs:363-369 |
-| 36 built-in commands (highest priority) | VERIFIED | src/tui/command.rs:78-163 (counted 36 entries) |
-| Config commands (middle priority) | VERIFIED | src/tui/command.rs:181-202 |
-| File commands from command/ and commands/ directories | VERIFIED | src/command/mod.rs:23-55 |
-| Markdown format with YAML frontmatter | VERIFIED | src/command/mod.rs:154-166 |
-| Empty template falls back to markdown body | VERIFIED | src/command/mod.rs:110 |
-| Validation: not empty, no whitespace, not start with / | VERIFIED | src/command/mod.rs:57-68 |
-| execute_command_template function with HashMap | VERIFIED | src/command/mod.rs:142-152 |
-| Supports both {{variable}} and {variable} syntax | VERIFIED | src/command/mod.rs:148-149 |
-| Deterministic ordering (sorted keys) | VERIFIED | src/command/mod.rs:144-145 |
-| Missing variables remain as placeholders | VERIFIED | src/command/mod.rs:148-149 (no replacement if key missing) |
-| TUI integration via CommandRegistry | VERIFIED | src/tui/command.rs:72-308 |
-| find_by_name_or_alias method | VERIFIED | src/tui/command.rs:253-262 |
-| filter method with fuzzy match | VERIFIED | src/tui/command.rs:264-299 |
-| Dynamic commands appended to built-ins | VERIFIED | src/tui/command.rs:169-213 |
-| Built-in commands take precedence | VERIFIED | src/tui/command.rs:185 (`if !seen.contains_key(&normalized)`) |
-| Async file operations with tokio::fs | VERIFIED | src/command/mod.rs:26,71 |
-| Error handling logged with tracing::warn | VERIFIED | src/command/mod.rs:29,39,46 |
-| subtask field deprecated | VERIFIED | src/command/mod.rs:15-16 |
-| Command execution flow (dialog then template) | UNABLE TO_VERIFY | Requires runtime tracing of execution path |
+### CommandConfig in `src/config/schema.rs`
+- Fields: `template`, `description`, `agent`, `model`, `subtask` - all match
 
-## Bugs Found
+### Template Processing
+- `execute_command_template()` correctly supports both `{{variable}}` and `{variable}` syntax
+- Keys are sorted before replacement (deterministic ordering) - verified at line 145
+- Missing variables remain as literal placeholders - correct
 
-### High
+### File Format (Markdown with YAML Frontmatter)
+- Empty `template:` in frontmatter correctly falls back to markdown body - verified at line 86-90
+- Missing frontmatter returns error - correct
 
-**Blocking call in async context (src/tui/command.rs:204)**
+### Validation Rules
+- Empty name rejected - verified at line 58-60
+- Whitespace in name rejected - verified at line 61-63
+- Leading `/` rejected - verified at line 64-66
+- Invalid commands are logged and skipped with warning - verified at line 39
+
+### Async File Operations
+- Both `find_command_files()` and `load_command_from_file()` are `async` and use `tokio::fs` - correct
+
+### Built-in Commands (36 total)
+All 36 commands listed in the architecture doc are present in `src/tui/command.rs:79-162`, correctly implemented with aliases where specified.
+
+### CommandRegistry (TUI)
+- `new()`, `commands()`, `find_by_name_or_alias()`, `filter()` methods all exist and match documentation
+
+---
+
+## Bugs/Discrepancies Found
+
+### 1. **Alias Formatting Inconsistent** (Low Priority)
+**Documentation says:** `/exit | /quit, /q`  
+**Actual code:** aliases stored as `["quit", "q"]` (no leading `/`)
+
+The `CommandRegistry::new()` at line 81-83 stores aliases without the leading slash, but the documentation format shows slashes on all aliases.
+
+### 2. **CommandRegistry Documentation Uses Wrong Struct** (Medium Priority)
+**Documentation shows in "Key Types" section:**
 ```rust
-let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-```
-Uses blocking `std::env::current_dir()` inside `append_dynamic_commands_async` which is called from a `block_on`. While this happens to work because we're already in a Tokio runtime context, it's not idiomatic async Rust. Should use `tokio::fs::canonicalize()` or `tokio::env::current_dir()` instead.
-
-### Medium
-
-**Runtime handle check is fragile (src/tui/command.rs:205-209)**
-```rust
-if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
-    let rt = runtime_handle;
-    rt.block_on(async {
-        Self::append_dynamic_commands_async(&base, &mut seen, &mut new_commands).await;
-    });
+pub struct Command {
+    pub name: String,
+    pub description: Option<String>,
+    pub template: String,
+    ...
 }
 ```
-If called outside a Tokio runtime, dynamic commands silently fail to load with no error indication. Should either panic with clear error or log a warning.
 
-**Plugin command system is separate implementation**
-The `src/command/plugin.rs` defines its own `PluginCommand` enum and `run_plugin_command` function that is completely independent from the main `CommandRegistry` system. This means:
-- Different command structures
-- No unified command help/status
-- No fuzzy matching or alias support
-- No shared error handling
+**This is `src/command/mod.rs::Command`, but the documentation section is titled "CommandRegistry (src/tui/command.rs)"** which actually uses a different `Command` struct (`src/tui/command.rs:25-37`) with fields: `name`, `aliases`, `description`, `category`, `dialog`, `template`, `agent`, `model`, `subtask`, `source`.
 
-### Low
+The architecture doc shows the wrong `Command` struct for the TUI integration section.
 
-**Template replacement order issue (src/command/mod.rs:148-149)**
-```rust
-result = result.replace(&format!("{{{{{key}}}}}", ), value);
-result = result.replace(&format!("{{{key}}}"), value);
-```
-If a value contains braces (e.g., value = "{$foo}"), the first pass replaces `{{name}}` with that value, then the second pass might inadvertently replace braces in the value itself if it happens to match another key. This is unlikely but possible edge case.
+### 3. **Plugin Commands Not Documented** (Medium Priority)
+`src/command/plugin.rs` exists with `PluginCommand` enum and `run_plugin_command()` function, but the architecture document doesn't mention plugin commands at all. The file provides `/plugin list`, `/plugin search <query>`, `/plugin install <source>` subcommands.
 
-**No validation of template variable syntax**
-If a template contains malformed placeholders like `{name` (missing closing brace), no validation catches this. The malformed placeholder remains unchanged.
+### 4. **Command Priority Order Differs from Implementation** (Low Priority)
+**Documentation says:** Built-in → Config → File (built-in highest priority)  
+**Actual implementation:** Built-in commands are initialized first, then config commands are appended (skipping duplicates), then file commands are appended (skipping duplicates).
+
+The actual precedence is correct (built-in wins), but the documentation implies a linear priority chain that doesn't reflect the actual `append_dynamic_commands()` flow at lines 169-218.
+
+### 5. **CommandRegistry filter() Returns Vec of Tuples** (Low Priority - Documentation Inaccuracy)
+**Documentation says:** `pub fn filter(&self, query: &str) -> Vec<(&Command, usize)>;  // Fuzzy match`
+
+This is correct - it returns `(&Command, usize)` tuples. However, the comment only says "Fuzzy match" when the implementation actually does scoring and sorting as well (lines 269-304).
+
+---
 
 ## Improvement Suggestions
 
-### Performance
+### High Priority
 
-1. **Pre-compute normalized names in CommandRegistry**
-   The `normalize_name()` function is called repeatedly in `find_by_name_or_alias` and `filter`. Consider caching these normalized forms.
+1. **Document Plugin Commands**  
+   Add a section in `architecture/command.md` covering the `PluginCommand` enum and `run_plugin_command()` in `src/command/plugin.rs`. This is an independent command subsystem that's currently undocumented.
 
-2. **Lazy loading of file-based commands**
-   Currently all file commands are loaded synchronously at startup via `block_on`. Consider loading them lazily on first command invocation.
+2. **Fix CommandRegistry Type Reference**  
+   The "CommandRegistry (src/tui/command.rs)" section should document the actual `Command` struct at `src/tui/command.rs:25-37` (with `aliases`, `category`, `dialog` fields), not the `Command` struct from `src/command/mod.rs`.
 
-3. **Avoid double parsing in load_command_from_file**
-   First tries `CommandConfig` parsing, then falls back to raw YAML value parsing. These could potentially be combined.
+### Medium Priority
 
-### Correctness
+3. **Clarify Alias Format in Table**  
+   Either:
+   - Change `/exit | /quit, /q` to `/exit | quit, q` (without leading slashes)
+   - Or document that aliases are stored without leading slashes and the `/` prefix is added programmatically
 
-1. **Add template validation**
-   Validate that all `{{variable}}` and `{variable}` placeholders are properly formed (balanced braces).
+4. **Clarify Command Precedence in Loading Process**  
+   The "Sources (in priority order)" section should clarify that all three sources are merged, with built-in commands being the baseline and duplicates skipped (not that one takes absolute priority over another).
 
-2. **Handle values containing placeholder patterns**
-   When substituting `{name}`, if the value itself contains `{name}`, it could cause double-replacement issues. Consider escaping or a more robust templating approach.
+### Low Priority
 
-3. **Consistent error propagation for runtime unavailability**
-   When `tokio::runtime::Handle::try_current()` fails, log a warning instead of silently skipping dynamic commands.
+5. **Document filter() Behavior More Completely**  
+   The `filter()` method returns scored results sorted by relevance and truncated to 10 items. The documentation could be more explicit about this.
 
-### Maintainability
+---
 
-1. **Unify Command types**
-   There are two distinct `Command` structs:
-   - `crate::command::Command` (src/command/mod.rs) - for file/config commands
-   - `crate::tui::command::Command` (src/tui/command.rs) - for TUI built-in commands
+## Summary
 
-   These have overlapping but not identical fields. Consider creating a shared `Command` type in a common location.
+The core `src/command/mod.rs` implementation matches the architecture document well. The main discrepancies are:
+- **Plugin commands completely undocumented** (medium impact)
+- **CommandRegistry section shows wrong struct type** (medium impact)
+- Minor inconsistencies in alias formatting and precedence description (low impact)
 
-2. **Document plugin command integration**
-   The `src/command/plugin.rs` file is a standalone plugin system, not integrated with the main command registry. Document this clearly or consider integration.
-
-3. **Add integration tests for template execution**
-   Current tests cover individual functions but lack integration tests that verify the full command flow from loading through template execution.
-
-## Priority Actions (top 5 items to fix)
-
-1. **[HIGH] Replace blocking `std::env::current_dir()` with async alternative**
-   File: `src/tui/command.rs:204`
-   Change to use `tokio::env::current_dir()` or `tokio::fs::canonicalize()`
-
-2. **[MEDIUM] Add error handling when runtime unavailable**
-   File: `src/tui/command.rs:205-209`
-   Log a warning when dynamic commands cannot be loaded due to missing runtime
-
-3. **[MEDIUM] Consider unifying Command types**
-   Create a shared Command type or clearly document why two separate types exist
-
-4. **[LOW] Add template placeholder validation**
-   Validate that placeholders are well-formed before/during substitution
-
-5. **[LOW] Improve plugin command integration**
-   Either integrate `PluginCommand` into the main registry or document it as a separate system
+The implementation is correct; the documentation needs updating to reflect the actual state of the codebase.
