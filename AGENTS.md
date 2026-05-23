@@ -30,7 +30,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `permission/` | Access control, path restrictions, DoomLoop detection, mode system |
 | `plugin/` | WASM plugin system with hooks and TUI extensions |
 | `provider/` | LLM provider implementations (Anthropic, OpenAI, Google, etc.) |
-| `pty/` | Shell session metadata management (in-memory, no actual PTY) |
+| `pty_session/` | Shell session metadata management (in-memory, no actual PTY) |
 | `resilience/` | Circuit breaker, retry mechanisms, and rate limiting |
 | `security/` | SSRF protection, internal IP validation, Landlock sandboxing |
 | `server/` | HTTP server (Axum) with WebSocket support for remote TUIs |
