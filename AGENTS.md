@@ -55,9 +55,10 @@ These items were identified during module reviews and are important for future a
 - **Dead events removed**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied` removed from skill and architecture doc (never existed in code - only `PermissionPending`/`PermissionResponded` exist)
 - **AppEvent count corrected**: 38 variants (was incorrectly documented as 40+)
 
-### Crypto Module (2026-05-22)
+### Crypto Module (2026-05-27)
 - **Crypto module updated**: architecture/crypto.md now accurately describes the implementation (Argon2id key derivation, v2 format with `v2:` prefix, legacy HMAC-SHA256 support)
 - **Skill synchronized**: `.opencode/skills/crypto/SKILL.md` updated to match implementation
+- **FORMAT_V2_PREFIX documented**: The constant `pub const FORMAT_V2_PREFIX: &str = "v2:"` at `src/crypto/mod.rs:10` is now explicitly documented
 
 ### Error Module (2026-05-22)
 - **Architecture updated**: architecture/error.md now accurately describes the implementation (all error variants, is_retryable methods, HTTP status mapping)
@@ -345,6 +346,10 @@ These items were identified during module reviews and are important for future a
 - **ResyncRequired serialization**: Server uses `TuiMessage::ResyncRequired` variant directly (not raw JSON)
 - **Client timeouts**: Health check has 10s timeout, WebSocket connection has 30s timeout
 - **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
+
+### Key Lessons from Review Sessions
+- **Always verify documentation claims against actual code**. Many "bugs" in review files turned out to be correctly implemented after direct inspection. The act of reviewing often reveals assumptions that were wrong.
+- When encountering a claim like "Bug X exists in file Y", first read the actual code at that location to confirm before marking it as a bug.
 
 ### TTS Module (2026-05-26)
 - **Error handling improved**: `speak()` now returns `Err(AppError::Io(...))` when `say` command fails instead of silently ignoring failures. Callers handle errors appropriately.
