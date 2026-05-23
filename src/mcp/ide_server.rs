@@ -6,9 +6,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::{stdin, stdout, Write};
 use std::sync::Arc;
-use tokio::io::BufReader;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, Notify};
 
@@ -77,19 +76,19 @@ impl IdeServer {
 
     #[allow(unused_mut)]
     pub async fn run_stdio(&self) -> Result<(), McpError> {
-        let mut stdin = stdin();
-        let mut stdout = stdout();
+        let stdin = BufReader::new(tokio::io::stdin());
+        let mut stdout = tokio::io::stdout();
+        let mut lines = stdin.lines();
         let mut input = String::new();
 
         let mut initialized = false;
 
         loop {
             input.clear();
-            let read_result = stdin.read_line(&mut input);
+            let read_result = lines.next_line().await;
             match read_result {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(_) => break,
+                Ok(Some(line)) => input = line,
+                Ok(None) | Err(_) => break,
             }
 
             let trimmed = input.trim();
@@ -101,10 +100,17 @@ impl IdeServer {
                 let response = self.handle_request(request, &mut initialized).await;
                 let response_json = serde_json::to_string(&response)
                     .map_err(|e| McpError::Server(e.to_string()))?;
-                writeln!(stdout, "{}", response_json)
+                stdout
+                    .write_all(response_json.as_bytes())
+                    .await
+                    .map_err(|e| McpError::Connection(e.to_string()))?;
+                stdout
+                    .write_all(b"\n")
+                    .await
                     .map_err(|e| McpError::Connection(e.to_string()))?;
                 stdout
                     .flush()
+                    .await
                     .map_err(|e| McpError::Connection(e.to_string()))?;
             }
         }

@@ -304,17 +304,18 @@ impl OAuthManager {
             .as_secs();
         let code_expires_at = now + 600;
 
-        let tokens = self.exchange_code_for_tokens(
-            token_url,
-            client_id,
-            client_secret,
-            code,
-            code_verifier,
-            redirect_uri,
-        )
-        .await?;
-
         self.mark_code_used(code.to_string(), code_expires_at)
+            .await?;
+
+        let tokens = self
+            .exchange_code_for_tokens(
+                token_url,
+                client_id,
+                client_secret,
+                code,
+                code_verifier,
+                redirect_uri,
+            )
             .await?;
 
         Ok(tokens)

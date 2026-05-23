@@ -26,7 +26,6 @@ pub enum ConnectionState {
     },
 }
 
-#[derive(Clone)]
 pub struct McpConnectionManager {
     client: RemoteClient,
     state: Arc<Mutex<ConnectionState>>,
@@ -39,6 +38,24 @@ pub struct McpConnectionManager {
     heartbeat_cancellation: Arc<Mutex<Option<CancellationToken>>>,
     shutdown: Arc<Notify>,
     reconnect_needed: Arc<Notify>,
+}
+
+impl Clone for McpConnectionManager {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            state: Arc::clone(&self.state),
+            retry_count: Arc::clone(&self.retry_count),
+            max_retries: self.max_retries,
+            base_delay: self.base_delay,
+            max_delay: self.max_delay,
+            heartbeat_interval: self.heartbeat_interval,
+            heartbeat_token: self.heartbeat_token.clone(),
+            heartbeat_cancellation: Arc::clone(&self.heartbeat_cancellation),
+            shutdown: Arc::clone(&self.shutdown),
+            reconnect_needed: Arc::clone(&self.reconnect_needed),
+        }
+    }
 }
 
 impl McpConnectionManager {

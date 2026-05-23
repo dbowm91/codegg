@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use lsp_types::*;
@@ -39,7 +39,7 @@ pub struct LspClient {
     pub server_id: String,
     pub root: PathBuf,
     pub process: tokio::sync::Mutex<LspProcess>,
-    pub request_id: AtomicI64,
+    pub request_id: AtomicU64,
     pub capabilities: Mutex<Option<ServerCapabilities>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
     pub diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,
@@ -74,7 +74,7 @@ impl LspClient {
             server_id: server.id.to_string(),
             root: root.to_path_buf(),
             process: tokio::sync::Mutex::new(process),
-            request_id: AtomicI64::new(0),
+            request_id: AtomicU64::new(0),
             capabilities: Mutex::new(None),
             opened_files: Mutex::new(HashMap::new()),
             diagnostics: Arc::new(Mutex::new(HashMap::new())),
@@ -454,10 +454,7 @@ impl LspClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, LspError> {
-        let mut id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        if id == 0 {
-            id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        }
+        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
 
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
@@ -481,7 +478,7 @@ impl LspClient {
                 let resp: serde_json::Value = serde_json::from_str(&resp_str)?;
 
                 if let Some(resp_id) = resp.get("id") {
-                    if resp_id.as_i64() == Some(id) {
+                    if resp_id.as_i64() == Some(id as i64) {
                         if let Some(err) = resp.get("error") {
                             return Err(LspError::RequestFailed(format!(
                                 "LSP error {}: {}",
