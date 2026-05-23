@@ -23,34 +23,58 @@ When continuing work from a previous session:
 
 When encountering a claim like "Bug X exists in file Y", first read the actual code at that location to confirm before marking it as a bug.
 
-## Architecture Review Findings (2026-05-23)
+## Architecture Review Session (2026-05-23)
 
-### Bug: FocusManager pop_dialog() Index Reversal
-- **File**: `src/tui/components/component/focus.rs:33-46`
-- **Issue**: `pop_dialog()` reverses the removal index before calling `remove()`
-- **Detail**: `position()` returns index from front (0 = first), but code computes `idx_rev = stack.len() - 1 - idx` and removes `idx_rev`
-- **Example**: stack `[A,B,C,D,E]`, searching for `B` gives `idx=1`, `idx_rev=3`, removes `D` not `B`
-- **Fix**: Use `pos` directly instead of `idx_rev` when calling `remove()`
+This session reviewed the consolidated plan and verified each item against the codebase using subagents. Key findings:
 
-### Snapshot Capture Flow (Two-Phase)
-- `capture_snapshot_if_needed()` is called BEFORE tool execution (`loop.rs:1655`)
-- `capture_incremental_snapshot_if_needed()` is called AFTER tool execution (`loop.rs:1853`)
-- Both gated on same `has_file_modifying` condition
-- Pre-execution snapshot drains stale file-change events first
+### Real Bugs Requiring Fixes
 
-### Documentation Gaps Identified (May 2026 Review)
-The following items need documentation in skills/architecture:
+1. **FocusManager pop_dialog() index bug** (HIGH priority)
+   - File: `src/tui/components/component/focus.rs:33-46`
+   - Bug: `idx_rev = stack.len() - 1 - idx` computes reverse index, then removes `idx_rev` instead of `idx`
+   - Fix: Change `self.stack.remove(idx_rev)` to `self.stack.remove(idx)`
 
-1. **`list_skill_resources()` function**: In `src/tool/skill.rs` - scans skill directory for additional resource files
-2. **`FORMAT_V2_PREFIX` constant**: `"v2:"` prefix in crypto module used by `config/encryption.rs`
+2. **snapshot restore() missing path validation** (HIGH priority)
+   - File: `src/snapshot/mod.rs:267-292`
+   - Bug: `restore()` does not validate paths escape project_root, but `restore_to_path()` does
+   - Fix: Add canonicalize check similar to `restore_to_path()` at lines 305-333
+
+### Documentation Gaps Identified
+
+The following documentation items remain pending (see `plans/plan.md` for full list):
+
+1. **`list_skill_resources()` function**: Undocumented in skills skill
+2. **`FORMAT_V2_PREFIX` constant**: `"v2:"` not named explicitly in docs
 3. **Tool modules undocumented**: teams.rs (5 TeamTools), lsp.rs (11 operations), formatter.rs
-4. **Resilience half_open fields**: `half_open_start_time` and `max_half_open_duration` in circuit breaker
-5. **fuzzy_match vs fuzzy_score**: `fuzzy_match` returns distance (lower=better), `fuzzy_score` returns similarity (higher=better)
-6. **Histogram 1000-element limit**: Metrics cap at 1000 values (FIFO eviction)
-7. **Snapshot restore() path validation**: `restore()` lacks path validation but `restore_to_path()` has it
-8. **UiState fields**: `dirty_regions`, `render_panic_count`, `last_render_error` undocumented
+4. **Resilience half_open fields**: `half_open_start_time` and `max_half_open_duration` not documented
+5. **Snapshot capture flow**: Two-phase capture (before/after tool execution) needs clearer doc
+6. **LSP request_id**: Docs show `AtomicI64` but actual is `AtomicU64`
+7. **SSE methods**: `connect_sse()`, `connect_sse_stream()`, `take_sse_events()` undocumented
+8. **IdeServer::run_socket()**: Async socket method not documented
+9. **Histogram 1000-element limit**: VecDeque cap not documented
+
+### Items Already Verified Fixed (No Action Needed)
+
+- Wave 0 docs (DOC-1 to DOC-6): All fixed in prior session
+- TTS speaking type shows `Mutex<AtomicBool>` correctly
+- UiState fields (`dirty_regions`, `render_panic_count`, `last_render_error`) documented
+- fuzzy_match vs fuzzy_score clarification added
+- Worktree error handling documented
+- PROVIDER_NOT_FOUND error code in exec.md
+- Handle_paste default method documented
+
+### Parallelization Guidance
+
+The remaining 13 items can be parallelized across 6 agents:
+- Agent A: BUG-6 (FocusManager bug - HIGH)
+- Agent B: DOC-8, DOC-9 (new skill files)
+- Agent C: DOC-11 (snapshot restore path validation - HIGH)
+- Agent D: DOC-10, DOC-13, DOC-15, DOC-16 (architecture corrections)
+- Agent E: DOC-12, DOC-17, DOC-18 (skills docs)
+- Agent F: DOC-20, DOC-25 (final docs)
 
 ### Verification Before Acting
+
 When a plan file claims something is a bug:
 1. Read the actual source code at the referenced location
 2. Verify the bug exists before marking it as such
