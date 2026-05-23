@@ -536,7 +536,7 @@ async fn handle_tui_message(
         TuiMessage::SessionInfo { id, model } => {
             let mut state_guard = state.lock().await;
             state_guard.session_id = Some(id.clone());
-            state_guard.model = model;
+            state_guard.model = Some(model);
             state_guard.rate_limit_key = if id.is_empty() {
                 "session:unknown".to_string()
             } else {

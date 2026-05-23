@@ -116,6 +116,7 @@ impl CircuitBreaker {
                 if start_time.elapsed() >= self.inner.max_half_open_duration {
                     *self.inner.state.write().await = CircuitState::Open;
                     *self.inner.half_open_start_time.write().await = None;
+                    *self.inner.last_failure_time.write().await = None;
                     tracing::warn!(
                         "circuit breaker {} transitioned to Open after HalfOpen timeout",
                         self.inner.name

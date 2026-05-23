@@ -225,6 +225,8 @@ impl IntoResponse for AppError {
             AppError::Storage(StorageError::NotFound(_)) => StatusCode::NOT_FOUND,
             AppError::Storage(StorageError::Database(_))
             | AppError::Storage(StorageError::Migration(_))
+            | AppError::Storage(StorageError::Import(_))
+            | AppError::Storage(StorageError::Export(_))
             | AppError::Storage(StorageError::LlmOperation { .. }) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -270,7 +272,8 @@ impl IntoResponse for AppError {
             AppError::Lsp(LspError::ServerNotFound(_)) => StatusCode::NOT_FOUND,
             AppError::Lsp(LspError::UnsupportedLanguage(_)) => StatusCode::BAD_REQUEST,
             AppError::Lsp(LspError::NotInitialized(_)) => StatusCode::CONFLICT,
-            AppError::Lsp(LspError::DownloadFailed(_))
+            AppError::Lsp(LspError::RequestTimeout(_))
+            | AppError::Lsp(LspError::DownloadFailed(_))
             | AppError::Lsp(LspError::LaunchFailed(_))
             | AppError::Lsp(LspError::RequestFailed(_)) => StatusCode::BAD_GATEWAY,
             AppError::Lsp(LspError::Io(_)) | AppError::Lsp(LspError::Json(_)) => {

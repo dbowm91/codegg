@@ -80,6 +80,7 @@ impl GoogleProvider {
                     for tc in tool_calls {
                         parts.push(json!({
                             "functionCall": {
+                                "id": tc.id,
                                 "name": tc.name,
                                 "args": tc.arguments,
                             }

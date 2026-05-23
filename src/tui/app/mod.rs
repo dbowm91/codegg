@@ -1620,16 +1620,7 @@ impl App {
                 self.dialog_state.theme_picker = None;
                 self.close_dialog();
             }
-            TuiMsg::SelectTreeSession { session_id } => {
-                let store = self.session_store.clone();
-                let session_id_clone = session_id.clone();
-                tokio::spawn(async move {
-                    if let Some(ref store) = store {
-                        if let Ok(Some(session)) = store.get(&session_id_clone).await {
-                            let _ = session;
-                        }
-                    }
-                });
+            TuiMsg::SelectTreeSession { session_id: _ } => {
                 self.close_dialog();
             }
             TuiMsg::ForkTreeSession { session_id } => {
@@ -5794,7 +5785,7 @@ fn estimate_cost(input_tokens: &u64, output_tokens: &u64, model: &str) -> String
 fn get_git_branch(git_root: &std::path::Path) -> Option<String> {
     let output = std::process::Command::new("git")
         .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .args(["branch", "--show-current"])
         .current_dir(git_root)
         .output()
@@ -5814,7 +5805,7 @@ fn get_git_branch(git_root: &std::path::Path) -> Option<String> {
 fn check_git_dirty(git_root: &std::path::Path) -> bool {
     let output = std::process::Command::new("git")
         .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .args(["status", "--porcelain"])
         .current_dir(git_root)
         .output()
