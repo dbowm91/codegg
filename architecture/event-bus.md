@@ -13,7 +13,7 @@ The `bus` module provides inter-component communication via an event-driven arch
 
 **Files**:
 - `global.rs` - GlobalEventBus singleton
-- `events.rs` - AppEvent enum (38 variants) with `event_type()` method for SSE filtering
+- `events.rs` - AppEvent enum (36 variants) with `event_type()` method for SSE filtering
 - `mod.rs` - PermissionRegistry and QuestionRegistry
 
 ## Components
@@ -60,7 +60,7 @@ impl GlobalEventBus {
 
 ### events.rs - AppEvent Enum
 
-38 event variants across categories:
+36 event variants across categories:
 
 **Session Events (7)**: `SessionCreated`, `SessionUpdated`, `SessionArchived`, `SessionForked`, `SessionShared`, `SessionUnshared`, `SessionReverted`
 
@@ -80,7 +80,7 @@ impl GlobalEventBus {
 
 **Diff Events (2)**: `DiffPending`, `DiffResponded`
 
-**Other Events (8)**: `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`
+**Other Events (9)**: `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged`, `AgentFinished`
 
 ### mod.rs - PermissionRegistry & QuestionRegistry
 

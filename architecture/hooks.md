@@ -179,12 +179,12 @@ impl HookResult {
 
 | Location | Event | Can Block? |
 |----------|-------|-----------|
-| `loop.rs:1255` | `SessionStart` | No |
-| `loop.rs:1351` | `AgentStart` | No |
-| `loop.rs:1751` | `PreToolExecute` | No |
-| `loop.rs:1825` | `PostToolExecute` | No |
-| `loop.rs:1524` | `AgentEnd` | No |
-| `loop.rs:1545` | `SessionEnd` | No |
+| `before agent loop starts` (`loop.rs`) | `SessionStart` | No |
+| `before agent processing` (`loop.rs`) | `AgentStart` | No |
+| `before tool execution` (`loop.rs`) | `PreToolExecute` | No |
+| `after tool execution` (`loop.rs`) | `PostToolExecute` | No |
+| `after agent processing` (`loop.rs`) | `AgentEnd` | No |
+| `before session ends` (`loop.rs`) | `SessionEnd` | No |
 
 **Important**: Stream errors now break the loop instead of returning early, ensuring `AgentEnd` and `SessionEnd` hooks run.
 
@@ -192,9 +192,9 @@ impl HookResult {
 
 | Location | Event | Can Block? |
 |----------|-------|-----------|
-| `loop.rs:1764` | `ToolExecuteBefore` | **Yes** |
-| `loop.rs:1806` | `ToolExecuteAfter` | No |
-| `loop.rs:1157` | `SessionCompacting` | **Yes** |
+| `before tool execution` (`loop.rs`) | `ToolExecuteBefore` | **Yes** |
+| `after tool execution` (`loop.rs`) | `ToolExecuteAfter` | No |
+| `during session compaction` (`loop.rs`) | `SessionCompacting` | **Yes** |
 
 ---
 

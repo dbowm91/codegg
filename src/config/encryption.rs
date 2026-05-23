@@ -1,7 +1,6 @@
 use crate::config::schema::Config;
 use crate::error::{AppError, ConfigError};
-
-const CRYPTO_V2_PREFIX: &str = "v2:";
+use crate::crypto::FORMAT_V2_PREFIX;
 
 pub fn get_master_key() -> Option<String> {
     std::env::var("CODEGG_MASTER_KEY")
@@ -68,7 +67,7 @@ pub fn encrypt_provider_keys(config: &mut Config) -> Result<(), AppError> {
 
             if provider.encrypted == Some(true) {
                 if let Some(ref encrypted_key) = provider.encrypted_api_key {
-                    if !encrypted_key.starts_with(CRYPTO_V2_PREFIX) {
+                    if !encrypted_key.starts_with(FORMAT_V2_PREFIX) {
                         match crate::crypto::decrypt_from_string(encrypted_key, &master_key) {
                             Ok(decrypted) => match crate::crypto::encrypt_to_string(&decrypted, &master_key) {
                                 Ok(migrated) => {
@@ -178,7 +177,7 @@ mod tests {
             .encrypted_api_key
             .as_ref()
             .expect("encrypted key should still be present");
-        assert!(migrated.starts_with(CRYPTO_V2_PREFIX));
+        assert!(migrated.starts_with(FORMAT_V2_PREFIX));
         let decrypted = crate::crypto::decrypt_from_string(migrated, "migration-test-master-key")
             .expect("migrated ciphertext should decrypt");
         assert_eq!(decrypted, "legacy-provider-secret");
