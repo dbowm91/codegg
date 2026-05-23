@@ -24,6 +24,19 @@ pub enum PatternType {
     ToolPreference,
 }
 
+impl std::fmt::Display for PatternType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PatternType::UserPreference => write!(f, "UserPreference"),
+            PatternType::CodingConvention => write!(f, "CodingConvention"),
+            PatternType::Deprecation => write!(f, "Deprecation"),
+            PatternType::NamingPattern => write!(f, "NamingPattern"),
+            PatternType::Architecture => write!(f, "Architecture"),
+            PatternType::ToolPreference => write!(f, "ToolPreference"),
+        }
+    }
+}
+
 pub struct PatternDetector {
     preference_patterns: Vec<PreferencePattern>,
     convention_patterns: Vec<ConventionPattern>,
@@ -63,7 +76,7 @@ impl PatternDetector {
                 PreferencePattern {
                     regex: regex::Regex::new(r"(?i)never use ([^.]+)").unwrap(),
                     base_score: 10.0,
-                    negation_modifier: 0.0,
+                    negation_modifier: -3.0,
                 },
                 PreferencePattern {
                     regex: regex::Regex::new(r"(?i)use ([^.]+) instead").unwrap(),
@@ -317,7 +330,7 @@ mod tests {
         let matches = detector.detect_in_text(text);
 
         assert!(!matches.is_empty());
-        assert!(matches[0].score < 8.0);
+        assert_eq!(matches[0].score, 5.0, "Don't use X should score base 8.0 - negation 3.0 = 5.0");
     }
 
     #[test]
