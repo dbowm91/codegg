@@ -23,6 +23,7 @@ impl RemoteClient {
             builder = builder.default_headers(headers);
         }
         let http = builder
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| ClientError::Connection(format!("failed to build client: {}", e)))?;
         Ok(Self {

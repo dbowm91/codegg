@@ -1,9 +1,10 @@
 use futures::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio::time::timeout;
+use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_tungstenite::tungstenite::http::Request;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::protocol::tui::TuiMessage;
 use crate::client::sdk::RemoteClient;
@@ -30,10 +31,38 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
         .body(())
         .map_err(|e| ClientError::Connection(format!("invalid WebSocket request: {}", e)))?;
 
-    let ws_stream = match timeout(Duration::from_secs(30), connect_async(ws_request)).await {
-        Ok(Ok((stream, _))) => stream,
-        Ok(Err(e)) => return Err(ClientError::WebSocket(e.to_string())),
-        Err(_) => return Err(ClientError::Connection("WebSocket connection timed out".to_string())),
+    let ws_stream = {
+        let mut attempt = 0;
+        let max_attempts = 3;
+        loop {
+            if attempt > 0 {
+                let delay_secs = 2u64.saturating_pow((attempt - 1) as u32);
+                info!("WebSocket reconnect attempt {} in {}s", attempt, delay_secs);
+                sleep(Duration::from_secs(delay_secs)).await;
+            }
+            match timeout(Duration::from_secs(30), connect_async(ws_request.clone())).await {
+                Ok(Ok((stream, _))) => break stream,
+                Ok(Err(e)) => {
+                    if attempt >= max_attempts {
+                        return Err(ClientError::WebSocket(format!(
+                            "WebSocket connection to {} failed after {} attempts: {}",
+                            ws_url, max_attempts, e
+                        )));
+                    }
+                    warn!("WebSocket attempt {} failed: {}, retrying...", attempt + 1, e);
+                }
+                Err(_) => {
+                    if attempt >= max_attempts {
+                        return Err(ClientError::Connection(format!(
+                            "WebSocket connection to {} timed out after {} attempts",
+                            ws_url, max_attempts
+                        )));
+                    }
+                    warn!("WebSocket attempt {} timed out, retrying...", attempt + 1);
+                }
+            }
+            attempt += 1;
+        }
     };
 
     info!("TUI WebSocket connected");
@@ -49,31 +78,36 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
     app.set_remote_send_tx(out_tx);
 
     let event_task = tokio::spawn(async move {
-        while let Some(msg) = ws_rx.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    match serde_json::from_str::<serde_json::Value>(&text) {
-                        Ok(event) => {
-                            if event_tx.send(event).is_err() {
-                                tracing::debug!("event_tx closed, stopping event_task");
-                                break;
+        let result = std::panic::catch_unwind(move || async {
+            while let Some(msg) = ws_rx.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        match serde_json::from_str::<serde_json::Value>(&text) {
+                            Ok(event) => {
+                                if event_tx.send(event).is_err() {
+                                    tracing::debug!("event_tx closed, stopping event_task");
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("failed to parse WebSocket message: {}", e);
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!("failed to parse WebSocket message: {}", e);
-                        }
                     }
+                    Ok(Message::Close(_)) => {
+                        info!("Server closed connection");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("WebSocket error: {}", e);
+                        break;
+                    }
+                    _ => {}
                 }
-                Ok(Message::Close(_)) => {
-                    info!("Server closed connection");
-                    break;
-                }
-                Err(e) => {
-                    error!("WebSocket error: {}", e);
-                    break;
-                }
-                _ => {}
             }
+        });
+        if let Err(panic_err) = result {
+            tracing::error!("event_task panicked: {:?}", panic_err);
         }
     });
 
