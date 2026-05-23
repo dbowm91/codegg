@@ -1,6 +1,6 @@
 # Implementation Plan - Documentation Review Consolidation
 
-**Status**: IN PROGRESS
+**Status**: COMPLETED ✅
 **Last Updated**: 2026-05-23
 **Goal**: Consolidate all architecture review findings into a single actionable plan with parallelization waves.
 
@@ -328,15 +328,15 @@ cargo test session
 | Wave | Items | Priority | Status |
 |------|-------|----------|--------|
 | Wave 0 | 6 | - | ✅ ALL FIXED |
-| Wave 1 | 1 (BUG-6) | HIGH | pending |
-| Wave 2 | 2 | HIGH/MED | pending |
-| Wave 3 | 2 | HIGH/MED | pending |
-| Wave 4 | 4 | MED | pending |
-| Wave 5 | 3 | MED | pending |
-| Wave 6 | 2 | LOW/MED | pending |
+| Wave 1 | 1 (BUG-6) | HIGH | ✅ FIXED (PR: wave1-bugfix) |
+| Wave 2 | 2 | HIGH/MED | ✅ COMPLETED (compaction + hooks SKILL.md) |
+| Wave 3 | 2 | HIGH/MED | ✅ COMPLETED (snapshot restore path validation + resilience half_open fields) |
+| Wave 4 | 4 | MED | ✅ COMPLETED (snapshot capture flow, LSP request_id, SSE methods, IdeServer::run_socket) |
+| Wave 5 | 3 | MED | ✅ COMPLETED (teams/lsp/formatter tools documented) |
+| Wave 6 | 2 | LOW/MED | ✅ COMPLETED (Histogram limit + MetricsSnapshot documented) |
 | Already Fixed | 14+ | - | ✅ COMPLETED |
 
-### Remaining Work: 13 items
+### All Items Completed ✅
 
 ---
 
@@ -360,10 +360,33 @@ This file consolidates findings from May 2026 architecture review sessions. The 
 3. **TTS is macOS-only**: Uses hardcoded `say` command
 4. **Permissions are synchronous**: `PermissionRegistry::respond()` is `fn`, not `async fn`
 5. **WASM plugins use fuel tracking**: `return_fuel()` uses `MAX_PLUGIN_FUEL_BUDGET`
-6. **FocusManager dialog stack**: Uses `VecDeque`, `pop_dialog()` had index reversal bug (fix at line 41)
+6. **FocusManager dialog stack**: Uses `VecDeque`, `pop_dialog()` now uses idx directly (BUG-6 FIXED)
 7. **PermissionRegistry location**: Located in `src/bus/mod.rs`, not `src/permission/`
 8. **MCP reconnect wired up**: Heartbeat failures trigger reconnect via `reconnect_needed` Notify
 9. **SSE not fully integrated**: `connect_sse()` etc. exist but not auto-called during remote connection
+10. **Snapshot restore() path validation**: Now validates paths don't escape project_root (BUG-11 FIXED)
+
+---
+
+## Implementation Notes (2026-05-23)
+
+### Completed in this session (All Waves 1-6):
+
+**Wave 1**: FocusManager pop_dialog index bug fix
+**Wave 2**: Created compaction/SKILL.md and hooks/SKILL.md
+**Wave 3**: Added path validation to snapshot restore(), documented half_open fields
+**Wave 4**: Fixed snapshot capture flow, LSP request_id type, SSE methods, IdeServer::run_socket
+**Wave 5**: Documented teams/lsp/formatter tools, list_skill_resources, FORMAT_V2_PREFIX
+**Wave 6**: Documented Histogram 1000-element limit and MetricsSnapshot fields
+
+### Branch/Commit History:
+- wave1-bugfix: 0f77c89 - compaction SKILL.md
+- wave3-bugfix: 9ef45f5 - snapshot restore + resilience docs
+- wave4-docs-corrections: 47b549a - snapshot/LSP/SSE/IDE docs
+- wave5-skills-docs: ab2b274 - tool modules documentation
+- wave6-final-docs: bb554b5 - util metrics documentation
+
+All merged to main: 84ec942
 
 ---
 
@@ -373,4 +396,4 @@ The following original plan files have been consolidated into this document:
 - This file (`plans/plan.md`) is the single source of truth
 - All other plan files in `plans/` directory have been removed
 
-*(Last updated: 2026-05-23)*
+*(Last updated: 2026-05-23 - ALL WAVES COMPLETED)*
