@@ -33,9 +33,11 @@ struct CircuitBreakerInner {
     failure_count: TokioRwLock<usize>,
     success_count: TokioRwLock<usize>,
     last_failure_time: TokioRwLock<Option<Instant>>,
+    half_open_start_time: TokioRwLock<Option<Instant>>,
     failure_threshold: usize,
     timeout_secs: u64,
     success_threshold: usize,
+    max_half_open_duration: Duration,
 }
 
 #[derive(Clone)]
@@ -57,9 +59,11 @@ impl CircuitBreaker {
                 failure_count: TokioRwLock::new(0),
                 success_count: TokioRwLock::new(0),
                 last_failure_time: TokioRwLock::new(None),
+                half_open_start_time: TokioRwLock::new(None),
                 failure_threshold,
                 timeout_secs,
                 success_threshold,
+                max_half_open_duration: Duration::from_secs(30),
             }),
         }
     }
@@ -81,6 +85,7 @@ impl CircuitBreaker {
                     let timeout = Duration::from_secs(self.inner.timeout_secs);
                     if last_failure.elapsed() >= timeout {
                         *state = CircuitState::HalfOpen;
+                        *self.inner.half_open_start_time.write().await = Some(Instant::now());
                         tracing::info!(
                             "circuit breaker {} transitioned to HalfOpen",
                             self.inner.name
@@ -103,6 +108,20 @@ impl CircuitBreaker {
             let state = *self.inner.state.read().await;
             if state == CircuitState::Open {
                 return Err(CircuitError::Open(self.inner.name.clone()).into());
+            }
+        }
+
+        if let CircuitState::HalfOpen = *self.inner.state.read().await {
+            if let Some(start_time) = *self.inner.half_open_start_time.read().await {
+                if start_time.elapsed() >= self.inner.max_half_open_duration {
+                    *self.inner.state.write().await = CircuitState::Open;
+                    *self.inner.half_open_start_time.write().await = None;
+                    tracing::warn!(
+                        "circuit breaker {} transitioned to Open after HalfOpen timeout",
+                        self.inner.name
+                    );
+                    return Err(CircuitError::Open(self.inner.name.clone()).into());
+                }
             }
         }
 
@@ -129,6 +148,7 @@ impl CircuitBreaker {
                     *state = CircuitState::Closed;
                     *self.inner.failure_count.write().await = 0;
                     *self.inner.success_count.write().await = 0;
+                    *self.inner.last_failure_time.write().await = None;
                     tracing::info!("circuit breaker {} transitioned to Closed", self.inner.name);
                 }
             }
