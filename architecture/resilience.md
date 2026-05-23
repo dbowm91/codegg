@@ -20,9 +20,11 @@ struct CircuitBreakerInner {
     failure_count: TokioRwLock<usize>,
     success_count: TokioRwLock<usize>,
     last_failure_time: TokioRwLock<Option<Instant>>,
+    half_open_start_time: TokioRwLock<Option<Instant>>,  // Set when Open→HalfOpen transition occurs
     failure_threshold: usize,
     timeout_secs: u64,
     success_threshold: usize,
+    max_half_open_duration: Duration,        // 30 seconds, controls HalfOpen→Open timeout
 }
 
 pub struct CircuitBreaker {
