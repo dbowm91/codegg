@@ -91,13 +91,19 @@ pub mod inner {
 
     pub struct Histogram(Arc<Mutex<VecDeque<u64>>>);
     impl Histogram {
-        pub fn record(&self, v: u64);
+        pub fn record(&self, v: u64);  // Records value, auto-evicts oldest if >1000 entries
     }
 
-    pub struct MetricsSnapshot { ... }
+    pub struct MetricsSnapshot {
+        pub counters: HashMap<String, u64>,      // Counter values at snapshot time
+        pub gauges: HashMap<String, u64>,         // Gauge values at snapshot time
+        pub histograms: HashMap<String, Vec<u64>>, // All recorded values for each histogram
+    }
     pub fn metrics() -> &'static Metrics;
 }
 ```
+
+**Histogram**: Uses `VecDeque<u64>` with a 1000-element limit. When capacity is exceeded, the oldest entry is automatically evicted (`pop_front()`). This provides a rolling window of recent measurements without unbounded memory growth.
 
 **Note**: `stat_core.rs` is a misleading filename - it contains metrics infrastructure, not file statistics as the name might suggest.
 
