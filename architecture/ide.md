@@ -108,6 +108,44 @@ Uses JetBrains `idea` or `idea.sh` CLI with `diff` subcommand. Supports:
 
 When no IDE is detected, `open_diff_generic()` searches PATH using `std::env::split_paths()` for `code` or `idea` binaries. Unlike IDE-specific handlers that use the original file paths, the generic fallback creates temporary files with the content (applying line range slicing if provided) and passes those to the IDE.
 
+## MCP IdeServer (`src/mcp/ide_server.rs`)
+
+The `IdeServer` struct provides MCP server functionality for IDE communication with two transport modes:
+
+### `run_stdio()` - Standard I/O Transport
+
+Uses tokio async I/O for stdio-based communication:
+
+```rust
+pub async fn run_stdio(&self) -> Result<(), McpError> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let (reader, mut writer) = (tokio::io::stdin(), tokio::io::stdout());
+    // ...
+}
+```
+
+### `run_socket()` - Unix Socket Transport
+
+Uses Unix socket for network-based communication:
+
+```rust
+pub async fn run_socket(&self, socket_path: &str) -> Result<(), McpError> {
+    let listener = UnixListener::bind(socket_path)?;
+    loop {
+        tokio::select! {
+            biased;
+            _ = self.shutdown_notify.notified() => break,
+            result = listener.accept() => {
+                // Handle incoming connections
+            }
+        }
+    }
+}
+```
+
+The `run_socket()` method uses async I/O via tokio's `UnixListener`, allowing multiple IDE connections. Each connection is handled in a spawned task via `handle_connection()`.
+
 ## See Also
 
 - [tui.md](tui.md) - TUI that displays diffs
+- [mcp.md](mcp.md) - MCP client/server system including IdeServer

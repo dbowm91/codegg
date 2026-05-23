@@ -199,6 +199,36 @@ pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>>
 }
 ```
 
+### Client SSE Methods (`src/mcp/remote.rs`)
+
+The `RemoteClient` provides client-side SSE connection methods:
+
+#### `connect_sse()` - Initiate SSE Connection
+
+```rust
+pub async fn connect_sse(&self) -> Result<(), McpError>
+```
+
+Establishes an SSE connection to the MCP server using the stored SSE URL. Sets appropriate headers (Authorization, Mcp-Session-Id) and Accept: text/event-stream. Calls `connect_sse_stream()` on success.
+
+#### `connect_sse_stream()` - Process SSE Stream
+
+```rust
+async fn connect_sse_stream(&self, resp: reqwest::Response) -> Result<(), McpError>
+```
+
+Internal method that spawns a task to process the SSE stream. Parses SSE events from the stream, extracting `data:` lines and parsing as JSON. Events are accumulated in `sse_events` Arc<Mutex<Vec<Value>>>. Has a 1MB buffer limit.
+
+#### `take_sse_events()` - Retrieve Collected Events
+
+```rust
+pub async fn take_sse_events(&self) -> Vec<serde_json::Value>
+```
+
+Returns all collected SSE events and clears the buffer. Used to retrieve events processed during SSE streaming.
+
+**Note**: SSE methods exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent (Known Issue - see architecture/mcp.md).
+
 ## Protocol
 
 ### TuiMessage (from `src/protocol/tui.rs`)
