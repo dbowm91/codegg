@@ -1,29 +1,94 @@
 ---
 name: compaction
-description: Context compaction strategies and safety tests for AgentLoop
-tags: [agent, compaction, context, memory]
+description: Context window overflow management through intelligent compaction strategies
+version: 1.0.0
+tags:
+  - agent
+  - context
+  - memory
+  - tokenization
+  - compaction
 ---
 
-# Compaction System Guide
+# Compaction Module Guide
 
-This skill covers the compaction system in opencode-rs, which manages context window limits by reducing message history.
+The compaction module manages context window overflow by intelligently reducing conversation history while preserving critical information and tool call invariants.
 
-## Compaction Strategies
+## Key Types
 
-Defined in `src/agent/compaction.rs`:
+### CompactionStrategy Enum (`src/agent/compaction.rs`)
 
 ```rust
-#[derive(Debug, PartialEq)]
 pub enum CompactionStrategy {
-    TruncateToolOutputs,  // Truncates tool result content to ~500 chars
-    SummarizeOldTurns,    // Uses LLM to summarize old turns (async)
-    DropMiddleMessages,   // Removes middle messages, keeping first and last pairs
+    TruncateToolOutputs,  // Prune long tool outputs to ~10k tokens max
+    SummarizeOldTurns,    // Use LLM to summarize older conversation turns
+    DropMiddleMessages,   // Drop middle messages keeping start/end
 }
 ```
 
-### Strategy Selection (Adaptive)
+### ContextTracker
 
-The `select_compaction_strategy()` function picks the best strategy:
+```rust
+pub struct ContextTracker {
+    current_tokens: usize,
+    context_limit: usize,
+    threshold: f64,
+    message_token_counts: Vec<usize>,
+}
+```
+
+Tracks token usage and determines when compaction is needed.
+
+### TokenizerType
+
+```rust
+pub enum TokenizerType {
+    Cl100kBase,  // GPT-4/3.5 (1.0x multiplier)
+    Claude,      // Claude models (1.4x multiplier)
+    Gemini,      // Gemini models (1.2x multiplier)
+    O200kBase,   // Newer models (1.0x multiplier)
+}
+```
+
+Model-specific token multipliers for accurate estimation.
+
+## Compaction Strategies
+
+### 1. TruncateToolOutputs
+
+Prunes tool outputs exceeding `max_tokens_per_output` (default 10,000 tokens). Preserves `tool_call_id` field unchanged.
+
+### 2. SummarizeOldTurns
+
+Uses LLM to summarize conversation turns. Falls back to `DropMiddleMessages` with placeholder if summarization unavailable. Only processes first 20 non-system messages, truncates tool content to 300 chars before summarization.
+
+### 3. DropMiddleMessages
+
+Keeps 2 messages per side (start/end of conversation). Returns unchanged if total messages <= 4.
+
+## Compaction Invariants
+
+All strategies must maintain these invariants:
+
+1. **No orphan `Message::Tool`**: Every tool result must have a matching assistant tool call with same `tool_call_id`
+2. **Order preservation**: Relative order of assistant tool calls and their matching results must be preserved
+3. **Tool ID preservation**: Truncation of tool outputs must preserve `tool_call_id`
+4. **Multi-tool preservation**: Assistant messages with multiple tool calls must preserve all IDs and order
+
+## Key Functions
+
+| Function | Description |
+|----------|-------------|
+| `detect_overflow()` | Returns true if current tokens exceed threshold |
+| `prune_tool_outputs()` | Truncates tool outputs to max_tokens_per_output |
+| `compact_messages_sync()` | Applies compaction strategies synchronously |
+| `compact_messages_async()` | Applies with LLM summarization |
+| `auto_compact_async()` | Auto-selects strategy based on content |
+| `llm_summarize()` | Uses provider to summarize messages |
+
+## Adaptive Strategy Selection
+
+The `select_compaction_strategy()` function picks the best strategy based on message characteristics:
 
 ```rust
 fn select_compaction_strategy(messages: &[Message]) -> CompactionStrategy {
@@ -40,130 +105,81 @@ fn select_compaction_strategy(messages: &[Message]) -> CompactionStrategy {
 }
 ```
 
-## Key Functions
+**Selection criteria:**
+- **TruncateToolOutputs**: When messages have long tool outputs (>2000 chars) AND there are many messages (>6)
+- **SummarizeOldTurns**: When there are many messages (>8 non-system) without long tool outputs
+- **DropMiddleMessages**: Default for smaller conversations
 
-### compaction.rs Functions
+## Async LLM Summarization
+
+The `SummarizeOldTurns` strategy uses `llm_summarize()` to generate contextual summaries:
 
 ```rust
-// Sync version - uses placeholder summary
-pub fn compact_messages_sync(
-    messages: Vec<Message>,
-    strategy: CompactionStrategy,
-) -> Vec<Message>
-
-// Async version - uses LLM summarization
-pub async fn compact_messages_async(
+pub async fn llm_summarize(
     messages: &[Message],
-    strategy: CompactionStrategy,
     provider: &Arc<dyn Provider>,
-) -> Vec<Message>
+) -> Result<String, AppError>
+```
 
-// Auto-compact with adaptive strategy selection (sync)
-pub fn auto_compact(
-    messages: &[Message],
-    context_limit: usize,
-    threshold: f64,
-    prune: bool,
-) -> Vec<Message>
+The `compact_messages_async()` and `auto_compact_async()` functions use this strategy with proper fallback:
 
-// Auto-compact with adaptive strategy selection (async)
+```rust
 pub async fn auto_compact_async(
     messages: &[Message],
     context_limit: usize,
     threshold: f64,
     prune: bool,
     provider: Option<&Arc<dyn Provider>>,
-) -> Vec<Message>
-
-// Prune long tool outputs
-pub fn prune_tool_outputs(messages: &[Message], max_len: usize) -> Vec<Message>
-```
-
-### Integration with AgentLoop
-
-The `compact_if_needed()` function in `src/agent/loop.rs`:
-- Checks if context needs compaction
-- Calls appropriate compaction function
-- Dispatches hook events via `plugin_service.dispatch_hook()`
-
-## ContextTracker
-
-Tracks token usage and triggers compaction when needed:
-
-```rust
-pub struct ContextTracker {
-    context_limit: usize,
-    threshold: f64,
-    current_tokens: AtomicUsize,
-}
-
-impl ContextTracker {
-    pub fn new(context_limit: usize, threshold: f64) -> Self;
-    pub fn add_message(&mut self, msg: &Message);
-    pub fn needs_compaction(&self) -> bool;
-    pub fn needs_overflow_protection(&self, overflow_buffer: usize) -> bool;
-}
-```
-
-## Compaction Safety Tests (Packet 8)
-
-Located in `tests/compaction.rs`:
-
-### Key Test Patterns
-
-**Truncating preserves IDs** (Packet 8):
-```rust
-#[test]
-fn test_truncate_tool_output_preserves_id() {
-    let messages = vec![
-        Message::Tool { tool_call_id: Arc::new("test_tool_call_1".to_string()), ... },
-    ];
-    let result = compact_messages(messages, CompactionStrategy::TruncateToolOutputs);
-    // Verify tool_call_id is preserved after truncation
-}
-```
-
-**Drop-middle preserves tool pairs** (Packet 8):
-```rust
-#[test]
-fn test_drop_middle_preserves_tool_pairs() {
-    let result = compact_messages(messages, CompactionStrategy::DropMiddleMessages);
-    // Check no orphan tools: every tool has matching assistant
-    for m in &result {
-        if let Message::Tool { tool_call_id, .. } = m {
-            assert!(assistant_tool_ids.contains(&tool_call_id.as_ref().to_string()));
+) -> Vec<Message> {
+    // Falls back to DropMiddleMessages if provider unavailable
+    if strategy == CompactionStrategy::SummarizeOldTurns {
+        if let Some(p) = provider {
+            result = compact_messages_async(result, strategy, p).await;
+        } else {
+            result = compact_messages_sync(result, CompactionStrategy::DropMiddleMessages);
         }
     }
 }
 ```
 
-**Summarization no orphan results** (Packet 8):
+## Sync Version for Compatibility
+
+For contexts where async is not available, use `auto_compact_sync()` or `compact_messages_sync()`:
+
 ```rust
-#[test]
-fn test_summarization_fallback_no_orphans() {
-    let result = compact_messages(messages, CompactionStrategy::SummarizeOldTurns);
-    // Falls back to placeholder if no provider
-    // Verify no orphan tool results
-}
+pub fn compact_messages_sync(
+    messages: Vec<Message>,
+    strategy: CompactionStrategy,
+) -> Vec<Message>
 ```
 
-**Multiple tool calls preserve order** (Packet 8):
-```rust
-#[test]
-fn test_multiple_tool_calls_preserve_ids_order() {
-    let truncated = compact_messages(messages, CompactionStrategy::TruncateToolOutputs);
-    // Check IDs preserved in order: ["tc1", "tc2"]
-}
-```
+## Configuration
 
-## Compaction Invariants
+Via `CompactionConfig` in `src/config/schema.rs`:
 
-1. **Assistant tool calls must have matching Tool results** in subsequent messages
-2. **Tool result `tool_call_id` must match** a prior assistant `tool_calls[].id`
-3. **Assistant message must come before** its corresponding Tool result
-4. **No orphan tool results** - every Tool message needs a prior Assistant with matching tool_call
+- `enabled`: Enable/disable compaction
+- `auto`: Automatic compaction when approaching limit
+- `prune`: Use TruncateToolOutputs strategy
+- `max_tokens`: Maximum tokens in context
+- `threshold`: 0.1-1.0, trigger compaction when tokens exceed threshold
+- `reserved`: Reserved token buffer (default 10,000)
+- `summarize_model`: Model to use for summarization
 
-## Related Skills
+## Integration
 
-- See `.opencode/skills/agent-loop/SKILL.md` for AgentLoop integration
-- See `.opencode/skills/provider/SKILL.md` for provider transcript tests with compaction
+Called from `AgentLoop::compact_if_needed()` in `src/agent/loop.rs:1130`. Dispatches `SessionCompacting` hook before compaction.
+
+## Testing
+
+Compaction safety tests are located in `tests/compaction.rs`. These verify:
+
+- Message ordering is preserved after compaction
+- Tool call IDs remain consistent
+- No orphan tool results after compaction
+- Adaptive strategy selection works correctly
+
+## See Also
+
+- `src/agent/loop.rs` - AgentLoop invoking compaction
+- `tests/compaction.rs` - Module tests
+- `.opencode/skills/agent-loop/SKILL.md` - AgentLoop integration
