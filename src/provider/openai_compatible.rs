@@ -129,7 +129,7 @@ impl Provider for OpenAiCompatibleProvider {
                                     "type": "function",
                                     "function": {
                                         "name": tc.name,
-                                        "arguments": tc.arguments.to_string(),
+                                        "arguments": tc.arguments.as_str().map(|s| s.to_string()).unwrap_or_else(|| tc.arguments.to_string()),
                                     }
                                 })
                             })

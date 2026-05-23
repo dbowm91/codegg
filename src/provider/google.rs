@@ -350,7 +350,11 @@ fn parse_google_chunk(val: &serde_json::Value) -> Option<Result<ChatEvent, Provi
                                 .unwrap_or("")
                                 .to_string();
                             let args = exec.get("args").cloned().unwrap_or(json!({}));
-                            let id = uuid::Uuid::new_v4().to_string();
+                            let id = exec
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                             return Some(Ok(ChatEvent::ToolCall(ToolCall {
                                 id: id.into(),
                                 name: name.into(),

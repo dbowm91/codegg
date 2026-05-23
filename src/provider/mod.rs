@@ -361,7 +361,7 @@ fn register_env_fallback_provider<F>(
             );
             registry.register(factory(key));
         } else {
-            debug_log!(
+            tracing::warn!(
                 "register_env_fallback_provider: NO KEY for provider '{}', env_var='{}' (empty key)",
                 name,
                 env_var

@@ -175,7 +175,6 @@ impl Provider for AnthropicProvider {
             .header("x-api-key", &api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .header("anthropic-beta", "prompt-caching-2024-07-31")
             .json(&body)
             .send()
             .await
