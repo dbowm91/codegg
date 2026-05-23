@@ -55,17 +55,13 @@ impl PluginEventBus {
                     .iter()
                     .any(|p| event_type.contains(p.as_str()))
             {
-                self.dispatch_to_plugin(&sub.plugin_id, &event).await;
+                tracing::debug!(
+                    plugin = sub.plugin_id,
+                    event = event_type,
+                    "plugin event matched subscription"
+                );
             }
         }
-    }
-
-    pub async fn dispatch_to_plugin(&self, plugin_id: &str, event: &AppEvent) {
-        tracing::warn!(
-            plugin = plugin_id,
-            event = event.event_type(),
-            "plugin event dispatch not implemented: events are logged but not forwarded to plugins"
-        );
     }
 
     pub async fn get_event_log(&self) -> Vec<AppEvent> {
