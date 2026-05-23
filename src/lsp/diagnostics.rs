@@ -13,6 +13,8 @@ use crate::error::LspError;
 use crate::lsp::service::LspService;
 
 const DEBOUNCE_MS: u64 = 150;
+const MAX_ENTRIES: usize = 1000;
+const TTL_MS: u64 = 60_000;
 
 #[derive(Debug, Clone)]
 pub struct FileDiagnostic {
@@ -41,6 +43,15 @@ impl DiagnosticsCollector {
     pub async fn should_debounce(&self, uri: &str) -> bool {
         let mut last = self.last_update.lock().await;
         let now = Instant::now();
+
+        last.retain(|_, instant| now.duration_since(*instant) < Duration::from_millis(TTL_MS));
+
+        if last.len() >= MAX_ENTRIES {
+            let oldest_instant = last.values().min().copied();
+            if let Some(oldest) = oldest_instant {
+                last.retain(|_, instant| *instant != oldest);
+            }
+        }
 
         if let Some(prev) = last.get(uri) {
             if now.duration_since(*prev) < Duration::from_millis(DEBOUNCE_MS) {
@@ -123,6 +134,6 @@ impl DiagnosticsCollector {
         let diags = self.get_diagnostics_for_file(file_path).await?;
         Ok(diags
             .iter()
-            .any(|d| d.severity == DiagnosticSeverity::ERROR))
+            .any(|d| d.severity >= DiagnosticSeverity::ERROR))
     }
 }

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use lsp_types::*;
+use tracing::trace;
 use url::Url;
 
 use crate::error::LspError;
@@ -145,7 +146,13 @@ impl LspOperations {
             return Ok(None);
         }
 
-        let hover: Hover = serde_json::from_value(resp)?;
+        let hover: Hover = match serde_json::from_value(resp) {
+            Ok(h) => h,
+            Err(e) => {
+                trace!("failed to parse hover response: {}", e);
+                return Ok(None);
+            }
+        };
         Ok(Some(format_hover_contents(&hover.contents)))
     }
 
@@ -272,8 +279,11 @@ impl LspOperations {
             return Ok(Vec::new());
         }
 
-        let items: CompletionList = serde_json::from_value(resp)?;
-        Ok(items.items)
+        let items: Vec<CompletionItem> = match serde_json::from_value::<CompletionList>(resp.clone()) {
+            Ok(list) => list.items,
+            Err(_) => serde_json::from_value(resp).unwrap_or_default(),
+        };
+        Ok(items)
     }
 
     pub async fn signature_help(
@@ -310,7 +320,13 @@ impl LspOperations {
             return Ok(None);
         }
 
-        let help: SignatureHelp = serde_json::from_value(resp)?;
+        let help: SignatureHelp = match serde_json::from_value(resp) {
+            Ok(h) => h,
+            Err(e) => {
+                trace!("failed to parse signature help response: {}", e);
+                return Ok(None);
+            }
+        };
         Ok(Some(format_signature_help(&help)))
     }
 
