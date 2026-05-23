@@ -46,7 +46,7 @@ pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
         .header("User-Agent", "codegg")
         .send()
         .await
-        .map_err(|e| AppError::Upgrade(e.to_string()))?;
+        .map_err(|e| AppError::Upgrade(format!("request failed: {e}")))?;
 
     if !resp.status().is_success() {
         return Err(AppError::Upgrade(format!(
@@ -55,7 +55,10 @@ pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
         )));
     }
 
-    let json: serde_json::Value = resp.json().await?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Upgrade(format!("failed to parse response: {e}")))?;
 
     let latest = json
         .get("tag_name")
@@ -71,6 +74,8 @@ pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
     })
 }
 ```
+
+**Note**: The `upgrade()` function below is defined in the module but **not currently called** by the CLI `codegg upgrade` command. The CLI only checks and reports version information without performing the actual upgrade.
 
 ### upgrade()
 

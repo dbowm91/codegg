@@ -26,7 +26,7 @@ pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
         .header("User-Agent", "codegg")
         .send()
         .await
-        .map_err(|e| AppError::Upgrade(e.to_string()))?;
+        .map_err(|e| AppError::Upgrade(format!("request failed: {e}")))?;
 
     if !resp.status().is_success() {
         return Err(AppError::Upgrade(format!(

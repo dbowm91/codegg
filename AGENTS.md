@@ -348,6 +348,10 @@ These items were identified during module reviews and are important for future a
 - **Architecture missing `VersionInfo`**: Actual struct is `VersionInfo` with `current`, `latest`, `needs_update` fields (not `ReleaseInfo` with `version`, `tag_name`, `download_url`, `release_notes`)
 - **Upgrade configuration not implemented**: Architecture showed `[upgrade]` config section but no such configuration is loaded in the module
 
+### Upgrade Module (2026-05-23)
+- **Error message inconsistency fixed**: `check_for_updates()` error message now consistently uses `format!("request failed: {e}")` pattern (was using `e.to_string()` which is equivalent but less explicit)
+- **`upgrade()` not called by CLI**: The `cmd_upgrade()` in `main.rs` only checks and reports updates but does **not** call `upgrade::upgrade()` to perform the actual upgrade. The `upgrade()` function exists but is unused.
+
 ### TUI Module (2026-05-22)
 - **Architecture doc updated**: `architecture/tui.md` now accurately reflects the implementation (was showing outdated routes like Chat/Sessions/Settings, wrong App struct, missing FocusManager/Component)
 - **Routes accurate**: Actual routes are `Home` and `Session(String)` - not the `Chat`, `Sessions`, `Settings`, `Skills`, `Permissions` shown in old doc
@@ -474,7 +478,7 @@ When adding guidance for a new module:
 | Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
 | Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` (v1.2.0) |
 | Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` (v1.1.0) |
-| Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` |
+| Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` (v1.1.0) |
 | Worktree (git worktrees, find_git_root) | `.opencode/skills/worktree/SKILL.md` |
 | Subagent (SubAgentPool, SubAgentSpawner, worker) | `.opencode/skills/subagent/SKILL.md` |
 | Compaction (context compaction strategies) | `.opencode/skills/compaction/SKILL.md` |
