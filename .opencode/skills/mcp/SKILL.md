@@ -108,6 +108,18 @@ pub struct RemoteClient {
 
 Automatic reconnection with exponential backoff and heartbeat:
 
+**Clone Implementation:**
+- `McpConnectionManager` has a manual `Clone` implementation (not derived)
+- `CancellationToken` from `tokio_util::sync` is `!Clone`, so it requires special handling
+- `Clone` uses `Arc::clone()` for Arc fields and copies primitive types directly
+
+```rust
+// CancellationToken wrapped in Arc<Mutex<Option<CancellationToken>>> is cloned via:
+Arc::clone(&self.heartbeat_cancellation)
+```
+
+### McpConnectionManager
+
 ```rust
 pub struct McpConnectionManager {
     client: RemoteClient,
@@ -120,13 +132,20 @@ pub struct McpConnectionManager {
     heartbeat_task: Arc<AtomicBool>,
     shutdown: Arc<Notify>,
     reconnect_needed: Arc<Notify>,
+    heartbeat_token: CancellationToken,                           // Cloneable
+    heartbeat_cancellation: Arc<Mutex<Option<CancellationToken>>>, // Cloneable via Arc::clone
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ConnectionState {
-    Connected,
-    Disconnected,
-    Reconnecting { attempt: u32 },
+impl Clone for McpConnectionManager {
+    fn clone(&self) -> Self {
+        McpConnectionManager {
+            client: self.client.clone(),
+            state: Arc::clone(&self.state),
+            // ... all fields cloned via Arc::clone or copy
+            heartbeat_token: self.heartbeat_token.clone(),
+            heartbeat_cancellation: Arc::clone(&self.heartbeat_cancellation),
+        }
+    }
 }
 ```
 
@@ -192,16 +211,21 @@ pub struct IdeServer {
 - `openDiff` - Opens file diff in IDE (VS Code extension, JetBrains plugin)
 
 **Transport Modes:**
-- stdio mode (for IDE extensions)
+- stdio mode (for IDE extensions) - uses async I/O via `tokio::io::stdin()/stdout()`
 - Unix socket mode
 
 ```rust
 impl IdeServer {
     pub fn new() -> Self;
-    pub async fn run_stdio(&self) -> Result<(), McpError>;
+    pub async fn run_stdio(&self) -> Result<(), McpError>;  // Uses tokio async I/O
     pub async fn run_socket(&self, socket_path: &str) -> Result<(), McpError>;
 }
 ```
+
+**Async I/O Implementation:**
+- `run_stdio()` uses `tokio::io::stdin()` and `tokio::io::stdout()` (not blocking `std::io`)
+- Uses `BufReader` with `AsyncBufReadExt` for async line reading
+- Uses `AsyncWriteExt` for async write and flush operations
 
 ### OAuthManager (`src/mcp/auth.rs`)
 
@@ -242,6 +266,8 @@ pub struct TokenSet {
 **Replay Protection:**
 - Used authorization codes tracked to prevent replay attacks
 - Codes expire after 600 seconds
+- **Important**: Code is marked as used BEFORE calling `exchange_code_for_tokens()` to eliminate race window
+- If exchange fails after marking, code remains marked (acceptable - prevents replay of failed codes)
 
 **OAuth Flow:**
 1. `build_authorization_url()` creates OAuth URL with PKCE

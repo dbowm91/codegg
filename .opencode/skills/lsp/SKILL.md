@@ -57,7 +57,7 @@ pub struct LspClient {
     pub server_id: String,
     pub root: PathBuf,
     pub process: tokio::sync::Mutex<LspProcess>,
-    pub request_id: AtomicI64,
+    pub request_id: AtomicU64,  // Changed from AtomicI64 to avoid signed wrap-around
     pub capabilities: Mutex<Option<ServerCapabilities>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
     pub diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,
@@ -65,6 +65,11 @@ pub struct LspClient {
     pub notif_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
 }
 ```
+
+**Request ID Generation:**
+- Uses `AtomicU64` for wrap-around safety (was `AtomicI64`)
+- `fetch_add(1, Ordering::SeqCst)` for sequential IDs
+- No special wrap-around check needed with unsigned integer
 
 ### LspServerDef (`server.rs`)
 
