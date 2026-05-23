@@ -1,7 +1,45 @@
 use similar::{ChangeTag, TextDiff};
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
 use tempfile::Builder;
+
+struct TempFilesGuard {
+    paths: Vec<PathBuf>,
+}
+
+impl TempFilesGuard {
+    fn new() -> Self {
+        Self { paths: Vec::new() }
+    }
+
+    fn add(&mut self, path: PathBuf) {
+        self.paths.push(path);
+    }
+}
+
+impl Drop for TempFilesGuard {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn register_panic_cleanup() {
+    static CLEANUP_REGISTERED: std::sync::Once = std::sync::Once::new();
+    CLEANUP_REGISTERED.call_once(|| {
+        std::panic::set_hook(Box::new(|_| {
+            let temp_dir = std::env::temp_dir();
+            for entry in std::fs::read_dir(temp_dir).into_iter().flatten().flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("codegg_") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }));
+    });
+}
 
 pub fn is_vscode() -> bool {
     std::env::var("VSCODE_IPC_HOOK").is_ok()
@@ -55,6 +93,9 @@ pub fn open_diff(
 }
 
 fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<(), String> {
+    register_panic_cleanup();
+    let mut guard = TempFilesGuard::new();
+
     let original_temp = Builder::new()
         .prefix("codegg_original_")
         .tempfile()
@@ -85,6 +126,9 @@ fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<()
     let original_path = original_temp.path().to_owned();
     let modified_path = modified_temp.path().to_owned();
 
+    guard.add(original_temp.path().to_owned());
+    guard.add(modified_temp.path().to_owned());
+
     drop(original_temp);
     drop(modified_temp);
 
@@ -105,10 +149,14 @@ fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<()
         ));
     }
 
+    drop(guard);
     Ok(())
 }
 
 fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
+    register_panic_cleanup();
+    let mut guard = TempFilesGuard::new();
+
     let original_temp = Builder::new()
         .prefix("codegg_original_")
         .tempfile()
@@ -140,6 +188,9 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
 
     let original_path = original_temp.path().to_owned();
     let modified_path = modified_temp.path().to_owned();
+
+    guard.add(original_temp.path().to_owned());
+    guard.add(modified_temp.path().to_owned());
 
     drop(original_temp);
     drop(modified_temp);
@@ -186,12 +237,15 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
         ));
     }
 
+    drop(guard);
     Ok(())
 }
 
 fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(), String> {
+    register_panic_cleanup();
+    let mut guard = TempFilesGuard::new();
     let has_code = std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
-        .any(|p| p.join("code").exists() || p.join("code.exe").exists());
+        .any(|p| p.join("code").exists() || p.join("code.exe").exists() || p.join("code.cmd").exists());
 
     if has_code {
         let original_temp = Builder::new()
@@ -226,6 +280,9 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
         let original_path = original_temp.path().to_owned();
         let modified_path = modified_temp.path().to_owned();
 
+        guard.add(original_temp.path().to_owned());
+        guard.add(modified_temp.path().to_owned());
+
         drop(original_temp);
         drop(modified_temp);
 
@@ -239,12 +296,13 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
             .map_err(|e| format!("failed to open code: {}", e))?;
 
         if output.status.success() {
+            drop(guard);
             return Ok(());
         }
     }
 
     let has_idea = std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
-        .any(|p| p.join("idea").exists() || p.join("idea.bat").exists());
+        .any(|p| p.join("idea").exists() || p.join("idea.bat").exists() || p.join("idea.cmd").exists());
 
     if has_idea {
         let original_temp = Builder::new()
@@ -279,6 +337,9 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
         let original_path = original_temp.path().to_owned();
         let modified_path = modified_temp.path().to_owned();
 
+        guard.add(original_temp.path().to_owned());
+        guard.add(modified_temp.path().to_owned());
+
         drop(original_temp);
         drop(modified_temp);
 
@@ -292,6 +353,7 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
             .map_err(|e| format!("failed to open idea: {}", e))?;
 
         if output.status.success() {
+            drop(guard);
             return Ok(());
         }
     }
