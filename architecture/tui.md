@@ -69,7 +69,7 @@ tui/
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── route.rs                # Route/RouteManager (Home, Session routes)
-├── theme.rs                # Theme definitions (31 themes)
+├── theme.rs                # Theme definitions (42 themes)
 ├── command.rs              # Slash command registry
 └── mod.rs                  # TUI entry point, event loop, GlobalEventBus
 ```

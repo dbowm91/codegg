@@ -14,19 +14,23 @@ The `command` module provides slash command registry loaded from markdown files 
 
 ## Key Types
 
-### Command (src/command/mod.rs)
+### Command (src/command/mod.rs:9-18)
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Command {
-    pub name: String,           // Command name (e.g., "review")
+    pub name: String,
     pub description: Option<String>,
-    pub template: String,         // Template with {{variable}} or {variable} placeholders
-    pub agent: Option<String>,   // Optional agent to route to
-    pub model: Option<String>,   // Optional model override
-    #[deprecated(since = "2026-05-22", note = "not yet implemented")]
-    pub subtask: Option<bool>,   // Deprecated - not implemented
-    pub source: String,          // "config" or file path
+    pub template: String,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    #[deprecated(since = "2026-05-22", note = "subtask field is not yet implemented")]
+    pub subtask: Option<bool>,
+    pub source: String,
 }
+```
+
+Note: The TUI `Command` struct with aliases is in `src/tui/command.rs:26-37`.
 ```
 
 ### CommandConfig (src/config/schema.rs)
