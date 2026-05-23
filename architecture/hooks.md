@@ -108,10 +108,10 @@ type = "shell_command"
 command = "echo"
 timeout_secs = 10
 
-[[hooks.post_agent_run]]
-event = "agent_end"
+[[hooks.post_tool_execute]]
+event = "post_tool_execute"
 type = "shell_command"
-command = "curl"
+command = "echo 'Tool executed'"
 timeout_secs = 10
 ```
 
