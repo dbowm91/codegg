@@ -112,7 +112,7 @@ timeout_secs = 10
 event = "agent_end"
 type = "shell_command"
 command = "curl"
-args = ["-X", "POST", "https://example.com/hook"]
+timeout_secs = 10
 ```
 
 ## Environment Variables
@@ -154,6 +154,8 @@ pub enum HookType {
     MessagesTransform,
 }
 ```
+
+**Note**: `HookType::as_str()` returns dot notation (e.g., `tool.execute.before`) for plugin manifest compatibility.
 
 ## HookResult
 
@@ -208,6 +210,8 @@ impl HookResult {
 | Blocking | Never | `ToolExecuteBefore`, `SessionCompacting` |
 | Return type | `Vec<AppError>` | `HookResult` |
 | Configuration | TOML config | Plugin manifest |
+| Timeout | 30s default (configurable) | 5s per hook |
+| Error format | Includes event name | Includes plugin_id: `{plugin_id}: hook timeout: hook execution timed out` |
 
 ---
 

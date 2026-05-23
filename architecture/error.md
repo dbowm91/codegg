@@ -110,6 +110,7 @@ impl ProviderError {
                 | ProviderError::Timeout(_)
                 | ProviderError::Stream(_)
                 | ProviderError::CircuitOpen(_)
+                | ProviderError::Auth(_)
         )
     }
 }
@@ -174,7 +175,25 @@ pub enum PermissionError {
 - **StorageError**: Database, Migration, NotFound, LlmOperation, Import, Export
 - **AgentError**: NotFound, Invalid
 - **McpError**: Connection, Server, ToolCall, OAuth, Encryption, Timeout
+
+impl McpError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            McpError::Connection(_) | McpError::Server(_) | McpError::ToolCall(_) | McpError::OAuth(_) | McpError::Timeout(_)
+        )
+    }
+}
 - **LspError**: ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json
+
+impl LspError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            LspError::DownloadFailed(_) | LspError::LaunchFailed(_) | LspError::RequestFailed(_) | LspError::RequestTimeout(_) | LspError::Io(_)
+        )
+    }
+}
 - **PluginError**: NotFound, LoadFailed, HookFailed, InstallFailed, InvalidManifest
 - **ClientError**: Connection, Unreachable, Rpc, WebSocket, Auth (client-side)
 - **ServerRuntimeError**: Bind, Shutdown, WebSocket, Rpc, Auth (server-side)
@@ -195,7 +214,9 @@ The `IntoResponse` implementation maps errors to appropriate HTTP status codes:
 | Error Type | Status Code |
 |------------|-------------|
 | ConfigError::NotFound | 404 |
-| ConfigError::Invalid/Parse/Merge | 400 |
+| ConfigError::Watch | 500 |
+| StorageError::Import | 500 |
+| StorageError::Export | 500 |
 | StorageError::NotFound | 404 |
 | StorageError::Database/Migration/LlmOperation | 500 |
 | ProviderError::Auth | 401 |
@@ -206,6 +227,8 @@ The `IntoResponse` implementation maps errors to appropriate HTTP status codes:
 | ToolError::NotFound | 404 |
 | ToolError::Permission | 403 |
 | ToolError::Timeout | 504 |
+| ToolError::Disabled | 403 |
+| ToolError::Execution/Format/Io/Network | 502 |
 | McpError::OAuth | 401 |
 | McpError::Timeout | 504 |
 | McpError::Connection/Server/ToolCall/Encryption | 502 |

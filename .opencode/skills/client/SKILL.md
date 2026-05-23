@@ -18,8 +18,8 @@ The client module (`src/client/`) enables users to connect their local terminal 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `mod.rs` | 4 | Re-exports `run_attach` function |
-| `attach.rs` | 118 | Main WebSocket connection logic with timeouts |
-| `sdk.rs` | 44 | HTTP client for server health checks with timeouts |
+| `attach.rs` | 154 | Main WebSocket connection logic with timeouts |
+| `sdk.rs` | 53 | HTTP client for server health checks with timeouts |
 
 ## Entry Point
 
@@ -28,6 +28,8 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 ```
 
 Called via CLI: `codegg attach <url> --token <token>`
+
+**Authentication**: If a token is provided, it's sent as a `Bearer {token}` header in the WebSocket handshake via the `Authorization` header. If no token is provided, the connection proceeds without authentication.
 
 ## Connection Flow (`attach.rs`)
 
@@ -54,7 +56,7 @@ let ws_stream = match timeout(Duration::from_secs(30), connect_async(ws_request)
 
 **Important**: Always extract both values from the tuple: `(stream, _)`. The `_` is the HTTP response and must not be ignored in pattern matching.
 
-### 4. Three Concurrent Tasks
+### 4. Two Concurrent Tasks
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -209,6 +211,14 @@ The URL builders handle:
 - No scheme → just append `/tui`
 
 But doesn't handle unix sockets or custom schemes.
+
+### Connection Failures and Retries
+
+WebSocket connection failures trigger exponential backoff retry:
+- **Retry attempts**: Up to 3 retries
+- **Backoff intervals**: 2s, 4s (exponential)
+- **Timeout per attempt**: 30 seconds per connection attempt
+- After all retries exhausted, returns `ClientError::Connection`
 
 ### Timeouts Are Essential
 Both health check (10s) and WebSocket connection (30s) have timeouts. Without them, unreachable servers will cause indefinite hangs.

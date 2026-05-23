@@ -90,18 +90,21 @@ Currently only `args` is available during TUI execution:
 
 ## TUI Integration
 
-### CommandRegistry (src/tui/command.rs)
+### CommandRegistry (src/tui/command.rs:25-37)
 
 ```rust
-pub struct CommandRegistry {
-    commands: Vec<Command>,
-}
-
-impl CommandRegistry {
-    pub fn new() -> Self;
-    pub fn commands(&self) -> &[Command];
-    pub fn find_by_name_or_alias(&self, name: &str) -> Option<&Command>;
-    pub fn filter(&self, query: &str) -> Vec<(&Command, usize)>;  // Fuzzy match
+#[derive(Debug, Clone)]
+pub struct Command {
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub description: String,
+    pub category: CommandCategory,
+    pub dialog: Option<Dialog>,
+    pub template: Option<String>,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub subtask: Option<bool>,
+    pub source: Option<String>,
 }
 ```
 
@@ -110,7 +113,7 @@ impl CommandRegistry {
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/connect` | | Connect provider |
-| `/exit` | `/quit`, `/q` | Exit the app |
+| `/exit` | `quit`, `q` | Exit the app |
 | `/status` | | View status |
 | `/themes` | | Switch theme |
 | `/help` | | Help |
@@ -151,9 +154,71 @@ impl CommandRegistry {
 | `/memory-forget` | | Forget a memory |
 | `/memory-consolidate` | | Consolidate session into memories |
 
+### Built-in Commands (36 total)
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/connect` | | Connect provider |
+| `/exit` | `quit`, `q` | Exit the app |
+| `/status` | | View status |
+| `/themes` | | Switch theme |
+| `/help` | | Help |
+| `/sessions` | `resume`, `continue` | Switch session |
+| `/new` | `clear` | New session |
+| `/share` | | Share session |
+| `/unshare` | | Unshare session |
+| `/rename` | | Rename session |
+| `/compact` | `summarize` | Compact session |
+| `/timeline` | | Jump to message |
+| `/fork` | | Fork from message |
+| `/undo` | | Undo previous message |
+| `/redo` | | Redo |
+| `/export` | | Export session transcript |
+| `/import` | | Import session |
+| `/timestamps` | `toggle-timestamps` | Toggle timestamps |
+| `/thinking` | `toggle-thinking` | Toggle thinking |
+| `/models` | | Switch model |
+| `/models-refresh` | `refresh-models` | Refresh model list |
+| `/variants` | | Switch model variant |
+| `/agents` | | Switch agent |
+| `/mcps` | | Manage MCP servers |
+| `/workspaces` | | Manage workspaces |
+| `/tree` | | Show file tree |
+| `/editor` | | Open editor |
+| `/keybinds` | | Customize keybindings |
+| `/context` | | View context window usage |
+| `/cost` | | View token usage and cost |
+| `/usage` | | View rate limits and quota |
+| `/tui` | `fullscreen` | Toggle fullscreen mode |
+| `/loop` | | Schedule periodic task |
+| `/tasks` | | List background tasks |
+| `/task-del` | | Delete background task |
+| `/memory` | | Memory dashboard |
+| `/memory-search` | | Search memories |
+| `/memory-list` | | List memories |
+| `/memory-remember` | | Remember something |
+| `/memory-forget` | | Forget a memory |
+| `/memory-consolidate` | | Consolidate session into memories |
+
 ### Dynamic Commands
 
 Dynamic commands from config and files are appended to built-in commands. **Built-in commands take precedence** - duplicates are skipped.
+
+### Plugin Commands (`src/command/plugin.rs`)
+
+Plugin commands via the `/plugin` subcommand:
+
+```rust
+#[derive(Debug, Subcommand)]
+pub enum PluginCommand {
+    /// List installed plugins
+    List,
+    /// Search available plugins
+    Search { query: String },
+    /// Install a plugin
+    Install { source: String },
+}
+```
 
 ### Command Execution (src/tui/app/mod.rs)
 

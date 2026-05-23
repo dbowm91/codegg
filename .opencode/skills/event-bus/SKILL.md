@@ -68,7 +68,7 @@ if let Ok(event) = rx.try_recv() {
 
 ## AppEvent Types (`src/bus/events.rs`)
 
-All 38 event variants with `event_type()` helper:
+All 36 event variants with `event_type()` helper:
 
 | Category | Events |
 |----------|--------|
@@ -81,7 +81,7 @@ All 38 event variants with `event_type()` helper:
 | Streaming (3) | `TextDelta` (Arc<str>), `ReasoningDelta`, `AgentFinished` |
 | Subagent (4) | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
 | Diff (2) | `DiffPending`, `DiffResponded` |
-| Other (7) | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged` |
+| Other (8) | `ConfigChanged`, `AgentChanged`, `ModelChanged`, `CompactionTriggered`, `Error`, `Info`, `TodoUpdated`, `FileChanged` |
 
 Note: `event_type()` method returns string discriminants like `"session:created"` for SSE filtering.
 

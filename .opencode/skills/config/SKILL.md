@@ -32,6 +32,8 @@ Central configuration type with ~45 optional fields:
 ```rust
 pub struct Config {
     pub version: Option<String>,
+    #[serde(rename = "$schema")]
+    pub schema: Option<String>,
     pub log_level: Option<String>,
     pub model: Option<String>,
     pub small_model: Option<String>,
@@ -165,7 +167,7 @@ Checked in order:
 
 ### Crypto Version Prefix
 
-`CRYPTO_V2_PREFIX: &str = "v2:"` - ciphertexts with this prefix are v2 format.
+`FORMAT_V2_PREFIX: &str = "v2:"` - ciphertexts with this prefix are v2 format.
 
 ## Validation (`Config::validate()`)
 
@@ -221,10 +223,7 @@ The watcher uses content hashing to avoid spurious reloads:
 Later config files override earlier ones via `merge_option!` macro.
 
 ### HashMap Fields (providers, agents, mcp, commands, modes)
-Field-by-field merge via `ProviderConfig::merge()`:
-- If same provider exists in both configs, fields are merged individually
-- `api_key: Some("key2")` from config2 overwrites `api_key: Some("key1")` from config1
-- But `base_url` from config1 is preserved if config2 doesn't specify it
+Full replace merge - later config files completely replace earlier ones for the same key.
 
 ### Instructions
 Instructions are concatenated, not replaced.
@@ -245,7 +244,7 @@ Instructions are concatenated, not replaced.
 
 **Cause**: `decrypt_provider_keys()` was not being called in `Config::load()`.
 
-**Fix**: Now called automatically at `schema.rs:508-509`.
+**Fix**: Now called automatically at `schema.rs:542`.
 
 ### Provider config fields lost during merge
 

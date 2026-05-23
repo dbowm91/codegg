@@ -80,10 +80,26 @@ Note: Error messages include execution duration in milliseconds for debugging pu
 | `CIRCUIT_OPEN` | Provider circuit breaker open |
 | `API_ERROR` | API error with code and message |
 | `STREAM_ERROR` | Stream error |
+| `PROVIDER_NOT_FOUND` | Provider not found |
 | `IO_ERROR` | I/O error |
 | `CONFIG_ERROR` | Configuration error |
-| `UPGRADE_ERROR` | Upgrade error |
+| `STORAGE_ERROR` | Storage error |
+| `TOOL_NOT_FOUND` | Tool not found |
+| `TOOL_TIMEOUT` | Tool timeout |
+| `TOOL_PERMISSION` | Tool permission denied |
+| `TOOL_DISABLED` | Tool disabled |
+| `TOOL_ERROR` | Generic tool execution error |
+| `MCP_ERROR` | MCP error |
+| `LSP_ERROR` | LSP error |
+| `PLUGIN_ERROR` | Plugin error |
+| `AGENT_ERROR` | Agent error |
+| `JSON_ERROR` | JSON error |
+| `HTTP_ERROR` | HTTP error |
 | `EXECUTION_ERROR` | Generic execution error |
+| `WORKTREE_ERROR` | Worktree error |
+| `UPGRADE_ERROR` | Upgrade error |
+| `CLIPBOARD_ERROR` | Clipboard error |
+| `TUI_ERROR` | TUI error |
 
 ## Module Implementation
 

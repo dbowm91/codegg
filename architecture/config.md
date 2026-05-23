@@ -103,7 +103,7 @@ Key functions:
 - `resolve_config_paths()` - Collects all config file paths
 - `load_config()` - Parses a single config file
 - `parse_config()` - JSONC comment stripping + JSON5 parsing
-- `merge_configs()` - Combines multiple configs with field-by-field HashMap merge
+- `merge_configs()` - Combines multiple configs (HashMap fields use full replace for agents/mcp/commands/modes)
 - `interpolate_env_vars()` - Expands `${VAR_NAME}` syntax
 
 ### watcher.rs - Hot Reload
