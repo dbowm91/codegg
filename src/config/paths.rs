@@ -178,7 +178,6 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             username,
             share,
             autoupdate,
-            server,
             disabled_providers,
             enabled_providers,
             permission,
@@ -190,7 +189,6 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             tools,
             formatter,
             lsp,
-            watcher,
             snapshot,
             snapshot_config,
             plugin,
@@ -202,6 +200,25 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             notifications,
             catalog
         );
+        if let Some(ref server) = config.server {
+            match &mut merged.server {
+                Some(ref mut existing) => existing.merge(server),
+                None => merged.server = Some(server.clone()),
+            }
+        }
+        if let Some(ref watcher) = config.watcher {
+            match &mut merged.watcher {
+                Some(ref mut existing) => {
+                    if watcher.ignore.is_some() {
+                        existing.ignore.clone_from(&watcher.ignore);
+                    }
+                    if watcher.debounce_duration_ms.is_some() {
+                        existing.debounce_duration_ms.clone_from(&watcher.debounce_duration_ms);
+                    }
+                }
+                None => merged.watcher = Some(watcher.clone()),
+            }
+        }
         if let Some(ref providers) = config.provider {
             match &mut merged.provider {
                 Some(ref mut existing) => {

@@ -130,6 +130,38 @@ pub struct ServerConfig {
     pub max_parallel_tools: Option<usize>,
 }
 
+impl ServerConfig {
+    pub fn merge(&mut self, other: &ServerConfig) {
+        if other.port.is_some() {
+            self.port.clone_from(&other.port);
+        }
+        if other.hostname.is_some() {
+            self.hostname.clone_from(&other.hostname);
+        }
+        if other.token.is_some() {
+            self.token.clone_from(&other.token);
+        }
+        if other.mdns.is_some() {
+            self.mdns.clone_from(&other.mdns);
+        }
+        if other.mdns_domain.is_some() {
+            self.mdns_domain.clone_from(&other.mdns_domain);
+        }
+        if other.cors.is_some() {
+            self.cors.clone_from(&other.cors);
+        }
+        if other.cors_origins.is_some() {
+            self.cors_origins.clone_from(&other.cors_origins);
+        }
+        if other.tool_timeout_seconds.is_some() {
+            self.tool_timeout_seconds.clone_from(&other.tool_timeout_seconds);
+        }
+        if other.max_parallel_tools.is_some() {
+            self.max_parallel_tools.clone_from(&other.max_parallel_tools);
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -497,6 +529,7 @@ impl Config {
     pub fn load() -> Result<Self, crate::error::ConfigError> {
         let paths = crate::config::paths::resolve_config_paths();
         if paths.is_empty() {
+            tracing::warn!("No config files found, using defaults");
             return Ok(Config::default());
         }
         let configs: Result<Vec<_>, _> = paths

@@ -90,17 +90,21 @@ impl ConfigWatcher {
     }
 
     pub async fn recv(&mut self) -> Option<Result<Config, AppError>> {
-        // Wait for notification with debounce
         while let Some(()) = self.rx.recv().await {
             sleep(self.debounce_duration).await;
 
-            // Drain any additional notifications during debounce
             while let Ok(()) = self.rx.try_recv() {
-                // Discard extra notifications
             }
 
-            // Check if content actually changed
-            if let Some(new_hash) = Self::compute_config_hash() {
+            let first_hash = Self::compute_config_hash();
+            sleep(Duration::from_millis(100)).await;
+            let second_hash = Self::compute_config_hash();
+
+            if first_hash != second_hash {
+                continue;
+            }
+
+            if let Some(new_hash) = first_hash {
                 if self.last_hash != Some(new_hash) {
                     self.last_hash = Some(new_hash);
                     return Some(Self::reload_config());

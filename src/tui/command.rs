@@ -205,8 +205,13 @@ impl CommandRegistry {
         if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
             let rt = runtime_handle;
             rt.block_on(async {
-                Self::append_dynamic_commands_async(&base, &mut seen, &mut new_commands).await;
+                let base_async = tokio::fs::canonicalize(&base)
+                    .await
+                    .unwrap_or_else(|_| base.clone());
+                Self::append_dynamic_commands_async(&base_async, &mut seen, &mut new_commands).await;
             });
+        } else {
+            tracing::warn!("Cannot load dynamic commands: no Tokio runtime");
         }
 
         commands.append(&mut new_commands);
