@@ -123,7 +123,7 @@ let encrypted = encrypt_to_string("sk-ant-api-key...", &master_key)?;
 ### Decrypting
 
 ```rust
-use crate::crypto::{decrypt_from_string, decrypt_from_string};
+use crate::crypto::decrypt_from_string;
 
 let api_key = decrypt_from_string(&encrypted, &master_key)?;
 ```
@@ -135,12 +135,12 @@ let api_key = decrypt_from_string(&encrypted, &master_key)?;
 3. **Nonce uniqueness** - Each encryption generates fresh random nonce
 4. **Authentication tag** - Any tampering is detected via AES-GCM authentication
 5. **Memory-hard derivation** - Argon2id resists GPU/ASIC attacks
-6. **Legacy migration** - Legacy ciphertexts automatically migrated to v2 on save
+6. **Legacy migration** - Legacy ciphertexts are migrated to v2 when `encrypt_provider_keys()` is called during config save. Previously encrypted data remains in legacy format until explicitly re-encrypted.
 
 ## Used By
 
 - `config/encryption.rs` - Encrypting config secrets (provider API keys)
-- `config/schema.rs` - `ProviderConfig::api_key()` method for on-demand decryption
+- `config/schema.rs` - `ProviderConfig::api_key(prefix)` method for on-demand decryption
 
 ## Dependencies
 

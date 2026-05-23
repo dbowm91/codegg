@@ -50,6 +50,7 @@ pub struct MemoryStore {
 impl MemoryStore {
     pub fn new() -> std::io::Result<Self>
     pub fn with_auto_save(auto_save: bool) -> std::io::Result<Self>
+    pub fn set_auto_save(&self, enabled: bool)  // Enable/disable auto-save
     pub fn add(&self, memory: Memory) -> Option<Memory>
     pub fn get(&self, id: &str) -> Option<Memory>  // Increments access_count
     pub fn list(&self, namespace: &str) -> Vec<Memory>
@@ -70,10 +71,9 @@ Memories stored as Markdown files with YAML frontmatter:
 ├── user/
 │   └── preferences/
 │       └── MEMORY.md
-└── projects/
+└── project/
     └── {project_hash}/
-        └── conventions/
-            └── MEMORY.md
+        └── MEMORY.md
 ```
 
 ### Memory File Format
@@ -99,7 +99,7 @@ Namespaces provide isolation and hierarchy:
 | Namespace | Content |
 |-----------|---------|
 | `user/preferences` | User-specific preferences |
-| `project/{hash}/conventions` | Project-specific conventions |
+| `project/{hash}` | Project-specific conventions |
 
 ## Consolidation System
 
@@ -126,6 +126,7 @@ Rule-based pattern detection identifies:
 | "our X follows Y" | 9 |
 | Coding convention match | 4-6 |
 | Deprecation notice | 7 |
+| Negation modifier | -3 (added to base, not replacement) |
 
 Final score = base + frequency_bonus. Only memories with score >= 8.0 are stored.
 
@@ -163,7 +164,7 @@ let summary = memory_store.get_memory_summary("user/preferences", 10);
 |---------|-------------|
 | `/memory` | Show memory dashboard with counts and recent memories |
 | `/memory-search <query>` | Search stored memories |
-| `/memory-list [namespace]` | List memories by namespace |
+| `/memory-list [namespace]` | List memories by namespace. If no namespace given, shows memories from both `user/preferences` AND `project/{hash}` namespaces |
 | `/memory-remember <text>` | Remember something mid-session |
 | `/memory-forget <id>` | Delete a specific memory by ID |
 | `/memory-consolidate` | Extract patterns from current session |

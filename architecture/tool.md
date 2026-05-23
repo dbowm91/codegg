@@ -8,7 +8,7 @@ The `tool` module provides the built-in tools that the agent can use to interact
 
 **Key Responsibilities**:
 - Tool registry management
-- Built-in tool implementations (33+ tools)
+- Built-in tool implementations (26 tools in `with_defaults()`)
 - Tool execution with permission checking
 - Parameter validation
 
@@ -72,7 +72,6 @@ pub struct ToolResult {
 |------|------|-------------|
 | **codesearch** | `codesearch.rs` | Advanced code search |
 | **review** | `review.rs` | Code review |
-| **lsp** | `lsp.rs` | LSP tool wrapper |
 
 ### Web Operations
 
@@ -98,6 +97,7 @@ pub struct ToolResult {
 | **skill** | `skill.rs` | Activate skills |
 | **batch** | `batch.rs` | Batch operations |
 | **tool_search** | `tool_search.rs` | On-demand tool discovery |
+| **invalid** | `invalid.rs` | Handles calls to unregistered tools |
 
 ## ToolRegistry
 
@@ -136,6 +136,8 @@ impl ToolCatalog {
     pub fn search(&self, query: &str) -> Vec<&ToolMetadata>;
     pub fn get(&self, name: &str) -> Option<&ToolMetadata>;
     pub fn list(&self) -> Vec<&ToolMetadata>;
+    pub fn deferred_tools(&self) -> Vec<&ToolMetadata>;  // List tools marked for deferred loading
+    pub fn is_deferred(&self, name: &str) -> bool;  // Check if a tool is deferred
 }
 ```
 

@@ -510,6 +510,19 @@ impl PluginService {
 
 **Note:** `PluginService` no longer holds a loader or event bus directly. Loading is done via `loader::load_plugin()`, and events use the global `PluginEventBus`.
 
+## Built-in Plugin Struct
+
+The `BuiltinPlugin` struct is defined in `src/plugin/builtin/mod.rs`:
+
+```rust
+pub struct BuiltinPlugin {
+    pub manifest: PluginManifest,
+    pub handler: fn(HookContext) -> HookResult,
+}
+```
+
+**Note:** This struct is NOT re-exported from the main `plugin` module (`src/plugin/mod.rs`). It exists only in the `builtin` submodule and is used internally by `get_builtin_plugins()`.
+
 ## TUI Integration
 
 Plugins can register TUI routes and components:
@@ -551,6 +564,8 @@ impl MarketplaceService {
     pub fn list_repository_plugins() -> Vec<MarketplacePlugin>;  // TODO: not implemented
 }
 ```
+
+**Note**: `list_official_plugins()` and `list_repository_plugins()` are TODO stubs that are not yet implemented. They currently return empty vectors.
 
 ## Security Considerations
 
