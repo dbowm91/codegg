@@ -129,6 +129,14 @@ These items were identified during module reviews and are important for future a
 - **Spawn timeout added**: Process spawn wrapped in `tokio::time::timeout` + `spawn_blocking`, capped at 10s to prevent hangs.
 - **Auto-reconnect via McpConnectionManager**: Exponential backoff (1s→2s→4s→...→max 60s), max 5 retries, heartbeat every 30s. `ensure_connected()` spawns reconnection in background task.
 
+### MCP Module (2026-05-23)
+- **McpConnectionManager Clone impl fixed**: Removed derived `Clone` that was unsound due to `CancellationToken` being `!Clone`. Implemented `Clone` manually with proper `Arc::clone` for Arc fields.
+- **OAuth replay protection race fixed**: Changed order so `mark_code_used()` is called BEFORE `exchange_code_for_tokens()`, eliminating race window. If exchange fails after marking, code remains used (acceptable - prevents replay of failed codes).
+- **IdeServer async I/O**: `run_stdio()` now uses `tokio::io::stdin()/stdout()` with `AsyncBufReadExt` and `AsyncWriteExt` instead of blocking `std::io`. Added `io-std` feature to tokio in Cargo.toml.
+
+### LSP Module (2026-05-23)
+- **Request ID wrap-around fixed**: Changed `request_id` from `AtomicI64` to `AtomicU64` to avoid signed overflow issues. Removed faulty `id == 0` check that didn't catch general wrap-around.
+
 ### Known Issues (Lower Priority)
 - **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
 - **Tool definition cache staleness**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
@@ -198,6 +206,9 @@ These items were identified during module reviews and are important for future a
 - **Builtin handler registry fixed**: `BUILTIN_HANDLERS` now uses `LazyLock` with proper fn pointer casting to avoid fn item type mismatches
 - **API HookType serialization fixed**: `api::hooks::HookType::as_str()` now returns dot notation (e.g., `tool.execute.before`) matching actual `HookType` implementation
 - **Feature flag named correctly**: Uses `plugins` feature, not `plugin`
+
+### Plugin Module (2026-05-23)
+- **dispatch_to_plugin removed**: Dead `dispatch_to_plugin` function at `src/plugin/event_bus.rs:63-69` was removed. Function only logged and never actually dispatched events to plugins. Plugin system uses `HookType::Event` via `PluginService::dispatch_event()` for event dispatch.
 
 ### Plugin Module (2026-05-22 - Session Review)
 - **hooks_for() sorting removed**: `PluginRegistry::hooks_for()` no longer sorts hooks since `register()` already sorts them via `sort_hooks()`. Removed redundant sort (was sorting twice on every call).
