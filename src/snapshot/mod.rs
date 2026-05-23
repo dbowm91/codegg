@@ -64,6 +64,15 @@ impl SnapshotManager {
     }
 
     pub fn new_with_options(pool: SqlitePool, project_root: PathBuf, options: SnapshotOptions) -> Self {
+        if options.max_files == 0 {
+            tracing::warn!("SnapshotOptions: max_files is 0, setting to 1");
+        }
+        if options.max_file_bytes == 0 {
+            tracing::warn!("SnapshotOptions: max_file_bytes is 0, setting to 1");
+        }
+        if options.max_total_bytes == 0 {
+            tracing::warn!("SnapshotOptions: max_total_bytes is 0, setting to 1");
+        }
         Self {
             pool,
             project_root,
@@ -242,11 +251,17 @@ impl SnapshotManager {
 
     fn to_relative_path(&self, path: &str) -> String {
         let path_buf = PathBuf::from(path);
-        path_buf
-            .strip_prefix(&self.project_root)
-            .unwrap_or(path_buf.as_path())
-            .to_string_lossy()
-            .to_string()
+        match path_buf.strip_prefix(&self.project_root) {
+            Ok(rel) => rel.to_string_lossy().to_string(),
+            Err(_) => {
+                tracing::warn!(
+                    "to_relative_path: path '{}' is not relative to project_root '{}', returning absolute path",
+                    path,
+                    self.project_root.display()
+                );
+                path_buf.to_string_lossy().to_string()
+            }
+        }
     }
 
     pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String> {
