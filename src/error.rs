@@ -166,6 +166,7 @@ impl ProviderError {
                 | ProviderError::Timeout(_)
                 | ProviderError::Stream(_)
                 | ProviderError::CircuitOpen(_)
+                | ProviderError::Auth(_)
         )
     }
 }
@@ -384,6 +385,15 @@ pub enum McpError {
     Timeout(String),
 }
 
+impl McpError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            McpError::Connection(_) | McpError::Server(_) | McpError::ToolCall(_) | McpError::OAuth(_) | McpError::Timeout(_)
+        )
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum LspError {
     #[error("server not found: {0}")]
@@ -412,6 +422,15 @@ pub enum LspError {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+impl LspError {
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            LspError::DownloadFailed(_) | LspError::LaunchFailed(_) | LspError::RequestFailed(_) | LspError::RequestTimeout(_) | LspError::Io(_)
+        )
+    }
 }
 
 #[derive(Error, Debug)]
