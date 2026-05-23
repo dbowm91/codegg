@@ -407,7 +407,7 @@ CREATE TABLE session_share (
 )
 ```
 
-**task** (v9):
+**task** (v9, with `allowed_paths` added in v14):
 ```sql
 CREATE TABLE task (
     id INTEGER PRIMARY KEY,
@@ -504,7 +504,7 @@ const PART_QUERY: &str = r#"SELECT id, message_id, session_id, time_created, tim
 ## Notes
 
 - `CreateSession` has `agent` and `model` fields that are accepted during creation but not stored in the database (no corresponding columns in session table)
-- `CheckpointStore::has_checkpoint()` renamed from `has_unfinished()` for clarity (checkpoints represent saved state, not "unfinished" work)
+- `CheckpointStore::has_checkpoint()` renamed from `has_unfinished()` for clarity. The name reflects its semantic meaning: it checks whether a checkpoint exists for the session (not whether work is "unfinished").
 - `PartRow` uses `parse_json_field()` helper while `MessageRow` uses direct `TryFrom` deserialization - this inconsistency in JSON error handling is known
 - Session state is tracked via `SessionStatus` and `SessionState` in `status.rs` for TUI display
 

@@ -42,6 +42,31 @@ pub struct PermissionRequest {
 }
 ```
 
+### PermissionChoice
+
+```rust
+pub enum PermissionChoice {
+    AllowOnce,
+    AlwaysAllow,
+    DenyOnce,
+    AlwaysDeny,
+}
+
+impl PermissionChoice {
+    pub fn allowed(&self) -> bool;
+    pub fn persist(&self) -> bool;  // true for AlwaysAllow/AlwaysDeny
+}
+```
+
+### PermissionResponse
+
+```rust
+pub struct PermissionResponse {
+    pub level: PermissionLevel,
+    pub persist: bool,
+}
+```
+
 ### PermissionRuleset
 
 ```rust
@@ -80,10 +105,15 @@ pub struct PermissionChecker {
 
 impl PermissionChecker {
     pub async fn check(&self, tool: &str, path: Option<&str>, session_id: Option<&str>) -> PermissionResult;
+    pub async fn check_legacy(&self, tool: &str, path: Option<&str>) -> PermissionResult;  // Uses None for session_id
     pub async fn check_bash(&self, path: Option<&str>, command: Option<&str>, session_id: Option<&str>) -> PermissionResult;
+    pub async fn check_bash_legacy(&self, path: Option<&str>, command: Option<&str>) -> PermissionResult;  // Uses None for session_id
     pub async fn check_git(&self, path: Option<&str>, subcommand: Option<&str>, session_id: Option<&str>) -> PermissionResult;
     pub async fn always_allow(&self, tool: &str, path: Option<&str>, session_id: Option<&str>);
+    pub async fn always_allow_legacy(&self, tool: &str, path: Option<&str>);  // Uses None for session_id
     pub async fn always_deny(&self, tool: &str, path: Option<&str>, session_id: Option<&str>);
+    pub async fn always_deny_legacy(&self, tool: &str, path: Option<&str>);  // Uses None for session_id
+    pub async fn clear_decisions(&self);  // Clear all cached decisions
 }
 ```
 
@@ -274,6 +304,19 @@ tools = { "custom_tool" = "deny" }
 3. **Path canonicalization** - Resolves symlinks before checking (cached with 1s TTL)
 4. **DoomLoop detection** - Prevents infinite loops via window-based counting
 5. **Glob pattern matching** - Supports `*` for tool names and bash commands
+6. **External directory check** - `check_external_directory()` validates paths stay within project root
+
+## Utility Functions
+
+### check_external_directory
+
+```rust
+pub fn check_external_directory(path: &str, project_root: &str) -> bool
+```
+
+Security utility that checks if a path is within a project root directory. Returns `true` if the path is inside the project root (safe), `false` if outside (potential security risk). Uses canonicalization when possible, falls back to prefix matching.
+
+**Note**: This function is marked `#[allow(dead_code)]` - it exists for potential future use.
 
 ## PermissionRegistry (in bus/mod.rs)
 

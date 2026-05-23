@@ -99,7 +99,7 @@ Uses `idea diff` or `idea.sh diff` CLI. Supports:
 - Windows: `%PROGRAMFILES%\JetBrains\<product>\bin\idea.bat`
 
 ### Generic Fallback
-If no IDE is detected, uses `std::env::split_paths` to search PATH for `code`/`code.exe` then `idea`/`idea.bat`. Creates temporary files with content (unlike direct IDE handlers which use file paths).
+If no IDE is detected, uses `std::env::split_paths` to search PATH for `code`/`code.exe` then `idea`/`idea.bat`. Creates temporary files with content (same as IDE-specific handlers).
 
 ## Implementation Details
 
