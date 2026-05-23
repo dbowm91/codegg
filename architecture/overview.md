@@ -1,6 +1,6 @@
 # Codegg Architecture Overview
 
-Codegg is a Rust rewrite of an AI coding agent built for performance and efficiency. It uses modern Rust async primitives and is designed for high-performance tool-augmented LLM interactions.
+Codegg is a **Rust rewrite of an AI coding agent** built for performance and efficiency. It uses modern Rust async primitives and is designed for high-performance tool-augmented LLM interactions with a full terminal UI, MCP integration, LSP support, and extensibility through WASM plugins.
 
 ## Technology Stack
 
@@ -16,139 +16,157 @@ Codegg is a Rust rewrite of an AI coding agent built for performance and efficie
 
 ## Module Index
 
-The codebase contains **34 discrete modules**. Each module has detailed documentation in its respective `.md` file below.
+The codebase contains **35 discrete modules** organized into 8 functional categories. Each module has detailed documentation in its respective `.md` file in this directory.
 
-### Core Agent Processing
+### [Core Agent Processing](agent.md)
 
-| Module | Docs | Description |
-|--------|------|-------------|
-| **agent** | [agent.md](agent.md) | Main agent loop (`AgentLoop`), message processing, subagent pool, context compaction, model auto-routing, team coordination |
-| **provider** | [provider.md](provider.md) | Unified interface for 20+ LLM backends (Anthropic, OpenAI, Google, Azure, Bedrock, etc.) with chat streaming, model discovery, and caching |
-| **tool** | [tool.md](tool.md) | Tool registry and 33+ built-in tools (bash, read, write, edit, glob, grep, git, webfetch, task, etc.) |
+The heart of the system - handles LLM interactions, tool execution, message processing, context management, and multi-agent coordination.
 
-### Communication & Events
+| Module | Files | Purpose |
+|--------|-------|---------|
+| **agent** | loop.rs, processor.rs, prompt.rs, compaction.rs, router.rs, task.rs, team.rs, teams.rs, worker.rs, mention.rs | Main `AgentLoop`, message processing, subagent pool, context compaction, model auto-routing, team coordination |
+| **provider** | anthropic.rs, openai.rs, google.rs, azure.rs, bedrock.rs, copilot.rs, gitlab.rs, cloudflare.rs, codegg_zen.rs, openrouter.rs, openai_compatible.rs, fallback.rs, cache.rs, catalog.rs, discovery.rs, models.rs, sse_parser.rs, text_tool_parser.rs, additional.rs | Unified interface for 20+ LLM backends with chat streaming, model discovery, and caching |
+| **tool** | bash.rs, read.rs, write.rs, edit.rs, glob.rs, grep.rs, git.rs, task.rs, webfetch.rs, websearch.rs, commit.rs, review.rs, formatter.rs, diff.rs, batch.rs, plan.rs, terminal.rs, todo.rs, skill.rs, teams.rs, lsp.rs, codesearch.rs, apply_patch.rs, multiedit.rs, replace.rs, invalid.rs, list.rs, question.rs, tool_search.rs, util.rs, executor.rs, catalog.rs, mod.rs | Tool registry and 33+ built-in tools |
 
-| Module | Docs | Description |
-|--------|------|-------------|
-| **bus** | [event-bus.md](event-bus.md) | `GlobalEventBus` (broadcast channel), `PermissionRegistry`, `QuestionRegistry` for inter-component communication |
-| **hooks** | [hooks.md](hooks.md) | Lifecycle hooks system (`PreToolExecute`, `PostToolExecute`, `SessionStart`, `SessionEnd`, etc.) for shell command hooks |
-| **protocol** | (inline) | `TuiMessage` enum for client-server TUI protocol over WebSocket |
+### [Communication & Events](event-bus.md)
 
-### Security & Permissions
+Inter-component communication through a publish-subscribe event bus, plus lifecycle hooks for extensibility.
 
-| Module | Docs | Description |
-|--------|------|-------------|
-| **permission** | [permission.md](permission.md) | Access control (`PermissionChecker`), path restrictions, DoomLoop detection, mode-based permissions (Review/Debug/Docs) |
-| **security** | [security.md](security.md) | SSRF protection, internal IP validation (IPv4/IPv6), symlink detection, Landlock sandboxing |
-| **crypto** | [crypto.md](crypto.md) | AES-256-GCM encryption with Argon2id key derivation for API keys and secrets |
+| Module | Files | Purpose |
+|--------|-------|---------|
+| **bus** | global.rs, events.rs, mod.rs | `GlobalEventBus` (broadcast channel), `PermissionRegistry`, `QuestionRegistry` for inter-component communication |
+| **hooks** | mod.rs | Lifecycle hooks system (`PreToolExecute`, `PostToolExecute`, `SessionStart`, `SessionEnd`, etc.) for shell command hooks |
+| **protocol** | tui.rs | `TuiMessage` enum for client-server TUI protocol over WebSocket |
 
-### Data & Persistence
+### [Security & Permissions](permission.md)
 
-| Module | Docs | Description |
-|--------|------|-------------|
-| **session** | [session.md](session.md) | SQLite-backed session storage, message history, checkpointing, import/export, session sharing with expiring tokens |
-| **storage** | [storage.md](storage.md) | SQLite database initialization, connection pooling, WAL mode, pragmas configuration |
-| **memory** | [memory.md](memory.md) | Persistent memory system for session-to-session learning with namespace-based organization and rule-based consolidation |
-| **snapshot** | [snapshot.md](snapshot.md) | File state capture (full/incremental) and restore for rollback safety |
+Access control, encryption, and sandboxing for safe tool execution.
 
-### User Interface
+| Module | Files | Purpose |
+|--------|-------|---------|
+| **permission** | mod.rs | Access control (`PermissionChecker`), path restrictions, DoomLoop detection, mode-based permissions (Review/Debug/Docs) |
+| **security** | mod.rs | SSRF protection, internal IP validation (IPv4/IPv6), symlink detection, Landlock sandboxing |
+| **crypto** | mod.rs | AES-256-GCM encryption with Argon2id key derivation for API keys and secrets |
 
-| Module | Docs | Description |
-|--------|------|-------------|
-| **tui** | [tui.md](tui.md) | Ratatui-based terminal UI with 21 dialog types, FocusManager, keyboard shortcuts, theme system, notifications |
-| **client** | [client.md](client.md) | WebSocket client for remote TUI connections to server with health checking and protocol handling |
+### [Data & Persistence](session.md)
 
-### External Integrations
+Session storage, memory management, snapshots, and database infrastructure.
 
-| Module | Docs | Description |
-|--------|------|-------------|
-| **mcp** | [mcp.md](mcp.md) | Model Context Protocol client (local via stdio, remote via HTTP) with OAuth support and auto-reconnection |
-| **lsp** | [lsp.md](lsp.md) | Language Server Protocol client for diagnostics, code operations (goto definition, find references, hover, completion) |
-| **ide** | [ide.md](ide.md) | IDE detection (VS Code, JetBrains) and diff viewer integration |
+| Module | Files | Purpose |
+|--------|-------|---------|
+| **session** | mod.rs, store.rs, message.rs, checkpoint.rs, import.rs, models.rs, row.rs, schema.rs, status.rs | SQLite-backed session storage, message history, checkpointing, import/export, session sharing with expiring tokens |
+| **storage** | mod.rs | SQLite database initialization, connection pooling, WAL mode, pragmas configuration |
+| **memory** | mod.rs | Persistent memory system for session-to-session learning with namespace-based organization and rule-based consolidation |
+| **snapshot** | mod.rs | File state capture (full/incremental) and restore for rollback safety |
 
-### Extensibility
+### [User Interface](tui.md)
 
-| Module | Docs | Description |
-|--------|------|-------------|
-| **plugin** | [plugin.md](plugin.md) | WASM plugin system via Wasmtime with 10 hook types, builtin handlers (copilot, gitlab, codex, poe), and TUI extensions |
-| **skills** | [skills.md](skills.md) | Skill system for specialized capabilities loaded from markdown files with YAML frontmatter |
-| **command** | [command.md](command.md) | Slash command registry from markdown files with template variable substitution |
+Terminal UI built with Ratatui, plus remote TUI client for server-based deployments.
 
-### Infrastructure
+| Module | Files | Purpose |
+|--------|-------|---------|
+| **tui** | app/mod.rs, app/types.rs, components/*.rs (17 components), dialogs/*.rs (21 dialogs) | Ratatui-based terminal UI with 21 dialog types, FocusManager, keyboard shortcuts, theme system, notifications |
+| **client** | mod.rs | WebSocket client for remote TUI connections to server with health checking and protocol handling |
 
-| Module | Docs | Description |
-|--------|------|-------------|
-| **config** | [config.md](config.md) | Configuration loading from JSONC files, schema validation, hot-reload via file watching, env var interpolation |
-| **server** | [server.md](server.md) | Axum-based HTTP server with WebSocket support, REST API (sessions, config, MCP, files, projects), SSE events, rate limiting |
-| **exec** | [exec.md](exec.md) | Non-interactive exec mode for CI/CD with JSON input/output and structured error classification |
+### [External Integrations](mcp.md)
 
-### Utilities
+Protocol clients for IDE extensions and language servers.
 
-| Module | Docs | Description |
-|--------|------|-------------|
-| **error** | [error.md](error.md) | Centralized `AppError` enum using thiserror with `is_retryable()` methods and HTTP status mapping |
-| **resilience** | [resilience.md](resilience.md) | Circuit breaker pattern with state machine (Closed/Open/HalfOpen) and `FallbackProvider` for provider redundancy |
-| **util** | [util.md](util.md) | Clipboard operations, fuzzy string matching, text truncation, metrics collection |
-| **worktree** | [worktree.md](worktree.md) | Git worktree management (list, create, remove) and git root detection |
-| **pty** | [pty.md](pty.md) | Shell session metadata management (in-memory only, no actual PTY) |
-| **upgrade** | [upgrade.md](upgrade.md) | Self-upgrade functionality via GitHub releases |
-| **tts** | [tts.md](tts.md) | Text-to-speech (macOS only via `say` command) |
+| Module | Files | Purpose |
+|--------|-------|---------|
+| **mcp** | mod.rs, local.rs, remote.rs, auth.rs, cli.rs, ide_server.rs | Model Context Protocol client (local via stdio, remote via HTTP) with OAuth support and auto-reconnection |
+| **lsp** | client.rs, diagnostics.rs, download.rs, language.rs, launch.rs, operations.rs, root.rs, server.rs, service.rs, mod.rs | Language Server Protocol client for diagnostics, code operations (goto definition, find references, hover, completion) |
+| **ide** | mod.rs | IDE detection (VS Code, JetBrains) and diff viewer integration |
+
+### [Extensibility](plugin.md)
+
+Plugin system, skill loading, and slash commands.
+
+| Module | Files | Purpose |
+|--------|-------|---------|
+| **plugin** | mod.rs, loader.rs, hooks.rs, registry.rs, service.rs, manifest.rs, install.rs, marketplace.rs, api.rs, tui.rs, event_bus.rs | WASM plugin system via Wasmtime with 10 hook types, builtin handlers (copilot, gitlab, codex, poe), and TUI extensions |
+| **skills** | mod.rs | Skill system for specialized capabilities loaded from markdown files with YAML frontmatter |
+| **command** | mod.rs | Slash command registry from markdown files with template variable substitution |
+
+### [Infrastructure](config.md)
+
+HTTP server, configuration, exec mode, and system utilities.
+
+| Module | Files | Purpose |
+|--------|-------|---------|
+| **config** | mod.rs, paths.rs, schema.rs, watcher.rs | Configuration loading from JSONC files, schema validation, hot-reload via file watching, env var interpolation |
+| **server** | mod.rs, http.rs, ws.rs, rpc.rs, state.rs, mdns.rs | Axum-based HTTP server with WebSocket support, REST API (sessions, config, MCP, files, projects), SSE events, rate limiting |
+| **exec** | mod.rs | Non-interactive exec mode for CI/CD with JSON input/output and structured error classification |
+
+### [Utilities](error.md)
+
+Error handling, resilience patterns, and helper functions.
+
+| Module | Files | Purpose |
+|--------|-------|---------|
+| **error** | (root) | Centralized `AppError` enum using thiserror with `is_retryable()` methods and HTTP status mapping |
+| **resilience** | mod.rs | Circuit breaker pattern with state machine (Closed/Open/HalfOpen) and `FallbackProvider` for provider redundancy |
+| **util** | clipboard.rs, fuzzy.rs, truncate.rs, stat_core.rs | Clipboard operations, fuzzy string matching, text truncation, metrics collection |
+| **worktree** | mod.rs | Git worktree management (list, create, remove) and git root detection |
+| **pty_session** | mod.rs | Shell session metadata management (in-memory only, no actual PTY) |
+| **upgrade** | mod.rs | Self-upgrade functionality via GitHub releases |
+| **tts** | mod.rs | Text-to-speech (macOS only via `say` command) |
 
 ---
 
-## System Architecture
+## System Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                    TUI                                           │
-│  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │  App (state machine)  │  Components (21 dialogs)  │  Input (keybindings) │    │
-│  └─────────────────────────────────────────────────────────────────────────┘    │
-│                              │                                                 │
-│                              │ TuiMessage (via GlobalEventBus)                  │
-└──────────────────────────────┼─────────────────────────────────────────────────┘
-                               │
-         ┌─────────────────────┴─────────────────────┐
-         │                                           │
-         ▼                                           ▼
-┌─────────────────────────────┐         ┌─────────────────────────────┐
-│        Local TUI             │         │     Remote TUI (client)      │
-│   (runs in terminal)         │         │   (WebSocket to server)     │
-└─────────────────────────────┘         └─────────────────────────────┘
-         │                                           │
-         └─────────────────────┬─────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              AgentLoop                                           │
-│                                                                                   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐    │
-│  │   Provider   │  │     Tool      │  │  Permission  │  │   GlobalEvent    │    │
-│  │ (LLM Calls)  │  │   Registry    │  │   Checker    │  │       Bus        │    │
-│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────────┘    │
-│         │                 │                 │                   ▲               │
-│         │                 │                 │                   │               │
-│         ▼                 ▼                 ▼                   │               │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │               │
-│  │    Hook     │  │   Snapshot   │  │    MCP      │         │               │
-│  │  Registry   │  │   Manager    │  │   Service   │         │               │
-│  └──────────────┘  └──────────────┘  └──────────────┘         │               │
-│         │                 │                 │                   │               │
-│         │                 │                 │                   │               │
-│         ▼                 ▼                 ▼                   │               │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │               │
-│  │   Memory    │  │   Session    │  │    LSP      │         │               │
-│  │   Store     │  │   Storage    │  │   Client    │         │               │
-│  └──────────────┘  └──────────────┘  └──────────────┘         │               │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                               │
-         ┌─────────────────────┼─────────────────────┐
-         │                     │                     │
-         ▼                     ▼                     ▼
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│   LLM Provider  │  │   MCP Servers   │  │   LSP Servers   │
-│  (20+ backends) │  │  (local/remote) │  │ (30+ languages) │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                       TUI                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────────────┐    │
+│  │  App (state machine)  │  Components (17)  │  Dialogs (21)  │  Input (keybindings) │    │
+│  └─────────────────────────────────────────────────────────────────────────────────┘    │
+│                                    │                                                     │
+│                                    │ TuiMessage (via GlobalEventBus)                      │
+└────────────────────────────────────┼─────────────────────────────────────────────────────┘
+                                     │
+          ┌──────────────────────────┴──────────────────────────┐
+          │                                                     │
+          ▼                                                     ▼
+┌─────────────────────────────┐                   ┌─────────────────────────────┐
+│      Local TUI               │                   │   Remote TUI (client)       │
+│    (runs in terminal)      │                   │  (WebSocket to server)      │
+└─────────────────────────────┘                   └─────────────────────────────┘
+          │                                                     │
+          └─────────────────────────────┬────────────────────────┘
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   AgentLoop                                              │
+│                                                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐   │
+│  │   Provider   │  │     Tool      │  │  Permission  │  │   GlobalEventBus          │   │
+│  │ (LLM Calls)  │  │   Registry    │  │   Checker    │  │   (pub/sub + registries) │   │
+│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────────────────┘   │
+│         │                 │                 │                     ▲                     │
+│         │                 │                 │                     │                     │
+│         ▼                 ▼                 ▼                     │                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │                     │
+│  │    Hook     │  │   Snapshot   │  │     MCP      │           │                     │
+│  │  Registry   │  │   Manager    │  │   Service    │           │                     │
+│  └──────────────┘  └──────────────┘  └──────────────┘           │                     │
+│         │                 │                 │                   │                     │
+│         │                 │                 │                   │                     │
+│         ▼                 ▼                 ▼                   │                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │                     │
+│  │   Memory    │  │   Session    │  │     LSP      │           │                     │
+│  │   Store     │  │   Storage    │  │   Client    │           │                     │
+│  └──────────────┘  └──────────────┘  └──────────────┘           │                     │
+└─────────────────────────────────────────────────────────────────────────────────────────┘
+                                     │
+          ┌──────────────────────────┼──────────────────────────┐
+          │                          │                          │
+          ▼                          ▼                          ▼
+┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
+│   LLM Provider      │  │   MCP Servers       │  │   LSP Servers        │
+│  (20+ backends)    │  │  (local/remote)     │  │ (42+ language servers│
+└─────────────────────┘  └─────────────────────┘  └─────────────────────┘
 ```
 
 ---
@@ -188,27 +206,27 @@ Tool call request → PermissionChecker::check()
 
 ```
 Local Client                    Server                      AgentLoop
-    │                             │                            │
-    │──── health check ──────────>│                            │
-    │<─── ok ─────────────────────│                            │
-    │                             │                            │
-    │──── WebSocket connect ────>│                            │
-    │                             │                            │
-    │<══════ TuiMessage protocol ═════════════════════════════│
-    │   Input/KeyDown/Resize      │                            │
-    │         │                   │                            │
-    │         │──────────────────>│   TuiCommand              │
-    │         │                   │        │                   │
-    │         │                   │        ▼                   │
-    │         │                   │   AgentLoop::run()         │
-    │         │                   │        │                   │
-    │         │                   │        ▼                   │
-    │<════════════════════════════│   AppEvent published       │
-    │   SessionInfo/TextDelta     │        │                   │
-    │   ToolCallStarted           │        ▼                   │
-    │   ToolResult                │   GlobalEventBus::publish() │
-    │                             │        │                   │
-    │<═════════════════════════════│<──────┘                   │
+     │                             │                            │
+     │──── health check ──────────>│                            │
+     │<─── ok ─────────────────────│                            │
+     │                             │                            │
+     │──── WebSocket connect ────>│                            │
+     │                             │                            │
+     │<══════ TuiMessage protocol ═════════════════════════════════│
+     │   Input/KeyDown/Resize      │                            │
+     │         │                   │                            │
+     │         │──────────────────>│   TuiCommand              │
+     │         │                   │        │                   │
+     │         │                   │        ▼                   │
+     │         │                   │   AgentLoop::run()         │
+     │         │                   │        │                   │
+     │         │                   │        ▼                   │
+     │<════════════════════════════│   AppEvent published       │
+     │   SessionInfo/TextDelta     │        │                   │
+     │   ToolCallStarted           │        ▼                   │
+     │   ToolResult                │   GlobalEventBus::publish() │
+     │                             │        │                   │
+     │<═════════════════════════════│<──────┘                   │
 ```
 
 ---
@@ -239,6 +257,7 @@ SQLite database (`sessions.db`) stores:
 | `session_share` | Session sharing tokens |
 | `task` | Subagent task tracking |
 | `cached_models` | Provider model cache |
+| `migration_version` | Schema migration tracking |
 
 See [session.md](session.md) for detailed schema documentation.
 
@@ -261,11 +280,11 @@ See [config.md](config.md) for detailed configuration options.
 
 ```
 src/
-├── agent/              # Main agent loop, compaction, router, team
+├── agent/              # AgentLoop, compaction, router, team, worker, task
 ├── bus/                # GlobalEventBus, PermissionRegistry, QuestionRegistry
 ├── client/             # Remote TUI WebSocket client
 ├── command/            # Slash command registry
-├── config/            # Configuration loading, validation, watching
+├── config/            # Configuration loading, validation, watching, schema
 ├── crypto/            # AES-256-GCM encryption
 ├── exec.rs            # Non-interactive exec mode
 ├── hooks/             # Lifecycle hooks system
@@ -278,7 +297,7 @@ src/
 ├── plugin/            # WASM plugin system
 ├── protocol/          # TuiMessage enum
 ├── provider/          # LLM provider implementations
-├── pty/               # Shell session metadata
+├── pty_session/       # Shell session metadata
 ├── resilience/        # Circuit breaker, FallbackProvider
 ├── security/          # SSRF protection, Landlock
 ├── server/            # HTTP server, WebSocket handlers
@@ -288,8 +307,88 @@ src/
 ├── storage/           # SQLite initialization
 ├── tool/              # Tool registry, built-in tools
 ├── tts/               # Text-to-speech
-├── tui/               # Terminal UI
+├── tui/               # Terminal UI (app, components, dialogs)
 ├── upgrade/           # Self-upgrade via GitHub
 ├── util/              # Clipboard, fuzzy, truncate, metrics
 └── worktree/          # Git worktree management
 ```
+
+---
+
+## Module Dependency Graph
+
+```
+main.rs (CLI entry point)
+├── config/
+├── session/
+├── memory/
+├── mcp/
+├── provider/
+├── storage/
+├── tui/
+├── exec/
+├── upgrade/
+└── agent/
+
+agent/ (depends on)
+├── provider/
+├── tool/
+├── bus/
+├── hooks/
+├── session/
+├── memory/
+├── permission/
+├── snapshot/
+├── mcp/
+├── lsp/
+├── config/
+└── resilience/
+
+tui/ (depends on)
+├── bus/
+├── session/
+├── command/
+├── config/
+└── plugin/
+
+server/ (depends on)
+├── bus/
+├── session/
+├── provider/
+└── config/
+
+client/ (depends on)
+├── bus/
+└── protocol/
+
+mcp/ (depends on)
+├── bus/
+├── security/
+└── crypto/
+
+lsp/ (depends on)
+├── bus/
+└── security/
+```
+
+---
+
+## Quick Reference
+
+| Category | Key Files | See Also |
+|----------|-----------|----------|
+| Agent Loop | agent/loop.rs, agent/processor.rs | [agent.md](agent.md) |
+| Providers | provider/mod.rs, provider/catalog.rs | [provider.md](provider.md) |
+| Tools | tool/mod.rs, tool/executor.rs, tool/catalog.rs | [tool.md](tool.md) |
+| Events | bus/global.rs, bus/events.rs | [event-bus.md](event-bus.md) |
+| Permissions | permission/mod.rs | [permission.md](permission.md) |
+| Session Storage | session/mod.rs, session/store.rs | [session.md](session.md) |
+| TUI | tui/app/mod.rs, tui/components/* | [tui.md](tui.md) |
+| Server | server/mod.rs, server/http.rs, server/ws.rs | [server.md](server.md) |
+| MCP | mcp/mod.rs, mcp/local.rs, mcp/remote.rs | [mcp.md](mcp.md) |
+| LSP | lsp/mod.rs, lsp/client.rs | [lsp.md](lsp.md) |
+| Plugins | plugin/mod.rs, plugin/hooks.rs | [plugin.md](plugin.md) |
+| Config | config/mod.rs, config/schema.rs | [config.md](config.md) |
+| Security | security/mod.rs | [security.md](security.md) |
+| Errors | error.rs (root) | [error.md](error.md) |
+| Resilience | resilience/mod.rs | [resilience.md](resilience.md) |
