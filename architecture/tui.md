@@ -29,7 +29,7 @@ tui/
 │       └── ui.rs           # UiState (theme, layout, routes, keybindings)
 ├── components/             # UI widgets and components
 │   ├── component/          # Component trait and FocusManager
-│   │   ├── mod.rs          # Component trait, DialogType enum
+│   │   ├── component.rs    # Component trait, DialogType enum (NOT mod.rs)
 │   │   ├── focus.rs        # FocusManager for modal focus stack
 │   │   └── context.rs      # AppContext for overlay dialogs
 │   ├── dialogs/            # Modal dialogs (all implement Component trait)

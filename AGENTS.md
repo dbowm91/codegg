@@ -356,6 +356,12 @@ These items were identified during module reviews and are important for future a
 - **State inconsistency handling added**: `on_key()` now properly handles case when `dialog.is_open()` but `focus_manager.is_empty()` - logs error and resets state instead of panicking via debug_assert
 - **Skill updated**: `.opencode/skills/tui/SKILL.md` updated with `push_dialog()` method for temporary dialogs and defensive state consistency check
 
+### TUI Module Review (2026-05-23)
+- **Component trait location fixed**: Architecture doc showed `component/mod.rs` but actual is `component.rs` (single file with submodules in `component/` subdirectory)
+- **Additional components documented**: `help_overlay.rs`, `tool_output.rs` added to component list (were missing from docs)
+- **Dialog files verified**: All 21 dialog implementations present in `dialogs/` directory
+- **skill synchronized**: `.opencode/skills/tui/SKILL.md` version bumped to 3.0.0 with accurate Component trait documentation
+
 ### Command Module (2026-05-22)
 - **Async file loading**: `find_command_files()` and `load_command_from_file()` now use `tokio::fs` for async I/O (were using blocking `std::fs`)
 - **`subtask` field deprecated**: Added `#[deprecated]` attribute to `subtask` field since it's not yet implemented

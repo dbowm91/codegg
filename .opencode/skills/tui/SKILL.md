@@ -1,7 +1,7 @@
 ---
 name: tui
 description: Guide for working with Terminal UI in opencode-rs
-version: 3.0.0
+version: 3.1.0
 tags:
   - tui
   - ratatui
@@ -13,7 +13,12 @@ tags:
 
 # TUI Development Guide
 
-This skill covers working with the Terminal UI (TUI) in opencode-rs, built using **Ratatui**. All dialogs now implement the `Component` trait (Wave 7.2+) with FocusManager integration.
+This skill covers working with the Terminal UI (TUI) in opencode-rs, built using **Ratatui**. All dialogs implement the `Component` trait with FocusManager integration.
+
+## Notable Corrections (v3.1.0)
+
+- **Component trait location**: The trait is in `src/tui/components/component.rs`, NOT in a `mod.rs` within `component/` subdirectory. The `component/` subdirectory contains only `context.rs` and `focus.rs` submodules.
+- **Additional components**: `help_overlay.rs`, `tool_output.rs` are now documented in the project structure.
 
 ## Project Structure
 
@@ -31,6 +36,11 @@ src/tui/
 │   │   └── ui.rs       # UiState (theme, layout, routes)
 │   └── types.rs        # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
 ├── components/
+│   ├── component/          # Component trait submodules
+│   │   ├── context.rs      # AppContext for overlay dialogs
+│   │   └── focus.rs        # FocusManager for modal focus stack
+│   ├── component.rs        # Component trait and DialogType enum
+│   ├── completion_overlay.rs # Slash/file/agent completion popups
 │   ├── dialogs/
 │   │   ├── agent.rs       # AgentDialog
 │   │   ├── command.rs     # CommandPalette
@@ -45,15 +55,18 @@ src/tui/
 │   │   ├── theme.rs       # ThemePickerDialog
 │   │   ├── tree.rs        # TreeDialog (session hierarchy)
 │   │   └── mod.rs
-│   ├── messages.rs     # MessagesWidget (message display)
-│   ├── prompt.rs       # PromptWidget (input prompt)
-│   ├── sidebar.rs      # SidebarWidget (side panel)
-│   ├── spinner.rs      # SpinnerWidget (loading indicator)
-│   ├── toast.rs        # ToastManager (notifications)
-│   ├── scroll.rs       # CenteredScroll (reusable scrolling)
-│   ├── diff.rs         # DiffViewer (diff visualization)
-│   ├── image.rs        # ImageViewer (image rendering)
-│   ├── notification.rs  # NotificationManager (desktop notifications)
+│   ├── diff.rs             # DiffViewer (diff visualization)
+│   ├── footer.rs           # FooterWidget (status bar)
+│   ├── help_overlay.rs     # Help overlay widget
+│   ├── image.rs            # ImageViewer (image rendering)
+│   ├── messages.rs         # MessagesWidget (message display)
+│   ├── notification.rs     # NotificationManager (desktop notifications)
+│   ├── prompt.rs           # PromptWidget (input prompt)
+│   ├── scroll.rs            # CenteredScroll (reusable scrolling)
+│   ├── sidebar.rs          # SidebarWidget (side panel)
+│   ├── spinner.rs           # SpinnerWidget (loading indicator)
+│   ├── toast.rs             # ToastManager (notifications)
+│   ├── tool_output.rs       # Tool call result display
 │   └── mod.rs
 ├── input/              # Key event handling, keybindings
 ├── layout.rs           # Layout calculations
@@ -121,7 +134,7 @@ if self.ui_state.dialog.is_open() {
 
 ## Component Trait Architecture
 
-All dialogs implement the `Component` trait from `src/tui/components/component.rs`:
+All dialogs implement the `Component` trait from `src/tui/components/component.rs` (not in `component/` subdirectory):
 
 ```rust
 pub trait Component: Send {
