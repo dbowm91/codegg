@@ -14,10 +14,10 @@ Location: `src/tts/mod.rs`
 
 ```rust
 pub struct Tts {
-    speaking: std::sync::atomic::AtomicBool,
+    speaking: std::sync::Mutex<std::sync::atomic::AtomicBool>,
 }
 
-impl Clone for Tts { /* ... */ }
+impl Clone for Tts { /* Uses Mutex for thread-safe cloning */ }
 
 #[async_trait]
 pub trait TtsEngine: Send + Sync {
