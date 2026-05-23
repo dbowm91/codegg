@@ -71,10 +71,6 @@ impl Tts {
             .lock()
             .unwrap()
             .store(false, std::sync::atomic::Ordering::SeqCst);
-self.speaking
-            .lock()
-            .unwrap()
-            .store(false, std::sync::atomic::Ordering::SeqCst);
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::warn!("say command failed: {}", stderr);
@@ -87,6 +83,9 @@ self.speaking
     }
 
     pub async fn stop(&self) -> Result<(), AppError> {
+        if !self.is_speaking() {
+            return Ok(());
+        }
         self.speaking
             .lock()
             .unwrap()
@@ -99,10 +98,6 @@ self.speaking
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::warn!("pkill say failed: {}", stderr);
-            return Err(AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("pkill say failed: {}", stderr),
-            )));
         }
         Ok(())
     }

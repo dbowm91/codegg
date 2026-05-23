@@ -88,7 +88,7 @@ pub fn open_diff(
     } else if is_jetbrains() {
         open_diff_jetbrains(&original_content, &modified_content)
     } else {
-        open_diff_generic(_original, _modified)
+        open_diff_generic(&original_content, &modified_content)
     }
 }
 
