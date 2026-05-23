@@ -4,7 +4,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::error::StorageError;
-use crate::pty::{CreatePtySession, PtyResize, PtySession};
+use crate::pty_session::{CreatePtySession, PtyResize, PtySession};
 
 pub struct PtyManager {
     sessions: Arc<RwLock<HashMap<String, PtySession>>>,

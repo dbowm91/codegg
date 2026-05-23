@@ -61,10 +61,10 @@ impl PluginEventBus {
     }
 
     pub async fn dispatch_to_plugin(&self, plugin_id: &str, event: &AppEvent) {
-        tracing::debug!(
+        tracing::warn!(
             plugin = plugin_id,
             event = event.event_type(),
-            "dispatching event to plugin"
+            "plugin event dispatch not implemented: events are logged but not forwarded to plugins"
         );
     }
 

@@ -22,7 +22,7 @@ pub mod permission;
 pub mod plugin;
 pub mod protocol;
 pub mod provider;
-pub mod pty;
+pub mod pty_session;
 pub mod resilience;
 #[cfg(feature = "server")]
 pub mod server;
