@@ -129,7 +129,6 @@ pub struct McpConnectionManager {
     base_delay: Duration,
     max_delay: Duration,
     heartbeat_interval: Duration,
-    heartbeat_task: Arc<AtomicBool>,
     shutdown: Arc<Notify>,
     reconnect_needed: Arc<Notify>,
     heartbeat_token: CancellationToken,                           // Cloneable
