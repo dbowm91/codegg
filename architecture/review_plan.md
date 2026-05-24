@@ -2,6 +2,29 @@
 
 This document outlines the review plan for architecture documentation in the `architecture/` directory. Each module will be reviewed by a subagent that will verify claims against the actual code and document findings and improvements.
 
+## Status
+
+**INCOMPLETE** - All 31 module reviews have been completed (plans/*_review.md files exist), but not all identified issues have been addressed. See "Work Completed" section below.
+
+## Work Completed
+
+### Wave 1 (2026-05-24)
+- **Server compilation fixes**: RpcRequest/RpcResponse/RpcError types added, health module exported, GlobalEventBus removed from ServerState
+- **Agent task.rs bug fix**: BackgroundScheduler now skips tasks with invalid IDs instead of using random fallback
+
+### Wave 2 (2026-05-24)
+- **Architecture docs updated**: server.md, agent.md, snapshot.md, tool.md, tts.md, worktree.md
+- **Skills docs updated**: server/SKILL.md
+
+### Wave 3 (2026-05-24)
+- **AGENTS.md updated**: Server Module and Agent Module sections updated with new fixes
+
+### Remaining Issues (Not Addressed)
+- Snapshot: `restore()` not integrated into error-handling (documented but not fixed)
+- IDE: Minor - line count discrepancy (internal implementation details)
+- Tool: Minor - "25+ total" should say "26 total" in SKILL.md
+- Various skill files may need minor updates based on review findings
+
 ## Modules to Review
 
 | # | Module | Document | Review Agent Output |
