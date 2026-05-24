@@ -16,101 +16,119 @@ Codegg is a **Rust rewrite of an AI coding agent** built for performance and eff
 
 ## Module Index
 
-The codebase contains **34 discrete modules** organized into 8 functional categories. Each module has detailed documentation in its respective `.md` file in this directory.
+The codebase contains **33 discrete modules** organized into 8 functional categories. Each module has detailed documentation in its respective `.md` file in this directory.
 
 ### [Core Agent Processing](agent.md)
 
 The heart of the system — handles LLM interactions, tool execution, message processing, context management, and multi-agent coordination.
 
-| Module | Description | Key Files |
-|--------|-------------|-----------|
-| **agent** | Main `AgentLoop`, message processing, subagent pool, context compaction, model auto-routing, team coordination | `loop.rs`, `processor.rs`, `prompt.rs`, `compaction.rs`, `router.rs`, `task.rs`, `team.rs`, `teams.rs`, `worker.rs`, `mention.rs` |
-| **provider** | Unified interface for 20+ LLM backends with chat streaming, model discovery, and caching | `anthropic.rs`, `openai.rs`, `google.rs`, `azure.rs`, `bedrock.rs`, `copilot.rs`, `gitlab.rs`, `cloudflare.rs`, `codegg_zen.rs`, `openrouter.rs`, `openai_compatible.rs`, `fallback.rs`, `cache.rs`, `catalog.rs`, `discovery.rs`, `models.rs`, `sse_parser.rs`, `text_tool_parser.rs`, `vertex.rs`, `additional.rs` |
-| **tool** | Tool registry and 33+ built-in tools for file operations, git, search, web, LSP, and more | `bash.rs`, `read.rs`, `write.rs`, `edit.rs`, `glob.rs`, `grep.rs`, `git.rs`, `task.rs`, `webfetch.rs`, `websearch.rs`, `commit.rs`, `review.rs`, `formatter.rs`, `diff.rs`, `batch.rs`, `plan.rs`, `terminal.rs`, `todo.rs`, `skill.rs`, `teams.rs`, `lsp.rs`, `codesearch.rs`, `apply_patch.rs`, `multiedit.rs`, `replace.rs`, `invalid.rs`, `list.rs`, `question.rs`, `tool_search.rs`, `util.rs`, `executor.rs`, `catalog.rs`, `mod.rs` |
+| Module | Description |
+|--------|-------------|
+| **agent** | Main `AgentLoop`, message processing, subagent pool, context compaction, model auto-routing, team coordination |
+| **provider** | Unified interface for 20+ LLM backends with chat streaming, model discovery, and caching |
+| **tool** | Tool registry and 33+ built-in tools for file operations, git, search, web, LSP, and more |
+
+**Deep Dive**: See [agent.md](agent.md) for AgentLoop internals, compaction strategies, router, and team coordination.
 
 ### [Communication & Events](event-bus.md)
 
 Inter-component communication through a publish-subscribe event bus, plus lifecycle hooks for extensibility.
 
-| Module | Description | Key Files |
-|--------|-------------|-----------|
-| **bus** | `GlobalEventBus` (broadcast channel), `PermissionRegistry`, `QuestionRegistry` for inter-component communication | `global.rs`, `events.rs`, `mod.rs` |
-| **hooks** | Lifecycle hooks system (`PreToolExecute`, `PostToolExecute`, `SessionStart`, `SessionEnd`, etc.) for shell command hooks | `mod.rs` |
-| **protocol** | `TuiMessage` enum for client-server TUI protocol over WebSocket | `tui.rs`, `mod.rs` |
+| Module | Description |
+|--------|-------------|
+| **bus** | `GlobalEventBus` (broadcast channel), `PermissionRegistry`, `QuestionRegistry` for inter-component communication |
+| **hooks** | Lifecycle hooks system (`PreToolExecute`, `PostToolExecute`, `SessionStart`, `SessionEnd`, etc.) for shell command hooks |
+| **protocol** | `TuiMessage` enum for client-server TUI protocol over WebSocket |
+
+**Deep Dive**: See [event-bus.md](event-bus.md) for event types, subscription patterns, and the permission/question registry.
 
 ### [Security & Permissions](permission.md)
 
 Access control, encryption, and sandboxing for safe tool execution.
 
-| Module | Description | Key Files |
-|--------|-------------|-----------|
-| **permission** | Access control (`PermissionChecker`), path restrictions, DoomLoop detection, mode-based permissions (Review/Debug/Docs) | `mod.rs` |
-| **security** | SSRF protection, internal IP validation (IPv4/IPv6), symlink detection, Landlock sandboxing | `mod.rs` |
-| **crypto** | AES-256-GCM encryption with Argon2id key derivation for API keys and secrets | `mod.rs` |
+| Module | Description |
+|--------|-------------|
+| **permission** | Access control (`PermissionChecker`), path restrictions, DoomLoop detection, mode-based permissions (Review/Debug/Docs) |
+| **security** | SSRF protection, internal IP validation (IPv4/IPv6), symlink detection, Landlock sandboxing |
+| **crypto** | AES-256-GCM encryption with Argon2id key derivation for API keys and secrets |
+
+**Deep Dive**: See [permission.md](permission.md) for permission rulesets, modes, and DoomLoop detection. See [security.md](security.md) for SSRF protection and sandboxing.
 
 ### [Data & Persistence](session.md)
 
 Session storage, memory management, snapshots, and database infrastructure.
 
-| Module | Description | Key Files |
-|--------|-------------|-----------|
-| **session** | SQLite-backed session storage, message history, checkpointing, import/export, session sharing with expiring tokens | `mod.rs`, `store.rs`, `message.rs`, `checkpoint.rs`, `import.rs`, `models.rs`, `row.rs`, `schema.rs`, `status.rs` |
-| **storage** | SQLite database initialization, connection pooling, WAL mode, pragmas configuration | `mod.rs` |
-| **memory** | Persistent memory system for session-to-session learning with namespace-based organization and rule-based consolidation | `mod.rs` |
-| **snapshot** | File state capture (full/incremental) and restore for rollback safety | `mod.rs` |
+| Module | Description |
+|--------|-------------|
+| **session** | SQLite-backed session storage, message history, checkpointing, import/export, session sharing with expiring tokens |
+| **storage** | SQLite database initialization, connection pooling, WAL mode, pragmas configuration |
+| **memory** | Persistent memory system for session-to-session learning with namespace-based organization and rule-based consolidation |
+| **snapshot** | File state capture (full/incremental) and restore for rollback safety |
+
+**Deep Dive**: See [session.md](session.md) for database schema, stores, and checkpointing. See [storage.md](storage.md) for SQLite initialization.
 
 ### [User Interface](tui.md)
 
 Terminal UI built with Ratatui, plus remote TUI client for server-based deployments.
 
-| Module | Description | Key Files |
-|--------|-------------|-----------|
-| **tui** | Ratatui-based terminal UI with 21 dialog types, FocusManager, keyboard shortcuts, theme system, notifications | `app/mod.rs`, `app/types.rs`, `components/*.rs` (17 components), `dialogs/*.rs` (21 dialogs) |
-| **client** | WebSocket client for remote TUI connections to server with health checking and protocol handling | `mod.rs` |
+| Module | Description |
+|--------|-------------|
+| **tui** | Ratatui-based terminal UI with 21 dialog types, FocusManager, keyboard shortcuts, theme system, notifications |
+| **client** | WebSocket client for remote TUI connections to server with health checking and protocol handling |
+
+**Deep Dive**: See [tui.md](tui.md) for App state machine, components, dialogs, and input handling.
 
 ### [External Integrations](mcp.md)
 
 Protocol clients for IDE extensions and language servers.
 
-| Module | Description | Key Files |
-|--------|-------------|-----------|
-| **mcp** | Model Context Protocol client (local via stdio, remote via HTTP) with OAuth support and auto-reconnection | `mod.rs`, `local.rs`, `remote.rs`, `auth.rs`, `cli.rs`, `ide_server.rs` |
-| **lsp** | Language Server Protocol client for diagnostics, code operations (goto definition, find references, hover, completion) | `client.rs`, `diagnostics.rs`, `download.rs`, `language.rs`, `launch.rs`, `operations.rs`, `root.rs`, `server.rs`, `service.rs`, `mod.rs` |
-| **ide** | IDE detection (VS Code, JetBrains) and diff viewer integration | `mod.rs` |
+| Module | Description |
+|--------|-------------|
+| **mcp** | Model Context Protocol client (local via stdio, remote via HTTP) with OAuth support and auto-reconnection |
+| **lsp** | Language Server Protocol client for diagnostics, code operations (goto definition, find references, hover, completion) |
+| **ide** | IDE detection (VS Code, JetBrains) and diff viewer integration |
+
+**Deep Dive**: See [mcp.md](mcp.md) for MCP client implementations. See [lsp.md](lsp.md) for LSP client and server management.
 
 ### [Extensibility](plugin.md)
 
 Plugin system, skill loading, and slash commands.
 
-| Module | Description | Key Files |
-|--------|-------------|-----------|
-| **plugin** | WASM plugin system via Wasmtime with 10 hook types, builtin handlers (copilot, gitlab, codex, poe), and TUI extensions | `mod.rs`, `loader.rs`, `hooks.rs`, `registry.rs`, `service.rs`, `manifest.rs`, `install.rs`, `marketplace.rs`, `api.rs`, `tui.rs`, `event_bus.rs` |
-| **skills** | Skill system for specialized capabilities loaded from markdown files with YAML frontmatter | `mod.rs` |
-| **command** | Slash command registry from markdown files with template variable substitution | `mod.rs` |
+| Module | Description |
+|--------|-------------|
+| **plugin** | WASM plugin system via Wasmtime with 10 hook types, builtin handlers (copilot, gitlab, codex, poe), and TUI extensions |
+| **skills** | Skill system for specialized capabilities loaded from markdown files with YAML frontmatter |
+| **command** | Slash command registry from markdown files with template variable substitution |
+
+**Deep Dive**: See [plugin.md](plugin.md) for WASM hooks, plugin service, and TUI extensions.
 
 ### [Infrastructure](config.md)
 
 HTTP server, configuration, exec mode, and system utilities.
 
-| Module | Description | Key Files |
-|--------|-------------|-----------|
-| **config** | Configuration loading from JSONC files, schema validation, hot-reload via file watching, env var interpolation | `mod.rs`, `paths.rs`, `schema.rs`, `watcher.rs` |
-| **server** | Axum-based HTTP server with WebSocket support, REST API (sessions, config, MCP, files, projects), SSE events, rate limiting | `mod.rs`, `http.rs`, `ws.rs`, `rpc.rs`, `state.rs`, `mdns.rs` |
-| **exec** | Non-interactive exec mode for CI/CD with JSON input/output and structured error classification | `mod.rs` |
+| Module | Description |
+|--------|-------------|
+| **config** | Configuration loading from JSONC files, schema validation, hot-reload via file watching, env var interpolation |
+| **server** | Axum-based HTTP server with WebSocket support, REST API (sessions, config, MCP, files, projects), SSE events, rate limiting |
+| **exec** | Non-interactive exec mode for CI/CD with JSON input/output and structured error classification |
+
+**Deep Dive**: See [config.md](config.md) for configuration schema and validation. See [server.md](server.md) for HTTP/WebSocket server architecture.
 
 ### [Utilities](error.md)
 
 Error handling, resilience patterns, and helper functions.
 
-| Module | Description | Key Files |
-|--------|-------------|-----------|
-| **error** | Centralized `AppError` enum using thiserror with `is_retryable()` methods and HTTP status mapping | `error.rs` (root) |
-| **resilience** | Circuit breaker pattern with state machine (Closed/Open/HalfOpen) and `FallbackProvider` for provider redundancy | `mod.rs` |
-| **util** | Clipboard operations, fuzzy string matching, text truncation, metrics collection | `clipboard.rs`, `fuzzy.rs`, `truncate.rs`, `stat_core.rs` |
-| **worktree** | Git worktree management (list, create, remove) and git root detection | `mod.rs` |
-| **pty_session** | Shell session metadata management (in-memory only, no actual PTY) | `mod.rs` |
-| **upgrade** | Self-upgrade functionality via GitHub releases | `mod.rs` |
-| **tts** | Text-to-speech (macOS only via `say` command) | `mod.rs` |
+| Module | Description |
+|--------|-------------|
+| **error** | Centralized `AppError` enum using thiserror with `is_retryable()` methods and HTTP status mapping |
+| **resilience** | Circuit breaker pattern with state machine (Closed/Open/HalfOpen) and `FallbackProvider` for provider redundancy |
+| **util** | Clipboard operations, fuzzy string matching, text truncation, metrics collection |
+| **worktree** | Git worktree management (list, create, remove) and git root detection |
+| **pty_session** | Shell session metadata management (in-memory only, no actual PTY) |
+| **upgrade** | Self-upgrade functionality via GitHub releases |
+| **tts** | Text-to-speech (macOS only via `say` command) |
+
+**Deep Dive**: See [error.md](error.md) for error classification. See [resilience.md](resilience.md) for circuit breaker and fallback provider.
 
 ---
 
@@ -125,18 +143,18 @@ Error handling, resilience patterns, and helper functions.
 │                                    │                                                     │
 │                                    │ TuiMessage (via GlobalEventBus)                      │
 └────────────────────────────────────┼─────────────────────────────────────────────────────┘
-                                      │
-           ┌──────────────────────────┴──────────────────────────┐
-           │                                                     │
-           ▼                                                     ▼
+                                       │
+            ┌──────────────────────────┴──────────────────────────┐
+            │                                                     │
+            ▼                                                     ▼
 ┌─────────────────────────────┐                   ┌─────────────────────────────┐
 │      Local TUI               │                   │   Remote TUI (client)       │
 │    (runs in terminal)      │                   │  (WebSocket to server)      │
 └─────────────────────────────┘                   └─────────────────────────────┘
-           │                                                     │
-           └─────────────────────────────┬────────────────────────┘
-                                         │
-                                         ▼
+            │                                                     │
+            └─────────────────────────────┬────────────────────────┘
+                                          │
+                                          ▼
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                   AgentLoop                                              │
 │                                                                                          │
@@ -159,10 +177,10 @@ Error handling, resilience patterns, and helper functions.
 │  │   Store     │  │   Storage    │  │   Client    │           │                     │
 │  └──────────────┘  └──────────────┘  └──────────────┘           │                     │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
-                                      │
-           ┌──────────────────────────┼──────────────────────────┐
-           │                          │                          │
-           ▼                          ▼                          ▼
+                                       │
+            ┌──────────────────────────┼──────────────────────────┐
+            │                          │                          │
+            ▼                          ▼                          ▼
 ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
 │   LLM Provider      │  │   MCP Servers       │  │   LSP Servers        │
 │  (20+ backends)    │  │  (local/remote)     │  │ (42+ language servers│
@@ -393,3 +411,43 @@ lsp/ (depends on)
 | Security | security/mod.rs | [security.md](security.md) |
 | Errors | error.rs (root) | [error.md](error.md) |
 | Resilience | resilience/mod.rs | [resilience.md](resilience.md) |
+
+---
+
+## Architecture Files
+
+Each module has dedicated documentation:
+
+| File | Module | Description |
+|------|--------|-------------|
+| [agent.md](agent.md) | agent | AgentLoop, compaction, router, task, team, worker |
+| [tool.md](tool.md) | tool | Tool registry, built-in tools, executor |
+| [provider.md](provider.md) | provider | LLM backends, streaming, model catalog |
+| [event-bus.md](event-bus.md) | bus | GlobalEventBus, AppEvent, registries |
+| [permission.md](permission.md) | permission | PermissionChecker, modes, DoomLoop |
+| [security.md](security.md) | security | SSRF, IP validation, Landlock |
+| [crypto.md](crypto.md) | crypto | AES-256-GCM encryption, key derivation |
+| [session.md](session.md) | session | Session storage, stores, checkpointing |
+| [storage.md](storage.md) | storage | SQLite initialization, pooling |
+| [memory.md](memory.md) | memory | Memory store, consolidation, namespaces |
+| [snapshot.md](snapshot.md) | snapshot | File state capture, restore |
+| [tui.md](tui.md) | tui | App, components, dialogs, input |
+| [client.md](client.md) | client | Remote TUI WebSocket client |
+| [mcp.md](mcp.md) | mcp | MCP client, local/remote, OAuth |
+| [lsp.md](lsp.md) | lsp | LSP client, diagnostics, operations |
+| [ide.md](ide.md) | ide | IDE detection, diff viewing |
+| [plugin.md](plugin.md) | plugin | WASM plugins, hooks, TUI extensions |
+| [skills.md](skills.md) | skills | Skill system, YAML frontmatter |
+| [command.md](command.md) | command | Slash commands, templates |
+| [config.md](config.md) | config | Configuration schema, validation |
+| [server.md](server.md) | server | HTTP server, WebSocket, REST API |
+| [error.md](error.md) | error | AppError enum, error classification |
+| [resilience.md](resilience.md) | resilience | Circuit breaker, FallbackProvider |
+| [exec.md](exec.md) | exec | Non-interactive exec mode |
+| [hooks.md](hooks.md) | hooks | Lifecycle hooks system |
+| [pty.md](pty.md) | pty_session | Shell session metadata |
+| [upgrade.md](upgrade.md) | upgrade | Self-upgrade via GitHub |
+| [util.md](util.md) | util | Clipboard, fuzzy, truncate |
+| [worktree.md](worktree.md) | worktree | Git worktree management |
+| [compaction.md](compaction.md) | agent/compaction | Context overflow strategies |
+| [tts.md](tts.md) | tts | Text-to-speech |
