@@ -44,6 +44,7 @@ pub struct Memory {
 impl MemoryStore {
     pub fn new() -> std::io::Result<Self>
     pub fn with_auto_save(auto_save: bool) -> std::io::Result<Self>
+    pub fn set_auto_save(&self, enabled: bool)
     pub fn add(&self, memory: Memory) -> Option<Memory>
     pub fn get(&self, id: &str) -> Option<Memory>  // Increments access_count
     pub fn list(&self, namespace: &str) -> Vec<Memory>
@@ -62,7 +63,7 @@ impl MemoryStore {
 ├── user/
 │   └── preferences/
 │       └── MEMORY.md
-└── projects/
+└── project/
     └── {project_hash}/
         └── conventions/
             └── MEMORY.md

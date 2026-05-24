@@ -96,7 +96,8 @@ The `SnapshotManager` is now wired to `AgentLoop` (`src/agent/loop.rs`):
 - **Field**: `snapshot_manager: Option<SnapshotManager>` in AgentLoop struct
 - **Initialization**: Created in `AgentLoop::new()` based on `config.snapshot` setting
 - **Capture trigger**: `capture_snapshot_if_needed()` called before file-modifying tools
-- **Config**: Enable via `snapshot: true` in config
+- **Config**: Enable via `snapshot: true` in config (default: false)
+- **Config options**: `snapshot_config.max_files` (default: 5000), `max_file_bytes` (default: 1MB), `max_total_bytes` (default: 20MB)
 
 File-modifying tools that trigger snapshots:
 - `write`
@@ -151,6 +152,8 @@ SnapshotManager supports restore operations:
 **Error handling**: Restore operations now include detailed error messages with file paths on failure.
 
 **Security**: `restore_to_path()` validates that restored paths don't escape the target directory via path traversal (e.g., `../../etc/passwd`). Uses `canonicalize()` to resolve symlinks and validate paths stay within target.
+
+**Atomic Write**: `restore_to_path()` uses an atomic write pattern (temp file + rename) to prevent partial writes if the process is interrupted.
 
 ## Future Work#
 

@@ -166,6 +166,12 @@ impl MemoryStore {
         result
     }
 
+    /// Retrieves a memory by ID, incrementing its access_count.
+    ///
+    /// Note: access_count is incremented in-memory but persistence depends on
+    /// the auto_save setting. If auto_save is disabled, the incremented count
+    /// will be lost on program exit. Call `save()` explicitly if persistence
+    /// is needed without triggering auto_save.
     pub fn get(&self, id: &str) -> Option<Memory> {
         let mut memories = self.memories.lock();
         if let Some(memory) = memories.get_mut(id) {

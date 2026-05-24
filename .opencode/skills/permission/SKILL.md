@@ -149,7 +149,7 @@ mode:
       edit: "ask"
   docs:
     description: "Documentation mode"
-    default: "allow"
+    default: "ask"
     tools:
       edit: "allow"
       read: "allow"

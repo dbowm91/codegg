@@ -175,8 +175,9 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
         return HookResult::ok(ctx.input);
     };
 
-    // Build WASM path: plugins/{plugin_id}/plugin.wasm
-    let wasm_path: PathBuf = format!("plugins/{}/plugin.wasm", plugin_id).into();
+    // Build WASM path: plugins/{plugin_name}/plugin.wasm
+    let plugin_name = plugin_id.strip_prefix("plugin:").unwrap_or(plugin_id);
+    let wasm_path = crate::plugin::install::plugins_dir().join(plugin_name).join("plugin.wasm");
     let wasm_path_str = wasm_path.to_string_lossy();
 
     // Check WASM size limit (10MB)
@@ -238,7 +239,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
         }
         Err(_) => {
             module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
-            HookResult::error("WASM hook timed out")
+            HookResult::error(format!("{}: hook timeout: {}", plugin_id, "execution timed out"))
         }
     }
 }

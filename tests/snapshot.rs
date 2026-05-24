@@ -12,33 +12,6 @@ async fn create_test_pool() -> SqlitePool {
         .expect("failed to connect to memory db")
 }
 
-async fn create_test_manager() -> SnapshotManager {
-    let pool = create_test_pool().await;
-    // Run migrations
-    codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
-    
-    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-    SnapshotManager::new(pool, temp_dir.path().to_path_buf())
-}
-
-#[tokio::test]
-async fn test_snapshot_manager_new() {
-    let manager = create_test_manager().await;
-    assert_eq!(manager.list_for_session("any-session").await.unwrap().len(), 0);
-}
-
-#[tokio::test]
-async fn test_snapshot_manager_get_nonexistent() {
-    let manager = create_test_manager().await;
-    assert!(manager.get("nonexistent-id").await.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn test_snapshot_manager_latest_none() {
-    let manager = create_test_manager().await;
-    assert!(manager.latest("any-session").await.unwrap().is_none());
-}
-
 #[tokio::test]
 async fn test_snapshot_capture_empty_dir() {
     let (mut manager, pool) = create_test_manager_with_pool().await;

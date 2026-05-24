@@ -67,8 +67,6 @@ pub struct WsRateLimiter {
 }
 ```
 
-Note: `event_bus` field was removed - SSE handler (`/api/event`) directly uses `GlobalEventBus::subscribe()` from `crate::bus::global`. The WebSocket handler at `/tui` also uses `GlobalEventBus::subscribe()` directly.
-
 ### ws.rs - WebSocket Handlers
 
 Two WebSocket endpoints:
@@ -190,14 +188,7 @@ The `sanitize_path()` function ensures file operations stay within allowed direc
 
 ### routes/event.rs - SSE Handler
 
-```rust
-pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    // Subscribes to GlobalEventBus directly
-    // Streams AppEvent as JSON with event: prefix
-    // 15-second heartbeat comments
-    // Sends ResyncRequired on lag
-}
-```
+The SSE handler at `/api/event` subscribes directly to `GlobalEventBus::subscribe()` and streams events to connected clients.
 
 ### Client SSE Methods (`src/mcp/remote.rs`)
 

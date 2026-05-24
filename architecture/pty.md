@@ -57,6 +57,7 @@ pub struct PtyManager {
 
 impl PtyManager {
     pub fn new() -> Self;
+    pub fn default() -> Self;
     pub async fn create(&self, input: CreatePtySession) -> Result<PtySession, StorageError>;
     pub async fn get(&self, id: &str) -> Option<PtySession>;
     pub async fn update_cwd(&self, id: &str, cwd: &str) -> Result<PtySession, StorageError>;

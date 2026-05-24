@@ -29,7 +29,7 @@ ToolRegistry → Tool implementations
     ├── TaskTool
     ├── WebFetchTool
     ├── WebSearchTool
-    └── ... (25+ total)
+    └── ... (26 total)
 ```
 
 ## Tool Trait
@@ -488,7 +488,7 @@ impl ToolError {
 1. **Path Validation** - Always validate paths with `validate_path()` to prevent directory traversal
 2. **Symlink Handling** - Walk tools (list, grep, glob) skip symlinks during traversal
 3. **BashTool Blocked Patterns** - Tools should check against blocked patterns
-4. **Unrestricted Mode** - For trusted environments only; skips validation
+4. **Unrestricted Mode** - Available in permission system; skips path validation for trusted environments (use with caution)
 
 ### Subprocess Security
 

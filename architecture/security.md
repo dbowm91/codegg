@@ -126,6 +126,8 @@ impl SandboxConfig {
 - `WRITE` - Write files
 - `EXEC` - Execute files
 
+**Configuration**: Landlock sandboxing is configured programmatically via `SandboxConfig` builder methods (`with_enabled()`, `with_allowed_paths()`, `with_deny_paths()`). Currently there is no TOML or file-based configuration for Landlock - the config must be set in code when initializing the bash tool.
+
 Helper functions:
 ```rust
 pub fn validate_path_safety(path: &Path, allowed_paths: &[String]) -> Result<(), ToolError>

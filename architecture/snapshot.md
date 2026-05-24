@@ -94,45 +94,6 @@ impl SnapshotManager {
 
 ## Usage Flow
 
-### Two-Phase Capture
-
-The snapshot system uses a two-phase capture approach integrated with the AgentLoop:
-
-#### Phase 1: Pre-Execution Capture (loop.rs:1655)
-```
-Before tool execution
-    │
-    ▼
-AgentLoop::capture_snapshot_if_needed()
-    │
-    ▼
-SnapshotManager::capture(session_id, None)
-    │
-    ▼
-Store full project state as snapshot
-    │
-    ▼
-Execute tool modification
-```
-
-**Note**: Snapshot capture is wired but `restore()` is not currently called on error. Snapshots are captured for safety but the rollback feature is not yet integrated.
-
-#### Phase 2: Post-Execution Incremental Capture (loop.rs:1853)
-```
-After tool execution (success)
-    │
-    ▼
-AgentLoop::capture_incremental_snapshot_if_needed()
-    │
-    ▼
-SnapshotManager::capture_incremental(session_id, label, changes)
-    │
-    ▼
-For each file change:
-  - Validate path is within project_root
-  - Store incremental changes
-```
-
 ### Full Capture
 
 ```
@@ -151,7 +112,10 @@ Store as JSON in snapshot.data column
 Execute tool modification
 ```
 
-**Note**: Same as Phase 1 - `restore()` is not called on error. Snapshot rollback is not yet integrated.
+**File Collection (`collect_files_sync()`)**:
+- Excluded directories: `.git`, `node_modules`, `target`, `.codegg`
+- Respects `max_files` (default: 5,000), `max_file_bytes` (default: 1MB per file), `max_total_bytes` (default: 20MB)
+- Skips files larger than `max_file_bytes` and stops when `max_files` or `max_total_bytes` reached
 
 ### Incremental Capture
 
@@ -172,6 +136,13 @@ For each (path, old_content):
     ▼
 If no files, return None
 ```
+
+### Restore Functionality
+
+The `restore()` and `restore_to_path()` methods exist but are **not integrated into the agent loop**. Snapshots are captured for safety, but automatic rollback on tool failure is not implemented.
+
+- `restore()` - Restores all files from snapshot to project root (path traversal protected)
+- `restore_to_path()` - Restores files to a custom target path with atomic write pattern (temp file + rename)
 
 ## Integration with AgentLoop
 
@@ -221,7 +192,7 @@ CREATE INDEX IF NOT EXISTS snapshot_session_idx ON snapshot(session_id);
 
 ### Path Traversal Prevention
 
-`restore_to_path()` validates that restored paths don't escape the target directory:
+`restore()` and `restore_to_path()` validate that restored paths don't escape the target directory:
 
 ```rust
 let canonical_target = std::fs::canonicalize(&target)?;
@@ -232,6 +203,20 @@ if !canonical_path.starts_with(&canonical_target) {
 ```
 
 This prevents attacks like `../../etc/passwd` from writing files outside the intended target directory.
+
+### Atomic Write Pattern in `restore_to_path()`
+
+`restore_to_path()` uses an atomic write pattern to prevent partial writes:
+
+```rust
+// Write to temp file first
+let temp_path = full_path.with_extension("tmp");
+std::fs::write(&temp_path, &file_snapshot.content)?;
+// Atomic rename
+std::fs::rename(&temp_path, &full_path)?;
+```
+
+This ensures that if the process is interrupted during write, the original file remains unmodified.
 
 ## Diff Module (`src/snapshot/diff.rs`)
 

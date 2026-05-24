@@ -1041,6 +1041,34 @@ impl SpinnerWidget {
 - **Footer Display**: Shown in footer area when session is active
 - **Event Loop**: `tick()` called every render frame (~60fps)
 
+## Timeline Feature
+
+The TUI supports a Timeline feature for navigating through message history:
+
+### UiState Fields
+
+```rust
+pub struct UiState {
+    // ... other fields ...
+    pub timeline_visible: bool,    // Whether timeline panel is shown
+    pub timeline_selected: usize,   // Currently selected message index
+    // ... other fields ...
+}
+```
+
+### Timeline Rendering
+
+The Timeline is rendered as a side panel showing message timestamps and navigation:
+- `timeline_visible` controls whether the timeline panel is displayed
+- `timeline_selected` tracks the currently selected message for navigation
+- Triggered via keyboard shortcut (typically `Ctrl+Shift+T` or similar)
+
+### Timeline Interaction
+
+- Navigate up/down through message history using arrow keys
+- Timeline updates `timeline_selected` and scrolls the main viewport to that message
+- Useful for reviewing previous agent responses and tool executions
+
 ## Related Skills
 
 - See `.opencode/skills/event-bus/SKILL.md` for GlobalEventBus and AppEvent documentation

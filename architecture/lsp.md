@@ -103,6 +103,8 @@ impl LspOperations {
 }
 ```
 
+**Note**: The `completion` method handles both LSP response types - `CompletionList` (a structured list with `isIncomplete` flag) and plain `Vec<CompletionItem>`. It first attempts to deserialize as `CompletionList`, and if that fails, falls back to parsing as a `Vec<CompletionItem>`.
+
 ### diagnostics.rs - Diagnostics Collection
 
 ```rust
@@ -221,10 +223,10 @@ pub fn server_definitions() -> &'static [LspServerDef]
 pub fn find_server(id: &str) -> Option<&'static LspServerDef>
 pub fn find_server_for_language(lang: &str) -> Option<&'static LspServerDef>
 pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
-pub fn build_env_overrides(env: Option<&HashMap<String, String>>) -> Vec<(String, String)>
+
 ```
 
-## Supported Languages (42 servers)
+## Supported Languages (44 servers)
 
 | Language | Server | Command |
 |----------|--------|---------|

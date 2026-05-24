@@ -120,12 +120,12 @@ where
 
 ### record_success() and record_failure()
 
-The `record_success()` method (circuit.rs:119-137):
+The `record_success()` method (circuit.rs:139-159):
 - **Closed**: Resets failure_count to 0
 - **HalfOpen**: Increments success_count; transitions to Closed when success_threshold reached
 - **Open**: No action
 
-The `record_failure()` method (circuit.rs:139-165):
+The `record_failure()` method (circuit.rs:160-178):
 - **Closed**: Increments failure_count; transitions to Open when failure_threshold exceeded
 - **HalfOpen**: Transitions to Open immediately
 - **Open**: No action

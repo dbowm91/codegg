@@ -45,7 +45,7 @@ The `provider` module provides a unified interface for interacting with various 
 | SAP AI Core | `create_sap_ai_core()` |
 | Zenmux | `create_zenmux()` |
 | Kilo | `create_kilo()` |
-| Codegg Go | `create_codegg_go()` |
+| Codegg Go | `create_codegg_go()` (via config-based registration) |
 | Vercel AI Gateway | `create_vercel_ai_gateway()` |
 
 ### Discovery Providers
@@ -257,6 +257,11 @@ pub struct SseParser {
 
 pub fn parse_openai_buffer(buffer: &mut String) -> Option<Result<ChatEvent, ProviderError>>;
 pub fn parse_anthropic_buffer(buffer: &mut String) -> Option<Result<ChatEvent, ProviderError>>;
+pub fn parse_anthropic_buffer_with_state(
+    buffer: &mut String,
+    current_tool: &mut Option<(String, String, String)>,
+    args_buffer: &mut String,
+) -> Option<Result<ChatEvent, ProviderError>>;
 ```
 
 ## Registration Patterns
@@ -331,6 +336,7 @@ impl ProviderError {
         matches!(
             self,
             ProviderError::RateLimit
+                | ProviderError::Auth(_)
                 | ProviderError::Timeout(_)
                 | ProviderError::Stream(_)
                 | ProviderError::CircuitOpen(_)

@@ -159,6 +159,11 @@ Contains all dialog instances, including optional dialogs:
 - `help_dialog`, `info_dialog`, `theme_picker` - optional
 - `permission_dialog`, `question_dialog` - created on demand
 - `share_dialog`, `import_dialog`, `template_dialog` - created on demand
+- `command_palette` - CommandPalette dialog (created on demand via `/` command)
+
+**Pending fields** (for tracking pending permission/question responses):
+- `pending_permission: Option<(String, String, Vec<String>)>` - pending permission request (perm_id, tool, paths)
+- `pending_question: Option<(String, Vec<QuestionSpec>)>` - pending question request (session_id, questions)
 
 ## Routes
 
@@ -311,13 +316,14 @@ Key methods:
 ### Render Order
 
 1. **Header**: Agent name, model, session info, active indicators
-2. **Viewport**: Messages (Home or Session view)
-3. **Prompt**: Input area with status indicator, mode indicator
-4. **Footer**: Token counts, session status, keybinds, TTS indicator
-5. **Sidebar**: Optional session/agent info panel (if visible)
-6. **Dialog**: Modal overlay via FocusManager (if open)
-7. **Completions**: Slash/file/agent completion popup (if active)
-8. **Toasts**: Notification messages (topmost)
+2. **Timeline**: Optional timeline panel (when `timeline_visible` is true)
+3. **Viewport**: Messages (Home or Session view)
+4. **Prompt**: Input area with status indicator, mode indicator
+5. **Footer**: Token counts, session status, keybinds, TTS indicator
+6. **Sidebar**: Optional session/agent info panel (if visible)
+7. **Dialog**: Modal overlay via FocusManager (if open)
+8. **Completions**: Slash/file/agent completion popup (if active)
+9. **Toasts**: Notification messages (topmost)
 
 ## Event Subscriptions
 
@@ -382,7 +388,38 @@ tokio::select! {
 }
 ```
 
-## See Also
+### ClickTarget Enum
+
+Mouse interaction targets for click handling:
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClickTarget {
+    Viewport,   // Main message area
+    Prompt,     // Input prompt area
+    Dialog,     // Active dialog overlay
+    Completion, // Completion popup
+    Sidebar,    // Sidebar panel
+    None,       // No target (background)
+}
+```
+
+Used by `clickable_area_at()` to determine which UI region was clicked, and `on_click()` to handle the interaction appropriately.
+
+### App Struct - Additional Fields
+
+The `App` struct (in `src/tui/app/mod.rs`) includes these additional fields:
+
+```rust
+pub struct App {
+    // ... state domains ...
+    pub busy_spinner: SpinnerWidget,  // Animated busy indicator
+    pub focus_manager: FocusManager,  // Modal focus stack
+    // ... other fields ...
+}
+```
+
+**`busy_spinner: SpinnerWidget`** - Located at `src/tui/components/spinner.rs`. Shows animated busy indicator (frames: `["░", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]`). Starts when `session_status` is `Working`, stops on `Idle` or `Error`. Tick called every render frame (~60fps).
 
 - [agent.md](agent.md) - AgentLoop that processes TUI commands
 - [event-bus.md](event-bus.md) - GlobalEventBus and event types

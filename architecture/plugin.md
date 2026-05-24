@@ -285,6 +285,17 @@ pub fn builtin_hook_handler(plugin_name: &str, ctx: HookContext) -> HookResult;
 pub async fn register_builtins(registry: &PluginRegistry);
 ```
 
+**BuiltinPlugin**: The `BuiltinPlugin` struct holds a plugin manifest and handler function for native Rust plugins:
+
+```rust
+pub struct BuiltinPlugin {
+    pub manifest: PluginManifest,
+    pub handler: fn(HookContext) -> HookResult,
+}
+```
+
+Built-in plugins (copilot, gitlab, codex, poe) all provide `auth` hook handlers that inject Bearer tokens.
+
 ### marketplace.rs - Marketplace Service
 
 ```rust

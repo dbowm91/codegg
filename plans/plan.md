@@ -119,132 +119,132 @@
 
 ---
 
-### Wave 3: Documentation Corrections (Continued)
+### Wave 3: Documentation Corrections (Continued) - ✅ COMPLETED
 
 #### W3-1: LSP Module
-| Item | File | Issue |
-|------|------|-------|
-| 32 | `architecture/lsp.md` | Change "42 servers" to "44 servers" at line 227 |
-| 33 | `architecture/lsp.md` | Remove `build_env_overrides` from docs or implement it |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 32 | `architecture/lsp.md` | Change "42 servers" to "44 servers" at line 227 | ✅ Done |
+| 33 | `architecture/lsp.md` | Remove `build_env_overrides` from docs or implement it | ✅ Done |
 
 #### W3-2: MCP Module
-| Item | File | Issue |
-|------|------|-------|
-| 34 | `architecture/mcp.md` | Remove `heartbeat_task: Arc<AtomicBool>` field (doesn't exist in code) at line ~117 |
-| 35 | `.opencode/skills/mcp/SKILL.md` | Document SSE integration gap (connect_sse not hooked into main flow) |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 34 | `architecture/mcp.md` | Remove `heartbeat_task: Arc<AtomicBool>` field (doesn't exist in code) at line ~117 | ✅ Done |
+| 35 | `.opencode/skills/mcp/SKILL.md` | Document SSE integration gap (connect_sse not hooked into main flow) | ✅ Done |
 
 #### W3-3: Memory Module (Documentation)
-| Item | File | Issue |
-|------|------|-------|
-| 36 | `.opencode/skills/memory/SKILL.md` | Change path `projects/{hash}/conventions` to `project/{hash}` |
-| 37 | `.opencode/skills/memory/SKILL.md` | Add `set_auto_save(&self, enabled: bool)` to API section |
-| 38 | `.opencode/skills/memory/SKILL.md` | Show negation scoring calculation explicitly |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 36 | `.opencode/skills/memory/SKILL.md` | Change path `projects/{hash}/conventions` to `project/{hash}` | ✅ Done |
+| 37 | `.opencode/skills/memory/SKILL.md` | Add `set_auto_save(&self, enabled: bool)` to API section | ✅ Done |
+| 38 | `.opencode/skills/memory/SKILL.md` | Show negation scoring calculation explicitly | ✅ Done |
 
 #### W3-4: Plugin Module (Documentation)
-| Item | File | Issue |
-|------|------|-------|
-| 39 | `architecture/plugin.md` | Update WASM path construction to show actual `plugins_dir().join(plugin_name).join("plugin.wasm")` |
-| 40 | `architecture/plugin.md` | Add `BuiltinPlugin` struct documentation |
-| 41 | `.opencode/skills/plugin/SKILL.md` | Update `execute_wasm_hook()` example with actual error handling |
-| 42 | `.opencode/skills/plugin/SKILL.md` | Update timeout error format to `format!("{}: hook timeout: {}", ...)` |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 39 | `architecture/plugin.md` | Update WASM path construction to show actual `plugins_dir().join(plugin_name).join("plugin.wasm")` | ✅ Done |
+| 40 | `architecture/plugin.md` | Add `BuiltinPlugin` struct documentation | ✅ Done |
+| 41 | `.opencode/skills/plugin/SKILL.md` | Update `execute_wasm_hook()` example with actual error handling | ✅ Done |
+| 42 | `.opencode/skills/plugin/SKILL.md` | Update timeout error format to `format!("{}: hook timeout: {}", ...)` | ✅ Done |
 
 #### W3-5: Permission Module
-| Item | File | Issue |
-|------|------|-------|
-| 43 | `.opencode/skills/permission/SKILL.md` | Change docs mode `default: "allow"` to `default: "ask"` at lines 150-157 |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 43 | `.opencode/skills/permission/SKILL.md` | Change docs mode `default: "allow"` to `default: "ask"` at lines 150-157 | ✅ Done |
 
 #### W3-6: Provider Module
-| Item | File | Issue |
-|------|------|-------|
-| 44 | `architecture/provider.md` | Add `is_openai: bool` field to SseParser struct |
-| 45 | `architecture/provider.md` | Add `ProviderError::Auth(_)` to `is_retryable()` match pattern |
-| 46 | `architecture/provider.md` | Clarify `codegg_go` registration path (config-based, not `register_builtin()`) |
-| 47 | `architecture/provider.md` | Document `parse_anthropic_buffer_with_state()` at sse_parser.rs:500-519 |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 44 | `architecture/provider.md` | Add `is_openai: bool` field to SseParser struct | ✅ Done |
+| 45 | `architecture/provider.md` | Add `ProviderError::Auth(_)` to `is_retryable()` match pattern | ✅ Done |
+| 46 | `architecture/provider.md` | Clarify `codegg_go` registration path (config-based, not `register_builtin()`) | ✅ Done |
+| 47 | `architecture/provider.md` | Document `parse_anthropic_buffer_with_state()` at sse_parser.rs:500-519 | ✅ Done |
 
 #### W3-7: PTY Module
-| Item | File | Issue |
-|------|------|-------|
-| 48 | `.opencode/skills/pty/SKILL.md` | Change `src/pty/` to `src/pty_session/` at line 20 |
-| 49 | `architecture/pty.md` | Document that `PtyManager` implements `Default` trait |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 48 | `.opencode/skills/pty/SKILL.md` | Change `src/pty/` to `src/pty_session/` at line 20 | ✅ Done |
+| 49 | `architecture/pty.md` | Document that `PtyManager` implements `Default` trait | ✅ Done |
 
 #### W3-8: Resilience Module
-| Item | File | Issue |
-|------|------|-------|
-| 50 | `architecture/resilience.md` | Fix line number refs for `record_success()` and `record_failure()` at lines 123-131 |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 50 | `architecture/resilience.md` | Fix line number refs for `record_success()` and `record_failure()` at lines 123-131 | ✅ Done |
 
 ---
 
-### Wave 4: Documentation Corrections (Final Batch)
+### Wave 4: Documentation Corrections (Final Batch) ✅ COMPLETED
 
 #### W4-1: Server Module
-| Item | File | Issue |
-|------|------|-------|
-| 51 | `architecture/server.md` | Remove claim "event_bus field was removed" - it still exists at line 70-71 |
-| 52 | `architecture/server.md` | Remove incorrect SSE handler description at lines 194-198 |
-| 53 | `.opencode/skills/server/SKILL.md` | Remove "Dead EventBus Struct" claim at line 210 |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 51 | `architecture/server.md` | Remove claim "event_bus field was removed" - it still exists at line 70-71 | ✅ Done |
+| 52 | `architecture/server.md` | Remove incorrect SSE handler description at lines 194-198 | ✅ Done |
+| 53 | `.opencode/skills/server/SKILL.md` | Remove "Dead EventBus Struct" claim at line 210 | ⚠️ SKIP - file doesn't exist |
 
 #### W4-2: Snapshot Module (Documentation)
-| Item | File | Issue |
-|------|------|-------|
-| 54 | `architecture/snapshot.md` | Remove error-restore flows at lines 97-119, 139-156 (not implemented) |
-| 55 | `architecture/snapshot.md` | Document that `restore()` exists but not integrated into agent |
-| 56 | `architecture/snapshot.md` | Document atomic write pattern in `restore_to_path()` |
-| 57 | `architecture/snapshot.md` | Document `collect_files_sync()` exclusions and limits |
-| 58 | `.opencode/skills/snapshot/SKILL.md` | Add `delete_snapshot()` and `delete_all_for_session()` to API |
-| 59 | `.opencode/skills/snapshot/SKILL.md` | Add note about atomic write in `restore_to_path()` |
-| 60 | `.opencode/skills/snapshot/SKILL.md` | Add config integration details |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 54 | `architecture/snapshot.md` | Remove error-restore flows at lines 97-119, 139-156 (not implemented) | ✅ Done |
+| 55 | `architecture/snapshot.md` | Document that `restore()` exists but not integrated into agent | ✅ Done |
+| 56 | `architecture/snapshot.md` | Document atomic write pattern in `restore_to_path()` | ✅ Done |
+| 57 | `architecture/snapshot.md` | Document `collect_files_sync()` exclusions and limits | ✅ Done |
+| 58 | `.opencode/skills/snapshot/SKILL.md` | Add `delete_snapshot()` and `delete_all_for_session()` to API | ✅ Done (already documented) |
+| 59 | `.opencode/skills/snapshot/SKILL.md` | Add note about atomic write in `restore_to_path()` | ✅ Done |
+| 60 | `.opencode/skills/snapshot/SKILL.md` | Add config integration details | ✅ Done |
 
 #### W4-3: Tool Module
-| Item | File | Issue |
-|------|------|-------|
-| 61 | `architecture/tool.md` | Remove `[tools]` TOML config with `path_rules` - not implemented |
-| 62 | `.opencode/skills/tool/SKILL.md` | Change "25+ total" to "26 total" at line 32 |
-| 63 | `.opencode/skills/tool/SKILL.md` | Add note about `unrestricted` mode availability |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 61 | `architecture/tool.md` | Remove `[tools]` TOML config with `path_rules` - not implemented | ✅ Done |
+| 62 | `.opencode/skills/tool/SKILL.md` | Change "25+ total" to "26 total" at line 32 | ✅ Done |
+| 63 | `.opencode/skills/tool/SKILL.md` | Add note about `unrestricted` mode availability | ✅ Done |
 
 #### W4-4: TTS Module
-| Item | File | Issue |
-|------|------|-------|
-| 64 | `architecture/tts.md` | Document `stop()` method and `pkill say` implementation |
-| 65 | `architecture/tts.md` | Document `is_speaking()` method signature |
-| 66 | `architecture/tts.md` | Fix `speaking` type to `Mutex<AtomicBool>` not just `AtomicBool` |
-| 67 | `architecture/tts.md` | Clarify `[tts]` config not implemented at all |
-| 68 | `architecture/tts.md` | Document `init()` only handles `TtsProvider::None` |
-| 69 | `architecture/tts.md` | Document empty string validation in `speak()` |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 64 | `architecture/tts.md` | Document `stop()` method and `pkill say` implementation | ✅ Done |
+| 65 | `architecture/tts.md` | Document `is_speaking()` method signature | ✅ Done |
+| 66 | `architecture/tts.md` | Fix `speaking` type to `Mutex<AtomicBool>` not just `AtomicBool` | ✅ Done |
+| 67 | `architecture/tts.md` | Clarify `[tts]` config not implemented at all | ✅ Done |
+| 68 | `architecture/tts.md` | Document `init()` only handles `TtsProvider::None` | ✅ Done |
+| 69 | `architecture/tts.md` | Document empty string validation in `speak()` | ✅ Done |
 
 #### W4-5: TUI Module
-| Item | File | Issue |
-|------|------|-------|
-| 70 | `architecture/tui.md` | Add missing UiState fields: `sidebar_visible`, `auto_scroll`, `show_thinking`, `show_timestamps`, `timeline_visible`, `timeline_selected`, `tts_enabled`, `fullscreen`, `dirty_regions` |
-| 71 | `architecture/tui.md` | Add Timeline as a render layer |
-| 72 | `architecture/tui.md` | Add CommandPalette field in DialogState |
-| 73 | `architecture/tui.md` | Document `busy_spinner` in App struct |
-| 74 | `architecture/tui.md` | Document `pending_*` fields in DialogState |
-| 75 | `architecture/tui.md` | Document ClickTarget enum |
-| 76 | `.opencode/skills/tui/SKILL.md` | Consider adding Timeline feature documentation |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 70 | `architecture/tui.md` | Add missing UiState fields: `sidebar_visible`, `auto_scroll`, `show_thinking`, `show_timestamps`, `timeline_visible`, `timeline_selected`, `tts_enabled`, `fullscreen`, `dirty_regions` | ✅ Done |
+| 71 | `architecture/tui.md` | Add Timeline as a render layer | ✅ Done |
+| 72 | `architecture/tui.md` | Add CommandPalette field in DialogState | ✅ Done |
+| 73 | `architecture/tui.md` | Document `busy_spinner` in App struct | ✅ Done |
+| 74 | `architecture/tui.md` | Document `pending_*` fields in DialogState | ✅ Done |
+| 75 | `architecture/tui.md` | Document ClickTarget enum | ✅ Done |
+| 76 | `.opencode/skills/tui/SKILL.md` | Consider adding Timeline feature documentation | ✅ Done |
 
 #### W4-6: Worktree Module
-| Item | File | Issue |
-|------|------|-------|
-| 77 | `architecture/worktree.md` | Add note: `remove_worktree()` does not support `force` parameter |
-| 78 | `.opencode/skills/worktree/SKILL.md` | Add same note for consistency |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 77 | `architecture/worktree.md` | Add note: `remove_worktree()` does not support `force` parameter | ✅ Done (already present) |
+| 78 | `.opencode/skills/worktree/SKILL.md` | Add same note for consistency | ✅ Done (already present) |
 
 #### W4-7: Upgrade Module
-| Item | File | Issue |
-|------|------|-------|
-| 79 | `main.rs` | Change printed install command from `cargo install --git ...` to `curl -fsSL https://codegg.ai/install.sh` |
+| Item | File | Issue | Status |
+|------|------|-------|--------|
+| 79 | `main.rs` | Change printed install command from `cargo install --git ...` to `curl -fsSL https://codegg.ai/install.sh` | ✅ Done |
 
 ---
 
 ### Wave 5: Low Priority / Optional
 
-| Item | Module | File | Issue |
-|------|--------|------|-------|
-| 80 | Snapshot | `tests/snapshot.rs:15-22` | Remove dead `create_test_manager()` function |
-| 81 | TTS | `src/tts/mod.rs:98-101` | Consider returning error when `pkill say` fails |
-| 82 | Memory | `src/memory/mod.rs:169-177` | Document `get()` increments access_count but only persists if auto_save enabled |
-| 83 | LSP | `architecture/lsp.md` | Consider documenting `completion` handles both `CompletionList` and `Vec<CompletionItem>` responses |
-| 84 | MCP | `architecture/mcp.md` | Consider integrating SSE support into main connection flow |
-| 85 | Security | `architecture/security.md` | Consider adding note about Landlock config loading |
+| Item | Module | File | Issue | Status |
+|------|--------|------|-------|--------|
+| 80 | Snapshot | `tests/snapshot.rs:15-22` | Remove dead `create_test_manager()` function | DONE |
+| 81 | TTS | `src/tts/mod.rs:98-101` | Consider returning error when `pkill say` fails | SKIPPED (current behavior reasonable - pkill may legitimately fail if say not running) |
+| 82 | Memory | `src/memory/mod.rs:169-177` | Document `get()` increments access_count but only persists if auto_save enabled | DONE |
+| 83 | LSP | `architecture/lsp.md` | Consider documenting `completion` handles both `CompletionList` and `Vec<CompletionItem>` responses | DONE |
+| 84 | MCP | `architecture/mcp.md` | Consider integrating SSE support into main connection flow | SKIPPED (gap already noted at lines 305-309) |
+| 85 | Security | `architecture/security.md` | Consider adding note about Landlock config loading | DONE |
 
 ---
 

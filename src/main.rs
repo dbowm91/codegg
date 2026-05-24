@@ -564,7 +564,7 @@ async fn cmd_upgrade() -> Result<(), AppError> {
         info.current
     );
     println!("Run the following to upgrade:");
-    println!("  cargo install --git https://github.com/anomalyco/codegg --path codegg");
+    println!("  curl -fsSL https://codegg.ai/install.sh");
 
     Ok(())
 }

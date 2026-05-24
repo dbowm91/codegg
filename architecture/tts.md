@@ -16,7 +16,7 @@ The `tts` module provides text-to-speech functionality.
 
 ```rust
 pub struct Tts {
-    speaking: std::sync::Mutex<std::sync::atomic::AtomicBool>,
+    speaking: std::sync::Mutex<std::sync::atomic::AtomicBool>,  // Thread-safe interior mutability
 }
 
 impl Clone for Tts { /* Uses Mutex for thread-safe cloning */ }
@@ -25,14 +25,17 @@ impl Default for Tts { /* Delegates to new() */ }
 
 impl Tts {
     pub fn new() -> Self;
-    pub fn init(&mut self, provider: TtsProvider) -> Result<(), AppError>;
-    pub async fn speak(&self, text: &str) -> Result<(), AppError>;
-    pub async fn stop(&self) -> Result<(), AppError>;
-    pub fn is_speaking(&self) -> bool;
+    pub fn init(&mut self, provider: TtsProvider) -> Result<(), AppError>;  // Only handles TtsProvider::None
+    pub async fn speak(&self, text: &str) -> Result<(), AppError>;  // Validates non-empty text
+    pub async fn stop(&self) -> Result<(), AppError>;  // Uses `pkill say` on macOS
+    pub fn is_speaking(&self) -> bool;  // Returns current speaking state
 }
 ```
 
-**Note**: `speak()` validates that `text` is non-empty, returning `Err(AppError::Io(...))` for empty strings.
+**Notes**:
+- `speak()` validates that `text` is non-empty, returning `Err(AppError::Io(...))` for empty strings
+- `stop()` uses `pkill say` on macOS to terminate ongoing speech; returns `Ok(())` even if no speech is running
+- `is_speaking()` returns `bool` (not `Result<bool, AppError>`)
 
 ### TtsEngine Trait
 
@@ -90,12 +93,11 @@ When `say` fails, `speak()` returns `Err(AppError::Io(...))` with the stderr mes
 
 ## Configuration
 
-```toml
-[tts]
-enabled = true  # User preference, not implemented in code
-```
+The TTS module has **no configuration integration**. There is no `[tts]` config section in the codebase.
 
-**Note**: Configuration options like `voice` and `rate` mentioned in config are not implemented. The TTS module currently has no configuration integration - `init()` only handles `TtsProvider::None` which is a no-op.
+- `init()` only handles `TtsProvider::None` (a no-op)
+- TTS enabled state is managed in-memory in the UI layer (`tts_enabled` in `UiState`)
+- No config options for voice, rate, or provider selection
 
 ## Usage
 
