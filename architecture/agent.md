@@ -50,12 +50,30 @@ pub struct AgentLoop {
 **Key Methods**:
 - `run()` - Main event loop
 - `run_with_prompt()` - Convenience method for simple prompts
+- `drain_follow_up()` - Drains queued follow-up prompts non-blocking
+- `capture_snapshot_if_needed()` - Captures project state snapshot if configured
+- `drain_file_change_events()` - Drains file change events from broadcast channel
 - `process_event()` - Handle incoming ChatEvents
 - `check_tool_permission()` - Verify tool execution is allowed
 - `compact_if_needed()` - Context compaction if needed
 - `build_tool_definitions()` - Build tool definitions with caching
 - `execute_tool_calls()` - Execute tools with permission checks
 - `stream_with_retry()` - Stream with exponential backoff retry
+
+### ToolDefCache Type Alias (loop.rs:60-67)
+
+```rust
+type ToolDefCache = (
+    Option<String>,                    // Cached tools hash
+    bool,                             // Permission version
+    bool,                             // MCP tool count changed
+    usize,                            // Permission count
+    u64,                              // Last cache timestamp
+    Vec<crate::provider::ToolDefinition>, // Cached tool definitions
+);
+```
+
+Cache is invalidated when `mcp_tool_count`, `permission_version`, or tool definitions change.
 
 ### compaction.rs - Context Management
 

@@ -38,11 +38,12 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 
 2. **Health Check** - Creates `RemoteClient` and calls `health()` to verify server connectivity (10s timeout)
 
-3. **WebSocket Connection** - 30-second timeout using `tokio_tungstenite::connect_async()`
+3. **WebSocket Connection** - 30-second timeout per attempt, up to 3 retries with exponential backoff (2s, 4s) using `tokio_tungstenite::connect_async()`
 
 4. **Channel Setup**:
    - `event_tx/rx` - Receives JSON events from server WebSocket → TUI
    - `out_tx/rx` - Sends TuiMessage from TUI → server WebSocket
+   - Event handling uses `catch_unwind` to prevent panics in spawned tasks from crashing the connection
 
 5. **Two Background Tasks**:
    - `event_task` - Receives WebSocket messages, parses JSON, forwards to TUI
@@ -82,7 +83,7 @@ The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag
 | `KeyDown` | `key: String`, `modifiers: Vec<String>` | Keyboard events |
 | `MouseClick` | `x: u16`, `y: u16` | Mouse clicks |
 | `Resize` | `w: u16`, `h: u16` | Terminal resize |
-| `RenderFrame` | `content: String` | Frame content (unused) |
+| `RenderFrame` | `content: String` | Frame content (legacy - received and logged, not rendered) |
 | `PermissionResponse` | `id: String`, `choice: String` | Permission answer |
 | `QuestionResponse` | `id: String`, `answers: serde_json::Value` | Question answer |
 

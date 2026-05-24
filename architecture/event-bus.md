@@ -116,6 +116,8 @@ PermissionRegistry::register(perm_id.clone(), tx);
 
 ### Permission Choice Enum
 
+Defined in `src/permission/mod.rs`:
+
 ```rust
 pub enum PermissionChoice {
     AllowOnce,

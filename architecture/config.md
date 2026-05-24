@@ -83,6 +83,8 @@ pub struct ProviderConfig {
 
 ProviderConfig has a `merge()` method for field-by-field merging and an `api_key()` method that checks environment variables first.
 
+ServerConfig has a `merge()` method at `schema.rs:134-162` that performs field-by-field merging, copying non-None fields from other config.
+
 ## Components
 
 ### schema.rs - Config Definitions
@@ -216,11 +218,11 @@ Validated fields:
 
 ### Encrypted keys not decrypting on hot-reload
 **Bug**: API keys work after `save()` but fail on hot-reload (file watcher triggers reload).
-**Fix**: `ConfigWatcher::reload_config()` now calls `decrypt_provider_keys()` at `watcher.rs:153-154`.
+**Fix**: `ConfigWatcher::reload_config()` now calls `decrypt_provider_keys()` at `watcher.rs:157-158`.
 
 ### Encrypted keys not decrypting on load
 **Bug**: API keys work after `save()` but fail on subsequent loads.
-**Fix**: `decrypt_provider_keys()` is called automatically in `Config::load()` at `schema.rs:508-509`.
+**Fix**: `decrypt_provider_keys()` is called automatically in `Config::load()` at `schema.rs:542`.
 
 ### Provider config fields lost during merge
 **Bug**: Provider settings from global config disappear when project config specifies the same provider.

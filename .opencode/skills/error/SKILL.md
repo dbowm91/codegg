@@ -45,6 +45,7 @@ impl ProviderError {
                 | ProviderError::Timeout(_)
                 | ProviderError::Stream(_)
                 | ProviderError::CircuitOpen(_)
+                | ProviderError::Auth(_)
         )
     }
 }

@@ -50,11 +50,19 @@ Model-specific token multipliers for accurate estimation.
 
 ### 1. TruncateToolOutputs
 
-Prunes tool outputs exceeding `max_tokens_per_output` (default 10,000 tokens). Preserves `tool_call_id` field unchanged.
+Two-phase pruning approach:
+
+1. **First phase (`prune_tool_outputs()`)**: Token-based pruning - truncates tool outputs exceeding `max_tokens_per_output` (default 10,000 tokens). Called as pre-pass in `compact_if_needed()`.
+
+2. **Second phase (`truncate_tool_outputs()`)**: Character-based truncation - within strategies, truncates tool outputs exceeding 500 characters. Used by `compact_messages_sync()` and compaction strategies.
+
+Preserves `tool_call_id` field unchanged.
 
 ### 2. SummarizeOldTurns
 
 Uses LLM to summarize conversation turns. Falls back to `DropMiddleMessages` with placeholder if summarization unavailable. Only processes first 20 non-system messages, truncates tool content to 300 chars before summarization.
+
+**Sync Fallback**: When `SummarizeOldTurns` encounters an error (LLM unavailable, timeout, etc.), it silently falls back to `DropMiddleMessages` behavior rather than returning an error. This ensures compaction always succeeds in sync mode.
 
 ### 3. DropMiddleMessages
 
@@ -74,10 +82,12 @@ All strategies must maintain these invariants:
 | Function | Description |
 |----------|-------------|
 | `detect_overflow()` | Returns true if current tokens exceed threshold |
-| `prune_tool_outputs()` | Truncates tool outputs to max_tokens_per_output |
-| `compact_messages_sync()` | Applies compaction strategies synchronously |
-| `compact_messages_async()` | Applies with LLM summarization |
-| `auto_compact_async()` | Auto-selects strategy based on content |
+| `prune_tool_outputs()` | Token-based truncation to max_tokens_per_output (pre-pass) |
+| `truncate_tool_outputs()` | Character-based truncation to 500 chars (within strategies) |
+| `compact_messages()` | Apply strategy to messages (async LLM-based) |
+| `compact_messages_sync()` | Apply strategy to messages (synchronous) |
+| `auto_compact()` | Auto-select strategy based on content (async) |
+| `auto_compact_sync()` | Auto-select strategy (sync fallback) |
 | `llm_summarize()` | Uses provider to summarize messages |
 
 ## Configuration
