@@ -64,10 +64,6 @@ impl PluginEventBus {
         }
     }
 
-    pub async fn get_event_log(&self) -> Vec<AppEvent> {
-        self.event_log.read().await.clone()
-    }
-
     pub async fn subscriptions(&self) -> Vec<PluginEventSubscription> {
         self.subscriptions.read().await.clone()
     }

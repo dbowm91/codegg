@@ -244,7 +244,7 @@ impl MemoryStore {
             let topic_key = format!("{}:{}", scored_mem.pattern_type, scored_mem.matched_text.to_lowercase());
 
             if let Some(existing_mem) = existing_by_topic.get(&topic_key) {
-                if existing_mem.importance >= scored_mem.score / 20.0 {
+                if existing_mem.importance > scored_mem.score / 20.0 {
                     continue;
                 }
 
@@ -272,7 +272,10 @@ impl MemoryStore {
             return String::new();
         }
 
-        let mut sorted: Vec<_> = memories;
+        let mut sorted: Vec<_> = memories
+            .into_iter()
+            .filter(|m| m.superseded_by.is_none())
+            .collect();
         sorted.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
 
         let summary: Vec<_> = sorted
