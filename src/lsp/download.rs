@@ -160,6 +160,10 @@ fn extract_zip(
     use std::io::Cursor;
     use zip::ZipArchive;
 
+    let dest = dest
+        .canonicalize()
+        .map_err(|_| LspError::DownloadFailed("invalid destination".into()))?;
+
     let mut archive = ZipArchive::new(Cursor::new(data))
         .map_err(|e| LspError::DownloadFailed(format!("failed to open zip: {}", e)))?;
 
@@ -170,11 +174,15 @@ fn extract_zip(
         let name = file.name().to_string();
 
         if name.contains(binary_name) || name.ends_with(binary_name) {
-            let out_path = dest.join(
-                std::path::Path::new(&name)
-                    .file_name()
-                    .unwrap_or(std::ffi::OsStr::new(binary_name)),
-            );
+            let file_name = std::path::Path::new(&name)
+                .file_name()
+                .unwrap_or(std::ffi::OsStr::new(binary_name));
+            let out_path = dest.join(file_name);
+
+            if !out_path.canonicalize().map(|p| p.starts_with(&dest)).unwrap_or(false) {
+                return Err(LspError::DownloadFailed("path traversal blocked".into()));
+            }
+
             let mut out = std::fs::File::create(&out_path)?;
             std::io::copy(&mut file, &mut out)?;
             return Ok(out_path);
@@ -196,19 +204,27 @@ fn extract_tar_gz(
     use std::io::Cursor;
     use tar::Archive;
 
+    let dest = dest
+        .canonicalize()
+        .map_err(|_| LspError::DownloadFailed("invalid destination".into()))?;
+
     let decoder = GzDecoder::new(Cursor::new(data));
     let mut archive = Archive::new(decoder);
 
-    for entry in archive.entries()? {
-        let mut entry = entry?;
+    for entry_result in archive.entries()? {
+        let mut entry = entry_result?;
         let path = entry.path()?.to_path_buf();
+        let full_path = dest.join(&path);
+
+        if !full_path.starts_with(&dest) {
+            return Err(LspError::DownloadFailed("path traversal blocked".into()));
+        }
 
         if let Some(name) = path.file_name() {
             if name.to_string_lossy() == binary_name {
-                let out_path = dest.join(name);
-                let mut file = std::fs::File::create(&out_path)?;
-                std::io::copy(&mut entry, &mut file)?;
-                return Ok(out_path);
+                std::fs::create_dir_all(&full_path.parent().unwrap_or(&dest))?;
+                entry.unpack(&full_path)?;
+                return Ok(full_path);
             }
         }
     }
