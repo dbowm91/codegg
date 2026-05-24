@@ -1,97 +1,279 @@
-# Implementation Plan - Documentation Review Consolidation
+# Implementation Plan - Code Review Consolidation
 
-**Status**: COMPLETED ✅
-**Last Updated**: 2026-05-27
-**Goal**: Historical record of May 2026 architecture review consolidation
-
----
-
-## Summary
-
-All items from the consolidated documentation review plan have been completed. This file serves as a historical record for future agents.
-
-### Verification Results (2026-05-27)
-
-| Category | Items | Status |
-|----------|-------|--------|
-| Wave 0 (DOC-1 to DOC-6) | Quick documentation fixes | ✅ ALL VERIFIED |
-| Wave 1 (BUG-6) | FocusManager pop_dialog index bug | ✅ FIXED |
-| Wave 2 (DOC-8, DOC-9) | compaction + hooks SKILL.md created | ✅ COMPLETE |
-| Wave 3 (DOC-11, DOC-12) | Snapshot restore path validation + resilience docs | ✅ COMPLETE |
-| Wave 4 (DOC-10,13,15,16) | Architecture corrections | ✅ COMPLETE |
-| Wave 5 (DOC-17,18,20) | Skills documentation | ✅ COMPLETE |
-| Wave 6 (DOC-25) | Histogram/MetricsSnapshot documented | ✅ COMPLETE |
-
-**Total: 19 items PASSED, 0 items FAILED**
+**Status**: PLANNED (Not Started)
+**Last Updated**: 2026-05-24
+**Goal**: Consolidate all review findings into actionable implementation plan
 
 ---
 
-## Notes for Future Agents
+## Summary of Review Findings
 
-These implementation notes were verified during the May 2026 review sessions:
-
-### Critical Implementation Notes
-
-1. **Architecture docs vs actual code**: When implementing fixes, always verify against actual source. Many "bugs" from reviews were actually already fixed in prior sessions.
-
-2. **Module naming**: Skills follow module naming (e.g., `compaction` skill at `.opencode/skills/compaction/SKILL.md`)
-
-3. **TTS is macOS-only**: Uses hardcoded `say` command
-
-4. **Permissions are synchronous**: `PermissionRegistry::respond()` is `fn`, not `async fn`. Do NOT use `await` when calling these.
-
-5. **WASM plugins use fuel tracking**: `return_fuel()` uses `MAX_PLUGIN_FUEL_BUDGET`
-
-6. **FocusManager dialog stack**: Uses `VecDeque`, `pop_dialog()` uses idx directly (was BUG-6, now fixed)
-
-7. **PermissionRegistry location**: Located in `src/bus/mod.rs`, not `src/permission/`
-
-8. **MCP reconnect wired up**: Heartbeat failures trigger reconnect via `reconnect_needed` Notify
-
-9. **SSE not fully integrated**: `connect_sse()` etc. exist but are not automatically called during remote connection setup
-
-10. **Snapshot restore() path validation**: Validates paths don't escape project_root
-
-11. **Crypto FORMAT_V2_PREFIX**: Public constant `pub const FORMAT_V2_PREFIX: &str = "v2:"` at `src/crypto/mod.rs:10`
-
-### Known Issues (Lower Priority)
-
-- **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
-- **Tool definition cache staleness**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
+| Category | Count | Notes |
+|----------|-------|-------|
+| Critical Bugs (Compilation) | 0 | Codebase compiles |
+| High Priority Bugs | 4 | Memory superseding, plugin fuel dead code, snapshot restore not wired |
+| Medium Priority Bugs | 5 | Memory access_count, plugin event_log, snapshot restore failure handling, TTS stop |
+| Documentation Updates | 50+ | Various arch docs and skills need corrections |
 
 ---
 
-## Historical Context
+## Implementation Phases (Waves)
 
-### Branch/Commit History (May 2026)
+### Wave 1: Critical Fixes (High Priority Bugs)
 
-| Branch | Commit | Description |
-|--------|--------|-------------|
-| wave1-bugfix | 0f77c89 | FocusManager pop_dialog fix + compaction SKILL.md |
-| wave3-bugfix | 9ef45f5 | Snapshot restore path validation + resilience docs |
-| wave4-docs-corrections | 47b549a | Snapshot capture flow, LSP request_id, SSE methods, IdeServer::run_socket |
-| wave5-skills-docs | ab2b274 | Teams/lsp/formatter tools, list_skill_resources, FORMAT_V2_PREFIX |
-| wave6-final-docs | bb554b5 | Histogram 1000-element limit and MetricsSnapshot |
+#### W1-1: Memory Module Fixes
+| Item | File | Line | Issue |
+|------|------|------|-------|
+| 1 | `src/memory/mod.rs` | 247 | Change `>=` to `>` for superseding threshold |
+| 2 | `src/memory/mod.rs` | 270 | Add `.filter(\|m\| m.superseded_by.is_none())` before sorting in `get_memory_summary()` |
 
-All merged to main: 84ec942 (later a953103 for FORMAT_V2_PREFIX fix)
+**Context for agents:**
+- The superseding logic at line 247 prevents new memories from superseding existing ones when scores are close. Changing `>=` to `>` allows superseding when new score is meaningfully higher.
+- The `get_memory_summary()` currently includes superseded memories in the output, which is confusing for users since those memories are no longer active.
 
-### Original Plan Files
+#### W1-2: Plugin Module Fixes
+| Item | File | Line | Issue |
+|------|------|------|-------|
+| 3 | `src/plugin/loader.rs` | 24-41 | Remove dead `check_and_reset_fuel_budget()` function |
+| 4 | `src/plugin/loader.rs` | 15-17 | Remove unused `PLUGIN_FUEL_BUDGET` and `PLUGIN_FUEL_LAST_RESET` globals |
+| 5 | `src/plugin/event_bus.rs` | 67 | Either use `event_log` or remove `get_event_log()` method |
 
-The following original plan files have been consolidated into this document:
-- This file (`plans/plan.md`) is the single source of truth
-- All other plan files in `plans/` directory have been removed
+**Context for agents:**
+- The `check_and_reset_fuel_budget()` function at lines 24-41 is never called, making the global fuel budget auto-reset dead code.
+- The `event_log` in `event_bus.rs` is populated but never consumed. Either wire it up or remove the dead code.
+- The per-plugin fuel budget system in `module_cache` is the actual active mechanism.
+
+#### W1-3: Snapshot Module - High Priority
+| Item | File | Line | Issue |
+|------|------|------|-------|
+| 6 | `src/snapshot/mod.rs` | 291-292 | Add failure flag to stop processing on error in `restore()` |
+| 7 | `src/snapshot/mod.rs` | - | Consider implementing error-triggered restore or document it doesn't exist |
+
+**Context for agents:**
+- The `restore()` function continues processing even after a write failure, potentially causing partial restoration without clear indication.
+- Architecture doc shows error-restore flows that don't exist in code - need to either implement or remove from docs.
 
 ---
 
-## Completed Verification Checklist
+### Wave 2: Documentation Corrections
 
-The following items were verified as correctly implemented (not bugs):
+#### W2-1: Agent Module
+| Item | File | Issue |
+|------|------|-------|
+| 8 | `architecture/agent.md` | Add `run_with_prompt()`, `drain_follow_up()`, `capture_snapshot_if_needed()`, `drain_file_change_events()` |
+| 9 | `architecture/agent.md` | Document `ToolDefCache` type alias at loop.rs:60-67 |
+| 10 | `.opencode/skills/subagent/SKILL.md` | Sync with current API after spawner deduplication |
 
-- **BUG-1**: IDE line range slicing - ✅ `open_diff_generic()` at src/ide/mod.rs:91
-- **BUG-2**: external_directory in PERMISSION_TYPES - ✅ Not present
-- **BUG-3**: TTS duplicate store - ✅ No duplicate `speaking.store(false)`
-- **BUG-4**: TTS stop() guard - ✅ Checks `is_speaking()` first
-- **BUG-5**: TTS init() - ✅ Exhaustive match on `TtsProvider::None`
-- **PTY location**: ✅ Module is `src/pty_session/`
+#### W2-2: Client Module
+| Item | File | Issue |
+|------|------|-------|
+| 11 | `architecture/client.md` | Clarify RenderFrame "received and logged" not "unused" |
+| 12 | `architecture/client.md` | Document 3 retries with exponential backoff (2s, 4s) |
+| 13 | `architecture/client.md` | Add note about `catch_unwind` in event handling |
+| 14 | `.opencode/skills/client/SKILL.md` | Document `new_remote()` at line 492, `handle_remote_event()` at line 686 |
 
-*(Last updated: 2026-05-27 - All items verified complete)*
+#### W2-3: Command Module
+| Item | File | Issue |
+|------|------|-------|
+| 15 | `architecture/command.md` | Change "36 commands" to correct count at lines 52, 115 |
+| 16 | `.opencode/skills/command/SKILL.md` | Fix line refs at 173-174 |
+
+#### W2-4: Compaction Module
+| Item | File | Issue |
+|------|------|-------|
+| 17 | `architecture/compaction.md` | Add two-phase pruning explanation (prune_tool_outputs vs truncate_tool_outputs) |
+| 18 | `architecture/compaction.md` | Add `auto_compact()`, `auto_compact_sync()`, `compact_messages()` to functions table |
+| 19 | `architecture/compaction.md` | Clarify that `TruncateToolOutputs` uses 500-char truncation |
+| 20 | `architecture/compaction.md` | Add note about `SummarizeOldTurns` sync fallback behavior |
+
+#### W2-5: Config Module
+| Item | File | Issue |
+|------|------|-------|
+| 21 | `architecture/config.md` | Fix line number refs: line 219 `watcher.rs:153-154` → `157-158`, lines 223-224 `schema.rs:508-509` → `542` |
+| 22 | `architecture/config.md` | Add `ServerConfig::merge()` method documentation |
+
+#### W2-6: Crypto Module
+| Item | File | Issue |
+|------|------|-------|
+| 23 | `architecture/crypto.md` | Document `FORMAT_V2_PREFIX` constant at line 10 |
+| 24 | `.opencode/skills/crypto/SKILL.md` | Sync with implementation |
+
+#### W2-7: Error Module
+| Item | File | Issue |
+|------|------|-------|
+| 25 | `architecture/error.md` | Add `ProviderError::Auth(_)` to `is_retryable()` match pattern at lines 106-115 |
+| 26 | `.opencode/skills/error/SKILL.md` | Add `ProviderError::Auth(_)` to `is_retryable()` pattern at lines 40-50 |
+
+#### W2-8: Event Bus Module
+| Item | File | Issue |
+|------|------|-------|
+| 27 | `AGENTS.md` | Correct AppEvent count from "38 variants" to actual count (36) |
+| 28 | `architecture/event-bus.md` | Clarify `PermissionChoice` is defined in `src/permission/mod.rs` |
+
+#### W2-9: Hooks Module
+| Item | File | Issue |
+|------|------|-------|
+| 29 | `architecture/hooks.md` | Remove/correct false claim at line 191 about stream errors breaking loop ensuring hooks run - they DON'T run |
+| 30 | `architecture/hooks.md` | Clarify shell hooks use underscore notation vs plugin hooks use dot notation |
+| 31 | `architecture/hooks.md` | Add note that `InlineScript` hook type is deprecated |
+
+---
+
+### Wave 3: Documentation Corrections (Continued)
+
+#### W3-1: LSP Module
+| Item | File | Issue |
+|------|------|-------|
+| 32 | `architecture/lsp.md` | Change "42 servers" to "44 servers" at line 227 |
+| 33 | `architecture/lsp.md` | Remove `build_env_overrides` from docs or implement it |
+
+#### W3-2: MCP Module
+| Item | File | Issue |
+|------|------|-------|
+| 34 | `architecture/mcp.md` | Remove `heartbeat_task: Arc<AtomicBool>` field (doesn't exist in code) at line ~117 |
+| 35 | `.opencode/skills/mcp/SKILL.md` | Document SSE integration gap (connect_sse not hooked into main flow) |
+
+#### W3-3: Memory Module (Documentation)
+| Item | File | Issue |
+|------|------|-------|
+| 36 | `.opencode/skills/memory/SKILL.md` | Change path `projects/{hash}/conventions` to `project/{hash}` |
+| 37 | `.opencode/skills/memory/SKILL.md` | Add `set_auto_save(&self, enabled: bool)` to API section |
+| 38 | `.opencode/skills/memory/SKILL.md` | Show negation scoring calculation explicitly |
+
+#### W3-4: Plugin Module (Documentation)
+| Item | File | Issue |
+|------|------|-------|
+| 39 | `architecture/plugin.md` | Update WASM path construction to show actual `plugins_dir().join(plugin_name).join("plugin.wasm")` |
+| 40 | `architecture/plugin.md` | Add `BuiltinPlugin` struct documentation |
+| 41 | `.opencode/skills/plugin/SKILL.md` | Update `execute_wasm_hook()` example with actual error handling |
+| 42 | `.opencode/skills/plugin/SKILL.md` | Update timeout error format to `format!("{}: hook timeout: {}", ...)` |
+
+#### W3-5: Permission Module
+| Item | File | Issue |
+|------|------|-------|
+| 43 | `.opencode/skills/permission/SKILL.md` | Change docs mode `default: "allow"` to `default: "ask"` at lines 150-157 |
+
+#### W3-6: Provider Module
+| Item | File | Issue |
+|------|------|-------|
+| 44 | `architecture/provider.md` | Add `is_openai: bool` field to SseParser struct |
+| 45 | `architecture/provider.md` | Add `ProviderError::Auth(_)` to `is_retryable()` match pattern |
+| 46 | `architecture/provider.md` | Clarify `codegg_go` registration path (config-based, not `register_builtin()`) |
+| 47 | `architecture/provider.md` | Document `parse_anthropic_buffer_with_state()` at sse_parser.rs:500-519 |
+
+#### W3-7: PTY Module
+| Item | File | Issue |
+|------|------|-------|
+| 48 | `.opencode/skills/pty/SKILL.md` | Change `src/pty/` to `src/pty_session/` at line 20 |
+| 49 | `architecture/pty.md` | Document that `PtyManager` implements `Default` trait |
+
+#### W3-8: Resilience Module
+| Item | File | Issue |
+|------|------|-------|
+| 50 | `architecture/resilience.md` | Fix line number refs for `record_success()` and `record_failure()` at lines 123-131 |
+
+---
+
+### Wave 4: Documentation Corrections (Final Batch)
+
+#### W4-1: Server Module
+| Item | File | Issue |
+|------|------|-------|
+| 51 | `architecture/server.md` | Remove claim "event_bus field was removed" - it still exists at line 70-71 |
+| 52 | `architecture/server.md` | Remove incorrect SSE handler description at lines 194-198 |
+| 53 | `.opencode/skills/server/SKILL.md` | Remove "Dead EventBus Struct" claim at line 210 |
+
+#### W4-2: Snapshot Module (Documentation)
+| Item | File | Issue |
+|------|------|-------|
+| 54 | `architecture/snapshot.md` | Remove error-restore flows at lines 97-119, 139-156 (not implemented) |
+| 55 | `architecture/snapshot.md` | Document that `restore()` exists but not integrated into agent |
+| 56 | `architecture/snapshot.md` | Document atomic write pattern in `restore_to_path()` |
+| 57 | `architecture/snapshot.md` | Document `collect_files_sync()` exclusions and limits |
+| 58 | `.opencode/skills/snapshot/SKILL.md` | Add `delete_snapshot()` and `delete_all_for_session()` to API |
+| 59 | `.opencode/skills/snapshot/SKILL.md` | Add note about atomic write in `restore_to_path()` |
+| 60 | `.opencode/skills/snapshot/SKILL.md` | Add config integration details |
+
+#### W4-3: Tool Module
+| Item | File | Issue |
+|------|------|-------|
+| 61 | `architecture/tool.md` | Remove `[tools]` TOML config with `path_rules` - not implemented |
+| 62 | `.opencode/skills/tool/SKILL.md` | Change "25+ total" to "26 total" at line 32 |
+| 63 | `.opencode/skills/tool/SKILL.md` | Add note about `unrestricted` mode availability |
+
+#### W4-4: TTS Module
+| Item | File | Issue |
+|------|------|-------|
+| 64 | `architecture/tts.md` | Document `stop()` method and `pkill say` implementation |
+| 65 | `architecture/tts.md` | Document `is_speaking()` method signature |
+| 66 | `architecture/tts.md` | Fix `speaking` type to `Mutex<AtomicBool>` not just `AtomicBool` |
+| 67 | `architecture/tts.md` | Clarify `[tts]` config not implemented at all |
+| 68 | `architecture/tts.md` | Document `init()` only handles `TtsProvider::None` |
+| 69 | `architecture/tts.md` | Document empty string validation in `speak()` |
+
+#### W4-5: TUI Module
+| Item | File | Issue |
+|------|------|-------|
+| 70 | `architecture/tui.md` | Add missing UiState fields: `sidebar_visible`, `auto_scroll`, `show_thinking`, `show_timestamps`, `timeline_visible`, `timeline_selected`, `tts_enabled`, `fullscreen`, `dirty_regions` |
+| 71 | `architecture/tui.md` | Add Timeline as a render layer |
+| 72 | `architecture/tui.md` | Add CommandPalette field in DialogState |
+| 73 | `architecture/tui.md` | Document `busy_spinner` in App struct |
+| 74 | `architecture/tui.md` | Document `pending_*` fields in DialogState |
+| 75 | `architecture/tui.md` | Document ClickTarget enum |
+| 76 | `.opencode/skills/tui/SKILL.md` | Consider adding Timeline feature documentation |
+
+#### W4-6: Worktree Module
+| Item | File | Issue |
+|------|------|-------|
+| 77 | `architecture/worktree.md` | Add note: `remove_worktree()` does not support `force` parameter |
+| 78 | `.opencode/skills/worktree/SKILL.md` | Add same note for consistency |
+
+#### W4-7: Upgrade Module
+| Item | File | Issue |
+|------|------|-------|
+| 79 | `main.rs` | Change printed install command from `cargo install --git ...` to `curl -fsSL https://codegg.ai/install.sh` |
+
+---
+
+### Wave 5: Low Priority / Optional
+
+| Item | Module | File | Issue |
+|------|--------|------|-------|
+| 80 | Snapshot | `tests/snapshot.rs:15-22` | Remove dead `create_test_manager()` function |
+| 81 | TTS | `src/tts/mod.rs:98-101` | Consider returning error when `pkill say` fails |
+| 82 | Memory | `src/memory/mod.rs:169-177` | Document `get()` increments access_count but only persists if auto_save enabled |
+| 83 | LSP | `architecture/lsp.md` | Consider documenting `completion` handles both `CompletionList` and `Vec<CompletionItem>` responses |
+| 84 | MCP | `architecture/mcp.md` | Consider integrating SSE support into main connection flow |
+| 85 | Security | `architecture/security.md` | Consider adding note about Landlock config loading |
+
+---
+
+## Parallelization Strategy
+
+### Wave 1 (High Priority Bugs) - Sequential
+Must fix memory and plugin bugs first before documentation changes to ensure accuracy.
+
+### Wave 2-4 (Documentation) - Can parallelize
+Each sub-wave (W2-1 through W2-8, W3-1 through W3-8, W4-1 through W4-7) can be done in parallel by different agents.
+
+### Wave 5 (Optional) - Low priority
+Can be done at end or skipped.
+
+---
+
+## Verification Steps
+
+After implementing changes, run:
+```bash
+cargo check
+cargo test
+```
+
+Ensure:
+1. No compilation errors
+2. All existing tests pass
+3. Documentation builds without broken links
+
+---
+
+*Last updated: 2026-05-24*

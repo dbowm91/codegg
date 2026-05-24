@@ -53,7 +53,7 @@ These items were identified during module reviews and are important for future a
 - **GlobalEventBus::publish() returns subscriber count on success**: Uses `trace` level for normal events (was `warn` for all cases). Channel closed errors properly distinguished.
 - **Event flow documentation accurate**: Registration-before-publish pattern correctly documented in both `architecture/event-bus.md` and `.opencode/skills/event-bus/SKILL.md`
 - **Dead events removed**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied` removed from skill and architecture doc (never existed in code - only `PermissionPending`/`PermissionResponded` exist)
-- **AppEvent count corrected**: 38 variants (was incorrectly documented as 40+)
+- **AppEvent count corrected**: 36 variants (was incorrectly documented as 38 or 40+)
 
 ### Crypto Module (2026-05-27)
 - **Crypto module updated**: architecture/crypto.md now accurately describes the implementation (Argon2id key derivation, v2 format with `v2:` prefix, legacy HMAC-SHA256 support)
@@ -350,6 +350,30 @@ These items were identified during module reviews and are important for future a
 - **ResyncRequired serialization**: Server uses `TuiMessage::ResyncRequired` variant directly (not raw JSON)
 - **Client timeouts**: Health check has 10s timeout, WebSocket connection has 30s timeout
 - **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
+
+### Memory Module (2026-05-24 - Consolidated Review)
+- **Superseding threshold bug**: Line 247 uses `>=` instead of `>` - prevents superseding when scores are tied. Needs fixing.
+- **get_memory_summary() includes superseded**: Line 270 missing `.filter(|m| m.superseded_by.is_none())` before sorting. Needs fixing.
+- See `plans/plan.md` for full pending fixes.
+
+### Plugin Module (2026-05-24 - Consolidated Review)
+- **Dead code - check_and_reset_fuel_budget()**: Function at loader.rs:24-41 never called. Global fuel budget auto-reset is dead code.
+- **Dead global - PLUGIN_FUEL_BUDGET**: Global at loader.rs:15 unused. Per-plugin fuel budgets in `module_cache` are the active mechanism.
+- **event_log never consumed**: `event_bus.rs:67` populates but no consumer. See `plans/plan.md` for pending fixes.
+- See `plans/plan.md` for full pending fixes.
+
+### Command Module (2026-05-24 - Consolidated Review)
+- **Panic on error**: `find_command_files()` at mod.rs:21-24 panics with "expected" on load failure instead of graceful handling.
+- See `plans/plan.md` for this and other pending fixes.
+
+### Hooks System (2026-05-24 - Consolidated Review)
+- **Stream error early return claim INACCURATE**: Architecture doc claims stream errors break loop ensuring hooks run - they DON'T run. Claim at line 191 is false.
+- Shell hooks use underscore notation (`pre_tool_execute`) vs plugin hooks use dot notation (`tool.execute.before`)
+- See `plans/plan.md` for this and other pending fixes.
+
+### LSP Module (2026-05-24 - Consolidated Review)
+- **Server count**: Should be 44 servers (not 42 as documented)
+- See `plans/plan.md` for this and other pending fixes.
 
 ### Key Lessons from Review Sessions
 - **Always verify documentation claims against actual code**. Many "bugs" in review files turned out to be correctly implemented after direct inspection. The act of reviewing often reveals assumptions that were wrong.
