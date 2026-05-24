@@ -21,23 +21,33 @@ pub struct SubmitPermissionRequest {
 }
 
 pub async fn submit_permission(
-    Path(session_id): Path<String>,
+    Path(perm_id): Path<String>,
     Json(req): Json<SubmitPermissionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    if req.session_id != session_id {
+    if req.session_id != perm_id.splitn(2, '-').next().unwrap_or(&req.session_id) {
         return Err(AppError::Storage(StorageError::NotFound(
             "session id mismatch".to_string(),
         )));
     }
 
-    if !matches!(req.decision.as_str(), "allow" | "deny") {
-        return Err(AppError::Tool(ToolError::Execution(
-            "invalid decision, must be 'allow' or 'deny'".to_string(),
-        )));
+    let choice = match req.decision.as_str() {
+        "allow" => crate::permission::PermissionChoice::AllowOnce,
+        "deny" => crate::permission::PermissionChoice::DenyOnce,
+        "always_allow" => crate::permission::PermissionChoice::AlwaysAllow,
+        "always_deny" => crate::permission::PermissionChoice::AlwaysDeny,
+        _ => {
+            return Err(AppError::Tool(ToolError::Execution(
+                "invalid decision, must be 'allow', 'deny', 'always_allow', or 'always_deny'".to_string(),
+            )));
+        }
+    };
+
+    if !crate::bus::PermissionRegistry::respond(perm_id.clone(), choice) {
+        tracing::warn!("permission response failed for perm_id: {}", perm_id);
     }
 
     Ok(Json(PermissionResponse {
-        session_id,
+        session_id: req.session_id,
         tool: req.tool,
         decision: req.decision,
         persist: req.persist,

@@ -2,7 +2,43 @@ use similar::{ChangeTag, TextDiff};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 use tempfile::Builder;
+
+const IDE_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn run_command_with_timeout(program: &str, args: &[&str]) -> Result<(), String> {
+    let program = program.to_string();
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+
+    let mut child = Command::new(&program)
+        .args(&args)
+        .spawn()
+        .map_err(|e| format!("failed to spawn {}: {}", program, e))?;
+
+    let deadline = Instant::now() + IDE_COMMAND_TIMEOUT;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("{} failed (exit {})", program, status))
+                };
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return Err(format!("{} timed out after {:?}", program, IDE_COMMAND_TIMEOUT));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(format!("wait failed: {}", e));
+            }
+        }
+    }
+}
 
 struct TempFilesGuard {
     paths: Vec<PathBuf>,
@@ -132,24 +168,12 @@ fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<()
     drop(original_temp);
     drop(modified_temp);
 
-    let output = Command::new("code")
-        .args([
-            "--diff",
-            original_path.to_string_lossy().as_ref(),
-            modified_path.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .map_err(|e| format!("failed to open vscode: {}", e))?;
+    let output = run_command_with_timeout("code", &[
+        "--diff",
+        original_path.to_string_lossy().as_ref(),
+        modified_path.to_string_lossy().as_ref(),
+    ])?;
 
-    if !output.status.success() {
-        return Err(format!(
-            "vscode diff failed (exit {}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    drop(guard);
     Ok(())
 }
 
@@ -220,22 +244,11 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
 
     let tool = tool.unwrap_or_else(|| "idea".to_string());
 
-    let output = Command::new(&tool)
-        .args([
-            "diff",
-            original_path.to_string_lossy().as_ref(),
-            modified_path.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .map_err(|e| format!("failed to open jetbrains: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "jetbrains diff failed (exit {}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
+    run_command_with_timeout(&tool, &[
+        "diff",
+        original_path.to_string_lossy().as_ref(),
+        modified_path.to_string_lossy().as_ref(),
+    ])?;
 
     drop(guard);
     Ok(())
@@ -286,16 +299,13 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
         drop(original_temp);
         drop(modified_temp);
 
-        let output = Command::new("code")
-            .args([
-                "--diff",
-                original_path.to_string_lossy().as_ref(),
-                modified_path.to_string_lossy().as_ref(),
-            ])
-            .output()
-            .map_err(|e| format!("failed to open code: {}", e))?;
+        let output = run_command_with_timeout("code", &[
+            "--diff",
+            original_path.to_string_lossy().as_ref(),
+            modified_path.to_string_lossy().as_ref(),
+        ]);
 
-        if output.status.success() {
+        if output.is_ok() {
             drop(guard);
             return Ok(());
         }
@@ -343,16 +353,13 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
         drop(original_temp);
         drop(modified_temp);
 
-        let output = Command::new("idea")
-            .args([
-                "diff",
-                original_path.to_string_lossy().as_ref(),
-                modified_path.to_string_lossy().as_ref(),
-            ])
-            .output()
-            .map_err(|e| format!("failed to open idea: {}", e))?;
+        let output = run_command_with_timeout("idea", &[
+            "diff",
+            original_path.to_string_lossy().as_ref(),
+            modified_path.to_string_lossy().as_ref(),
+        ]);
 
-        if output.status.success() {
+        if output.is_ok() {
             drop(guard);
             return Ok(());
         }
