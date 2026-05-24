@@ -1,3 +1,10 @@
+---
+name: error
+description: AppError, ProviderError, ToolError, is_retryable, CircuitOpen error handling
+version: 1.1.0
+tags: [error, exception, provider, tool]
+---
+
 # Error Module Skill (v1.1.0)
 
 ## Overview

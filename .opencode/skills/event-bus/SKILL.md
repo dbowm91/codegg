@@ -1,6 +1,7 @@
 ---
 name: event-bus
 description: GlobalEventBus publish/subscribe and event types for inter-component communication
+version: 1.1.0
 tags: [bus, events, pubsub, tui, agent]
 ---
 

@@ -1,6 +1,7 @@
 ---
 name: Permission
 description: Permission system architecture and registration patterns in opencode-rs
+version: 1.1.0
 tags: [security, permission, agent, mode]
 ---
 
