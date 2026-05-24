@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use axum::{
     extract::{ws::WebSocket, ConnectInfo, FromRequestParts, State, WebSocketUpgrade},
@@ -13,6 +14,7 @@ use tracing::info;
 
 use crate::error::ServerRuntimeError;
 use crate::protocol::tui::{QuestionSpec, TuiMessage};
+use crate::server::rpc::{RpcError, RpcRequest, RpcResponse};
 
 #[derive(Clone, Debug)]
 pub struct WebSocketAuth {

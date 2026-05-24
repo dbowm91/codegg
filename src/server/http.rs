@@ -204,7 +204,6 @@ pub async fn run_server(host: &str, port: u16) -> Result<(), crate::error::Serve
         project_dir: project_dir.clone(),
         pool,
         mcp_service: Arc::new(RwLock::new(mcp_service)),
-        event_bus: routes::GlobalEventBus::new(),
         config: config.unwrap_or_default(),
         ws_rate_limiter: Arc::new(WsRateLimiter::new(100, 60)),
     };

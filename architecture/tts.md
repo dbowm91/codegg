@@ -16,12 +16,12 @@ The `tts` module provides text-to-speech functionality.
 
 ```rust
 pub struct Tts {
-    speaking: std::sync::atomic::AtomicBool,
+    speaking: std::sync::Mutex<std::sync::atomic::AtomicBool>,
 }
 
-impl Clone for Tts { /* ... */ }
+impl Clone for Tts { /* Uses Mutex for thread-safe cloning */ }
 
-impl Default for Tts { /* ... */ }
+impl Default for Tts { /* Delegates to new() */ }
 
 impl Tts {
     pub fn new() -> Self;
@@ -31,6 +31,8 @@ impl Tts {
     pub fn is_speaking(&self) -> bool;
 }
 ```
+
+**Note**: `speak()` validates that `text` is non-empty, returning `Err(AppError::Io(...))` for empty strings.
 
 ### TtsEngine Trait
 
@@ -93,7 +95,7 @@ When `say` fails, `speak()` returns `Err(AppError::Io(...))` with the stderr mes
 enabled = true  # User preference, not implemented in code
 ```
 
-**Note**: Configuration options like `voice` and `rate` mentioned in config are not implemented.
+**Note**: Configuration options like `voice` and `rate` mentioned in config are not implemented. The TTS module currently has no configuration integration - `init()` only handles `TtsProvider::None` which is a no-op.
 
 ## Usage
 

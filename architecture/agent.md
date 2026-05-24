@@ -174,7 +174,7 @@ pub struct BackgroundScheduler {
 - `spawn_loop()` - Spawn the background task loop
 - `load_tasks()` / `save_task()` - SQLite persistence
 
-**Note**: BackgroundScheduler now uses `task.id` for `task_id` in SubAgentRequest (was using `rand::random()` before)
+**Note**: BackgroundScheduler parses `task.id` and skips tasks with invalid IDs instead of using a random fallback. If parsing fails, the task is logged and skipped.
 
 ### mention.rs - Agent Mentions
 

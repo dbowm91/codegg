@@ -86,7 +86,7 @@ These items were identified during module reviews and are important for future a
 - **AgentLoop struct fixed**: Architecture doc showed wrong field types (`agent: Agent` vs actual `agents: HashMap<String, Agent>`, `client: Client` didn't exist, `provider: Arc<ProviderRegistry>` vs actual `Box<dyn Provider>`)
 - **`start_workers()` removed**: Dead no-op method removed from `SubAgentPool`
 - **SubAgentSpawner code deduplication**: `send()` and `send_async()` now share implementation via `enqueue_request()` and `handle_response()` helpers
-- **BackgroundScheduler task_id fixed**: Uses `task.id.parse()` to use actual task ID instead of `rand::random()`
+- **BackgroundScheduler task_id fixed**: Uses `task.id.parse()` to use actual task ID instead of `rand::random()`. Invalid IDs now cause the task to be skipped (logged with warning) rather than falling back to random.
 - **Skill synchronized**: `.opencode/skills/subagent/SKILL.md` updated to reflect current API
 
 ### Verified Correct Items (not bugs)
@@ -280,10 +280,14 @@ These items were identified during module reviews and are important for future a
 ### Server Module (2026-05-22)
 - **WsRateLimiter shared**: `WsRateLimiter` in `ServerState` is now shared across all WebSocket connections (was created per-connection, causing inefficient rate limiting)
 - **SSE GlobalEventBus fixed**: SSE handler at `/api/event` now subscribes directly to `crate::bus::global::GlobalEventBus::subscribe()` instead of using isolated State parameter
-- **Dead EventBus removed**: `routes/event.rs` had an unused local `EventBus` struct - removed, SSE now uses `GlobalEventBus` directly
 - **Health route simplified**: `routes/health.rs` simplified to just `health_check()` function (unused `Router` builder removed)
 - **Auth deduplication**: `validate_ws_auth()` function now shared between `handle_ws` and `handle_tui` (was duplicated inline code)
 - **rpc.rs status corrected**: `rpc.rs` is NOT unused - it defines `JsonRpcMessage` struct used by `ws.rs` for JSON-RPC responses
+
+### Server Module (2026-05-24)
+- **RpcRequest/RpcResponse/RpcError added**: These types were missing from `rpc.rs` but referenced in `ws.rs`. Added them to fix compilation.
+- **health module exported**: `routes/mod.rs` now exports `health` module so `http.rs` can import `health_check`
+- **GlobalEventBus removed from ServerState**: Since `GlobalEventBus` is a static singleton (not Clone), it was removed from `ServerState`. SSE and WebSocket handlers use `GlobalEventBus::subscribe()` directly.
 
 ### Session Module (2026-05-22)
 - **StorageError variants expanded**: Added `Import` and `Export` error variants to `StorageError` enum (were using `Database` variant)

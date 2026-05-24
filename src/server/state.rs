@@ -8,14 +8,12 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::config::schema::Config;
 use crate::mcp::McpService;
-use crate::server::routes::GlobalEventBus;
 
 #[derive(Clone)]
 pub struct ServerState {
     pub project_dir: String,
     pub pool: SqlitePool,
     pub mcp_service: Arc<RwLock<McpService>>,
-    pub event_bus: GlobalEventBus,
     pub config: Config,
     pub ws_rate_limiter: Arc<WsRateLimiter>,
 }
@@ -61,12 +59,6 @@ impl FromRef<ServerState> for SqlitePool {
 impl FromRef<ServerState> for Arc<RwLock<McpService>> {
     fn from_ref(state: &ServerState) -> Arc<RwLock<McpService>> {
         state.mcp_service.clone()
-    }
-}
-
-impl FromRef<ServerState> for GlobalEventBus {
-    fn from_ref(state: &ServerState) -> GlobalEventBus {
-        state.event_bus.clone()
     }
 }
 

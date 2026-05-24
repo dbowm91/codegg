@@ -2,6 +2,7 @@ mod http;
 mod mdns;
 mod middleware;
 pub mod routes;
+pub mod rpc;
 mod state;
 mod ws;
 

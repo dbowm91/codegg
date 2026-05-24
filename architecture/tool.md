@@ -236,13 +236,18 @@ pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolEr
 
 ## Configuration
 
-Related config:
+Path validation for tools is handled by the `permission` module, not here. The tool registry's `filter_out()` method can deny specific tools, but no `path_rules` configuration exists in the tool module itself.
 
 ```toml
 [tools]
-allowed = ["bash", "read", "edit", "glob", "grep"]
-denied = ["delete"]
+allowed = ["bash", "read", "edit", "glob", "grep"]  # filter_out() denies non-listed tools
+denied = ["delete"]                                 # explicitly denied tools
+```
 
+Note: The `path_rules` configuration shown below is NOT implemented in the tool module:
+
+```toml
+# NOT IMPLEMENTED - shown for reference only
 [tools.path_rules]
 allowed_paths = ["/home/**", "/workspace/**"]
 denied_paths = ["/etc/**", "/root/**"]

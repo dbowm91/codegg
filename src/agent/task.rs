@@ -223,9 +223,20 @@ impl BackgroundScheduler {
                         };
 
                         for task in ready {
+                            let task_id = match task.id.parse::<u64>() {
+                                Ok(id) => id,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Invalid task id '{}' (parse error: {}), skipping task",
+                                        task.id,
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
                             let prompt = format!("[Background] {}", task.message);
                             let request = crate::agent::worker::SubAgentRequest {
-                                task_id: task.id.parse().unwrap_or_else(|_| rand::random::<u64>()),
+                                task_id,
                                 prompt,
                                 agent: "build".to_string(),
                                 parent_id: Some(task.session_id.clone()),

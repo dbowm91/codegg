@@ -67,7 +67,7 @@ pub struct WsRateLimiter {
 }
 ```
 
-Note: `event_bus` field was removed - SSE handler (`/api/event`) and TUI WebSocket (`/tui`) directly use `GlobalEventBus::subscribe()` from `crate::bus::global`.
+Note: `event_bus` field was removed - SSE handler (`/api/event`) directly uses `GlobalEventBus::subscribe()` from `crate::bus::global`. The WebSocket handler at `/tui` also uses `GlobalEventBus::subscribe()` directly.
 
 ### ws.rs - WebSocket Handlers
 

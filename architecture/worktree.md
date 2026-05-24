@@ -42,7 +42,7 @@ Creates a new worktree. If `create_branch` is true, passes `-b` to create a new 
 pub fn remove_worktree(git_root: &Path, path: &Path) -> Result<(), AppError>
 ```
 
-Removes a worktree via `git worktree remove`.
+Removes a worktree via `git worktree remove`. Note: Does not support a `force` parameter.
 
 ### find_git_root()
 

@@ -113,10 +113,9 @@ Store full project state as snapshot
     │
     ▼
 Execute tool modification
-    │
-    ▼
-If error → SnapshotManager::restore(snapshot_view)
 ```
+
+**Note**: Snapshot capture is wired but `restore()` is not currently called on error. Snapshots are captured for safety but the rollback feature is not yet integrated.
 
 #### Phase 2: Post-Execution Incremental Capture (loop.rs:1853)
 ```
@@ -150,10 +149,9 @@ Store as JSON in snapshot.data column
     │
     ▼
 Execute tool modification
-    │
-    ▼
-If error → SnapshotManager::restore(snapshot_view)
 ```
+
+**Note**: Same as Phase 1 - `restore()` is not called on error. Snapshot rollback is not yet integrated.
 
 ### Incremental Capture
 
