@@ -61,6 +61,10 @@ impl PermissionRegistry {
             .senders
             .retain(|_, (_, created)| created.elapsed() < ttl);
     }
+
+    pub fn cleanup_now() {
+        Self::cleanup();
+    }
 }
 
 impl Default for PermissionRegistry {
@@ -123,6 +127,10 @@ impl QuestionRegistry {
         QUESTION_REGISTRY
             .senders
             .retain(|_, (_, created)| created.elapsed() < ttl);
+    }
+
+    pub fn cleanup_now() {
+        Self::cleanup();
     }
 }
 

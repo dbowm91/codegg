@@ -154,6 +154,12 @@ impl ConfigWatcher {
         let configs = configs?;
         let mut config = crate::config::paths::merge_configs(&configs);
 
+        config.migrate();
+
+        if let Err(errors) = config.validate() {
+            tracing::warn!("config validation errors: {:?}", errors);
+        }
+
         crate::config::encryption::decrypt_provider_keys(&mut config)
             .map_err(|e| AppError::Config(ConfigError::Watch(e.to_string())))?;
 
