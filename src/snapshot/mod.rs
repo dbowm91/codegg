@@ -288,8 +288,9 @@ impl SnapshotManager {
                                 .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
                         }
                     }
-                    std::fs::write(&full_path, &file_snapshot.content)
-                        .map_err(|e| format!("failed to write {}: {}", full_path.display(), e))?;
+                    if let Err(e) = std::fs::write(&full_path, &file_snapshot.content) {
+                        return Err(format!("failed to write {}: {}", full_path.display(), e));
+                    }
                 }
                 Ok(())
             })();
