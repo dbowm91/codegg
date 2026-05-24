@@ -250,7 +250,7 @@ mod tests {
             },
         ];
 
-        let result = auto_compact_async(&messages, 128_000, 0.85, false, None).await;
+        let result = auto_compact_async(&messages, 128_000, 0.85, false, None, None).await;
         assert_eq!(result.len(), messages.len());
     }
 
