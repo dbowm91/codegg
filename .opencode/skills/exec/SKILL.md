@@ -1,6 +1,7 @@
 ---
 name: exec
 description: Non-interactive exec mode for CI/CD with JSON I/O
+version: 1.1.0
 tags: [exec, automation, ci-cd, scripting]
 ---
 

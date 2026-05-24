@@ -1,6 +1,7 @@
 ---
 name: TTS
 description: Text-to-speech module for audio output in opencode-rs
+version: 1.0.0
 tags: [tts, audio, speak]
 ---
 

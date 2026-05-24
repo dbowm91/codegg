@@ -1,3 +1,10 @@
+---
+name: subagent
+description: SubAgentPool, SubAgentSpawner, worker task infrastructure for parallel agent execution
+version: 1.1.0
+tags: [agent, worker, parallel, spawner]
+---
+
 # Skill: SubAgent Infrastructure
 
 This skill covers the subagent infrastructure in opencode-rs, which enables the main agent to spawn independent subagents for parallel task execution.
