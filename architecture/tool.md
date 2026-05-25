@@ -8,7 +8,7 @@ The `tool` module provides the built-in tools that the agent can use to interact
 
 **Key Responsibilities**:
 - Tool registry management
-- Built-in tool implementations (26 tools in `with_defaults()`)
+- Built-in tool implementations (27 tools in `with_defaults()`)
 - Tool execution with permission checking
 - Parameter validation
 
@@ -72,6 +72,7 @@ pub struct ToolResult {
 |------|------|-------------|
 | **codesearch** | `codesearch.rs` | Advanced code search |
 | **review** | `review.rs` | Code review |
+| **lsp** | `lsp.rs` | Query LSP server for code intelligence |
 
 ### Web Operations
 
@@ -98,6 +99,18 @@ pub struct ToolResult {
 | **batch** | `batch.rs` | Batch operations |
 | **tool_search** | `tool_search.rs` | On-demand tool discovery |
 | **invalid** | `invalid.rs` | Handles calls to unregistered tools |
+
+### Multi-Agent Team
+
+| Tool | Description |
+|-----|-------------|
+| **team_create** | Create a new agent team |
+| **send_message** | Send message to a team |
+| **list_messages** | List team messages |
+| **team_status** | Check team status |
+| **list_teams** | List all teams |
+
+(TeamTools registered separately via `TeamTools::register_all()`)
 
 ## ToolRegistry
 
