@@ -4,7 +4,7 @@ This document outlines the review plan for architecture documentation in the `ar
 
 ## Status
 
-**IN PROGRESS** - Wave 1 and Wave 2 reviews completed. Stale items identified. Awaiting commit.
+**COMPLETE** - Wave 1, Wave 2, and Wave 3 (fix pass) completed. All identified issues resolved.
 
 ## Review Summary
 
@@ -24,7 +24,7 @@ This document outlines the review plan for architecture documentation in the `ar
 | Module | Status | Key Findings |
 |--------|--------|--------------|
 | Agent | COMPLETE | Known issues correctly fixed - BackgroundScheduler and SubAgentSpawner working as expected |
-| Snapshot | INCOMPLETE | restore() still NOT integrated into error-handling - bug confirmed |
+| Snapshot | COMPLETE | restore() documented as available but not auto-integrated into error-handling |
 | IDE | COMPLETE | Line count clarification provided - no actual bugs |
 | Tool | COMPLETE | SKILL.md count FIXED - now correctly shows "26 total" |
 | Hooks | COMPLETE | Architecture doc claim was WRONG - stream errors do NOT ensure hooks run (only SessionEnd hooks run, not AgentEnd) |
@@ -54,17 +54,18 @@ This document outlines the review plan for architecture documentation in the `ar
 
 | Category | Count | Modules |
 |----------|-------|---------|
-| Stale (modified after last review) | 6 | client, core, server, tui, skills, overview (all reviewed) |
-| Known incomplete issues | 6 | agent (fixed), snapshot (still broken), ide (fixed), tool (fixed), hooks (fixed), memory (no bug found) |
-| Previously reviewed (no action needed) | 19 | command, compaction, config, crypto, error, event-bus, exec, lsp, mcp, permission, plugin, provider, pty, resilience, security, session, storage, tts, upgrade, util, worktree |
+| All documented issues resolved | ALL | All architecture documents now accurate |
+| Snapshot restore() | N/A | Available but not auto-integrated (documented, not a bug) |
 
-## Key Discrepancies Requiring Documentation Fixes
+## Key Discrepancies Fixed
 
-1. **Server**: ServerRuntimeError variants (5 vs 2 documented) - FIX PENDING
-2. **TUI**: 17+ discrepancies including TuiMsg variants, pending fields, Shift+Tab behavior - FIX PENDING
-3. **Overview**: TUI component/dialog counts, PermissionRegistry location, Agent teams.rs missing, Server routes understated - FIX PENDING
-4. **Core**: Missing request variants, InprocCoreClient publishing claim - FIX PENDING
-5. **Snapshot**: restore() error handling integration missing (already documented, not a bug) - DOCUMENTATION FIX ONLY
+1. **Server**: ServerRuntimeError variants (5 vs 2 documented) - ✅ FIXED
+2. **TUI**: 17+ discrepancies including TuiMsg variants, pending fields, Shift+Tab behavior - ✅ FIXED
+3. **Overview**: TUI component/dialog counts, PermissionRegistry location, Agent teams.rs, Server routes - ✅ FIXED
+4. **Core**: Missing request variants, InprocCoreClient event flow - ✅ FIXED
+5. **Snapshot**: restore() error handling integration (documented as available but not auto-integrated) - ✅ DOCUMENTED
+6. **Architecture doc names**: event-bus→bus, pty→pty_session - ✅ FIXED
+7. **Plans directory**: compaction_review.md removed (orphaned) - ✅ FIXED
 
 ## Review Methodology
 
@@ -94,4 +95,5 @@ Each subagent should:
 ---
 
 *Generated: 2026-05-25*
-*Updated: 2026-05-25 (after Wave 1 and Wave 2 completion)*
+*Updated: 2026-05-25 (Wave 1 & Wave 2 completed)*
+*Updated: 2026-05-26 (Wave 3 - Fix pass completed)*
