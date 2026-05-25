@@ -11,7 +11,7 @@ use ratatui::Frame;
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
-use crate::session::{Session, SessionStore};
+
 use crate::tui::app::TuiMsg;
 
 #[derive(Debug, Clone)]
@@ -36,7 +36,6 @@ pub struct TreeDialog {
     pub expanded: HashSet<String>,
     pub scroll: CenteredScroll,
     visible_height: usize,
-    store: Option<Arc<SessionStore>>,
     current_session_id: Option<String>,
 }
 
@@ -50,7 +49,6 @@ impl TreeDialog {
             expanded: HashSet::new(),
             scroll: CenteredScroll::new(),
             visible_height: 10,
-            store: None,
             current_session_id: None,
         }
     }
@@ -61,10 +59,6 @@ impl TreeDialog {
 
     pub fn set_visible_height(&mut self, height: usize) {
         self.visible_height = height;
-    }
-
-    pub fn set_store(&mut self, store: Arc<SessionStore>) {
-        self.store = Some(store);
     }
 
     pub fn load_nodes(&mut self, nodes: Vec<TreeNode>, current_session_id: Option<String>) {
@@ -90,158 +84,6 @@ impl TreeDialog {
         self.flatten();
         self.selected = 0;
         self.scroll.reset();
-    }
-
-    pub async fn build_from_session_async(
-        &mut self,
-        sess: Option<&Session>,
-        store: Option<Arc<SessionStore>>,
-    ) {
-        self.nodes.clear();
-        self.expanded.clear();
-        self.store = store.clone();
-        self.current_session_id = sess.map(|s| s.id.clone());
-
-        let root_id = match sess {
-            Some(s) => {
-                if let Some(ref store) = store {
-                    Self::find_root_async(store, &s.id).await
-                } else {
-                    Some(s.id.clone())
-                }
-            }
-            None => None,
-        };
-
-        if let Some(id) = root_id {
-            if let Some(ref store) = store {
-                self.build_tree_async(&id, 0, store).await;
-            }
-        }
-
-        if self.nodes.is_empty() {
-            self.nodes.push(TreeNode {
-                id: "root".to_string(),
-                session_id: "root".to_string(),
-                label: "no session".to_string(),
-                time_updated: 0,
-                message_count: None,
-                is_current: false,
-                is_archived: false,
-                children: Vec::new(),
-                depth: 0,
-            });
-        }
-
-        if let Some(first) = self.nodes.first() {
-            self.expanded.insert(first.session_id.clone());
-        }
-
-        self.flatten();
-        self.selected = 0;
-        self.scroll.reset();
-    }
-
-    async fn find_root_async(store: &Arc<SessionStore>, session_id: &str) -> Option<String> {
-        let mut current_id = session_id.to_string();
-        loop {
-            let store_clone = Arc::clone(store);
-            let id_clone = current_id.clone();
-            let opt_sess = store_clone.get(&id_clone).await.ok().flatten()?;
-            if let Some(parent_id) = opt_sess.parent_id {
-                current_id = parent_id;
-            } else {
-                return Some(current_id);
-            }
-        }
-    }
-
-    async fn build_tree_async(
-        &mut self,
-        session_id: &str,
-        depth: usize,
-        store: &Arc<SessionStore>,
-    ) {
-        let store_clone = Arc::clone(store);
-        let id_clone = session_id.to_string();
-
-        let (root_sess, children) =
-            tokio::join!(store_clone.get(&id_clone), store_clone.children(&id_clone));
-
-        let root_sess = root_sess.ok().flatten();
-        let children = children.unwrap_or_default();
-
-        let (Some(root_sess), children) = (root_sess, children) else {
-            return;
-        };
-
-        let is_current = self
-            .current_session_id
-            .as_ref()
-            .map(|id| id == session_id)
-            .unwrap_or(false);
-
-        let message_count = store_clone.message_count(&id_clone).await.ok();
-
-        let node = TreeNode {
-            id: session_id.to_string(),
-            session_id: session_id.to_string(),
-            label: root_sess.title.clone(),
-            time_updated: root_sess.time_updated,
-            message_count,
-            is_current,
-            is_archived: root_sess.time_archived.is_some(),
-            children: Vec::new(),
-            depth,
-        };
-        self.nodes.push(node);
-
-        let mut stack: Vec<(String, usize)> =
-            children.into_iter().map(|c| (c.id, depth + 1)).collect();
-
-        while let Some((child_id, child_depth)) = stack.pop() {
-            let store_clone = Arc::clone(store);
-            let child_id_clone = child_id.clone();
-
-            let children = match store_clone.children(&child_id).await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("failed to get children for {}: {}", child_id, e);
-                    continue;
-                }
-            };
-
-            let is_current = self
-                .current_session_id
-                .as_ref()
-                .map(|id| id == &child_id)
-                .unwrap_or(false);
-
-            let message_count = store_clone.message_count(&child_id_clone).await.ok();
-
-            let node = TreeNode {
-                id: child_id.clone(),
-                session_id: child_id.clone(),
-                label: children
-                    .first()
-                    .map(|c| c.title.clone())
-                    .unwrap_or_default(),
-                time_updated: children.first().map(|c| c.time_updated).unwrap_or(0),
-                message_count,
-                is_current,
-                is_archived: children
-                    .first()
-                    .map(|c| c.time_archived.is_some())
-                    .unwrap_or(false),
-                children: Vec::new(),
-                depth: child_depth,
-            };
-            self.nodes.push(node);
-
-            for child in children.into_iter().rev() {
-                stack.push((child.id, child_depth + 1));
-            }
-        }
     }
 
     pub fn toggle_expand(&mut self) {
