@@ -1,6 +1,7 @@
 ---
 name: mode
 description: Mode system for specialized permission workflows (Review/Debug/Docs)
+version: 1.0.0
 tags: [mode, permission, workflow, review, debug, docs]
 ---
 

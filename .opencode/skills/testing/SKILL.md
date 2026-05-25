@@ -1,3 +1,13 @@
+---
+name: testing
+description: Testing guidance for opencode-rs including unit, integration, and E2E tests
+version: 1.0.0
+tags:
+  - testing
+  - unit-test
+  - integration-test
+---
+
 # Skill: Testing
 
 Guidance for testing opencode-rs, including unit, integration, and E2E tests.

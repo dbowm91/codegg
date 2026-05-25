@@ -1,3 +1,13 @@
+---
+name: tui-dialog-testing
+description: Guide for testing TUI dialogs and Component trait implementations
+version: 1.0.0
+tags:
+  - tui
+  - dialog
+  - testing
+---
+
 # TUI Dialog Testing Skill
 
 ## When to Use
