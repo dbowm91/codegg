@@ -1,3 +1,13 @@
+---
+name: tool-search
+description: Tool catalog system and tool_search tool for on-demand tool discovery
+version: 1.0.0
+tags:
+  - tool
+  - search
+  - catalog
+---
+
 # Skill: tool-search
 
 # Tool Search & Catalog Guide

@@ -168,16 +168,16 @@ fn execute_command(&mut self, cmd: &Command, raw_input: Option<&str>) {
 
 | Component | File | Line |
 |-----------|------|------|
-| Command struct (core) | `src/command/mod.rs` | 8 |
+| Command struct (core) | `src/command/mod.rs` | 9 |
 | Command loading | `src/command/mod.rs` | 70, 123 |
 | Template execution | `src/command/mod.rs` | 160 |
 | Frontmatter parsing | `src/command/mod.rs` | 172 |
-| CommandRegistry (41 built-ins) | `src/tui/command.rs` | 78 |
+| CommandRegistry (41 built-ins) | `src/tui/command.rs` | 72 |
 | Dynamic command loading | `src/tui/command.rs` | 169, 207 |
 | CommandPalette dialog | `src/tui/components/dialogs/command.rs` | 15 |
-| Command execution (TUI) | `src/tui/app/mod.rs` | 2702 |
-| Slash command handling | `src/tui/app/mod.rs` | 3634 |
-| CommandConfig schema | `src/config/schema.rs` | 363 |
+| Command execution (TUI) | `src/tui/app/mod.rs` | 2808 |
+| Slash command handling | `src/tui/app/mod.rs` | 3732 |
+| CommandConfig schema | `src/config/schema.rs` | 396 |
 
 ## Architecture Notes
 

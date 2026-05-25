@@ -33,27 +33,6 @@
    - Plan should accurately reflect current state, not historical claims
    - Use "PASS" verification before including items in plan
 
-### Command Module Bug (COMPLETED 2026-05-25)
-
-```rust
-// Fixed - src/command/mod.rs:20-25
-pub async fn find_command_files(base: &Path) -> Vec<Command> {
-    find_command_files_sync(base)
-        .into_iter()
-        .filter_map(|r| r.ok())
-        .collect()
-}
-```
-
-### Documentation Corrections (COMPLETED 2026-05-25)
-
-1. **Overview architecture**: Fixed to 13 components, 20 dialogs
-2. **MCP architecture**: Added `heartbeat_token` and `heartbeat_cancellation` fields to McpConnectionManager
-3. **Core architecture**: Added explicit CoreRequest variants enumeration
-4. **LSP architecture**: Server count fixed to 39 (was 44)
-5. **Config architecture**: `decrypt_provider_keys()` line fixed to 163
-6. **Command architecture**: Built-in command count fixed to 41 (was 36)
-
 ### Subagent Context Preservation
 
 1. **Context window limits**: Subagents undergo compaction after ~2000 lines of context

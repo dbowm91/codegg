@@ -1,6 +1,7 @@
 ---
 name: team
 description: Multi-agent teams via file-based inbox communication
+version: 1.0.0
 tags: [team, multi-agent, collaboration, inbox]
 ---
 

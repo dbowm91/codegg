@@ -1,3 +1,13 @@
+---
+name: tui-dialog-maintenance
+description: Guide for maintaining TUI dialogs including key handling and FocusManager integration
+version: 1.0.0
+tags:
+  - tui
+  - dialog
+  - maintenance
+---
+
 # Skill: TUI Dialog Maintenance
 
 ## Purpose

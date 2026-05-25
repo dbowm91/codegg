@@ -1,3 +1,14 @@
+---
+name: tui_input
+description: TUI input handling including paste, keybindings, and FocusManager integration
+version: 1.0.0
+tags:
+  - tui
+  - input
+  - keyboard
+  - paste
+---
+
 # Skill: TUI Input Handling
 
 ## Overview

@@ -1,3 +1,14 @@
+---
+name: e2e
+description: End-to-end testing guide for opencode-rs TUI application
+version: 1.0.0
+tags:
+  - testing
+  - e2e
+  - integration
+  - ci-cd
+---
+
 # E2E Testing Skill
 
 ## Description

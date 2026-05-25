@@ -1,6 +1,7 @@
 ---
 name: question-response
 description: Question and permission response shape consistency across HTTP, WebSocket, and local registry
+version: 1.0.0
 tags: [question, permission, http, websocket, registry]
 ---
 

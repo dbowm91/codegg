@@ -1,6 +1,7 @@
 ---
 name: notifications
 description: Desktop notifications for long-running task completion
+version: 1.0.0
 tags: [notifications, desktop, ui, ux]
 ---
 

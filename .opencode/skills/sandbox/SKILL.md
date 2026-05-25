@@ -1,6 +1,7 @@
 ---
 name: sandbox
 description: OS-level filesystem sandboxing for bash tool using Landlock
+version: 1.0.0
 tags: [security, sandbox, landlock, linux, bash]
 ---
 
