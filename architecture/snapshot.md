@@ -94,7 +94,7 @@ impl SnapshotManager {
 
 ## Usage Flow
 
-### Full Capture
+### Full Capture (Before Tool Execution)
 
 ```
 Tool execution (edit, write, delete)
@@ -110,7 +110,12 @@ Store as JSON in snapshot.data column
     │
     ▼
 Execute tool modification
+    │
+    ▼
+(If tool fails, snapshot is available for manual restore via SnapshotManager::restore())
 ```
+
+**Note**: Snapshots are captured for safety but **automatic rollback on tool failure is not implemented**. The `restore()` and `restore_to_path()` methods exist and are available for manual use, but they are not called automatically when tool execution fails.
 
 **File Collection (`collect_files_sync()`)**:
 - Excluded directories: `.git`, `node_modules`, `target`, `.codegg`
@@ -139,10 +144,13 @@ If no files, return None
 
 ### Restore Functionality
 
-The `restore()` and `restore_to_path()` methods exist but are **not integrated into the agent loop**. Snapshots are captured for safety, but automatic rollback on tool failure is not implemented.
+The `restore()` and `restore_to_path()` methods exist and are functional, but are **not integrated into the agent loop**. Snapshots are captured for safety, but automatic rollback on tool failure is not implemented.
 
-- `restore()` - Restores all files from snapshot to project root (path traversal protected)
-- `restore_to_path()` - Restores files to a custom target path with atomic write pattern (temp file + rename)
+**Available restore methods:**
+- `restore(snapshot: &SnapshotView)` - Restores all files from snapshot to project root (path traversal protected)
+- `restore_to_path(snapshot: &SnapshotView, target_path: &Path)` - Restores files to a custom target path with atomic write pattern (temp file + rename)
+
+**Status**: Restore functionality is **available for manual use** but must be triggered explicitly (e.g., via a `/restore` command or direct API call). The snapshot capture infrastructure is in place; integrating restore into error-handling is a planned enhancement.
 
 ## Integration with AgentLoop
 
