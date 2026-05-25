@@ -496,7 +496,7 @@ When adding guidance for a new module:
 
 | Document | Status | Notes |
 |----------|--------|-------|
-| `plans/plan.md` | Active (2026-05-25) | Consolidated plan from 33 review files - documentation corrections |
+| `plans/plan.md` | Completed (2026-05-25) | Consolidated plan from 33 review files - all items verified and pruned |
 
 ## Quick Reference
 
