@@ -1,101 +1,95 @@
 # Architecture Review Plan
 
-This document outlines the review plan for architecture documentation in the `architecture/` directory. Each module will be reviewed by a subagent that will verify claims against the actual code and document findings and improvements.
-
-## Status
-
-**INCOMPLETE** - Wave 3 (fix pass) completed. All identified issues resolved. Ready for next review cycle.
-
-*Note: Set to INCOMPLETE for iterative improvement - will be updated after next review cycle.*
-
-## Review Summary
-
-### Wave 1 Results (Stale Modules - May 25 modifications)
-
-| Module | Status | Key Findings |
-|--------|--------|--------------|
-| Client | COMPLETE | SKILL.md line counts outdated (154 vs 159 for attach.rs) |
-| Core | COMPLETE | Missing request variants (TurnCancel, TurnSteer, etc); misleading claim about InprocCoreClient publishing |
-| Server | COMPLETE | ServerRuntimeError has 5 variants (doc shows 2); SSE methods misplaced to MCP not server |
-| TUI | COMPLETE | 17 discrepancies found - many undocumented TuiMsg variants, pending_permission/pending_question fields wrong |
-| Skills | COMPLETE | All accurate - no discrepancies |
-| Overview | COMPLETE | TUI counts wrong (17 vs 14 components, 21 vs 20 dialogs); PermissionRegistry location wrong; Agent misses teams.rs; Server routes understated |
-
-### Wave 2 Results (Known Issues)
-
-| Module | Status | Key Findings |
-|--------|--------|--------------|
-| Agent | COMPLETE | Known issues correctly fixed - BackgroundScheduler and SubAgentSpawner working as expected |
-| Snapshot | COMPLETE | restore() documented as available but not auto-integrated into error-handling |
-| IDE | COMPLETE | Line count clarification provided - no actual bugs |
-| Tool | COMPLETE | SKILL.md count FIXED - now correctly shows "26 total" |
-| Hooks | COMPLETE | Architecture doc claim was WRONG - stream errors do NOT ensure hooks run (only SessionEnd hooks run, not AgentEnd) |
-| Memory | COMPLETE | The claimed bugs (`>=` vs `>`, missing filter) were NOT FOUND - consolidated review had stale line numbers |
-
-## Stale Items Identified
-
-### Architecture Documents with Name Mismatch (FIXED)
-
-| Document | Actual Module | Issue | Status |
-|----------|--------------|-------|--------|
-| `architecture/event-bus.md` | `src/bus/` | Name mismatch - module is `bus/` not `event-bus/` | **FIXED - renamed to bus.md** |
-| `architecture/pty.md` | `src/pty_session/` | Name mismatch - module is `pty_session/` not `pty/` | **FIXED - renamed to pty_session.md** |
-| `architecture/error.md` | `src/error.rs` (file) | No module directory - file-based module | No action needed |
-| `architecture/exec.md` | `src/exec.rs` (file) | No module directory - file-based module | No action needed |
-| `architecture/compaction.md` | NONE | No corresponding module exists | See stale plans below |
-
-### Plans Directory Stale Items
-
-| File | Status | Action |
-|------|--------|--------|
-| `plans/plan.md` | Archived | Already marked as archived in AGENTS.md |
-| `plans/tui_separation.md` | Current | More recent (May 25 20:45) - still relevant |
-| `plans/compaction_review.md` | Orphaned | No corresponding module - to be removed |
-
-## Modules Summary
-
-| Category | Count | Modules |
-|----------|-------|---------|
-| All documented issues resolved | ALL | All architecture documents now accurate |
-| Snapshot restore() | N/A | Available but not auto-integrated (documented, not a bug) |
-
-## Key Discrepancies Fixed
-
-1. **Server**: ServerRuntimeError variants (5 vs 2 documented) - ✅ FIXED
-2. **TUI**: 17+ discrepancies including TuiMsg variants, pending fields, Shift+Tab behavior - ✅ FIXED
-3. **Overview**: TUI component/dialog counts, PermissionRegistry location, Agent teams.rs, Server routes - ✅ FIXED
-4. **Core**: Missing request variants, InprocCoreClient event flow - ✅ FIXED
-5. **Snapshot**: restore() error handling integration (documented as available but not auto-integrated) - ✅ DOCUMENTED
-6. **Architecture doc names**: event-bus→bus, pty→pty_session - ✅ FIXED
-7. **Plans directory**: compaction_review.md removed (orphaned) - ✅ FIXED
-
-## Review Methodology
-
-For each module, the subagent will:
-
-1. **Read the architecture document** at `architecture/<module>.md`
-2. **Explore the corresponding source code** in `src/<module>/` or relevant locations
-3. **Verify claims** by checking if documented types, functions, and behaviors match the implementation
-4. **Identify discrepancies** between documentation and implementation
-5. **Detect bugs** in the actual code that may not be documented
-6. **Propose improvements** for both documentation and code
-
-## Review Agent Instructions
-
-Each subagent should:
-- Load the relevant skill for the module (e.g., `agent-loop`, `provider`, etc.)
-- Cross-reference the architecture document with actual source code
-- Document any:
-  - Inaccuracies in the documentation
-  - Missing undocumented types or functions
-  - Bugs or code quality issues
-  - Missing architectural concerns
-  - Recommendations for improvement
-- Write findings to the corresponding file in `plans/` directory
-- Include a "Status" section at the top: STALE, INCOMPLETE, or COMPLETE
+**Status**: Phase 1-2 Complete (2026-05-25)
+**Created**: 2026-05-25
+**All 33 subagent reviews**: Completed
 
 ---
 
-*Generated: 2026-05-25*
-*Updated: 2026-05-25 (Wave 1 & Wave 2 completed)*
-*Updated: 2026-05-26 (Wave 3 - Fix pass completed)*
+## Summary
+
+Review all architecture documents (33 modules), verify claims against code, identify bugs and improvements, then prune stale content.
+
+## Phase 1: Subagent Reviews Complete
+
+All 33 subagent reviews completed. See `plans/review/` for individual reports.
+
+## Phase 2: Stale Item Detection
+
+### Modules Verified Accurate (No fixes needed)
+- `06_pty_session.md` - All claims verified correct
+- `12_bus.md` - All claims verified correct
+- `21_resilience.md` - Accurate, one missing detail (half_open_start_time)
+- `24_worktree.md` - All claims verified correct
+- `25_crypto.md` - All claims verified correct
+- `27_exec.md` - All claims verified correct
+- `29_memory.md` - Main doc accurate, skill doc has stale path
+- `30_error.md` - All claims verified correct
+- `31_storage.md` - All claims verified correct
+- `33_upgrade.md` - All claims verified correct
+
+### Modules Needing Corrections
+
+| Module | Issues Found |
+|--------|-------------|
+| `01_overview.md` | Dialog count 21→22/23, LSP 44+→43+, Tools 33+→27+, Hook types 10→13 |
+| `02_tui.md` | Theme count inconsistency (42 vs 31), DialogState classification wrong |
+| `03_snapshot.md` | AgentLoop integration code example stale (line numbers wrong) |
+| `04_server.md` | Missing FromRef implementations, rate limit headers |
+| `05_mcp.md` | Missing Clone impl, validate_url_host location, run_stdio async I/O |
+| `07_permission.md` | check_with_args missing, write tool lookup inconsistency |
+| `08_lsp.md` | Missing code_lens(), send_initialized(), skill says 42 servers (should be 39) |
+| `09_config.md` | Missing schema field, api_key() signature incomplete, line refs off |
+| `10_core.md` | CoreRequest incomplete (~20 missing), CoreEvent undocumented, bugs in handlers |
+| `11_agent.md` | Missing ToolResult variant, PartData::ToolCall not documented |
+| `13_command.md` | Line 115 says 36 commands (should be 41), find_command_files not truly async |
+| `14_hooks.md` | PreAgentRun/PostAgentRun don't exist, skill uses wrong YAML format |
+| `15_skills.md` | Missing list()/get() methods, find_matching behavior undocumented |
+| `16_client.md` | handle_remote_event() mislocated (in tui/app not client) |
+| `17_security.md` | Missing IPv6 link-local, spurious [security] config section |
+| `18_tool.md` | LspTool and TeamTools undocumented |
+| `19_tts.md` | stop() description misleading |
+| `20_plugin.md` | dispatch_to_plugin referenced but removed, fuel leaks on errors |
+| `22_provider.md` | ProviderCache.store should be cache, missing OpenAiToolState, ResponseFormat, ModelVariant |
+| `23_compaction.md` | 7 items needing correction, conflations, missing fields/functions |
+| `26_ide.md` | Code examples don't match actual implementations |
+| `28_session.md` | Module exports overstated, checkpoints table schema wrong |
+
+### Skill Docs with Stale Content
+
+| Skill | Issue |
+|-------|-------|
+| `.opencode/skills/hooks/SKILL.md` | Uses YAML map format, actual is TOML array |
+| `.opencode/skills/memory/SKILL.md` | Wrong path `project/{hash}/conventions/MEMORY.md` (should be `project/{hash}/MEMORY.md`) |
+| `.opencode/skills/lsp/SKILL.md` | Says 42 servers (should be 39) |
+| `.opencode/skills/error/SKILL.md` | (review incomplete - may have issues) |
+
+## Phase 3: Pruning
+
+### Items to Remove/Archive
+
+1. **Stale HookEvent references**: `PreAgentRun` and `PostAgentRun` in `architecture/hooks.md` - these events do not exist in codebase
+2. **Spurious `[security]` config section**: `architecture/security.md` lines 200-206 - `ssrf_protection` not used anywhere
+3. **Dead `dispatch_to_plugin` reference**: `architecture/plugin.md` references removed function
+
+### Items to Investigate Further
+
+1. **Core handlers bug**: `Initialize`, `TurnCancel`, `TurnSteer`, `AgentSelect`, `ModelSelect` defined but not handled (silently return `Ack`)
+2. **Plugin fuel leaks**: `execute_wasm_hook()` has fuel leaks on error paths
+3. **Server permission filtering**: `permission.rs` and `question.rs` session filtering may not work as intended
+
+---
+
+## Verification Commands
+
+```bash
+# Lint and typecheck
+cargo clippy --all-targets --all-features 2>&1 | head -50
+
+# Test suite
+cargo test --all-features 2>&1 | tail -30
+```
+
+---
+
+*Plan execution: All 33 subagents completed in 3 batches*
