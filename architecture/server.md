@@ -194,33 +194,13 @@ The SSE handler at `/api/event` subscribes directly to `GlobalEventBus::subscrib
 
 The `/tui` WebSocket maintains a bounded event buffer and assigns a monotonically increasing sequence number to each outbound event. When a client sends `Resume { from_event_seq }`, the server replays buffered events with a higher sequence number before sending `ResyncRequired`.
 
-### Client SSE Methods (`src/mcp/remote.rs`)
+### Client SSE Methods (`src/mcp/remote.rs` - documented in detail in `architecture/mcp.md`)
 
-The `RemoteClient` provides client-side SSE connection methods:
+The `RemoteClient` provides client-side SSE connection methods (full documentation in `architecture/mcp.md`):
 
-#### `connect_sse()` - Initiate SSE Connection
-
-```rust
-pub async fn connect_sse(&self) -> Result<(), McpError>
-```
-
-Establishes an SSE connection to the MCP server using the stored SSE URL. Sets appropriate headers (Authorization, Mcp-Session-Id) and Accept: text/event-stream. Calls `connect_sse_stream()` on success.
-
-#### `connect_sse_stream()` - Process SSE Stream
-
-```rust
-async fn connect_sse_stream(&self, resp: reqwest::Response) -> Result<(), McpError>
-```
-
-Internal method that spawns a task to process the SSE stream. Parses SSE events from the stream, extracting `data:` lines and parsing as JSON. Events are accumulated in `sse_events` Arc<Mutex<Vec<Value>>>. Has a 1MB buffer limit.
-
-#### `take_sse_events()` - Retrieve Collected Events
-
-```rust
-pub async fn take_sse_events(&self) -> Vec<serde_json::Value>
-```
-
-Returns all collected SSE events and clears the buffer. Used to retrieve events processed during SSE streaming.
+- `connect_sse()` - Initiate SSE connection to MCP server
+- `connect_sse_stream()` - Process SSE stream
+- `take_sse_events()` - Retrieve collected SSE events
 
 **Note**: SSE methods exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent (Known Issue - see architecture/mcp.md).
 
@@ -274,8 +254,11 @@ Environment variables:
 
 ```rust
 pub enum ServerRuntimeError {
-    Bind(String),     // Failed to bind address
-    Shutdown(String), // Server shutdown error
+    Bind(String),        // Failed to bind address
+    Shutdown(String),   // Server shutdown error
+    WebSocket(String),  // WebSocket connection error
+    Rpc(String),        // JSON-RPC error
+    Auth(String),       // Authentication failed
 }
 ```
 
