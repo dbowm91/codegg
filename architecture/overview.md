@@ -22,7 +22,7 @@ The architecture follows a **layered separation** between the TUI frontend, the 
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                                TUI Layer                                        │
 │  ┌──────────────────────────────────────────────────────────────────────────┐  │
-│  │  App (State Machine) │ Components (17) │ Dialogs (21) │ Input Handling  │  │
+│  │  App (State Machine) │ Components (14) │ Dialogs (20) │ Input Handling  │  │
 │  └──────────────────────────────────────────────────────────────────────────┘  │
 │                                      │                                          │
 │                              TuiMessage │ CoreResponse                          │
@@ -77,9 +77,11 @@ The heart of the system — handles LLM interactions, tool execution, message pr
 | **Processor** | `processor.rs` | Turn processing and response handling |
 | **Task** | `task.rs` | Background task scheduling |
 | **Worker** | `worker.rs` | SubAgentPool and SubAgentSpawner |
-| **Team** | `team.rs` | Multi-agent team coordination |
+| **Team** | `team.rs` | Single-team coordination |
+| **Teams** | `teams.rs` | Multi-team coordination |
 | **Prompt** | `prompt.rs` | System prompt construction |
 | **Mention** | `mention.rs` | Agent mention/selection handling |
+| **Prompts** | `prompts/` | Prompt templates directory |
 
 **Key Interfaces**:
 - `AgentLoop::run()` — Main execution loop
@@ -139,7 +141,7 @@ Tool registry and 33+ built-in tools for file operations, git, search, web, LSP,
 
 ---
 
-### [Event Bus](event-bus.md) — `src/bus/`
+### [Event Bus](bus.md) — `src/bus/`
 
 Inter-component communication through a publish-subscribe event bus, plus lifecycle hooks for extensibility.
 
@@ -147,10 +149,10 @@ Inter-component communication through a publish-subscribe event bus, plus lifecy
 |-----------|------|---------|
 | **GlobalEventBus** | `global.rs` | Broadcast channel (2048 capacity) for `AppEvent` distribution |
 | **AppEvent** | `events.rs` | 36 event variants (session, message, tool, streaming, etc.) |
-| **PermissionRegistry** | `mod.rs` | Request/response for permission decisions (300s TTL) |
-| **QuestionRegistry** | `mod.rs` | Request/response for question answers (300s TTL) |
+| **PermissionRegistry** | `mod.rs` (bus/) | Request/response for permission decisions (300s TTL) |
+| **QuestionRegistry** | `mod.rs` (bus/) | Request/response for question answers (300s TTL) |
 
-**See**: [event-bus.md](event-bus.md) for event types, subscription patterns, and the permission/question registry.
+**See**: [bus.md](bus.md) for event types, subscription patterns, and the permission/question registry.
 
 ---
 
@@ -303,11 +305,21 @@ Axum-based HTTP server with WebSocket support, REST API, SSE events, rate limiti
 
 | Route | Purpose |
 |-------|---------|
-| `/api/sessions/*` | Session CRUD operations |
+| `/api/sessions/*` | Session CRUD, fork, archive, share, revert |
 | `/api/config` | Configuration management |
 | `/api/mcp/*` | MCP server management |
-| `/api/events` | SSE event stream |
+| `/api/event` | SSE event stream |
+| `/api/permission/*` | Permission handling |
+| `/api/question/*` | Question handling |
+| `/api/providers` | Provider listing |
+| `/api/tools` | Tool listing |
+| `/api/file/*` | File read/write/delete |
+| `/api/project/*` | Project management |
+| `/api/workspace/*` | Workspace management |
 | `/ws/tui` | WebSocket TUI connection |
+| `/health` | Health check |
+
+**Note**: 13 route modules in `src/server/routes/` (config, event, file, health, mcp, permission, project, provider, question, session, tool, workspace).
 
 **See**: [server.md](server.md) for HTTP/WebSocket server architecture.
 
@@ -615,7 +627,7 @@ src/
 | [agent.md](agent.md) | agent | AgentLoop, compaction, router, task, team, worker |
 | [tool.md](tool.md) | tool | Tool registry, built-in tools, executor |
 | [provider.md](provider.md) | provider | LLM backends, streaming, model catalog |
-| [event-bus.md](event-bus.md) | bus | GlobalEventBus, AppEvent, registries |
+| [bus.md](bus.md) | bus | GlobalEventBus, AppEvent, registries |
 | [permission.md](permission.md) | permission | PermissionChecker, modes, DoomLoop |
 | [security.md](security.md) | security | SSRF, IP validation, Landlock |
 | [crypto.md](crypto.md) | crypto | AES-256-GCM encryption, key derivation |
