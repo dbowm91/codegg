@@ -380,16 +380,25 @@ CREATE TABLE todo (
 )
 ```
 
-**checkpoints**:
+**checkpoints** (v10):
 ```sql
 CREATE TABLE checkpoints (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     timestamp INTEGER NOT NULL,
-    state TEXT NOT NULL,  -- JSON serialized Checkpoint
+    state TEXT NOT NULL,  -- JSON serialized Checkpoint struct (contains provider, model, messages, etc.)
     FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
 )
 ```
+
+Note: The Checkpoint struct is serialized as JSON and stored in the `state` column. The struct contains:
+- `id`, `session_id`, `timestamp` (duplicated at table level)
+- `provider`, `model` - provider information
+- `messages`, `completed_steps`, `working_files` - session state
+
+Helper functions:
+- `compute_checksum(content: &str) -> String` - SHA256 hash
+- `create_working_file(path: &str, pre_state: Option<String>) -> Option<WorkingFile>` - creates WorkingFile with checksum
 
 ### Supporting Tables
 
@@ -458,7 +467,12 @@ pub use row::{MessageRow, PartRow, PermissionRow, SessionRow, TodoRow};
 pub use store::{
     escape_sql_like, generate_slug, MessageStore, PartStore, PermissionStore, SessionStore, TodoStore,
 };
-pub use checkpoint::CheckpointStore;
+pub use checkpoint::{
+    CheckpointStore,
+    compute_checksum,     // SHA256 checksum for file verification
+    create_working_file,  // Creates WorkingFile with checksum from path
+    verify_file,          // Verifies file matches expected checksum
+};
 ```
 
 ## Event Publishing
