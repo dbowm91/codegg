@@ -168,7 +168,7 @@ fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<()
     drop(original_temp);
     drop(modified_temp);
 
-    let output = run_command_with_timeout("code", &[
+    run_command_with_timeout("code", &[
         "--diff",
         original_path.to_string_lossy().as_ref(),
         modified_path.to_string_lossy().as_ref(),
@@ -299,13 +299,13 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
         drop(original_temp);
         drop(modified_temp);
 
-        let output = run_command_with_timeout("code", &[
+    let _output = run_command_with_timeout("code", &[
             "--diff",
             original_path.to_string_lossy().as_ref(),
             modified_path.to_string_lossy().as_ref(),
         ]);
 
-        if output.is_ok() {
+    if _output.is_ok() {
             drop(guard);
             return Ok(());
         }

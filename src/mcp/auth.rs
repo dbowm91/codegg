@@ -542,6 +542,7 @@ impl OAuthManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn load_tokens_async(&mut self) -> Result<(), McpError> {
         if !self.token_store.exists() {
             return Ok(());
@@ -601,6 +602,7 @@ impl OAuthManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn load_used_codes_async(&mut self) -> Result<(), McpError> {
         if !self.used_codes_store.exists() {
             return Ok(());
