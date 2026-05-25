@@ -188,7 +188,7 @@ impl HookResult {
 | `after agent processing` (`loop.rs`) | `AgentEnd` | No |
 | `before session ends` (`loop.rs`) | `SessionEnd` | No |
 
-**Important**: Stream errors now break the loop instead of returning early, ensuring `AgentEnd` and `SessionEnd` hooks run.
+**Important**: Stream errors break the loop. `SessionEnd` hooks run after loop exit. `AgentEnd` hooks do NOT run on stream errors since they are inside the loop that is broken.
 
 ## Plugin Hooks in AgentLoop
 

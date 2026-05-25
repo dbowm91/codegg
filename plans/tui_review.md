@@ -1,163 +1,269 @@
-# TUI Module Review
+# TUI Architecture Review
 
-## Summary
+**Status**: STALE (re-review after May 25 changes)
 
-Reviewed `architecture/tui.md` (390 lines) against actual implementation in `src/tui/`:
-- **src/tui/app/mod.rs**: 5814 lines (main App struct and event loop)
-- **src/tui/app/types.rs**: 239 lines (Dialog, TuiMsg, SessionStatus, etc.)
-- **src/tui/app/state/**: UiState, SessionState, AgentState, DialogState, PromptState, MessagesState
-- **src/tui/components/component.rs**: 103 lines (Component trait, DialogType, FocusManager)
-- **src/tui/components/component/focus.rs**: 108 lines (FocusManager implementation)
-- **src/tui/mod.rs**: 1467 lines (event loop, GlobalEventBus subscription, async handlers)
-- Additional components, input handling, layout, route, theme modules
+**Reviewed**: 2026-05-25
+**Architecture doc modified**: May 25 20:21
 
-## Verification Results
+---
 
-### Verified Correct Items
+## Summary of Verification
 
-| Item | Status | Notes |
-|------|--------|-------|
-| Directory structure | ✅ Accurate | All files match architecture doc |
-| App state domains (6) | ✅ Accurate | UiState, SessionState, AgentState, DialogState, PromptState, MessagesState |
-| Dialog enum variants (21) | ✅ Accurate | All 21 variants listed match implementation |
-| Route enum | ✅ Accurate | Home, Session(String) - correct |
-| InputMode enum | ✅ Accurate | Insert, Normal - correct |
-| Component trait | ✅ Accurate | handle_key, update, render, dialog_type, is_modal, hit_test, set_selected |
-| DialogType enum | ✅ Accurate | All 22 variants match Dialog enum |
-| FocusManager | ✅ Accurate | push/pop/top/top_mut/is_empty/handle_key/update/render/active_dialog_type |
-| UiState fields | ✅ Accurate | All documented fields present in src/tui/app/state/ui.rs |
-| SessionState fields | ✅ Accurate | All documented fields present in src/tui/app/state/session.rs |
-| GlobalEventBus subscription | ✅ Accurate | Line 924 of mod.rs: `let mut bus_rx = GlobalEventBus::subscribe();` |
-| Event handling | ✅ Accurate | TextDelta, ReasoningDelta, ToolCallStarted, ToolResult, AgentFinished, PermissionPending, QuestionPending, FileChanged, Subagent*, CompactionTriggered, Error |
-| Render order | ✅ Accurate | Header → Viewport → Prompt → Footer → Sidebar → Dialog → Completions → Toasts |
-| TuiCommand | ✅ Accurate | All documented variants plus additional ones (UndoDelete, UnshareSession, ExportSession, RenameSession, etc.) |
-| TuiMsg | ✅ Accurate | Matches documented structure with additional variants |
-| Theme count (31) | ✅ Accurate | theme.rs contains 31 themes |
-| Layout structure | ✅ Accurate | Header (1), Viewport (flexible), Prompt (3), Footer (1), Sidebar (30 cols) |
+The architecture document at `architecture/tui.md` was reviewed against the actual source code in `src/tui/`. The document is largely accurate but has several discrepancies that need correction.
 
-### Discrepancies Found
+**Files verified**:
+- `src/tui/app/mod.rs` (~5978 lines) - App struct, event handling, open_dialog
+- `src/tui/app/types.rs` (239 lines) - Dialog, TuiMsg, SessionStatus, etc.
+- `src/tui/app/state/ui.rs` (88 lines) - UiState
+- `src/tui/app/state/session.rs` (38 lines) - SessionState
+- `src/tui/app/state/agent.rs` (11 lines) - AgentState
+- `src/tui/app/state/dialog.rs` (55 lines) - DialogState
+- `src/tui/app/state/messages.rs` (4 lines) - MessagesState
+- `src/tui/app/state/prompt.rs` (15 lines) - PromptState
+- `src/tui/components/component.rs` (103 lines) - Component trait, DialogType
+- `src/tui/components/component/focus.rs` (108 lines) - FocusManager
+- `src/tui/components/dialogs/confirm.rs` (146 lines) - ConfirmDialog
+- `src/tui/components/dialogs/info.rs` (162 lines) - InfoDialog
+- `src/tui/components/spinner.rs` (101 lines) - SpinnerWidget
+- `src/tui/route.rs` (44 lines) - Route, RouteManager
+- `src/tui/input.rs` (702 lines) - InputMode, InputAction
+- `src/tui/theme.rs` (810 lines) - Theme (31 themes)
+- `src/tui/layout.rs` (105 lines) - TuiLayout
+- `src/tui/mod.rs` (1329+ lines) - Event loop, handlers
 
-1. **Architecture doc line 21: "App struct (~5800 lines)"**
-   - The comment in the architecture doc was likely accurate at time of writing. Current implementation is 5814 lines, so this is essentially correct with minor variance.
+---
 
-2. **UiState: shutdown_tx type** (architecture/tui.md:95)
-   - Doc shows: `pub shutdown_tx: Option<broadcast::Sender<()>>`
-   - Actual: Same type - ✅ Verified
+## Verified Correct Items
 
-3. **UiState: help_lines type** (architecture/tui.md:96)
-   - Doc shows: `pub help_lines: Vec<String>`
-   - Actual: Same type - ✅ Verified
+| Item | Location | Status |
+|------|----------|--------|
+| `Dialog` enum variants | `app/types.rs:2-25` | ✅ Matches doc |
+| `Route` enum (Home, Session) | `route.rs:2-6` | ✅ Matches doc |
+| `RouteManager` struct | `route.rs:8-11` | ✅ Matches doc |
+| `InputMode` enum (Insert, Normal) | `input.rs:72-77` | ✅ Matches doc |
+| `InputAction` enum | `input.rs:88-133` | ✅ Matches doc |
+| `DialogType` enum (21 variants) | `component.rs:21-45` | ✅ Matches doc |
+| `Component` trait | `component.rs:82-102` | ✅ Matches doc |
+| `FocusManager` methods | `component/focus.rs:18-102` | ✅ Matches doc |
+| `UiState` fields (theme, layout, routes, etc.) | `app/state/ui.rs:27-74` | ✅ Matches doc |
+| `SessionState` fields | `app/state/session.rs:16-38` | ✅ Matches doc |
+| `AgentState` fields | `app/state/agent.rs:3-11` | ✅ Matches doc |
+| `DialogState` dialog instances | `app/state/dialog.rs:27-55` | ✅ Matches doc |
+| `ClickTarget` enum | `app/mod.rs:203-211` | ✅ Matches doc |
+| `SessionStatus` enum (Idle, Working, Error) | `app/types.rs:227-232` | ✅ Matches doc |
+| `SpinnerWidget` frames | `components/spinner.rs:20` | ✅ Matches doc |
+| `TuiLayout` structure | `layout.rs:57-104` | ✅ Matches doc |
+| FocusManager `push/pop/top/handle_key` | `component/focus.rs` | ✅ Matches doc |
+| Theme count (31 themes) | `theme.rs:102-630` | ✅ Matches doc |
+| InfoDialog implementation (Context/Cost/Usage) | `components/dialogs/info.rs` | ✅ Matches doc |
+| `ConfirmDialog` via `push_dialog()` | `components/dialogs/confirm.rs` | ✅ Matches doc |
+| `busy_spinner: SpinnerWidget` in App | `app/mod.rs:247` | ✅ Matches doc |
 
-4. **UiState: bindings type** (architecture/tui.md:97)
-   - Doc shows: `pub bindings: HashMap<(KeyModifiers, KeyCode), InputAction>`
-   - Actual: `HashMap<(crossterm::event::KeyModifiers, crossterm::event::KeyCode), InputAction>` - ✅ Equivalent
+---
 
-5. **UiState: keybinds type** (architecture/tui.md:98)
-   - Doc shows: `pub keybinds: Option<KeybindConfig>`
-   - Actual: Same type - ✅ Verified
+## Discrepancies Found
 
-6. **UiState: tts field** (architecture/tui.md:104)
-   - Doc shows: `pub tts: Tts`
-   - Actual: Same type - ✅ Verified
+### 1. `UiState` fully verified as accurate
 
-7. **Architecture doc shows "Timeline" render layer but skill docs do not**
-   - The timeline feature (render_timeline method) exists and is used - it's an additional render layer not documented in architecture but present in skill
-   - This is a documentation gap, not a bug
+**Doc** (lines 93-121): `UiState` struct with theme, layout, routes, dialog, etc.
 
-8. **UiState missing field in documentation**
-   - Architecture doc does NOT list `sidebar_visible`, `auto_scroll`, `show_thinking`, `show_timestamps`, `timeline_visible`, `timeline_selected`, `tts_enabled`, `fullscreen`, `dirty_regions` fields that exist in actual UiState
-   - These are present in the actual code at src/tui/app/state/ui.rs:27-74
+**Actual** (`app/state/ui.rs:27-74`): All documented fields present including:
+- `fullscreen: bool` (line 71) ✅
+- `tts: Tts` (line 67) ✅
+- `tts_enabled: bool` (line 69) ✅
 
-9. **SessionState: indexed_files type**
-   - Doc shows: `pub indexed_files: Arc<RwLock<Vec<String>>>`
-   - Actual: Same type - ✅ Verified
+**Note**: My initial read of UiState was truncated and missed these fields. The doc is accurate for UiState.
 
-10. **DialogState: architecture shows "confirm.rs" in dialogs/**
-    - Doc shows ConfirmDialog at line 38 in dialogs/confirm.rs
-    - Actual: File exists at src/tui/components/dialogs/confirm.rs - ✅
+### 2. `TuiMsg::SelectSession` signature mismatch
 
-11. **architecture/tui.md:174-184 shows Dialog variants in code block but the Rust syntax is slightly off**
-    - The code block shows `pub enum Dialog { None, Model, Agent...}` but actual has proper multiline formatting
-    - Content is accurate - minor formatting issue only
+**Doc** (line 82): `SelectSession { session_id: String }`
 
-12. **CommandPalette not listed in DialogState but exists in Dialog variants**
-    - Doc says CommandPalette is at `dialogs/command.rs` but it's NOT in the DialogState struct directly
-    - It IS stored in DialogState as `command_palette: CommandPalette` - verified
+**Actual** (`app/types.rs:83`): `SelectSession(Box<Session>)`
 
-### Bugs or Issues Found
+The TuiMsg carries a full `Session` object, not just a session_id string.
 
-**No critical bugs found.** The implementation appears consistent with the documentation.
+### 3. `OpenDiffDialog` field types mismatch
 
-### Minor Issues / Missing Documentation
+**Doc** (line 76): `OpenDiffDialog { old_content: String, new_content: String, title: String }`
 
-1. **Timeline rendering not documented in architecture**
-   - Timeline is rendered as a separate layer (step 5.5 in render order) but not mentioned in architecture doc
-   - Present in skill documentation but not in architecture/tui.md
+**Actual** (`app/types.rs:72-76`):
+```rust
+OpenDiffDialog {
+    old_content: Box<str>,
+    new_content: Box<str>,
+    title: Box<str>,
+},
+```
 
-2. **UiState fields incomplete in architecture doc**
-   - Missing: `sidebar_visible`, `auto_scroll`, `show_thinking`, `show_timestamps`, `timeline_visible`, `timeline_selected`, `tts_enabled`, `fullscreen`, `dirty_regions`
-   - These exist in src/tui/app/state/ui.rs:27-74
+Uses `Box<str>` not `String`.
 
-3. **CommandPalette in DialogState**
-   - The `command_palette: CommandPalette` field exists but the architecture doc only mentions CommandPalette in passing
+### 4. `OpenShareDialog` variant correctly documented
 
-4. **ClickTarget enum not documented**
-   - Present in app/mod.rs:188-195 but not in architecture doc
-   - Used for mouse click target tracking
+**Doc** (line 70): Lists `OpenShareDialog` in TuiMsg
 
-5. **App fields like `viewport_area`, `prompt_area`, etc. not documented**
-   - These are internal state for mouse event handling, not part of the public API
-   - Architecture correctly focuses on the 6 state domains
+**Actual** (`app/types.rs:70`): `OpenShareDialog` variant exists in TuiMsg enum.
 
-6. **busy_spinner field not documented**
-   - SpinnerWidget is present in App struct but not mentioned in architecture
-   - Used for session status indication
+### 5. `OpenThemeDialog` variant correctly documented
 
-7. **pending_delete_session and similar pending_* fields in DialogState**
-   - Used for confirmation dialogs but not documented
+**Doc** (line 69): Lists `OpenThemeDialog` in TuiMsg
 
-8. **info_dialog variant shows Context/Cost/Usage but actually creates 3 separate info dialogs**
-   - The InfoDialog implementation handles Context, Cost, Usage modes internally
-   - Not immediately obvious from Dialog enum alone
+**Actual** (`app/types.rs:69`): `OpenThemeDialog` variant exists in TuiMsg enum.
 
-### Recommendations
+### 6. `UiState` has `tts: Tts` field correctly documented
 
-1. **Update architecture/tui.md** to include:
-   - Complete UiState fields list (sidebar_visible, auto_scroll, etc.)
-   - Timeline as a render layer
-   - CommandPalette field in DialogState
-   - busy_spinner in App struct
-   - pending_* fields in DialogState
+**Doc** (line 114): `pub tts: Tts,`
 
-2. **Consider adding to skill documentation**:
-   - Timeline feature documentation
-   - ClickTarget enum
-   - SpinnerWidget integration
+**Actual** (`app/state/ui.rs:67`): `pub tts: Tts,` field exists in UiState.
 
-3. **Architecture doc is accurate overall** - the implementation matches the documented structure very closely. The missing fields are generally internal implementation details rather than public API.
+### 7. `UiState` has `tts_enabled: bool` field correctly documented
 
-## File References
+**Doc** (line 115): `pub tts_enabled: bool,`
 
-| Issue | File | Line |
-|-------|------|------|
-| UiState missing fields | src/tui/app/state/ui.rs | 27-74 |
-| App struct 6 state domains | src/tui/app/mod.rs | 197-231 |
-| GlobalEventBus subscription | src/tui/mod.rs | 924 |
-| TuiCommand variants | src/tui/app/mod.rs | 79-151 |
-| TuiMsg variants | src/tui/app/types.rs | 56-173 |
-| DialogType enum | src/tui/components/component.rs | 21-45 |
-| FocusManager implementation | src/tui/components/component/focus.rs | 14-108 |
-| DialogState struct | src/tui/app/state/dialog.rs | 27-55 |
-| Timeline rendering | src/tui/app/mod.rs | 5294-5585 |
-| Render method | src/tui/app/mod.rs | 796-862 |
-| Event loop | src/tui/mod.rs | 920-1467 |
+**Actual** (`app/state/ui.rs:69`): `pub tts_enabled: bool,` field exists in UiState.
+
+### 8. App struct undocumented fields
+
+**Doc** (line 424-430): Shows only `busy_spinner` and `focus_manager` as additional fields.
+
+**Actual** (`app/mod.rs:213-248`): App has many more fields:
+- `notification_manager: Option<crate::tui::components::notification::NotificationManager>`
+- `undo_session_id: Option<String>`
+- `undo_until: Option<Instant>`
+- `bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>`
+- `config_watcher: Option<crate::config::ConfigWatcher>`
+- `core_client: Option<Arc<dyn CoreClient>>`
+- And others that ARE documented
+
+### 9. DialogState pending fields inaccurate
+
+**Doc** (line 174-176): Shows pending fields as tuples.
+
+**Actual** (`app/state/dialog.rs:33-54`):
+```rust
+pub question_session_id: Option<String>,
+pub permission_perm_id: Option<String>,
+pub pending_delete_session: Option<String>,
+pub pending_archive_session: Option<(String, bool)>,
+pub pending_bulk_delete: Option<usize>,
+pub pending_bulk_delete_ids: Option<Vec<String>>,
+pub pending_bulk_archive: Option<(usize, bool)>,
+pub pending_bulk_archive_ids: Option<Vec<String>>,
+```
+
+The pending fields have been expanded with bulk operation tracking.
+
+### 10. TuiCommand missing variants
+
+**Doc** (line 245-252): Shows DeleteSession, ArchiveSession, ForkSession, ShareSession, BulkDelete.
+
+**Actual** (`app/mod.rs:81-167`): TuiCommand has 36+ variants including:
+- `UndoDelete`
+- `UnshareSession`
+- `ExportSession`
+- `RenameSession`
+- `BulkArchive`
+- `BulkExport`
+- `CreateFromTemplate`
+- `LoadSessionMessages`
+- `SpawnSubagent`
+- `ListTasks`
+- `DeleteTask`
+- `TaskSchedule`
+- `WorktreeList`
+- `MemorySummary/MemorySearch/MemoryRemember/MemoryForget`
+- `UpdateModels`
+
+### 11. TuiMsg NavigateLeft/NavigateRight missing from doc
+
+**Doc** (line 231): Shows only `SubmitPrompt, NavigateUp, NavigateDown, CycleAgent`
+
+**Actual** (`app/types.rs:61-62`):
+```rust
+NavigateLeft,
+NavigateRight,
+```
+
+These additional navigation variants exist but aren't documented.
+
+### 12. TuiMsg ConfirmResult not in doc
+
+**Doc**: Doesn't mention `ConfirmResult(Option<bool>)` variant at line 172.
+
+### 13. TuiMsg missing variants (ExternalEditor, UndoDelete)
+
+**Doc** (line ~236): Shows `// ... and many more`
+
+**Actual** (`app/types.rs:117-118`):
+```rust
+ExternalEditor,
+UndoDelete,
+```
+
+Not mentioned in doc.
+
+### 14. Keyboard shortcut discrepancies
+
+**Doc** (line 363): `↑/j, ↓/k` for Navigate
+
+**Actual** (`input.rs:206-217`): Up/Down and j/k are both NavigateDown - j maps to NavigateDown (not k as "up"). This is correct in code but the doc says "↑/j, ↓/k" implying j is down and k is up, which is correct.
+
+**Doc** (line 364): `Shift+Tab` for Toggle plan mode
+
+**Actual** (`input.rs:220-223`): Shift+Tab maps to `TogglePermissionMode` NOT TogglePlanMode.
+
+### 15. InfoDialog documented as separate dialog types
+
+**Doc** (line 197): `Context, Cost, Usage` as separate Dialog variants
+
+**Actual**: These are handled via a single `InfoDialog` with `InfoType` enum (Context, Cost, Usage). This is a more efficient implementation than 3 separate dialog types. The doc is misleading.
+
+### 16. `pending_permission` field documented but not in code
+
+**Doc** (line 175): `pending_permission: Option<(String, String, Vec<String>)>`
+
+**Actual**: Not found in DialogState. Permission pending is tracked via `session_state.permission_pending: bool` and `dialog_state.permission_perm_id: Option<String>`.
+
+### 17. `pending_question` field documented but not in code
+
+**Doc** (line 176): `pending_question: Option<(String, Vec<QuestionSpec>)>`
+
+**Actual**: Not found in DialogState. Question pending is tracked via `dialog_state.question_session_id: Option<String>` and `dialog_state.question_dialog: Option<QuestionDialog>`.
+
+---
+
+## Recommendations
+
+### For Documentation
+
+1. **Update TuiMsg enum** to reflect actual variants including:
+   - `SelectSession(Box<Session>)` not `{ session_id: String }`
+   - `OpenDiffDialog { old_content: Box<str>, new_content: Box<str>, title: Box<str> }`
+   - `NavigateLeft`, `NavigateRight`
+   - `ConfirmResult(Option<bool>)`
+   - `ExternalEditor`, `UndoDelete`
+
+2. **Document TuiCommand fully** - it has 36+ variants, not just 5.
+
+3. **Document App struct fully** - there are many more fields than documented.
+
+4. **Fix `Shift+Tab` description** - it triggers `TogglePermissionMode`, not plan mode toggle.
+
+5. **Clarify Context/Cost/Usage** - these use a single `InfoDialog` with `InfoType`, not three separate dialogs.
+
+### For Code
+
+1. **No code bugs found** - the implementation is consistent with documentation for the items reviewed.
+
+---
 
 ## Conclusion
 
-The TUI module architecture documentation is **highly accurate** with only minor omissions:
-- Some internal state fields not documented (dirty_regions, timeline_visible, etc.)
-- Timeline feature undocumented
-- busy_spinner undocumented
+The architecture document is mostly accurate but has several discrepancies that accumulated over time as the codebase evolved. The most significant issues are:
 
-**No bugs or inconsistencies** were found between the architecture document and the actual implementation. The code structure, types, and behavior all match the documented architecture closely.
+1. TuiMsg/TuiCommand enums significantly larger than documented
+2. `pending_permission`/`pending_question` documented but don't exist
+3. `InfoDialog` implementation is more efficient than documented
+4. App struct undocumented fields (notification_manager, undo_session_id, etc.)
+5. `Shift+Tab` triggers `TogglePermissionMode`, not plan mode as documented
 
+A comprehensive update to the architecture document is recommended.

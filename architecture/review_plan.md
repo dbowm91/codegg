@@ -4,62 +4,74 @@ This document outlines the review plan for architecture documentation in the `ar
 
 ## Status
 
-**INCOMPLETE** - All 31 module reviews have been completed (plans/*_review.md files exist), but not all identified issues have been addressed. See "Work Completed" section below.
+**IN PROGRESS** - Wave 1 and Wave 2 reviews completed. Stale items identified. Awaiting commit.
 
-## Work Completed
+## Review Summary
 
-### Wave 1 (2026-05-24)
-- **Server compilation fixes**: RpcRequest/RpcResponse/RpcError types added, health module exported, GlobalEventBus removed from ServerState
-- **Agent task.rs bug fix**: BackgroundScheduler now skips tasks with invalid IDs instead of using random fallback
+### Wave 1 Results (Stale Modules - May 25 modifications)
 
-### Wave 2 (2026-05-24)
-- **Architecture docs updated**: server.md, agent.md, snapshot.md, tool.md, tts.md, worktree.md
-- **Skills docs updated**: server/SKILL.md
+| Module | Status | Key Findings |
+|--------|--------|--------------|
+| Client | COMPLETE | SKILL.md line counts outdated (154 vs 159 for attach.rs) |
+| Core | COMPLETE | Missing request variants (TurnCancel, TurnSteer, etc); misleading claim about InprocCoreClient publishing |
+| Server | COMPLETE | ServerRuntimeError has 5 variants (doc shows 2); SSE methods misplaced to MCP not server |
+| TUI | COMPLETE | 17 discrepancies found - many undocumented TuiMsg variants, pending_permission/pending_question fields wrong |
+| Skills | COMPLETE | All accurate - no discrepancies |
+| Overview | COMPLETE | TUI counts wrong (17 vs 14 components, 21 vs 20 dialogs); PermissionRegistry location wrong; Agent misses teams.rs; Server routes understated |
 
-### Wave 3 (2026-05-24)
-- **AGENTS.md updated**: Server Module and Agent Module sections updated with new fixes
+### Wave 2 Results (Known Issues)
 
-### Remaining Issues (Not Addressed)
-- Snapshot: `restore()` not integrated into error-handling (documented but not fixed)
-- IDE: Minor - line count discrepancy (internal implementation details)
-- Tool: Minor - "25+ total" should say "26 total" in SKILL.md
-- Various skill files may need minor updates based on review findings
+| Module | Status | Key Findings |
+|--------|--------|--------------|
+| Agent | COMPLETE | Known issues correctly fixed - BackgroundScheduler and SubAgentSpawner working as expected |
+| Snapshot | INCOMPLETE | restore() still NOT integrated into error-handling - bug confirmed |
+| IDE | COMPLETE | Line count clarification provided - no actual bugs |
+| Tool | COMPLETE | SKILL.md count FIXED - now correctly shows "26 total" |
+| Hooks | COMPLETE | Architecture doc claim was WRONG - stream errors do NOT ensure hooks run (only SessionEnd hooks run, not AgentEnd) |
+| Memory | COMPLETE | The claimed bugs (`>=` vs `>`, missing filter) were NOT FOUND - consolidated review had stale line numbers |
 
-## Modules to Review
+## Stale Items Identified
 
-| # | Module | Document | Review Agent Output |
-|---|--------|----------|---------------------|
-| 1 | Agent | `architecture/agent.md` | `plans/agent_review.md` |
-| 2 | Client | `architecture/client.md` | `plans/client_review.md` |
-| 3 | Command | `architecture/command.md` | `plans/command_review.md` |
-| 4 | Compaction | `architecture/compaction.md` | `plans/compaction_review.md` |
-| 5 | Config | `architecture/config.md` | `plans/config_review.md` |
-| 6 | Crypto | `architecture/crypto.md` | `plans/crypto_review.md` |
-| 7 | Error | `architecture/error.md` | `plans/error_review.md` |
-| 8 | Event Bus | `architecture/event-bus.md` | `plans/event-bus_review.md` |
-| 9 | Exec | `architecture/exec.md` | `plans/exec_review.md` |
-| 10 | Hooks | `architecture/hooks.md` | `plans/hooks_review.md` |
-| 11 | IDE | `architecture/ide.md` | `plans/ide_review.md` |
-| 12 | LSP | `architecture/lsp.md` | `plans/lsp_review.md` |
-| 13 | MCP | `architecture/mcp.md` | `plans/mcp_review.md` |
-| 14 | Memory | `architecture/memory.md` | `plans/memory_review.md` |
-| 15 | Permission | `architecture/permission.md` | `plans/permission_review.md` |
-| 16 | Plugin | `architecture/plugin.md` | `plans/plugin_review.md` |
-| 17 | Provider | `architecture/provider.md` | `plans/provider_review.md` |
-| 18 | PTY | `architecture/pty.md` | `plans/pty_review.md` |
-| 19 | Resilience | `architecture/resilience.md` | `plans/resilience_review.md` |
-| 20 | Security | `architecture/security.md` | `plans/security_review.md` |
-| 21 | Server | `architecture/server.md` | `plans/server_review.md` |
-| 22 | Session | `architecture/session.md` | `plans/session_review.md` |
-| 23 | Skills | `architecture/skills.md` | `plans/skills_review.md` |
-| 24 | Snapshot | `architecture/snapshot.md` | `plans/snapshot_review.md` |
-| 25 | Storage | `architecture/storage.md` | `plans/storage_review.md` |
-| 26 | Tool | `architecture/tool.md` | `plans/tool_review.md` |
-| 27 | TTS | `architecture/tts.md` | `plans/tts_review.md` |
-| 28 | TUI | `architecture/tui.md` | `plans/tui_review.md` |
-| 29 | Upgrade | `architecture/upgrade.md` | `plans/upgrade_review.md` |
-| 30 | Util | `architecture/util.md` | `plans/util_review.md` |
-| 31 | Worktree | `architecture/worktree.md` | `plans/worktree_review.md` |
+### Architecture Documents with Name Mismatch
+
+| Document | Actual Module | Issue |
+|----------|--------------|-------|
+| `architecture/event-bus.md` | `src/bus/` | Name mismatch - module is `bus/` not `event-bus/` |
+| `architecture/pty.md` | `src/pty_session/` | Name mismatch - module is `pty_session/` not `pty/` |
+| `architecture/error.md` | `src/error.rs` (file) | No module directory - file-based module |
+| `architecture/exec.md` | `src/exec.rs` (file) | No module directory - file-based module |
+| `architecture/compaction.md` | NONE | No corresponding module exists |
+
+### Recommended Pruning Actions
+
+1. **Rename** `architecture/event-bus.md` → `architecture/bus.md` (or keep for bus module if intentional)
+2. **Rename** `architecture/pty.md` → `architecture/pty_session.md` (or keep for pty_session if intentional)
+3. **Consider removal** of `architecture/compaction.md` - no corresponding module exists
+4. **Verify** `architecture/error.md` and `architecture/exec.md` are properly aligned with their file-based modules
+
+### Plans Directory Stale Items
+
+| File | Status | Action |
+|------|--------|--------|
+| `plans/plan.md` | Archived | Already marked as archived in AGENTS.md |
+| `plans/tui_separation.md` | Current | More recent (May 25 20:45) - still relevant |
+| `plans/compaction_review.md` | Orphaned | No corresponding module - consider removal |
+
+## Modules Summary
+
+| Category | Count | Modules |
+|----------|-------|---------|
+| Stale (modified after last review) | 6 | client, core, server, tui, skills, overview (all reviewed) |
+| Known incomplete issues | 6 | agent (fixed), snapshot (still broken), ide (fixed), tool (fixed), hooks (fixed), memory (no bug found) |
+| Previously reviewed (no action needed) | 19 | command, compaction, config, crypto, error, event-bus, exec, lsp, mcp, permission, plugin, provider, pty, resilience, security, session, storage, tts, upgrade, util, worktree |
+
+## Key Discrepancies Requiring Documentation Fixes
+
+1. **Server**: ServerRuntimeError variants (5 vs 2 documented)
+2. **TUI**: 17+ discrepancies including TuiMsg variants, pending fields, Shift+Tab behavior
+3. **Overview**: TUI component/dialog counts, PermissionRegistry location, Agent teams.rs missing, Server routes understated
+4. **Core**: Missing request variants, InprocCoreClient publishing claim
+5. **Snapshot**: restore() error handling integration missing (code bug, not doc)
 
 ## Review Methodology
 
@@ -83,10 +95,10 @@ Each subagent should:
   - Bugs or code quality issues
   - Missing architectural concerns
   - Recommendations for improvement
-
-## Execution
-
-Subagents will be launched in parallel groups to maximize efficiency. Each will write their findings to the corresponding file in the `plans/` directory.
+- Write findings to the corresponding file in `plans/` directory
+- Include a "Status" section at the top: STALE, INCOMPLETE, or COMPLETE
 
 ---
-*Generated: 2026-05-24*
+
+*Generated: 2026-05-25*
+*Updated: 2026-05-25 (after Wave 1 and Wave 2 completion)*

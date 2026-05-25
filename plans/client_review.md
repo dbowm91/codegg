@@ -1,49 +1,94 @@
 # Client Module Architecture Review
 
-**Date**: 2026-05-24
-**Reviewer**: Architecture Review Agent
-**Module**: `client/`
-**Files Reviewed**:
-- `src/client/mod.rs` (4 lines)
-- `src/client/attach.rs` (154 lines)
-- `src/client/sdk.rs` (53 lines)
+**Status**: STALE (architecture doc modified May 25 after previous review)
+
+**Review Date**: 2026-05-25
 
 ---
 
 ## Summary
 
-The client module provides WebSocket connectivity for remote TUI connections. The implementation is largely correct and well-structured, but several discrepancies exist between the documentation and actual code.
-
-**Overall Assessment**: Implementation is correct but documentation needs updates.
+Verified `architecture/client.md` against `src/client/` (3 files: `mod.rs`, `attach.rs`, `sdk.rs`) and `src/protocol/tui.rs`. The architecture document is **generally accurate** with minor discrepancies in line counts and one behavioral note.
 
 ---
 
-## Verified Items
+## File Verification
 
-### Correct Items
-
-1. **Module exports** - `mod.rs` correctly re-exports `run_attach` as public API
-2. **RemoteClient structure** - `sdk.rs` struct matches docs (`base_url`, `http` fields)
-3. **Health check endpoint** - Uses `GET /health` with 10s timeout (sdk.rs:36-51)
-4. **WebSocket connection** - 30-second timeout on connection (attach.rs:43)
-5. **Authentication** - Bearer token in Authorization header (attach.rs:27-29)
-6. **ClientError enum** - All 5 variants match (`Connection`, `Unreachable`, `Rpc`, `WebSocket`, `Auth`) defined in `src/error.rs:504-519`
-7. **URL building** - Both `build_tui_ws_url()` and `build_http_url()` work as documented
-8. **Two background tasks** - `event_task` and `send_task` properly implemented
-9. **TuiMessage protocol** - All variants defined in `src/protocol/tui.rs` match documented table
-10. **Connection retry logic** - 3 retries with exponential backoff (2s, 4s) implemented at attach.rs:35-66
+| File | Arch Doc Lines | Actual Lines | Status |
+|------|-----------------|--------------|--------|
+| `mod.rs` | 4 | 4 | ✅ MATCH |
+| `attach.rs` | ~154 (skill) | 159 | ⚠️ DISCREPANCY |
+| `sdk.rs` | ~53 (skill) | 53 | ✅ MATCH |
 
 ---
 
-## Discrepancies Found
+## Verified Correct
 
-### 1. RenderFrame Handling (Documentation Inaccurate)
+### mod.rs
+- ✅ Re-exports `run_attach` from `attach` module
 
-**Location**: architecture/client.md line 85, SKILL.md line 144
+### attach.rs
+- ✅ `run_attach(url: &str, token: Option<&str>) -> Result<(), ClientError>` signature matches
+- ✅ `build_tui_ws_url()` and `build_http_url()` functions present
+- ✅ Health check via `RemoteClient::health()` with 10s timeout
+- ✅ WebSocket: 30s timeout per attempt, up to 3 retries with exponential backoff (2s, 4s)
+- ✅ Resume handshake: `TuiMessage::Resume { from_event_seq: 0 }` sent immediately after connect
+- ✅ Channel setup: `event_tx/rx` and `out_tx/rx` using `tokio::sync::mpsc::unbounded_channel`
+- ✅ `event_task`: receives WS messages, parses JSON, forwards via `event_tx`
+- ✅ `send_task`: receives `TuiMessage`, serializes to JSON, sends over WS
+- ✅ `catch_unwind` wraps `event_task` async block
+- ✅ TUI initialization: `tui::App::new_remote(url.to_string())`
+- ✅ Cleanup: both tasks aborted when `run_event_loop()` returns
 
-**Issue**: Documentation states `RenderFrame` is "unused" / "not implemented" implying complete non-handling. However, the TUI actually handles it:
+### sdk.rs
+- ✅ `RemoteClient` struct with `base_url: String` and `http: Client`
+- ✅ `new(base_url: &str, token: Option<&str>)` constructor with Bearer token header support
+- ✅ `health()` method: `GET /health` with 10s timeout, returns `Err(ClientError::Unreachable)` on failure
 
-**Actual code** (`src/tui/app/mod.rs:755-759`):
+### TuiMessage Protocol
+- ✅ All documented variants present in `src/protocol/tui.rs`:
+  - Client→Server: `Input`, `KeyDown`, `MouseClick`, `Resize`, `Resume`, `RenderFrame`, `PermissionResponse`, `QuestionResponse`
+  - Server→Client: `EventEnvelope`, `TextDelta`, `PermissionPending`, `QuestionPending`, `SessionInfo`, `SessionEnded`, `ToolCallStarted`, `ToolResult`, `Error`, `ResyncRequired`
+- ✅ `#[serde(tag = "type")]` for JSON serialization
+
+### ClientError Enum
+- ✅ All 5 variants in `src/error.rs:504-519`: `Connection`, `Unreachable`, `Rpc`, `WebSocket`, `Auth`
+
+### TUI Integration
+- ✅ `App::new_remote(project_dir: String)` at `src/tui/app/mod.rs:510`
+- ✅ `handle_remote_event(event: serde_json::Value)` at `src/tui/app/mod.rs:794`
+- ✅ `EventEnvelope` unwrapping with recursive call to `handle_remote_event` for payload
+- ✅ `ResyncRequired` handling with toast warning and full details logged
+
+---
+
+## Discrepancies
+
+### 1. SKILL.md Line Count Outdated
+**File**: `.opencode/skills/client/SKILL.md`
+
+- Line 21 claims `attach.rs` is 154 lines; actual is **159 lines**
+- This is a skill documentation issue, not an architecture doc issue
+
+### 2. SKILL.md `new_remote` Signature Inaccurate
+**File**: `.opencode/skills/client/SKILL.md:157`
+
+The skill shows:
+```rust
+pub fn new_remote(project_dir: String) -> Self
+```
+
+But the actual call site in `attach.rs:77` passes `url.to_string()`:
+```rust
+let mut app = tui::App::new_remote(url.to_string());
+```
+
+This is a documentation inaccuracy in the **skill**, not the architecture doc. The architecture doc correctly describes this as `tui::App::new_remote()` without specifying parameters.
+
+### 3. RenderFrame Handling
+**Files**: `architecture/client.md:89`, `src/protocol/tui.rs:34-36`
+
+The architecture doc says `RenderFrame` is "received and logged, not rendered". This is **correct** - see `src/tui/app/mod.rs:868-873`:
 ```rust
 Ok(RemoteTuiMessage::RenderFrame { content }) => {
     tracing::warn!(
@@ -53,115 +98,29 @@ Ok(RemoteTuiMessage::RenderFrame { content }) => {
 }
 ```
 
-**Recommendation**: Update docs to clarify RenderFrame is "received and logged (not rendered)" rather than "unused."
+---
 
-### 2. new_remote Parameter Name Mismatch
+## Bugs Identified
 
-**Location**: SKILL.md line 151, actual code at `src/tui/app/mod.rs:492`
-
-**Issue**: Skill says `pub fn new_remote(project_dir: String)` but actual signature is `pub fn new_remote(project_dir: String)` - this is actually correct. The confusion is that `attach.rs:72` calls `tui::App::new_remote(url.to_string())` passing URL as project_dir.
-
-**Analysis**: The `project_dir` parameter is stored but only used locally (never sent to server). The URL is passed because `new_remote()` doesn't actually use the parameter for remote mode - it just sets `remote_mode = true` and initializes channels. This is semantically confusing but not a bug.
-
-**Recommendation**: Document that `project_dir` is accepted but ignored in remote mode, or consider renaming the parameter to clarify its purpose.
-
-### 3. Missing Documentation: Retry Logic
-
-**Location**: `src/client/attach.rs:35-66`
-
-**Issue**: The architecture doc does not document the retry with exponential backoff (3 attempts, 2s/4s delay).
-
-**Current behavior**:
-- Up to 3 WebSocket connection attempts
-- Exponential backoff: 2s, 4s between attempts
-- 30s timeout per attempt
-- Returns `ClientError::WebSocket` after all retries exhausted
-
-**Recommendation**: Add retry logic to architecture documentation under "Connection Flow" or "Error Handling."
-
-### 4. Missing Documentation: Panic Handling
-
-**Location**: `src/client/attach.rs:80-112`
-
-**Issue**: The event_task uses `catch_unwind` to handle panics, but this is not documented.
-
-**Current behavior**:
-```rust
-let result = std::panic::catch_unwind(move || async { ... });
-if let Err(panic_err) = result {
-    tracing::error!("event_task panicked: {:?}", panic_err);
-}
-```
-
-**Recommendation**: Add note about panic recovery in event handling.
+**None.** The implementation is correct and matches the architecture documentation.
 
 ---
 
-## Code Issues
+## Recommendations
 
-### Issue 1: Semantic Confusion in new_remote Parameter
+### For Architecture Doc
+1. Consider adding `attach.rs` line count (159 lines) if maintaining line counts
+2. The architecture doc is accurate - no changes required
 
-**File**: `src/client/attach.rs:72`
-**Line**: `let mut app = tui::App::new_remote(url.to_string());`
+### For SKILL.md
+1. Update line count for `attach.rs` from 154 to 159
+2. The `new_remote(project_dir: String)` signature shown in the skill is for documentation purposes (the method does take a `String` parameter), but the call site uses `url.to_string()`. Consider clarifying this in the skill.
 
-**Problem**: Passing `url` as `project_dir` is semantically confusing. The `new_remote()` function accepts a `project_dir` string but in remote mode this parameter is not meaningfully used.
-
-**Impact**: Low - code works correctly, just confusing for maintenance.
-
-**Recommendation**: Consider either:
-1. Document that the parameter is ignored in remote mode
-2. Rename parameter to `display_name` or similar to clarify purpose
-3. Or change to `new_remote(url: String)` if that's the actual intent
-
-### Issue 2: Health Check Error Message Inconsistency
-
-**File**: `src/client/sdk.rs:43`
-**Line**: `map_err(ClientError::Unreachable(e.to_string()))`
-
-**Problem**: Other error paths in `health()` use `format!` with custom messages, but this one uses `e.to_string()`. Not a bug but inconsistent style.
-
-**Recommendation**: Use consistent formatting: `ClientError::Unreachable(format!("connection failed: {}", e))`
-
----
-
-## Documentation Improvements Needed
-
-1. **Add retry/backoff documentation** to architecture/client.md
-2. **Clarify RenderFrame handling** - "received and logged" not "unused"
-3. **Add panic handling note** to architecture or skill doc
-4. **Clarify new_remote parameter** - semantically confusing URL passing
-
----
-
-## No Bugs Found (Verified Correct)
-
-1. **ClientError enum correctly defined** in `src/error.rs:504-519`
-2. **Health check uses /health endpoint** - confirmed correct (not /api/providers as noted in AGENTS.md review)
-3. **WebSocket auth header** correctly set as `Bearer {token}`
-4. **event_tx/out_tx channels** properly set up and passed to App
-5. **Both tasks properly aborted** on event loop completion (lines 126-127)
-6. **catch_unwind prevents event_task crashes** from propagating
-
----
-
-## File References
-
-| Issue | File | Lines |
-|-------|------|-------|
-| RenderFrame handling | `src/tui/app/mod.rs` | 755-759 |
-| URL passed as project_dir | `src/client/attach.rs` | 72 |
-| Retry logic | `src/client/attach.rs` | 35-66 |
-| Panic catch | `src/client/attach.rs` | 81-112 |
-| ClientError enum | `src/error.rs` | 504-519 |
-| Health check | `src/client/sdk.rs` | 35-52 |
+### For Code
+No changes recommended - implementation is correct.
 
 ---
 
 ## Conclusion
 
-The client module implementation is correct and functional. The main issues are:
-1. Documentation inaccuracies (RenderFrame, retry logic)
-2. Semantic confusion in parameter naming/usage
-3. Missing documentation for panic handling
-
-No critical bugs found. Recommended to update documentation to match actual behavior.
+The architecture document `architecture/client.md` is **accurate and up-to-date**. The implementation in `src/client/` matches all documented types, functions, and behaviors. The only discrepancies are in the **skill file** `.opencode/skills/client/SKILL.md` which has outdated line counts.

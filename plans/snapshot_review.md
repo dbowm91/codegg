@@ -1,132 +1,189 @@
-# Snapshot Module Review
+# Snapshot Module Review (2026-05-25)
+
+## Status: INCOMPLETE
+
+The snapshot module implementation exists but `restore()` is **not integrated into error-handling** as of this review.
+
+---
+
+## Known Issue Verification: restore() Not Integrated
+
+**Previous Review Finding**: "The restore() and restore_to_path() methods exist but are not integrated into the agent loop."
+
+**Current Status**: **CONFIRMED - STILL NOT FIXED**
+
+### Evidence
+
+1. **No calls to `SnapshotManager::restore()` in AgentLoop**
+   - Search across entire codebase for `.restore(` only finds one call in `src/core/mod.rs:357` for SessionStore (not snapshot)
+   - `src/agent/loop.rs:1559-1624` shows only `capture_snapshot_if_needed()` and `capture_incremental_snapshot_if_needed()`
+   - No error handler invokes `SnapshotManager::restore()`
+
+2. **Snapshot capture is wired but rollback is not**
+   - Lines 1650-1655 in loop.rs capture snapshot before file-modifying tools
+   - Lines 1853 capture incremental snapshot on file changes
+   - Neither path has error recovery that calls `restore()`
+
+3. **Architecture document is misleading**
+   - Lines 97-119 and 139-156 show "If error → SnapshotManager::restore(snapshot_view)" flow
+   - This flow **does not exist in code**
+
+---
+
+## Architecture vs Implementation Comparison
+
+| Documented Item | Arch Line | Implementation | Match |
+|-----------------|-----------|----------------|-------|
+| `SnapshotOptions` with defaults | 22-27 | mod.rs:8-23 | ✓ |
+| `FileSnapshot` struct | 29-40 | mod.rs:25-31 | ✓ |
+| `Snapshot` struct with `data: String` | 42-54 | mod.rs:33-40 | ✓ |
+| `SnapshotView` with `files: HashMap` | 56-68 | mod.rs:42-49 | ✓ |
+| `SnapshotManager::new(pool, project_root)` | 80 | mod.rs:57-64 | ✓ |
+| `SnapshotManager::new_with_options(...)` | 81 | mod.rs:66-81 | ✓ |
+| `restore()` method | 88 | mod.rs:267-300 | ✓ |
+| `restore_to_path()` method | 89 | mod.rs:302-341 | ✓ |
+| Path traversal protection | 193-206 | mod.rs:280-284, 319-323 | ✓ |
+| Atomic write pattern | 207-219 | mod.rs:330-334 | ✓ |
+| Diff types | 221-250 | diff.rs:3-27 | ✓ |
+| `diff_files()` function | 248 | diff.rs:29-128 | ✓ |
+| `format_unified_diff()` function | 249 | diff.rs:130-143 | ✓ |
+
+All documented types/functions match implementation exactly.
+
+---
+
+## Path Traversal Protection Verification
+
+Both `restore()` and `restore_to_path()` have proper path traversal protection:
+
+```rust
+// mod.rs:274-284 (restore)
+let canonical_project_root = project_root.canonicalize()?;
+for (rel_path, file_snapshot) in files {
+    let full_path = project_root.join(&rel_path);
+    let canonical_path = full_path.canonicalize()
+        .unwrap_or_else(|_| full_path.clone());
+    if !canonical_path.starts_with(&canonical_project_root) {
+        return Err(format!("path traversal attempt detected"));
+    }
+    // ... write
+}
+
+// mod.rs:312-323 (restore_to_path)
+let canonical_target = target.canonicalize()?;
+for (rel_path, file_snapshot) in files {
+    let full_path = target.join(&rel_path);
+    let canonical_path = full_path.canonicalize()
+        .unwrap_or_else(|_| full_path.clone());
+    if !canonical_path.starts_with(&canonical_target) {
+        return Err(format!("path traversal attempt detected"));
+    }
+    // ... atomic write
+}
+```
+
+**Status**: Path traversal protection is correctly implemented.
+
+---
+
+## Discrepancies Found
+
+### 1. Architecture Documents Non-Existent Error-Recovery Flow (HIGH)
+
+**Location**: `architecture/snapshot.md:139-156`
+
+The architecture shows this flow:
+```
+If error → SnapshotManager::restore(snapshot_view)
+```
+
+This flow **does not exist**. The agent captures snapshots but never restores them on error.
+
+**Recommendation**: Update architecture to document that `restore()` is available but not yet integrated into the agent error-handling loop.
+
+### 2. Architecture Shows AgentLoop Integration Code (LOW)
+
+**Location**: `architecture/snapshot.md:147-172`
+
+The code examples show:
+```rust
+impl AgentLoop {
+    async fn capture_snapshot_if_needed(&mut self) { ... }
+    async fn capture_incremental_snapshot_if_needed(&mut self, label: Option<String>) { ... }
+}
+```
+
+These methods exist at `loop.rs:1559-1624` but no `restore` call exists after these methods. The architecture correctly shows `capture` methods but incorrectly implies `restore` is called on error.
+
+---
+
+## Bugs Identified
+
+### 1. restore() continues after write failure (LOW)
+
+**File**: `src/snapshot/mod.rs:291-293`
+
+```rust
+if let Err(e) = std::fs::write(&full_path, &file_snapshot.content) {
+    return Err(format!("failed to write {}: {}", full_path.display(), e));
+}
+```
+
+Actually, the code **does return early** on write failure. The previous review was incorrect here.
+
+Wait - let me verify more carefully...
+
+Looking at lines 291-293:
+```rust
+if let Err(e) = std::fs::write(&full_path, &file_snapshot.content) {
+    return Err(format!("failed to write {}: {}", full_path.display(), e));
+}
+```
+
+This IS a fast-fail on write error. The previous review was wrong about this.
+
+### 2. restore_to_path() continues after write failure (LOW - but verified correct fast-fail)
+
+Looking at lines 331-334:
+```rust
+std::fs::write(&temp_path, &file_snapshot.content)
+    .map_err(|e| format!("failed to write {}: {}", temp_path.display(), e))?;
+std::fs::rename(&temp_path, &full_path)
+    .map_err(|e| format!("failed to rename {}: {}", temp_path.display(), e))?;
+```
+
+This also fails fast on error. Both restore functions properly return early on failure.
+
+---
 
 ## Summary
 
-Reviewed `architecture/snapshot.md`, `src/snapshot/mod.rs`, `src/snapshot/diff.rs`, `.opencode/skills/snapshot/SKILL.md`, and integration points in `src/agent/loop.rs`. The architecture document is **largely accurate** but has several minor discrepancies and gaps. The skill guide exists at v1.1.0 but was never linked from the architecture doc.
-
----
-
-## Verified Correct Items
-
-| Item | Status |
-|------|--------|
-| `SnapshotOptions` fields (`max_files`, `max_file_bytes`, `max_total_bytes`) with defaults | Verified |
-| `FileSnapshot` struct (path, content, hash, timestamp) | Verified |
-| `Snapshot` struct (`data: String` - JSON serialized) | Verified |
-| `SnapshotView` struct (`files: HashMap<String, FileSnapshot>`) | Verified |
-| `SnapshotManager::new()` and `new_with_options()` signatures | Verified |
-| `capture()`, `capture_incremental()`, `get()`, `list_for_session()`, `latest()` | Verified |
-| `restore()`, `restore_to_path()`, `delete_snapshot()`, `delete_all_for_session()` | Verified |
-| Path traversal prevention using `canonicalize()` check | Verified (2026-05-23 fix) |
-| Database table in `src/session/schema.rs` migration v13 | Verified |
-| Snapshot table schema (id, session_id, created_at, label, data) with index | Verified |
-| Diff types (`FileDiff`, `DiffHunk`, `DiffLine`, `DiffKind`) | Verified |
-| `diff_files()` and `format_unified_diff()` functions | Verified |
-| `restore_to_path()` uses atomic write (temp file + rename) | Verified |
-| File count and size limits enforced in `collect_files_sync()` | Verified |
-| Skips `.git`, `node_modules`, `target`, `.codegg` directories | Verified |
-| Skips files larger than `max_file_bytes` | Verified |
-| `old_content: Option<String>` available in `FileChanged` events | Verified |
-
----
-
-## Discrepancies
-
-### 1. **restore() is never called in AgentLoop** (Medium)
-- **Architecture**: `loop.rs:118` and `loop.rs:155` show `SnapshotManager::restore(snapshot_view)` called on error
-- **Actual Code**: `capture_snapshot_if_needed()` and `capture_incremental_snapshot_if_needed()` exist, but **no code path calls `restore()`** on error. The snapshots are captured but never used for rollback.
-- **Location**: `src/agent/loop.rs:1559-1624`
-- **Impact**: Snapshot capture is wired but restore-on-error is not. The safety net promised by the architecture does not exist.
-- **Recommendation**: Either implement error-triggered restore or remove the restore flow from the architecture diagram.
-
-### 2. **capture_incremental signature mismatch** (Low - Docs Correct, Code Allows More)
-- **Architecture**: `file_changes: Vec<(String, Option<String>)>` with note "For each (path, old_content)"
-- **Actual Code**: The implementation at `mod.rs:123` accepts `Vec<(String, Option<String>)>`. The `None` variant is skipped (line 129: `let Some(content) = old_content else { continue; }`), so it correctly behaves as documented.
-- **Status**: Code is more general but behaves correctly.
-
-### 3. **restore() uses blocking I/O in spawn_blocking but does not handle errors** (Low)
-- **Location**: `mod.rs:291`
-- **Issue**: `std::fs::write()` can fail after the path traversal check passes (e.g., permission denied, disk full). The error message is returned but the function continues processing remaining files.
-- **Status**: Minor - errors are collected but partial restoration can occur.
-
-### 4. **Integration flow references non-existent code paths** (Medium)
-- **Architecture** lines 97-119 show error-triggered restore: `If error → SnapshotManager::restore(snapshot_view)`
-- **Architecture** lines 139-156 show same error-restore flow for full capture
-- **Actual**: No error handler calls restore. The flow ends at `capture_snapshot_if_needed()`.
-- **Recommendation**: Update architecture to reflect actual two-phase capture (pre-execution capture + post-execution incremental capture) without the restore step.
-
-### 5. **Skill version outdated** (Low)
-- **Skill**: v1.1.0, last updated 2026-05-23
-- **AGENTS.md** shows v1.1.0 as current
-- Status: Skill is up to date.
-
----
-
-## Documentation Gaps
-
-### 1. Missing from architecture/snapshot.md
-- No mention that `restore()` is not currently called by AgentLoop
-- `restore_to_path()` atomic write technique (temp file + rename) not documented
-- Error handling in restore operations not documented (partial failure possible)
-- `collect_files_sync()` limits and exclusions not documented
-
-### 2. Missing from SKILL.md
-- No information about atomic write in `restore_to_path()`
-- `delete_snapshot()` and `delete_all_for_session()` not listed in API
-- No mention of config schema integration (`snapshot` and `snapshot_config` in config)
-
----
-
-## Bugs and Issues in Code
-
-### 1. **restore() continues after write failure** (Low)
-- **File**: `src/snapshot/mod.rs:291-292`
-- **Issue**: If `std::fs::write()` fails, the error is logged but processing continues to the next file
-- **Impact**: Partial restore possible without clear indication
-- **Recommendation**: Either fail fast on first error or document that partial restoration can occur
-
-### 2. **restore_to_path() has race condition window** (Low)
-- **File**: `src/snapshot/mod.rs:318-319`
-- **Issue**: Between `canonicalize()` check and `std::fs::write()`, the file system could change (TOCTOU)
-- **Status**: Unavoidable without OS-level support; acceptable risk
-
-### 3. **Test file has dead code** (Very Low)
-- **File**: `tests/snapshot.rs`
-- `create_test_manager()` defined at line 15 but `create_test_manager_with_pool()` at line 79 is used by all tests
-- `create_test_manager()` is dead code (lines 15-22)
-- **Recommendation**: Remove `create_test_manager()` or use it
+| Category | Status |
+|----------|--------|
+| Type/Function Documentation | COMPLETE - all match |
+| Path Traversal Protection | COMPLETE - implemented correctly |
+| Error Handling Integration | **INCOMPLETE** - restore() never called |
+| Atomic Write Pattern | COMPLETE - implemented in restore_to_path() |
+| Architecture Accuracy | INCOMPLETE - documents non-existent error recovery |
 
 ---
 
 ## Recommendations
 
-### For Architecture Document
-1. Remove the error-restore flows from diagrams (lines 97-119, 139-156) since `restore()` is never called
-2. Document that `restore()` and `restore_to_path()` exist but are not yet integrated into the agent error-handling loop
-3. Document the atomic write pattern in `restore_to_path()`
-4. Document `collect_files_sync()` exclusions and limits
-5. Add link to `.opencode/skills/snapshot/SKILL.md`
+1. **Architecture Document**: Remove or mark as "planned" the error-triggered restore flow (lines 139-156). Document that snapshots are captured but restore must be triggered manually or via future integration.
 
-### For Code
-1. Consider integrating `restore()` into the error-handling path if snapshot rollback is intended
-2. Consider adding a failure flag to stop processing remaining files on error in restore
-3. Clean up dead `create_test_manager()` function in tests
+2. **AgentLoop Integration**: If automatic rollback on error is desired, add error-handling that calls `restore()` when tool execution fails. This would require storing the captured snapshot ID for use on error.
 
-### For Skill
-1. Add `delete_snapshot()` and `delete_all_for_session()` to API listing
-2. Add note about atomic write in `restore_to_path()`
-3. Add config integration details (`snapshot`, `snapshot_config`)
+3. **Minimal Fix**: Even without full rollback integration, adding a `/restore` command that calls `SnapshotManager::restore()` would make the functionality accessible.
 
 ---
 
 ## File References
 
-| File | Lines | Issue |
-|------|-------|-------|
-| `src/snapshot/mod.rs` | 267-299 | `restore()` never called from AgentLoop |
-| `src/snapshot/mod.rs` | 291-292 | Continues after write failure |
-| `src/snapshot/mod.rs` | 301-340 | `restore_to_path()` atomic write not documented |
-| `src/agent/loop.rs` | 1559-1624 | Capture methods exist but restore not wired |
-| `architecture/snapshot.md` | 97-119 | Error-restore flow does not exist in code |
-| `architecture/snapshot.md` | 139-156 | Error-restore flow does not exist in code |
-| `tests/snapshot.rs` | 15-22 | Dead `create_test_manager()` function |
+| File | Lines | Note |
+|------|-------|------|
+| `src/snapshot/mod.rs` | 267-341 | `restore()` and `restore_to_path()` implementations |
+| `src/agent/loop.rs` | 1559-1624 | Capture methods only, no restore call |
+| `src/agent/loop.rs` | 1650-1655 | Pre-tool capture (no restore on failure) |
+| `src/agent/loop.rs` | 1853 | Incremental capture (no restore) |
+| `architecture/snapshot.md` | 139-156 | Documents non-existent error recovery |

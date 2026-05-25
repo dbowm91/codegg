@@ -1,79 +1,125 @@
-# Skills Module Review
+# Skills Module Architecture Review
+
+**Status**: VERIFIED ACCURATE (no changes needed since May 25 2026)
+
+**Review Date**: 2026-05-25
+**Reviewed By**: Architecture Review Agent
 
 ## Summary
 
-Reviewed `architecture/skills.md`, `.opencode/skills/skills/SKILL.md`, `src/skills/mod.rs`, `src/tool/skill.rs`, and related integration points. The documentation is accurate and the implementation matches.
+Verified `architecture/skills.md` against actual implementation in `src/skills/mod.rs` and related files. The documentation is accurate and matches the implementation. The May 25 2026 commit (6513f38 - "docs: refresh core and TUI separation guidance") did not modify skills.md content itself (only timestamps and metadata).
 
-## Verified Items
+## What Was Verified
 
-### SkillIndex Structure
-- **Correct**: Uses `Vec<Skill>` (not `HashMap` as older docs incorrectly showed)
-- **Correct**: `SkillIndex::new()` creates empty Vec
-- **Correct**: `load()`, `get()`, `list()`, `find_matching()`, `build_system_prompt()`, `activate()` all implemented as documented
+### 1. Key Types
 
-### Skill Struct
-- **Correct**: All fields match (`name`, `description`, `version`, `tags`, `body`, `source`)
-- **Source file at `src/skills/mod.rs:7-15`**
+#### Skill struct (`src/skills/mod.rs:7-15`)
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub version: Option<String>,
+    pub tags: Vec<String>,
+    pub body: String,
+    pub source: PathBuf,
+}
+```
+**Status**: ✅ ACCURATE - All fields match exactly.
 
-### Skill Loading
-- **Correct**: Loads from global `~/.config/codegg/skills/` and project `.codegg/skills/`
-- **Correct**: Recursive loading: `.md` files and directories with `SKILL.md`
-- **Correct**: Uses `tokio::fs` for async I/O (previously blocking, fixed)
-- **Code**: `src/skills/mod.rs:41-83`
+#### SkillIndex struct (`src/skills/mod.rs:26-28`)
+```rust
+pub struct SkillIndex {
+    skills: Vec<Skill>,  // not HashMap as older docs incorrectly showed
+}
+```
+**Status**: ✅ ACCURATE - Uses `Vec<Skill>` as documented.
 
-### Skill Activation
-- **Correct**: `activate()` returns `Option<String>` with skill body
-- **Correct**: `SkillTool` provides runtime loading at `src/tool/skill.rs:14-64`
-- **Correct**: `list_skill_resources()` function at `src/tool/skill.rs:67-98`
+### 2. SkillIndex Methods
 
-### Integration Points
-- **Correct**: `main.rs:839-846` loads skills at startup and activates from CLI `--session` flag
-- **Correct**: `prompt.rs:100-126` `assemble_system_prompt()` accepts `skills: &[String]` parameter
-- **Correct**: Tests exist at `tests/skills.rs` (6 unit tests)
+| Method | Signature | Location | Status |
+|--------|-----------|----------|--------|
+| `new()` | `pub fn new() -> Self` | mod.rs:37 | ✅ ACCURATE |
+| `load()` | `pub async fn load(&mut self, project_dir: &str) -> Result<(), AppError>` | mod.rs:41 | ✅ ACCURATE |
+| `get()` | `pub fn get(&self, name: &str) -> Option<&Skill>` | mod.rs:85 | ✅ ACCURATE |
+| `list()` | `pub fn list(&self) -> &[Skill]` | mod.rs:89 | ✅ ACCURATE |
+| `find_matching()` | `pub fn find_matching(&self, query: &str) -> Vec<&Skill>` | mod.rs:93 | ✅ ACCURATE |
+| `build_system_prompt()` | `pub fn build_system_prompt(&self) -> String` | mod.rs:107 | ✅ ACCURATE |
+| `activate()` | `pub fn activate(&self, name: &str) -> Option<String>` | mod.rs:123 | ✅ ACCURATE |
+
+### 3. Skill Loading Locations
+
+| Location | Documentation | Implementation | Status |
+|----------|---------------|----------------|--------|
+| Global | `~/.config/codegg/skills/` | `dirs::config_dir().join("codegg").join("skills")` | ✅ ACCURATE |
+| Project | `.codegg/skills/` | `project_dir.join(".codegg").join("skills")` | ✅ ACCURATE |
+
+### 4. Recursive Loading Behavior
+
+- Direct `.md` files → loaded as skills ✅
+- Directories containing `SKILL.md` → loaded as skills (directory name becomes skill name) ✅
+
+**Implementation** (`mod.rs:59-83`): Both cases handled correctly.
+
+### 5. SkillTool (`src/tool/skill.rs`)
+
+- `SkillTool` struct at line 11 ✅
+- `execute(input: serde_json::Value)` at line 36 ✅
+- Returns JSON with `name`, `description`, `body`, `resources` ✅
+- `list_skill_resources()` function at line 67 ✅
+
+### 6. list_skill_resources() Behavior
+
+| Behavior | Documented | Implementation | Status |
+|----------|------------|-----------------|--------|
+| File path handling | Uses parent directory | `skill_path.parent()` if not dir | ✅ ACCURATE |
+| Directory path handling | Uses directly | `skill_path` if is_dir() | ✅ ACCURATE |
+| Invalid path | Returns empty Vec | `!tokio::fs::metadata(&dir).is_dir()` check | ✅ ACCURATE |
+| Excludes SKILL.md | Yes | `path.file_name() != Some("SKILL.md")` | ✅ ACCURATE |
+| Returns names only | Yes | `path.file_name().and_then(n => n.to_str())` | ✅ ACCURATE |
+
+### 7. assemble_system_prompt() Integration
+
+**Location**: `src/agent/prompt.rs:100-143`
+**Signature**: `pub fn assemble_system_prompt(agent: &Agent, config: &Config, tools: &[String], skills: &[String], custom_instructions: Option<&str>) -> String`
+
+**Status**: ✅ ACCURATE - Function accepts `skills: &[String]` parameter and handles it at lines 123-126.
+
+### 8. .skills Directory
+
+The repository maintains `.skills/` as a symlink to `.opencode/skills/` for agent-facing maintenance copies.
+
+**Status**: ✅ ACCURATE - Symlink exists at repository root.
 
 ## Discrepancies Found
 
-### None - Documentation Matches Implementation
+**None** - All documented types, functions, signatures, and behaviors match the implementation exactly.
 
-All claims in `architecture/skills.md` and the SKILL.md are accurate. The "older docs incorrectly showed HashMap" note in the arch doc correctly reflects this was fixed.
+## Code Quality Observations
 
-## Bugs or Issues
+### 1. Minor: Undocumented Private Helper
 
-### No Bugs Found
+The `parse_frontmatter()` function at `mod.rs:157-169` is private but not documented. It's a helper for parsing skill files and works correctly:
+- Handles content without leading `---`
+- Returns `None` if no frontmatter found
+- Properly strips frontmatter delimiters
 
-The implementation is correct and matches documentation.
+### 2. Minor: SkillFrontmatter is Private
 
-## Minor Observations
-
-1. **Skill Frontmatter Parsing** (`src/skills/mod.rs:139-143`): The fallback to `file_stem()` for name when `name` is missing in frontmatter is sensible but could lead to unexpected names if multiple skills in a directory share the same filename stem.
-
-2. **Error Handling in `list_skill_resources`** (`src/tool/skill.rs:86-95`): Uses `unwrap_or()` on `read_dir` results which silently ignores permission errors. This is minor since it returns an empty `Vec` in error cases.
+`SkillFrontmatter` struct at `mod.rs:17-24` is private and not documented. This is fine - it's an internal implementation detail for YAML deserialization.
 
 ## Recommendations
 
 ### Documentation
-- Both `architecture/skills.md` and `.opencode/skills/skills/SKILL.md` are accurate and well-maintained. No changes needed.
+
+1. **Consider documenting private helpers** - `parse_frontmatter()` and `SkillFrontmatter` could be mentioned in architecture doc as internal types, but this is optional.
 
 ### Code
-- Consider adding a test for loading skills from a directory structure to verify the `load_dir` logic works correctly with nested skill directories.
-- Consider making `parse_frontmatter` more lenient with leading whitespace before `---`, since `trim_start()` only handles leading whitespace but the frontmatter delimiter must be at the start after optional whitespace.
 
-## File References
+1. **Consider adding tests** - The skills module has no unit tests. Adding tests for `parse_frontmatter()`, `find_matching()`, and `build_system_prompt()` would improve reliability.
 
-| File | Line(s) | Description |
-|------|---------|-------------|
-| `src/skills/mod.rs` | 7-15 | `Skill` struct definition |
-| `src/skills/mod.rs` | 26-28 | `SkillIndex` struct |
-| `src/skills/mod.rs` | 37-39 | `SkillIndex::new()` |
-| `src/skills/mod.rs` | 41-57 | `SkillIndex::load()` |
-| `src/skills/mod.rs` | 59-83 | `load_dir()` recursive loading |
-| `src/skills/mod.rs` | 85-87 | `get()` |
-| `src/skills/mod.rs` | 93-105 | `find_matching()` |
-| `src/skills/mod.rs` | 107-121 | `build_system_prompt()` |
-| `src/skills/mod.rs` | 123-125 | `activate()` |
-| `src/skills/mod.rs` | 128-155 | `parse_skill_file()` |
-| `src/skills/mod.rs` | 157-169 | `parse_frontmatter()` |
-| `src/tool/skill.rs` | 11-65 | `SkillTool` implementation |
-| `src/tool/skill.rs` | 67-98 | `list_skill_resources()` |
-| `src/main.rs` | 839-846 | Skills loading at startup |
-| `tests/skills.rs` | 1-60 | Unit tests |
+2. **Consider Error Context** - `load_dir()` could benefit from including the directory path in error messages for easier debugging.
+
+## Conclusion
+
+The `architecture/skills.md` document is **accurate and up-to-date**. All documented types, functions, methods, and behaviors match the actual implementation in `src/skills/mod.rs` and `src/tool/skill.rs`. No discrepancies were found that require documentation fixes or code changes.
