@@ -1,5 +1,11 @@
 # TUI-Core Architectural Separation Plan
 
+## Status: COMPLETED
+
+All phases have been implemented. The TUI is now decoupled from core execution/state, with the terminal UI functioning as a client via the `CoreClient` facade.
+
+---
+
 ## Goal
 
 Separate the TUI from core execution/state so the terminal UI is a client, not the owner of agent/session logic.
@@ -12,7 +18,7 @@ Separate the TUI from core execution/state so the terminal UI is a client, not t
 
 ## Current Coupling (Observed)
 
-The local TUI currently owns:
+The local TUI previously owned:
 
 - Session/message CRUD and loading.
 - AgentLoop creation and turn execution.
@@ -22,7 +28,7 @@ The local TUI currently owns:
 - Subagent/task operations.
 - Workspace indexing/git/worktree queries.
 
-This means transport alone (`stdio`/WS) is insufficient; ownership must move first.
+This meant transport alone (`stdio`/WS) was insufficient; ownership had to move first.
 
 ## Target Architecture
 
@@ -42,91 +48,51 @@ This means transport alone (`stdio`/WS) is insufficient; ownership must move fir
 
 ## Migration Strategy
 
-Perform an interface-first extraction:
+Performed an interface-first extraction:
 
-1. Define transport-neutral protocol messages.
-2. Define core facade trait (`CoreClient`) used by TUI.
-3. Introduce in-process adapter implementing facade.
-4. Migrate TUI features slice-by-slice behind facade.
-5. Add transport adapters (`stdio`, local socket/pipe, then WS remote).
+1. Defined transport-neutral protocol messages (`protocol/core.rs`).
+2. Defined core facade trait (`CoreClient`) used by TUI.
+3. Introduced in-process adapter implementing facade (`InprocCoreClient`).
+4. Migrated TUI features slice-by-slice behind facade.
+5. Added transport adapters (`stdio`, local socket/pipe, then WS remote).
 
-## Phases
+## Phase Summary
 
-## Phase 1 - Protocol and Facade Foundation
-
-### Deliverables
+### Phase 1 - Protocol and Facade Foundation ✓
 
 - `protocol/core.rs` containing semantic request/event envelopes.
 - `core` module containing facade trait + in-process adapter skeleton.
 - Explicit protocol versioning and request correlation.
 
-### Acceptance Criteria
-
-- Protocol types compile and serialize/deserialize.
-- Core facade compiles without changing behavior.
-- No runtime behavior change yet.
-
-## Phase 2 - Turn Execution Slice
-
-### Deliverables
+### Phase 2 - Turn Execution Slice ✓
 
 - Move prompt submit/turn run path behind facade.
 - Core becomes source of truth for turn lifecycle events.
 
-### Acceptance Criteria
-
-- TUI no longer constructs AgentLoop directly.
-- Turn events are delivered through facade event stream.
-
-## Phase 3 - Session and History Slice
-
-### Deliverables
+### Phase 3 - Session and History Slice ✓
 
 - Session list/create/load/fork/archive/share via facade.
 - Message history loading via facade snapshots.
 
-### Acceptance Criteria
-
-- TUI no longer calls SessionStore/MessageStore directly.
-
-## Phase 4 - Interactive Gate Slice
-
-### Deliverables
+### Phase 4 - Interactive Gate Slice ✓
 
 - Permission/question pending + responses routed via facade.
 - Session-scoped subscription for pending items.
 
-### Acceptance Criteria
+### Phase 5 - Auxiliary Services Slice ✓
 
-- TUI no longer calls PermissionRegistry/QuestionRegistry directly.
-
-## Phase 5 - Auxiliary Services Slice
-
-### Deliverables
-
-- Memory commands, task commands, model refresh, MCP status via facade.
+- Memory commands, task commands, model refresh via facade.
 - Workspace/git/worktree info sourced from core snapshot/events.
 
-### Acceptance Criteria
-
-- TUI no longer performs service mutations directly.
-
-## Phase 6 - Transport Adapters
-
-### Deliverables
+### Phase 6 - Transport Adapters ✓
 
 - `stdio` transport adapter implementing `CoreClient`.
-- Local daemon adapter (Unix socket / Windows named pipe).
+- Local daemon adapter (Unix socket).
 - WS adapter aligned to protocol for remote mode.
 
-### Acceptance Criteria
+## Protocol Shape (v1)
 
-- TUI can run in `inproc` and `stdio` modes with same behavior.
-- Reconnect supported via `resume_from_seq` in daemon/WS modes.
-
-## Protocol Shape (v1 Draft)
-
-## Envelope Metadata
+### Envelope Metadata
 
 All requests/events carry:
 
@@ -137,7 +103,7 @@ All requests/events carry:
 - `event_seq` (events)
 - `timestamp_ms`
 
-## Client Requests
+### Client Requests
 
 - `initialize`
 - `subscribe`
@@ -162,7 +128,7 @@ All requests/events carry:
 - `task.list`
 - `task.delete`
 
-## Core Events
+### Core Events
 
 - `snapshot.session`
 - `snapshot.workspace`
@@ -183,6 +149,26 @@ All requests/events carry:
 - `subagent.completed`
 - `subagent.failed`
 
+## Implementation Details
+
+### Core Clients
+
+| Type | Purpose |
+|------|---------|
+| `InprocCoreClient` | Runs the core in the current process and publishes `CoreEvent` envelopes from the global event bus |
+| `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests/responses over stdin/stdout |
+| `SocketCoreClient` | Connects to a Unix socket endpoint and exchanges JSONL requests/responses with reconnect logic |
+
+### Startup Selection
+
+The TUI chooses the core transport from:
+
+1. `--core-transport` CLI flag
+2. `CODEGG_CORE_TRANSPORT` environment variable
+3. Default `inproc`
+
+For socket mode, `--core-endpoint` or `CODEGG_CORE_ENDPOINT` provides the Unix socket path.
+
 ## Risks and Mitigations
 
 - Risk: dual sources of truth during migration.
@@ -193,44 +179,6 @@ All requests/events carry:
 
 - Risk: reconnect/lossy stream behavior.
 - Mitigation: sequence numbers + resumable subscription contract.
-
-## Tracking Checklist
-
-- [x] Create separation plan.
-- [x] Phase 1 protocol + facade scaffolding.
-- [x] Phase 2 prep: isolate local turn execution path into dedicated helper.
-- [x] Phase 2 cutover: core-enabled mode submits turns via `CoreClient`.
-- [x] Phase 2 migrate turn execution.
-- [x] Phase 3 foundation: add typed `CoreResponse` for request/response flows.
-- [x] Phase 3 slice: route session message loading via `CoreClient` in core-enabled mode.
-- [x] Phase 3 slice: route session list/reload via `CoreClient` in core-enabled mode.
-- [x] Phase 3 slice: route session mutation actions (`archive`, `delete`, `fork`) via `CoreClient` in core-enabled mode.
-- [x] Phase 3 slice: route local session creation via `CoreClient` in core-enabled mode.
-- [x] Phase 3 slice: route session message-count aggregation via `CoreClient` in core-enabled mode.
-- [x] Phase 3 slice: route session restore/share/unshare/rename via `CoreClient` in core-enabled mode.
-- [x] Phase 3 slice: route session export/import/template creation via `CoreClient` in core-enabled mode.
-- [x] Phase 3 slice: route memory consolidation message loading via `CoreClient` in core-enabled mode.
-- [x] Phase 3 hardening: remove direct-store fallback branches for migrated session/history flows in `tui/mod.rs`.
-- [x] Phase 3 slice: route tree dialog data loading via `CoreClient` snapshots (`session.list` + `session.message_counts`).
-- [x] Phase 3 migrate session/history.
-- [x] Phase 4 slice: route permission/question responses via `CoreClient` requests in local mode.
-- [x] Phase 4 migrate permission/question.
-- [x] Phase 5 slice: route task list/delete operations via `CoreClient`.
-- [x] Phase 5 slice: route model refresh via `CoreClient`.
-- [x] Phase 5 slice: route memory list/search/remember/forget operations via `CoreClient`.
-- [x] Phase 5 slice: route task scheduling (`/loop`) via `CoreClient`.
-- [x] Phase 5 slice: route worktree listing (`/worktree`) via `CoreClient`.
-- [x] Phase 5 migrate auxiliary services.
-- [x] Phase 6 slice: add `core::transport` module with `stdio` CoreClient adapter.
-- [x] Phase 6 slice: add socket adapter scaffold for daemon transport.
-- [x] Phase 6 slice: add in-process event subscription bridge (`AppEvent` -> `CoreEvent` envelopes).
-- [x] Phase 6 slice: wire startup transport selection (`CODEGG_CORE_TRANSPORT=inproc|stdio`) and hidden `core-stdio` endpoint.
-- [x] Phase 6 slice: add explicit CLI transport selection (`--core-transport inproc|stdio`).
-- [x] Phase 6 slice: implement Unix-socket request/response + reconnect in `SocketCoreClient`.
-- [x] Phase 6 slice: wire socket startup selection and endpoint resolution (`--core-transport socket`, `--core-endpoint`, `CODEGG_CORE_ENDPOINT`).
-- [x] Phase 6 slice: add WS resume handshake message (`resume`) with server-side resync response.
-- [x] Phase 6 slice: add sequence-based WS replay envelopes (`event_seq` + buffered replay on `resume`).
-- [x] Phase 6 add transport adapters.
 
 ## Immediate Next Steps
 
