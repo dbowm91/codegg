@@ -433,11 +433,11 @@ Circuit breaker pattern with state machine (Closed/Open/HalfOpen) and `FallbackP
 
 ---
 
-### [PTY Session](pty.md) — `src/pty_session/`
+### [PTY Session](pty_session.md) — `src/pty_session/`
 
 Shell session metadata management (in-memory only, no actual PTY).
 
-**See**: [pty.md](pty.md) for shell session metadata.
+**See**: [pty_session.md](pty_session.md) for shell session metadata.
 
 ---
 
@@ -650,7 +650,7 @@ src/
 | [resilience.md](resilience.md) | resilience | Circuit breaker, FallbackProvider |
 | [exec.md](exec.md) | exec | Non-interactive exec mode |
 | [hooks.md](hooks.md) | hooks | Lifecycle hooks system |
-| [pty.md](pty.md) | pty_session | Shell session metadata |
+| [pty_session.md](pty_session.md) | pty_session | Shell session metadata |
 | [upgrade.md](upgrade.md) | upgrade | Self-upgrade via GitHub |
 | [util.md](util.md) | util | Clipboard, fuzzy, truncate |
 | [worktree.md](worktree.md) | worktree | Git worktree management |

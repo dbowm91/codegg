@@ -34,7 +34,7 @@ pub trait CoreClient: Send + Sync {
 
 | Type | Purpose |
 |------|---------|
-| `InprocCoreClient` | Runs the core in the current process and can publish `CoreEvent` envelopes from the global event bus |
+| `InprocCoreClient` | Runs the core in the current process. `subscribe()` reads from GlobalEventBus and forwards events to the channel. Turn execution (spawned async) publishes `AgentFinished`/`Error` events to the bus. |
 | `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests/responses over stdin/stdout |
 | `SocketCoreClient` | Connects to a Unix socket endpoint and exchanges JSONL requests/responses |
 
@@ -54,10 +54,12 @@ Defined in `src/protocol/core.rs`.
 
 ### Request Families
 
-- Session lifecycle: list, create, load, attach, fork, delete, archive, restore, share, unshare, rename, export, import, create-from-template
+- Session lifecycle: list, create, load, attach, fork, delete, archive, restore, share, unshare, rename, export, import, create-from-template, initialize, subscribe, resume
 - Turn lifecycle: submit, cancel, steer, agent select, model select
 - Session data: message loading and message counts
 - Operational helpers: model refresh, permission/question response, memory CRUD, task CRUD/scheduling, worktree listing
+
+**Note**: See `src/protocol/core.rs` for complete `CoreRequest` enum with all variants.
 
 ## Transport Modes
 
@@ -86,5 +88,5 @@ If socket mode is selected, `--core-endpoint` or `CODEGG_CORE_ENDPOINT` must pro
 ## Implementation Notes
 
 - Local TUI flows should prefer `CoreClient` over direct store access when a request already exists in `CoreRequest`.
-- The in-process client publishes `CoreEvent` into the global event bus so the TUI and SSE consumers remain in sync.
+- The in-process client **subscribes** to the GlobalEventBus (via `subscribe()`) and forwards events to the channel receiver. The actual event publishing (`AgentFinished`, `Error`) happens inside `tokio::spawn` within turn execution handlers.
 - The core protocol version is currently `1`.
