@@ -402,7 +402,7 @@ static PLUGIN_FUEL_LAST_RESET: AtomicU64 = AtomicU64::new(0);
 **Fuel Logic:**
 - Each hook reserves fuel before execution
 - WASM fuel set on Store via `store.set_fuel()`
-- Unused fuel returned after execution
+- Unused fuel returned after execution (including on errors - all error paths call return_fuel)
 - Budget exhausted → returns `HookResult::ok(ctx.input)` early
 
 ## Security
