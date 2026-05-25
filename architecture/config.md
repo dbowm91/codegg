@@ -20,6 +20,8 @@ The `config` module handles configuration loading, validation, and hot-reloading
 
 ```rust
 pub struct Config {
+    #[serde(rename = "$schema")]
+    pub schema: Option<String>,
     pub version: Option<String>,
     pub log_level: Option<String>,
     pub model: Option<String>,
@@ -82,6 +84,12 @@ pub struct ProviderConfig {
 ```
 
 ProviderConfig has a `merge()` method for field-by-field merging and an `api_key()` method that checks environment variables first.
+
+```rust
+pub fn api_key(&self, prefix: &str) -> Option<String>
+```
+
+The method checks environment variables first (e.g., `ANTHROPIC_API_KEY`), then `api_key` field, then encrypted `encrypted_api_key` field.
 
 ServerConfig has a `merge()` method at `schema.rs:134-162` that performs field-by-field merging, copying non-None fields from other config.
 

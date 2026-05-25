@@ -45,6 +45,14 @@ impl SkillIndex {
     pub fn build_system_prompt(&self) -> String;
     pub fn activate(&self, name: &str) -> Option<String>;
 }
+
+### SkillIndex Methods
+
+- `get(name)` - Retrieves a skill by exact name match (case-sensitive)
+- `list()` - Returns all skills as a slice
+- `find_matching(query)` - Case-insensitive partial match across name, description, and tags
+- `activate(name)` - Retrieves skill body by exact name match (case-sensitive)
+
 ```
 
 ## Skill File Format

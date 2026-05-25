@@ -112,7 +112,7 @@ pub struct Command {
 }
 ```
 
-### Built-in Commands (36 total)
+### Built-in Commands (41 total)
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
@@ -198,7 +198,7 @@ When a command with a template is executed:
 
 ## Async File Operations
 
-Both `find_command_files()` and `load_command_from_file()` are async functions using `tokio::fs` for proper non-blocking I/O:
+`find_command_files()` is an async wrapper that calls a sync function internally. `load_command_from_file()` is truly async using `tokio::fs` for non-blocking I/O:
 
 ```rust
 pub async fn find_command_files(base: &Path) -> Vec<Command>
