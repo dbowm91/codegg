@@ -31,8 +31,9 @@ use super::route::{Route, RouteManager};
 use super::theme::Theme;
 use crate::agent::builtin_agents;
 use crate::agent::Agent;
-use crate::bus::{PermissionRegistry, QuestionRegistry};
+use crate::core::CoreClient;
 use crate::memory::MemoryStore;
+use crate::protocol::core::CoreRequest;
 use crate::protocol::tui::TuiMessage as RemoteTuiMessage;
 use crate::config::schema::SessionTemplate;
 use crate::permission::PermissionRequest;
@@ -137,6 +138,21 @@ pub enum TuiCommand {
     DeleteTask {
         id: String,
     },
+    TaskSchedule {
+        interval_secs: u64,
+        message: String,
+    },
+    WorktreeList,
+    MemorySummary,
+    MemorySearch {
+        query: String,
+    },
+    MemoryRemember {
+        text: String,
+    },
+    MemoryForget {
+        id: String,
+    },
     CompactSession,
     OpenDiffDialog {
         old_content: Box<str>,
@@ -220,6 +236,7 @@ pub struct App {
     pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
     pub remote_event_rx: Option<mpsc::UnboundedReceiver<serde_json::Value>>,
     pub remote_send_tx: Option<mpsc::UnboundedSender<RemoteTuiMessage>>,
+    pub core_client: Option<Arc<dyn CoreClient>>,
     pub config_watcher: Option<crate::config::ConfigWatcher>,
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
@@ -474,6 +491,7 @@ impl App {
             tui_cmd_tx: None,
             remote_event_rx: None,
             remote_send_tx: None,
+            core_client: None,
             config_watcher: Some(
                 cfg.and_then(|c| c.watcher.as_ref())
                     .map(|w| crate::config::ConfigWatcher::new().with_config(w))
@@ -658,6 +676,7 @@ impl App {
             tui_cmd_tx: None,
             remote_event_rx: None,
             remote_send_tx: None,
+            core_client: None,
             config_watcher: None, // No config watcher for tests
             subagent_pool: None,
             bg_scheduler: None,
@@ -677,10 +696,99 @@ impl App {
         self.remote_send_tx = Some(tx);
     }
 
+    pub fn set_core_client(&mut self, client: Arc<dyn CoreClient>) {
+        self.core_client = Some(client);
+    }
+
     fn send_remote_message(&self, msg: RemoteTuiMessage) {
         if let Some(ref tx) = self.remote_send_tx {
             let _ = tx.send(msg);
         }
+    }
+
+    pub fn dispatch_turn_submit_request(&self, text: String) {
+        let Some(client) = self.core_client.clone() else {
+            return;
+        };
+        let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone()) else {
+            return;
+        };
+        let messages = self.build_provider_context();
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::TurnSubmit {
+                session_id,
+                text,
+                plan_mode: self.agent_state.plan_mode,
+                model: self.agent_state.current_model.clone(),
+                agents: self.agent_state.agents.clone(),
+                current_agent_idx: self.agent_state.current_agent,
+                messages,
+            },
+        );
+        tokio::spawn(async move {
+            if let Err(e) = client.request(request).await {
+                tracing::debug!("core facade turn.submit failed: {}", e);
+            }
+        });
+    }
+
+    fn build_provider_context(&self) -> Vec<crate::provider::Message> {
+        let mut out = Vec::new();
+        for m in &self.messages_state.messages.messages {
+            let mut content: Vec<crate::provider::ContentPart> = Vec::new();
+            let mut tool_calls: Vec<crate::provider::ToolCall> = Vec::new();
+            let mut tool_results: Vec<crate::provider::Message> = Vec::new();
+
+            for p in &m.parts {
+                match p {
+                    MsgPart::Text { content: text } => {
+                        content.push(crate::provider::ContentPart::Text {
+                            text: text.clone().into(),
+                        })
+                    }
+                    MsgPart::Reasoning { content: text, .. } => {
+                        content.push(crate::provider::ContentPart::Text {
+                            text: format!("[Reasoning]\n{}", text).into(),
+                        })
+                    }
+                    MsgPart::ToolCall {
+                        id,
+                        name,
+                        input,
+                        output,
+                        ..
+                    } => {
+                        if let Ok(arguments) = serde_json::from_str::<serde_json::Value>(input) {
+                            tool_calls.push(crate::provider::ToolCall {
+                                id: id.clone().into(),
+                                name: name.clone().into(),
+                                arguments,
+                            });
+                        }
+                        tool_results.push(crate::provider::Message::Tool {
+                            tool_call_id: id.clone().into(),
+                            content: output.clone().into(),
+                        });
+                    }
+                }
+            }
+
+            match m.role {
+                MessageRole::User => {
+                    if !content.is_empty() {
+                        out.push(crate::provider::Message::User { content });
+                    }
+                }
+                MessageRole::Assistant => {
+                    if !content.is_empty() || !tool_calls.is_empty() {
+                        out.push(crate::provider::Message::Assistant { content, tool_calls });
+                    }
+                    out.extend(tool_results);
+                }
+            }
+        }
+        out
     }
 
     pub fn handle_remote_event(&mut self, event: serde_json::Value) {
@@ -688,6 +796,11 @@ impl App {
         debug_log!("handle_remote_event: type={}", _event_type);
 
         match serde_json::from_value::<RemoteTuiMessage>(event) {
+            Ok(RemoteTuiMessage::EventEnvelope { event_seq: _, payload }) => {
+                if let Ok(value) = serde_json::to_value(*payload) {
+                    self.handle_remote_event(value);
+                }
+            }
             Ok(RemoteTuiMessage::TextDelta { delta }) => {
                 self.messages_state.messages.add_assistant_text(delta);
                 if matches!(self.session_state.session_status, SessionStatus::Working) {
@@ -1663,9 +1776,7 @@ impl App {
                             choice: choice.to_string(),
                         });
                     } else {
-                        tokio::spawn(async move {
-                            PermissionRegistry::respond(perm_id, choice);
-                        });
+                        self.send_local_permission_response(perm_id, choice);
                     }
                 }
                 self.dialog_state.permission_dialog = None;
@@ -1683,9 +1794,7 @@ impl App {
                             answers,
                         });
                     } else {
-                        tokio::spawn(async move {
-                            QuestionRegistry::answer_question(session_id, answers);
-                        });
+                        self.send_local_question_response(session_id, answers);
                     }
                 }
                 self.dialog_state.question_dialog = None;
@@ -2927,7 +3036,11 @@ impl App {
                     .info("Workspace management - use /sessions to switch workspaces");
             }
             "/worktree" => {
-                self.handle_worktree_command();
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::WorktreeList);
+                } else {
+                    self.handle_worktree_command();
+                }
             }
             "/editor" => {
                 self.open_external_editor();
@@ -2941,45 +3054,13 @@ impl App {
                     );
                 } else if let Some(duration) = crate::agent::task::parse_duration(parts[0]) {
                     let message = parts[1].trim_matches('"').to_string();
-                    if let Some(ref scheduler) = self.bg_scheduler {
-                        let session_id = self
-                            .session_state
-                            .session
-                            .as_ref()
-                            .map(|s| s.id.clone())
-                            .unwrap_or_default();
-                        let task = crate::agent::task::BackgroundTask::new(
-                            session_id.clone(),
-                            duration,
+                    if let Some(ref tx) = self.tui_cmd_tx {
+                        let _ = tx.try_send(TuiCommand::TaskSchedule {
+                            interval_secs: duration.as_secs(),
                             message,
-                        );
-                        let id = task.id.clone();
-                        let prompt = format!("[Background] {}", task.message);
-                        let pool = self.subagent_pool.clone();
-                        let scheduler_clone = scheduler.clone();
-                        self.messages_state.toasts.info(&format!(
-                            "Task {} scheduled (every {:?})",
-                            id.chars().take(8).collect::<String>(),
-                            duration
-                        ));
-                        tokio::spawn(async move {
-                            let _ = scheduler_clone.add(task).await;
-                            if let Some(ref pool) = pool {
-                                let request = crate::agent::worker::SubAgentRequest {
-                                    task_id: 0,
-                                    prompt,
-                                    agent: "build".to_string(),
-                                    parent_id: Some(session_id),
-                                    denied_tools: Vec::new(),
-                                    allowed_paths: Vec::new(),
-                                    description: "Background loop task".to_string(),
-                                    depth: 0,
-                                };
-                                pool.spawner().send(request).await.ok();
-                            }
                         });
                     } else {
-                        self.messages_state.toasts.error("Scheduler not available");
+                        self.messages_state.toasts.error("Command channel unavailable");
                     }
                 } else {
                     self.messages_state
@@ -3010,23 +3091,43 @@ impl App {
                 }
             }
             "/memory" => {
-                self.handle_memory_command(None);
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::MemorySummary);
+                } else {
+                    self.handle_memory_command(None);
+                }
             }
             "/memory-search" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
-                self.handle_memory_command(Some(("search", &query)));
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::MemorySearch { query });
+                } else {
+                    self.handle_memory_command(Some(("search", &query)));
+                }
             }
             "/memory-list" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
-                self.handle_memory_command(Some(("list", &query)));
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::MemorySummary);
+                } else {
+                    self.handle_memory_command(Some(("list", &query)));
+                }
             }
             "/memory-remember" => {
                 let text = self.dialog_state.command_palette.query.trim().to_string();
-                self.handle_memory_command(Some(("remember", &text)));
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::MemoryRemember { text });
+                } else {
+                    self.handle_memory_command(Some(("remember", &text)));
+                }
             }
             "/memory-forget" => {
                 let id = self.dialog_state.command_palette.query.trim().to_string();
-                self.handle_memory_command(Some(("forget", &id)));
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::MemoryForget { id });
+                } else {
+                    self.handle_memory_command(Some(("forget", &id)));
+                }
             }
             "/memory-consolidate" => {
                 self.handle_memory_command(Some(("consolidate", "")));
@@ -4310,15 +4411,22 @@ impl App {
             Some(("consolidate", _)) => {
                 let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
                 let message_store = self.message_store.clone();
+                let core_client = self.core_client.clone();
                 let mem_store_clone = mem_store.clone();
                 let project_hash_clone = project_hash.clone();
                 self.messages_state.toasts.info("Consolidating session memories...");
                 tokio::spawn(async move {
-                    let messages = if let (Some(sid), Some(store)) = (session_id.as_ref(), message_store.as_ref()) {
-                        match store.list(sid).await {
-                            Ok(msgs) => msgs,
-                            Err(_) => Vec::new(),
+                    let messages = if let (Some(client), Some(sid)) = (core_client, session_id.clone()) {
+                        let request = crate::core::new_request(
+                            format!("session-messages-{}", uuid::Uuid::new_v4()),
+                            crate::protocol::core::CoreRequest::SessionMessagesLoad { session_id: sid },
+                        );
+                        match client.request(request).await {
+                            Ok(crate::protocol::core::CoreResponse::SessionMessages { messages, .. }) => messages,
+                            _ => Vec::new(),
                         }
+                    } else if let (Some(sid), Some(store)) = (session_id.as_ref(), message_store.as_ref()) {
+                        store.list(sid).await.unwrap_or_default()
                     } else {
                         Vec::new()
                     };
@@ -4992,28 +5100,42 @@ impl App {
         self.messages_state
             .toasts
             .info("Refreshing model cache in background...");
-        let pool = self.session_store.as_ref().map(|s| s.pool().clone());
+        let core_client = self.core_client.clone();
         let cmd_tx = self.tui_cmd_tx.clone();
-        if let (Some(pool), Some(tx)) = (pool, cmd_tx) {
+        if let (Some(core_client), Some(tx)) = (core_client, cmd_tx) {
             tokio::spawn(async move {
-                let config = crate::config::schema::Config::load().unwrap_or_default();
-                let mut registry = crate::provider::ProviderRegistry::new();
-                crate::provider::register_builtin_with_config(&mut registry, &config);
-                let discovery = crate::provider::discovery::ModelDiscoveryService::new(
-                    std::path::PathBuf::new(),
-                )
-                .with_pool(pool);
-                let models = discovery.refresh(&registry).await;
-                let model_ids: Vec<String> = models
-                    .iter()
-                    .map(|m| format!("{}/{}", m.provider, m.id))
-                    .collect();
-                let _ = tx.send(TuiCommand::UpdateModels(model_ids)).await;
+                let request = crate::core::new_request(
+                    format!("models-refresh-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::ModelsRefresh,
+                );
+                match core_client.request(request).await {
+                    Ok(crate::protocol::core::CoreResponse::Json { data }) => {
+                        let models = data
+                            .get("models")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let model_ids: Vec<String> = models
+                            .iter()
+                            .filter_map(|m| m.as_str().map(ToOwned::to_owned))
+                            .collect();
+                        let _ = tx.send(TuiCommand::UpdateModels(model_ids)).await;
+                    }
+                    Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                        tracing::warn!("model refresh via core failed: {}", message);
+                    }
+                    Ok(other) => {
+                        tracing::warn!("unexpected models refresh response: {:?}", other);
+                    }
+                    Err(e) => {
+                        tracing::warn!("model refresh request failed: {}", e);
+                    }
+                }
             });
         } else {
             self.messages_state
                 .toasts
-                .warning("Database or command channel not available for refresh");
+                .warning("Core client or command channel not available for refresh");
         }
     }
 
@@ -5215,9 +5337,7 @@ impl App {
         if let Some(qd) = &self.dialog_state.question_dialog {
             let answers = qd.answers_json();
             if let Some(session_id) = self.dialog_state.question_session_id.take() {
-                tokio::spawn(async move {
-                    QuestionRegistry::answer_question(session_id, answers);
-                });
+                self.send_local_question_response(session_id, answers);
             }
         }
         self.dialog_state.question_dialog = None;
@@ -5242,16 +5362,11 @@ impl App {
     pub fn submit_permission_response(&mut self, allowed: bool) {
         if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
             let perm_id = perm_id.clone();
-            let allowed_flag = allowed;
-            tokio::spawn(async move {
-                PermissionRegistry::respond(
-                    perm_id,
-                    match allowed_flag {
-                        true => crate::permission::PermissionChoice::AllowOnce,
-                        false => crate::permission::PermissionChoice::DenyOnce,
-                    },
-                );
-            });
+            let choice = match allowed {
+                true => crate::permission::PermissionChoice::AllowOnce,
+                false => crate::permission::PermissionChoice::DenyOnce,
+            };
+            self.send_local_permission_response(perm_id, choice);
         }
         self.dialog_state.permission_dialog = None;
         self.dialog_state.permission_perm_id = None;
@@ -5271,14 +5386,63 @@ impl App {
         let allowed = choice.allowed();
         if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
             let perm_id = perm_id.clone();
-            tokio::spawn(async move {
-                PermissionRegistry::respond(perm_id, choice);
-            });
+            self.send_local_permission_response(perm_id, choice);
         }
         self.dialog_state.permission_dialog = None;
         self.dialog_state.permission_perm_id = None;
         self.close_dialog();
         Some((allowed, idx))
+    }
+
+    fn send_local_permission_response(
+        &self,
+        perm_id: String,
+        choice: crate::permission::PermissionChoice,
+    ) {
+        let Some(core_client) = self.core_client.clone() else {
+            tracing::warn!("core client unavailable for permission response");
+            return;
+        };
+        let choice = match choice {
+            crate::permission::PermissionChoice::AllowOnce => "allow",
+            crate::permission::PermissionChoice::AlwaysAllow => "always_allow",
+            crate::permission::PermissionChoice::DenyOnce => "deny",
+            crate::permission::PermissionChoice::AlwaysDeny => "always_deny",
+        }
+        .to_string();
+        tokio::spawn(async move {
+            let request = crate::core::new_request(
+                format!("permission-respond-{}", uuid::Uuid::new_v4()),
+                CoreRequest::PermissionRespond {
+                    id: perm_id,
+                    choice,
+                },
+            );
+            if let Err(e) = core_client.request(request).await {
+                tracing::warn!("failed to send permission response via core: {}", e);
+            }
+        });
+    }
+
+    fn send_local_question_response(&self, question_id: String, answers_json: String) {
+        let Some(core_client) = self.core_client.clone() else {
+            tracing::warn!("core client unavailable for question response");
+            return;
+        };
+        let answers = serde_json::from_str::<serde_json::Value>(&answers_json)
+            .unwrap_or(serde_json::Value::String(answers_json));
+        tokio::spawn(async move {
+            let request = crate::core::new_request(
+                format!("question-respond-{}", uuid::Uuid::new_v4()),
+                CoreRequest::QuestionRespond {
+                    id: question_id,
+                    answers,
+                },
+            );
+            if let Err(e) = core_client.request(request).await {
+                tracing::warn!("failed to send question response via core: {}", e);
+            }
+        });
     }
 
     pub fn enter_plan_mode(&mut self, topic: Option<String>) {

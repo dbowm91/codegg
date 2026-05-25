@@ -12,6 +12,16 @@ The `tui` module provides the terminal user interface using Ratatui.
 - Application state management across 6 state domains
 - Layout and component rendering
 - Notifications, dialogs, and FocusManager-based modal handling
+- Core-backed session/history operations via `CoreClient`
+
+## Core Integration
+
+The TUI no longer talks directly to session storage for most migrated flows. Instead, it routes session, history, task, memory, and worktree actions through `CoreClient` so the same logic can run in-process, over stdio, or over a socket transport.
+
+Local transport selection is handled by `--core-transport` or `CODEGG_CORE_TRANSPORT`:
+- `inproc` keeps the core in the same process
+- `stdio` spawns `codegg core-stdio`
+- `socket` connects to a Unix socket endpoint supplied by `--core-endpoint` or `CODEGG_CORE_ENDPOINT`
 
 ## Directory Structure
 
@@ -424,4 +434,4 @@ pub struct App {
 - [agent.md](agent.md) - AgentLoop that processes TUI commands
 - [event-bus.md](event-bus.md) - GlobalEventBus and event types
 - [session.md](session.md) - Session storage
-- `.opencode/skills/tui/SKILL.md` - Detailed TUI development guide
+- `.skills/tui/SKILL.md` - Detailed TUI development guide

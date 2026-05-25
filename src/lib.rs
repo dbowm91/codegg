@@ -21,6 +21,7 @@ pub mod mcp;
 pub mod permission;
 pub mod plugin;
 pub mod protocol;
+pub mod core;
 pub mod provider;
 pub mod pty_session;
 pub mod resilience;

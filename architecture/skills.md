@@ -11,6 +11,8 @@ The `skills` module provides specialized capabilities activated via `/skill:` co
 - Skill activation via `/skill:<name>` commands
 - System prompt augmentation with skill content
 
+The repository also keeps agent-facing skill docs in `.skills/` for maintenance. Those files should stay aligned with the runtime loader semantics documented below.
+
 ## Key Types
 
 ### Skill
@@ -110,4 +112,4 @@ The `assemble_system_prompt()` in `src/agent/prompt.rs` accepts skill names but 
 ## See Also
 
 - [tool.md](tool.md) - `/skill:` tool
-- `.opencode/skills/skills/SKILL.md` - Detailed skill system guide
+- `.skills/skills/SKILL.md` - Detailed skill system guide

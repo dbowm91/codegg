@@ -67,6 +67,31 @@ impl TreeDialog {
         self.store = Some(store);
     }
 
+    pub fn load_nodes(&mut self, nodes: Vec<TreeNode>, current_session_id: Option<String>) {
+        self.nodes = nodes;
+        self.current_session_id = current_session_id;
+        if self.nodes.is_empty() {
+            self.nodes.push(TreeNode {
+                id: "root".to_string(),
+                session_id: "root".to_string(),
+                label: "no session".to_string(),
+                time_updated: 0,
+                message_count: None,
+                is_current: false,
+                is_archived: false,
+                children: Vec::new(),
+                depth: 0,
+            });
+        }
+        self.expanded.clear();
+        if let Some(first) = self.nodes.first() {
+            self.expanded.insert(first.session_id.clone());
+        }
+        self.flatten();
+        self.selected = 0;
+        self.scroll.reset();
+    }
+
     pub async fn build_from_session_async(
         &mut self,
         sess: Option<&Session>,

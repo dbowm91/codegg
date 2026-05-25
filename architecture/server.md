@@ -89,8 +89,8 @@ Supported methods:
 
 **`/tui`** - TuiMessage protocol:
 - Uses `TuiMessage` enum from `src/protocol/tui.rs`
-- Handles `Input`, `KeyDown`, `MouseClick`, `Resize`, `PermissionResponse`, `QuestionResponse`, `SessionInfo`
-- Converts `AppEvent` from `GlobalEventBus` to `TuiMessage` for server→client streaming
+- Handles `Input`, `KeyDown`, `MouseClick`, `Resize`, `Resume`, `PermissionResponse`, `QuestionResponse`, `SessionInfo`
+- Converts `AppEvent` from `GlobalEventBus` to `TuiMessage` payloads, then wraps them in `EventEnvelope` for server→client streaming
 
 Auth validation via `validate_ws_auth()` shared between both handlers.
 
@@ -190,6 +190,10 @@ The `sanitize_path()` function ensures file operations stay within allowed direc
 
 The SSE handler at `/api/event` subscribes directly to `GlobalEventBus::subscribe()` and streams events to connected clients.
 
+### TUI Replay Buffer
+
+The `/tui` WebSocket maintains a bounded event buffer and assigns a monotonically increasing sequence number to each outbound event. When a client sends `Resume { from_event_seq }`, the server replays buffered events with a higher sequence number before sending `ResyncRequired`.
+
 ### Client SSE Methods (`src/mcp/remote.rs`)
 
 The `RemoteClient` provides client-side SSE connection methods:
@@ -231,6 +235,7 @@ Returns all collected SSE events and clears the buffer. Used to retrieve events 
 | `KeyDown` | `key: String`, `modifiers: Vec<String>` | Keyboard events |
 | `MouseClick` | `x: u16`, `y: u16` | Mouse clicks |
 | `Resize` | `w: u16`, `h: u16` | Terminal resize |
+| `Resume` | `from_event_seq: u64` | Resume handshake for buffered event replay |
 | `PermissionResponse` | `id: String`, `choice: String` | Permission answer |
 | `QuestionResponse` | `id: String`, `answers: serde_json::Value` | Question answer |
 | `SessionInfo` | `id: String`, `model: String` | Session metadata |
@@ -238,6 +243,7 @@ Returns all collected SSE events and clears the buffer. Used to retrieve events 
 **Server → Client**:
 | Variant | Fields | Purpose |
 |---------|--------|---------|
+| `EventEnvelope` | `event_seq: u64`, `payload: Box<TuiMessage>` | Sequence-tagged wrapper for replayable TUI events |
 | `TextDelta` | `delta: String` | Streaming text |
 | `ToolCallStarted` | `tool_name`, `tool_id`, `arguments` | Tool execution |
 | `ToolResult` | `tool_id`, `output`, `success` | Tool result |
@@ -276,5 +282,5 @@ pub enum ServerRuntimeError {
 ## See Also
 
 - [client.md](client.md) - Remote TUI client
-- `.opencode/skills/server/SKILL.md` - Detailed implementation guide
+- `.skills/server/SKILL.md` - Detailed implementation guide
 - `src/protocol/tui.rs` - TuiMessage protocol definitions

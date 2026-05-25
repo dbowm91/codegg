@@ -40,18 +40,20 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 
 3. **WebSocket Connection** - 30-second timeout per attempt, up to 3 retries with exponential backoff (2s, 4s) using `tokio_tungstenite::connect_async()`
 
-4. **Channel Setup**:
+4. **Resume Handshake** - Immediately sends `TuiMessage::Resume { from_event_seq: 0 }` after connect so the server can replay buffered events when needed.
+
+5. **Channel Setup**:
    - `event_tx/rx` - Receives JSON events from server WebSocket → TUI
    - `out_tx/rx` - Sends TuiMessage from TUI → server WebSocket
    - Event handling uses `catch_unwind` to prevent panics in spawned tasks from crashing the connection
 
-5. **Two Background Tasks**:
+6. **Two Background Tasks**:
    - `event_task` - Receives WebSocket messages, parses JSON, forwards to TUI
    - `send_task` - Receives `TuiMessage` from TUI, serializes to JSON, sends over WebSocket
 
-6. **TUI Initialization** - Creates `tui::App::new_remote()` with event channels
+7. **TUI Initialization** - Creates `tui::App::new_remote()` with event channels
 
-7. **Cleanup** - Both tasks aborted when `run_event_loop()` returns
+8. **Cleanup** - Both tasks aborted when `run_event_loop()` returns
 
 ### sdk.rs
 
@@ -83,6 +85,7 @@ The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag
 | `KeyDown` | `key: String`, `modifiers: Vec<String>` | Keyboard events |
 | `MouseClick` | `x: u16`, `y: u16` | Mouse clicks |
 | `Resize` | `w: u16`, `h: u16` | Terminal resize |
+| `Resume` | `from_event_seq: u64` | Resume handshake for replayed server events |
 | `RenderFrame` | `content: String` | Frame content (legacy - received and logged, not rendered) |
 | `PermissionResponse` | `id: String`, `choice: String` | Permission answer |
 | `QuestionResponse` | `id: String`, `answers: serde_json::Value` | Question answer |
@@ -91,6 +94,7 @@ The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag
 
 | Variant | Fields | Purpose |
 |---------|--------|---------|
+| `EventEnvelope` | `event_seq: u64`, `payload: Box<TuiMessage>` | Sequence-tagged wrapper for replayable server events |
 | `TextDelta` | `delta: String` | Incremental text update |
 | `PermissionPending` | `id: String`, `tool: String`, `path: Option<String>` | Permission request |
 | `QuestionPending` | `id: String`, `questions: Vec<QuestionSpec>` | Question request |
@@ -100,6 +104,8 @@ The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag
 | `ToolResult` | `tool_id: String`, `output: String`, `success: bool` | Tool execution result |
 | `Error` | `message: String` | Error message |
 | `ResyncRequired` | `reason: Option<String>`, `pending_permissions: Vec<String>`, `pending_questions: Vec<String>` | Client re-sync needed |
+
+`handle_remote_event()` unwraps `EventEnvelope` first and then dispatches the inner payload, so replayed events and live events share the same handler path.
 
 ## Error Handling
 
@@ -117,4 +123,4 @@ pub enum ClientError {
 
 - [server.md](server.md) - Server that accepts connections
 - `src/protocol/tui.rs` - TuiMessage protocol definitions
-- `.opencode/skills/client/SKILL.md` - Detailed implementation guide
+- `.skills/client/SKILL.md` - Detailed implementation guide

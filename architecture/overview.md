@@ -16,7 +16,7 @@ Codegg is a **Rust rewrite of an AI coding agent** built for performance and eff
 
 ## Module Index
 
-The codebase contains **33 discrete modules** organized into 8 functional categories. Each module has detailed documentation in its respective `.md` file in this directory.
+The codebase contains **32 discrete modules** organized into 9 functional categories. Each module has detailed documentation in its respective `.md` file in this directory.
 
 ### [Core Agent Processing](agent.md)
 
@@ -38,9 +38,19 @@ Inter-component communication through a publish-subscribe event bus, plus lifecy
 |--------|-------------|
 | **bus** | `GlobalEventBus` (broadcast channel), `PermissionRegistry`, `QuestionRegistry` for inter-component communication |
 | **hooks** | Lifecycle hooks system (`PreToolExecute`, `PostToolExecute`, `SessionStart`, `SessionEnd`, etc.) for shell command hooks |
-| **protocol** | `TuiMessage` enum for client-server TUI protocol over WebSocket |
 
 **Deep Dive**: See [event-bus.md](event-bus.md) for event types, subscription patterns, and the permission/question registry.
+
+### [Core Runtime & Protocol](core.md)
+
+Request/response facade for separating TUI transport from core session and agent logic.
+
+| Module | Description |
+|--------|-------------|
+| **core** | Typed `CoreClient` facade with in-process, stdio, and socket transport adapters |
+| **protocol** | Shared `CoreRequest`/`CoreResponse` envelopes plus the TUI `TuiMessage` protocol and resume/replay envelopes |
+
+**Deep Dive**: See [core.md](core.md) for the transport split, request families, and protocol envelopes.
 
 ### [Security & Permissions](permission.md)
 
@@ -73,8 +83,8 @@ Terminal UI built with Ratatui, plus remote TUI client for server-based deployme
 
 | Module | Description |
 |--------|-------------|
-| **tui** | Ratatui-based terminal UI with 21 dialog types, FocusManager, keyboard shortcuts, theme system, notifications |
-| **client** | WebSocket client for remote TUI connections to server with health checking and protocol handling |
+| **tui** | Ratatui-based terminal UI with CoreClient-backed session flows, 21 dialog types, FocusManager, keyboard shortcuts, theme system, notifications |
+| **client** | WebSocket client for remote TUI connections to server with health checking, resume/replay, and protocol handling |
 
 **Deep Dive**: See [tui.md](tui.md) for App state machine, components, dialogs, and input handling.
 
@@ -109,7 +119,7 @@ HTTP server, configuration, exec mode, and system utilities.
 | Module | Description |
 |--------|-------------|
 | **config** | Configuration loading from JSONC files, schema validation, hot-reload via file watching, env var interpolation |
-| **server** | Axum-based HTTP server with WebSocket support, REST API (sessions, config, MCP, files, projects), SSE events, rate limiting |
+| **server** | Axum-based HTTP server with WebSocket support, REST API (sessions, config, MCP, files, projects), SSE events, rate limiting, TUI replay buffering |
 | **exec** | Non-interactive exec mode for CI/CD with JSON input/output and structured error classification |
 
 **Deep Dive**: See [config.md](config.md) for configuration schema and validation. See [server.md](server.md) for HTTP/WebSocket server architecture.
@@ -301,6 +311,7 @@ See [config.md](config.md) for detailed configuration options.
 src/
 ├── agent/              # AgentLoop, compaction, router, team, worker, task
 ├── bus/                # GlobalEventBus, PermissionRegistry, QuestionRegistry
+├── core/               # CoreClient facade and transport adapters
 ├── client/             # Remote TUI WebSocket client
 ├── command/            # Slash command registry
 ├── config/            # Configuration loading, validation, watching, schema
@@ -314,7 +325,7 @@ src/
 ├── mcp/               # Model Context Protocol client
 ├── permission/        # Access control, DoomLoop detection
 ├── plugin/            # WASM plugin system
-├── protocol/          # TuiMessage enum
+├── protocol/          # CoreRequest/CoreResponse and TuiMessage protocols
 ├── provider/          # LLM provider implementations
 ├── pty_session/       # Shell session metadata
 ├── resilience/        # Circuit breaker, FallbackProvider
@@ -339,6 +350,7 @@ src/
 ```
 main.rs (CLI entry point)
 ├── config/
+├── core/
 ├── session/
 ├── memory/
 ├── mcp/
@@ -363,7 +375,19 @@ agent/ (depends on)
 ├── config/
 └── resilience/
 
+core/ (depends on)
+├── agent/
+├── bus/
+├── provider/
+├── tool/
+├── permission/
+├── session/
+├── memory/
+├── storage/
+└── protocol/
+
 tui/ (depends on)
+├── core/
 ├── bus/
 ├── session/
 ├── command/
@@ -374,11 +398,12 @@ server/ (depends on)
 ├── bus/
 ├── session/
 ├── provider/
+├── protocol/
 └── config/
 
 client/ (depends on)
-├── bus/
-└── protocol/
+├── protocol/
+└── tui/
 
 mcp/ (depends on)
 ├── bus/
@@ -397,12 +422,14 @@ lsp/ (depends on)
 | Category | Key Files | See Also |
 |----------|-----------|----------|
 | Agent Loop | agent/loop.rs, agent/processor.rs | [agent.md](agent.md) |
+| Core Runtime | core/mod.rs, core/transport/* | [core.md](core.md) |
 | Providers | provider/mod.rs, provider/catalog.rs | [provider.md](provider.md) |
 | Tools | tool/mod.rs, tool/executor.rs, tool/catalog.rs | [tool.md](tool.md) |
 | Events | bus/global.rs, bus/events.rs | [event-bus.md](event-bus.md) |
 | Permissions | permission/mod.rs | [permission.md](permission.md) |
 | Session Storage | session/mod.rs, session/store.rs | [session.md](session.md) |
 | TUI | tui/app/mod.rs, tui/components/* | [tui.md](tui.md) |
+| Client | client/attach.rs, client/sdk.rs | [client.md](client.md) |
 | Server | server/mod.rs, server/http.rs, server/ws.rs | [server.md](server.md) |
 | MCP | mcp/mod.rs, mcp/local.rs, mcp/remote.rs | [mcp.md](mcp.md) |
 | LSP | lsp/mod.rs, lsp/client.rs | [lsp.md](lsp.md) |
@@ -431,8 +458,9 @@ Each module has dedicated documentation:
 | [storage.md](storage.md) | storage | SQLite initialization, pooling |
 | [memory.md](memory.md) | memory | Memory store, consolidation, namespaces |
 | [snapshot.md](snapshot.md) | snapshot | File state capture, restore |
-| [tui.md](tui.md) | tui | App, components, dialogs, input |
-| [client.md](client.md) | client | Remote TUI WebSocket client |
+| [tui.md](tui.md) | tui | App, components, dialogs, input, core-backed flows |
+| [client.md](client.md) | client | Remote TUI WebSocket client, resume/replay |
+| [core.md](core.md) | core | CoreClient facade, transport adapters, protocol envelopes |
 | [mcp.md](mcp.md) | mcp | MCP client, local/remote, OAuth |
 | [lsp.md](lsp.md) | lsp | LSP client, diagnostics, operations |
 | [ide.md](ide.md) | ide | IDE detection, diff viewing |
@@ -440,7 +468,7 @@ Each module has dedicated documentation:
 | [skills.md](skills.md) | skills | Skill system, YAML frontmatter |
 | [command.md](command.md) | command | Slash commands, templates |
 | [config.md](config.md) | config | Configuration schema, validation |
-| [server.md](server.md) | server | HTTP server, WebSocket, REST API |
+| [server.md](server.md) | server | HTTP server, WebSocket, REST API, replay buffer |
 | [error.md](error.md) | error | AppError enum, error classification |
 | [resilience.md](resilience.md) | resilience | Circuit breaker, FallbackProvider |
 | [exec.md](exec.md) | exec | Non-interactive exec mode |

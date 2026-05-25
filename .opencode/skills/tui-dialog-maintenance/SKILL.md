@@ -10,6 +10,11 @@ Guide for maintaining TUI dialogs in opencode-rs, including key handling, state 
 - Use `ModelDialog::set_current()` and `ModelDialog::set_models()` to update dialog state
 - FocusManager cloned dialogs must carry payloads in `TuiMsg` to avoid stale `dialog_state` reads
 
+### Core-Backed Dialogs
+- Session tree, share, import, export, archive/delete, and history-related dialogs should prefer `CoreClient` requests instead of direct `SessionStore` or `MessageStore` access
+- `TreeDialog::load_nodes()` is the preferred way to load a prebuilt tree from core responses
+- If a dialog action already has a matching `CoreRequest`, wire the dialog to that request first and keep the UI layer thin
+
 ### Key Handling
 - `Component::handle_key()` should handle `KeyCode::Tab` directly (not as `Char('\t')`)
 - Separate key handling per dialog tab (e.g., SelectModel vs Configure tab in ModelDialog)

@@ -16,7 +16,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 |--------|---------|
 | `agent/` | Main agent loop, message processing, subagent pool, prompt templates, compaction, routing, team coordination |
 | `bus/` | Event bus system (GlobalEventBus, PermissionRegistry, QuestionRegistry) |
-| `client/` | Remote TUI client for WebSocket connections |
+| `client/` | Remote TUI client for WebSocket connections with resume/replay support |
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher |
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
@@ -26,24 +26,35 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
 | `lsp/` | Language Server Protocol support (diagnostics, code operations) |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
+| `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation |
 | `memory/` | Persistent memory system for session learning and namespace management |
 | `permission/` | Access control, path restrictions, DoomLoop detection, mode system |
 | `plugin/` | WASM plugin system with hooks and TUI extensions |
 | `provider/` | LLM provider implementations (Anthropic, OpenAI, Google, etc.) |
+| `protocol/` | Shared `CoreRequest`/`CoreResponse` and `TuiMessage` protocol envelopes |
 | `pty_session/` | Shell session metadata management (in-memory, no actual PTY) |
 | `resilience/` | Circuit breaker, retry mechanisms, and rate limiting |
 | `security/` | SSRF protection, internal IP validation, Landlock sandboxing |
-| `server/` | HTTP server (Axum) with WebSocket support for remote TUIs |
+| `server/` | HTTP server (Axum) with WebSocket support for remote TUIs and replay buffering |
 | `session/` | Session storage, message history, and checkpointing (SQLite) |
 | `skills/` | Skill system for specialized capabilities (git, research, etc.) |
 | `snapshot/` | Snapshot support for file state capture and restore |
 | `storage/` | SQLite database storage layer and initialization |
 | `tool/` | Built-in tools (bash, read, edit, task, webfetch, etc.) |
 | `tts/` | Text-to-speech module with provider support |
-| `tui/` | Terminal user interface (widgets, handlers, input processing, diff viewer, notifications, image support) |
+| `tui/` | Terminal user interface (widgets, handlers, input processing, diff viewer, notifications, image support, CoreClient-backed flows) |
 | `upgrade/` | Self-upgrade functionality via GitHub releases |
 | `util/` | Utility functions (clipboard, fuzzy search, etc.) |
 | `worktree/` | Git worktree support for project management |
+
+## Architecture Index
+
+- `architecture/core.md`: Core facade, transport adapters, request envelopes, and protocol boundaries
+- `architecture/tui.md`: TUI state, dialog/component maintenance, and CoreClient-backed flows
+- `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
+- `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
+- `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
+- `plans/tui_separation.md`: Completed TUI/core separation plan and phase notes
 
 ## Critical Implementation Notes (from Review Sessions)
 
@@ -160,7 +171,7 @@ These items were identified during module reviews and are important for future a
 
 ### Client Module Review (2026-05-22)
 - **Architecture doc accurate**: `architecture/client.md` correctly describes the implementation
-- **Client skill line numbers updated**: `new_remote()` at line 492, `handle_remote_event()` at line 686
+- **Client skill line numbers updated**: `new_remote()` at line 510, `handle_remote_event()` at line 794
 - **RenderFrame marked as legacy**: `RenderFrame` variant exists in `TuiMessage` but server doesn't send it
 - **Skills fixed**: event-bus, server, tool skills updated for accuracy
 
@@ -519,7 +530,8 @@ When adding guidance for a new module:
 | PTY (shell session metadata) | `.opencode/skills/pty/SKILL.md` |
 | Agent (AgentLoop, compaction, router, team) | `.opencode/skills/agent-loop/SKILL.md` |
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
-| TUI (keyboard shortcuts, FocusManager, Component trait) | `.opencode/skills/tui/SKILL.md` |
+| TUI (keyboard shortcuts, FocusManager, Component trait) | `.skills/tui/SKILL.md` |
+| Core (CoreClient facade, transports, protocol envelopes) | `.skills/core/SKILL.md` |
 | Security (SSRF, symlinks, Landlock) | `.opencode/skills/security/SKILL.md` |
 | WASM plugins | `.opencode/skills/plugin/SKILL.md` |
 | MCP (Model Context Protocol) | `.opencode/skills/mcp/SKILL.md` |
@@ -532,10 +544,10 @@ When adding guidance for a new module:
 | Tool (path validation, async command, ToolExecutor, ToolCatalog) | `.opencode/skills/tool/SKILL.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |
-| Client (remote TUI, WebSocket) | `.opencode/skills/client/SKILL.md` |
-| Server (HTTP, WebSocket, REST API, SSE) | `.opencode/skills/server/SKILL.md` |
+| Client (remote TUI, WebSocket) | `.skills/client/SKILL.md` |
+| Server (HTTP, WebSocket, REST API, SSE) | `.skills/server/SKILL.md` |
 | Snapshot (file state capture and restore) | `.opencode/skills/snapshot/SKILL.md` |
-| Skills (skill system overview) | `.opencode/skills/skills/SKILL.md` |
+| Skills (skill system overview) | `.skills/skills/SKILL.md` |
 | Command (slash commands, templates, execution) | `.opencode/skills/command/SKILL.md` |
 | IDE (VS Code, JetBrains detection, diff viewing) | `.opencode/skills/ide/SKILL.md` |
 | Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |

@@ -1,7 +1,7 @@
 ---
 name: client
 description: Remote TUI client for WebSocket connections to codegg server
-version: 1.0.0
+version: 1.1.0
 tags: [client, remote, websocket, tui]
 ---
 
@@ -56,6 +56,10 @@ let ws_stream = match timeout(Duration::from_secs(30), connect_async(ws_request)
 
 **Important**: Always extract both values from the tuple: `(stream, _)`. The `_` is the HTTP response and must not be ignored in pattern matching.
 
+### 3.5 Resume Handshake
+
+Immediately after connect, the client sends `TuiMessage::Resume { from_event_seq: 0 }` so the server can replay buffered events if needed.
+
 ### 4. Two Concurrent Tasks
 
 ```
@@ -78,7 +82,7 @@ let ws_stream = match timeout(Duration::from_secs(30), connect_async(ws_request)
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                      App (new_remote)                       │
-│  src/tui/app/mod.rs:489                                    │
+│  src/tui/app/mod.rs:510                                    │
 │                                                             │
 │  • handle_remote_event() - processes server messages        │
 │  • set_remote_send_tx() - sends user actions to server      │
@@ -128,12 +132,14 @@ Defined in `src/protocol/tui.rs`:
 | `KeyDown` | `key: String`, `modifiers: Vec<String>` | Keyboard events |
 | `MouseClick` | `x: u16`, `y: u16` | Mouse clicks |
 | `Resize` | `w: u16`, `h: u16` | Terminal resize |
+| `Resume` | `from_event_seq: u64` | Resume handshake for replayed server events |
 | `PermissionResponse` | `id: String`, `choice: String` | Permission decision |
 | `QuestionResponse` | `id: String`, `answers: serde_json::Value` | Question answers |
 
 ### Server → Client (Output)
 | Variant | Fields | Purpose |
 |---------|--------|---------|
+| `EventEnvelope` | `event_seq: u64`, `payload: Box<TuiMessage>` | Sequence-tagged wrapper for replayable server events |
 | `TextDelta` | `delta: String` | Streaming text |
 | `ToolCallStarted` | `tool_name`, `tool_id`, `arguments` | Tool execution started |
 | `ToolResult` | `tool_id`, `output`, `success` | Tool execution completed |
@@ -146,7 +152,7 @@ Defined in `src/protocol/tui.rs`:
 
 ## TUI Integration
 
-### Remote App Initialization (`src/tui/app/mod.rs:492`)
+### Remote App Initialization (`src/tui/app/mod.rs:510`)
 ```rust
 pub fn new_remote(project_dir: String) -> Self {
     let mut app = Self::new(project_dir);
@@ -158,7 +164,7 @@ pub fn new_remote(project_dir: String) -> Self {
 }
 ```
 
-### Remote Event Handling (`src/tui/app/mod.rs:686`)
+### Remote Event Handling (`src/tui/app/mod.rs:794`)
 ```rust
 pub fn handle_remote_event(&mut self, event: serde_json::Value) {
     match serde_json::from_value::<RemoteTuiMessage>(event) {
@@ -174,6 +180,8 @@ pub fn handle_remote_event(&mut self, event: serde_json::Value) {
 ```
 
 **Important**: When adding new `TuiMessage` variants, add handling in `handle_remote_event()` or they will be silently ignored.
+
+`handle_remote_event()` unwraps `EventEnvelope` first and then dispatches the inner payload, so replayed events and live events share the same handler path.
 
 ## ClientError Enum (`src/error.rs`)
 
@@ -225,6 +233,6 @@ Both health check (10s) and WebSocket connection (30s) have timeouts. Without th
 
 ## Related Skills
 
-- See `.opencode/skills/event-bus/SKILL.md` for event types
-- See `.opencode/skills/tui/SKILL.md` for TUI event handling
-- See `.opencode/skills/provider/SKILL.md` for provider registration
+- See `.skills/event-bus/SKILL.md` for event types
+- See `.skills/tui/SKILL.md` for TUI event handling
+- See `.skills/provider/SKILL.md` for provider registration

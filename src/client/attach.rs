@@ -69,6 +69,11 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
+    // Request a resumable stream from sequence 0 (full resync fallback).
+    if let Ok(resume) = serde_json::to_string(&TuiMessage::Resume { from_event_seq: 0 }) {
+        let _ = ws_tx.send(Message::Text(resume.into())).await;
+    }
+
     let mut app = tui::App::new_remote(url.to_string());
 
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();

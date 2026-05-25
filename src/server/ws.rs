@@ -1,4 +1,7 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 
 use axum::{
@@ -11,10 +14,41 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 use tracing::info;
+use once_cell::sync::Lazy;
 
 use crate::error::ServerRuntimeError;
 use crate::protocol::tui::{QuestionSpec, TuiMessage};
 use crate::server::rpc::{RpcError, RpcRequest, RpcResponse};
+
+static TUI_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+static TUI_EVENT_BUFFER: Lazy<StdMutex<VecDeque<(u64, TuiMessage)>>> =
+    Lazy::new(|| StdMutex::new(VecDeque::with_capacity(1024)));
+const TUI_EVENT_BUFFER_MAX: usize = 1024;
+
+fn next_tui_event_seq() -> u64 {
+    TUI_EVENT_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+fn record_tui_event(event_seq: u64, msg: TuiMessage) {
+    if let Ok(mut guard) = TUI_EVENT_BUFFER.lock() {
+        guard.push_back((event_seq, msg));
+        while guard.len() > TUI_EVENT_BUFFER_MAX {
+            let _ = guard.pop_front();
+        }
+    }
+}
+
+fn replay_tui_events(from_event_seq: u64) -> Vec<(u64, TuiMessage)> {
+    if let Ok(guard) = TUI_EVENT_BUFFER.lock() {
+        guard
+            .iter()
+            .filter(|(seq, _)| *seq > from_event_seq)
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct WebSocketAuth {
@@ -405,7 +439,13 @@ let send_task = tokio::spawn(async move {
             match event_bus_rx.recv().await {
                 Ok(event) => {
                     if let Some(tui_msg) = convert_app_event(event.clone()) {
-                        if let Ok(json) = serde_json::to_string(&tui_msg) {
+                        let event_seq = next_tui_event_seq();
+                        record_tui_event(event_seq, tui_msg.clone());
+                        let envelope = TuiMessage::EventEnvelope {
+                            event_seq,
+                            payload: Box::new(tui_msg),
+                        };
+                        if let Ok(json) = serde_json::to_string(&envelope) {
                             let ws_msg = axum::extract::ws::Message::Text(json.into());
                             if bus_tx_clone3.send(ws_msg).is_err() {
                                 tracing::warn!("WebSocket send failed, client may have lagged");
@@ -477,7 +517,7 @@ impl TuiSessionState {
 async fn handle_tui_message(
     msg: TuiMessage,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
-    _bus_tx: &mpsc::UnboundedSender<axum::extract::ws::Message>,
+    bus_tx: &mpsc::UnboundedSender<axum::extract::ws::Message>,
     _server_state: &crate::server::state::ServerState,
 ) {
     match msg {
@@ -508,6 +548,26 @@ async fn handle_tui_message(
             let sid = state.lock().await.clone();
             if let Some(session_id) = sid.session_id {
                 tracing::debug!("Resize for session {}: {}x{}", session_id, w, h);
+            }
+        }
+        TuiMessage::Resume { from_event_seq } => {
+            tracing::debug!("TUI resume requested from event seq {}", from_event_seq);
+            for (event_seq, msg) in replay_tui_events(from_event_seq) {
+                let envelope = TuiMessage::EventEnvelope {
+                    event_seq,
+                    payload: Box::new(msg),
+                };
+                if let Ok(json) = serde_json::to_string(&envelope) {
+                    let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+                }
+            }
+            let resync_msg = TuiMessage::ResyncRequired {
+                reason: Some("resume_requested".to_string()),
+                pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(),
+                pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
+            };
+            if let Ok(json) = serde_json::to_string(&resync_msg) {
+                let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
             }
         }
         TuiMessage::PermissionResponse { id, choice } => {

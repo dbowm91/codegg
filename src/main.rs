@@ -3,10 +3,12 @@ use clap_complete::{generate, Shell};
 use codegg::agent;
 use codegg::config::paths;
 use codegg::config::schema::Config;
+use codegg::core::CoreClient;
 use codegg::error::{AppError, ConfigError, StorageError};
 use codegg::exec::{ExecInput, ExecMode};
 use codegg::memory::MemoryStore;
 use codegg::mcp;
+use codegg::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
 use codegg::provider::{self, ProviderRegistry};
 use codegg::session::{MessageStore, Session, SessionStore};
 use codegg::skills::SkillIndex;
@@ -16,6 +18,7 @@ use codegg::upgrade;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::Read;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing_subscriber::util::SubscriberInitExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -94,6 +97,14 @@ struct Cli {
     /// Enable verbose output (-v for warning, -vv for info, -vvv for debug)
     #[arg(long, short = 'v', action = clap::ArgAction::Count)]
     verbose: u8,
+
+    /// Core transport mode for TUI: inproc or stdio
+    #[arg(long = "core-transport", value_enum)]
+    core_transport: Option<CoreTransport>,
+
+    /// Core transport endpoint (required for socket mode), e.g. unix:///tmp/codegg-core.sock
+    #[arg(long = "core-endpoint")]
+    core_endpoint: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -196,6 +207,8 @@ enum Commands {
         #[command(subcommand)]
         command: mcp::cli::McpCommand,
     },
+    #[command(hide = true, name = "core-stdio")]
+    CoreStdio,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, clap::ValueEnum)]
@@ -204,6 +217,14 @@ pub enum OutputFormat {
     #[default]
     Text,
     Json,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+enum CoreTransport {
+    Inproc,
+    Stdio,
+    Socket,
 }
 
 impl OutputFormat {
@@ -308,6 +329,9 @@ async fn main() -> Result<(), AppError> {
             }
             Commands::Mcp { command } => {
                 mcp::cli::exec_mcp_command(command.clone())?;
+            }
+            Commands::CoreStdio => {
+                run_core_stdio().await?;
             }
         }
         return Ok(());
@@ -820,6 +844,73 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         scheduler.spawn_loop(Arc::clone(sub_pool), std::time::Duration::from_secs(10));
     }
     app.bg_scheduler = Some(scheduler);
+    let core_transport = cli
+        .core_transport
+        .map(|m| match m {
+            CoreTransport::Inproc => "inproc".to_string(),
+            CoreTransport::Stdio => "stdio".to_string(),
+            CoreTransport::Socket => "socket".to_string(),
+        })
+        .unwrap_or_else(|| {
+            std::env::var("CODEGG_CORE_TRANSPORT")
+                .unwrap_or_else(|_| "inproc".to_string())
+                .to_lowercase()
+        });
+    let core_client: Arc<dyn CoreClient> = if core_transport == "stdio" {
+        let exe = std::env::current_exe()
+            .map_err(|e| AppError::Other(anyhow::anyhow!("cannot resolve current exe: {}", e)))?;
+        let args = vec!["core-stdio".to_string()];
+        match codegg::core::transport::StdioCoreClient::spawn(
+            exe.to_string_lossy().as_ref(),
+            &args,
+            Some(std::path::Path::new(&project_dir)),
+        )
+        .await
+        {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                tracing::warn!(
+                    "failed to initialize stdio core transport ({}), falling back to inproc",
+                    e
+                );
+                Arc::new(codegg::core::InprocCoreClient::new(
+                    app.subagent_pool.clone(),
+                    Some(memory_store.clone()),
+                    app.bg_scheduler.clone(),
+                    Some(pool.clone()),
+                ))
+            }
+        }
+    } else if core_transport == "socket" {
+        let endpoint = cli
+            .core_endpoint
+            .clone()
+            .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok())
+            .unwrap_or_else(|| "unix:///tmp/codegg-core.sock".to_string());
+        match codegg::core::transport::SocketCoreClient::connect(&endpoint).await {
+            Ok(client) => Arc::new(client),
+            Err(e) => {
+                tracing::warn!(
+                    "failed to initialize socket core transport ({}), falling back to inproc",
+                    e
+                );
+                Arc::new(codegg::core::InprocCoreClient::new(
+                    app.subagent_pool.clone(),
+                    Some(memory_store.clone()),
+                    app.bg_scheduler.clone(),
+                    Some(pool.clone()),
+                ))
+            }
+        }
+    } else {
+        Arc::new(codegg::core::InprocCoreClient::new(
+            app.subagent_pool.clone(),
+            Some(memory_store.clone()),
+            app.bg_scheduler.clone(),
+            Some(pool.clone()),
+        ))
+    };
+    app.set_core_client(core_client);
 
     if let Some(agent_name) = &cli.agent {
         if let Some(idx) = app
@@ -881,6 +972,64 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     }
 
     tui::run_event_loop(&mut app).await
+}
+
+async fn run_core_stdio() -> Result<(), AppError> {
+    let project_dir = env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let pool = storage::init(&project_dir).await?;
+    let session_store = Arc::new(SessionStore::new(pool.clone()));
+    let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|_| MemoryStore::default()));
+    let config = Config::load().unwrap_or_default();
+    let agents = agent::resolve_agents(&config)?;
+
+    let mut subagent_registry = ProviderRegistry::new();
+    provider::register_builtin_with_config(&mut subagent_registry, &config);
+    let subagent_pool = crate::agent::worker::SubAgentPool::new(
+        &config,
+        agents,
+        subagent_registry,
+        session_store,
+        Some(pool.clone()),
+    )
+    .await;
+    let subagent_pool = Arc::new(subagent_pool);
+    let scheduler = Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
+    scheduler.spawn_loop(Arc::clone(&subagent_pool), std::time::Duration::from_secs(10));
+
+    let core = codegg::core::InprocCoreClient::new(
+        Some(subagent_pool),
+        Some(memory_store),
+        Some(scheduler),
+        Some(pool),
+    );
+
+    let stdin = BufReader::new(tokio::io::stdin());
+    let mut lines = stdin.lines();
+    let mut stdout = tokio::io::stdout();
+    while let Some(line) = lines.next_line().await.map_err(AppError::Io)? {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<RequestEnvelope<CoreRequest>>(trimmed) {
+            Ok(req) => core.request(req).await.unwrap_or(CoreResponse::Error {
+                code: "request_failed".to_string(),
+                message: "core request execution failed".to_string(),
+            }),
+            Err(e) => CoreResponse::Error {
+                code: "invalid_request".to_string(),
+                message: e.to_string(),
+            },
+        };
+        let out = serde_json::to_string(&response).map_err(AppError::Json)?;
+        stdout.write_all(out.as_bytes()).await.map_err(AppError::Io)?;
+        stdout.write_all(b"\n").await.map_err(AppError::Io)?;
+        stdout.flush().await.map_err(AppError::Io)?;
+    }
+    Ok(())
 }
 
 fn parse_model(model: &str) -> (String, String) {

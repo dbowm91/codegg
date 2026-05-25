@@ -1,7 +1,7 @@
 ---
 name: tui
 description: Guide for working with Terminal UI in opencode-rs
-version: 3.1.0
+version: 3.2.0
 tags:
   - tui
   - ratatui
@@ -15,10 +15,11 @@ tags:
 
 This skill covers working with the Terminal UI (TUI) in opencode-rs, built using **Ratatui**. All dialogs implement the `Component` trait with FocusManager integration.
 
-## Notable Corrections (v3.1.0)
+## Notable Corrections (v3.2.0)
 
 - **Component trait location**: The trait is in `src/tui/components/component.rs`, NOT in a `mod.rs` within `component/` subdirectory. The `component/` subdirectory contains only `context.rs` and `focus.rs` submodules.
 - **Additional components**: `help_overlay.rs`, `tool_output.rs` are now documented in the project structure.
+- **Core separation**: Most session/history/task/memory/worktree flows now route through `src/core/` instead of direct store access in TUI.
 
 ## Project Structure
 
@@ -68,9 +69,11 @@ src/tui/
 │   ├── toast.rs             # ToastManager (notifications)
 │   ├── tool_output.rs       # Tool call result display
 │   └── mod.rs
-├── input/              # Key event handling, keybindings
+├── input.rs            # Key event handling, keybindings
 ├── layout.rs           # Layout calculations
+├── route.rs            # Route/RouteManager (Home, Session routes)
 ├── theme.rs            # Theme definitions
+├── command.rs          # Slash command registry
 └── mod.rs              # TUI entry point, event loop
 ```
 
@@ -723,9 +726,15 @@ In `src/tui/mod.rs` `run_event_loop`, async operations are performed:
 Some(cmd) = cmd_rx.recv() => {
     match cmd {
         TuiCommand::ForkSession { session_id } => {
-            if let Some(ref store) = app.session_store {
-                if let Err(e) = store.fork(&session_id).await {
-                    tracing::warn!("failed to fork session: {}", e);
+            if let Some(ref core_client) = app.core_client {
+                let request = crate::core::new_request(
+                    format!("fork-{}", session_id),
+                    CoreRequest::SessionFork {
+                        session_id: session_id.clone(),
+                    },
+                );
+                if let Err(e) = core_client.request(request).await {
+                    tracing::warn!("failed to fork session via core: {}", e);
                 }
             }
             app.messages_state.toasts.info("Session forked");
@@ -741,8 +750,8 @@ Some(cmd) = cmd_rx.recv() => {
 1. **Never use `block_on` in event handlers** - it blocks the UI thread
 2. **Send commands and return immediately** - let the async handler do the work
 3. **Commands carry all needed data** - clone data needed for async operation
-4. **Handler updates UI state directly** - modifies app state after async operation completes
-5. **Use `Arc::clone(store)`** - store is cloned before the async block to avoid borrow issues
+4. **Prefer `CoreClient` for migrated flows** - avoid direct `session_store` or `message_store` access if a request already exists in `CoreRequest`
+5. **Handler updates UI state directly** - modifies app state after async operation completes
 
 ## TuiMsg Enum (src/tui/app/types.rs)
 
@@ -1071,5 +1080,5 @@ The Timeline is rendered as a side panel showing message timestamps and navigati
 
 ## Related Skills
 
-- See `.opencode/skills/event-bus/SKILL.md` for GlobalEventBus and AppEvent documentation
-- See `.opencode/skills/agent-loop/SKILL.md` for AgentLoop event publishing
+- See `.skills/event-bus/SKILL.md` for GlobalEventBus and AppEvent documentation
+- See `.skills/agent-loop/SKILL.md` for AgentLoop event publishing

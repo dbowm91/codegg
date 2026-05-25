@@ -119,6 +119,7 @@ use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
 use crate::error::AppError;
 use crate::permission::PermissionRequest;
+use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::tui::components::dialogs::import::ImportSource;
 use crate::tui::components::toast::Toast;
 use crossterm::event::{
@@ -134,9 +135,6 @@ use std::io::{self, stdout};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::permission::PermissionChecker;
-use crate::provider::{ChatRequest, ContentPart, Message, ProviderRegistry};
-use crate::session::CreateSession;
 use crate::tui::app::SessionStatus;
 use md5;
 use rand;
@@ -205,98 +203,129 @@ fn clear_render_error(app: &mut app::App) {
 
 const MAX_RENDER_PANICS: usize = 3;
 
-fn build_conversation_context(
-    ui_messages: &[crate::tui::components::messages::UIMessage],
-) -> Vec<Message> {
-    use crate::tui::components::messages::{MessageRole as UIMessageRole, MsgPart};
+fn latest_user_message_text(app: &app::App) -> String {
+    use crate::tui::components::messages::MessageRole;
+    app.messages_state
+        .messages
+        .messages
+        .iter()
+        .rev()
+        .find(|m| matches!(m.role, MessageRole::User))
+        .map(|m| m.text_content())
+        .unwrap_or_default()
+}
 
-    let mut out = Vec::new();
-
-    for m in ui_messages {
-        let mut content: Vec<ContentPart> = Vec::new();
-        let mut tool_calls: Vec<crate::provider::ToolCall> = Vec::new();
-        let mut tool_results: Vec<Message> = Vec::new();
-
-        for p in &m.parts {
-            match p {
-                MsgPart::Text { content: text } => content.push(ContentPart::Text {
-                    text: text.clone().into(),
-                }),
-                MsgPart::Reasoning { content: text, .. } => content.push(ContentPart::Text {
-                    text: format!("[Reasoning]\n{}", text).into(),
-                }),
-                MsgPart::ToolCall {
-                    id,
-                    name,
-                    input,
-                    output,
-                    ..
-                } => {
-                    if let Ok(arguments) = serde_json::from_str::<serde_json::Value>(input) {
-                        tool_calls.push(crate::provider::ToolCall {
-                            id: id.clone().into(),
-                            name: name.clone().into(),
-                            arguments,
-                        });
-                    }
-                    tool_results.push(Message::Tool {
-                        tool_call_id: id.clone().into(),
-                        content: output.clone().into(),
-                    });
-                }
-            }
-        }
-
-        match m.role {
-            UIMessageRole::User => {
-                if !content.is_empty() {
-                    out.push(Message::User { content });
-                }
-            }
-            UIMessageRole::Assistant => {
-                if !content.is_empty() || !tool_calls.is_empty() {
-                    out.push(Message::Assistant {
-                        content,
-                        tool_calls,
-                    });
-                }
-                out.extend(tool_results);
-            }
-        }
+async fn ensure_local_session(app: &mut app::App) {
+    if app.session_state.session.is_some() {
+        return;
     }
-
-    out
+    debug_log!("Event loop: no session exists, creating new session");
+    if let Some(core_client) = app.core_client.clone() {
+        let project_dir = app.session_state.project_dir.clone();
+        let request = crate::core::new_request(
+            format!("session-create-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionCreate {
+                directory: project_dir,
+                title: None,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { session }) => {
+                let session_id = session.id.clone();
+                app.session_state.session = Some(session);
+                debug_log!("Event loop: session created via core with id={}", session_id);
+            }
+            Ok(CoreResponse::Error { code, message }) => {
+                debug_log!(
+                    "Event loop: failed to create session via core ({}): {}",
+                    code,
+                    message
+                );
+            }
+            Ok(other) => {
+                debug_log!("Event loop: unexpected session-create response: {:?}", other);
+            }
+            Err(e) => {
+                debug_log!("Event loop: failed to create session via core: {:?}", e);
+            }
+        }
+    } else {
+        debug_log!("Event loop: no core client available for session creation");
+    }
 }
 
 async fn reload_sessions(app: &mut app::App) {
     use std::collections::HashMap;
 
-    let store = match &app.session_store {
-        Some(s) => Arc::clone(s),
-        None => return,
-    };
     let project_id = app.session_state.project_dir.clone();
     let show_archived = app.dialog_state.session_dialog.show_archived;
 
     app.dialog_state.session_dialog.set_loading(true);
 
-    let sessions = match if show_archived {
-        store.list_all(&project_id, None).await
-    } else {
-        store.list(&project_id, 100).await
-    } {
-        Ok(sessions) => sessions,
-        Err(e) => {
-            tracing::warn!("failed to load sessions: {}", e);
-            return;
+    let sessions = if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionList {
+                project_id: project_id.clone(),
+                show_archived,
+                limit: 100,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::SessionList { sessions }) => sessions,
+            Ok(CoreResponse::Error { code, message }) => {
+                tracing::warn!("failed to load sessions via core ({}): {}", code, message);
+                return;
+            }
+            Ok(other) => {
+                tracing::warn!("unexpected core response for session list: {:?}", other);
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("failed to load sessions via core: {}", e);
+                return;
+            }
         }
+    } else {
+        tracing::warn!("core client unavailable for session list");
+        return;
     };
 
     let session_ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
     let message_counts: HashMap<String, usize> = if session_ids.is_empty() {
         HashMap::new()
+    } else if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-message-counts-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionMessageCounts {
+                session_ids: session_ids.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::SessionMessageCounts { counts }) => counts,
+            Ok(CoreResponse::Error { code, message }) => {
+                tracing::warn!(
+                    "failed to load session message counts via core ({}): {}",
+                    code,
+                    message
+                );
+                HashMap::new()
+            }
+            Ok(other) => {
+                tracing::warn!(
+                    "unexpected core response for session message counts: {:?}",
+                    other
+                );
+                HashMap::new()
+            }
+            Err(e) => {
+                tracing::warn!("failed to load session message counts via core: {}", e);
+                HashMap::new()
+            }
+        }
     } else {
-        store.message_counts(&session_ids).await.unwrap_or_default()
+        tracing::warn!("core client unavailable for session message counts");
+        HashMap::new()
     };
 
     app.dialog_state.session_dialog.load_sessions(sessions);
@@ -308,24 +337,56 @@ async fn reload_sessions(app: &mut app::App) {
 }
 
 async fn handle_delete_session(app: &mut app::App, session_id: String) {
-    if let Some(ref store) = app.session_store {
-        if let Err(e) = store.soft_delete(&session_id).await {
-            tracing::warn!("failed to soft delete session: {}", e);
+    if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-delete-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionDelete {
+                session_id: session_id.clone(),
+                permanent: false,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Ack) => {}
+            Ok(CoreResponse::Error { code, message }) => {
+                tracing::warn!("failed to delete session via core ({}): {}", code, message);
+            }
+            Ok(other) => {
+                tracing::warn!("unexpected core response for session delete: {:?}", other);
+            }
+            Err(e) => {
+                tracing::warn!("failed to delete session via core: {}", e);
+            }
         }
+    } else {
+        tracing::warn!("core client unavailable for delete session");
     }
     app.messages_state.toasts.info("Session deleted");
     reload_sessions(app).await;
 }
 
 async fn handle_archive_session(app: &mut app::App, session_id: String, unarchive: bool) {
-    if let Some(ref store) = app.session_store {
-        if let Err(e) = if unarchive {
-            store.unarchive(&session_id).await
-        } else {
-            store.archive(&session_id).await
-        } {
-            tracing::warn!("failed to archive session: {}", e);
+    if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-archive-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionArchive {
+                session_id: session_id.clone(),
+                unarchive,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Ack) => {}
+            Ok(CoreResponse::Error { code, message }) => {
+                tracing::warn!("failed to archive session via core ({}): {}", code, message);
+            }
+            Ok(other) => {
+                tracing::warn!("unexpected core response for session archive: {:?}", other);
+            }
+            Err(e) => {
+                tracing::warn!("failed to archive session via core: {}", e);
+            }
         }
+    } else {
+        tracing::warn!("core client unavailable for archive session");
     }
     let msg = if unarchive {
         "Session unarchived"
@@ -337,10 +398,27 @@ async fn handle_archive_session(app: &mut app::App, session_id: String, unarchiv
 }
 
 async fn handle_fork_session(app: &mut app::App, session_id: String) {
-    if let Some(ref store) = app.session_store {
-        if let Err(e) = store.fork(&session_id).await {
-            tracing::warn!("failed to fork session: {}", e);
+    if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-fork-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionFork {
+                session_id: session_id.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Ack) => {}
+            Ok(CoreResponse::Error { code, message }) => {
+                tracing::warn!("failed to fork session via core ({}): {}", code, message);
+            }
+            Ok(other) => {
+                tracing::warn!("unexpected core response for session fork: {:?}", other);
+            }
+            Err(e) => {
+                tracing::warn!("failed to fork session via core: {}", e);
+            }
         }
+    } else {
+        tracing::warn!("core client unavailable for fork session");
     }
     app.messages_state.toasts.info("Session forked");
     reload_sessions(app).await;
@@ -348,12 +426,39 @@ async fn handle_fork_session(app: &mut app::App, session_id: String) {
 
 async fn handle_bulk_delete(app: &mut app::App, session_ids: Vec<String>) {
     let count = session_ids.len();
-    if let Some(ref store) = app.session_store {
+    if let Some(core_client) = app.core_client.clone() {
         for id in &session_ids {
-            if let Err(e) = store.delete(id).await {
-                tracing::warn!("failed to delete session {}: {}", id, e);
+            let request = crate::core::new_request(
+                format!("session-delete-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionDelete {
+                    session_id: id.clone(),
+                    permanent: true,
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::Ack) => {}
+                Ok(CoreResponse::Error { code, message }) => {
+                    tracing::warn!(
+                        "failed to permanently delete session {} via core ({}): {}",
+                        id,
+                        code,
+                        message
+                    );
+                }
+                Ok(other) => {
+                    tracing::warn!(
+                        "unexpected core response for permanent session delete {}: {:?}",
+                        id,
+                        other
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("failed to permanently delete session {} via core: {}", id, e);
+                }
             }
         }
+    } else {
+        tracing::warn!("core client unavailable for bulk delete");
     }
     app.messages_state
         .toasts
@@ -363,17 +468,39 @@ async fn handle_bulk_delete(app: &mut app::App, session_ids: Vec<String>) {
 
 async fn handle_bulk_archive(app: &mut app::App, session_ids: Vec<String>, unarchive: bool) {
     let count = session_ids.len();
-    if let Some(ref store) = app.session_store {
+    if let Some(core_client) = app.core_client.clone() {
         for id in &session_ids {
-            let r = if unarchive {
-                store.unarchive(id).await
-            } else {
-                store.archive(id).await
-            };
-            if let Err(e) = r {
-                tracing::warn!("failed to archive session {}: {}", id, e);
+            let request = crate::core::new_request(
+                format!("session-archive-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionArchive {
+                    session_id: id.clone(),
+                    unarchive,
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::Ack) => {}
+                Ok(CoreResponse::Error { code, message }) => {
+                    tracing::warn!(
+                        "failed to archive session {} via core ({}): {}",
+                        id,
+                        code,
+                        message
+                    );
+                }
+                Ok(other) => {
+                    tracing::warn!(
+                        "unexpected core response for session archive {}: {:?}",
+                        id,
+                        other
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("failed to archive session {} via core: {}", id, e);
+                }
             }
         }
+    } else {
+        tracing::warn!("core client unavailable for bulk archive");
     }
     let msg = if unarchive {
         format!("{} sessions unarchived", count)
@@ -386,13 +513,29 @@ async fn handle_bulk_archive(app: &mut app::App, session_ids: Vec<String>, unarc
 
 async fn handle_bulk_export(app: &mut app::App, session_ids: Vec<String>) {
     let count = session_ids.len();
-    if let Some(ref store) = app.session_store {
+    if let Some(core_client) = app.core_client.clone() {
         for id in &session_ids {
-            match store.export_session(id).await {
-                Ok(_) => tracing::info!("exported session {}", id),
-                Err(e) => tracing::warn!("failed to export session {}: {}", id, e),
+            let request = crate::core::new_request(
+                format!("session-export-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionExport {
+                    session_id: id.clone(),
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::Json { .. }) => tracing::info!("exported session {}", id),
+                Ok(CoreResponse::Error { code, message }) => {
+                    tracing::warn!("failed to export session {} via core ({}): {}", id, code, message)
+                }
+                Ok(other) => tracing::warn!(
+                    "unexpected core response for session export {}: {:?}",
+                    id,
+                    other
+                ),
+                Err(e) => tracing::warn!("failed to export session {} via core: {}", id, e),
             }
         }
+    } else {
+        tracing::warn!("core client unavailable for bulk export");
     }
     app.messages_state
         .toasts
@@ -400,9 +543,13 @@ async fn handle_bulk_export(app: &mut app::App, session_ids: Vec<String>) {
 }
 
 async fn handle_share_session(app: &mut app::App, session_id: String) {
-    if let Some(ref store) = app.session_store {
-        match store.share_session(&session_id).await {
-            Ok(shared) => {
+    if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-share-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionShare { session_id },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { session: shared }) => {
                 app.session_state.session = Some(shared.clone());
                 let url = shared.share_url.unwrap_or_default();
                 let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(
@@ -413,6 +560,16 @@ async fn handle_share_session(app: &mut app::App, session_id: String) {
                 app.dialog_state.share_dialog = Some(dialog);
                 app.open_dialog(Dialog::Share);
             }
+            Ok(CoreResponse::Error { message, .. }) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Failed to share: {}", message));
+            }
+            Ok(other) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Unexpected share response: {:?}", other));
+            }
             Err(e) => {
                 app.messages_state
                     .toasts
@@ -420,18 +577,30 @@ async fn handle_share_session(app: &mut app::App, session_id: String) {
             }
         }
     } else {
-        app.messages_state
-            .toasts
-            .error("Session store not available");
+        app.messages_state.toasts.error("Core client not available");
     }
 }
 
 async fn handle_unshare_session(app: &mut app::App, session_id: String) {
-    if let Some(ref store) = app.session_store {
-        match store.unshare_session(&session_id).await {
-            Ok(session) => {
+    if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-unshare-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionUnshare { session_id },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { session }) => {
                 app.session_state.session = Some(session);
                 app.messages_state.toasts.info("Session unshared");
+            }
+            Ok(CoreResponse::Error { message, .. }) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Failed to unshare: {}", message));
+            }
+            Ok(other) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Unexpected unshare response: {:?}", other));
             }
             Err(e) => {
                 app.messages_state
@@ -440,16 +609,18 @@ async fn handle_unshare_session(app: &mut app::App, session_id: String) {
             }
         }
     } else {
-        app.messages_state
-            .toasts
-            .error("Session store not available");
+        app.messages_state.toasts.error("Core client not available");
     }
 }
 
 async fn handle_export_session(app: &mut app::App, session_id: String) {
-    if let Some(ref store) = app.session_store {
-        match store.export_session(&session_id).await {
-            Ok(export) => {
+    if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-export-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionExport { session_id },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data: export }) => {
                 let json = serde_json::to_string_pretty(&export).unwrap_or_default();
                 match crate::util::clipboard::copy_to_clipboard(&json) {
                     Ok(_) => {
@@ -464,6 +635,16 @@ async fn handle_export_session(app: &mut app::App, session_id: String) {
                     }
                 }
             }
+            Ok(CoreResponse::Error { message, .. }) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Failed to export: {}", message));
+            }
+            Ok(other) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Unexpected export response: {:?}", other));
+            }
             Err(e) => {
                 app.messages_state
                     .toasts
@@ -471,37 +652,33 @@ async fn handle_export_session(app: &mut app::App, session_id: String) {
             }
         }
     } else {
-        app.messages_state
-            .toasts
-            .error("Session store not available");
+        app.messages_state.toasts.error("Core client not available");
     }
 }
 
 async fn handle_rename_session(app: &mut app::App, session_id: String, new_title: String) {
-    if let Some(ref store) = app.session_store {
-        use crate::session::UpdateSession;
-        match store
-            .update(
-                &session_id,
-                UpdateSession {
-                    title: Some(new_title),
-                    share_url: None,
-                    summary_additions: None,
-                    summary_deletions: None,
-                    summary_files: None,
-                    summary_diffs: None,
-                    revert: None,
-                    permission: None,
-                    tags: None,
-                    time_compacting: None,
-                    time_archived: None,
-                },
-            )
-            .await
-        {
-            Ok(session) => {
+    if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-rename-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionRename {
+                session_id,
+                new_title,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { session }) => {
                 app.session_state.session = Some(session);
                 app.messages_state.toasts.info("Session renamed");
+            }
+            Ok(CoreResponse::Error { message, .. }) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Failed to rename: {}", message));
+            }
+            Ok(other) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Unexpected rename response: {:?}", other));
             }
             Err(e) => {
                 app.messages_state
@@ -510,56 +687,265 @@ async fn handle_rename_session(app: &mut app::App, session_id: String, new_title
             }
         }
     } else {
-        app.messages_state
-            .toasts
-            .error("Session store not available");
+        app.messages_state.toasts.error("Core client not available");
     }
 }
 
 async fn handle_open_tree_dialog(app: &mut app::App) {
-    let store = app.session_store.clone();
-    let sess = app.session_state.session.clone();
+    use std::collections::HashMap;
+    use crate::tui::components::dialogs::tree::TreeNode;
+
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .error("Core client not available");
+        return;
+    };
+    let Some(current_session) = app.session_state.session.clone() else {
+        app.dialog_state.tree_dialog.load_nodes(Vec::new(), None);
+        return;
+    };
+
+    let list_request = crate::core::new_request(
+        format!("session-tree-list-{}", uuid::Uuid::new_v4()),
+        CoreRequest::SessionList {
+            project_id: app.session_state.project_dir.clone(),
+            show_archived: true,
+            limit: 1000,
+        },
+    );
+    let sessions = match core_client.request(list_request).await {
+        Ok(CoreResponse::SessionList { sessions }) => sessions,
+        Ok(CoreResponse::Error { message, .. }) => {
+            app.messages_state
+                .toasts
+                .error(&format!("Failed to load tree sessions: {}", message));
+            return;
+        }
+        Ok(other) => {
+            app.messages_state
+                .toasts
+                .error(&format!("Unexpected tree response: {:?}", other));
+            return;
+        }
+        Err(e) => {
+            app.messages_state
+                .toasts
+                .error(&format!("Failed to load tree sessions: {}", e));
+            return;
+        }
+    };
+
+    let by_id: HashMap<String, crate::session::Session> = sessions
+        .iter()
+        .cloned()
+        .map(|s| (s.id.clone(), s))
+        .collect();
+    let mut root_id = current_session.id.clone();
+    while let Some(parent_id) = by_id.get(&root_id).and_then(|s| s.parent_id.clone()) {
+        if !by_id.contains_key(&parent_id) {
+            break;
+        }
+        root_id = parent_id;
+    }
+
+    let mut children_map: HashMap<String, Vec<crate::session::Session>> = HashMap::new();
+    for session in &sessions {
+        if let Some(parent_id) = &session.parent_id {
+            children_map
+                .entry(parent_id.clone())
+                .or_default()
+                .push(session.clone());
+        }
+    }
+
+    let counts_request = crate::core::new_request(
+        format!("session-tree-counts-{}", uuid::Uuid::new_v4()),
+        CoreRequest::SessionMessageCounts {
+            session_ids: sessions.iter().map(|s| s.id.clone()).collect(),
+        },
+    );
+    let counts = match core_client.request(counts_request).await {
+        Ok(CoreResponse::SessionMessageCounts { counts }) => counts,
+        _ => HashMap::new(),
+    };
+
+    fn build_node(
+        session: &crate::session::Session,
+        depth: usize,
+        current_session_id: &str,
+        children_map: &HashMap<String, Vec<crate::session::Session>>,
+        counts: &HashMap<String, usize>,
+    ) -> TreeNode {
+        let mut children = children_map
+            .get(&session.id)
+            .cloned()
+            .unwrap_or_default();
+        children.sort_by_key(|s| s.time_updated);
+        let child_nodes = children
+            .iter()
+            .map(|child| build_node(child, depth + 1, current_session_id, children_map, counts))
+            .collect();
+        TreeNode {
+            id: session.id.clone(),
+            session_id: session.id.clone(),
+            label: session.title.clone(),
+            time_updated: session.time_updated,
+            message_count: counts.get(&session.id).copied(),
+            is_current: session.id == current_session_id,
+            is_archived: session.time_archived.is_some(),
+            children: child_nodes,
+            depth,
+        }
+    }
+
+    let tree_nodes = if let Some(root) = by_id.get(&root_id) {
+        vec![build_node(
+            root,
+            0,
+            &current_session.id,
+            &children_map,
+            &counts,
+        )]
+    } else {
+        Vec::new()
+    };
     app.dialog_state
         .tree_dialog
-        .build_from_session_async(sess.as_ref(), store)
-        .await;
+        .load_nodes(tree_nodes, Some(current_session.id));
 }
 
 async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
-    let Some(store) = &app.session_store else {
-        if let Some(ref mut import) = app.dialog_state.import_dialog {
-            import.set_error("No session store available".to_string());
-        }
-        return;
-    };
-    let store = Arc::clone(store);
-
-    match source {
-        ImportSource::SessionId(id) => match store.get(&id).await {
-            Ok(Some(session)) => {
-                let msg_count = store.message_count(&id).await.unwrap_or(0);
-                if let Some(ref mut import) = app.dialog_state.import_dialog {
-                    import.set_preview(session, msg_count);
-                }
-            }
-            Ok(None) => {
-                if let Some(ref mut import) = app.dialog_state.import_dialog {
-                    import.set_error(format!("Session not found: {}", id));
-                }
-            }
-            Err(e) => {
-                if let Some(ref mut import) = app.dialog_state.import_dialog {
-                    import.set_error(format!("Failed to load session: {}", e));
-                }
-            }
-        },
-        ImportSource::FilePath(path) => match tokio::fs::read_to_string(path.as_str()).await {
-            Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-                Ok(data) => match store.import_session(data, None).await {
-                    Ok(session) => {
-                        let msg_count = store.message_count(&session.id).await.unwrap_or(0);
+    if let Some(core_client) = app.core_client.clone() {
+        match source {
+            ImportSource::SessionId(id) => {
+                let load_request = crate::core::new_request(
+                    format!("session-load-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::SessionLoad {
+                        session_id: id.clone(),
+                    },
+                );
+                let count_request = crate::core::new_request(
+                    format!("session-message-counts-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::SessionMessageCounts {
+                        session_ids: vec![id.clone()],
+                    },
+                );
+                match (
+                    core_client.request(load_request).await,
+                    core_client.request(count_request).await,
+                ) {
+                    (
+                        Ok(CoreResponse::Session { session }),
+                        Ok(CoreResponse::SessionMessageCounts { counts }),
+                    ) => {
+                        let msg_count = counts.get(&id).copied().unwrap_or(0);
                         if let Some(ref mut import) = app.dialog_state.import_dialog {
                             import.set_preview(session, msg_count);
+                        }
+                    }
+                    (Ok(CoreResponse::Error { message, .. }), _) | (_, Ok(CoreResponse::Error { message, .. })) => {
+                        if let Some(ref mut import) = app.dialog_state.import_dialog {
+                            import.set_error(format!("Failed to load session: {}", message));
+                        }
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        if let Some(ref mut import) = app.dialog_state.import_dialog {
+                            import.set_error(format!("Failed to load session: {}", e));
+                        }
+                    }
+                    _ => {
+                        if let Some(ref mut import) = app.dialog_state.import_dialog {
+                            import.set_error("Unexpected response while loading session".to_string());
+                        }
+                    }
+                }
+            }
+            ImportSource::FilePath(path) => match tokio::fs::read_to_string(path.as_str()).await {
+                Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(data) => {
+                        let import_request = crate::core::new_request(
+                            format!("session-import-data-{}", uuid::Uuid::new_v4()),
+                            CoreRequest::SessionImportData { data },
+                        );
+                        match core_client.request(import_request).await {
+                            Ok(CoreResponse::Session { session }) => {
+                                let count_request = crate::core::new_request(
+                                    format!("session-message-counts-{}", uuid::Uuid::new_v4()),
+                                    CoreRequest::SessionMessageCounts {
+                                        session_ids: vec![session.id.clone()],
+                                    },
+                                );
+                                let msg_count = match core_client.request(count_request).await {
+                                    Ok(CoreResponse::SessionMessageCounts { counts }) => {
+                                        counts.get(&session.id).copied().unwrap_or(0)
+                                    }
+                                    _ => 0,
+                                };
+                                if let Some(ref mut import) = app.dialog_state.import_dialog {
+                                    import.set_preview(session, msg_count);
+                                }
+                            }
+                            Ok(CoreResponse::Error { message, .. }) => {
+                                if let Some(ref mut import) = app.dialog_state.import_dialog {
+                                    import.set_error(format!("Import failed: {}", message));
+                                }
+                            }
+                            Ok(other) => {
+                                if let Some(ref mut import) = app.dialog_state.import_dialog {
+                                    import.set_error(format!("Unexpected import response: {:?}", other));
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(ref mut import) = app.dialog_state.import_dialog {
+                                    import.set_error(format!("Import failed: {}", e));
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(ref mut import) = app.dialog_state.import_dialog {
+                            import.set_error(format!("Invalid JSON: {}", e));
+                        }
+                    }
+                },
+                Err(e) => {
+                    if let Some(ref mut import) = app.dialog_state.import_dialog {
+                        import.set_error(format!("Failed to read file: {}", e));
+                    }
+                }
+            },
+        }
+        return;
+    }
+
+    if let Some(ref mut import) = app.dialog_state.import_dialog {
+        import.set_error("Core client not available".to_string());
+    }
+}
+
+async fn handle_confirm_import(app: &mut app::App, source: ImportSource) {
+    if let Some(core_client) = app.core_client.clone() {
+        match source {
+            ImportSource::SessionId(id) => {
+                let request = crate::core::new_request(
+                    format!("session-fork-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::SessionFork { session_id: id },
+                );
+                match core_client.request(request).await {
+                    Ok(CoreResponse::Session { session }) => {
+                        if let Some(ref mut import) = app.dialog_state.import_dialog {
+                            import.set_done(session);
+                        }
+                    }
+                    Ok(CoreResponse::Error { message, .. }) => {
+                        if let Some(ref mut import) = app.dialog_state.import_dialog {
+                            import.set_error(format!("Import failed: {}", message));
+                        }
+                    }
+                    Ok(other) => {
+                        if let Some(ref mut import) = app.dialog_state.import_dialog {
+                            import.set_error(format!("Unexpected import response: {:?}", other));
                         }
                     }
                     Err(e) => {
@@ -567,49 +953,19 @@ async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
                             import.set_error(format!("Import failed: {}", e));
                         }
                     }
-                },
-                Err(e) => {
-                    if let Some(ref mut import) = app.dialog_state.import_dialog {
-                        import.set_error(format!("Invalid JSON: {}", e));
-                    }
-                }
-            },
-            Err(e) => {
-                if let Some(ref mut import) = app.dialog_state.import_dialog {
-                    import.set_error(format!("Failed to read file: {}", e));
                 }
             }
-        },
-    }
-}
-
-async fn handle_confirm_import(app: &mut app::App, source: ImportSource) {
-    let Some(store) = &app.session_store else {
-        if let Some(ref mut import) = app.dialog_state.import_dialog {
-            import.set_error("No session store available".to_string());
+            ImportSource::FilePath(_) => {
+                if let Some(ref mut import) = app.dialog_state.import_dialog {
+                    import.set_error("File already imported via preview".to_string());
+                }
+            }
         }
         return;
-    };
-    let store = Arc::clone(store);
+    }
 
-    match source {
-        ImportSource::SessionId(id) => match store.fork(&id).await {
-            Ok(session) => {
-                if let Some(ref mut import) = app.dialog_state.import_dialog {
-                    import.set_done(session);
-                }
-            }
-            Err(e) => {
-                if let Some(ref mut import) = app.dialog_state.import_dialog {
-                    import.set_error(format!("Import failed: {}", e));
-                }
-            }
-        },
-        ImportSource::FilePath(_) => {
-            if let Some(ref mut import) = app.dialog_state.import_dialog {
-                import.set_error("File already imported via preview".to_string());
-            }
-        }
+    if let Some(ref mut import) = app.dialog_state.import_dialog {
+        import.set_error("Core client not available".to_string());
     }
 }
 
@@ -618,22 +974,29 @@ async fn handle_create_from_template(
     _key: String,
     template: crate::config::schema::SessionTemplate,
 ) {
-    let Some(store) = &app.session_store else {
-        app.messages_state
-            .toasts
-            .error("No session store available");
-        return;
-    };
-    let store = Arc::clone(store);
     let project_dir = app.session_state.project_dir.clone();
     let template_name = template.name.clone();
     let agent = template.agent.clone();
     let model = template.model.clone();
-
-    match store
-        .create_from_template(&template, &project_dir, &project_dir)
-        .await
-    {
+    let created = if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-create-template-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionCreateFromTemplate {
+                template: template.clone(),
+                project_id: project_dir.clone(),
+                directory: project_dir.clone(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { session }) => Ok(session),
+            Ok(CoreResponse::Error { message, .. }) => Err(message),
+            Ok(other) => Err(format!("Unexpected response: {:?}", other)),
+            Err(e) => Err(e.to_string()),
+        }
+    } else {
+        Err("Core client not available".to_string())
+    };
+    match created {
         Ok(session) => {
             app.session_state.session = Some(session.clone());
             app.ui_state
@@ -741,142 +1104,562 @@ async fn handle_spawn_subagent(app: &mut app::App, agent_name: String, prompt: S
 async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
     use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
 
-    let store = match &app.message_store {
-        Some(s) => Arc::clone(s),
-        None => return,
-    };
+    async fn load_via_core(
+        app: &mut app::App,
+        session_id: &str,
+    ) -> Option<Vec<crate::session::message::Message>> {
+        let client = app.core_client.clone()?;
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::SessionMessagesLoad {
+                session_id: session_id.to_string(),
+            },
+        );
+        match client.request(request).await {
+            Ok(CoreResponse::SessionMessages { messages, .. }) => Some(messages),
+            Ok(CoreResponse::Error { message, .. }) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Failed to load messages: {}", message));
+                None
+            }
+            Ok(CoreResponse::Ack)
+            | Ok(CoreResponse::SessionList { .. })
+            | Ok(CoreResponse::Session { .. })
+            | Ok(CoreResponse::SessionMessageCounts { .. })
+            | Ok(CoreResponse::Json { .. }) => None,
+            Err(e) => {
+                app.messages_state
+                    .toasts
+                    .error(&format!("Failed to load messages: {}", e));
+                None
+            }
+        }
+    }
 
     app.messages_state.messages.clear();
 
-    match store.list(&session_id).await {
-        Ok(messages) => {
-            for msg in messages {
-                let role = {
-                    fn determine_role(msg: &crate::session::message::Message) -> MessageRole {
-                        for part in &msg.data.parts {
-                            match &part.data {
-                                crate::session::message::PartData::Reasoning { .. }
-                                | crate::session::message::PartData::ToolCall { .. } => {
-                                    return MessageRole::Assistant;
-                                }
-                                _ => {}
+    let messages = if app.core_client.is_some() {
+        match load_via_core(app, &session_id).await {
+            Some(messages) => messages,
+            None => return,
+        }
+    } else {
+        app.messages_state
+            .toasts
+            .error("Core client not available");
+        return;
+    };
+
+    for msg in messages {
+        let role = {
+            fn determine_role(msg: &crate::session::message::Message) -> MessageRole {
+                for part in &msg.data.parts {
+                    match &part.data {
+                        crate::session::message::PartData::Reasoning { .. }
+                        | crate::session::message::PartData::ToolCall { .. } => {
+                            return MessageRole::Assistant;
+                        }
+                        _ => {}
+                    }
+                }
+                MessageRole::User
+            }
+            determine_role(&msg)
+        };
+        let parts = {
+            fn convert(parts: &[crate::session::message::PartInfo]) -> Vec<MsgPart> {
+                parts
+                    .iter()
+                    .map(|p| match &p.data {
+                        crate::session::message::PartData::Text { text } => MsgPart::Text {
+                            content: text.clone(),
+                        },
+                        crate::session::message::PartData::Reasoning { reasoning } => {
+                            MsgPart::Reasoning {
+                                content: reasoning.clone(),
+                                collapsed: false,
                             }
                         }
-                        MessageRole::User
-                    }
-                    determine_role(&msg)
-                };
-                let parts = {
-                    fn convert(parts: &[crate::session::message::PartInfo]) -> Vec<MsgPart> {
-                        parts
-                            .iter()
-                            .map(|p| match &p.data {
-                                crate::session::message::PartData::Text { text } => MsgPart::Text {
-                                    content: text.clone(),
-                                },
-                                crate::session::message::PartData::Reasoning { reasoning } => {
-                                    MsgPart::Reasoning {
-                                        content: reasoning.clone(),
-                                        collapsed: false,
-                                    }
-                                }
-                                crate::session::message::PartData::ToolCall {
-                                    id,
-                                    name,
-                                    input,
-                                    output,
-                                    status,
-                                } => MsgPart::ToolCall {
-                                    id: id.clone(),
-                                    name: name.clone(),
-                                    input: serde_json::to_string(input).unwrap_or_default(),
-                                    output: output.clone().unwrap_or_default(),
-                                    status: status.clone(),
-                                    duration_ms: None,
-                                    exit_code: None,
-                                    output_lines: None,
-                                },
-                                crate::session::message::PartData::Image { .. }
-                                | crate::session::message::PartData::File { .. } => MsgPart::Text {
-                                    content: "[File/Image]".to_string(),
-                                },
-                            })
-                            .collect()
-                    }
-                    convert(&msg.data.parts)
-                };
-
-                if !parts.is_empty() || role == MessageRole::Assistant {
-                    app.messages_state.messages.messages.push(UIMessage {
-                        role,
-                        parts,
-                        timestamp: None,
-                        is_plan_mode: None,
-                    });
-                }
+                        crate::session::message::PartData::ToolCall {
+                            id,
+                            name,
+                            input,
+                            output,
+                            status,
+                        } => MsgPart::ToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: serde_json::to_string(input).unwrap_or_default(),
+                            output: output.clone().unwrap_or_default(),
+                            status: status.clone(),
+                            duration_ms: None,
+                            exit_code: None,
+                            output_lines: None,
+                        },
+                        crate::session::message::PartData::Image { .. }
+                        | crate::session::message::PartData::File { .. } => MsgPart::Text {
+                            content: "[File/Image]".to_string(),
+                        },
+                    })
+                    .collect()
             }
-        }
-        Err(e) => {
-            tracing::warn!("failed to load messages: {}", e);
+            convert(&msg.data.parts)
+        };
+
+        if !parts.is_empty() || role == MessageRole::Assistant {
+            app.messages_state.messages.messages.push(UIMessage {
+                role,
+                parts,
+                timestamp: None,
+                is_plan_mode: None,
+            });
         }
     }
 }
 
 async fn handle_undo_delete(app: &mut app::App, session_id: String) {
-    if let Some(store) = &app.session_store {
-        match store.restore(&session_id).await {
-            Ok(_) => {
+    if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("session-restore-{}", uuid::Uuid::new_v4()),
+            CoreRequest::SessionRestore { session_id },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Session { .. }) | Ok(CoreResponse::Ack) => {
                 app.messages_state
                     .toasts
                     .success("Session restored successfully");
                 reload_sessions(app).await;
             }
+            Ok(CoreResponse::Error { message, .. }) => {
+                tracing::error!("Failed to restore session: {}", message);
+                app.messages_state.toasts.error("Failed to restore session");
+            }
+            Ok(other) => {
+                tracing::error!("Unexpected session restore response: {:?}", other);
+                app.messages_state.toasts.error("Failed to restore session");
+            }
             Err(e) => {
-                tracing::error!("Failed to restore session {}: {}", session_id, e);
+                tracing::error!("Failed to restore session: {}", e);
                 app.messages_state.toasts.error("Failed to restore session");
             }
         }
     } else {
-        tracing::warn!("No session store available for undo");
+        tracing::warn!("No core client available for undo");
     }
     app.undo_session_id = None;
     app.undo_until = None;
 }
 
 async fn handle_list_tasks(app: &mut app::App) {
-    if let Some(ref scheduler) = app.bg_scheduler {
-        let tasks = scheduler.list().await;
-        if tasks.is_empty() {
-            app.messages_state.toasts.info("No background tasks");
-        } else {
-            let list: Vec<String> = tasks
-                .iter()
-                .map(|t| {
-                    format!(
-                        "{}: {} ({:?})",
-                        t.id.chars().take(8).collect::<String>(),
-                        t.message.chars().take(30).collect::<String>(),
-                        t.interval
-                    )
-                })
-                .collect();
-            app.messages_state.toasts.info(&list.join(" | "));
+    if let Some(core_client) = app.core_client.clone() {
+        let request = crate::core::new_request(
+            format!("task-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::TaskList,
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data }) => {
+                let tasks = data
+                    .get("tasks")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if tasks.is_empty() {
+                    app.messages_state.toasts.info("No background tasks");
+                } else {
+                    let list: Vec<String> = tasks
+                        .iter()
+                        .map(|t| {
+                            let id = t.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                            let message = t
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default();
+                            let interval_secs = t
+                                .get("interval_secs")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            format!(
+                                "{}: {} ({}s)",
+                                id.chars().take(8).collect::<String>(),
+                                message.chars().take(30).collect::<String>(),
+                                interval_secs
+                            )
+                        })
+                        .collect();
+                    app.messages_state.toasts.info(&list.join(" | "));
+                }
+            }
+            Ok(CoreResponse::Error { message, .. }) => {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("Failed to list tasks: {}", message));
+            }
+            Ok(other) => {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("Unexpected task list response: {:?}", other));
+            }
+            Err(e) => {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("Failed to list tasks: {}", e));
+            }
         }
     } else {
-        app.messages_state.toasts.info("No background tasks");
+        app.messages_state.toasts.warning("Core client unavailable");
     }
 }
 
 async fn handle_delete_task(app: &mut app::App, id: String) {
-    if let Some(ref scheduler) = app.bg_scheduler {
-        let removed = scheduler.remove(&id).await;
-        if removed {
-            app.messages_state.toasts.info("Task deleted");
-        } else {
-            app.messages_state.toasts.warning("Task not found");
+    if let Some(core_client) = app.core_client.clone() {
+        let parsed_id = id.parse::<u64>().ok();
+        let Some(parsed_id) = parsed_id else {
+            app.messages_state.toasts.warning("Task id must be numeric");
+            return;
+        };
+        let request = crate::core::new_request(
+            format!("task-delete-{}", uuid::Uuid::new_v4()),
+            CoreRequest::TaskDelete { id: parsed_id },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Ack) => app.messages_state.toasts.info("Task deleted"),
+            Ok(CoreResponse::Error { code, .. }) if code == "task_not_found" => {
+                app.messages_state.toasts.warning("Task not found");
+            }
+            Ok(CoreResponse::Error { message, .. }) => {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("Failed to delete task: {}", message));
+            }
+            Ok(other) => app
+                .messages_state
+                .toasts
+                .warning(&format!("Unexpected task delete response: {:?}", other)),
+            Err(e) => app
+                .messages_state
+                .toasts
+                .warning(&format!("Failed to delete task: {}", e)),
         }
     } else {
-        app.messages_state.toasts.warning("Scheduler not available");
+        app.messages_state.toasts.warning("Core client unavailable");
+    }
+}
+
+async fn handle_memory_summary(app: &mut app::App) {
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    let project_hash = format!("{:x}", md5::compute(app.session_state.project_dir.as_bytes()));
+    let project_namespace = format!("project/{}", project_hash);
+    let req_prefs = crate::core::new_request(
+        format!("memory-list-{}", uuid::Uuid::new_v4()),
+        CoreRequest::MemoryList {
+            namespace: "user/preferences".to_string(),
+        },
+    );
+    let req_proj = crate::core::new_request(
+        format!("memory-list-{}", uuid::Uuid::new_v4()),
+        CoreRequest::MemoryList {
+            namespace: project_namespace.clone(),
+        },
+    );
+    let prefs = match core_client.request(req_prefs).await {
+        Ok(CoreResponse::Json { data }) => data
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let proj = match core_client.request(req_proj).await {
+        Ok(CoreResponse::Json { data }) => data
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let total = prefs.len() + proj.len();
+    if total == 0 {
+        app.messages_state
+            .toasts
+            .info("No memories yet. Use /memory-remember <text> to save something.");
+        return;
+    }
+    let mut lines = vec![format!("Memory Summary ({} total):", total)];
+    if !prefs.is_empty() {
+        lines.push(format!("  user/preferences ({}):", prefs.len()));
+        for m in prefs.iter().take(5) {
+            let id = m
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .chars()
+                .take(8)
+                .collect::<String>();
+            let title = m
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(untitled)");
+            lines.push(format!("    - [{}] {}", id, title));
+        }
+    }
+    if !proj.is_empty() {
+        lines.push(format!("  {} ({}):", project_namespace, proj.len()));
+        for m in proj.iter().take(5) {
+            let id = m
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .chars()
+                .take(8)
+                .collect::<String>();
+            let title = m
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(untitled)");
+            lines.push(format!("    - [{}] {}", id, title));
+        }
+    }
+    app.messages_state.toasts.info(&lines.join("\n"));
+}
+
+async fn handle_memory_search(app: &mut app::App, query: String) {
+    if query.is_empty() {
+        app.messages_state.toasts.warning("Usage: /memory-search <query>");
+        return;
+    }
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    let request = crate::core::new_request(
+        format!("memory-search-{}", uuid::Uuid::new_v4()),
+        CoreRequest::MemorySearch { query: query.clone() },
+    );
+    match core_client.request(request).await {
+        Ok(CoreResponse::Json { data }) => {
+            let results = data
+                .get("memories")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if results.is_empty() {
+                app.messages_state
+                    .toasts
+                    .info(&format!("No memories found matching '{}'", query));
+            } else {
+                let lines: Vec<String> = results
+                    .iter()
+                    .take(10)
+                    .map(|m| {
+                        let id = m
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .chars()
+                            .take(8)
+                            .collect::<String>();
+                        let title = m
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("(untitled)");
+                        format!("- [{}] {}", id, title)
+                    })
+                    .collect();
+                app.messages_state.toasts.info(&format!(
+                    "Found {} memories:\n{}",
+                    results.len(),
+                    lines.join("\n")
+                ));
+            }
+        }
+        Ok(CoreResponse::Error { message, .. }) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Memory search failed: {}", message)),
+        Ok(other) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Unexpected memory search response: {:?}", other)),
+        Err(e) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Memory search failed: {}", e)),
+    }
+}
+
+async fn handle_memory_remember(app: &mut app::App, text: String) {
+    if text.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /memory-remember <text to remember>");
+        return;
+    }
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    let request = crate::core::new_request(
+        format!("memory-remember-{}", uuid::Uuid::new_v4()),
+        CoreRequest::MemoryRemember {
+            text,
+            namespace: Some("user/preferences".to_string()),
+        },
+    );
+    match core_client.request(request).await {
+        Ok(CoreResponse::Json { .. }) | Ok(CoreResponse::Ack) => app.messages_state.toasts.info("Remembered"),
+        Ok(CoreResponse::Error { message, .. }) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Memory remember failed: {}", message)),
+        Ok(other) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Unexpected memory remember response: {:?}", other)),
+        Err(e) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Memory remember failed: {}", e)),
+    }
+}
+
+async fn handle_memory_forget(app: &mut app::App, id: String) {
+    if id.is_empty() {
+        app.messages_state
+            .toasts
+            .warning("Usage: /memory-forget <id>");
+        return;
+    }
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    let request = crate::core::new_request(
+        format!("memory-forget-{}", uuid::Uuid::new_v4()),
+        CoreRequest::MemoryForget { id: id.clone() },
+    );
+    match core_client.request(request).await {
+        Ok(CoreResponse::Json { data }) => {
+            let deleted = data.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
+            if deleted {
+                app.messages_state.toasts.info("Memory deleted");
+            } else {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("Memory '{}' not found", id));
+            }
+        }
+        Ok(CoreResponse::Error { message, .. }) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Memory forget failed: {}", message)),
+        Ok(other) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Unexpected memory forget response: {:?}", other)),
+        Err(e) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Memory forget failed: {}", e)),
+    }
+}
+
+async fn handle_task_schedule(app: &mut app::App, interval_secs: u64, message: String) {
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    let session_id = app
+        .session_state
+        .session
+        .as_ref()
+        .map(|s| s.id.clone())
+        .unwrap_or_default();
+    let request = crate::core::new_request(
+        format!("task-schedule-{}", uuid::Uuid::new_v4()),
+        CoreRequest::TaskSchedule {
+            session_id,
+            interval_secs,
+            message,
+        },
+    );
+    match core_client.request(request).await {
+        Ok(CoreResponse::Json { data }) => {
+            let task_id = data
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            app.messages_state.toasts.info(&format!(
+                "Task {} scheduled (every {}s)",
+                task_id.chars().take(8).collect::<String>(),
+                interval_secs
+            ));
+        }
+        Ok(CoreResponse::Error { message, .. }) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Failed to schedule task: {}", message)),
+        Ok(other) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Unexpected task schedule response: {:?}", other)),
+        Err(e) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Failed to schedule task: {}", e)),
+    }
+}
+
+async fn handle_worktree_list(app: &mut app::App) {
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    let request = crate::core::new_request(
+        format!("worktree-list-{}", uuid::Uuid::new_v4()),
+        CoreRequest::WorktreeList {
+            project_dir: app.session_state.project_dir.clone(),
+        },
+    );
+    match core_client.request(request).await {
+        Ok(CoreResponse::Json { data }) => {
+            let trees = data
+                .get("worktrees")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if trees.is_empty() {
+                app.messages_state.toasts.info("No worktrees found");
+            } else {
+                let names: Vec<String> = trees
+                    .iter()
+                    .map(|t| {
+                        let path = t.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+                        let branch = t
+                            .get("branch")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        format!("{} ({})", path, branch)
+                    })
+                    .collect();
+                app.messages_state.toasts.info(&names.join(", "));
+            }
+        }
+        Ok(CoreResponse::Error { message, .. }) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Failed to list worktrees: {}", message)),
+        Ok(other) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Unexpected worktree response: {:?}", other)),
+        Err(e) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Failed to list worktrees: {}", e)),
     }
 }
 
@@ -922,7 +1705,6 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
     let mut terminal = create_terminal()?;
     let mut reader = EventStream::new();
     let mut bus_rx = GlobalEventBus::subscribe();
-    let mut processing_task: Option<tokio::task::JoinHandle<()>> = None;
     let (cmd_tx, mut cmd_rx) = mpsc::channel(100);
     if app.tui_cmd_tx.is_none() {
         tracing::warn!("No TUI command sender available in app, using new channel");
@@ -994,196 +1776,20 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
 
         app.messages_state.toasts.tick();
 
-        if !app.ui_state.remote_mode && app.prompt_state.pending_send && processing_task.is_none() {
-            debug_log!("Event loop: pending_send=true, spawning agent task");
-
-            if app.session_state.session.is_none() {
-                debug_log!("Event loop: no session exists, creating new session");
-                if let Some(store) = &app.session_store {
-                    let project_dir = app.session_state.project_dir.clone();
-                    let store = Arc::clone(store);
-                    let new_session = store
-                        .create(CreateSession {
-                            project_id: project_dir.clone(),
-                            directory: project_dir.clone(),
-                            title: None,
-                            parent_id: None,
-                            workspace_id: None,
-                            agent: None,
-                            model: None,
-                            tags: None,
-                        })
-                        .await;
-                    match new_session {
-                        Ok(session) => {
-                            let _session_id = session.id.clone();
-                            app.session_state.session = Some(session);
-                            debug_log!("Event loop: session created with id={}", _session_id);
-                        }
-                        Err(e) => {
-                            debug_log!("Event loop: failed to create session: {:?}", e);
-                        }
-                    }
-                } else {
-                    debug_log!("Event loop: no session store available");
-                }
-            }
-
-            let config = crate::config::schema::Config::load().unwrap_or_default();
-            let active_agent = &app.agent_state.agents[app.agent_state.current_agent];
-            debug_log!("Event loop: using model={}", app.agent_state.current_model);
-            debug_log!(
-                "Event loop: active agent name={}, mode={:?}, steps={:?}",
-                active_agent.name,
-                active_agent.mode,
-                active_agent.steps
-            );
-
-            processing_task = Some(tokio::spawn({
-                let model = app.agent_state.current_model.clone();
-                let messages = build_conversation_context(&app.messages_state.messages.messages);
-                let session_id = app
-                    .session_state
-                    .session
-                    .as_ref()
-                    .map(|s| s.id.clone())
-                    .unwrap_or_default();
-                let agents = app.agent_state.agents.clone();
-                let current_agent_idx = app.agent_state.current_agent;
-                let config = config.clone();
-                let pool = app.session_store.as_ref().map(|s| s.pool());
-                let subagent_pool = app.subagent_pool.clone();
-                let memory_store = app.memory_store.clone();
-
-                async move {
-                    use crate::agent::prompt::load_agent_prompt;
-                    use crate::agent::r#loop::AgentLoop;
-                    use crate::tool::ToolRegistry;
-
-                    let mut registry = ProviderRegistry::new();
-                    crate::provider::register_builtin_with_config(&mut registry, &config);
-
-                    let provider_name = model.split('/').next().unwrap_or("openai").to_string();
-                    let model_name = model.split('/').next_back().unwrap_or(&model).to_string();
-                    debug_log!(
-                        "Agent task: provider_name={}, model_name={}",
-                        provider_name,
-                        model_name
-                    );
-
-                    if let Some(base_provider) = registry.get(&provider_name) {
-                        debug_log!("Agent task: provider found, creating agent loop");
-                        let provider = base_provider.clone_box();
-                        let mut tool_registry = ToolRegistry::with_defaults();
-                        debug_log!(
-                            "Agent task: default tool registry size={}",
-                            tool_registry.list().len()
-                        );
-
-                        if let Some(pool) = subagent_pool {
-                            let task_tool = crate::tool::task::TaskTool::new(
-                                pool.task_store(),
-                                Some(pool.spawner()),
-                                Some(session_id.clone()),
-                                Vec::new(),
-                            );
-                            tool_registry.register(task_tool);
-                        }
-
-                        let permission_checker = PermissionChecker::new(Some(&config), None);
-
-                        let memory_context = memory_store.as_ref().map(|store| {
-                            let all_memories = store.list("user/preferences");
-                            if all_memories.is_empty() {
-                                String::new()
-                            } else {
-                                let summary: String = all_memories
-                                    .iter()
-                                    .take(10)
-                                    .map(|m| {
-                                        format!(
-                                            "- [{}] {}",
-                                            m.id,
-                                            m.title.as_deref().unwrap_or("(untitled)")
-                                        )
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                format!("\n\n## Learned Preferences\n{}\n", summary)
-                            }
-                        }).unwrap_or_default();
-
-                        let mut system = load_agent_prompt(
-                            &agents[current_agent_idx],
-                            &config,
-                            &model_name,
-                        );
-                        system.push_str(&memory_context);
-
-                        let mut agent_loop = AgentLoop::new(
-                            agents,
-                            provider,
-                            permission_checker,
-                            tool_registry,
-                            config.clone(),
-                            None,
-                            pool,
-                        );
-                        agent_loop.set_session_id(&session_id);
-
-                        let request = ChatRequest {
-                            messages,
-                            model: model_name,
-                            tools: None,
-                            system: Some(system),
-                            temperature: None,
-                            top_p: None,
-                            max_tokens: None,
-                            response_format: None,
-                        };
-
-                        debug_log!(
-                            "Agent task: starting agent_loop.run() with {} messages, model={}",
-                            request.messages.len(),
-                            request.model
-                        );
-                        if let Err(e) = agent_loop.run(request).await {
-                            debug_log!("Agent task: agent loop error: {}", e);
-                            tracing::error!("Agent loop error: {}", e);
-                            crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                                message: format!("Agent error: {}", e),
-                            });
-                        } else {
-                            debug_log!("Agent task: agent loop completed successfully");
-                            crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
-                                session_id: session_id.clone(),
-                                stop_reason: "completed".to_string(),
-                            });
-                        }
-                    } else {
-                        debug_log!(
-                            "Agent task: provider '{}' not found in registry",
-                            provider_name
-                        );
-                        crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                            message: format!(
-                                "Provider '{}' not found. Please check your configuration.",
-                                provider_name
-                            ),
-                        });
-                    }
-                }
-            }));
-        }
-
-        if let Some(task) = processing_task.as_mut() {
-            if task.is_finished() {
-                debug_log!("Event loop: processing task finished, resetting state");
-                processing_task = None;
-                app.event_rx = None;
-                app.session_state.session_status = SessionStatus::Idle;
+        if !app.ui_state.remote_mode && app.prompt_state.pending_send {
+            debug_log!("Event loop: pending_send=true, submitting through core facade");
+            let Some(_) = app.core_client else {
                 app.prompt_state.pending_send = false;
-            }
+                app.session_state.session_status = SessionStatus::Error;
+                app.messages_state
+                    .toasts
+                    .error("Core client not configured; cannot execute prompt");
+                continue;
+            };
+            ensure_local_session(app).await;
+            app.dispatch_turn_submit_request(latest_user_message_text(app));
+            app.prompt_state.pending_send = false;
+            continue;
         }
 
         tokio::select! {
@@ -1263,19 +1869,30 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                 if experimental {
                                     let session_id = app.session_state.session.as_ref().map(|s| s.id.clone());
                                     let message_store = app.message_store.clone();
+                                    let core_client = app.core_client.clone();
                                     let memory_store = app.memory_store.clone();
                                     let project_dir = app.session_state.project_dir.clone();
 
                                     tokio::spawn(async move {
                                         let project_hash = format!("{:x}", md5::compute(project_dir.as_bytes()));
-                                        if let (Some(sid), Some(store)) = (session_id, message_store) {
-                                            if let Ok(messages) = store.list(&sid).await {
-                                                if !messages.is_empty() {
-                                                    if let Some(ref mem) = memory_store {
-                                                        mem.consolidate_session(&messages, &project_hash);
-                                                        tracing::info!("Auto-consolidated session {} memories", messages.len());
-                                                    }
-                                                }
+                                        let messages = if let (Some(client), Some(sid)) = (core_client, session_id.clone()) {
+                                            let request = crate::core::new_request(
+                                                format!("session-messages-{}", uuid::Uuid::new_v4()),
+                                                CoreRequest::SessionMessagesLoad { session_id: sid },
+                                            );
+                                            match client.request(request).await {
+                                                Ok(CoreResponse::SessionMessages { messages, .. }) => messages,
+                                                _ => Vec::new(),
+                                            }
+                                        } else if let (Some(sid), Some(store)) = (session_id, message_store) {
+                                            store.list(&sid).await.unwrap_or_default()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        if !messages.is_empty() {
+                                            if let Some(ref mem) = memory_store {
+                                                mem.consolidate_session(&messages, &project_hash);
+                                                tracing::info!("Auto-consolidated session {} memories", messages.len());
                                             }
                                         }
                                     });
@@ -1431,6 +2048,27 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     TuiCommand::DeleteTask { id } => {
                         handle_delete_task(app, id).await;
+                    }
+                    TuiCommand::TaskSchedule {
+                        interval_secs,
+                        message,
+                    } => {
+                        handle_task_schedule(app, interval_secs, message).await;
+                    }
+                    TuiCommand::WorktreeList => {
+                        handle_worktree_list(app).await;
+                    }
+                    TuiCommand::MemorySummary => {
+                        handle_memory_summary(app).await;
+                    }
+                    TuiCommand::MemorySearch { query } => {
+                        handle_memory_search(app, query).await;
+                    }
+                    TuiCommand::MemoryRemember { text } => {
+                        handle_memory_remember(app, text).await;
+                    }
+                    TuiCommand::MemoryForget { id } => {
+                        handle_memory_forget(app, id).await;
                     }
                     TuiCommand::CompactSession => {
                         handle_compact_session(app).await;

@@ -132,5 +132,5 @@ impl UIMessage {
 
 ## Reference
 
-- **TUI Development Guide**: `.opencode/skills/tui/SKILL.md`
+- **TUI Development Guide**: `.skills/tui/SKILL.md`
 - **Keybind Dialog**: `src/tui/components/dialogs/keybind.rs` handles TTS action bindings

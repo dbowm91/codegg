@@ -1,6 +1,10 @@
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum TuiMessage {
+    EventEnvelope {
+        event_seq: u64,
+        payload: Box<TuiMessage>,
+    },
     Input {
         text: String,
     },
@@ -15,6 +19,9 @@ pub enum TuiMessage {
     Resize {
         w: u16,
         h: u16,
+    },
+    Resume {
+        from_event_seq: u64,
     },
     PermissionResponse {
         id: String,

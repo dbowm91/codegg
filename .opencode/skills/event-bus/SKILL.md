@@ -139,5 +139,5 @@ Note: The SSE handler takes NO parameters - it subscribes directly to `GlobalEve
 ## Related Skills
 
 - `.opencode/skills/agent-loop/SKILL.md` - AgentLoop event publishing
-- `.opencode/skills/tui/SKILL.md` - TUI event handling
+- `.skills/tui/SKILL.md` - TUI event handling
 - `.opencode/skills/permission/SKILL.md` - Permission flow with PermissionRegistry
