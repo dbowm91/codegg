@@ -1,6 +1,7 @@
 ---
 name: router
 description: Model auto-routing system for task complexity-based model selection
+version: 1.0.0
 tags: [agent, router, model, complexity]
 ---
 
