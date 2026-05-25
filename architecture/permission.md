@@ -341,5 +341,5 @@ impl PermissionRegistry {
 ## See Also
 
 - [tool.md](tool.md) - Tools that use PermissionChecker
-- [event-bus.md](event-bus.md) - PermissionRegistry pattern
+- [bus.md](bus.md) - PermissionRegistry pattern
 - [security.md](security.md) - Additional security measures

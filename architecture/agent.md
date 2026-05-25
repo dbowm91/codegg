@@ -302,7 +302,7 @@ Related configurations in `config/`:
 - [provider.md](provider.md) - LLM provider interface
 - [tool.md](tool.md) - Tool registry and execution
 - [permission.md](permission.md) - Access control
-- [event-bus.md](event-bus.md) - Event publishing
+- [bus.md](bus.md) - Event publishing
 - [hooks.md](hooks.md) - Lifecycle hooks
 - `.opencode/skills/subagent/SKILL.md` - Subagent infrastructure details
 - `.opencode/skills/compaction/SKILL.md` - Compaction system details
