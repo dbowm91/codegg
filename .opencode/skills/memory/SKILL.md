@@ -65,8 +65,7 @@ impl MemoryStore {
 │       └── MEMORY.md
 └── project/
     └── {project_hash}/
-        └── conventions/
-            └── MEMORY.md
+        └── MEMORY.md
 ```
 
 ## Commands
