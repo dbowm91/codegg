@@ -358,12 +358,12 @@ These items were identified during module reviews and are important for future a
 - **Client timeouts**: Health check has 10s timeout, WebSocket connection has 30s timeout
 - **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
 
-### Command Module - Pending Fix
-- **Panic on error** (2026-05-25): `find_command_files()` at mod.rs:21-24 panics with "expected" on load failure instead of graceful handling. Fix: use `filter_map(|r| r.ok())` pattern. See `plans/plan.md` Wave 1.
-
 ### Key Lessons from Review Sessions
 - **Always verify documentation claims against actual code**. Many "bugs" in review files turned out to be correctly implemented after direct inspection. The act of reviewing often reveals assumptions that were wrong.
 - When encountering a claim like "Bug X exists in file Y", first read the actual code at that location to confirm before marking it as a bug.
+- **Documentation can become stale**: Struct fields get added/removed; always compare architecture docs against actual source code (e.g., `McpConnectionManager` was missing `heartbeat_token` and `heartbeat_cancellation` fields).
+- **Counts should be verified**: Component/dialog counts (TUI), server counts (LSP), command counts can drift from reality. When fixing documentation, count from actual source files, not from other documentation.
+- **Line numbers in docs are fragile**: References like `watcher.rs:157-158` should be verified as they can be off by several lines. Use code search to find exact locations.
 
 ### TTS Module (2026-05-26)
 - **Error handling improved**: `speak()` now returns `Err(AppError::Io(...))` when `say` command fails instead of silently ignoring failures. Callers handle errors appropriately.
@@ -496,8 +496,7 @@ When adding guidance for a new module:
 
 | Document | Status | Notes |
 |----------|--------|-------|
-| `plans/plan.md` (Phase 1) | Archived (2026-05-24) | All Phase 1 review items completed |
-| `plans/plan.md` (Phase 2) | Active (2026-05-25) | Remaining documentation corrections |
+| `plans/plan.md` | Active (2026-05-25) | Consolidated plan from 33 review files - documentation corrections |
 
 ## Quick Reference
 
@@ -516,7 +515,7 @@ When adding guidance for a new module:
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `.opencode/skills/resilience/SKILL.md` |
 | Permission (mode system, PermissionChecker, DoomLoop, PermissionRegistry) | `.opencode/skills/permission/SKILL.md` |
-| LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` (v1.1.0, 40 servers) |
+| LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` (v1.1.0, 39 servers) |
 | Tool (path validation, async command, ToolExecutor, ToolCatalog) | `.opencode/skills/tool/SKILL.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |
