@@ -28,10 +28,16 @@ pub struct ContextTracker {
     context_limit: usize,
     threshold: f64,
     message_token_counts: Vec<usize>,
+    max_messages: Option<usize>,
+    max_total_bytes: Option<usize>,
+    model: Option<String>,
 }
 ```
 
-Tracks token usage and determines when compaction is needed.
+Tracks token usage and determines when compaction is needed. Supports builder pattern for configuration:
+- `with_max_messages(max)` - Set maximum message count limit
+- `with_max_total_bytes(max)` - Set maximum total bytes limit  
+- `with_model(model)` - Set model for tokenizer selection
 
 ### TokenizerType
 
@@ -50,11 +56,9 @@ Model-specific token multipliers for accurate estimation.
 
 ### 1. TruncateToolOutputs
 
-Two-phase pruning approach:
+Character-based truncation of tool outputs exceeding 500 characters. Used by `compact_messages_sync()` and compaction strategies.
 
-1. **First phase (`prune_tool_outputs()`)**: Token-based pruning - truncates tool outputs exceeding `max_tokens_per_output` (default 10,000 tokens). Called as pre-pass in `compact_if_needed()`.
-
-2. **Second phase (`truncate_tool_outputs()`)**: Character-based truncation - within strategies, truncates tool outputs exceeding 500 characters. Used by `compact_messages_sync()` and compaction strategies.
+Note: `prune_tool_outputs()` is a separate pre-pass function that performs token-based truncation (default 10,000 tokens max) and is called before `auto_compact`/`auto_compact_sync` to reduce large outputs before applying strategy selection.
 
 Preserves `tool_call_id` field unchanged.
 
@@ -66,7 +70,7 @@ Uses LLM to summarize conversation turns. Falls back to `DropMiddleMessages` wit
 
 ### 3. DropMiddleMessages
 
-Keeps 2 messages per side (start/end of conversation). Returns unchanged if total messages <= 4.
+Keeps 2 messages per side (start/end of conversation). Returns unchanged if total non-system messages <= 4.
 
 ## Compaction Invariants
 
@@ -81,14 +85,16 @@ All strategies must maintain these invariants:
 
 | Function | Description |
 |----------|-------------|
-| `detect_overflow()` | Returns true if current tokens exceed threshold |
+| `detect_overflow()` | Returns true if current tokens exceed context_limit - reserved |
 | `prune_tool_outputs()` | Token-based truncation to max_tokens_per_output (pre-pass) |
 | `truncate_tool_outputs()` | Character-based truncation to 500 chars (within strategies) |
-| `compact_messages()` | Apply strategy to messages (async LLM-based) |
-| `compact_messages_sync()` | Apply strategy to messages (synchronous) |
-| `auto_compact()` | Auto-select strategy based on content (async) |
-| `auto_compact_sync()` | Auto-select strategy (sync fallback) |
-| `llm_summarize()` | Uses provider to summarize messages |
+| `compact_messages()` | Wrapper around `compact_messages_sync` (sync-only context) |
+| `compact_messages_sync()` | Apply strategy to messages (synchronous, no LLM) |
+| `compact_messages_async()` | Apply strategy with LLM summarization (async, requires provider) |
+| `auto_compact()` | Wrapper around `auto_compact_sync` |
+| `auto_compact_sync()` | Auto-select strategy with pruning (sync fallback) |
+| `auto_compact_async()` | Auto-select strategy with optional LLM summarization (async) |
+| `llm_summarize()` | Uses provider to summarize messages (async) |
 
 ## Configuration
 
