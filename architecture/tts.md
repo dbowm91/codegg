@@ -34,7 +34,7 @@ impl Tts {
 
 **Notes**:
 - `speak()` validates that `text` is non-empty, returning `Err(AppError::Io(...))` for empty strings
-- `stop()` uses `pkill say` on macOS to terminate ongoing speech; returns `Ok(())` even if no speech is running
+- `stop()` first checks if speaking, returns `Ok(())` early if not; otherwise uses `pkill say` on macOS to terminate ongoing speech
 - `is_speaking()` returns `bool` (not `Result<bool, AppError>`)
 
 ### TtsEngine Trait
