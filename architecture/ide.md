@@ -73,7 +73,7 @@ Generates a side-by-side diff view with ANSI color codes.
 
 ## VS Code Integration
 
-Uses VS Code's `--diff` CLI argument with temporary files. Files are flushed before passing to VS Code to ensure content is visible. Temporary files are dropped before invoking the IDE to ensure paths are valid:
+Uses VS Code's `--diff` CLI argument with temporary files. Files are flushed before passing to VS Code to ensure content is visible. Temporary files are dropped before invoking the IDE to ensure paths are valid. Uses `run_command_with_timeout()` which returns `Result<(), String>` with error details:
 
 ```rust
 let mut original_file = original_temp.as_file();
@@ -81,20 +81,14 @@ original_file.write_all(original_content.as_bytes())?;
 original_file.flush()?;
 drop(original_temp);  // Release file handle before IDE reads
 
-let output = Command::new("code")
-    .args(["--diff", original_path, modified_path])
-    .output()?;
-
-if !output.status.success() {
-    return Err(format!(
-        "vscode diff failed (exit {}): {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    ));
-}
+run_command_with_timeout("code", &[
+    "--diff",
+    original_path.to_string_lossy().as_ref(),
+    modified_path.to_string_lossy().as_ref(),
+])?;
 ```
 
-Error messages include exit status and stderr output for debugging.
+Note: `run_command_with_timeout()` handles errors internally and returns descriptive strings like `"code failed (exit 1)"`.
 
 ## JetBrains Integration
 
