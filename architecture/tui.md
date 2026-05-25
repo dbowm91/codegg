@@ -172,8 +172,8 @@ Contains all dialog instances, including optional dialogs:
 - `command_palette` - CommandPalette dialog (created on demand via `/` command)
 
 **Pending fields** (for tracking pending permission/question responses):
-- `pending_permission: Option<(String, String, Vec<String>)>` - pending permission request (perm_id, tool, paths)
-- `pending_question: Option<(String, Vec<QuestionSpec>)>` - pending question request (session_id, questions)
+- `permission_perm_id: Option<String>` - permission ID when permission dialog is pending
+- `question_session_id: Option<String>` - session ID when question dialog is pending
 
 ## Routes
 
@@ -228,13 +228,16 @@ Internal messages from TUI to App (in `app/types.rs`):
 
 ```rust
 pub enum TuiMsg {
-    SubmitPrompt, NavigateUp, NavigateDown, CycleAgent,
+    SubmitPrompt, NavigateUp, NavigateDown, NavigateLeft, NavigateRight, CycleAgent,
     OpenModelDialog, OpenAgentDialog, OpenSessionDialog, OpenHelpDialog,
     SelectModel { model: String }, SelectAgent { agent_name: String },
-    CharInput(char), Backspace, Delete, CursorLeft, CursorRight,
-    ToggleSidebar, ToggleFullscreen, ToggleReasoning, ToggleTts,
+    SelectSession(Box<Session>),  // Full Session object, not just session_id
+    OpenDiffDialog { old_content: Box<str>, new_content: Box<str>, title: Box<str> },
+    OpenShareDialog, OpenThemeDialog, ExternalEditor, UndoDelete,
+    ConfirmResult(Option<bool>),  // Confirmed=true, Cancelled=false, Dismissed=None
     // ... and many more
 }
+```
 ```
 
 ### TuiCommand
@@ -361,7 +364,7 @@ TUI subscribes to `GlobalEventBus` for:
 | `Esc`, `Ctrl+C` | Any | Cancel operation |
 | `↑/j`, `↓/k` | Normal | Navigate up/down |
 | `Tab` | Normal | Switch agent |
-| `Shift+Tab` | Normal | Toggle plan mode |
+| `Shift+Tab` | Normal | Toggle permission mode |
 | `Ctrl+L` | Normal | Model selector |
 | `Ctrl+K` | Normal | Clear session |
 | `Ctrl+N` | Normal | New session |
@@ -416,15 +419,19 @@ pub enum ClickTarget {
 
 Used by `clickable_area_at()` to determine which UI region was clicked, and `on_click()` to handle the interaction appropriately.
 
-### App Struct - Additional Fields
-
-The `App` struct (in `src/tui/app/mod.rs`) includes these additional fields:
+The `App` struct (in `src/tui/app/mod.rs`) includes these fields (among many others):
 
 ```rust
 pub struct App {
     // ... state domains ...
     pub busy_spinner: SpinnerWidget,  // Animated busy indicator
     pub focus_manager: FocusManager,  // Modal focus stack
+    pub notification_manager: Option<NotificationManager>,
+    pub undo_session_id: Option<String>,
+    pub undo_until: Option<Instant>,
+    pub bg_scheduler: Option<Arc<BackgroundScheduler>>,
+    pub config_watcher: Option<ConfigWatcher>,
+    pub core_client: Option<Arc<dyn CoreClient>>,
     // ... other fields ...
 }
 ```
@@ -432,6 +439,6 @@ pub struct App {
 **`busy_spinner: SpinnerWidget`** - Located at `src/tui/components/spinner.rs`. Shows animated busy indicator (frames: `["░", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]`). Starts when `session_status` is `Working`, stops on `Idle` or `Error`. Tick called every render frame (~60fps).
 
 - [agent.md](agent.md) - AgentLoop that processes TUI commands
-- [event-bus.md](event-bus.md) - GlobalEventBus and event types
+- [bus.md](bus.md) - GlobalEventBus and event types
 - [session.md](session.md) - Session storage
 - `.skills/tui/SKILL.md` - Detailed TUI development guide
