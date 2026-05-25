@@ -282,8 +282,8 @@ Ratatui-based terminal UI with CoreClient-backed session flows, 21 dialog types,
 | Component | Purpose |
 |-----------|---------|
 | **App** | Main state machine |
-| **Components** | 17 reusable widgets (messages, prompt, sidebar, etc.) |
-| **Dialogs** | 21 modal dialogs (permission, confirm, model, etc.) |
+| **Components** | 13 reusable widgets (messages, prompt, sidebar, etc.) |
+| **Dialogs** | 20 modal dialogs (permission, confirm, model, etc.) |
 | **Input** | Keyboard handling and keybindings |
 | **Route** | State routing and navigation |
 

@@ -33,18 +33,10 @@
    - Plan should accurately reflect current state, not historical claims
    - Use "PASS" verification before including items in plan
 
-### Command Module Bug (Pending Fix)
+### Command Module Bug (COMPLETED 2026-05-25)
 
 ```rust
-// Current (BUG) - src/command/mod.rs:21-24
-pub async fn find_command_files(base: &Path) -> Vec<Command> {
-    find_command_files_sync(base).into_iter().map(|r| r.unwrap_or_else(|e| {
-        warn!("Failed to load command: {}", e);
-        panic!("expected")
-    })).collect()
-}
-
-// Fixed
+// Fixed - src/command/mod.rs:20-25
 pub async fn find_command_files(base: &Path) -> Vec<Command> {
     find_command_files_sync(base)
         .into_iter()
@@ -53,13 +45,14 @@ pub async fn find_command_files(base: &Path) -> Vec<Command> {
 }
 ```
 
-### Documentation Corrections Needed
+### Documentation Corrections (COMPLETED 2026-05-25)
 
-1. **Overview architecture**: Component count (14 vs 17), Dialog count (20 vs 21)
-2. **MCP architecture**: Remove `heartbeat_task: Arc<AtomicBool>` from McpConnectionManager
-3. **Core architecture**: Explicitly list CoreRequest variants
-4. **LSP architecture**: Server count is 40, not 44
-5. **Config architecture**: `decrypt_provider_keys()` at watcher.rs:163 not 157-158
+1. **Overview architecture**: Fixed to 13 components, 20 dialogs
+2. **MCP architecture**: Added `heartbeat_token` and `heartbeat_cancellation` fields to McpConnectionManager
+3. **Core architecture**: Added explicit CoreRequest variants enumeration
+4. **LSP architecture**: Server count fixed to 39 (was 44)
+5. **Config architecture**: `decrypt_provider_keys()` line fixed to 163
+6. **Command architecture**: Built-in command count fixed to 41 (was 36)
 
 ### Subagent Context Preservation
 

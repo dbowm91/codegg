@@ -226,7 +226,7 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
 
 ```
 
-## Supported Languages (44 servers)
+## Supported Languages (39 servers)
 
 | Language | Server | Command |
 |----------|--------|---------|

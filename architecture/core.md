@@ -59,7 +59,19 @@ Defined in `src/protocol/core.rs`.
 - Session data: message loading and message counts
 - Operational helpers: model refresh, permission/question response, memory CRUD, task CRUD/scheduling, worktree listing
 
-**Note**: See `src/protocol/core.rs` for complete `CoreRequest` enum with all variants.
+#### Explicit CoreRequest Variants
+
+The `CoreRequest` enum (in `src/protocol/core.rs`) contains these variants:
+- `Initialize` - Initialize session
+- `Subscribe { session_id }` - Subscribe to session events
+- `Resume { session_id, from_event_seq }` - Resume from event sequence
+- `TurnCancel { session_id, turn_id }` - Cancel a turn
+- `TurnSteer { session_id, turn_id, text }` - Steer with text
+- `AgentSelect { session_id, agent_name }` - Select agent
+- `ModelSelect { session_id, model }` - Select model
+- (Plus additional variants for list, create, load, etc.)
+
+See `src/protocol/core.rs` for complete enum definition.
 
 ## Transport Modes
 

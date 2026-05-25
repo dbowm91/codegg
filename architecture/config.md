@@ -218,7 +218,7 @@ Validated fields:
 
 ### Encrypted keys not decrypting on hot-reload
 **Bug**: API keys work after `save()` but fail on hot-reload (file watcher triggers reload).
-**Fix**: `ConfigWatcher::reload_config()` now calls `decrypt_provider_keys()` at `watcher.rs:157-158`.
+**Fix**: `ConfigWatcher::reload_config()` now calls `decrypt_provider_keys()` at `watcher.rs:163`.
 
 ### Encrypted keys not decrypting on load
 **Bug**: API keys work after `save()` but fail on subsequent loads.

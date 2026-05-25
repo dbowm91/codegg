@@ -18,10 +18,10 @@ pub struct Command {
 }
 
 pub async fn find_command_files(base: &Path) -> Vec<Command> {
-    find_command_files_sync(base).into_iter().map(|r| r.unwrap_or_else(|e| {
-        warn!("Failed to load command: {}", e);
-        panic!("expected")
-    })).collect()
+    find_command_files_sync(base)
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .collect()
 }
 
 pub fn find_command_files_sync(base: &Path) -> Vec<Result<Command, String>> {

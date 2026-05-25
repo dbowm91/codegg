@@ -1,6 +1,6 @@
 # Implementation Plan - Documentation Corrections (Phase 2)
 
-**Status**: Active
+**Status**: Completed
 **Created**: 2026-05-25
 **Last Updated**: 2026-05-25 (consolidated from 33 module review files)
 
@@ -14,8 +14,18 @@ This plan consolidates remaining items from Phase 1 review that need attention. 
 
 | Category | Count | Status |
 |----------|-------|--------|
-| Code Bugs | 1 | Pending |
-| Documentation Corrections | 7 | Pending |
+| Code Bugs | 1 | Completed (2026-05-25) |
+| Documentation Corrections | 7 | Completed (2026-05-25) |
+
+### Completion Notes
+
+- **1.1**: Fixed `find_command_files()` to use `filter_map(|r| r.ok())` instead of panicking on errors
+- **2.1**: Updated overview.md to show 13 components and 20 dialogs
+- **2.2**: Added `heartbeat_token` and `heartbeat_cancellation` fields to McpConnectionManager doc
+- **2.3**: Added explicit CoreRequest variants enumeration to core.md
+- **2.4**: Updated LSP server count from 44 to 39 in lsp.md
+- **2.5**: Fixed config.md line number from 157-158 to 163
+- **2.6**: Updated command count from 36 to 41 in command.md and SKILL.md
 
 ---
 
