@@ -32,22 +32,15 @@ This document outlines the review plan for architecture documentation in the `ar
 
 ## Stale Items Identified
 
-### Architecture Documents with Name Mismatch
+### Architecture Documents with Name Mismatch (FIXED)
 
-| Document | Actual Module | Issue |
-|----------|--------------|-------|
-| `architecture/event-bus.md` | `src/bus/` | Name mismatch - module is `bus/` not `event-bus/` |
-| `architecture/pty.md` | `src/pty_session/` | Name mismatch - module is `pty_session/` not `pty/` |
-| `architecture/error.md` | `src/error.rs` (file) | No module directory - file-based module |
-| `architecture/exec.md` | `src/exec.rs` (file) | No module directory - file-based module |
-| `architecture/compaction.md` | NONE | No corresponding module exists |
-
-### Recommended Pruning Actions
-
-1. **Rename** `architecture/event-bus.md` → `architecture/bus.md` (or keep for bus module if intentional)
-2. **Rename** `architecture/pty.md` → `architecture/pty_session.md` (or keep for pty_session if intentional)
-3. **Consider removal** of `architecture/compaction.md` - no corresponding module exists
-4. **Verify** `architecture/error.md` and `architecture/exec.md` are properly aligned with their file-based modules
+| Document | Actual Module | Issue | Status |
+|----------|--------------|-------|--------|
+| `architecture/event-bus.md` | `src/bus/` | Name mismatch - module is `bus/` not `event-bus/` | **FIXED - renamed to bus.md** |
+| `architecture/pty.md` | `src/pty_session/` | Name mismatch - module is `pty_session/` not `pty/` | **FIXED - renamed to pty_session.md** |
+| `architecture/error.md` | `src/error.rs` (file) | No module directory - file-based module | No action needed |
+| `architecture/exec.md` | `src/exec.rs` (file) | No module directory - file-based module | No action needed |
+| `architecture/compaction.md` | NONE | No corresponding module exists | See stale plans below |
 
 ### Plans Directory Stale Items
 
@@ -55,7 +48,7 @@ This document outlines the review plan for architecture documentation in the `ar
 |------|--------|--------|
 | `plans/plan.md` | Archived | Already marked as archived in AGENTS.md |
 | `plans/tui_separation.md` | Current | More recent (May 25 20:45) - still relevant |
-| `plans/compaction_review.md` | Orphaned | No corresponding module - consider removal |
+| `plans/compaction_review.md` | Orphaned | No corresponding module - to be removed |
 
 ## Modules Summary
 
@@ -67,11 +60,11 @@ This document outlines the review plan for architecture documentation in the `ar
 
 ## Key Discrepancies Requiring Documentation Fixes
 
-1. **Server**: ServerRuntimeError variants (5 vs 2 documented)
-2. **TUI**: 17+ discrepancies including TuiMsg variants, pending fields, Shift+Tab behavior
-3. **Overview**: TUI component/dialog counts, PermissionRegistry location, Agent teams.rs missing, Server routes understated
-4. **Core**: Missing request variants, InprocCoreClient publishing claim
-5. **Snapshot**: restore() error handling integration missing (code bug, not doc)
+1. **Server**: ServerRuntimeError variants (5 vs 2 documented) - FIX PENDING
+2. **TUI**: 17+ discrepancies including TuiMsg variants, pending fields, Shift+Tab behavior - FIX PENDING
+3. **Overview**: TUI component/dialog counts, PermissionRegistry location, Agent teams.rs missing, Server routes understated - FIX PENDING
+4. **Core**: Missing request variants, InprocCoreClient publishing claim - FIX PENDING
+5. **Snapshot**: restore() error handling integration missing (already documented, not a bug) - DOCUMENTATION FIX ONLY
 
 ## Review Methodology
 

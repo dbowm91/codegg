@@ -2,7 +2,7 @@
 
 ## Summary
 
-Reviewed `architecture/pty.md` against the actual implementation in `src/pty_session/` and the skill at `.opencode/skills/pty/SKILL.md`. The module provides shell session metadata management (in-memory only, no actual PTY sessions).
+Reviewed `architecture/pty_session.md` against the actual implementation in `src/pty_session/` and the skill at `.opencode/skills/pty/SKILL.md`. The module provides shell session metadata management (in-memory only, no actual PTY sessions).
 
 ## What Was Verified
 
@@ -93,7 +93,7 @@ The implementation is clean and well-structured:
 | `.opencode/skills/pty/SKILL.md` | 20 | Location path incorrect (`src/pty/` should be `src/pty_session/`) |
 | `src/pty_session/mod.rs` | 1-29 | Correct implementation (no issues) |
 | `src/pty_session/session.rs` | 1-273 | Correct implementation (no issues) |
-| `architecture/pty.md` | 1-80 | Accurate (minor improvements possible) |
+| `architecture/pty_session.md` | 1-80 | Accurate (minor improvements possible) |
 
 ## Conclusion
 

@@ -62,7 +62,7 @@ These items were identified during module reviews and are important for future a
 
 ### Event Bus Module (2026-05-22)
 - **GlobalEventBus::publish() returns subscriber count on success**: Uses `trace` level for normal events (was `warn` for all cases). Channel closed errors properly distinguished.
-- **Event flow documentation accurate**: Registration-before-publish pattern correctly documented in both `architecture/event-bus.md` and `.opencode/skills/event-bus/SKILL.md`
+- **Event flow documentation accurate**: Registration-before-publish pattern correctly documented in both `architecture/bus.md` and `.opencode/skills/event-bus/SKILL.md`
 - **Dead events removed**: `PermissionRequested`, `PermissionGranted`, `PermissionDenied` removed from skill and architecture doc (never existed in code - only `PermissionPending`/`PermissionResponded` exist)
 - **AppEvent count corrected**: 36 variants (was incorrectly documented as 38 or 40+)
 
@@ -272,7 +272,7 @@ These items were identified during module reviews and are important for future a
 - **`create_worktree()` signature differs**: Has `create_branch: bool` parameter (not shown in old doc)
 
 ### PTY Module (2026-05-22)
-- **Architecture doc updated**: `architecture/pty.md` now accurately describes the implementation (was showing outdated `SessionManager` API with wrong field types)
+- **Architecture doc updated**: `architecture/pty_session.md` now accurately describes the implementation (was showing outdated `SessionManager` API with wrong field types)
 - **`update_cwd` method added**: `PtyManager::update_cwd()` now exists and returns `Result<PtySession, StorageError>` (was documented but not implemented)
 - **Skill created**: `.opencode/skills/pty/SKILL.md` created with module guidance
 

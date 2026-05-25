@@ -2,7 +2,7 @@
 
 ## Summary
 
-Reviewed `architecture/event-bus.md`, `src/bus/` implementation, and `.opencode/skills/event-bus/SKILL.md`. The documentation is **highly accurate** and the implementation matches the specifications. No critical bugs found.
+Reviewed `architecture/bus.md`, `src/bus/` implementation, and `.opencode/skills/event-bus/SKILL.md`. The documentation is **highly accurate** and the implementation matches the specifications. No critical bugs found.
 
 ---
 
@@ -97,7 +97,7 @@ Verified in `src/agent/loop.rs`:
 
 ### For Documentation
 
-1. **Update AGENTS.md**: The note about "38 variants" appears to be incorrect. The actual count is 36, which is already documented correctly in `architecture/event-bus.md`.
+1. **AGENTS.md already updated**: The note about "38 variants" was incorrect - actual count is 36, which is already documented correctly in `architecture/bus.md`.
 
 2. **Clarify `PermissionChoice` location**: Consider noting that `PermissionChoice` is defined in `src/permission/mod.rs` for clarity.
 
