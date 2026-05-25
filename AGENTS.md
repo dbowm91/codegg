@@ -126,13 +126,9 @@ These items were identified during module reviews and are important for future a
 - **Skill synchronized**: `.opencode/skills/exec/SKILL.md` updated to match implementation
 - **Error messages include duration**: Error output now includes execution duration in milliseconds for debugging (e.g., `"Permission denied: Tool 'bash' denied by permissions (1234ms)"`)
 
-### Hooks System (2026-05-22)
-- **ToolExecuteBefore/After plugin hooks called**: Both hooks ARE invoked in `execute_tool_calls()` at loop.rs:1764 and 1806. `ToolExecuteBefore` can block execution by returning `blocked: true`.
-- **Shell hook config validation added**: Invalid event names (e.g., typos) now log warnings instead of silently failing. InlineScript is now deprecated with warning.
-- **Plugin hook timeout errors include plugin_id**: Error message format changed from `"hook timeout: hook execution timed out"` to `"{plugin_id}: hook timeout: hook execution timed out"`.
-- **ShellCommandHook PATH fixed**: Now uses user's actual `PATH` via `std::env::var_os("PATH")` instead of hardcoded `/usr/local/bin:/usr/bin:/bin`.
-- **Early return bug fixed**: Stream errors now break the agent loop instead of returning early, ensuring `AgentEnd` and `SessionEnd` hooks always run.
-- **ShellCommandHook error messages improved**: Error messages now include event name for easier debugging (e.g., `"Hook command failed (event=pre_tool_execute): ..."`). ShellCommandHook now stores `event: HookEvent` field.
+### Hooks System (2026-05-25)
+- **Shell hooks vs plugin hooks notation**: Shell hooks use underscore notation (`pre_tool_execute`) vs plugin hooks use dot notation (`tool.execute.before`)
+- **AgentEnd hooks skipped on stream error**: Stream errors break the loop at `src/agent/loop.rs:1369`, causing `AgentEnd` hooks (lines 1518-1533) to be SKIPPED. `SessionEnd` hooks (lines 1539-1554) RUN because they are outside the loop.
 
 ### MCP Module (2026-05-22)
 - **DNS rebinding protection fixed**: `validated_ips` changed to `Arc<Mutex<Option<Vec<IpAddr>>>>` so clones share state. `initialize()` now re-validates DNS on each call, preventing bypass after reconnects.
@@ -362,29 +358,8 @@ These items were identified during module reviews and are important for future a
 - **Client timeouts**: Health check has 10s timeout, WebSocket connection has 30s timeout
 - **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
 
-### Memory Module (2026-05-24 - Consolidated Review)
-- **Superseding threshold bug**: Line 247 uses `>=` instead of `>` - prevents superseding when scores are tied. Needs fixing.
-- **get_memory_summary() includes superseded**: Line 270 missing `.filter(|m| m.superseded_by.is_none())` before sorting. Needs fixing.
-- See `plans/plan.md` for full pending fixes.
-
-### Plugin Module (2026-05-24 - Consolidated Review)
-- **Dead code - check_and_reset_fuel_budget()**: Function at loader.rs:24-41 never called. Global fuel budget auto-reset is dead code.
-- **Dead global - PLUGIN_FUEL_BUDGET**: Global at loader.rs:15 unused. Per-plugin fuel budgets in `module_cache` are the active mechanism.
-- **event_log never consumed**: `event_bus.rs:67` populates but no consumer. See `plans/plan.md` for pending fixes.
-- See `plans/plan.md` for full pending fixes.
-
-### Command Module (2026-05-24 - Consolidated Review)
-- **Panic on error**: `find_command_files()` at mod.rs:21-24 panics with "expected" on load failure instead of graceful handling.
-- See `plans/plan.md` for this and other pending fixes.
-
-### Hooks System (2026-05-24 - Consolidated Review)
-- **Stream error early return claim INACCURATE**: Architecture doc claims stream errors break loop ensuring hooks run - they DON'T run. Claim at line 191 is false.
-- Shell hooks use underscore notation (`pre_tool_execute`) vs plugin hooks use dot notation (`tool.execute.before`)
-- See `plans/plan.md` for this and other pending fixes.
-
-### LSP Module (2026-05-24 - Consolidated Review)
-- **Server count**: Should be 44 servers (not 42 as documented)
-- See `plans/plan.md` for this and other pending fixes.
+### Command Module - Pending Fix
+- **Panic on error** (2026-05-25): `find_command_files()` at mod.rs:21-24 panics with "expected" on load failure instead of graceful handling. Fix: use `filter_map(|r| r.ok())` pattern. See `plans/plan.md` Wave 1.
 
 ### Key Lessons from Review Sessions
 - **Always verify documentation claims against actual code**. Many "bugs" in review files turned out to be correctly implemented after direct inspection. The act of reviewing often reveals assumptions that were wrong.
@@ -438,7 +413,7 @@ These items were identified during module reviews and are important for future a
 ### Command Module (2026-05-22)
 - **Async file loading**: `find_command_files()` and `load_command_from_file()` now use `tokio::fs` for async I/O (were using blocking `std::fs`)
 - **`subtask` field deprecated**: Added `#[deprecated]` attribute to `subtask` field since it's not yet implemented
-- **Architecture doc updated**: `architecture/command.md` now shows all 36 built-in commands (was showing 20)
+- **Command count**: 41 built-in commands (updated from 36)
 - **Skill updated**: `.opencode/skills/command/SKILL.md` updated to version 1.1.0 with accurate line numbers and async API documentation
 
 ### Config Module (2026-05-22)
@@ -521,7 +496,8 @@ When adding guidance for a new module:
 
 | Document | Status | Notes |
 |----------|--------|-------|
-| `plans/plan.md` | Archived (2026-05-24) | All review consolidation items completed |
+| `plans/plan.md` (Phase 1) | Archived (2026-05-24) | All Phase 1 review items completed |
+| `plans/plan.md` (Phase 2) | Active (2026-05-25) | Remaining documentation corrections |
 
 ## Quick Reference
 
@@ -540,7 +516,7 @@ When adding guidance for a new module:
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `.opencode/skills/resilience/SKILL.md` |
 | Permission (mode system, PermissionChecker, DoomLoop, PermissionRegistry) | `.opencode/skills/permission/SKILL.md` |
-| LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` |
+| LSP (Language Server Protocol, diagnostics, code operations) | `.opencode/skills/lsp/SKILL.md` (v1.1.0, 40 servers) |
 | Tool (path validation, async command, ToolExecutor, ToolCatalog) | `.opencode/skills/tool/SKILL.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |
