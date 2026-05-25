@@ -35,7 +35,7 @@ pub enum HookEvent {
 }
 ```
 
-**Note**: `PreAgentRun` and `PostAgentRun` are documented but **not implemented**.
+**Note**: `PreAgentRun` and `PostAgentRun` events do not exist in this codebase.
 
 ## HookContext
 

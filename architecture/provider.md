@@ -181,6 +181,31 @@ pub struct ModelInfo {
 }
 ```
 
+### ResponseFormat
+
+```rust
+pub enum ResponseFormat {
+    JsonObject,
+    JsonSchema {
+        name: String,
+        schema: serde_json::Value,
+        strict: bool,
+    },
+}
+```
+
+### ModelVariant
+
+```rust
+pub struct ModelVariant {
+    pub suffix: String,
+    pub context_window_override: Option<usize>,
+    pub max_output_override: Option<usize>,
+    pub extra_params: serde_json::Value,
+    pub prompt: Option<String>,
+}
+```
+
 ## ProviderRegistry
 
 Central registry for managing provider instances:
@@ -223,8 +248,7 @@ LRU-like cache with TTL for provider responses:
 
 ```rust
 pub struct ProviderCache {
-    store: DashMap<String, CachedResponse>,
-    ttl: Duration,
+    cache: DashMap<CacheKey, CacheEntry>,
 }
 ```
 

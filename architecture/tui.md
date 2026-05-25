@@ -79,7 +79,7 @@ tui/
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── route.rs                # Route/RouteManager (Home, Session routes)
-├── theme.rs                # Theme definitions (31 themes)
+├── theme.rs                # Theme definitions (33 themes)
 ├── command.rs              # Slash command registry
 └── mod.rs                  # TUI entry point, event loop, GlobalEventBus
 ```
@@ -165,11 +165,10 @@ pub struct AgentState {
 ### DialogState (`app/state/dialog.rs`)
 
 Contains all dialog instances, including optional dialogs:
-- `model_dialog`, `agent_dialog`, `session_dialog` - always present
-- `help_dialog`, `info_dialog`, `theme_picker` - optional
-- `permission_dialog`, `question_dialog` - created on demand
-- `share_dialog`, `import_dialog`, `template_dialog` - created on demand
-- `command_palette` - CommandPalette dialog (created on demand via `/` command)
+- `model_dialog`, `agent_dialog`, `session_dialog`, `tree_dialog`, `command_palette` - always present
+- `theme_picker`, `question_dialog`, `permission_dialog`, `keybind_dialog`, `mcp_dialog` - created on demand
+- `share_dialog`, `import_dialog`, `template_dialog`, `connect_dialog` - created on demand
+- `goto_dialog`, `plan_dialog`, `diff_dialog`, `help_dialog`, `info_dialog` - created on demand
 
 **Pending fields** (for tracking pending permission/question responses):
 - `permission_perm_id: Option<String>` - permission ID when permission dialog is pending

@@ -22,7 +22,7 @@ The system follows a **layered architecture** separating the TUI frontend, Core 
 ┌─────────────────────────────────────────────────────────────────┐
 │                          TUI Layer                              │
 │  ┌────────────────────────────────────────────────────────────┐  │
-│  │  App (State Machine) │ Components │ Dialogs (21) │ Input  │  │
+│  │  App (State Machine) │ Components │ Dialogs (22) │ Input  │  │
 │  └────────────────────────────────────────────────────────────┘  │
 │                              │                                   │
 │                    TuiMessage │ CoreResponse                     │
@@ -50,8 +50,8 @@ The system follows a **layered architecture** separating the TUI frontend, Core 
 └──────────────────────────────────────────────────────────────────┘
                      │                    │                    │
          ┌───────────┴─────┐  ┌───────────┴──────┐  ┌─────────┴───────┐
-         │  LLM Provider   │  │   MCP Servers    │  │   LSP Servers   │
-         │  (20+ models)   │  │ (local/remote)  │  │   (44+ langs)   │
+│  LLM Provider   │  │   MCP Servers    │  │   LSP Servers   │
+          │  (20+ models)   │  │ (local/remote)  │  │   (41+ langs)   │
          └─────────────────┘  └──────────────────┘  └─────────────────┘
 ```
 
@@ -67,7 +67,7 @@ Each module has a dedicated `.md` file in `architecture/`. Click any link for a 
 |--------|-------------|-----------|
 | **[Agent](agent.md)** | AgentLoop, message processing, subagent pool, compaction, routing, team coordination | [agent.md](agent.md) |
 | **[Provider](provider.md)** | Unified interface for 20+ LLM backends with streaming, model discovery, caching | [provider.md](provider.md) |
-| **[Tool](tool.md)** | Tool registry and 33+ built-in tools for file ops, git, search, LSP, and more | [tool.md](tool.md) |
+| **[Tool](tool.md)** | Tool registry and 26 built-in tools for file ops, git, search, LSP, and more | [tool.md](tool.md) |
 | **[Event Bus](bus.md)** | GlobalEventBus (pub/sub), PermissionRegistry, QuestionRegistry | [bus.md](bus.md) |
 | **[Core](core.md)** | CoreClient facade, transport adapters (inproc/stdio/socket), protocol envelopes | [core.md](core.md) |
 
@@ -108,7 +108,7 @@ Each module has a dedicated `.md` file in `architecture/`. Click any link for a 
 
 | Module | Description | Deep Dive |
 |--------|-------------|-----------|
-| **[Plugin](plugin.md)** | WASM plugin system via Wasmtime with 10 hook types, builtin handlers | [plugin.md](plugin.md) |
+| **[Plugin](plugin.md)** | WASM plugin system via Wasmtime with 13 hook types, builtin handlers | [plugin.md](plugin.md) |
 | **[Skills](skills.md)** | Skill system loaded from markdown files with YAML frontmatter | [skills.md](skills.md) |
 | **[Command](command.md)** | Slash command registry from markdown files with template substitution | [command.md](command.md) |
 | **[Hooks](hooks.md)** | Lifecycle hooks system for agent loop events | [hooks.md](hooks.md) |
