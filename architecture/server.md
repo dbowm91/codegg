@@ -128,8 +128,7 @@ Auth validation via `validate_ws_auth()` shared between both handlers.
 #### Permission Routes (`/api/permission/:session_id`)
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/permission/:session_id` | Get pending permissions |
-| POST | `/api/permission/:session_id/submit` | Submit permission |
+| GET, POST | `/api/permission/:session_id` | GET (pending permissions), POST (submit response) |
 
 #### Question Routes (`/api/question/:session_id`)
 | Method | Path | Description |
