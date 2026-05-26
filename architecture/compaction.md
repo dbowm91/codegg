@@ -88,7 +88,7 @@ All strategies must maintain these invariants:
 | `detect_overflow()` | Returns true if current tokens exceed context_limit - reserved |
 | `has_long_tool_outputs()` | Checks if any tool output exceeds 2000 character threshold |
 | `count_non_system_messages()` | Counts messages that are not System messages |
-| `select_compaction_strategy()` | Selects strategy based on message count and tool output length |
+| `select_compaction_strategy()` | Selects strategy: >6 messages with long tool outputs → TruncateToolOutputs; >8 messages → SummarizeOldTurns |
 | `prune_tool_outputs()` | Token-based truncation to max_tokens_per_output (pre-pass) |
 | `truncate_tool_outputs()` | Character-based truncation to 500 chars (within strategies) |
 | `compact_messages()` | Wrapper around `compact_messages_sync` (sync-only context) |
