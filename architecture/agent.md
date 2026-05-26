@@ -64,16 +64,16 @@ pub struct AgentLoop {
 
 ```rust
 type ToolDefCache = (
-    Option<String>,                    // Cached tools hash
-    bool,                             // Permission version
-    bool,                             // MCP tool count changed
-    usize,                            // Permission count
-    u64,                              // Last cache timestamp
+    Option<String>,                    // model: Cached tools hash
+    bool,                             // plan_mode: Whether in plan mode
+    bool,                             // lsp_enabled: Whether LSP is enabled (affects tool definitions)
+    usize,                            // mcp_count: MCP tool count
+    u64,                              // perm_ver: Permission version
     Vec<crate::provider::ToolDefinition>, // Cached tool definitions
 );
 ```
 
-Cache is invalidated when `mcp_tool_count`, `permission_version`, or tool definitions change.
+Cache is invalidated when `plan_mode`, `lsp_enabled`, `mcp_count`, `permission_version`, or tool definitions change.
 
 ### compaction.rs - Context Management
 

@@ -11,7 +11,7 @@ The `bus` module provides inter-component communication via an event-driven arch
 - Permission request/response pattern via PermissionRegistry
 - Question/answer request/response pattern via QuestionRegistry
 
-**Event Count**: 36 event variants in `AppEvent` enum (see below for categories)
+**Event Count**: 36 event variants in `AppEvent` enum (see below for categories - verified correct as of 2026-05-26)
 
 **Files**:
 - `global.rs` - GlobalEventBus singleton

@@ -288,4 +288,4 @@ The protocol uses explicit versioning via `PROTOCOL_VERSION = 1` in `src/protoco
 - `TuiMessage` similarly uses `#[serde(tag = "type")]`
 - All enums use `rename_all = "snake_case"` for JSON compatibility
 - The core module handles `CoreRequest` variants in `src/core/mod.rs`
-- Subagent events (`SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed`) exist in both `CoreEvent` and the event bus, but `map_app_event_to_core_event` does NOT map subagent events (they fall through to `None`)
+- Subagent events (`SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed`) exist in both `CoreEvent` and the event bus, and `map_app_event_to_core_event` DOES map all four subagent events (see `src/core/mod.rs:795-838`)

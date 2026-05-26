@@ -48,7 +48,7 @@ pub struct CommandConfig {
 
 ### Sources (in priority order)
 
-1. **Built-in commands**: 41 hardcoded commands (highest priority)
+1. **Built-in commands**: 39 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **File commands**: From `command/` or `commands/` directories in CWD
 
@@ -111,7 +111,7 @@ pub struct Command {
 }
 ```
 
-### Built-in Commands (41 total)
+### Built-in Commands (39 total)
 
 | Command | Aliases | Description |
 |---------|---------|-------------|

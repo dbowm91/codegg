@@ -38,7 +38,7 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 
 2. **Health Check** - Creates `RemoteClient` and calls `health()` to verify server connectivity (10s timeout)
 
-3. **WebSocket Connection** - 30-second timeout per attempt, up to 3 retries with exponential backoff (2s, 4s) using `tokio_tungstenite::connect_async()`
+3. **WebSocket Connection** - 30-second timeout per attempt, up to 3 retries with exponential backoff (1s, 2s, 4s) using `tokio_tungstenite::connect_async()`
 
 4. **Resume Handshake** - Immediately sends `TuiMessage::Resume { from_event_seq: 0 }` after connect so the server can replay buffered events when needed.
 
