@@ -22,7 +22,7 @@ The system follows a **layered architecture** separating the TUI frontend, Core 
 ┌─────────────────────────────────────────────────────────────────┐
 │                          TUI Layer                              │
 │  ┌────────────────────────────────────────────────────────────┐  │
-│  │  App (State Machine) │ Components │ Dialogs (22) │ Input  │  │
+│  │  App (State Machine) │ Components │ Dialogs (21) │ Input  │  │
 │  └────────────────────────────────────────────────────────────┘  │
 │                              │                                   │
 │                    TuiMessage │ CoreResponse                     │
@@ -48,11 +48,11 @@ The system follows a **layered architecture** separating the TUI frontend, Core 
 │  │  └─────────┘  └────────┘  └───────────┘  └────────┘  │       │
 │  └────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
-                     │                    │                    │
-         ┌───────────┴─────┐  ┌───────────┴──────┐  ┌─────────┴───────┐
+                      │                    │                    │
+          ┌───────────┴─────┐  ┌───────────┴──────┐  ┌─────────┴───────┐
 │  LLM Provider   │  │   MCP Servers    │  │   LSP Servers   │
-          │  (20+ models)   │  │ (local/remote)  │  │   (41+ langs)   │
-         └─────────────────┘  └──────────────────┘  └─────────────────┘
+           │  (20+ models)   │  │ (local/remote)  │  │   (41+ langs)   │
+          └─────────────────┘  └──────────────────┘  └─────────────────┘
 ```
 
 ---
@@ -67,7 +67,7 @@ Each module has a dedicated `.md` file in `architecture/`. Click any link for a 
 |--------|-------------|-----------|
 | **[Agent](agent.md)** | AgentLoop, message processing, subagent pool, compaction, routing, team coordination | [agent.md](agent.md) |
 | **[Provider](provider.md)** | Unified interface for 20+ LLM backends with streaming, model discovery, caching | [provider.md](provider.md) |
-| **[Tool](tool.md)** | Tool registry and 26 built-in tools for file ops, git, search, LSP, and more | [tool.md](tool.md) |
+| **[Tool](tool.md)** | Tool registry and 31 built-in tools for file ops, git, search, LSP, and more | [tool.md](tool.md) |
 | **[Event Bus](bus.md)** | GlobalEventBus (pub/sub), PermissionRegistry, QuestionRegistry | [bus.md](bus.md) |
 | **[Core](core.md)** | CoreClient facade, transport adapters (inproc/stdio/socket), protocol envelopes | [core.md](core.md) |
 
@@ -224,13 +224,13 @@ src/
 ├── session/            # Session storage, schema, checkpointing
 ├── skills/             # Skill system
 ├── snapshot/           # File state capture and restore
-├── storage/            # SQLite initialization
-├── tool/               # Tool registry, built-in tools
+├── storage/             # SQLite initialization
+├── tool/               # Tool registry, built-in tools (31 tools)
 ├── tts/                # Text-to-speech
 ├── tui/                # Terminal UI (app, components, dialogs)
 ├── upgrade/            # Self-upgrade via GitHub
 ├── util/               # Clipboard, fuzzy, truncate, metrics
-└── worktree/           # Git worktree management
+└── worktree/          # Git worktree management
 ```
 
 ---
@@ -258,13 +258,61 @@ Configuration is loaded from (in order of precedence):
 
 ---
 
+## Built-in Agents
+
+| Agent | Mode | Description |
+|-------|------|-------------|
+| `build` | Primary | Default agent with full permissions |
+| `plan` | Primary | Read-only agent for planning |
+| `general` | Subagent | Subagent without todo management |
+| `explore` | All | Read-only exploration agent |
+| `title` | Subagent | Generates session titles (hidden) |
+| `summary` | Subagent | Generates session summaries (hidden) |
+| `compaction` | Subagent | Context compaction agent (hidden) |
+
+---
+
+## Built-in Tools (31)
+
+| Category | Tools |
+|----------|-------|
+| **File Operations** | `read`, `write`, `edit`, `glob`, `list` |
+| **Search** | `grep`, `codesearch` |
+| **Shell** | `bash`, `terminal` |
+| **Git** | `git`, `commit`, `diff`, `review` |
+| **Code** | `apply_patch`, `replace`, `multiedit` |
+| **LSP** | `lsp` |
+| **Web** | `webfetch`, `websearch` |
+| **Tasks** | `task`, `todo`, `batch`, `plan` |
+| **Special** | `question`, `skill`, `tool_search`, `invalid` |
+
+---
+
+## LLM Providers (20+)
+
+| Provider | Implementation |
+|----------|---------------|
+| **Anthropic** | `anthropic.rs` |
+| **OpenAI** | `openai.rs` |
+| **Google** | `google.rs`, `vertex.rs` |
+| **AWS** | `bedrock.rs` |
+| **Azure** | `azure.rs` |
+| **OpenRouter** | `openrouter.rs` |
+| **Cloudflare** | `cloudflare.rs` |
+| **GitLab** | `gitlab.rs` |
+| **Copilot** | `copilot.rs` |
+| **CodeggZen** | `codegg_zen.rs` |
+| **Additional** | `additional.rs` (Mistral, Groq, Deepinfra, Cerebras, Cohere, TogetherAI, Perplexity, xAI, Venice, MiniMax, CodeggGo) |
+
+---
+
 ## Architecture Files Index
 
 | File | Module | Description |
 |------|--------|-------------|
 | [agent.md](agent.md) | agent | AgentLoop, compaction, router, task, team, worker |
-| [tool.md](tool.md) | tool | Tool registry, built-in tools, executor |
-| [provider.md](provider.md) | provider | LLM backends, streaming, model catalog |
+| [tool.md](tool.md) | tool | Tool registry, built-in tools (31 tools), executor |
+| [provider.md](provider.md) | provider | LLM backends (20+), streaming, model catalog |
 | [bus.md](bus.md) | bus | GlobalEventBus, AppEvent, registries |
 | [permission.md](permission.md) | permission | PermissionChecker, modes, DoomLoop |
 | [security.md](security.md) | security | SSRF, IP validation, Landlock |
@@ -273,7 +321,7 @@ Configuration is loaded from (in order of precedence):
 | [storage.md](storage.md) | storage | SQLite initialization, pooling |
 | [memory.md](memory.md) | memory | Memory store, consolidation, namespaces |
 | [snapshot.md](snapshot.md) | snapshot | File state capture, restore |
-| [tui.md](tui.md) | tui | App, components, dialogs, input |
+| [tui.md](tui.md) | tui | App, components (21 dialogs), input |
 | [client.md](client.md) | client | Remote TUI WebSocket client |
 | [core.md](core.md) | core | CoreClient facade, transport adapters |
 | [server.md](server.md) | server | HTTP server, WebSocket, REST API |
@@ -293,3 +341,4 @@ Configuration is loaded from (in order of precedence):
 | [util.md](util.md) | util | Clipboard, fuzzy, truncate |
 | [worktree.md](worktree.md) | worktree | Git worktree management |
 | [tts.md](tts.md) | tts | Text-to-speech |
+| [compaction.md](compaction.md) | compaction | Context window overflow management |
