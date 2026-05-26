@@ -362,7 +362,7 @@ Each group is independent; agents should pick one group at a time:
 | I | M-9 | Hooks | InlineScript deprecation handling | `src/hooks/mod.rs` OR `architecture/hooks.md` |
 | J | M-11 | Exec | Timeout documentation | `architecture/exec.md` |
 | K | M-12 | Server | Auth middleware security | `architecture/server.md` |
-| L | M-13 | Core | Type precision improvements | `architecture/core.md` |
+| L | M-13 ✅ | Core | Type precision improvements | `architecture/core.md` |
 | M | M-14 | Tool | ToolExecutor usage docs | `architecture/tool.md` |
 | N | M-15 | Worktree | force parameter consideration | `architecture/worktree.md` |
 
