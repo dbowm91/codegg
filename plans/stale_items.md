@@ -2,6 +2,55 @@
 
 **Review Date**: 2026-05-26
 **Phase**: 4 - Stale Item Identification Complete
+**Phase**: 5 - Pruning Recommendations (embedded below)
+
+---
+
+## Phase 5: Pruning Recommendations
+
+Based on Phase 4 findings, the following pruning actions are recommended:
+
+### 1. Create Missing Architecture Documentation
+
+| Action | Reason |
+|--------|--------|
+| **Create architecture/protocol.md** | Protocol module (`src/protocol/`) exists with CoreRequest, CoreResponse, TuiMessage types but has no dedicated architecture doc. These types are partially documented in core.md but deserve their own doc. |
+
+### 2. Update Existing Architecture Documentation
+
+| Action | File | Reason |
+|--------|------|--------|
+| Fix built-in modes table | `architecture/permission.md` | "skill" incorrectly listed in allowed_tools for all 3 modes |
+| Clarify provider auto-registration | `architecture/provider.md` | SAP AI Core, Zenmux, Kilo, Vercal AI Gateway not auto-registered |
+| Rename "Discovery Providers" section | `architecture/provider.md` | Misleading title - these don't auto-discover |
+| Document CoreEvent mapping gaps | `architecture/core.md` | Many events dropped in `map_app_event_to_core_event()` |
+| Clarify hook timeout distinction | `architecture/plugin.md` | 5s outer dispatch vs 30s inner WASM |
+| Clarify backoff formula | `architecture/resilience.md` | Should mention jitter |
+| Fix UiState field list | `architecture/tui.md` | Some documented fields missing from source |
+
+### 3. Remove or Update Line Number References
+
+Line numbers in architecture docs are fragile and frequently drift. Recommendations:
+- Remove specific line number references (e.g., "loop.rs:1777")
+- Use method names or describe behavior instead
+- If line numbers must be kept, add a disclaimer that they may be stale
+
+### 4. Cross-Reference Fixes Needed
+
+| Issue | Location | Fix |
+|-------|----------|-----|
+| AgentLoop hooks | `architecture/plugin.md` | Add cross-reference showing exact AgentLoop integration points |
+| Snapshot table schema | `architecture/snapshot.md` | Note it's defined in `session::schema::migrate_v13()` |
+| ToolExecutor not integrated | `architecture/tool.md` | Known issue - already documented but could be more prominent |
+| Protocol types | `architecture/core.md` | Note that CoreRequest/CoreResponse are in `src/protocol/` |
+
+### 5. Documentation Structure Improvements
+
+| Improvement | Reason |
+|-------------|--------|
+| Rename `stat_core.rs` to `metrics.rs` | Filename is misleading - contains metrics code, not file stats |
+| Document `compaction` as agent submodule | Currently documented separately which implies it's a top-level module |
+| Document `error` and `exec` as single files | Currently in module index as if they were directories |
 
 ---
 
