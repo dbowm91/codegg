@@ -1,5 +1,30 @@
 # AGENTS.override.md
 
+## Implementation Notes (2026-05-26)
+
+### Working with Git Worktrees for Parallel Changes
+
+When implementing code changes in parallel using worktrees:
+1. Create worktree with `git worktree add <path> -b <branch-name>`
+2. Work in the worktree for compilation safety
+3. Commit changes in the worktree
+4. Switch to main and reset/rebase to incorporate changes
+5. Use `git rm --cached <worktree-path>` to avoid embedded repo issues
+6. Clean up worktree directory manually after pruning
+
+**Critical**: Git worktrees have nested `.git` directories that can cause "embedded git repository" warnings and issues with `git add -A`. Always clean up properly.
+
+### Plan Implementation Verification
+
+During the 2026-05-26 plan implementation:
+- 2 code bugs (BUG-01, BUG-02, BUG-03) were real issues in the server routes
+- 5 code bugs (BUG-04 through BUG-08) were already not needed - TUI doesn't send those requests
+- 2 code bugs (BUG-09, BUG-10) were real fuel leak issues
+- Many "documentation bugs" from review files were already correct in current docs
+- Only 1 confirmed doc count error exists: theme count (42 vs 31)
+
+---
+
 ## Session Learnings (2026-05-26)
 
 ### Plan Review Process
@@ -117,12 +142,12 @@ Phase 2 (Parallel - Documentation):
 
 ### Verified Bugs (Confirmed by Direct Code Inspection)
 
-1. **BUG-01** (permission.rs:27): Session ID mismatch check is broken - splits on wrong format
-2. **BUG-02** (permission.rs:65-90): `get_pending_permissions_for_session()` ignores session_id
-3. **BUG-03** (question.rs:63-73): `get_pending_questions_for_session()` filter compares IDs to session_id
-4. **BUG-04-08** (core/mod.rs:698): Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect fall through to Ack
-5. **BUG-09** (loader.rs:344-354): Fuel not returned when hook function not found
-6. **BUG-10** (loader.rs:356-409): Fuel not returned on 4 early error paths
+1. **BUG-01** (permission.rs:27): Session ID mismatch check is broken - splits on wrong format → FIXED
+2. **BUG-02** (permission.rs:65-90): `get_pending_permissions_for_session()` ignores session_id → FIXED
+3. **BUG-03** (question.rs:63-73): `get_pending_questions_for_session()` filter compares IDs to session_id → FIXED
+4. **BUG-04-08** (core/mod.rs:698): Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect fall through to Ack → No action needed (TUI doesn't send these)
+5. **BUG-09** (loader.rs:344-354): Fuel not returned when hook function not found → FIXED
+6. **BUG-10** (loader.rs:356-409): Fuel not returned on 4 early error paths → FIXED
 
 ### Claims in Review Files that Were WRONG
 
