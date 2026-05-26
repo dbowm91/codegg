@@ -124,7 +124,7 @@ These items were verified during a 2026-05-26 review session:
 | LSP server count | 39 | `src/lsp/server.rs:27-385` |
 | PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
-| ToolExecutor usage | bash, read, glob tools | `src/tool/executor.rs:72,92,112` |
+| ToolExecutor | NOT integrated - exists but unused | `architecture/tool.md:205` |
 | Plugin fuel logic | CORRECT - returns early when exhausted | `src/plugin/loader.rs:262-266` |
 | InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |

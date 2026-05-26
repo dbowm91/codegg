@@ -363,7 +363,7 @@ Each group is independent; agents should pick one group at a time:
 | J | M-11 | Exec | Timeout documentation | `architecture/exec.md` |
 | K | M-12 | Server | Auth middleware security | `architecture/server.md` |
 | L | M-13 ✅ | Core | Type precision improvements | `architecture/core.md` |
-| M | M-14 | Tool | ToolExecutor usage docs | `architecture/tool.md` |
+| M | M-14 ✅ | Tool | ToolExecutor usage docs - CORRECTED | `architecture/tool.md` |
 | N | M-15 | Worktree | force parameter consideration | `architecture/worktree.md` |
 
 **M-4 (Provider Error Retry Status) is already VERIFIED - no action needed.**
@@ -393,7 +393,7 @@ Before implementing any item, verify against this list:
 | Auth middleware allows without token | ✅ | `src/server/middleware/auth.rs:37-39` - intentional dev mode |
 | Plugin fuel tracking logic | ✅ CORRECT | Condition NOT inverted - properly returns early when exhausted |
 | UiState.fullscreen exists | ✅ | `src/tui/app/state/ui.rs:71` |
-| ToolExecutor IS used | ✅ | bash, read, glob at `executor.rs:72,92,112` |
+| ToolExecutor NOT used by tools | ✅ | architecture/tool.md:205 correctly states "not currently integrated" |
 | ProviderError::Auth retryable | ✅ | `src/error.rs:169` |
 | Memory frequency_bonus formula | ✅ | `(count - 1) * 2.0` at `patterns.rs:232` |
 | SessionCreated, MessageAdded published | ✅ | `src/bus/events.rs:7,21` |
