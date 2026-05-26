@@ -73,13 +73,17 @@ Generates a side-by-side diff view with ANSI color codes.
 
 ## VS Code Integration
 
-Uses VS Code's `--diff` CLI argument with temporary files. Files are flushed before passing to VS Code to ensure content is visible. Temporary files are dropped before invoking the IDE to ensure paths are valid. Uses `run_command_with_timeout()` which returns `Result<(), String>` with error details:
+Uses VS Code's `--diff` CLI argument with temporary files. Files are flushed and temp file handles are **released AFTER IDE invocation** to ensure content is visible. Uses `run_command_with_timeout()` which returns `Result<(), String>` with error details:
 
 ```rust
 let mut original_file = original_temp.as_file();
 original_file.write_all(original_content.as_bytes())?;
 original_file.flush()?;
-drop(original_temp);  // Release file handle before IDE reads
+guard.add(original_temp.path().to_owned());
+guard.add(modified_temp.path().to_owned());
+
+drop(original_temp);  // Release file handle AFTER IDE invocation
+drop(modified_temp);
 
 run_command_with_timeout("code", &[
     "--diff",
@@ -87,6 +91,14 @@ run_command_with_timeout("code", &[
     modified_path.to_string_lossy().as_ref(),
 ])?;
 ```
+
+### TempFilesGuard
+
+The `TempFilesGuard` struct (defined at `src/ide/mod.rs:43-63`) implements `Drop` to automatically clean up temp files when the guard goes out of scope. This ensures temp files are cleaned up even if the IDE command fails or panics occur.
+
+### register_panic_cleanup
+
+The private `register_panic_cleanup()` function (`src/ide/mod.rs:65-78`) registers a panic hook that cleans up any leftover `codegg_*` temp files in the system temp directory if the process crashes. It uses `std::sync::Once` to ensure the hook is only registered once.
 
 Note: `run_command_with_timeout()` handles errors internally and returns descriptive strings like `"code failed (exit 1)"`.
 
