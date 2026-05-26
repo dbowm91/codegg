@@ -14,7 +14,7 @@ The `command` module provides slash command registry loaded from markdown files 
 
 ## Key Types
 
-### Command (src/command/mod.rs:9-18)
+### Command (src/command/mod.rs)
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,8 +30,7 @@ pub struct Command {
 }
 ```
 
-Note: The TUI `Command` struct with aliases is in `src/tui/command.rs:26-37`.
-```
+Note: The TUI `Command` struct with aliases is in `src/tui/command.rs:72`.
 
 ### CommandConfig (src/config/schema.rs)
 
@@ -94,7 +93,7 @@ Currently only `args` is available during TUI execution:
 
 ## TUI Integration
 
-### CommandRegistry (src/tui/command.rs:25-37)
+### CommandRegistry (src/tui/command.rs:72)
 
 ```rust
 #[derive(Debug, Clone)]
