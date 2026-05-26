@@ -187,11 +187,11 @@ Missing documentation for validations that exist in code:
 - **Issue**: Doc shows `~/.local/share/codegg/plugins/` (Linux) but actual uses `dirs::data_local_dir()/codegg/plugins` (cross-platform)
 - **Action**: Update documentation to reflect cross-platform path
 
-### M-9: Hook InlineScript Handling
+### M-9: Hook InlineScript Handling ✅ COMPLETED
 **Source**: `plans/hooks_review.md`
 
 - **Issue**: `InlineScript` at `src/hooks/mod.rs:181-184` is deprecated dead code with `#[allow(deprecated)]` but undocumented
-- **Action**: Either document it as deprecated or remove the dead code
+- **Action**: Documented in `architecture/hooks.md` as deprecated and non-functional; removed unnecessary `warn!()` log in `src/hooks/mod.rs`
 
 ### M-10: IDE open_diff_generic Indentation
 **Source**: `plans/ide_review.md`

@@ -98,6 +98,8 @@ impl Hook for ShellCommandHook {
 
 ## Hook Configuration
 
+**Note**: `InlineScript` hook type existed in earlier versions but is now **deprecated and non-functional**. It is retained in the codebase to ensure enum exhaustiveness but is ignored at runtime. Use `shell_command` hooks instead.
+
 ```toml
 [hooks]
 enabled = true
