@@ -228,7 +228,8 @@ Missing documentation for validations that exist in code:
 **Source**: `plans/worktree_review.md`
 
 - **Issue**: `remove_worktree()` doesn't support `--force` flag
-- **Action**: Consider adding `force` parameter for `git worktree remove --force` support
+- **Action**: Add `force` parameter for `git worktree remove --force` support
+- **Status**: ✅ COMPLETED (Wave 2, Group N)
 
 ---
 
