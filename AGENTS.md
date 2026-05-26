@@ -121,7 +121,7 @@ These items were verified during a 2026-05-26 review session:
 | Item | Value | Location |
 |------|-------|----------|
 | Tool count | 26 | `src/tool/mod.rs:89-119` |
-| LSP server count | 42 | `src/lsp/server.rs:27-385` |
+| LSP server count | 39 | `src/lsp/server.rs:27-385` |
 | PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor usage | bash, read, glob tools | `src/tool/executor.rs:72,92,112` |

@@ -60,8 +60,9 @@ rg "check_and_reset_fuel_budget" src/plugin/loader.rs
 ### H-3: LSP Server Count Documentation
 **Source**: `plans/lsp_review.md`
 
-- **Issue**: Architecture doc says "39 servers" but actual is **42 servers** at `src/lsp/server.rs:27-385`
-- **Action**: Update lsp.md server count
+- **Issue**: Architecture doc says "39 servers" at `lsp.md:229` which is CORRECT - actual count is 39 servers at `src/lsp/server.rs:27-385`
+- **Issue**: AGENTS.md incorrectly says "42 servers" - should be 39
+- **Action**: Update AGENTS.md to say 39 servers (doc was already correct)
 
 **Status**: Documentation only
 
@@ -387,7 +388,7 @@ Before implementing any item, verify against this list:
 | Item | Verified Value | Location |
 |------|----------------|----------|
 | Tool count = 26 | ✅ | `src/tool/mod.rs:89-119` |
-| LSP server count = 42 | ✅ | `src/lsp/server.rs:27-385` |
+| LSP server count = 39 | ✅ | `src/lsp/server.rs:27-385` |
 | PermissionResponse = {level, persist} | ✅ | `src/permission/mod.rs:1142-1145`, no `reason` field |
 | Auth middleware allows without token | ✅ | `src/server/middleware/auth.rs:37-39` - intentional dev mode |
 | Plugin fuel tracking logic | ✅ CORRECT | Condition NOT inverted - properly returns early when exhausted |
