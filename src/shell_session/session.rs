@@ -4,24 +4,24 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::error::StorageError;
-use crate::pty_session::{CreatePtySession, PtyResize, PtySession};
+use crate::shell_session::{CreateShellSession, ShellResize, ShellSession};
 
-pub struct PtyManager {
-    sessions: Arc<RwLock<HashMap<String, PtySession>>>,
+pub struct ShellManager {
+    sessions: Arc<RwLock<HashMap<String, ShellSession>>>,
 }
 
-impl PtyManager {
+impl ShellManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub async fn create(&self, input: CreatePtySession) -> Result<PtySession, StorageError> {
+    pub async fn create(&self, input: CreateShellSession) -> Result<ShellSession, StorageError> {
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp_millis();
 
-        let session = PtySession {
+        let session = ShellSession {
             id: id.clone(),
             project_id: input.project_id,
             cwd: input.cwd.unwrap_or_else(|| ".".to_string()),
@@ -35,21 +35,21 @@ impl PtyManager {
         Ok(session)
     }
 
-    pub async fn get(&self, id: &str) -> Option<PtySession> {
+    pub async fn get(&self, id: &str) -> Option<ShellSession> {
         self.sessions.read().await.get(id).cloned()
     }
 
-    pub async fn update_cwd(&self, id: &str, cwd: &str) -> Result<PtySession, StorageError> {
+    pub async fn update_cwd(&self, id: &str, cwd: &str) -> Result<ShellSession, StorageError> {
         let mut sessions = self.sessions.write().await;
         let session = sessions
             .get_mut(id)
-            .ok_or_else(|| StorageError::NotFound(format!("pty session {id}")))?;
+            .ok_or_else(|| StorageError::NotFound(format!("shell session {id}")))?;
 
         session.cwd = cwd.to_string();
         Ok(session.clone())
     }
 
-    pub async fn list(&self, project_id: &str) -> Vec<PtySession> {
+    pub async fn list(&self, project_id: &str) -> Vec<ShellSession> {
         self.sessions
             .read()
             .await
@@ -59,11 +59,11 @@ impl PtyManager {
             .collect()
     }
 
-    pub async fn resize(&self, id: &str, resize: PtyResize) -> Result<(), StorageError> {
+    pub async fn resize(&self, id: &str, resize: ShellResize) -> Result<(), StorageError> {
         let mut sessions = self.sessions.write().await;
         let session = sessions
             .get_mut(id)
-            .ok_or_else(|| StorageError::NotFound(format!("pty session {id}")))?;
+            .ok_or_else(|| StorageError::NotFound(format!("shell session {id}")))?;
 
         session.cols = resize.cols;
         session.rows = resize.rows;
@@ -75,12 +75,12 @@ impl PtyManager {
             .write()
             .await
             .remove(id)
-            .ok_or_else(|| StorageError::NotFound(format!("pty session {id}")))?;
+            .ok_or_else(|| StorageError::NotFound(format!("shell session {id}")))?;
         Ok(())
     }
 }
 
-impl Default for PtyManager {
+impl Default for ShellManager {
     fn default() -> Self {
         Self::new()
     }
@@ -90,12 +90,12 @@ impl Default for PtyManager {
 mod tests {
     use super::*;
 
-    fn create_test_manager() -> PtyManager {
-        PtyManager::new()
+    fn create_test_manager() -> ShellManager {
+        ShellManager::new()
     }
 
-    fn create_test_session_input() -> CreatePtySession {
-        CreatePtySession {
+    fn create_test_session_input() -> CreateShellSession {
+        CreateShellSession {
             project_id: "test-project".to_string(),
             cwd: Some("/tmp".to_string()),
             shell: Some("bash".to_string()),
@@ -123,7 +123,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_session_defaults() {
         let manager = create_test_manager();
-        let input = CreatePtySession {
+        let input = CreateShellSession {
             project_id: "test-project".to_string(),
             cwd: None,
             shell: None,
@@ -183,7 +183,7 @@ mod tests {
         let manager = create_test_manager();
 
         manager
-            .create(CreatePtySession {
+            .create(CreateShellSession {
                 project_id: "project-a".to_string(),
                 cwd: None,
                 shell: None,
@@ -194,7 +194,7 @@ mod tests {
             .unwrap();
 
         manager
-            .create(CreatePtySession {
+            .create(CreateShellSession {
                 project_id: "project-a".to_string(),
                 cwd: None,
                 shell: None,
@@ -205,7 +205,7 @@ mod tests {
             .unwrap();
 
         manager
-            .create(CreatePtySession {
+            .create(CreateShellSession {
                 project_id: "project-b".to_string(),
                 cwd: None,
                 shell: None,
@@ -232,7 +232,7 @@ mod tests {
 
         let created = manager.create(input).await.unwrap();
         let result = manager
-            .resize(&created.id, PtyResize { cols: 120, rows: 40 })
+            .resize(&created.id, ShellResize { cols: 120, rows: 40 })
             .await;
 
         assert!(result.is_ok());
@@ -245,7 +245,7 @@ mod tests {
     async fn test_resize_not_found() {
         let manager = create_test_manager();
         let result = manager
-            .resize("nonexistent-id", PtyResize { cols: 120, rows: 40 })
+            .resize("nonexistent-id", ShellResize { cols: 120, rows: 40 })
             .await;
 
         assert!(result.is_err());

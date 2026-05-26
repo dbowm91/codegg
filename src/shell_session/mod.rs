@@ -3,7 +3,7 @@ pub mod session;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PtySession {
+pub struct ShellSession {
     pub id: String,
     pub project_id: String,
     pub cwd: String,
@@ -14,7 +14,7 @@ pub struct PtySession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreatePtySession {
+pub struct CreateShellSession {
     pub project_id: String,
     pub cwd: Option<String>,
     pub shell: Option<String>,
@@ -23,7 +23,7 @@ pub struct CreatePtySession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PtyResize {
+pub struct ShellResize {
     pub cols: u16,
     pub rows: u16,
 }

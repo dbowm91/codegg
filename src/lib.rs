@@ -23,7 +23,7 @@ pub mod plugin;
 pub mod protocol;
 pub mod core;
 pub mod provider;
-pub mod pty_session;
+pub mod shell_session;
 pub mod resilience;
 #[cfg(feature = "server")]
 pub mod server;
