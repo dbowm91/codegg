@@ -143,4 +143,24 @@ Phase 2 (Parallel - Documentation):
 
 ---
 
-*Updated 2026-05-26: Removed implementation-specific bug references, kept valuable patterns and accurate code locations*
+*Updated 2026-05-26: Consolidated plan review learnings, added verified codebase facts from 31 review files*
+
+---
+
+## New Verified Codebase Facts (2026-05-26 Review Session)
+
+| Item | Value | Location |
+|------|-------|----------|
+| Tool count | 26 | `src/tool/mod.rs:89-119` |
+| LSP server count | 42 | `src/lsp/server.rs:27-385` |
+| PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
+| InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
+| ToolExecutor usage | bash, read, glob tools | `src/tool/executor.rs:72,92,112` |
+| Plugin fuel logic | CORRECT - returns early when exhausted | `src/plugin/loader.rs:262-266` |
+| InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
+| CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
+| register_panic_cleanup | Private function for temp file cleanup | `src/ide/mod.rs:65-78` |
+| ProviderError::Auth | is_retryable = true | `src/error.rs:169` |
+| Memory frequency_bonus | `(count - 1) * 2.0` | `src/memory/patterns.rs:232` |
+| Session events published | SessionCreated, MessageAdded | `src/bus/events.rs:7,21` |
+| Auth middleware | Allows requests when no token set | `src/server/middleware/auth.rs:37-39` |

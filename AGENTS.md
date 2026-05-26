@@ -112,15 +112,32 @@ These items are important for future agents to know when working with the codeba
 
 5. **Pre-verification before editing** - When a plan or review file claims "X is wrong in architecture doc", first check if it's been fixed since the review was written. Many "corrections" in old plans were already addressed.
 
-### Working with Plans and Reviews
+6. **Use subagents for batch review work** - Process 4-5 plan files per subagent (2000 line context limit), consolidate results, then consolidate into final plan.
 
-1. **Batch processing for plan reviews**: Process 4-5 plan files per subagent to avoid context compaction. Consolidate each batch, then consolidate into final plan.
+### Verified Codebase Facts
 
-2. **Plan consolidation pattern**: Subagent reads batch → writes consolidated temp file → parent reads all temp files → creates final plan → cleans up temp files.
+These items were verified during a 2026-05-26 review session:
 
-3. **Subagent context limits**: Subagents undergo compaction after ~2000 lines of context. Design prompts accordingly.
+| Item | Value | Location |
+|------|-------|----------|
+| Tool count | 26 | `src/tool/mod.rs:89-119` |
+| LSP server count | 42 | `src/lsp/server.rs:27-385` |
+| PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
+| InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
+| ToolExecutor usage | bash, read, glob tools | `src/tool/executor.rs:72,92,112` |
+| Plugin fuel logic | CORRECT - returns early when exhausted | `src/plugin/loader.rs:262-266` |
+| InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
+| CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
+| register_panic_cleanup | Private function for temp file cleanup | `src/ide/mod.rs:65-78` |
+| ProviderError::Auth | is_retryable = true | `src/error.rs:169` |
+| Memory frequency_bonus | `(count - 1) * 2.0` | `src/memory/patterns.rs:232` |
+| Session events published | SessionCreated, MessageAdded | `src/bus/events.rs:7,21` |
 
-4. **Accurate status tracking**: Many items initially flagged as "pending" were actually already fixed. Plan should accurately reflect current state, not historical claims.
+### Security Notes
+
+- **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
+
+- **Plugin dead code**: `check_and_reset_fuel_budget()`, `PLUGIN_FUEL_BUDGET`, and `PLUGIN_FUEL_LAST_RESET` at `loader.rs:15,24-41` are never called - candidates for removal.
 
 ### CoreRequest Handler Attention Points
 
