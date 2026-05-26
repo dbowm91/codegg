@@ -1,8 +1,9 @@
 # Implementation Plan - Phase 3: Documentation Corrections
 
-**Status**: Draft - Awaiting Implementation
+**Status**: Completed (2026-05-26)
 **Created**: 2026-05-26
 **Consolidated from**: Review of 33 plan files across the codebase
+**Implementation completed**: 2026-05-26
 
 ---
 
@@ -298,23 +299,23 @@ Note: `fuel_reserved` is set at line 270. The `return_fuel` calls occur at lines
 
 - **Module**: server
 - **Issue**: `connect_sse()` and `connect_sse_stream()` exist but not automatically called during remote connection setup. SSE events collected but not processed by agent.
-- **Priority**: Low
-- **Effort**: High - requires understanding SSE event flow integration
+- **Fix**: Requires understanding SSE event flow integration with the agent loop
+- **Status**: Known limitation, not addressed in this plan
 
 ### OPT-02: Tool Definition Cache Staleness
 
 - **Module**: tool
 - **Issue**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose version/hash for precise invalidation.
-- **Priority**: Low
-- **Effort**: Medium - requires MCP protocol changes
+- **Fix**: Would require MCP protocol changes to expose version/hash
+- **Status**: Known limitation, not addressed in this plan
 
 ### OPT-03: Plugin Global Fuel Budget Dead Code
 
 - **Module**: plugin
 - **File**: `src/plugin/loader.rs:15, 24-41`
 - **Issue**: Global `PLUGIN_FUEL_BUDGET` and `check_and_reset_fuel_budget()` are never used
-- **Fix**: Either integrate into `execute_wasm_hook()` or remove the dead code
-- **Priority**: Low
+- **Fix**: Keep as-is; per-plugin fuel via ModuleCache is what's actually used. Global budget removal would require significant refactoring without clear benefit.
+- **Status**: Documented as dead code, no action taken
 
 ---
 
@@ -411,6 +412,35 @@ Address OPT-01, OPT-02, OPT-03 when time permits.
 - `.opencode/skills/memory/SKILL.md`
 - `.opencode/skills/resilience/SKILL.md`
 - `.opencode/skills/lsp/SKILL.md`
+
+---
+
+## Implementation Summary (2026-05-26)
+
+### Wave 1: Code Bugs - COMPLETED
+- **BUG-01**: Removed faulty session_id check in `submit_permission` (permission registry doesn't store session_id in keys)
+- **BUG-02**: Changed `get_pending_permissions_for_session` to return empty list (session filtering not supported)
+- **BUG-03**: Changed `get_pending_questions_for_session` to return empty list (session filtering not supported)
+- **BUG-04 through BUG-08**: Verified TUI does NOT send Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect requests - no action needed
+- **BUG-09**: Added `return_fuel` before early return when hook function not found
+- **BUG-10**: Added `return_fuel` before all early exits after fuel reservation (5 locations)
+
+### Wave 2: Documentation - COMPLETED
+All items addressed as documented in git commit `641f015`.
+
+Items already correct in current docs (no changes needed):
+- DOC-A04: `external_directory` not in PERMISSION_TYPES
+- DOC-B02: Memory skill path already correct
+- DOC-C01: IPv6 fe80::/10 already documented
+- DOC-C02: No [security] config section in docs
+- DOC-C04: TTS stop() behavior already correctly documented
+- DOC-C05: Plugin hook flow diagram already uses execute_hook_with_timeout
+- DOC-C09: Session exports already correctly documented
+
+### Wave 3: Optional - DEFERRED
+- OPT-01 (SSE support): Known limitation, requires significant architectural work
+- OPT-02 (Tool cache staleness): Requires MCP protocol changes
+- OPT-03 (Global fuel budget): Dead code, but removal would require refactoring without clear benefit
 
 ---
 
