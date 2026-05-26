@@ -360,7 +360,7 @@ Each group is independent; agents should pick one group at a time:
 | G | M-7 | Command | normalize_name() documentation | `architecture/command.md` |
 | H | M-8 | Plugin | plugins_dir cross-platform | `architecture/plugin.md` |
 | I | M-9 | Hooks | InlineScript deprecation handling | `src/hooks/mod.rs` OR `architecture/hooks.md` |
-| J | M-11 | Exec | Timeout documentation | `architecture/exec.md` |
+| J | M-11 ✅ | Exec | Timeout documentation | `architecture/exec.md` |
 | K | M-12 | Server | Auth middleware security | `architecture/server.md` |
 | L | M-13 ✅ | Core | Type precision improvements | `architecture/core.md` |
 | M | M-14 ✅ | Tool | ToolExecutor usage docs - CORRECTED | `architecture/tool.md` |
