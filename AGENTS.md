@@ -492,13 +492,6 @@ When adding guidance for a new module:
 - `.opencode/skills/<name>/SKILL.md` - Module-specific skill guides
 - `architecture/<module>.md` - Architecture documentation per module
 
-## Archived Documents
-
-| Document | Status | Notes |
-|----------|--------|-------|
-| `plans/plan.md` | Completed (2026-05-25) | Consolidated plan from 33 review files - all items verified and pruned |
-| `architecture/review_plan.md` | Completed (2026-05-25) | Architecture review phase 3 - all 27 module corrections and skill doc fixes completed |
-
 ## Quick Reference
 
 | Topic | Location |
