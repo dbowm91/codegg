@@ -477,12 +477,26 @@ pub use checkpoint::{
 
 ## Event Publishing
 
-Events are published via `GlobalEventBus` in `src/bus/events.rs`:
+The following events are published via `GlobalEventBus` in `src/bus/events.rs`:
 
-- `SessionCreated` - New session created
-- `MessageAdded` - New message in session
+### Session Events
+- `SessionCreated` - New session created (line 7)
+- `SessionUpdated` - Session metadata was updated (line 9)
+- `SessionArchived` - Session was archived (line 11)
+- `SessionForked` - Session was forked into a new session (line 13)
+- `SessionShared` - Session was shared via URL (line 15)
+- `SessionUnshared` - Session sharing was disabled (line 17)
+- `SessionReverted` - Session was reverted to a previous message (line 19)
 
-Note: `SessionSelected`, `SessionDeleted`, `SessionRenamed` are listed in the architecture but are not currently published as events.
+### Message Events
+- `MessageAdded` - New message in session (line 21)
+- `MessageDeleted` - Message was deleted from the session (line 26)
+
+### NOT Published
+The following events mentioned elsewhere in documentation are **not** published:
+- `SessionSelected`
+- `SessionDeleted`
+- `SessionRenamed`
 
 ## Helper Functions
 
