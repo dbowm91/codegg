@@ -262,6 +262,8 @@ The `execute_wasm_hook()` function returns fuel on ALL early exits after `fuel_r
 6. Timeout → return fuel in the Err(_) match arm
 7. Execution error → return fuel in the Ok(Err(e)) match arm
 
+**Known Issue**: There are fuel leaks at `loader.rs:255-285` in `load_plugin()` where early returns (metadata read failure, size check failure, compilation failure) do NOT call `return_fuel()`. This causes permanent fuel loss from plugin budgets.
+
 ## Fuel Tracking
 
 ### Per-Plugin Fuel Budget
@@ -278,7 +280,8 @@ const WASM_FUEL_PER_HOOK: u64 = 1_000_000;
 - After execution, unused fuel is returned via `ModuleCache::return_fuel()`
 - Returns early if budget exhausted
 - **Important**: `return_fuel()` initializes new plugin entries with `MAX_PLUGIN_FUEL_BUDGET` (not 0) to ensure proper fuel tracking for plugins that haven't been seen before
-- **Fuel leak prevention**: `return_fuel()` is called on ALL exit paths (success, error, and early returns) to prevent fuel leaks
+- **Fuel leak prevention**: `return_fuel()` is called on ALL exit paths in `execute_wasm_hook()` (success, error, and early returns) to prevent fuel leaks
+- **Known issue**: `load_plugin()` at `loader.rs:255-285` has fuel leaks on early error returns (metadata failure, size check failure, compilation failure)
 
 ## WASM Module Caching
 
