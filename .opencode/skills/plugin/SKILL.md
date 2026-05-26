@@ -1,7 +1,7 @@
 ---
 name: plugin
 description: Plugin system, WASM execution, hooks, fuel tracking
-version: 1.1.0
+version: 1.2.0
 tags:
   - plugin
   - wasm
@@ -252,6 +252,16 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
 - Hook function names: `on_auth`, `on_provider`, `on_tool_execute_before`, etc.
 - Hook returns JSON: `{"output": {...}, "blocked": false, "error": null}`
 
+**Fuel Leak Prevention**:
+The `execute_wasm_hook()` function returns fuel on ALL early exits after `fuel_reserved` is set:
+1. Hook function not found → return fuel before returning HookResult::ok
+2. No memory export → return fuel before returning error
+3. No allocate function → return fuel before returning error
+4. Allocate returned no value → return fuel before returning error
+5. Input exceeds memory bounds → return fuel before returning error
+6. Timeout → return fuel in the Err(_) match arm
+7. Execution error → return fuel in the Ok(Err(e)) match arm
+
 ## Fuel Tracking
 
 ### Global Fuel Budget
@@ -273,6 +283,7 @@ const FUEL_RESET_INTERVAL_SECS: u64 = 60;
 - Budget resets every 60 seconds via `check_and_reset_fuel_budget()`
 - Returns early if budget exhausted
 - **Important**: `return_fuel()` initializes new plugin entries with `MAX_PLUGIN_FUEL_BUDGET` (not 0) to ensure proper fuel tracking for plugins that haven't been seen before
+- **Fuel leak prevention**: `return_fuel()` is called on ALL exit paths (success, error, and early returns) to prevent fuel leaks
 
 ## WASM Module Caching
 
