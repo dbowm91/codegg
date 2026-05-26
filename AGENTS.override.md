@@ -71,11 +71,14 @@ When implementing code changes in parallel using worktrees:
 - Always instantiated: `model_dialog`, `agent_dialog`, `session_dialog`, `tree_dialog`, `command_palette`
 - On-demand (Option<T>): all others including `theme_picker`, `question_dialog`, `permission_dialog`, `keybind_dialog`, `mcp_dialog`
 
----
+### TTS Keybindings
+- Ctrl+Y: Toggle TTS playback
+- Ctrl+Shift+Y: Stop TTS playback
+- (Verified from tts.md review - may need verification against actual TUI keybinding implementation)
 
-## Helpful Patterns for Future Agents
+### Helpful Patterns for Future Agents
 
-### Batch Review Pattern
+#### Batch Review Pattern
 ```
 Parent Agent:
   1. Launch subagent batch 1 (4-5 plan files) → temp_consolidated_1.md
@@ -86,37 +89,27 @@ Parent Agent:
   6. Clean up temp files
 ```
 
-### Parallel Implementation Pattern
+#### Parallel Implementation Pattern
 ```
-Phase 1 (Sequential - Code Bugs):
-  - Fix plugin fuel leaks (loader.rs:259,270,285)
-  - Fix CoreEvent mapping (core/mod.rs:728-797)
+Wave 1 (Parallel - 2 agents):
+  - W1-1: Fix plugin fuel leaks (loader.rs:259,270,285,403)
+  - W1-2: Fix CoreEvent mapping (core/mod.rs:728-797)
 
-Phase 2 (Parallel - Documentation):
-  - Each agent takes 5-6 modules
-  - Run 6 agents in parallel
-  - Verify each module compiles/builds
+Wave 2 (Parallel - Documentation):
+  - Each agent takes one documentation fix
+  - Run 7 agents in parallel
+  - Verify each compiles/builds
 ```
 
----
+#### SessionCompacting Hook Verification
+- DON'T trust claims that "dispatch_session_compacting not found in loop.rs"
+- The hook IS dispatched via `dispatch_hook(ctx)` with `HookType::SessionCompacting` at loop.rs:1197-1201
+- The convenience wrapper `dispatch_session_compacting()` exists but AgentLoop uses the generic method
 
-## Key Insights from Review Sessions
-
-1. **Only confirmed documentation count error was TUI theme count** - comment said 42 but only 31 themes defined
-
-2. **Many review claims were WRONG** - current code was already correct:
-   - Dialog count: 21 is CORRECT (not 22/23)
-   - LSP language count: 41 is correct (not 44+)
-   - Tool count: 26 is CORRECT (not 33+)
-   - Hook types: 6 HookEvent variants (not 13)
-   - Command count: doc already says 41 (not 36)
-   - UiState: All documented fields ARE present (tts, tts_enabled, fullscreen, dirty_regions, render_panic_count, last_render_error)
-
-3. **Documentation Fix Approach**
-   - Read the CURRENT architecture doc first to check need before fixing
-   - Then read the actual source code to verify counts/claims
-   - Only fix if there's a real discrepancy
-   - Don't trust review file claims without verification
+#### Provider Auto-Registration
+- Only `codegg_go` is auto-registered via `register_builtin()`
+- SAP AI Core, Zenmux, Kilo, Vercel AI Gateway are config-only, NOT auto-registered
+- Check `src/provider/mod.rs:register_builtin_with_config()` for details
 
 ---
 
@@ -124,7 +117,8 @@ Phase 2 (Parallel - Documentation):
 
 | Bug | Location | Description |
 |-----|----------|-------------|
-| Plugin fuel leaks | `src/plugin/loader.rs:255-285` | `module_cache::CACHE.return_fuel()` not called on early exits at lines 259, 270, 285 |
+| Plugin fuel leaks | `src/plugin/loader.rs:255-285` | `module_cache::CACHE.return_fuel()` not called on early exits at lines 259, 270, 285, 403 |
 | CoreEvent mapping | `src/core/mod.rs:728-797` | Subagent* events dropped via `_ => None` in `map_app_event_to_core_event` |
+| Hash algorithm | `src/snapshot/mod.rs:142` | Uses MD5 instead of SHA256 (inconsistent with checkpoint.rs) |
 
 *(End of file)*

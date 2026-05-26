@@ -132,10 +132,24 @@ These items were verified during review sessions:
 | CoreEvent has subagent variants | SubagentStarted, SubagentCompleted | `src/protocol/core.rs:244,256` |
 | map_app_event_to_core_event | Maps TextDelta, ReasoningDelta, ToolCallStarted, ToolResult, PermissionPending, QuestionPending, AgentFinished, Error | `src/core/mod.rs:728-797` |
 | map_app_event_to_core_event | Subagent events NOT mapped (falls through to None) | `src/core/mod.rs:795` |
+| SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1197-1201` |
+| hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
+| Backoff formula | `2^(i-1) * jitter` (NOT `2^i`) | `src/resilience/backoff.rs` |
+| Protocol version | 1 | `src/protocol/core.rs:3` |
+| Hash algorithm | checkpoint uses SHA256, snapshot uses MD5 | `src/session/checkpoint.rs`, `src/snapshot/mod.rs` |
 
 ### Security Notes
 
 - **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
+
+### Verified Codebase Facts (Additional)
+
+| Item | Value | Location |
+|------|-------|----------|
+| Backoff formula | `2^(i-1) * jitter` (NOT `2^i`) | `src/resilience/backoff.rs` |
+| HalfOpen→Open timeout | 30s default via `max_half_open_duration` | `src/resilience/circuit.rs:66` |
+| Hook timeout | 5s outer dispatch, 30s inner WASM | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
+| Protocol version | 1 | `src/protocol/core.rs:3` |
 
 ### CoreRequest Handler Attention Points
 
