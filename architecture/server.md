@@ -125,10 +125,11 @@ Auth validation via `validate_ws_auth()` shared between both handlers.
 |--------|------|-------------|
 | GET | `/api/event` | SSE event stream |
 
-#### Permission Routes (`/api/permission/:session_id`)
+#### Permission Routes
 | Method | Path | Description |
 |--------|------|-------------|
-| GET, POST | `/api/permission/:session_id` | GET (pending permissions), POST (submit response) |
+| GET | `/api/permission/:session_id` | Get pending permissions |
+| POST | `/api/permission/:session_id/submit` | Submit permission response |
 
 #### Question Routes (`/api/question/:session_id`)
 | Method | Path | Description |
