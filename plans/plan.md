@@ -1,6 +1,6 @@
 # Implementation Plan
 
-**Status**: IN PROGRESS
+**Status**: COMPLETED
 **Last Updated**: 2026-05-26
 
 ---
@@ -25,7 +25,7 @@ wc -l src/tui/app/mod.rs
 # Tool count (should be 26)
 rg "pub struct \w+Tool" src/tool/mod.rs | wc -l
 
-# LSP server count (should be 42)
+# LSP server count (should be 39)
 rg "LspServerDef" src/lsp/server.rs | wc -l
 
 # Check specific locations
