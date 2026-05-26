@@ -32,7 +32,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `plugin/` | WASM plugin system with hooks and TUI extensions |
 | `provider/` | LLM provider implementations (Anthropic, OpenAI, Google, etc.) |
 | `protocol/` | Shared `CoreRequest`/`CoreResponse` and `TuiMessage` protocol envelopes |
-| `pty_session/` | Shell session metadata management (in-memory, no actual PTY) |
+| `shell_session/` | Shell session metadata management (in-memory, no actual PTY) |
 | `resilience/` | Circuit breaker, retry mechanisms, and rate limiting |
 | `security/` | SSRF protection, internal IP validation, Landlock sandboxing |
 | `server/` | HTTP server (Axum) with WebSocket support for remote TUIs and replay buffering |
@@ -214,7 +214,7 @@ These items were verified during review sessions:
 ├── permission/         # PermissionChecker, DoomLoop, PermissionRegistry
 ├── plugin/             # WASM plugin system
 ├── provider/           # LLM provider implementations
-├── pty/                # Shell session metadata
+├── shell_session/    # Shell session metadata
 ├── question-response/  # Question/permission response shapes
 ├── resilience/          # Circuit breaker, FallbackProvider
 ├── router/             # Model auto-routing
@@ -259,7 +259,7 @@ When adding guidance for a new module:
 
 | Topic | Location |
 |-------|----------|
-| PTY (shell session metadata) | `.opencode/skills/pty/SKILL.md` |
+| Shell Session (shell session metadata) | `.opencode/skills/shell_session/SKILL.md` |
 | Agent (AgentLoop, compaction, router, team) | `.opencode/skills/agent-loop/SKILL.md` |
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
 | TUI (keyboard shortcuts, FocusManager, Component trait) | `.skills/tui/SKILL.md` |
