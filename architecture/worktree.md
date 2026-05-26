@@ -39,10 +39,10 @@ Creates a new worktree. If `create_branch` is true, passes `-b` to create a new 
 ### remove_worktree()
 
 ```rust
-pub fn remove_worktree(git_root: &Path, path: &Path) -> Result<(), AppError>
+pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), AppError>
 ```
 
-Removes a worktree via `git worktree remove`. Note: Does not support a `force` parameter.
+Removes a worktree via `git worktree remove`. Pass `force=true` to use the `--force` flag, which removes a worktree even if it has untracked or modified files.
 
 ### find_git_root()
 
@@ -98,8 +98,11 @@ if let Some(git_root) = find_git_root(&some_path) {
     // Create a new worktree
     create_worktree(&git_root, &Path::new("/path/to/new"), "feature-branch", true)?;
 
-    // Remove a worktree
-    remove_worktree(&git_root, &Path::new("/path/to/new"))?;
+    // Remove a worktree (force=false)
+    remove_worktree(&git_root, &Path::new("/path/to/new"), false)?;
+
+    // Or force removal even with untracked/modified files
+    remove_worktree(&git_root, &Path::new("/path/to/new"), true)?;
 
     // Check if a directory is a worktree
     if is_git_worktree(&Path::new("/some/dir")) {

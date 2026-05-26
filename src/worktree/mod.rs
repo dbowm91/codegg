@@ -137,10 +137,14 @@ pub fn create_worktree(
     Ok(())
 }
 
-pub fn remove_worktree(git_root: &Path, path: &Path) -> Result<(), AppError> {
+pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), AppError> {
     let path_str = path.to_string_lossy().to_string();
+    let mut args = vec!["worktree", "remove", &path_str];
+    if force {
+        args.push("--force");
+    }
     let output = Command::new("git")
-        .args(["worktree", "remove", &path_str])
+        .args(&args)
         .current_dir(git_root)
         .output()
         .map_err(|e| AppError::Worktree(format!("failed to remove worktree: {e}")))?;

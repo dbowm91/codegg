@@ -129,7 +129,7 @@ fn test_create_and_remove_worktree() {
         "created worktree not found in list"
     );
 
-    remove_worktree(&repo_dir, &wt_dir).expect("remove_worktree failed");
+    remove_worktree(&repo_dir, &wt_dir, false).expect("remove_worktree failed");
     let trees_after_remove = list_worktrees(&repo_dir).expect("list_worktrees after remove failed");
     assert!(
         !trees_after_remove
