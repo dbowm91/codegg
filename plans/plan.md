@@ -147,14 +147,14 @@ Missing documentation for validations that exist in code:
 
 **Status**: COMPLETE - committed as `bf4decd`
 
-### M-3: IDE Module Documentation
+### M-3: IDE Module Documentation ✅
 **Source**: `plans/ide_review.md`
 
-1. **Temp file timing**: Doc says temp files dropped BEFORE IDE invocation but actually dropped AFTER (at `mod.rs:168-169,253`)
-2. **register_panic_cleanup**: Not documented at `src/ide/mod.rs:65-78`
-3. **TempFilesGuard**: Not documented - implements Drop to clean up temp files
+1. **Temp file timing**: Doc said temp files dropped BEFORE IDE invocation but actually dropped AFTER - fixed
+2. **register_panic_cleanup**: Added documentation at `src/ide/mod.rs:65-78`
+3. **TempFilesGuard**: Added documentation - implements Drop to clean up temp files
 
-**Action**: Fix temp file timing documentation, add missing function documentation
+**Status**: COMPLETE - committed as `123c90d`
 
 ### M-4: Provider Error Retry Status
 **Source**: `plans/provider_review.md`
@@ -193,11 +193,13 @@ Missing documentation for validations that exist in code:
 - **Issue**: `InlineScript` at `src/hooks/mod.rs:181-184` is deprecated dead code with `#[allow(deprecated)]` but undocumented
 - **Action**: Either document it as deprecated or remove the dead code
 
-### M-10: IDE open_diff_generic Indentation
+### M-10: IDE open_diff_generic Indentation ✅
 **Source**: `plans/ide_review.md`
 
 - **Issue**: Lines 302-311 have questionable indentation around guard drop placement
-- **Action**: Review and fix if needed
+- **Action**: Reviewed indentation - code uses consistent 4-space indentation throughout, no fix needed
+
+**Status**: COMPLETE - committed with M-3 as `123c90d`
 
 ### M-11: Exec Timeout Documentation
 **Source**: `plans/exec_review.md`
