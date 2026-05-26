@@ -146,7 +146,7 @@ The `record_failure()` method (circuit.rs):
 - Checks `is_available()` before calling provider
 - Records success/failure after each call
 - Exponential backoff between providers: `2^i` seconds (i=0→1s, i=1→2s, i=2→4s...), capped at 30s
-- HalfOpen→Open timeout: 30s default via `max_half_open_duration` (circuit.rs:66,116)
+- HalfOpen→Open timeout: 30s default via `max_half_open_duration`
 
 ## See Also
 
