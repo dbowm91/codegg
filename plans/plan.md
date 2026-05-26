@@ -87,7 +87,7 @@ rg "check_and_reset_fuel_budget" src/plugin/loader.rs
 - **Reality**: BOTH plugin hooks (`dispatch_tool_execute_before/after`) AND HookRegistry hooks (`PreToolExecute`/`PostToolExecute`) ARE invoked for each tool execution, but at DIFFERENT locations
 - **Action**: Clarify that both hook systems are invoked; update or remove specific line numbers (they're fragile)
 
-**Status**: Documentation clarification
+**Status**: COMPLETED (see commit b948665)
 
 ### H-6: Plugin Dead Code Removal
 **Source**: `plans/plugin_review.md`
@@ -326,7 +326,7 @@ Items are organized into waves that can be executed in parallel by different age
 | 2 | H-2 | Tool | Tool count correction | `architecture/tool.md` |
 | 3 | H-3 | LSP | Server count correction | `architecture/lsp.md` |
 | 4 | H-4 | Permission | PermissionResponse, mode tables | `architecture/permission.md` |
-| 5 | H-5 | Agent | Hook invocation clarification | `architecture/agent-loop.md` |
+| 5 | H-5 | Agent | Hook invocation clarification | `architecture/agent.md` |
 | 6 | H-6 | Plugin | Dead code removal | `src/plugin/loader.rs`, `architecture/plugin.md` |
 | 7 | H-7 | Provider | ToolDefinition comment, API | `architecture/provider.md` |
 | 8 | H-8 | Session | Event publishing clarification | `architecture/session.md` |
