@@ -123,15 +123,14 @@ These items were verified during review sessions:
 | PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | NOT integrated - exists but unused | `architecture/tool.md:205` |
-| Plugin fuel logic | Has leaks on early error returns | `src/plugin/loader.rs:255-285` |
-| CoreEvent mapping | Incomplete - many events dropped | `src/core/mod.rs:728-797` |
+| Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
+| CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
 | UiState fields | All documented fields present | `src/tui/app/state/ui.rs:27-74` |
 | Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
 | CoreEvent has subagent variants | SubagentStarted, SubagentCompleted | `src/protocol/core.rs:244,256` |
-| map_app_event_to_core_event | Maps TextDelta, ReasoningDelta, ToolCallStarted, ToolResult, PermissionPending, QuestionPending, AgentFinished, Error | `src/core/mod.rs:728-797` |
-| map_app_event_to_core_event | Subagent events NOT mapped (falls through to None) | `src/core/mod.rs:795` |
+| map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
 | SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1197-1201` |
 | hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
 | Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
