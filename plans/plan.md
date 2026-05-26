@@ -94,8 +94,7 @@ The implementation is organized into **5 waves** to maximize parallel work:
 
 ## Wave 0: Quick Wins (Under 2 Hours Each)
 
-**Status**: ✅ COMPLETE (items QW-3 through QW-12 completed via PRs #7, #8, #9, #10, #11, #13, #15)
-**Remaining Items**: QW-13, QW-14, QW-15
+**Status**: ✅ COMPLETE (items QW-3 through QW-15 completed via PRs #7, #8, #9, #10, #11, #13, #15, #52, #53, #54)
 
 The remaining items below are small, independent, and can be done in parallel by multiple agents.
 
@@ -103,6 +102,7 @@ The remaining items below are small, independent, and can be done in parallel by
 - **File**: `src/permission/mod.rs:1162-1231`
 - **Action**: Replace `VecDeque` iteration with `HashMap<String, usize>` for count tracking
 - **Impact**: Changes O(n) to O(1) for doomloop detection
+- **Status**: ✅ Already implemented - verified O(1) HashMap lookups in place
 
 ### QW-14: Rename PTY Module (15 min)
 - **Files**: `src/pty_session/`, `docs/ARCHITECTURE.md`, `src/lib.rs`
@@ -112,6 +112,7 @@ The remaining items below are small, independent, and can be done in parallel by
   2. Rename `pub mod pty_session` to `pub mod shell_session` in `src/lib.rs`
   3. Update all imports throughout codebase
   4. Update documentation references
+- **Status**: ✅ COMPLETED PR #52 - renamed to shell_session, all structs renamed
 
 ### QW-15: Fix Worktree is_current/is_detached (30 min)
 - **Files**: `src/worktree/mod.rs:36-56`
@@ -119,6 +120,7 @@ The remaining items below are small, independent, and can be done in parallel by
   1. Parse HEAD line to detect current worktree
   2. Set `is_detached=true` when HEAD points to commit (not branch)
   3. Consider using `git worktree list --porcelain` for more reliable detection
+- **Status**: ✅ COMPLETED PR #53 - improved is_current detection with symlink support
 
 ---
 
@@ -896,7 +898,7 @@ cargo test --package codegg -- <module>_test_pattern
 | TUI Input Repair (Completed 2026-05-01) | ✅ |
 | TUI Scrolling Fix (Completed 2026-05-06) | ✅ |
 | TUI Message Flow (Completed 2026-05-05) | ✅ |
-| Wave 0: Quick Wins | ✅ COMPLETE (except QW-13, QW-14, QW-15) |
+| Wave 0: Quick Wins | ✅ COMPLETE (QW-13, QW-14, QW-15 done via PRs #52, #53, #54) |
 | Wave 1: Critical Security | ✅ COMPLETE |
 | Wave 2: High-Priority | ✅ COMPLETE |
 | Wave 3: Medium-Priority | ✅ COMPLETE |
@@ -912,7 +914,7 @@ cargo test --package codegg -- <module>_test_pattern
 
 ## Implementation Completed (2026-05-06)
 
-### Wave 0: Quick Wins
+### Wave 0: Quick Wins (Remaining)
 | PR | Item | Status | Notes |
 |----|------|--------|-------|
 | #7 | QW-3: Duplicate handle_slash_command | ✅ | Removed duplicate implementations |
@@ -925,6 +927,9 @@ cargo test --package codegg -- <module>_test_pattern
 | N/A | QW-7: Content hash | ✅ | Already implemented in QW-9 |
 | N/A | QW-6: DeniedTools audit log | ✅ | Already existed in tool/mod.rs |
 | N/A | QW-7: DB pool size | ✅ | Already standardized to 10 |
+| N/A | QW-13: DoomLoop O(1) | ✅ | Already implemented - HashMap O(1) lookups verified |
+| #52 | QW-14: Rename PTY to shell_session | ✅ | Renamed module, structs, updated docs |
+| #53 | QW-15: Worktree is_current fix | ✅ | Improved symlink handling for is_current detection |
 
 ### Wave 1: Critical Security
 | PR | Item | Status | Notes |
@@ -958,8 +963,14 @@ cargo test --package codegg -- <module>_test_pattern
 
 ### Diversions from Plan
 1. **QW-12 (Content hash)** - Already implemented, merged with QW-9
-2. **QW-14 (PTY rename)** - NOT YET DONE - module still `src/pty_session/`, needs renaming to `src/shell_session/`
+2. **QW-14 (PTY rename)** - ✅ COMPLETED via PR #52 - renamed to shell_session
 3. **HIGH-3 (block_on)** - Not found in codebase, already using tokio::spawn
+
+### Wave 0 Completion (2026-05-26)
+All Wave 0 items now complete:
+- QW-13: Already had O(1) HashMap implementation verified
+- QW-14: Renamed pty_session → shell_session (PR #52)
+- QW-15: Fixed is_current detection with symlink support (PR #53)
 
 ---
 
