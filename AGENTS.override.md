@@ -73,6 +73,16 @@
 - `run_stdio()` uses `tokio::io::stdin()/stdout()` with `AsyncBufReadExt` and `AsyncWriteExt`
 - NOT blocking `std::io` as older docs may claim
 
+### Theme Count Bug (Verified)
+- `src/tui/theme.rs:8` comment says "42 built-in themes" 
+- But only 31 ThemeData entries actually exist in THEMES array (lines 102-630)
+- This is the only confirmed doc count error to fix
+
+### TUI Dialog State (Verified)
+- `tree_dialog` and `command_palette` are always instantiated (not on-demand as docs say)
+- `help_dialog` and `info_dialog` are on-demand (not optional as docs say)
+- Corresponds to `src/tui/app/state/dialog.rs`
+
 ---
 
 ## Helpful Patterns for Future Agents
@@ -100,3 +110,39 @@ Phase 2 (Parallel - Documentation):
   - Run 6 agents in parallel
   - Verify each module compiles/builds
 ```
+
+---
+
+## Findings from 2026-05-26 Plan Review Session
+
+### Verified Bugs (Confirmed by Direct Code Inspection)
+
+1. **BUG-01** (permission.rs:27): Session ID mismatch check is broken - splits on wrong format
+2. **BUG-02** (permission.rs:65-90): `get_pending_permissions_for_session()` ignores session_id
+3. **BUG-03** (question.rs:63-73): `get_pending_questions_for_session()` filter compares IDs to session_id
+4. **BUG-04-08** (core/mod.rs:698): Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect fall through to Ack
+5. **BUG-09** (loader.rs:344-354): Fuel not returned when hook function not found
+6. **BUG-10** (loader.rs:356-409): Fuel not returned on 4 early error paths
+
+### Claims in Review Files that Were WRONG
+
+Many review files claimed documentation was wrong, but current code was already correct:
+
+1. **Dialog count**: Review said 21 should be 22/23 - but 21 is CORRECT
+2. **LSP language count**: Review said 44+ should be 43+ - but actual is 41 and doc says 41+
+3. **Tool count**: Review said 33+ should be 27+ - but 26 and doc says 26
+4. **Hook types**: Review said 10 should be 13 - but actual is 6 HookEvent variants (Plugin has 13 HookType variants)
+5. **Command count**: Review said 36 but doc already says 41
+6. **LSP skill count**: Review said 42 but actual is 41 and skill doc says 41
+
+### Key Insight
+
+**The only confirmed documentation count error is the TUI theme count** - comment says 42 but only 31 themes defined.
+
+### Documentation Fix Approach
+
+When implementing documentation fixes:
+1. Read the CURRENT architecture doc first to check if fix is needed
+2. Then read the actual source code to verify counts/claims
+3. Only fix if there's a real discrepancy
+4. Don't trust review file claims without verification
