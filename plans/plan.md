@@ -127,7 +127,7 @@ rg "check_and_reset_fuel_budget" src/plugin/loader.rs
 
 ## MEDIUM Priority Items
 
-### M-1: Config Validation Documentation
+### M-1: Config Validation Documentation ✅ COMPLETED
 **Source**: `plans/config_review.md`
 
 Missing documentation for validations that exist in code:
@@ -351,7 +351,7 @@ Each group is independent; agents should pick one group at a time:
 
 | Group | Items | Module | Description | Files to Modify |
 |-------|-------|--------|-------------|-----------------|
-| A | M-1 | Config | Missing validation docs | `architecture/config.md` |
+| A | M-1 ✅ | Config | Missing validation docs → DOCUMENTED | `architecture/config.md` |
 | B | M-2 | Memory | frequency_bonus, file locking, namespace | `architecture/memory.md` |
 | C | M-3, M-10 | IDE | Temp file timing, indentation | `architecture/ide.md`, `src/ide/mod.rs` |
 | D | M-4 | Provider | Already verified - no action needed | - |
