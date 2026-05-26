@@ -167,6 +167,11 @@ Missing documentation for validations that exist in code:
 
 - **Issue**: "Used by" list (webfetch, websearch, codesearch, mcp/remote) may be incomplete
 - **Action**: Verify against actual tool implementations
+- **Status**: COMPLETE - Verified all actual consumers with file:line refs:
+  - `webfetch` uses `validate_url_host` at `src/tool/webfetch.rs:90`
+  - `websearch` uses `validate_host_ip` at `src/tool/websearch.rs:58` and `revalidate_dns` at `src/tool/websearch.rs:68`
+  - `codesearch` uses `validate_host_ip` at `src/tool/codesearch.rs:86` and `revalidate_dns` at `src/tool/codesearch.rs:99`
+  - `mcp/remote` uses `validate_url_host` at `src/mcp/remote.rs:400` and `validate_host_ip` at `src/mcp/remote.rs:407`
 
 ### M-6: LSP Completion Fallback Behavior
 **Source**: `plans/lsp_review.md`
@@ -355,7 +360,7 @@ Each group is independent; agents should pick one group at a time:
 | B | M-2 ✅ | Memory | COMPLETE - frequency_bonus formula added | `architecture/memory.md` |
 | C | M-3, M-10 | IDE | Temp file timing, indentation | `architecture/ide.md`, `src/ide/mod.rs` |
 | D | M-4 | Provider | Already verified - no action needed | - |
-| E | M-5 | Security | "Used by" list verification | `architecture/security.md` |
+| E | M-5 ✅ | Security | COMPLETE - "Used by" list verified with file:line refs | `architecture/security.md` |
 | F | M-6 | LSP | Completion fallback clarification | `architecture/lsp.md` |
 | G | M-7 | Command | normalize_name() documentation | `architecture/command.md` |
 | H | M-8 | Plugin | plugins_dir cross-platform | `architecture/plugin.md` |
