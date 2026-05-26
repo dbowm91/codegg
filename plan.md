@@ -1,7 +1,7 @@
 # Implementation Plan
 
 **Status**: IN PROGRESS
-**Last Updated**: 2026-05-06
+**Last Updated**: 2026-05-26
 
 ---
 
@@ -857,15 +857,16 @@ cargo test --package codegg -- <module>_test_pattern
 | TUI Input Repair (Completed 2026-05-01) | ✅ |
 | TUI Scrolling Fix (Completed 2026-05-06) | ✅ |
 | TUI Message Flow (Completed 2026-05-05) | ✅ |
-| Wave 0: Quick Wins | ⏳ PENDING |
-| Wave 1: Critical Security | ⏳ PENDING |
-| Wave 2: High-Priority | ⏳ PENDING |
-| Wave 3: Medium-Priority | ⏳ PENDING |
+| Wave 0: Quick Wins | ✅ COMPLETE |
+| Wave 1: Critical Security | ✅ COMPLETE |
+| Wave 2: High-Priority | ✅ COMPLETE |
+| Wave 3: Medium-Priority | ✅ COMPLETE |
 | Wave 4: Large Refactors | ⏳ DEFERRED |
 | TUI Enhancement Features | ⏳ SKIPPED |
 | Agent Capability Features | ✅ PARTIAL (AGENT-2, AGENT-3 done via PR #33) |
 | Mode/Exec Features | ✅ COMPLETE (MODE-1, EXEC-1 done via PR #33) |
 | Plugin Marketplace | ✅ COMPLETE (PLUGIN-1 done via PR #33) |
+| Architecture Review Items (2026-05-26) | ⏳ NEW - ~55 items |
 | Documentation | ⏳ FUTURE |
 
 ---
@@ -928,6 +929,7 @@ cargo test --package codegg -- <module>_test_pattern
 | Metric | Value |
 |--------|-------|
 | Waves 0-3 Completed | ✅ All (via 25+ PRs) |
+| Architecture Review Items | ~55 new items (ARCH-1 to ARCH-3) |
 | Future Features | ~15 items remaining |
 | PRs Created (Waves 0-3 + Features) | 33 |
 | Wave 4 (Large Refactors) | ⏳ DEFERRED |
@@ -935,7 +937,7 @@ cargo test --package codegg -- <module>_test_pattern
 | Agent Capabilities | ✅ Partial (2/8 done) |
 | Mode/Exec Features | ✅ Complete (MODE-1, EXEC-1) |
 | Plugin Marketplace | ✅ Complete (PLUGIN-1) |
-| Documentation | ⏳ FUTURE
+| Documentation | ⏳ FUTURE |
 
 ---
 

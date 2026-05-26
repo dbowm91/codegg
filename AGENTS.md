@@ -86,7 +86,7 @@ These items are important for future agents to know when working with the codeba
 
 - **Subprocess PATH**: All tools use `std::env::var_os("PATH")` instead of hardcoded paths for proper Homebrew/cargo/pyenv tool discovery
 
-- **Plugin fuel tracking**: `fuel_reserved` set at `loader.rs:270` is returned via `module_cache::CACHE.return_fuel()` on normal exits, BUT there are fuel leaks on early error returns at `loader.rs:255-285` where early returns do NOT call `return_fuel()`
+- **Plugin fuel tracking**: `fuel_reserved` set at `loader.rs:270` is returned via `module_cache::CACHE.return_fuel()` on normal exits. Early error returns at `loader.rs:255-285` also correctly return fuel.
 
 - **handle_remote_event location**: `src/tui/app/mod.rs:794` - not in client module
 
@@ -97,6 +97,22 @@ These items are important for future agents to know when working with the codeba
 - **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
 
 - **Tool definition cache staleness**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
+
+- **ToolExecutor exists but unused**: `src/tool/executor.rs:8` has retry logic but is never called in the tool execution flow.
+
+- **TTS init ignores providers**: `src/tts/mod.rs:45-49` silently accepts non-`None` providers without warning.
+
+- **TTS stop() silent failure**: `src/tts/mod.rs:85-103` returns `Ok(())` even when `pkill say` fails.
+
+- **PermissionResponse unused**: `src/permission/mod.rs:1141-1145` defines a struct not used internally.
+
+- **check_external_directory unused**: `src/permission/mod.rs:1237-1248` marked `#[allow(dead_code)]`, never called.
+
+- **Static CANONICAL_PATHS_CACHE never clears**: `src/security/sandbox.rs:237` - if allowed paths change at runtime, cache won't reflect changes.
+
+- **Histogram unbounded memory growth**: `src/util/metrics.rs:122-124` - only `pop_front()` at 1000 per name, but no limit on unique names.
+
+- **Worktree symlink detection issue**: `src/worktree/mod.rs:69-88` - current worktree detection via canonicalization may fail with symlinked directories.
 
 ### Key Lessons from Review Sessions
 
@@ -112,6 +128,14 @@ These items are important for future agents to know when working with the codeba
 
 6. **Use subagents for batch review work** - Process 4-5 plan files per subagent (2000 line context limit), consolidate results, then consolidate into final plan.
 
+7. **Subagent events ARE mapped** - Architecture docs may claim they're not mapped in `map_app_event_to_core_event`, but the code at `src/core/mod.rs:795-838` shows all 4 subagent events ARE mapped.
+
+8. **Client backoff is (1s, 2s, 4s)** - Not (2s, 4s) as some docs claim. At `src/client/attach.rs:39`: `2u64.saturating_pow((attempt - 1) as u32)` gives attempt 1→1s, 2→2s, 3→4s.
+
+9. **.skills/ directory is documentation-only** - Runtime only loads from `~/.config/codegg/skills/` and `.codegg/skills/`, NOT `.skills/` at repo root.
+
+10. **Permission route is /submit** - Server docs may show `POST /api/permission/:session_id` but actual route is `/api/permission/:session_id/submit`.
+
 ### Verified Codebase Facts
 
 These items were verified during review sessions:
@@ -122,7 +146,7 @@ These items were verified during review sessions:
 | LSP server count | 39 | `src/lsp/server.rs:27-385` |
 | PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
-| ToolExecutor | NOT integrated - exists but unused | `architecture/tool.md:205` |
+| ToolExecutor | NOT integrated - exists but unused | `src/tool/executor.rs:8` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
@@ -134,8 +158,13 @@ These items were verified during review sessions:
 | SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1197-1201` |
 | hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
 | Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
+| Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
-| Hash algorithm | Both use SHA256 | `src/session/checkpoint.rs`, `src/snapshot/mod.rs` |
+| AppEvent count | 34 (not 36) | `src/bus/events.rs:5-147` |
+| Built-in command count | 39 (not 41) | `src/tui/command.rs:79-161` |
+| ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
+| Timeline fields location | `timeline_visible` and `timeline_selected` are in `App` struct, NOT `UiState` | `src/tui/app/mod.rs:232-233` |
+| Snapshot hash inconsistency | `collect_files_sync` uses MD5 for non-empty files, SHA256 elsewhere | `src/snapshot/mod.rs:431` |
 
 ### Security Notes
 

@@ -38,10 +38,22 @@ When implementing code changes in parallel using worktrees:
 - InprocCoreClient handlers at `src/core/mod.rs:52-355` handle: TurnSubmit, SessionMessagesLoad, SessionMessageCounts, SessionCreate, SessionLoad, SessionAttach, etc.
 - Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - TUI does not send these requests, so `Ack` is intentional
 
-### Plugin Fuel System
-- Fuel reserved at `src/plugin/loader.rs:245` with `reserve_fuel()`
-- Fuel returned via `module_cache::CACHE.return_fuel(plugin_id, fuel)` on clean exit paths
-- All early error returns now correctly return fuel (fixed dead code at line 407)
+## Notes from Architecture Review Session (2026-05-26)
+
+### General Lessons
+1. **Always verify documentation claims against actual code** before accepting them as truth
+2. **Counts in documentation drift** - verify tool counts, command counts, event counts against source
+3. **Use subagents for batch review work** with 4-5 files per subagent to avoid context compaction
+4. **Client backoff is (1s, 2s, 4s)** not (2s, 4s) as some docs claim based on `2u64.saturating_pow((attempt - 1) as u32)`
+5. **.skills/ directory is documentation-only** - runtime only loads from `~/.config/codegg/skills/` and `.codegg/skills/`
+6. **Permission route is /submit** not /:session_id despite what some docs show
+
+### Critical Code Findings
+- ToolDefCache at `src/agent/loop.rs:60-67` is `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - contains `lsp_enabled` field
+- 39 built-in commands (not 41) at `src/tui/command.rs:79-161`
+- 34 AppEvent variants (not 36) at `src/bus/events.rs:5-147`
+- timeline_visible and timeline_selected are in `App` struct, NOT `UiState` at `src/tui/app/mod.rs:232-233`
+- Snapshot hash inconsistency confirmed - MD5 used at mod.rs:431, SHA256 elsewhere
 
 ### CoreEvent Mapping
 - `map_app_event_to_core_event()` at `src/core/mod.rs` properly maps all events
@@ -113,9 +125,35 @@ Wave 2 (Parallel - Documentation):
 
 ## Current Active Bugs
 
-No known active bugs. Previous issues have been resolved:
-- Plugin fuel leaks: Fixed (dead code removal at loader.rs:407)
-- CoreEvent mapping: Fixed (subagent events now properly mapped)
-- Hash algorithm: Fixed (snapshot now uses SHA256 like checkpoint)
+The following issues were identified during architecture review (2026-05-26):
+
+### High Priority - Code Bugs
+| Bug | Location | Description |
+|-----|----------|-------------|
+| Snapshot hash inconsistency | `src/snapshot/mod.rs:431` | Uses MD5 for non-empty files, SHA256 elsewhere |
+| ToolExecutor unused | `src/tool/executor.rs:8` | Exists with retry logic but never integrated |
+| Static cache never clears | `src/security/sandbox.rs:237` | `CANONICAL_PATHS_CACHE` never invalidates |
+
+### Medium Priority - Design Issues
+| Bug | Location | Description |
+|-----|----------|-------------|
+| TTS stop() silent failure | `src/tts/mod.rs:85-103` | Returns `Ok(())` even when `pkill` fails |
+| TTS init() ignores providers | `src/tts/mod.rs:45-49` | Silently accepts non-None providers |
+| Histogram unbounded | `src/util/metrics.rs:122-124` | Only limits per name, not unique names count |
+| Worktree symlink issue | `src/worktree/mod.rs:69-88` | Canonicalization may fail with symlinks |
+
+### Low Priority - Dead Code
+| Bug | Location | Description |
+|-----|----------|-------------|
+| PermissionResponse unused | `src/permission/mod.rs:1141-1145` | Struct defined but never used internally |
+| check_external_directory unused | `src/permission/mod.rs:1237-1248` | Marked `#[allow(dead_code)]` |
+
+### Documentation Staleness (Non-Bugs)
+These are documentation issues, not code bugs:
+- Event count in bus.md says 36, actual is 34
+- Command count in command.md says 41, actual is 39
+- Backoff formula in client.md says (2s, 4s), actual is (1s, 2s, 4s)
+- Subagent events documentation claims NOT mapped, but they ARE mapped
+- .skills/ directory description implies runtime loading, but it doesn't load from there
 
 *(End of file)*
