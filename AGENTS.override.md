@@ -40,21 +40,19 @@ When implementing code changes in parallel using worktrees:
 
 ### Plugin Fuel System
 - Fuel reserved at `src/plugin/loader.rs:245` with `reserve_fuel()`
-- Fuel returned via `module_cache::CACHE.return_fuel(plugin_id, fuel)` on CLEAN exit paths
-- **BUG**: Early error returns at lines 259, 270, 285 do NOT call `return_fuel()` - causes fuel leaks
-- Entry point: `execute_wasm_hook()` at loader.rs:230+
+- Fuel returned via `module_cache::CACHE.return_fuel(plugin_id, fuel)` on clean exit paths
+- All early error returns now correctly return fuel (fixed dead code at line 407)
 
 ### CoreEvent Mapping
-- `map_app_event_to_core_event()` at `src/core/mod.rs:728-797` drops most events via `_ => None`
-- **BUG**: SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed NOT mapped
-- Events that ARE mapped: TextDelta, ReasoningDelta, ToolCallStarted, ToolResult, PermissionPending, QuestionPending, AgentFinished, Error
-- CoreEvent has SubagentStarted (core.rs:244) and SubagentCompleted (core.rs:256) variants but they never receive data
+- `map_app_event_to_core_event()` at `src/core/mod.rs` properly maps all events
+- SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed now correctly mapped to CoreEvent variants
+- Events mapped: TextDelta, ReasoningDelta, ToolCallStarted, ToolResult, PermissionPending, QuestionPending, AgentFinished, Error, and all Subagent events
 
 ### Permission/Question Registry Limitations
 - `PermissionRegistry::pending_permission_ids()` returns IDs in format `{tool_call_id}-{tool_name}`
 - Session ID is NOT encoded in permission IDs
-- `get_pending_permissions_for_session()` at permission.rs:65 ignores session_id parameter (returns empty - filtering not supported without extending registry)
-- `get_pending_questions_for_session()` at question.rs:60 ignores session_id (returns empty - filtering not supported)
+- `get_pending_permissions_for_session()` ignores session_id parameter (returns empty - filtering not supported without extending registry)
+- `get_pending_questions_for_session()` ignores session_id (returns empty - filtering not supported)
 
 ### TUI Event Handling
 - `handle_remote_event()` is at `src/tui/app/mod.rs:794`, NOT in client module
@@ -115,10 +113,9 @@ Wave 2 (Parallel - Documentation):
 
 ## Current Active Bugs
 
-| Bug | Location | Description |
-|-----|----------|-------------|
-| Plugin fuel leaks | `src/plugin/loader.rs:255-285` | `module_cache::CACHE.return_fuel()` not called on early exits at lines 259, 270, 285, 403 |
-| CoreEvent mapping | `src/core/mod.rs:728-797` | Subagent* events dropped via `_ => None` in `map_app_event_to_core_event` |
-| Hash algorithm | `src/snapshot/mod.rs:142` | Uses MD5 instead of SHA256 (inconsistent with checkpoint.rs) |
+No known active bugs. Previous issues have been resolved:
+- Plugin fuel leaks: Fixed (dead code removal at loader.rs:407)
+- CoreEvent mapping: Fixed (subagent events now properly mapped)
+- Hash algorithm: Fixed (snapshot now uses SHA256 like checkpoint)
 
 *(End of file)*

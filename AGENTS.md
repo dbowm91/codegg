@@ -134,9 +134,9 @@ These items were verified during review sessions:
 | map_app_event_to_core_event | Subagent events NOT mapped (falls through to None) | `src/core/mod.rs:795` |
 | SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1197-1201` |
 | hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
-| Backoff formula | `2^(i-1) * jitter` (NOT `2^i`) | `src/resilience/backoff.rs` |
+| Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
-| Hash algorithm | checkpoint uses SHA256, snapshot uses MD5 | `src/session/checkpoint.rs`, `src/snapshot/mod.rs` |
+| Hash algorithm | Both use SHA256 | `src/session/checkpoint.rs`, `src/snapshot/mod.rs` |
 
 ### Security Notes
 
@@ -146,7 +146,7 @@ These items were verified during review sessions:
 
 | Item | Value | Location |
 |------|-------|----------|
-| Backoff formula | `2^(i-1) * jitter` (NOT `2^i`) | `src/resilience/backoff.rs` |
+| Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
 | HalfOpen→Open timeout | 30s default via `max_half_open_duration` | `src/resilience/circuit.rs:66` |
 | Hook timeout | 5s outer dispatch, 30s inner WASM | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
