@@ -84,96 +84,47 @@ The implementation is organized into **5 waves** to maximize parallel work:
 
 | Wave | Focus | Items | Parallel Potential |
 |------|-------|-------|-------------------|
-| 0 | Quick Wins | ~15 items | All independent |
-| 1 | Critical Security | ~10 items | 3 groups, items within group sequential |
-| 2 | High-Priority Infrastructure | ~12 items | Groups independent |
-| 3 | Medium-Priority Groups | ~25 items | Groups independent |
+| 0 | Quick Wins | 3 items remaining (QW-13, QW-14, QW-15) | All independent |
+| 1 | Critical Security | ✅ COMPLETE | N/A |
+| 2 | High-Priority Infrastructure | ✅ COMPLETE | N/A |
+| 3 | Medium-Priority Groups | ✅ COMPLETE | N/A |
 | 4 | Large Refactors | 2 items | Sequential (large effort) |
 
 ---
 
 ## Wave 0: Quick Wins (Under 2 Hours Each)
 
-These items are small, independent, and can be done in parallel by multiple agents.
+**Status**: ✅ COMPLETE (items QW-3 through QW-12 completed via PRs #7, #8, #9, #10, #11, #13, #15)
+**Remaining Items**: QW-13, QW-14, QW-15
 
-### QW-1: Delete Dead Code in TUI (5 min)
-- **File**: `src/tui/app/render.rs` (953 lines)
-- **Action**: File does not exist. Only `mod.rs`, `types.rs`, and `commands.rs` exist in `src/tui/app/`. No action needed - REMOVE THIS ITEM.
-
-### QW-2: Verify Redis Fallback Logic (15 min)
-- **File**: `src/server/ws.rs:168-178`
-- **Status**: VERIFIED CORRECT - if `REDIS_URL` is set → use Redis; otherwise → use in-memory. This is proper fallback behavior, not inverted.
-- **Action**: REMOVE THIS ITEM - no fix needed.
-
-### QW-3: Delete Duplicate handle_slash_command (30 min)
-- **Files**: `src/tui/app/commands.rs:62-288` and `323-536`
-- **Action**: Remove duplicate `handle_slash_command`, `on_paste()`, `on_resize()`
-- **Fix**: Keep one implementation, remove the duplicate
-
-### QW-4: Remove or Implement execute_command (15 min)
-- **File**: `src/tui/app/commands.rs:538-727`
-- **Issue**: `execute_command` appears unused - dead code
-- **Action**: Either implement it properly or remove it
-
-### QW-5: Fix Early Return Bug (15 min)
-- **File**: `src/tui/app/commands.rs:612-623`
-- **Issue**: Early return bypasses intended return value
-- **Action**: Fix the return statement logic
-
-### QW-6: Add DeniedTools Audit Log (30 min)
-- **File**: `src/tool/mod.rs` or wherever `filter_out()` is called
-- **Action**: Add `tracing::info!` when tools are filtered
-- **Reference**: Keep existing `denied_tools` enforcement
-
-### QW-7: Standardize DB Pool Size (5 min)
-- **Files**: `storage/mod.rs`, `session/store.rs`
-- **Issue**: `init()` uses 10, `Database::new()` uses 5
-- **Fix**: Standardize to single value (recommend 10)
-
-### QW-8: Make DoomLoop Threshold Configurable (30 min)
-- **Files**: `config/schema.rs`, `permission/mod.rs`
-- **Action**: Add `doomloop_threshold` to config schema
-- **Reference**: `DoomLoopDetector` at `permission/mod.rs:1162-1231`
-
-### QW-9: Add Config Watcher Debounce (1 hr)
-- **Files**: `config/schema.rs`, `config/watcher.rs`
-- **Action**:
-  - Add `debounce_duration_ms` config (default 500ms)
-  - Implement debounce using `tokio::time::sleep`
-  - Add content hash before reload
-  - Validate config before applying
-
-### QW-10: Fix Upgrade Duplicate Logic (30 min)
-- **Files**: `main.rs:549-590`, `upgrade/mod.rs`
-- **Action**: Refactor `cmd_upgrade()` to use module instead of duplicating logic
-
-### QW-11: Add Request Timeout to Upgrade (15 min)
-- **File**: `upgrade/mod.rs:72-78`
-- **Action**: Add `-m 300` (5 min timeout) to curl command
-
-### QW-12: Add Content Hash Before Reload (1 hr)
-- **File**: `config/watcher.rs`
-- **Action**: Hash content before triggering reload to avoid unnecessary reloads
+The remaining items below are small, independent, and can be done in parallel by multiple agents.
 
 ### QW-13: DoomLoop O(n) to O(1) Fix (1 hr)
 - **File**: `src/permission/mod.rs:1162-1231`
 - **Action**: Replace `VecDeque` iteration with `HashMap<String, usize>` for count tracking
 - **Impact**: Changes O(n) to O(1) for doomloop detection
 
-### QW-14: Rename/Mark PTY Module (15 min)
-- **Files**: `src/pty/`, `docs/ARCHITECTURE.md`
-- **Issue**: Module misleadingly named - no actual PTY functionality
-- **Action**: Update documentation to clarify actual functionality, or rename
+### QW-14: Rename PTY Module (15 min)
+- **Files**: `src/pty_session/`, `docs/ARCHITECTURE.md`, `src/lib.rs`
+- **Issue**: Module is `pty_session` (not `pty`), and it's misleadingly named - no actual PTY functionality, just session metadata
+- **Action**: 
+  1. Rename `src/pty_session/` directory to `src/shell_session/`
+  2. Rename `pub mod pty_session` to `pub mod shell_session` in `src/lib.rs`
+  3. Update all imports throughout codebase
+  4. Update documentation references
 
 ### QW-15: Fix Worktree is_current/is_detached (30 min)
 - **Files**: `src/worktree/mod.rs:36-56`
 - **Action**:
-  - Parse HEAD line to detect current worktree
-  - Set `is_detached=true` when HEAD points to commit (not branch)
+  1. Parse HEAD line to detect current worktree
+  2. Set `is_detached=true` when HEAD points to commit (not branch)
+  3. Consider using `git worktree list --porcelain` for more reliable detection
 
 ---
 
 ## Wave 1: Critical Security & Data Integrity (Week 1)
+
+**Status**: ✅ COMPLETE (via PRs #16, #17, #18, #19, #20, #21)
 
 Items in this wave address critical bugs that could cause data loss, security vulnerabilities, or crashes.
 
@@ -258,6 +209,8 @@ Items in this wave address critical bugs that could cause data loss, security vu
 ---
 
 ## Wave 2: High-Priority Infrastructure (Week 2-3)
+
+**Status**: ✅ COMPLETE (via PRs #22, #23, #24, #25)
 
 ### HIGH-1: MCP Automatic Reconnection
 - **Files**: `config/schema.rs`, `mcp/mod.rs`, `mcp/local.rs`, `mcp/remote.rs`
@@ -346,6 +299,8 @@ Items in this wave address critical bugs that could cause data loss, security vu
 ---
 
 ## Wave 3: Medium-Priority Groups (Week 4-8)
+
+**Status**: ✅ COMPLETE (via PRs #26, #27, #28, #29, #30, #31)
 
 Groups can be worked on in parallel by different agents. Items within a group may have dependencies.
 
@@ -941,10 +896,10 @@ cargo test --package codegg -- <module>_test_pattern
 | TUI Input Repair (Completed 2026-05-01) | ✅ |
 | TUI Scrolling Fix (Completed 2026-05-06) | ✅ |
 | TUI Message Flow (Completed 2026-05-05) | ✅ |
-| Wave 0: Quick Wins | ⏳ PENDING |
-| Wave 1: Critical Security | ⏳ PENDING |
-| Wave 2: High-Priority | ⏳ PENDING |
-| Wave 3: Medium-Priority | ⏳ PENDING |
+| Wave 0: Quick Wins | ✅ COMPLETE (except QW-13, QW-14, QW-15) |
+| Wave 1: Critical Security | ✅ COMPLETE |
+| Wave 2: High-Priority | ✅ COMPLETE |
+| Wave 3: Medium-Priority | ✅ COMPLETE |
 | Wave 4: Large Refactors | ⏳ DEFERRED |
 | TUI Enhancement Features | ⏳ SKIPPED |
 | Agent Capability Features | ✅ PARTIAL (AGENT-2, AGENT-3 done via PR #33) |
@@ -1003,7 +958,7 @@ cargo test --package codegg -- <module>_test_pattern
 
 ### Diversions from Plan
 1. **QW-12 (Content hash)** - Already implemented, merged with QW-9
-2. **QW-14 (PTY rename)** - Renamed `src/pty/` to `src/shell/` to clarify purpose
+2. **QW-14 (PTY rename)** - NOT YET DONE - module still `src/pty_session/`, needs renaming to `src/shell_session/`
 3. **HIGH-3 (block_on)** - Not found in codebase, already using tokio::spawn
 
 ---

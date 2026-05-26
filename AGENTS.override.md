@@ -156,4 +156,50 @@ These are documentation issues, not code bugs:
 - Subagent events documentation claims NOT mapped, but they ARE mapped
 - .skills/ directory description implies runtime loading, but it doesn't load from there
 
+---
+
+## Plan Consolidation Notes (2026-05-26)
+
+### Original Plan Files (Now Consolidated)
+The following original plan files were consolidated into `plans/plan.md`:
+- `agent_session_review.md`
+- `client_ui_review.md`
+- `core_infrastructure_review.md`
+- `exec_security_review.md`
+- `integration_review.md`
+- `plugin_extension_review.md`
+- `provider_resilience_review.md`
+- `utility_support_review.md`
+
+### Remaining Implementation Items
+The following items from the consolidated plan were NOT completed and remain pending:
+
+| Item | Description | Location |
+|------|-------------|----------|
+| QW-13 | DoomLoop O(n) to O(1) - Replace VecDeque with HashMap | `src/permission/mod.rs:1162-1231` |
+| QW-14 | Rename pty_session to shell_session | `src/pty_session/` → `src/shell_session/` |
+| QW-15 | Fix Worktree is_current/is_detached | `src/worktree/mod.rs:36-56` |
+
+### Plan Corrections Made
+1. **QW-14 (PTY rename)**: Was incorrectly marked as done in plan - module is still `pty_session`, needs renaming to `shell_session`
+2. **QW-1 and QW-2**: Were marked "REMOVE THIS ITEM" - removed from plan
+3. **Wave status**: Updated to reflect actual completion status (Wave 0 partial, Wave 1-3 complete)
+
+### Wave 0 Quick Wins Status (Post-Consolidation)
+| Item | Status | Notes |
+|------|--------|-------|
+| QW-3 (Duplicate handle_slash_command) | ✅ Done PR #7 | |
+| QW-4 (Remove execute_command) | ✅ Done PR #10 | |
+| QW-5 (Early return bug) | ✅ Done PR #9 | |
+| QW-6 (DeniedTools audit log) | ✅ Done | Already existed |
+| QW-7 (DB pool size) | ✅ Done | Already standardized to 10 |
+| QW-8 (DoomLoop threshold) | ✅ Done PR #8 | |
+| QW-9 (Config watcher debounce) | ✅ Done PR #13 | |
+| QW-10 (Upgrade duplicate logic) | ✅ Done PR #15 | |
+| QW-11 (Upgrade request timeout) | ✅ Done PR #11 | |
+| QW-12 (Content hash) | ✅ Done | Merged with QW-9 |
+| QW-13 (DoomLoop O(1)) | ⏳ PENDING | |
+| QW-14 (Rename pty_session) | ⏳ PENDING | NOT done - module still `pty_session` |
+| QW-15 (Worktree is_current) | ⏳ PENDING | |
+
 *(End of file)*
