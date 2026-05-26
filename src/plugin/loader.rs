@@ -349,6 +349,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
                     function = func_name,
                     "WASM hook function not found"
                 );
+                module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
                 return Ok::<(HookResult, u64), BoxError>((HookResult::ok(ctx.input), 0));
             }
         };
@@ -357,6 +358,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
             Some(m) => m,
             None => {
                 tracing::warn!(plugin = plugin_id, "WASM module has no memory export");
+                module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
                 return Ok::<(HookResult, u64), BoxError>((
                     HookResult::error("WASM module has no memory export"),
                     0,
@@ -371,6 +373,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
             Some(f) => f,
             None => {
                 tracing::warn!(plugin = plugin_id, "WASM module has no allocate function");
+                module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
                 return Ok::<(HookResult, u64), BoxError>((
                     HookResult::error("WASM module missing allocate function"),
                     0,
@@ -388,6 +391,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
             Some(p) => p,
             None => {
                 tracing::warn!(plugin = plugin_id, "allocate returned no value");
+                module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
                 return Ok::<(HookResult, u64), BoxError>((
                     HookResult::error("allocate returned no value"),
                     0,
@@ -402,6 +406,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
         let memory_size = memory.data_size(&store);
         if input_ptr as usize + input_bytes.len() > memory_size {
             tracing::warn!(plugin = plugin_id, "WASM input exceeds memory bounds");
+            module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
             return Ok::<(HookResult, u64), BoxError>((
                 HookResult::error("WASM input exceeds memory bounds"),
                 0,
