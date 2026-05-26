@@ -30,7 +30,7 @@ pub struct Command {
 }
 ```
 
-Note: The TUI `Command` struct with aliases is in `src/tui/command.rs:72`.
+Note: The TUI `Command` struct with aliases is in `src/tui/command.rs`.
 
 ### CommandConfig (src/config/schema.rs)
 
@@ -93,7 +93,7 @@ Currently only `args` is available during TUI execution:
 
 ## TUI Integration
 
-### CommandRegistry (src/tui/command.rs:72)
+### CommandRegistry
 
 ```rust
 #[derive(Debug, Clone)]
@@ -216,7 +216,7 @@ pub async fn load_command_from_file(path: &Path) -> Result<Command, String>
 - Empty `template:` in frontmatter now correctly falls back to markdown body
 - Improved duplicate detection across command sources
 
-The `CommandRegistry::normalize_name()` function (src/tui/command.rs:240-242) lowercases the input and strips leading `/` characters, enabling case-insensitive matching and consistent command lookup:
+The `CommandRegistry::normalize_name()` function lowercases the input and strips leading `/` characters, enabling case-insensitive matching and consistent command lookup:
 
 ```rust
 fn normalize_name(name: &str) -> String {

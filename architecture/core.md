@@ -106,6 +106,30 @@ The `CoreRequest` enum (in `src/protocol/core.rs`) contains these variants:
 - `TaskDelete { id }` - Delete task
 - `WorktreeList { project_dir }` - List worktrees
 
+#### Request Handler Behavior
+
+**Handled variants** (produce meaningful response):
+- `TurnSubmit` - Spawns agent loop, returns `Ack` immediately
+- `SessionMessagesLoad` - Returns session messages
+- `SessionMessageCounts` - Returns message counts
+- `SessionCreate` - Creates and returns session
+- `SessionLoad` / `SessionAttach` - Loads and returns session
+- All other session variants (List, Fork, Delete, Archive, Restore, Share, Unshare, Rename, Export, Import, CreateFromTemplate)
+- `PermissionRespond` / `QuestionRespond` - Registry responses
+- `ModelsRefresh` - Returns refreshed model list
+- `TaskList` / `TaskSchedule` / `TaskDelete` - Task operations
+- `MemoryList` / `MemorySearch` / `MemoryRemember` / `MemoryForget` - Memory operations
+- `WorktreeList` - Returns worktree list
+
+**Fallthrough variants** (return `Ack` without processing):
+- `Initialize`
+- `Subscribe`
+- `Resume`
+- `TurnCancel`
+- `TurnSteer`
+- `AgentSelect`
+- `ModelSelect`
+
 #### CoreEvent Enum
 
 The `CoreEvent` enum (in `src/protocol/core.rs`) is published by the core and received by in-process subscribers via `subscribe()`:

@@ -145,7 +145,8 @@ The `record_failure()` method (circuit.rs):
 - Default parameters: `failure_threshold=3`, `timeout_secs=60`, `success_threshold=2`
 - Checks `is_available()` before calling provider
 - Records success/failure after each call
-- Exponential backoff between providers: `2^i` seconds, capped at 30s
+- Exponential backoff between providers: `2^i` seconds (i=0→1s, i=1→2s, i=2→4s...), capped at 30s
+- HalfOpen→Open timeout: 30s default via `max_half_open_duration` (circuit.rs:66,116)
 
 ## See Also
 

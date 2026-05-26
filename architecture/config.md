@@ -91,7 +91,7 @@ pub fn api_key(&self, prefix: &str) -> Option<String>
 
 The method checks environment variables first (e.g., `ANTHROPIC_API_KEY`), then `api_key` field, then encrypted `encrypted_api_key` field.
 
-ServerConfig has a `merge()` method at `schema.rs:134-162` that performs field-by-field merging, copying non-None fields from other config.
+ServerConfig has a `merge()` method that performs field-by-field merging, copying non-None fields from other config.
 
 ## Components
 
@@ -230,19 +230,19 @@ Validated fields:
 
 ### Encrypted keys not decrypting on hot-reload
 **Bug**: API keys work after `save()` but fail on hot-reload (file watcher triggers reload).
-**Fix**: `ConfigWatcher::reload_config()` now calls `decrypt_provider_keys()` at `watcher.rs:163`.
+**Fix**: `ConfigWatcher::reload_config()` now calls `decrypt_provider_keys()`.
 
 ### Encrypted keys not decrypting on load
 **Bug**: API keys work after `save()` but fail on subsequent loads.
-**Fix**: `decrypt_provider_keys()` is called automatically in `Config::load()` at `schema.rs:542`.
+**Fix**: `decrypt_provider_keys()` is called automatically in `Config::load()`.
 
 ### Provider config fields lost during merge
 **Bug**: Provider settings from global config disappear when project config specifies the same provider.
-**Fix**: `ProviderConfig::merge()` method implemented for field-level merging at `schema.rs:175-212`.
+**Fix**: `ProviderConfig::merge()` method implemented for field-level merging.
 
 ### medium_model not validated
 **Bug**: Invalid `medium_model` values not caught by validation.
-**Fix**: `medium_model` validation added at `schema.rs:594-601`.
+**Fix**: `medium_model` validation added.
 
 ### Dead tui_config code removed
 **Bug**: `find_tui_config()` and `load_tui_config()` were exported but never used anywhere in the codebase.

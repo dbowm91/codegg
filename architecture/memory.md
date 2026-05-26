@@ -76,7 +76,7 @@ Memories stored as Markdown files with YAML frontmatter. File operations use `fl
         └── MEMORY.md
 ```
 
-### File Locking (`src/memory/mod.rs:497-526`)
+### File Locking
 
 The `flock_lock()` and `flock_unlock()` functions provide advisory locking for memory file operations:
 - `flock_lock()` - Acquires exclusive lock (LOCK_EX) before file operations

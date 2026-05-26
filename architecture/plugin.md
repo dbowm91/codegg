@@ -404,7 +404,7 @@ const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;
 ## Security
 
 - **Fuel Limits**: Per-plugin budgets prevent infinite loops
-- **Timeout**: 5s per hook dispatch, 30s for WASM execution
+- **Timeout**: 5s outer dispatch timeout (service.rs:18 `hook_timeout`), 30s inner WASM execution timeout (loader.rs:14 `WASM_HOOK_TIMEOUT`, rarely reached due to outer timeout)
 - **Memory Bounds**: Input validated before WASM memory write
 - **Output Size**: 10MB max from WASM output
 - **WASM Size**: 10MB max module size

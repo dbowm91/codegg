@@ -139,7 +139,7 @@ pub enum ConnectionState {
 - Heartbeat every 30s to keep connection alive
 - `ensure_connected()` spawns reconnection in background task when disconnected
 
-### SSE Connection Methods (`src/mcp/remote.rs:698-747`)
+### SSE Connection Methods
 
 The `RemoteClient` provides SSE (Server-Sent Events) connection methods:
 

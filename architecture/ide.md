@@ -94,11 +94,11 @@ run_command_with_timeout("code", &[
 
 ### TempFilesGuard
 
-The `TempFilesGuard` struct (defined at `src/ide/mod.rs:43-63`) implements `Drop` to automatically clean up temp files when the guard goes out of scope. This ensures temp files are cleaned up even if the IDE command fails or panics occur.
+The `TempFilesGuard` struct implements `Drop` to automatically clean up temp files when the guard goes out of scope. This ensures temp files are cleaned up even if the IDE command fails or panics occur.
 
 ### register_panic_cleanup
 
-The private `register_panic_cleanup()` function (`src/ide/mod.rs:65-78`) registers a panic hook that cleans up any leftover `codegg_*` temp files in the system temp directory if the process crashes. It uses `std::sync::Once` to ensure the hook is only registered once.
+The private `register_panic_cleanup()` function registers a panic hook that cleans up any leftover `codegg_*` temp files in the system temp directory if the process crashes. It uses `std::sync::Once` to ensure the hook is only registered once.
 
 Note: `run_command_with_timeout()` handles errors internally and returns descriptive strings like `"code failed (exit 1)"`.
 

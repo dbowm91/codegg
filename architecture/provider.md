@@ -30,25 +30,32 @@ The `provider` module provides a unified interface for interacting with various 
 
 ### Additional Providers (in `additional.rs`)
 
+These are available via config or env var fallback (`register_builtin_with_config`):
+
+| Provider | Registration | Factory Function |
+|----------|--------------|------------------|
+| Mistral | Env/GitHub Copilot | `create_mistral()` |
+| Groq | Env/GitHub Copilot | `create_groq()` |
+| DeepInfra | Env/GitHub Copilot | `create_deepinfra()` |
+| Cerebras | Env/GitHub Copilot | `create_cerebras()` |
+| Cohere | Env/GitHub Copilot | `create_cohere()` |
+| TogetherAI | Env/GitHub Copilot | `create_together()` |
+| Perplexity | Env/GitHub Copilot | `create_perplexity()` |
+| xAI | Env/GitHub Copilot | `create_xai()` |
+| Venice | Env/GitHub Copilot | `create_venice()` |
+| MiniMax | Env/GitHub Copilot | `create_minimax()` |
+| Codegg Go | Env/GitHub Copilot only | `create_codegg_go()` |
+
+These providers exist in `additional.rs` but require explicit config to use:
+
 | Provider | Factory Function |
-|----------|-----------------|
-| Mistral | `create_mistral()` |
-| Groq | `create_groq()` |
-| DeepInfra | `create_deepinfra()` |
-| Cerebras | `create_cerebras()` |
-| Cohere | `create_cohere()` |
-| TogetherAI | `create_together()` |
-| Perplexity | `create_perplexity()` |
-| xAI | `create_xai()` |
-| Venice | `create_venice()` |
-| MiniMax | `create_minimax()` |
+|----------|-------------------|
 | SAP AI Core | `create_sap_ai_core()` |
 | Zenmux | `create_zenmux()` |
 | Kilo | `create_kilo()` |
-| Codegg Go | `create_codegg_go()` (via config-based registration) |
 | Vercel AI Gateway | `create_vercel_ai_gateway()` |
 
-### Discovery Providers
+### Additional OpenAI-Compatible Providers
 
 | Provider | File |
 |----------|------|

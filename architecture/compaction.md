@@ -113,7 +113,7 @@ Via `CompactionConfig` in `src/config/schema.rs`:
 
 ## Integration
 
-Called from `AgentLoop::compact_if_needed()` in `src/agent/loop.rs:1130`. The flow is:
+Called from `AgentLoop::compact_if_needed()`. The flow is:
 1. `prune_tool_outputs()` runs first (token-based pre-pass, BEFORE hook)
 2. `SessionCompacting` hook is dispatched
 3. If hook is not blocked, compaction strategy is selected and applied
