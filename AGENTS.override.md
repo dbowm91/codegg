@@ -152,7 +152,7 @@ Phase 2 (Parallel - Documentation):
 | Item | Value | Location |
 |------|-------|----------|
 | Tool count | 26 | `src/tool/mod.rs:89-119` |
-| LSP server count | 42 | `src/lsp/server.rs:27-385` |
+| LSP server count | 39 | `src/lsp/server.rs:27-385` |
 | PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | NOT integrated - exists but unused | `architecture/tool.md:205` |
@@ -165,7 +165,7 @@ Phase 2 (Parallel - Documentation):
 | Session events published | SessionCreated, MessageAdded | `src/bus/events.rs:7,21` |
 | Auth middleware | Allows requests when no token set | `src/server/middleware/auth.rs:37-39` |
 | AppEvent count | 36 variants | `src/bus/events.rs:5-190` |
-| Plugin dead code | `check_and_reset_fuel_budget()` never called | `src/plugin/loader.rs:24-41` |
+| Plugin dead code | REMOVED - check_and_reset_fuel_budget() at loader.rs:24-41 | `src/plugin/loader.rs` |
 
 ---
 
@@ -185,7 +185,7 @@ Many "bugs" in review files were actually correctly implemented. Verified:
 - PermissionResponse shape is `{level, persist}` not `{id, choice}`
 - Auth middleware intentionally allows requests when no token configured (dev mode)
 - Plugin fuel tracking logic is CORRECT (not inverted as some reviews suggested)
-- LSP server count is 42 (not 39 as doc claimed)
+- LSP server count is 39 (doc was correct)
 
 ### Wave-Based Implementation
 - **Wave 1**: 9 independent agents can work in parallel (HIGH priority)

@@ -98,8 +98,6 @@ These items are important for future agents to know when working with the codeba
 
 - **Tool definition cache staleness**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
 
-- **Plugin global fuel budget unused**: `PLUGIN_FUEL_BUDGET` and `check_and_reset_fuel_budget()` at `loader.rs:15,24-41` are never called - dead code that could be removed or integrated.
-
 ### Key Lessons from Review Sessions
 
 1. **Always verify documentation claims against actual code** - Many "bugs" in review files turned out to be correctly implemented after direct inspection.
@@ -137,7 +135,7 @@ These items were verified during a 2026-05-26 review session:
 
 - **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
 
-- **Plugin dead code**: `check_and_reset_fuel_budget()`, `PLUGIN_FUEL_BUDGET`, and `PLUGIN_FUEL_LAST_RESET` at `loader.rs:15,24-41` are never called - candidates for removal.
+- **Plugin fuel dead code removed**: `check_and_reset_fuel_budget()`, `PLUGIN_FUEL_BUDGET`, and `PLUGIN_FUEL_LAST_RESET` at `loader.rs:15,24-41` were removed in Wave 1 (H-6) - they were never called.
 
 ### CoreRequest Handler Attention Points
 
