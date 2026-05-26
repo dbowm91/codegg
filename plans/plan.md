@@ -207,9 +207,9 @@ Missing documentation for validations that exist in code:
 
 ### M-12: Server Auth Middleware Security Review
 **Source**: `plans/server_review.md`
+**Status**: VERIFIED - documentation already correct
 
-- **Issue**: Auth middleware documentation order incorrect - doc claims "reject if none set" but code at `middleware/auth.rs:37-39` actually **allows** requests when no token is configured
-- **Action**: Determine if this is intentional security design or bug; update accordingly
+- **Verification**: Code at `middleware/auth.rs:37-39` allows requests when no token is configured (lines 37-39). Architecture doc at line 181 correctly states: "This is intentional for development mode." No changes needed.
 
 ### M-13: Core Type Precision
 **Source**: `plans/core_review.md`
@@ -361,7 +361,7 @@ Each group is independent; agents should pick one group at a time:
 | H | M-8 | Plugin | plugins_dir cross-platform | `architecture/plugin.md` |
 | I | M-9 | Hooks | InlineScript deprecation handling | `src/hooks/mod.rs` OR `architecture/hooks.md` |
 | J | M-11 | Exec | Timeout documentation | `architecture/exec.md` |
-| K | M-12 | Server | Auth middleware security | `architecture/server.md` |
+| K | M-12 ✅ | Server | Auth middleware security - VERIFIED correct | `architecture/server.md` |
 | L | M-13 ✅ | Core | Type precision improvements | `architecture/core.md` |
 | M | M-14 ✅ | Tool | ToolExecutor usage docs - CORRECTED | `architecture/tool.md` |
 | N | M-15 | Worktree | force parameter consideration | `architecture/worktree.md` |
