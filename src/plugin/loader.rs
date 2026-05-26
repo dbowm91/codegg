@@ -404,7 +404,6 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
             Some(p) => p,
             None => {
                 tracing::warn!(plugin = plugin_id, "hook function returned no value");
-                module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
                 return Ok::<(HookResult, u64), BoxError>((
                     HookResult::error("hook function returned no value"),
                     0,
