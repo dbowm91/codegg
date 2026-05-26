@@ -10,6 +10,36 @@ The `upgrade` module provides self-upgrade functionality via GitHub releases.
 - Check for updates via GitHub API (queries `https://api.github.com/repos/anomalyco/codegg/releases/latest`)
 - Run installer script via `curl -fsSL https://codegg.ai/install.sh`
 
+## CLI Command Behavior
+
+The `codegg upgrade` command **only checks and reports** - it does not automatically perform the upgrade:
+
+1. Queries GitHub API for latest release tag
+2. Compares with current version (`VERSION` from `CARGO_PKG_VERSION`)
+3. If newer version available, prints instructions to manually install via:
+   ```bash
+   curl -fsSL https://codegg.ai/install.sh
+   ```
+
+The actual `upgrade()` function exists in `src/upgrade/mod.rs:57` but is **not called** by the CLI command.
+
+## Configuration
+
+### autoupdate
+
+The `autoupdate` config setting exists but is **not currently wired to the upgrade module**:
+
+```rust
+pub enum AutoupdateConfig {
+    Bool(bool),        // true/false for automatic updates
+    Notify(String),    // notify with custom message
+}
+```
+
+Default: `true` (but not implemented)
+
+This config field is loaded and stored in `Config.autoupdate` but the upgrade module does not read it. The upgrade module only performs version checking when the CLI command is run.
+
 ## Key Types
 
 ### VersionInfo
@@ -75,9 +105,7 @@ pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
 }
 ```
 
-**Note**: The `upgrade()` function below is defined in the module but **not currently called** by the CLI `codegg upgrade` command. The CLI only checks and reports version information without performing the actual upgrade.
-
-### upgrade()
+### upgrade() (defined but not called)
 
 ```rust
 pub async fn upgrade() -> Result<String, AppError> {
@@ -111,16 +139,8 @@ pub async fn upgrade() -> Result<String, AppError> {
 }
 ```
 
-## Usage
-
-The upgrade command is available via CLI:
-
-```bash
-codegg upgrade
-```
-
-This checks for updates and, if a new version is available, prints the current and latest versions along with instructions to install.
+**Note**: This function is defined but not invoked by the CLI. The CLI only reports version info without performing the actual upgrade.
 
 ## See Also
 
-- [config.md](config.md) - Configuration (upgrade settings not yet implemented)
+- [config.md](config.md) - Configuration (`autoupdate` field defined but not wired to upgrade module)
