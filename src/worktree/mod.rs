@@ -66,7 +66,6 @@ pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
     let mut current_head: Option<String> = None;
     let mut current_is_detached = false;
     let mut current_is_current = false;
-    let git_root_canonical = git_root.canonicalize().ok();
 
     for line in stdout.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
@@ -82,10 +81,8 @@ pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
             current_branch.clear();
             current_head = None;
             current_is_detached = false;
-            current_is_current = git_root_canonical
-                .as_ref()
-                .and_then(|root| Path::new(path).canonicalize().ok().map(|p| p == *root))
-                .unwrap_or(false);
+            current_is_current = Path::new(path) == git_root
+                || Path::new(path).canonicalize().map_or(false, |p| p == git_root.canonicalize().unwrap_or_else(|_| git_root.to_path_buf()));
         } else if let Some(branch) = line.strip_prefix("branch ") {
             current_branch = branch.to_string();
         } else if let Some(head) = line.strip_prefix("HEAD ") {
