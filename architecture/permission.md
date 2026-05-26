@@ -197,9 +197,9 @@ pub struct ModeDefinition {
 
 | Mode | Default | Allowed Tools | Restricted Tools |
 |------|---------|---------------|------------------|
-| `review` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, lsp | edit, bash, task, todowrite |
-| `debug` | Allow | read, glob, grep, list, bash, question, webfetch, websearch, codesearch, edit, lsp | task, todowrite |
-| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, write, lsp | bash, task, todowrite |
+| `review` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, lsp, skill | edit, bash, task, todowrite |
+| `debug` | Allow | read, glob, grep, list, bash, question, webfetch, websearch, codesearch, edit, lsp, skill | task, todowrite |
+| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, lsp, skill | bash, task, todowrite |
 
 ## Permission Flow
 
