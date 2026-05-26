@@ -264,15 +264,11 @@ The `execute_wasm_hook()` function returns fuel on ALL early exits after `fuel_r
 
 ## Fuel Tracking
 
-### Global Fuel Budget
+### Per-Plugin Fuel Budget
 
 ```rust
-static PLUGIN_FUEL_BUDGET: AtomicU64 = AtomicU64::new(10_000_000);
-static PLUGIN_FUEL_LAST_RESET: AtomicU64 = AtomicU64::new(0);
-
 const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;
 const WASM_FUEL_PER_HOOK: u64 = 1_000_000;
-const FUEL_RESET_INTERVAL_SECS: u64 = 60;
 ```
 
 **Fuel Logic:**
@@ -280,7 +276,6 @@ const FUEL_RESET_INTERVAL_SECS: u64 = 60;
 - Each hook reserves fuel via `ModuleCache::reserve_fuel()` before execution
 - WASM fuel is set on the store via `store.set_fuel()`
 - After execution, unused fuel is returned via `ModuleCache::return_fuel()`
-- Budget resets every 60 seconds via `check_and_reset_fuel_budget()`
 - Returns early if budget exhausted
 - **Important**: `return_fuel()` initializes new plugin entries with `MAX_PLUGIN_FUEL_BUDGET` (not 0) to ensure proper fuel tracking for plugins that haven't been seen before
 - **Fuel leak prevention**: `return_fuel()` is called on ALL exit paths (success, error, and early returns) to prevent fuel leaks

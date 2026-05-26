@@ -143,6 +143,11 @@ Auth validation via `validate_ws_auth()` shared between both handlers.
 | GET | `/api/providers` | List providers |
 | GET | `/api/tools` | List tools |
 
+#### Health Routes
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Server health check (no auth required) |
+
 #### File Routes (`/api/file`)
 | Method | Path | Description |
 |--------|------|-------------|

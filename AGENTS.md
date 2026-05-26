@@ -54,7 +54,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
-- `plans/plan.md`: Consolidated implementation plan (31 module reviews) with wave-based parallelization strategy
+- `plans/plan.md`: Completed implementation plan - all items verified and pruned
 
 ## Critical Implementation Notes
 
@@ -134,8 +134,6 @@ These items were verified during a 2026-05-26 review session:
 ### Security Notes
 
 - **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
-
-- **Plugin fuel dead code removed**: `check_and_reset_fuel_budget()`, `PLUGIN_FUEL_BUDGET`, and `PLUGIN_FUEL_LAST_RESET` at `loader.rs:15,24-41` were removed in Wave 1 (H-6) - they were never called.
 
 ### CoreRequest Handler Attention Points
 
