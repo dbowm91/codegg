@@ -138,14 +138,14 @@ Missing documentation for validations that exist in code:
 
 **Action**: Document these validations in architecture/config.md
 
-### M-2: Memory Module Documentation
+### M-2: Memory Module Documentation ✅
 **Source**: `plans/memory_review.md`
 
-1. **frequency_bonus formula**: Doc says "Final score = base + frequency_bonus" but actual formula at `patterns.rs:232` is `final_score = base_score + frequency_bonus` where `frequency_bonus = (count - 1) * 2.0`
-2. **File locking mechanism**: Doc doesn't mention `flock_lock`/`flock_unlock` at `mod.rs:496-526`
-3. **Namespace format**: Table shows `user/preferences` but actual code uses `project/{hash}`
+1. **frequency_bonus formula**: Added formula `(count - 1) * 2.0` to documentation
+2. **File locking mechanism**: Already documented at `mod.rs:497-526`
+3. **Namespace format**: Already correct (`project/{hash}` in table)
 
-**Action**: Document all three items
+**Status**: COMPLETE - committed as `bf4decd`
 
 ### M-3: IDE Module Documentation
 **Source**: `plans/ide_review.md`
@@ -351,8 +351,8 @@ Each group is independent; agents should pick one group at a time:
 
 | Group | Items | Module | Description | Files to Modify |
 |-------|-------|--------|-------------|-----------------|
-| A | M-1 ✅ | Config | Missing validation docs → DOCUMENTED | `architecture/config.md` |
-| B | M-2 | Memory | frequency_bonus, file locking, namespace | `architecture/memory.md` |
+| A | M-1 ✅ | Config | COMPLETE - validation docs added | `architecture/config.md` |
+| B | M-2 ✅ | Memory | COMPLETE - frequency_bonus formula added | `architecture/memory.md` |
 | C | M-3, M-10 | IDE | Temp file timing, indentation | `architecture/ide.md`, `src/ide/mod.rs` |
 | D | M-4 | Provider | Already verified - no action needed | - |
 | E | M-5 | Security | "Used by" list verification | `architecture/security.md` |
