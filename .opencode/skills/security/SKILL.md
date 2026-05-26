@@ -606,15 +606,14 @@ WASM plugins have fuel (instruction budget) limits to prevent DoS:
 const MAX_WASM_SIZE: usize = 10 * 1024 * 1024;  // 10MB
 const WASM_FUEL_PER_HOOK: u64 = 1_000_000;       // 1M fuel
 const WASM_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
-static PLUGIN_FUEL_BUDGET: AtomicU64 = AtomicU64::new(10_000_000);
 const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;
 ```
 
-Before executing a hook, check if budget is exhausted:
+Fuel is tracked per-plugin in `ModuleCache::fuel_budgets`. Before executing a hook, fuel is reserved and checked:
 
 ```rust
-let current_budget = PLUGIN_FUEL_BUDGET.load(Ordering::Relaxed);
-if current_budget >= MAX_PLUGIN_FUEL_BUDGET {
+let current_plugin_fuel = fuel_budgets.get(plugin_id).map(|v| v.load(Ordering::Relaxed)).unwrap_or(MAX_PLUGIN_FUEL_BUDGET);
+if current_plugin_fuel >= MAX_PLUGIN_FUEL_BUDGET {
     tracing::warn!(plugin = plugin_id, "plugin fuel budget exhausted");
     return HookResult::ok(ctx.input);
 }

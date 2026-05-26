@@ -18,45 +18,16 @@ When implementing code changes in parallel using worktrees:
 
 ## Session Learnings
 
-### Plan Review Process
+### Verification Before Assumption
+- Initial review files may contain incorrect claims about bugs
+- Always verify claims against actual code before marking as "bug"
+- Many "bugs" turn out to be correct implementation after direct inspection
+- Example: Memory superseding threshold was correctly `>` not `>=`
 
-1. **Batch Processing for Plan Reviews**
-   - When reviewing multiple plan files, process in batches of 4-5 to avoid subagent context compaction
-   - Consolidate each batch into a temporary file, then consolidate those files
-   - This prevents losing context during long review sessions
-
-2. **Verification Before Assumption**
-   - Initial review files may contain incorrect claims about bugs
-   - Always verify claims against actual code before marking as "bug"
-   - Many "bugs" turn out to be correct implementation after direct inspection
-   - Example: Memory superseding threshold was correctly `>` not `>=`
-
-3. **Documentation vs Implementation**
-   - Documentation often lags behind code changes
-   - When a review says "X is wrong", check if it's been fixed since the review
-   - Architecture docs can become stale even while code is correct
-
-### Plan Organization
-
-1. **Wave-based Parallelization**
-   - Group independent items into waves for parallel execution
-   - Wave 1 items (code bugs) should be done first
-   - Wave 2+ items (documentation) can be done in parallel by different agents
-   - Mark dependencies explicitly
-
-2. **Accurate Status Tracking**
-   - Many items initially flagged as "pending" were actually already fixed
-   - Plan should accurately reflect current state, not historical claims
-   - Use "PASS" verification before including items in plan
-
-### Subagent Context Preservation
-
-1. **Context window limits**: Subagents undergo compaction after ~2000 lines of context
-2. **Batch size**: 4-5 plan files per subagent is optimal
-3. **Consolidation pattern**:
-   - Subagent reads batch → writes consolidated temp file
-   - Parent agent reads all temp files → creates final plan
-   - This preserves subagent context for accurate summarization
+### Documentation vs Implementation
+- Documentation often lags behind code changes
+- When a review says "X is wrong", check if it's been fixed since the review
+- Architecture docs can become stale even while code is correct
 
 ---
 
@@ -136,14 +107,33 @@ Phase 2 (Parallel - Documentation):
    - LSP skill count: 41 (not 42)
 
 3. **Documentation Fix Approach**
-   - Read the CURRENT architecture doc first to check if fix is needed
+   - Read the CURRENT architecture doc first to check need before fixing
    - Then read the actual source code to verify counts/claims
    - Only fix if there's a real discrepancy
    - Don't trust review file claims without verification
 
 ---
 
-*Updated 2026-05-26: Consolidated plan review learnings, added verified codebase facts from 31 review files*
+## Verified Codebase Facts (2026-05-26)
+
+| Item | Value | Location |
+|------|-------|----------|
+| Tool count | 26 | `src/tool/mod.rs:89-119` |
+| LSP server count | 39 | `src/lsp/server.rs:27-385` |
+| PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
+| InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
+| ToolExecutor | NOT integrated - exists but unused | `architecture/tool.md:205` |
+| Plugin fuel logic | CORRECT - returns early when exhausted | `src/plugin/loader.rs:262-266` |
+| InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
+| CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
+| register_panic_cleanup | Private function for temp file cleanup | `src/ide/mod.rs:65-78` |
+| ProviderError::Auth | is_retryable = true | `src/error.rs:169` |
+| Memory frequency_bonus | `(count - 1) * 2.0` | `src/memory/patterns.rs:232` |
+| Session events published | SessionCreated, MessageAdded | `src/
+bus/events.rs:7,21` |
+| Auth middleware | Allows requests when no token set | `src/server/middleware/auth.rs:37-39` |
+| AppEvent count | 36 variants | `src/bus/events.rs:5-190` |
+
 
 ---
 
@@ -165,36 +155,3 @@ Phase 2 (Parallel - Documentation):
 | Session events published | SessionCreated, MessageAdded | `src/bus/events.rs:7,21` |
 | Auth middleware | Allows requests when no token set | `src/server/middleware/auth.rs:37-39` |
 | AppEvent count | 36 variants | `src/bus/events.rs:5-190` |
-| Plugin dead code | REMOVED - check_and_reset_fuel_budget() at loader.rs:24-41 | `src/plugin/loader.rs` |
-
----
-
-## Plan Consolidation Notes (2026-05-26)
-
-### Consolidated Plan Structure
-The implementation plan at `plans/plan.md` consolidates findings from 31 module review files. Key structure:
-
-1. **Verification Section**: Critical commands to verify claims before implementing
-2. **HIGH Priority Items** (9 items): Documentation fixes and one dead code removal
-3. **MEDIUM Priority Items** (15 items): Various improvements grouped by module
-4. **LOW Priority Items** (4 categories): Polish work
-5. **Implementation Waves**: Parallelization strategy with 9 parallel agents for Wave 1
-
-### Key Verification Findings
-Many "bugs" in review files were actually correctly implemented. Verified:
-- PermissionResponse shape is `{level, persist}` not `{id, choice}`
-- Auth middleware intentionally allows requests when no token configured (dev mode)
-- Plugin fuel tracking logic is CORRECT (not inverted as some reviews suggested)
-- LSP server count is 39 (doc was correct)
-
-### Wave-Based Implementation
-- **Wave 1**: 9 independent agents can work in parallel (HIGH priority)
-- **Wave 2**: 14 groups, each independent (MEDIUM priority)
-- **Wave 3**: LOW priority polish
-
-### Files Modified by Each Agent
-Each implementation item includes `Files to Modify` column for clarity.
-
----
-
-*Updated 2026-05-26: Consolidated plan review learnings, added verified codebase facts from 31 review files*
