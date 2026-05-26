@@ -187,11 +187,11 @@ Missing documentation for validations that exist in code:
 - **Issue**: Doc shows `~/.local/share/codegg/plugins/` (Linux) but actual uses `dirs::data_local_dir()/codegg/plugins` (cross-platform)
 - **Action**: Update documentation to reflect cross-platform path
 
-### M-9: Hook InlineScript Handling
+### M-9: Hook InlineScript Handling ✅ COMPLETED
 **Source**: `plans/hooks_review.md`
 
 - **Issue**: `InlineScript` at `src/hooks/mod.rs:181-184` is deprecated dead code with `#[allow(deprecated)]` but undocumented
-- **Action**: Either document it as deprecated or remove the dead code
+- **Action**: Documented in `architecture/hooks.md` as deprecated and non-functional; removed unnecessary `warn!()` log in `src/hooks/mod.rs`
 
 ### M-10: IDE open_diff_generic Indentation
 **Source**: `plans/ide_review.md`
@@ -359,7 +359,7 @@ Each group is independent; agents should pick one group at a time:
 | F | M-6 | LSP | Completion fallback clarification | `architecture/lsp.md` |
 | G | M-7 | Command | normalize_name() documentation | `architecture/command.md` |
 | H | M-8 | Plugin | plugins_dir cross-platform | `architecture/plugin.md` |
-| I | M-9 | Hooks | InlineScript deprecation handling | `src/hooks/mod.rs` OR `architecture/hooks.md` |
+| I | M-9 ✅ | Hooks | InlineScript deprecation handling | `src/hooks/mod.rs` OR `architecture/hooks.md` |
 | J | M-11 | Exec | Timeout documentation | `architecture/exec.md` |
 | K | M-12 | Server | Auth middleware security | `architecture/server.md` |
 | L | M-13 ✅ | Core | Type precision improvements | `architecture/core.md` |
