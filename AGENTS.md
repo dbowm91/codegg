@@ -86,7 +86,7 @@ These items are important for future agents to know when working with the codeba
 
 - **Subprocess PATH**: All tools use `std::env::var_os("PATH")` instead of hardcoded paths for proper Homebrew/cargo/pyenv tool discovery
 
-- **Plugin fuel tracking**: `fuel_reserved` set at `loader.rs:270` is returned via `module_cache::CACHE.return_fuel()` on ALL exits
+- **Plugin fuel tracking**: `fuel_reserved` set at `loader.rs:270` is returned via `module_cache::CACHE.return_fuel()` on normal exits, BUT there are fuel leaks on early error returns at `loader.rs:255-285` where early returns do NOT call `return_fuel()`
 
 - **handle_remote_event location**: `src/tui/app/mod.rs:794` - not in client module
 
@@ -114,7 +114,7 @@ These items are important for future agents to know when working with the codeba
 
 ### Verified Codebase Facts
 
-These items were verified during a 2026-05-26 review session:
+These items were verified during a 2026-05-26 architecture review session:
 
 | Item | Value | Location |
 |------|-------|----------|
@@ -123,13 +123,16 @@ These items were verified during a 2026-05-26 review session:
 | PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | NOT integrated - exists but unused | `architecture/tool.md:205` |
-| Plugin fuel logic | CORRECT - returns early when exhausted | `src/plugin/loader.rs:262-266` |
+| Plugin fuel logic | Has leaks on early error returns | `src/plugin/loader.rs:255-285` |
+| CoreEvent mapping | Incomplete - many events dropped | `src/core/mod.rs:728-797` |
 | InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
 | register_panic_cleanup | Private function for temp file cleanup | `src/ide/mod.rs:65-78` |
 | ProviderError::Auth | is_retryable = true | `src/error.rs:169` |
 | Memory frequency_bonus | `(count - 1) * 2.0` | `src/memory/patterns.rs:232` |
 | Session events published | SessionCreated, MessageAdded | `src/bus/events.rs:7,21` |
+| GlobalEventBus capacity | 2048 | `src/bus/global.rs:13` |
+| PermissionRegistry TTL | 300s | `src/bus/mod.rs:59` |
 
 ### Security Notes
 
