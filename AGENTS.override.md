@@ -1,6 +1,6 @@
 # AGENTS.override.md
 
-## Implementation Notes (2026-05-26)
+## Implementation Patterns
 
 ### Working with Git Worktrees for Parallel Changes
 
@@ -14,18 +14,9 @@ When implementing code changes in parallel using worktrees:
 
 **Critical**: Git worktrees have nested `.git` directories that can cause "embedded git repository" warnings and issues with `git add -A`. Always clean up properly.
 
-### Plan Implementation Verification
-
-During the 2026-05-26 plan implementation:
-- 2 code bugs (BUG-01, BUG-02, BUG-03) were real issues in the server routes
-- 5 code bugs (BUG-04 through BUG-08) were already not needed - TUI doesn't send those requests
-- 2 code bugs (BUG-09, BUG-10) were real fuel leak issues
-- Many "documentation bugs" from review files were already correct in current docs
-- Only 1 confirmed doc count error exists: theme count (42 vs 31)
-
 ---
 
-## Session Learnings (2026-05-26)
+## Session Learnings
 
 ### Plan Review Process
 
@@ -69,26 +60,23 @@ During the 2026-05-26 plan implementation:
 
 ---
 
-## Verified Code Location Notes (2026-05-26)
+## Verified Code Location Notes
 
 ### CoreRequest Handlers
 - `CoreRequest` enum is in `src/protocol/core.rs:50-175`
-- InprocCoreClient handler at `src/core/mod.rs:698` handles most variants but has catch-all `Ack`
-- **Already implemented**: TurnSubmit, Session* variants, Memory*, Task*, Worktree*, PermissionRespond, QuestionRespond, ModelsRefresh
-- **Falls through to Ack** (not truly unimplemented - these are TUI-side): Initialize, Subscribe, Resume, TurnCancel, TurnSteer, AgentSelect, ModelSelect
-- The `Ack` response may be intentional for some variants that are handled elsewhere
+- InprocCoreClient handlers at `src/core/mod.rs:52-355` handle: TurnSubmit, SessionMessagesLoad, SessionMessageCounts, SessionCreate, SessionLoad, SessionAttach, etc.
+- Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - TUI does not send these requests, so `Ack` is intentional
 
 ### Plugin Fuel System
 - Fuel reserved at `src/plugin/loader.rs:270` with `reserve_fuel()`
-- Fuel returned via `module_cache::CACHE.return_fuel(plugin_id, fuel)`
-- **BUG**: Early returns at lines 352, 360-363, 374-377, 390-394 don't return fuel
+- Fuel returned via `module_cache::CACHE.return_fuel(plugin_id, fuel)` on ALL exit paths
 - Entry point: `execute_wasm_hook()` at loader.rs:230+
 
 ### Permission/Question Registry Limitations
 - `PermissionRegistry::pending_permission_ids()` returns IDs in format `{tool_call_id}-{tool_name}`
 - Session ID is NOT encoded in permission IDs
-- `get_pending_permissions_for_session()` at permission.rs:65 ignores session_id parameter (line 70 comment confirms this is by design)
-- `get_pending_questions_for_session()` at question.rs:60 has faulty filter comparing IDs directly to session_id
+- `get_pending_permissions_for_session()` at permission.rs:65 ignores session_id parameter (returns empty - filtering not supported without extending registry)
+- `get_pending_questions_for_session()` at question.rs:60 ignores session_id (returns empty - filtering not supported)
 
 ### TUI Event Handling
 - `handle_remote_event()` is at `src/tui/app/mod.rs:794`, NOT in client module
@@ -96,17 +84,14 @@ During the 2026-05-26 plan implementation:
 
 ### IdeServer Async I/O
 - `run_stdio()` uses `tokio::io::stdin()/stdout()` with `AsyncBufReadExt` and `AsyncWriteExt`
-- NOT blocking `std::io` as older docs may claim
+- NOT blocking `std::io`
 
-### Theme Count Bug (Verified)
-- `src/tui/theme.rs:8` comment says "42 built-in themes" 
-- But only 31 ThemeData entries actually exist in THEMES array (lines 102-630)
-- This is the only confirmed doc count error to fix
+### TUI Theme Count
+- `src/tui/theme.rs:8` comment correctly says "31 built-in themes" (verified 2026-05-26)
 
-### TUI Dialog State (Verified)
-- `tree_dialog` and `command_palette` are always instantiated (not on-demand as docs say)
-- `help_dialog` and `info_dialog` are on-demand (not optional as docs say)
-- Corresponds to `src/tui/app/state/dialog.rs`
+### TUI Dialog State
+- Always instantiated: `model_dialog`, `agent_dialog`, `session_dialog`, `tree_dialog`, `command_palette`
+- On-demand (Option<T>): all others including `theme_picker`, `question_dialog`, `permission_dialog`, `keybind_dialog`, `mcp_dialog`
 
 ---
 
@@ -138,36 +123,24 @@ Phase 2 (Parallel - Documentation):
 
 ---
 
-## Findings from 2026-05-26 Plan Review Session
+## Key Insights from Review Sessions
 
-### Verified Bugs (Confirmed by Direct Code Inspection)
+1. **Only confirmed documentation count error was TUI theme count** - comment said 42 but only 31 themes defined
 
-1. **BUG-01** (permission.rs:27): Session ID mismatch check is broken - splits on wrong format → FIXED
-2. **BUG-02** (permission.rs:65-90): `get_pending_permissions_for_session()` ignores session_id → FIXED
-3. **BUG-03** (question.rs:63-73): `get_pending_questions_for_session()` filter compares IDs to session_id → FIXED
-4. **BUG-04-08** (core/mod.rs:698): Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect fall through to Ack → No action needed (TUI doesn't send these)
-5. **BUG-09** (loader.rs:344-354): Fuel not returned when hook function not found → FIXED
-6. **BUG-10** (loader.rs:356-409): Fuel not returned on 4 early error paths → FIXED
+2. **Many review claims were WRONG** - current code was already correct:
+   - Dialog count: 21 is CORRECT (not 22/23)
+   - LSP language count: 41 is correct (not 44+)
+   - Tool count: 26 is correct (not 33+)
+   - Hook types: 6 HookEvent variants (not 13)
+   - Command count: doc already says 41 (not 36)
+   - LSP skill count: 41 (not 42)
 
-### Claims in Review Files that Were WRONG
+3. **Documentation Fix Approach**
+   - Read the CURRENT architecture doc first to check if fix is needed
+   - Then read the actual source code to verify counts/claims
+   - Only fix if there's a real discrepancy
+   - Don't trust review file claims without verification
 
-Many review files claimed documentation was wrong, but current code was already correct:
+---
 
-1. **Dialog count**: Review said 21 should be 22/23 - but 21 is CORRECT
-2. **LSP language count**: Review said 44+ should be 43+ - but actual is 41 and doc says 41+
-3. **Tool count**: Review said 33+ should be 27+ - but 26 and doc says 26
-4. **Hook types**: Review said 10 should be 13 - but actual is 6 HookEvent variants (Plugin has 13 HookType variants)
-5. **Command count**: Review said 36 but doc already says 41
-6. **LSP skill count**: Review said 42 but actual is 41 and skill doc says 41
-
-### Key Insight
-
-**The only confirmed documentation count error is the TUI theme count** - comment says 42 but only 31 themes defined.
-
-### Documentation Fix Approach
-
-When implementing documentation fixes:
-1. Read the CURRENT architecture doc first to check if fix is needed
-2. Then read the actual source code to verify counts/claims
-3. Only fix if there's a real discrepancy
-4. Don't trust review file claims without verification
+*Updated 2026-05-26: Removed implementation-specific bug references, kept valuable patterns and accurate code locations*
