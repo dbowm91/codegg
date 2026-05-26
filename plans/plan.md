@@ -55,7 +55,7 @@ rg "check_and_reset_fuel_budget" src/plugin/loader.rs
 - **Issue**: Architecture doc says "27 tools" but actual count is **26 tools** in `with_defaults()` at `src/tool/mod.rs:89-119`
 - **Action**: Update architecture doc line 11 to say "26 tools"
 
-**Status**: Documentation only
+**Status**: ✓ Complete - documentation already correct (26 tools)
 
 ### H-3: LSP Server Count Documentation
 **Source**: `plans/lsp_review.md`
