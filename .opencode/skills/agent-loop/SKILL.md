@@ -834,7 +834,7 @@ subagent_provider.wait_for_request(100, 20).await
 
 ## Related Skills
 
-- See `.skills/tui/SKILL.md` for TUI development overview
+- See `.opencode/skills/tui/SKILL.md` for TUI development overview
 - See `.opencode/skills/permission/SKILL.md` for PermissionChoice and registry usage
 - See `.opencode/skills/provider/SKILL.md` for ScriptedProvider and transcript tests
 - See `AGENTS.md` for project-wide patterns

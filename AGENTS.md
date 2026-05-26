@@ -86,7 +86,7 @@ These items are important for future agents to know when working with the codeba
 
 - **Subprocess PATH**: All tools use `std::env::var_os("PATH")` instead of hardcoded paths for proper Homebrew/cargo/pyenv tool discovery
 
-- **Plugin fuel tracking**: `fuel_reserved` set at `loader.rs:270` is returned via `module_cache::CACHE.return_fuel()` on ALL exits (BUG-09/BUG-10 fixed)
+- **Plugin fuel tracking**: `fuel_reserved` set at `loader.rs:270` is returned via `module_cache::CACHE.return_fuel()` on ALL exits
 
 - **handle_remote_event location**: `src/tui/app/mod.rs:794` - not in client module
 

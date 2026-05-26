@@ -73,7 +73,7 @@ pub struct LspClient {
 
 ### LspServerDef (`server.rs`)
 
-Server definition with 39 server implementations:
+Server definition with 40 server implementations:
 
 ```rust
 pub struct LspServerDef {
