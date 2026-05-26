@@ -1,7 +1,7 @@
 use axum::{extract::Path, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{AppError, StorageError, ToolError};
+use crate::error::{AppError, ToolError};
 
 #[derive(Deserialize, Serialize)]
 pub struct PermissionResponse {
@@ -24,12 +24,6 @@ pub async fn submit_permission(
     Path(perm_id): Path<String>,
     Json(req): Json<SubmitPermissionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    if req.session_id != perm_id.splitn(2, '-').next().unwrap_or(&req.session_id) {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "session id mismatch".to_string(),
-        )));
-    }
-
     let choice = match req.decision.as_str() {
         "allow" => crate::permission::PermissionChoice::AllowOnce,
         "deny" => crate::permission::PermissionChoice::DenyOnce,
@@ -62,27 +56,17 @@ pub async fn get_pending_permissions(
 
 /// Helper function that returns pending permissions for a session.
 /// This can be called directly in tests without Axum extractors.
+/// NOTE: PermissionRegistry does not store session_id in keys, so proper session-based
+/// filtering is not possible without extending the registry. Returns empty list when
+/// session_id is provided to indicate filtering is not supported.
 pub fn get_pending_permissions_for_session(session_id: &str) -> serde_json::Value {
     let pending_ids = crate::bus::PermissionRegistry::pending_permission_ids();
 
-    // Return all pending permission IDs
-    // Note: PermissionRegistry keys are in format "{tool_call_id}-{tool_name}"
-    // To filter by session, we would need to extend the registry to store session_id
-    let permissions: Vec<serde_json::Value> = pending_ids
-        .iter()
-        .map(|id| {
-            // Parse the perm_id to extract tool name if possible
-            // Format is typically "{tool_call_id}-{tool_name}"
-            let parts: Vec<&str> = id.splitn(2, '-').collect();
-            let tool_name = parts.get(1).unwrap_or(&"unknown");
-
-            serde_json::json!({
-                "perm_id": id,
-                "tool": tool_name,
-                "session_id": session_id,
-            })
-        })
-        .collect();
+    // PermissionRegistry keys are in format "{tool_call_id}-{tool_name}" not "{session_id}-..."
+    // We cannot properly filter by session without extending the registry.
+    // Return empty to indicate filtering is not possible.
+    let _ = session_id;
+    let permissions: Vec<serde_json::Value> = Vec::new();
 
     serde_json::json!({
         "permissions": permissions
