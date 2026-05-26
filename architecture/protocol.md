@@ -58,7 +58,7 @@ Wraps events with sequence number, timestamp, and optional session/turn context 
 
 ## CoreRequest Enum
 
-Located in `src/protocol/core.rs:50-175`. Variant count: **35**.
+Located in `src/protocol/core.rs`. Variant count: **35**.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,7 +117,7 @@ pub enum CoreRequest { ... }
 
 ## CoreResponse Enum
 
-Located in `src/protocol/core.rs:24-46`.
+Located in `src/protocol/core.rs` (CoreResponse section).
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,7 +137,7 @@ pub enum CoreResponse { ... }
 
 ## CoreEvent Enum
 
-Located in `src/protocol/core.rs:179-272`.
+Located in `src/protocol/core.rs` (CoreEvent section).
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,7 +180,7 @@ pub enum CoreEvent { ... }
 
 ## TuiMessage Enum
 
-Located in `src/protocol/tui.rs:3-75`.
+Located in `src/protocol/tui.rs`.
 
 ```rust
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -280,12 +280,12 @@ Server (Axum)
 
 ## Versioning
 
-The protocol uses explicit versioning via `PROTOCOL_VERSION = 1` in `src/protocol/core.rs:3`. Envelopes include `protocol_version` to detect mismatches between client and server.
+The protocol uses explicit versioning via `PROTOCOL_VERSION = 1` in `src/protocol/core.rs`. Envelopes include `protocol_version` to detect mismatches between client and server.
 
 ## Implementation Notes
 
 - `CoreRequest` and `CoreResponse` use `#[serde(tag = "type")]` for JSON discrimination
 - `TuiMessage` similarly uses `#[serde(tag = "type")]`
 - All enums use `rename_all = "snake_case"` for JSON compatibility
-- The core module handles `CoreRequest` variants in `src/core/mod.rs:52-355`
+- The core module handles `CoreRequest` variants in `src/core/mod.rs`
 - Subagent events (`SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed`) exist in both `CoreEvent` and the event bus, but `map_app_event_to_core_event` does NOT map subagent events (they fall through to `None`)

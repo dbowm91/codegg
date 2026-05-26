@@ -480,17 +480,17 @@ pub use checkpoint::{
 The following events are published via `GlobalEventBus` in `src/bus/events.rs`:
 
 ### Session Events
-- `SessionCreated` - New session created (line 7)
-- `SessionUpdated` - Session metadata was updated (line 9)
-- `SessionArchived` - Session was archived (line 11)
-- `SessionForked` - Session was forked into a new session (line 13)
-- `SessionShared` - Session was shared via URL (line 15)
-- `SessionUnshared` - Session sharing was disabled (line 17)
-- `SessionReverted` - Session was reverted to a previous message (line 19)
+- `SessionCreated` - New session created
+- `SessionUpdated` - Session metadata was updated
+- `SessionArchived` - Session was archived
+- `SessionForked` - Session was forked into a new session
+- `SessionShared` - Session was shared via URL
+- `SessionUnshared` - Session sharing was disabled
+- `SessionReverted` - Session was reverted to a previous message
 
 ### Message Events
-- `MessageAdded` - New message in session (line 21)
-- `MessageDeleted` - Message was deleted from the session (line 26)
+- `MessageAdded` - New message in session
+- `MessageDeleted` - Message was deleted from the session
 
 ### NOT Published
 The following events mentioned elsewhere in documentation are **not** published:

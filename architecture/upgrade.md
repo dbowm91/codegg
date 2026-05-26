@@ -21,7 +21,7 @@ The `codegg upgrade` command **only checks and reports** - it does not automatic
    curl -fsSL https://codegg.ai/install.sh
    ```
 
-The actual `upgrade()` function exists in `src/upgrade/mod.rs:57` but is **not called** by the CLI command.
+The actual `upgrade()` function exists in `src/upgrade/mod.rs` but is **not called** by the CLI command.
 
 ## Configuration
 
