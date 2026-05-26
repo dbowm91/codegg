@@ -1,209 +1,219 @@
 # Architecture Review Plan
 
-**Status**: Incomplete - Implementation Phase
+**Status**: PENDING
 **Created**: 2026-05-26
-**Goal**: Review all architecture documents, verify claims in code, identify improvements and bugs
+**Purpose**: Systematic in-depth review of all architecture documents with code verification
 
 ---
 
-## Executive Summary
+## Overview
 
-Review of 32 architecture modules completed via subagent batch processing. The architecture documentation is generally well-maintained with most discrepancies being minor (line number drift, stale sections). However, several significant issues were identified:
+This plan organizes a comprehensive review of 28 architecture modules. Each module will be assigned to a subagent that will:
+1. Read the architecture document(s)
+2. Verify all claims against actual source code
+3. Interrogate code for bugs, inconsistencies, and improvement opportunities
+4. Write findings to `plans/<module>.md`
 
-| Category | Count |
-|----------|-------|
-| Modules reviewed | 32 |
-| Modules with verified correct docs | 12 |
-| Modules with minor discrepancies | 15 |
-| Modules with significant issues | 5 |
-| Bugs found in implementation | 2 |
-| Stale items to correct | ~25 |
+After all subagent reviews complete, findings will be consolidated and stale items identified for pruning.
 
 ---
 
-## Verified Correct Modules (12)
+## Phase 1: Module Reviews (Subagent Tasks)
 
-These modules have accurate documentation with no significant issues:
-- **bus.md** - Event counts correct (36), broadcast channel 2048 verified
-- **client.md** - Timeouts (10s health, 30s WS), retry logic all correct
-- **command.md** - 41 built-in commands verified correct
-- **core.md** - CoreClient facade, transports verified correct
-- **crypto.md** - AES-256-GCM, Argon2id verified correct
-- **error.md** - All error types, is_retryable() verified correct
-- **memory.md** - Memory system accurate, bugs correctly documented
-- **pty_session.md** - All structs/methods verified correct
-- **session.md** - Mostly accurate (minor event publishing note)
-- **skills.md** - Skill system accurate, 38 skills verified
-- **snapshot.md** - All implementations verified correct
-- **upgrade.md** - Version checking accurate
+### Batch 1: Core Runtime (5 modules)
+| Module | Architecture File | Review Focus |
+|--------|-------------------|--------------|
+| agent | `architecture/agent.md` | AgentLoop, message processing, subagent pool, team coordination |
+| bus | `architecture/bus.md` | GlobalEventBus, PermissionRegistry, QuestionRegistry |
+| core | `architecture/core.md` | CoreClient facade, transport adapters |
+| command | `architecture/command.md` | Slash command registry, templates |
+| compaction | `architecture/compaction.md` | Context overflow management |
 
----
+### Batch 2: Security & Access Control (3 modules)
+| Module | Architecture File | Review Focus |
+|--------|-------------------|--------------|
+| permission | `architecture/permission.md` | Access control, DoomLoop, mode system |
+| security | `architecture/security.md` | SSRF, IP validation, Landlock sandboxing |
+| crypto | `architecture/crypto.md` | AES-256-GCM, Argon2id key derivation |
 
-## Minor Discrepancies (15 modules)
+### Batch 3: Data & State Management (4 modules)
+| Module | Architecture File | Review Focus |
+|--------|-------------------|--------------|
+| session | `architecture/session.md` | SQLite storage, message history, checkpointing |
+| storage | `architecture/storage.md` | SQLite initialization, connection pooling |
+| memory | `architecture/memory.md` | Persistent memory, namespaces, consolidation |
+| snapshot | `architecture/snapshot.md` | File state capture and restore |
 
-These have documentation issues that don't affect functionality:
+### Batch 4: UI & Rendering (3 modules)
+| Module | Architecture File | Review Focus |
+|--------|-------------------|--------------|
+| tui | `architecture/tui.md` | Ratatui components, dialogs, FocusManager |
+| client | `architecture/client.md` | WebSocket remote TUI, resume/replay |
+| ide | `architecture/ide.md` | VS Code, JetBrains integration, diff viewing |
 
-| Module | Issue |
-|--------|-------|
-| **agent.md** | Line numbers stale (loop.rs references off due to code growth) |
-| **compaction.md** | Hook dispatch location not clearly documented (happens in loop.rs, not compaction.rs) |
-| **config.md** | Validation section incomplete - missing tool_timeout_seconds (0-3600), max_parallel_tools (0-100), compaction threshold (0.1-1.0) |
-| **hooks.md** | Integration point line numbers need updating to current code |
-| **ide.md** | Temp file drop timing claim misleading (after IDE runs, not before), indentation bug in open_diff_generic |
-| **lsp.md** | Server count correct (39 servers), "Recent Bug Fixes" framing stale |
-| **mcp.md** | Protocol version "2024-11-05" hardcoded - should verify if current |
-| **permission.md** | PermissionResponse struct documented incorrectly (doc shows wrong struct), docs mode includes 'write' but shouldn't, skill missing from mode tables |
-| **plugin.md** | plugins_dir is platform-dependent but doc shows Linux-specific path |
-| **provider.md** | ToolDefinition stale comment about input_schema rename, register_builtin_with_config not prominent |
-| **resilience.md** | Line numbers for record_success() (139-159 should be 139-158), record_failure() (160-178 should be 160-186) |
-| **security.md** | IPv6 unique local range naming imprecise (fc00::/7 vs fd00::/8) |
-| **storage.md** | init() documentation slightly confusing about Database struct usage |
-| **tts.md** | No issues - accurate |
-| **worktree.md** | No issues - accurate |
+### Batch 5: Integration Services (4 modules)
+| Module | Architecture File | Review Focus |
+|--------|-------------------|--------------|
+| server | `architecture/server.md` | Axum HTTP, WebSocket, REST API, SSE |
+| mcp | `architecture/mcp.md` | MCP client, local/remote, OAuth flow |
+| lsp | `architecture/lsp.md` | LSP diagnostics, code operations |
+| exec | `architecture/exec.md` | Non-interactive CI/CD mode |
 
----
+### Batch 6: Extensibility (4 modules)
+| Module | Architecture File | Review Focus |
+|--------|-------------------|--------------|
+| plugin | `architecture/plugin.md` | WASM plugins, hook types, fuel tracking |
+| skills | `architecture/skills.md` | Skill loading, YAML frontmatter |
+| hooks | `architecture/hooks.md` | Lifecycle hooks system |
+| upgrade | `architecture/upgrade.md` | GitHub releases, self-upgrade |
 
-## Significant Issues (5 modules)
-
-### 1. exec.md - Question Timeout Claim
-**File**: `architecture/exec.md:169`
-**Issue**: Doc claims "if the question tool is used, it will timeout after 300 seconds" but exec mode only calls `setup_question_channel()` - no explicit timeout. The 300-second timeout is inherited from general agent loop.
-**Fix**: Rephrase to clarify timeout is inherited from agent loop processing, not explicit exec configuration.
-
-### 2. server.md - Auth Middleware Bug
-**File**: `architecture/server.md:172-178`
-**Issue**: Auth middleware doc says "Reject if none set" but code at `src/server/middleware/auth.rs:37-39` actually **allows** requests when no token is configured. This is a security documentation issue.
-**Fix**: Update documentation to accurately reflect that missing tokens result in **allowing** the request (which may be intentional for development).
-
-### 3. server.md - Missing TuiMessage Variants
-**File**: `architecture/server.md:209-235`
-**Issue**: Protocol table omits `RenderFrame` (exists at `src/protocol/tui.rs:34-36`) and `QuestionResponse.id` field.
-**Fix**: Add RenderFrame to protocol table and QuestionResponse.id field.
-
-### 4. server.md - SSE Methods Misplaced
-**File**: `architecture/server.md:201-206`
-**Issue**: SSE methods (connect_sse, connect_sse_stream, take_sse_events) are MCP client methods in `src/mcp/remote.rs`, not server methods. This section should reference or be cross-referenced from mcp.md.
-**Fix**: Move SSE documentation to mcp.md or add cross-reference.
-
-### 5. tool.md - Tool Count and Executor Disconnect
-**File**: `architecture/tool.md:11,169-202`
-**Issue**: Doc claims 27 tools in `with_defaults()` but actual count is **26**. Also, ToolExecutor struct with retry logic exists but is **not actually used** by any tool in the registry.
-**Fix**: Update count to 26, and either integrate ToolExecutor or mark it as "available but not integrated".
+### Batch 7: Provider & Utilities (5 modules)
+| Module | Architecture File | Review Focus |
+|--------|-------------------|--------------|
+| provider | `architecture/provider.md` | LLM backends, streaming, model catalog |
+| tool | `architecture/tool.md` | Tool registry, built-in tools |
+| resilience | `architecture/resilience.md` | Circuit breaker, FallbackProvider |
+| util | `architecture/util.md` | Clipboard, fuzzy matching, truncation |
+| tts | `architecture/tts.md` | Text-to-speech (macOS) |
+| pty_session | `architecture/pty_session.md` | Shell session metadata |
+| worktree | `architecture/worktree.md` | Git worktree management |
 
 ---
 
-## Implementation Bugs Found (2)
+## Phase 2: Subagent Instructions
 
-### BUG-01: PermissionResponse Struct Wrong
-**Location**: `architecture/permission.md:61-69`
-**Issue**: Doc shows `PermissionResponse { id: String, choice: String }` but actual struct at `src/permission/mod.rs:1142-1145` is `{ level: PermissionLevel, persist: bool }`. The documented version doesn't exist.
-**Severity**: High - Could mislead API consumers
+Each subagent will receive this instruction template:
 
-### BUG-02: Ide.open_diff_generic Indentation Bug
-**Location**: `src/ide/mod.rs:257-369`
-**Issue**: Indentation inconsistent around `let _output = run_command_with_timeout` at lines 302-311. May compile but is confusing to maintain.
-**Severity**: Low - Logic may still work correctly
+```
+## Task: Review [MODULE_NAME] Architecture
 
----
-
-## Stale Items to Correct
-
-### Sections to Update or Remove:
-1. **command.md:208-218** - "Recent Changes (2026-05-22)" section - no longer recent, should be integrated or historical
-2. **lsp.md:275-286** - "Recent Bug Fixes" framing - these are standard implementation details, not recent fixes
-3. **provider.md** - Stale comment about `input_schema → parameters` rename (already done)
-4. **config.md** - Known Issues Fixed section should be datestamped or moved to changelog
-5. **bus.md** - Event count highlighted at top so it's clear when new events added
-
-### Line Numbers to Update:
-1. **agent.md** - loop.rs:1764, 1806 (code grew ~400 lines)
-2. **resilience.md** - circuit.rs:139-159→158, 160-178→186
-3. **tui.md** - "~5800 lines" → 5978 lines
-
-### Missing Documentation:
-1. **tui.md** - UiState.fullscreen: bool field missing
-2. **tui.md** - render.rs doesn't exist (spinner is at components/spinner.rs)
-3. **memory.md** - File locking (flock_lock/flock_unlock) not documented
-4. **plugin.md** - Dead code (check_and_reset_fuel_budget, PLUGIN_FUEL_BUDGET) should be documented or removed
-5. **config.md** - Missing validation rules for tool_timeout_seconds, max_parallel_tools, compaction threshold
-
-### Config Examples to Update:
-1. **permission.md:273-300** - Missing tools (read, git, write, skill) in config example
-2. **mcp.md:271-289** - Simplified JSON example doesn't show all config fields
+1. Read `architecture/[module].md` thoroughly
+2. Identify all claims (counts, line numbers, field names, behaviors)
+3. For each claim:
+   - Use code search (grep, glob) to find relevant source files
+   - Read the actual source code
+   - Compare documentation to implementation
+   - Mark as VERIFIED, STALE, or INCORRECT
+4. Interrogate code for:
+   - Missing functionality documented as implemented
+   - Implemented functionality missing from docs
+   - Inconsistencies between modules
+   - Potential bugs or edge cases
+   - Outdated patterns or deprecated approaches
+5. Write findings to `plans/[module].md` with structure:
+   - ## Verified Claims
+   - ## Stale Information  
+   - ## Bugs Found
+   - ## Improvements Suggested
+   - ## Cross-Module Issues
+6. Return summary of key findings
+```
 
 ---
 
-## Orphaned/Missing Architecture Files
+## Phase 3: Consolidation
 
-### Potential Missing Docs:
-- `src/tool/executor.rs` - ToolExecutor exists but retry logic not integrated
-- `src/ide/mod.rs:65-78` - register_panic_cleanup not documented
-- `src/ide/mod.rs` - TempFilesGuard not documented
-- `src/hooks/mod.rs:203-205` - has_hooks() method not documented
+After all batches complete:
 
-### No Corresponding Source (verify if stale):
-- None found - all architecture files have corresponding source modules
+1. Read all `plans/*.md` files
+2. Identify cross-cutting issues affecting multiple modules
+3. Document systemic patterns needing architectural fixes
+4. Create `plans/consolidated.md` with master findings
 
 ---
 
-## Subagent Review Output Files
+## Phase 4: Stale Item Identification
 
-All subagent reviews written to `plans/` directory:
-- `plans/agent_review.md` through `plans/worktree_review.md` (32 files)
-- Each contains: Summary, Verified Correct, Discrepancies, Bugs, Improvements, Stale Items
+### Step 4.1: Compare Module Index
 
----
+Read `architecture/overview.md` Module Index section and verify each listed module:
+- Still exists in `src/` as actual module
+- Has corresponding architecture file
+- Is referenced in AGENTS.md module table
 
-## Recommended Actions
+### Step 4.2: Check Architecture File Validity
 
-### High Priority (Documentation Bugs):
-1. Fix permission.md PermissionResponse struct (BUG-01)
-2. Fix server.md auth middleware description (allows vs rejects)
-3. Add RenderFrame to server.md protocol table
-4. Update tool.md tool count (27→26)
-5. Move SSE docs from server.md to mcp.md
+For each `.md` file in `architecture/`:
+- Verify it documents an actual module in `src/`
+- Verify claims are still accurate
+- Check for duplicate/outdated information
 
-### Medium Priority (Stale Corrections):
-1. Update agent.md line references
-2. Update lsp.md server count (39→42)
-3. Update resilience.md line numbers
-4. Remove or historical-ize "Recent Changes" sections
-5. Update tui.md line count and fullscreen field
+### Step 4.3: Identify Stale Items
 
-### Low Priority (Improvements):
-1. Document file locking in memory.md
-2. Document dead code in plugin.md (or remove code)
-3. Add validation rules to config.md
-4. Fix ide.md indentation bug (BUG-02)
+Create `plans/stale_items.md` documenting:
+- Modules in architecture with no corresponding source
+- Files referencing deprecated patterns
+- Counts/line numbers that have drifted from reality
+- Cross-references to other architecture files that are outdated
 
 ---
 
-## Execution Log
+## Phase 5: Pruning Recommendations
 
-- [x] Batch 1: agent, bus, client, command, compaction, config, core, crypto
-- [x] Batch 2: error, exec, hooks, ide, lsp, mcp, memory, permission
-- [x] Batch 3: plugin, provider, pty_session, resilience, security, server, session, skills
-- [x] Batch 4: snapshot, storage, tool, tts, tui, upgrade, util, worktree
-- [x] Consolidation phase
-- [x] Implementation phase: All 14 recommended actions completed
-
-### Implementation Details (2026-05-26)
-1. Fixed permission.md PermissionResponse struct (BUG-01)
-2. Fixed server.md auth middleware description (allows vs rejects)
-3. Added RenderFrame to server.md protocol table
-4. Updated tool.md tool count (27→26)
-5. Moved SSE docs from server.md to mcp.md
-6. Updated agent.md line references (1764→1777, 1806→1814)
-7. Updated lsp.md server count (39 servers confirmed correct)
-8. Updated resilience.md line numbers (139-159→158, 160-178→186)
-9. Removed/historicalized stale 'Recent Changes' sections
-10. Updated tui.md line count (~5800→5978)
-11. Documented file locking in memory.md
-12. Documented dead code in plugin.md
-13. Added validation rules to config.md
-14. Fixed ide.md indentation bug note (BUG-02 - code works, indentation cosmetic)
+Based on Phase 4 findings, recommend:
+1. Remove `architecture/*.md` files for modules that no longer exist
+2. Update `architecture/overview.md` module index
+3. Fix cross-references between architecture files
+4. Remove duplicate information across files
 
 ---
 
-*Review plan created: 2026-05-26*
-*Consolidated from 32 subagent review files*
+## Verification Commands
+
+After any documentation changes:
+```bash
+cargo build --all-features
+cargo clippy --all-features -- -D warnings
+```
+
+---
+
+## File Outputs
+
+| File | Purpose |
+|------|---------|
+| `plans/agent.md` | Agent module review findings |
+| `plans/bus.md` | Bus module review findings |
+| `plans/core.md` | Core module review findings |
+| `plans/command.md` | Command module review findings |
+| `plans/compaction.md` | Compaction module review findings |
+| `plans/permission.md` | Permission module review findings |
+| `plans/security.md` | Security module review findings |
+| `plans/crypto.md` | Crypto module review findings |
+| `plans/session.md` | Session module review findings |
+| `plans/storage.md` | Storage module review findings |
+| `plans/memory.md` | Memory module review findings |
+| `plans/snapshot.md` | Snapshot module review findings |
+| `plans/tui.md` | TUI module review findings |
+| `plans/client.md` | Client module review findings |
+| `plans/ide.md` | IDE module review findings |
+| `plans/server.md` | Server module review findings |
+| `plans/mcp.md` | MCP module review findings |
+| `plans/lsp.md` | LSP module review findings |
+| `plans/exec.md` | Exec module review findings |
+| `plans/plugin.md` | Plugin module review findings |
+| `plans/skills.md` | Skills module review findings |
+| `plans/hooks.md` | Hooks module review findings |
+| `plans/upgrade.md` | Upgrade module review findings |
+| `plans/provider.md` | Provider module review findings |
+| `plans/tool.md` | Tool module review findings |
+| `plans/resilience.md` | Resilience module review findings |
+| `plans/util.md` | Util module review findings |
+| `plans/tts.md` | TTS module review findings |
+| `plans/pty_session.md` | PTY Session module review findings |
+| `plans/worktree.md` | Worktree module review findings |
+| `plans/consolidated.md` | Master findings across all modules |
+| `plans/stale_items.md` | Items identified for pruning |
+
+---
+
+## Notes
+
+- **Context Limits**: Subagents may undergo compaction after ~2000 lines. Batch size is designed to stay within limits.
+- **Line Numbers**: Always use code search to verify line numbers - docs may drift
+- **Verification First**: Many "bugs" in docs turn out to be correctly implemented. Always verify claims against code.
+- **No Direct Changes**: This plan is for REVIEW ONLY. No direct code changes should be specified for execution.
+
+---
+
+*End of plan*
