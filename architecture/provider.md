@@ -146,7 +146,7 @@ pub struct ToolCall {
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
-    pub parameters: serde_json::Value,  // input_schema renamed to parameters
+    pub parameters: serde_json::Value,
 }
 
 impl ToolDefinition {
@@ -297,9 +297,19 @@ pub fn parse_anthropic_buffer_with_state(
 
 ## Registration Patterns
 
+### register_builtin_with_config
+
+Primary entry point. Registers all providers from config with environment variable fallback:
+
+```rust
+pub fn register_builtin_with_config(registry: &mut ProviderRegistry, config: &Config);
+```
+
+Supports providers defined in config file with optional env var fallback for API keys.
+
 ### register_builtin
 
-Registers providers from environment variables (no config required):
+Registers providers from environment variables only (no config required):
 
 ```rust
 pub fn register_builtin(registry: &mut ProviderRegistry);
@@ -336,14 +346,6 @@ fn register_env_fallback_provider<F>(
     factory: F,
 ) where
     F: FnOnce(String) -> Box<dyn Provider>,
-```
-
-### register_builtin_with_config
-
-Registers all providers from config with environment variable fallback:
-
-```rust
-pub fn register_builtin_with_config(registry: &mut ProviderRegistry, config: &Config);
 ```
 
 ## ProviderError
