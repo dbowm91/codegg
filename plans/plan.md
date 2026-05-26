@@ -168,11 +168,12 @@ Missing documentation for validations that exist in code:
 - **Issue**: "Used by" list (webfetch, websearch, codesearch, mcp/remote) may be incomplete
 - **Action**: Verify against actual tool implementations
 
-### M-6: LSP Completion Fallback Behavior
+### M-6: LSP Completion Fallback Behavior ✅
 **Source**: `plans/lsp_review.md`
 
 - **Issue**: `operations.rs:282-285` has fallback to `Vec<CompletionItem>`, but `client.rs:412-413` only does `CompletionList` without fallback
 - **Action**: Clarify which module handles completion fallback behavior
+- **Resolution**: Clarified in `architecture/lsp.md:106` - `LspOperations::completion` handles the fallback (tries `CompletionList`, falls back to `Vec<CompletionItem>`); `LspClient::completion` only handles `CompletionList` which is the correct architectural separation
 
 ### M-7: Command normalize_name() Documentation
 **Source**: `plans/command_review.md`
@@ -356,7 +357,7 @@ Each group is independent; agents should pick one group at a time:
 | C | M-3, M-10 | IDE | Temp file timing, indentation | `architecture/ide.md`, `src/ide/mod.rs` |
 | D | M-4 | Provider | Already verified - no action needed | - |
 | E | M-5 | Security | "Used by" list verification | `architecture/security.md` |
-| F | M-6 | LSP | Completion fallback clarification | `architecture/lsp.md` |
+| F | M-6 ✅ | LSP | Completion fallback clarification | `architecture/lsp.md` |
 | G | M-7 | Command | normalize_name() documentation | `architecture/command.md` |
 | H | M-8 | Plugin | plugins_dir cross-platform | `architecture/plugin.md` |
 | I | M-9 | Hooks | InlineScript deprecation handling | `src/hooks/mod.rs` OR `architecture/hooks.md` |
