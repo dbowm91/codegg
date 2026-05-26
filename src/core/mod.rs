@@ -792,6 +792,50 @@ fn map_app_event_to_core_event(event: crate::bus::events::AppEvent) -> Option<Co
             code: "agent_error".to_string(),
             message,
         }),
+        crate::bus::events::AppEvent::SubagentStarted {
+            session_id,
+            task_id,
+            agent,
+            description,
+        } => Some(CoreEvent::SubagentStarted {
+            session_id,
+            task_id,
+            agent,
+            description,
+        }),
+        crate::bus::events::AppEvent::SubagentProgress {
+            session_id,
+            task_id,
+            agent,
+            message,
+        } => Some(CoreEvent::SubagentProgress {
+            session_id,
+            task_id,
+            agent,
+            message,
+        }),
+        crate::bus::events::AppEvent::SubagentCompleted {
+            session_id,
+            task_id,
+            agent,
+            result_summary,
+        } => Some(CoreEvent::SubagentCompleted {
+            session_id,
+            task_id,
+            agent,
+            result_summary,
+        }),
+        crate::bus::events::AppEvent::SubagentFailed {
+            session_id,
+            task_id,
+            agent,
+            error,
+        } => Some(CoreEvent::SubagentFailed {
+            session_id,
+            task_id,
+            agent,
+            error,
+        }),
         _ => None,
     }
 }

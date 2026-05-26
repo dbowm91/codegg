@@ -256,6 +256,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(plugin = plugin_id, error = %e, "failed to read WASM metadata");
+            module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
             return HookResult::ok(ctx.input);
         }
     };
@@ -267,6 +268,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
             max = MAX_WASM_SIZE,
             "WASM module exceeds maximum size"
         );
+        module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
         return HookResult::ok(ctx.input);
     }
 
@@ -282,6 +284,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
                 plugin = plugin_id,
                 "failed to get or compile WASM module from cache"
             );
+            module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
             return HookResult::ok(ctx.input);
         }
     };
@@ -401,6 +404,7 @@ pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult 
             Some(p) => p,
             None => {
                 tracing::warn!(plugin = plugin_id, "hook function returned no value");
+                module_cache::CACHE.return_fuel(plugin_id, fuel_reserved);
                 return Ok::<(HookResult, u64), BoxError>((
                     HookResult::error("hook function returned no value"),
                     0,
