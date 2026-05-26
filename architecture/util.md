@@ -107,6 +107,9 @@ if let Some(text) = clipboard::read_from_clipboard() {
 // Fuzzy matching
 let candidates = vec!["hello".to_string(), "world".to_string()];
 let results = fuzzy_match("hel", &candidates); // sorted by score
+for (name, score) in &results {
+    println!("{name}: {score}");
+}
 
 let score = fuzzy_score("hello", "hello"); // case-insensitive scoring
 
