@@ -293,7 +293,10 @@ Related configurations in `config/`:
 2. **`SubAgentPool` bounded concurrency** - Uses semaphore with default of 5, RAII guard pattern for active_count
 3. **Tool definition caching** - Cache key includes mcp_tool_count, permission_version for proper invalidation (uses mcp_tool_count as proxy - known limitation)
 4. **DoomLoop detection** - Uses window-based counting (not consecutive), correctly documented
-5. **ToolExecuteBefore/After hooks** - Both hooks ARE invoked in `execute_tool_calls()` at loop.rs:1777 and 1814
+5. **Tool execution hooks** - Both hook systems are invoked for each tool execution, but at different locations in `execute_tool_calls()`:
+   - **Shell Command HookRegistry** (`PreToolExecute`/`PostToolExecute`): Runs external shell commands registered in config. Can NOT block execution.
+   - **Plugin Service hooks** (`dispatch_tool_execute_before`/`dispatch_tool_execute_after`): Runs WASM plugin hooks. `ToolExecuteBefore` CAN block execution if the plugin returns `blocked: true`.
+   Both systems receive the same tool context (tool_name, arguments, session_id, result).
 6. **BackgroundScheduler task_id** - Uses `task.id.parse()` to use actual background task ID instead of random
 7. **`start_workers()` removed** - Dead no-op method was removed, workers start in constructors
 
