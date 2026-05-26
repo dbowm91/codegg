@@ -287,22 +287,66 @@ pub enum McpServerStatus {
 
 ## Server Configuration
 
-MCP servers configured in `config.json`:
+MCP servers configured in `config.json`. The `servers` section maps server names to `McpEntry` objects, each containing an optional `McpServerConfig` with the following fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `server_type` | `string` | Type of MCP server: `local` or `remote` (renamed from `type`) |
+| `command` | `string` | Executable path for local servers (e.g., `npx`, `uvx`) |
+| `args` | `string[]` | Arguments passed to the command |
+| `env` | `object` | Environment variables for local servers |
+| `environment` | `object` | Additional environment variables (merged with `env`) |
+| `url` | `string` | HTTP URL for remote servers |
+| `headers` | `object` | HTTP headers for remote servers (e.g., Authorization) |
+| `transport` | `string` | Transport type: `stdio` or `http` |
+| `timeout` | `number` | Request timeout in milliseconds |
+| `oauth` | `object` | OAuth configuration (`client_id`, `client_secret`, `scope`) |
+| `reconnect` | `object` | Reconnection settings (`enabled`, `max_retries`, `base_delay_secs`, `max_delay_secs`, `heartbeat_interval_secs`) |
+
+**Example configuration:**
 
 ```json
 {
   "mcp": {
     "servers": {
       "filesystem": {
-        "type": "local",
+        "enabled": true,
+        "server_type": "local",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"],
+        "env": {
+          "PATH": "${PATH}"
+        },
+        "timeout": 30000
       },
       "github": {
-        "type": "remote",
+        "enabled": true,
+        "server_type": "remote",
         "url": "https://api.github.com/mcp",
         "headers": {
           "Authorization": "Bearer ${GITHUB_TOKEN}"
+        },
+        "transport": "http",
+        "timeout": 60000,
+        "reconnect": {
+          "enabled": true,
+          "max_retries": 5,
+          "base_delay_secs": 1,
+          "max_delay_secs": 60,
+          "heartbeat_interval_secs": 30
+        }
+      },
+      "slack": {
+        "enabled": true,
+        "server_type": "remote",
+        "url": "https://slack-mcp.example.com",
+        "oauth": {
+          "client_id": "${SLACK_CLIENT_ID}",
+          "client_secret": "${SLACK_CLIENT_SECRET}",
+          "scope": "chat:write,channels:read"
+        },
+        "reconnect": {
+          "enabled": true
         }
       }
     }
