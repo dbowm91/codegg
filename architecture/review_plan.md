@@ -1,173 +1,150 @@
 # Architecture Review Plan
 
-This document outlines a systematic review process for all architecture documents in the `architecture/` directory. The goal is to verify claims against actual code, identify stale information, and create improvement plans for each module.
+This plan organizes a systematic review of all architecture documents in the `architecture/` directory, using subagents to verify claims against actual code and identify improvements and bugs.
 
-## Overview
+## Modules to Review (34 total, excluding review_plan.md)
 
-- **Total architecture documents**: 34 (excluding this file)
-- **Subagent batches**: 8 groups of 4-5 modules each
-- **Output location**: Each subagent writes improvement plans to `plans/<module>_review.md`
-- **Review scope**: Verify documentation claims, identify bugs, suggest improvements
+| # | Module | File |
+|---|--------|------|
+| 1 | Overview | `architecture/overview.md` |
+| 2 | Protocol | `architecture/protocol.md` |
+| 3 | Command | `architecture/command.md` |
+| 4 | Client | `architecture/client.md` |
+| 5 | Bus | `architecture/bus.md` |
+| 6 | Agent | `architecture/agent.md` |
+| 7 | Skills | `architecture/skills.md` |
+| 8 | Provider | `architecture/provider.md` |
+| 9 | Plugin | `architecture/plugin.md` |
+| 10 | Upgrade | `architecture/upgrade.md` |
+| 11 | Session | `architecture/session.md` |
+| 12 | Server | `architecture/server.md` |
+| 13 | Resilience | `architecture/resilience.md` |
+| 14 | Compaction | `architecture/compaction.md` |
+| 15 | Util | `architecture/util.md` |
+| 16 | Permission | `architecture/permission.md` |
+| 17 | Core | `architecture/core.md` |
+| 18 | Memory | `architecture/memory.md` |
+| 19 | Config | `architecture/config.md` |
+| 20 | IDE | `architecture/ide.md` |
+| 21 | MCP | `architecture/mcp.md` |
+| 22 | Hooks | `architecture/hooks.md` |
+| 23 | Worktree | `architecture/worktree.md` |
+| 24 | Security | `architecture/security.md` |
+| 25 | LSP | `architecture/lsp.md` |
+| 26 | PTY Session | `architecture/pty_session.md` |
+| 27 | Exec | `architecture/exec.md` |
+| 28 | TUI | `architecture/tui.md` |
+| 29 | Tool | `architecture/tool.md` |
+| 30 | Error | `architecture/error.md` |
+| 31 | TTS | `architecture/tts.md` |
+| 32 | Snapshot | `architecture/snapshot.md` |
+| 33 | Crypto | `architecture/crypto.md` |
+| 34 | Storage | `architecture/storage.md` |
 
-## Staleness Check Process
+## Review Process
 
-Before launching subagents, a preliminary check identifies:
-1. Architecture documents with no corresponding source module
-2. Documents referencing non-existent file paths or line numbers
-3. Outdated module names or deprecated patterns
-4. Discrepancies between documented modules and actual `src/` structure
+### Phase 1: Subagent Batch Reviews (Parallel Execution)
 
-## Batch 1: Core Infrastructure
-- [x] `core.md` - Core facade, transport adapters, protocol envelopes
-- [x] `protocol.md` - CoreRequest/CoreResponse, TuiMessage protocol
-- [x] `bus.md` - GlobalEventBus, PermissionRegistry, QuestionRegistry
-- [x] `config.md` - Configuration loading, validation, encryption
+Launch subagents in batches of 5-6 modules each. Each subagent will:
 
-## Batch 2: Agent & Session Management
-- [x] `agent.md` - AgentLoop, subagent pool, team coordination
-- [x] `session.md` - Session storage, database schema, checkpointing
-- [x] `memory.md` - Persistent memory, session-to-session learning
-- [x] `compaction.md` - Context window overflow management
+1. Read the architecture document for their assigned module(s)
+2. Read the corresponding source code in `src/`
+3. Verify claims in the documentation against actual code
+4. Identify:
+   - Stale/incorrect documentation claims
+   - Bugs discovered during review
+   - Improvement opportunities
+   - Missing features that are documented as existing
+   - Features documented but not implemented
+5. Write findings to `plans/<module>_review.md`
 
-## Batch 3: Execution & Security
-- [x] `exec.md` - Non-interactive exec mode for CI/CD
-- [x] `security.md` - SSRF, symlink protection, Landlock
-- [x] `permission.md` - Mode system, PermissionChecker, DoomLoop
-- [x] `crypto.md` - AES-256-GCM, Argon2id key derivation
+### Batch Assignments
 
-## Batch 4: Provider & Resilience
-- [x] `provider.md` - LLM provider implementations
-- [x] `resilience.md` - Circuit breaker, FallbackProvider
-- [x] `tool.md` - Tool trait, registration, execution flow
-- [x] `command.md` - Slash command registry, templates
+**Batch 1** (Modules 1-5): Overview, Protocol, Command, Client, Bus
+- Task: `plans/overview_review.md`, `plans/protocol_review.md`, `plans/command_review.md`, `plans/client_review.md`, `plans/bus_review.md`
 
-## Batch 5: Integration & Communication
-- [x] `mcp.md` - Model Context Protocol client
-- [x] `lsp.md` - Language Server Protocol support
-- [x] `ide.md` - VS Code, JetBrains integration
-- [x] `server.md` - HTTP/WebSocket server for remote TUI
+**Batch 2** (Modules 6-10): Agent, Skills, Provider, Plugin, Upgrade
+- Task: `plans/agent_review.md`, `plans/skills_review.md`, `plans/provider_review.md`, `plans/plugin_review.md`, `plans/upgrade_review.md`
 
-## Batch 6: Client & UI
-- [x] `client.md` - Remote TUI client, WebSocket
-- [x] `tui.md` - Terminal UI, keyboard shortcuts
-- [x] `hooks.md` - Hooks system for agent lifecycle
-- [x] `error.md` - AppError, ProviderError, ToolError
+**Batch 3** (Modules 11-15): Session, Server, Resilience, Compaction, Util
+- Task: `plans/session_review.md`, `plans/server_review.md`, `plans/resilience_review.md`, `plans/compaction_review.md`, `plans/util_review.md`
 
-## Batch 7: Plugins & Extensions
-- [x] `plugin.md` - WASM plugin system
-- [x] `skills.md` - Runtime skill loader
-- [x] `snapshot.md` - File state capture and restore
-- [x] `upgrade.md` - Self-upgrade via GitHub releases
+**Batch 4** (Modules 16-20): Permission, Core, Memory, Config, IDE
+- Task: `plans/permission_review.md`, `plans/core_review.md`, `plans/memory_review.md`, `plans/config_review.md`, `plans/ide_review.md`
 
-## Batch 8: Utilities & Support Modules
-- [x] `util.md` - Clipboard, fuzzy matching, metrics
-- [x] `storage.md` - SQLite initialization, pooling
-- [x] `worktree.md` - Git worktree management
-- [x] `pty_session.md` - Shell session metadata
-- [x] `tts.md` - Text-to-speech module
+**Batch 5** (Modules 21-25): MCP, Hooks, Worktree, Security, LSP
+- Task: `plans/mcp_review.md`, `plans/hooks_review.md`, `plans/worktree_review.md`, `plans/security_review.md`, `plans/lsp_review.md`
 
----
+**Batch 6** (Modules 26-30): PTY Session, Exec, TUI, Tool, Error
+- Task: `plans/pty_session_review.md`, `plans/exec_review.md`, `plans/tui_review.md`, `plans/tool_review.md`, `plans/error_review.md`
 
-## Review Instructions for Subagents
+**Batch 7** (Modules 31-34): TTS, Snapshot, Crypto, Storage
+- Task: `plans/tts_review.md`, `plans/snapshot_review.md`, `plans/crypto_review.md`, `plans/storage_review.md`
+
+### Phase 2: Stale Item Detection
+
+After all subagents complete, the parent agent will:
+
+1. **Cross-reference all `plans/*_review.md` files**
+   - Compile a list of all identified stale documentation items
+   - Compile a list of all identified stale module files
+
+2. **Check for stale items in architecture directory**:
+   - Modules that exist in `architecture/` but have no corresponding source in `src/`
+   - Modules that describe features that have been removed or significantly changed
+   - Line numbers and field counts that no longer match source
+   - File references that point to moved/renamed files
+
+3. **Verify module organization**:
+   - Compare `architecture/` listing against what modules actually exist in `src/`
+   - Identify orphaned architecture files
+   - Note any source modules without architecture documentation
+
+### Phase 3: Review Summary (Parent Agent)
+
+After all subagent reviews and stale detection:
+1. Consolidate findings into a summary document at `plans/consolidated_review.md`
+2. Produce final list of recommended:
+   - Documentation corrections
+   - Documentation files to remove (stale)
+   - Architecture files to remove (stale)
+   - Code improvements (for separate implementation)
+
+## Subagent Instructions
 
 Each subagent should:
+- Work only in `/Users/davidbowman/projects/codegg`
+- Verify every claim by checking actual source code
+- Note exact line numbers for discrepancies
+- Document what should be fixed but NOT make direct code changes
+- Write findings to the specified output file in `plans/`
 
-1. **Read the architecture document** for their assigned modules
+## Output Structure
 
-2. **Verify claims against source code**:
-   - Check line numbers mentioned in docs against actual code
-   - Verify struct field definitions match documented fields
-   - Confirm function signatures, enum variants, and method names
-   - Validate architecture claims about data flow and module interactions
+Each `plans/<module>_review.md` should contain:
 
-3. **Identify stale information**:
-   - Missing fields that were added to structs
-   - Renamed functions or methods
-   - Deprecated patterns no longer in use
-   - Outdated file paths or line references
+```markdown
+# <Module> Architecture Review
 
-4. **Interrogate for improvements and bugs**:
-   - Look for TODOs, FIXMEs, or HackMD notes in source
-   - Identify missing error handling
-   - Check for race conditions or concurrency issues
-   - Verify security assumptions still hold
+## Documentation Accuracy
+- [List verified accurate claims]
+- [List stale/incorrect claims with corrections]
 
-5. **Write improvement plan to `plans/<module>_review.md`**:
-   - Summary of verification findings
-   - List of stale items found
-   - Bug reports with file:line references
-   - Improvement suggestions (not direct code changes)
+## Code Bugs Found
+- [Bug description with location]
 
-## Staleness Pruning Criteria
+## Improvement Opportunities
+- [Suggested improvements]
 
-After all subagent reviews complete, consolidate findings to identify:
+## Stale Items to Remove from Architecture Directory
+- [Any items that should be pruned]
 
-1. **Orphaned documents**: Architecture docs with no corresponding `src/` module
-2. **Completely stale documents**: Docs where >50% of content is outdated
-3. **Partially stale documents**: Specific sections that need updating
-4. **Missing documents**: Modules in `src/` with no architecture doc
-
-## Execution Order
-
-1. **Phase 1**: Launch Batch 1-4 subagents in parallel (8 total subagents)
-2. **Phase 2**: Launch Batch 5-8 subagents in parallel
-3. **Phase 3**: Consolidate all `plans/*_review.md` files
-4. **Phase 4**: Update this review plan with staleness findings
-5. **Phase 5**: Create cleanup plan for stale items
-
-## Expected Outputs
-
-Review plans written by subagents to `plans/`:
-
-- [x] `plans/core_infrastructure_review.md` - core, protocol, bus, config
-- [x] `plans/agent_session_review.md` - agent, session, memory, compaction
-- [x] `plans/exec_security_review.md` - exec, security, permission, crypto
-- [x] `plans/provider_resilience_review.md` - provider, resilience, tool, command
-- [x] `plans/integration_review.md` - mcp, lsp, ide, server
-- [x] `plans/client_ui_review.md` - client, tui, hooks, error
-- [x] `plans/plugin_extension_review.md` - plugin, skills, snapshot, upgrade
-- [x] `plans/utility_support_review.md` - util, storage, worktree, pty_session, tts
-
-## Staleness Findings Summary
-
-### Critical Bugs Found
-1. **snapshot.md**: Hash algorithm inconsistency - `collect_files_sync()` uses MD5 but SHA256 elsewhere (`src/snapshot/mod.rs:431` vs :143,:417)
-2. **core.md/protocol.md**: Incorrectly claims subagent events NOT mapped in `map_app_event_to_core_event` - they ARE mapped
-3. **skills.md**: Claims `.skills/` directory is loaded at runtime - it is NOT
-
-### Stale Item Categories
-| Category | Count | Modules Affected |
-|----------|-------|------------------|
-| Missing struct fields | 3 | agent, util |
-| Wrong line numbers | 4 | pty_session, session, compaction |
-| Wrong counts (commands, tests) | 3 | command, pty_session, provider |
-| Outdated descriptions | 5 | bus, provider, client, plugin |
-| Unused/dead code referenced | 4 | permission, tool |
-
-### Potential Bugs in Code
-| File | Issue |
-|------|-------|
-| `src/tool/executor.rs:8` | `ToolExecutor` exists but never used |
-| `src/snapshot/mod.rs:431` | MD5 vs SHA256 inconsistency |
-| `src/util/metrics.rs:122-124` | Histogram unbounded memory growth |
-| `src/tui/app/state/ui.rs` | `render_panic_count` never incremented |
-| `src/tui/app/state/ui.rs` | `dirty_regions` partial redraw optimization incomplete |
-| `src/client/mod.rs` | `ClientError` lacks `is_retryable()` method |
-| `src/memory/mod.rs` | `access_count` increments lost without explicit save |
-| `src/security/sandbox.rs:237` | Static cache with no invalidation |
-
-## Next Steps
-
-1. **Fix critical bugs** in snapshot hashing, skills loading, and subagent event mapping
-2. **Update stale documentation** in skills.md, bus.md, provider.md, client.md
-3. **Audit dead code**: Remove or integrate `ToolExecutor`, `PermissionResponse`, `check_external_directory()`
-4. **Address potential bugs** in metrics, TUI state, and memory persistence
-5. **Update line numbers** in pty_session.md, session.md, compaction.md
-6. **Correct command/test counts** in command.md, pty_session.md
+## Missing Documentation
+- [Features with no docs or incomplete docs]
+```
 
 ## Notes
 
-- This plan is for **review only** - subagents write improvement plans, not direct code changes
-- Subagents should use the `general` agent type for thorough code analysis
-- Each subagent prompt should specify exactly which modules they're reviewing
-- Consolidation step identifies what needs to be pruned or updated in architecture/
+- This is a research/review task only - no code changes should be made by subagents
+- Subagents should verify using grep, glob, and Read tools against actual source
+- All work stays within `/Users/davidbowman/projects/codegg`
