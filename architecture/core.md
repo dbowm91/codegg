@@ -34,7 +34,7 @@ pub trait CoreClient: Send + Sync {
 
 | Type | Purpose |
 |------|---------|
-| `InprocCoreClient` | Runs the core in the current process. `subscribe()` reads from GlobalEventBus and forwards events to the channel. Turn execution (spawned async) publishes `AgentFinished`/`Error` events to the bus. |
+| `InprocCoreClient` | Runs the core in the current process. Contains 4 fields: `subagent_pool` (SubAgentPool for subagent management), `memory_store` (MemoryStore for cross-session memory), `bg_scheduler` (BackgroundScheduler for task scheduling), and `pool` (SqlitePool for database access). `subscribe()` reads from GlobalEventBus and forwards events to the channel. Turn execution (spawned async) publishes `AgentFinished`/`Error` events to the bus. |
 | `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests/responses over stdin/stdout |
 | `SocketCoreClient` | Connects to a Unix socket endpoint and exchanges JSONL requests/responses |
 
@@ -62,16 +62,86 @@ Defined in `src/protocol/core.rs`.
 #### Explicit CoreRequest Variants
 
 The `CoreRequest` enum (in `src/protocol/core.rs`) contains these variants:
+
+**Session Lifecycle:**
 - `Initialize` - Initialize session
 - `Subscribe { session_id }` - Subscribe to session events
 - `Resume { session_id, from_event_seq }` - Resume from event sequence
+- `SessionList { project_id, show_archived, limit }` - List sessions
+- `SessionCreate { directory, title }` - Create new session
+- `SessionAttach { session_id }` - Attach to session
+- `SessionLoad { session_id }` - Load session data
+- `SessionFork { session_id }` - Fork session
+- `SessionDelete { session_id, permanent }` - Delete session
+- `SessionArchive { session_id, unarchive }` - Archive/unarchive session
+- `SessionRestore { session_id }` - Restore session
+- `SessionShare { session_id }` - Share session
+- `SessionUnshare { session_id }` - Unshare session
+- `SessionRename { session_id, new_title }` - Rename session
+- `SessionExport { session_id }` - Export session
+- `SessionImportData { data }` - Import session data
+- `SessionCreateFromTemplate { template, project_id, directory }` - Create from template
+
+**Turn Lifecycle:**
+- `TurnSubmit { session_id, text, plan_mode, model, agents, current_agent_idx, messages }` - Submit a turn for execution. `session_id` identifies the session, `text` is user input, `plan_mode` enables planning, `model` specifies the LLM model, `agents` is the agent configuration array, `current_agent_idx` selects active agent, and `messages` is conversation history.
 - `TurnCancel { session_id, turn_id }` - Cancel a turn
 - `TurnSteer { session_id, turn_id, text }` - Steer with text
 - `AgentSelect { session_id, agent_name }` - Select agent
 - `ModelSelect { session_id, model }` - Select model
-- (Plus additional variants for list, create, load, etc.)
 
-See `src/protocol/core.rs` for complete enum definition.
+**Session Data:**
+- `SessionMessagesLoad { session_id }` - Load session messages
+- `SessionMessageCounts { session_ids }` - Get message counts
+
+**Operational Helpers:**
+- `ModelsRefresh` - Refresh model list
+- `PermissionRespond { id, choice }` - Respond to permission request
+- `QuestionRespond { id, answers }` - Respond to question
+- `MemorySearch { query }` - Search memory
+- `MemoryList { namespace }` - List memory entries
+- `MemoryRemember { text, namespace }` - Remember to memory
+- `MemoryForget { id }` - Forget from memory
+- `TaskList` - List tasks
+- `TaskSchedule { session_id, interval_secs, message }` - Schedule task
+- `TaskDelete { id }` - Delete task
+- `WorktreeList { project_dir }` - List worktrees
+
+#### CoreEvent Enum
+
+The `CoreEvent` enum (in `src/protocol/core.rs`) is published by the core and received by in-process subscribers via `subscribe()`:
+
+**Snapshot Events:**
+- `SnapshotSession { session_id }` - Session state snapshot requested
+- `SnapshotWorkspace { project_dir }` - Workspace snapshot requested
+- `SnapshotModels { current_model, models }` - Model list snapshot
+
+**Turn Events:**
+- `TurnStarted { session_id, turn_id }` - Turn execution started
+- `TurnTextDelta { session_id, turn_id, delta }` - Text delta received
+- `TurnReasoningDelta { session_id, turn_id, delta }` - Reasoning delta received
+- `TurnCompleted { session_id, turn_id, stop_reason }` - Turn completed
+- `TurnFailed { session_id, turn_id, message }` - Turn failed
+
+**Tool Events:**
+- `ToolStarted { session_id, turn_id, tool_name, tool_id, arguments }` - Tool execution started
+- `ToolCompleted { session_id, turn_id, tool_id, output, success }` - Tool completed
+
+**Permission/Question Events:**
+- `PermissionPending { id, tool, path }` - Permission request pending
+- `QuestionPending { id, questions }` - Question pending response
+
+**Session Events:**
+- `SessionUpdated { session_id }` - Session was updated
+- `FileChanged { path, action }` - File changed event
+
+**Subagent Events:**
+- `SubagentStarted { session_id, task_id, agent, description }` - Subagent started
+- `SubagentProgress { session_id, task_id, agent, message }` - Subagent progress
+- `SubagentCompleted { session_id, task_id, agent, result_summary }` - Subagent completed
+- `SubagentFailed { session_id, task_id, agent, error }` - Subagent failed
+
+**Error Events:**
+- `Error { code, message }` - Error occurred
 
 ## Transport Modes
 

@@ -203,9 +203,9 @@ impl LspError {
 | From | To | Notes |
 |------|-----|-------|
 | `sqlx::Error` | `StorageError::Database` | Database errors |
-| `reqwest::Error` | `ProviderError::Api` | HTTP request failures |
+| `reqwest::Error` | `ProviderError::Api` | HTTP failures; reqwest `.url()` extracts endpoint |
 | `CircuitError::Open` | `ProviderError::CircuitOpen` | Circuit breaker integration |
-| `String` / `&str` | `ProviderError::Api` | Helper constructors |
+| `String` / `&str` | `ProviderError::Api` | `api()` (empty URL) or `api_with_url()` constructors |
 
 ## HTTP Status Mapping (Server Feature)
 

@@ -165,10 +165,9 @@ pub struct AgentState {
 ### DialogState (`app/state/dialog.rs`)
 
 Contains all dialog instances, including optional dialogs:
-- `model_dialog`, `agent_dialog`, `session_dialog`, `tree_dialog`, `command_palette` - always present
+- `model_dialog`, `agent_dialog`, `session_dialog`, `tree_dialog`, `command_palette` - always instantiated
 - `theme_picker`, `question_dialog`, `permission_dialog`, `keybind_dialog`, `mcp_dialog` - created on demand
-- `share_dialog`, `import_dialog`, `template_dialog`, `connect_dialog` - created on demand
-- `goto_dialog`, `plan_dialog`, `diff_dialog`, `help_dialog`, `info_dialog` - created on demand
+- `share_dialog`, `import_dialog`, `template_dialog`, `connect_dialog`, `goto_dialog`, `plan_dialog`, `diff_dialog`, `help_dialog`, `info_dialog` - created on demand
 
 **Pending fields** (for tracking pending permission/question responses):
 - `permission_perm_id: Option<String>` - permission ID when permission dialog is pending
@@ -247,10 +246,34 @@ Async commands sent via channel (in `app/mod.rs`):
 pub enum TuiCommand {
     DeleteSession { session_id: String },
     ArchiveSession { session_id: String, unarchive: bool },
+    UndoDelete { session_id: String },
     ForkSession { session_id: String },
     ShareSession { session_id: String },
+    UnshareSession { session_id: String },
+    ExportSession { session_id: String },
+    RenameSession { session_id: String, new_title: String },
     BulkDelete { session_ids: Vec<String> },
-    // ... and more
+    BulkArchive { session_ids: Vec<String>, unarchive: bool },
+    BulkExport { session_ids: Vec<String> },
+    ReloadSessions,
+    OpenTreeDialog,
+    PreviewImport { source: ImportSource },
+    ConfirmImport { source: ImportSource },
+    CreateFromTemplate { key: String, template: SessionTemplate },
+    LoadSessionMessages { session_id: String },
+    SpawnSubagent { agent_name: String, prompt: String },
+    ListTasks,
+    DeleteTask { id: String },
+    TaskSchedule { interval_secs: u64, message: String },
+    WorktreeList,
+    MemorySummary,
+    MemorySearch { query: String },
+    MemoryRemember { text: String },
+    MemoryForget { id: String },
+    CompactSession,
+    OpenDiffDialog { old_content: Box<str>, new_content: Box<str>, title: Box<str> },
+    SendNotification { notification_type: NotificationType, body: String },
+    UpdateModels(Vec<String>),
 }
 ```
 

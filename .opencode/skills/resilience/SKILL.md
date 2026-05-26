@@ -42,7 +42,13 @@ pub async fn is_available(&self) -> bool {
             if let Some(last_failure) = *self.inner.last_failure_time.read().await {
                 let timeout = Duration::from_secs(self.inner.timeout_secs);
                 if last_failure.elapsed() >= timeout {
-                    *state = CircuitState::HalfOpen;  // Direct state transition
+                    let now = Instant::now();
+                    *state = CircuitState::HalfOpen;
+                    *self.inner.half_open_start_time.write().await = Some(now);
+                    tracing::info!(
+                        "circuit breaker {} transitioned to HalfOpen",
+                        self.inner.name
+                    );
                     return true;
                 }
             }

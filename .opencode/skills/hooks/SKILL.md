@@ -146,22 +146,23 @@ impl Hook for ShellCommandHook {
 
 ### Configuration
 
-Hooks are configured in config.yaml under the `hooks` key:
+Hooks are configured in your config file under the `[hooks]` section:
 
-```yaml
-hooks:
-  pre_tool_execute:
-    - event: pre_tool_execute
-      hook:
-        shell_command:
-          command: echo "Tool {tool_name} executing"
-          timeout_secs: 30
-  post_tool_execute:
-    - event: post_tool_execute
-      hook:
-        shell_command:
-          command: echo "Tool completed"
-          timeout_secs: 30
+```toml
+[hooks]
+enabled = true
+
+[[hooks.pre_tool_execute]]
+event = "pre_tool_execute"
+type = "shell_command"
+command = "echo 'Tool {tool_name} executing'"
+timeout_secs = 30
+
+[[hooks.post_tool_execute]]
+event = "post_tool_execute"
+type = "shell_command"
+command = "echo 'Tool completed'"
+timeout_secs = 30
 ```
 
 ### Shell Hook Variables

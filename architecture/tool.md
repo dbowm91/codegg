@@ -90,6 +90,18 @@ pub struct ToolResult {
 | **plan_enter** | `plan.rs` | Enter plan mode |
 | **plan_exit** | `plan.rs` | Exit plan mode |
 
+### Team Operations
+
+| Tool | File | Description |
+|------|------|-------------|
+| **team_create** | `teams.rs` | Create a new agent team |
+| **send_message** | `teams.rs` | Send message to a team |
+| **list_messages** | `teams.rs` | List team messages |
+| **team_status** | `teams.rs` | Check team status |
+| **list_teams** | `teams.rs` | List all teams |
+
+(TeamTools registered separately via `TeamTools::register_all()`)
+
 ### External Integrations
 
 | Tool | File | Description |
@@ -99,18 +111,6 @@ pub struct ToolResult {
 | **batch** | `batch.rs` | Batch operations |
 | **tool_search** | `tool_search.rs` | On-demand tool discovery |
 | **invalid** | `invalid.rs` | Handles calls to unregistered tools |
-
-### Multi-Agent Team
-
-| Tool | Description |
-|-----|-------------|
-| **team_create** | Create a new agent team |
-| **send_message** | Send message to a team |
-| **list_messages** | List team messages |
-| **team_status** | Check team status |
-| **list_teams** | List all teams |
-
-(TeamTools registered separately via `TeamTools::register_all()`)
 
 ## ToolRegistry
 
@@ -178,6 +178,20 @@ pub struct ToolExecutor {
 }
 
 impl ToolExecutor {
+    pub fn new(max_attempts: usize) -> Self {
+        Self {
+            max_attempts,
+            base_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(30),
+        }
+    }
+
+    pub fn with_delays(mut self, base_delay: Duration, max_delay: Duration) -> Self {
+        self.base_delay = base_delay;
+        self.max_delay = max_delay;
+        self
+    }
+
     pub async fn execute_with_retry<F, Fut>(&self, f: F) -> Result<Value, ToolError>
     where
         F: Fn() -> Fut,

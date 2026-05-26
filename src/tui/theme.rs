@@ -5,7 +5,7 @@
 //!
 //! ## Available Themes
 //!
-//! The module includes 42 built-in themes:
+//! The module includes 31 built-in themes:
 //! - Dark: `dark`, `catppuccin-mocha`, `dracula`, `gruvbox-dark`, `nord`, `tokyonight`, `monokai`, `solarized-dark`, `one-dark`, `github-dark`, `ayu-dark`, `material-dark`, `palenight`, `cobalt`, `vs-dark`, `high-contrast-dark`, `zenburn`, `rose-pine`, `kanagawa`, `everforest-dark`, `moonlight`, `night-owl`, `atom-one-dark`, `base16-default`, `tokyonight-storm`, `dracula-soft`
 //! - Light: `light`, `catppuccin-latte`, `solarized-light`, `github-light`, `material-light`
 //!

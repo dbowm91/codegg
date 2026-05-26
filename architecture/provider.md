@@ -269,6 +269,13 @@ pub struct FallbackProvider {
 Unified SSE parser for OpenAI and Anthropic streaming formats:
 
 ```rust
+#[derive(Debug, Clone, Default)]
+struct OpenAiToolState {
+    id: String,
+    name: String,
+    args_buffer: String,
+}
+
 pub struct SseParser {
     buffer: String,
     delimiter: &'static str,

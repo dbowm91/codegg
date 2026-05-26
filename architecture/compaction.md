@@ -56,9 +56,9 @@ Model-specific token multipliers for accurate estimation.
 
 ### 1. TruncateToolOutputs
 
-Character-based truncation of tool outputs exceeding 500 characters. Used by `compact_messages_sync()` and compaction strategies.
+Character-based truncation of tool outputs exceeding 500 characters. Used by `compact_messages_sync()` and `compact_messages_async()` when this strategy is selected.
 
-Note: `prune_tool_outputs()` is a separate pre-pass function that performs token-based truncation (default 10,000 tokens max) and is called before `auto_compact`/`auto_compact_sync` to reduce large outputs before applying strategy selection.
+Note: `prune_tool_outputs()` is a separate pre-pass function (not a strategy) that performs token-based truncation (~10,000 tokens max). It is called BEFORE the `SessionCompacting` hook is dispatched, reducing large tool outputs first to minimize data passed to hooks.
 
 Preserves `tool_call_id` field unchanged.
 
@@ -70,7 +70,7 @@ Uses LLM to summarize conversation turns. Falls back to `DropMiddleMessages` wit
 
 ### 3. DropMiddleMessages
 
-Keeps 2 messages per side (start/end of conversation). Returns unchanged if total non-system messages <= 4.
+Drops middle messages, keeping `keep_each_side = 2` messages on each end of the conversation (start/end). Returns unchanged if total non-system messages <= 4 (meaning 2 per side is the maximum drop, so nothing to drop).
 
 ## Compaction Invariants
 
@@ -86,6 +86,9 @@ All strategies must maintain these invariants:
 | Function | Description |
 |----------|-------------|
 | `detect_overflow()` | Returns true if current tokens exceed context_limit - reserved |
+| `has_long_tool_outputs()` | Checks if any tool output exceeds 2000 character threshold |
+| `count_non_system_messages()` | Counts messages that are not System messages |
+| `select_compaction_strategy()` | Selects strategy based on message count and tool output length |
 | `prune_tool_outputs()` | Token-based truncation to max_tokens_per_output (pre-pass) |
 | `truncate_tool_outputs()` | Character-based truncation to 500 chars (within strategies) |
 | `compact_messages()` | Wrapper around `compact_messages_sync` (sync-only context) |
@@ -110,7 +113,10 @@ Via `CompactionConfig` in `src/config/schema.rs`:
 
 ## Integration
 
-Called from `AgentLoop::compact_if_needed()` in `src/agent/loop.rs:1130`. Dispatches `SessionCompacting` hook before compaction.
+Called from `AgentLoop::compact_if_needed()` in `src/agent/loop.rs:1130`. The flow is:
+1. `prune_tool_outputs()` runs first (token-based pre-pass, BEFORE hook)
+2. `SessionCompacting` hook is dispatched
+3. If hook is not blocked, compaction strategy is selected and applied
 
 ## See Also
 
