@@ -179,6 +179,7 @@ impl HookRegistry {
                 } => Box::new(ShellCommandHook::new(command.clone(), *timeout_secs, event)),
                 #[allow(deprecated)]
                 ConfigHookConfig::InlineScript { .. } => {
+                    tracing::warn!("Skipping deprecated InlineScript");
                     continue;
                 }
             };

@@ -1,6 +1,6 @@
 # Implementation Plan
 
-**Status**: IN PROGRESS
+**Status**: COMPLETE
 **Last Updated**: 2026-05-26
 
 ---
@@ -327,11 +327,45 @@ To:
 
 | Wave | Items | Status |
 |------|-------|--------|
-| W1 (Critical) | 2 | Pending |
-| W2 (Docs) | 7 | Pending |
-| W3 (Cross-module) | 4 (W3-1 = W1-2) | Pending |
-| W4 (Additional) | 4 | Pending |
-| W5 (Low priority) | 4 | Pending |
+| W1 (Critical) | 2 | COMPLETE |
+| W2 (Docs) | 7 | COMPLETE |
+| W3 (Cross-module) | 4 (W3-1 = W1-2) | COMPLETE |
+| W4 (Additional) | 4 | COMPLETE |
+| W5 (Low priority) | 4 | COMPLETE |
+
+---
+
+## Completed Items Summary
+
+### Wave 1: Critical Bugs
+- **W1-1**: Fixed plugin fuel leaks at `loader.rs:259,270,285,403`
+- **W1-2**: Added SubagentStarted/Progress/Completed/Failed mapping to CoreEvent
+
+### Wave 2: Documentation Fixes
+- **W2-1**: Created `architecture/protocol.md`
+- **W2-2**: Fixed Permission built-in modes table (removed `skill`)
+- **W2-3**: Clarified provider auto-registration and renamed "Discovery Providers"
+- **W2-4**: Removed 17 line number references across 8 architecture docs
+- **W2-5**: Clarified hook timeout distinction (5s dispatch, 30s WASM)
+- **W2-6**: Clarified backoff formula with examples and HalfOpen→Open timeout
+- **W2-7**: Documented CoreRequest fallthrough behavior
+
+### Wave 3: Cross-Module Fixes
+- **W3-2**: Changed MD5 to SHA256 for snapshot hashing
+- **W3-3**: Documented PermissionRegistry session filtering limitation
+- **W3-4**: Renamed `stat_core.rs` to `metrics.rs`
+
+### Wave 4: Additional Items
+- **W4-1**: Fixed server permission route documentation
+- **W4-2**: TTS keybindings verified correct (Ctrl+Y, Ctrl+Shift+Y)
+- **W4-3**: HalfOpen→Open timeout already documented in W2-6
+- **W4-4**: Documented upgrade command behavior
+
+### Wave 5: Lower Priority Items
+- **W5-1**: Documented EventProcessor in architecture/agent.md
+- **W5-2**: Verified CompactionConfig schema, documented hardcoded constants
+- **W5-3**: Fixed fuzzy match example iteration
+- **W5-4**: Added InlineScript deprecation warning logging
 
 ---
 
@@ -395,26 +429,26 @@ Wave 5 (Parallel - 4 agents):
 
 ### Verification Checklist
 
-- [ ] W1-1: Plugin fuel leaks fixed - verify with `cargo test plugin`
-- [ ] W1-2: CoreEvent mapping complete - verify events flow to in-process subscribers
-- [ ] W2-1: architecture/protocol.md created
-- [ ] W2-2: Permission built-in modes table corrected
-- [ ] W2-3: Provider auto-registration clarified
-- [ ] W2-4: Line numbers replaced with method names
-- [ ] W2-5: Hook timeout distinction clarified
-- [ ] W2-6: Backoff formula includes jitter and HalfOpen→Open note
-- [ ] W2-7: CoreRequest fallthrough documented
-- [ ] W3-2: Hash algorithm standardized to SHA256
-- [ ] W3-3: PermissionRegistry limitation documented
-- [ ] W3-4: stat_core.rs renamed to metrics.rs
-- [ ] W4-1: Server permission route table corrected
-- [ ] W4-2: TTS keybinding verification completed
-- [ ] W4-3: HalfOpen→Open timeout documented
-- [ ] W4-4: Upgrade command behavior documented
-- [ ] W5-1: EventProcessor documented
-- [ ] W5-2: CompactionConfig thresholds verified
-- [ ] W5-3: Fuzzy match example fixed
-- [ ] W5-4: InlineScript deprecation logging added
+- [x] W1-1: Plugin fuel leaks fixed - verify with `cargo test plugin`
+- [x] W1-2: CoreEvent mapping complete - verify events flow to in-process subscribers
+- [x] W2-1: architecture/protocol.md created
+- [x] W2-2: Permission built-in modes table corrected
+- [x] W2-3: Provider auto-registration clarified
+- [x] W2-4: Line numbers replaced with method names
+- [x] W2-5: Hook timeout distinction clarified
+- [x] W2-6: Backoff formula includes jitter and HalfOpen→Open note
+- [x] W2-7: CoreRequest fallthrough documented
+- [x] W3-2: Hash algorithm standardized to SHA256
+- [x] W3-3: PermissionRegistry limitation documented
+- [x] W3-4: stat_core.rs renamed to metrics.rs
+- [x] W4-1: Server permission route table corrected
+- [x] W4-2: TTS keybinding verification completed
+- [x] W4-3: HalfOpen→Open timeout documented
+- [x] W4-4: Upgrade command behavior documented
+- [x] W5-1: EventProcessor documented
+- [x] W5-2: CompactionConfig thresholds verified
+- [x] W5-3: Fuzzy match example fixed
+- [x] W5-4: InlineScript deprecation logging added
 
 ---
 

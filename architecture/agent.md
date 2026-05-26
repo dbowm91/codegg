@@ -117,14 +117,39 @@ pub enum TaskComplexity {
 
 ### processor.rs - Event Processor
 
-Processes `ChatEvent` types from the provider:
+Processes `ChatEvent` stream from the provider into accumulated state:
+
+```rust
+pub struct EventProcessor {
+    accumulated_text: String,
+    accumulated_reasoning: String,
+    tool_calls: Vec<ToolCall>,
+    tool_results: Vec<(String, String)>,
+    stop_reason: Option<String>,
+    input_tokens: usize,
+    output_tokens: usize,
+    is_complete: bool,
+}
+```
+
+**Key Methods**:
+- `process(event)` - Process a single `ChatEvent` (TextDelta, ReasoningDelta, ToolCall, ToolResult, Finish, Error)
+- `text() / reasoning()` - Access accumulated content
+- `tool_calls() / tool_results()` - Access collected tool data
+- `to_assistant_message()` - Convert to `Message::Assistant`
+- `to_tool_messages()` - Convert tool results to `Message::Tool` vector
+- `is_complete() / has_tool_calls()` - State queries
+- `reset()` - Clear all accumulated state for reuse
 
 **ChatEvent Types** (from `provider/mod.rs`):
 - `TextDelta(Arc<String>)` - Text content streamed
 - `ReasoningDelta(Arc<String>)` - Reasoning content streamed
 - `ToolCall(ToolCall)` - Request to execute a tool
-- `Finish{ stop_reason, usage }` - End of message marker
-- `Error(Arc<String>)` - Error occurred
+- `ToolResult{ tool_call_id, content }` - Tool execution result
+- `Finish{ stop_reason, usage, .. }` - End of message marker
+- `Error(Arc<String>)` - Error occurred (logged, not stored)
+
+**Usage**: Used in exec mode (`src/exec/mod.rs`) and agent loop to process LLM response streams. Enables incremental display of streaming content and collection of tool calls for later execution.
 
 ### worker.rs - Subagent Pool
 

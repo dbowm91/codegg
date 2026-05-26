@@ -339,6 +339,20 @@ impl PermissionRegistry {
 
 **Note**: All methods are synchronous (`fn`), NOT async. TTL of 300s for entries.
 
+## Known Issue: Session Filtering Limitation
+
+`PermissionRegistry` keys are formatted as `{tool_call_id}-{tool_name}`, NOT `{session_id}-...`. This means there is no way to filter pending permissions by `session_id`.
+
+**Impact**: Methods like `get_pending_permissions_for_session()` cannot properly filter by session because the registry does not store `session_id` in its keys.
+
+**Root cause**: When permissions are registered, the `perm_id` passed to `register()` does not include session context. The `PermissionPending` event carries `session_id`, but this information is not preserved in the registry lookup key.
+
+**Affected operations**:
+- `PermissionRegistry::register(perm_id, tx)` - perm_id has no session context
+- `PermissionRegistry::pending_permission_ids()` - returns all IDs, cannot filter by session
+
+This is a known architectural limitation per AGENTS.md.
+
 ## See Also
 
 - [tool.md](tool.md) - Tools that use PermissionChecker

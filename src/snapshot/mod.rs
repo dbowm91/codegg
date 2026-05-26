@@ -1,6 +1,7 @@
 pub mod diff;
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use sqlx::SqlitePool;
@@ -139,7 +140,7 @@ impl SnapshotManager {
                 continue;
             }
             let rel_path = self.to_relative_path(&path);
-            let hash = format!("{:x}", md5::compute(content.as_bytes()));
+            let hash = format!("{:x}", sha2::Sha256::digest(content.as_bytes()));
             files.insert(
                 rel_path.clone(),
                 FileSnapshot {
@@ -413,7 +414,7 @@ fn collect_files_sync(project_root: &Path, options: &SnapshotOptions) -> HashMap
                     FileSnapshot {
                         path: rel_path,
                         content: String::new(),
-                        hash: format!("{:x}", md5::compute([])),
+                        hash: format!("{:x}", sha2::Sha256::digest([])),
                         timestamp: now,
                     },
                 );
