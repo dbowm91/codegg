@@ -51,7 +51,7 @@ The system follows a **layered architecture** separating the TUI frontend, Core 
                        │                    │                    │
            ┌───────────┴─────┐  ┌───────────┴──────┐  ┌─────────┴───────┐
 │  LLM Provider   │  │   MCP Servers    │  │   LSP Servers   │
-            │  (20+ models)   │  │ (local/remote)  │  │   (39 servers)  │
+             │  (20+ models)   │  │ (local/remote)  │  │   (40 servers)  │
            └─────────────────┘  └──────────────────┘  └────────────────┘
 ```
 
@@ -274,7 +274,7 @@ Configuration is loaded from (in order of precedence):
 
 ---
 
-## Built-in Tools (26)
+## Built-in Tools (29)
 
 | Category | Tools |
 |----------|-------|
@@ -282,7 +282,7 @@ Configuration is loaded from (in order of precedence):
 | **Search** | `grep`, `codesearch` |
 | **Shell** | `bash`, `terminal` |
 | **Git** | `git`, `commit`, `diff`, `review` |
-| **Code** | `apply_patch`, `replace` |
+| **Code** | `apply_patch`, `replace`, `multiedit`, `lsp`, `formatter` |
 | **Web** | `webfetch`, `websearch` |
 | **Tasks** | `task`, `todo`, `batch`, `plan_enter`, `plan_exit` |
 | **Special** | `question`, `skill`, `tool_search`, `invalid` |
@@ -322,12 +322,12 @@ Configuration is loaded from (in order of precedence):
 | [storage.md](storage.md) | storage | SQLite initialization, pooling |
 | [memory.md](memory.md) | memory | Memory store, consolidation, namespaces |
 | [snapshot.md](snapshot.md) | snapshot | File state capture, restore |
-| [tui.md](tui.md) | tui | App, components (21 dialogs), input |
+| [tui.md](tui.md) | tui | App, components (20 dialogs), input |
 | [client.md](client.md) | client | Remote TUI WebSocket client |
 | [core.md](core.md) | core | CoreClient facade, transport adapters |
 | [server.md](server.md) | server | HTTP server, WebSocket, REST API |
 | [mcp.md](mcp.md) | mcp | MCP client, local/remote, OAuth |
-| [lsp.md](lsp.md) | lsp | LSP client, diagnostics, operations |
+| [lsp.md](lsp.md) | lsp | LSP client (40 servers), diagnostics, operations |
 | [ide.md](ide.md) | ide | IDE detection, diff viewing |
 | [plugin.md](plugin.md) | plugin | WASM plugins, hooks, TUI extensions |
 | [skills.md](skills.md) | skills | Skill system, YAML frontmatter |
