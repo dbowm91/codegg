@@ -200,6 +200,7 @@ impl PluginService {
 
     // Individual dispatch methods
     pub async fn dispatch_auth(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_provider(&self, input: serde_json::Value) -> HookResult;
     pub async fn dispatch_tool_execute_before(&self, input: serde_json::Value) -> HookResult;
     pub async fn dispatch_tool_execute_after(&self, input: serde_json::Value) -> HookResult;
     // ... other hook types

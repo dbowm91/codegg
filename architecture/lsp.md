@@ -274,7 +274,7 @@ pub enum LspError {
 
 ## Implementation Notes
 
-All documented bugs have been fixed in the current implementation:
+All documented design notes have been addressed in the current implementation:
 
 - **PATH parsing**: Uses `std::env::split_paths()` for correct cross-platform PATH handling
 - **PHP mapping**: Correctly maps to `php-language-server` (was incorrectly listed as intelephense)

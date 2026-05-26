@@ -29,7 +29,7 @@ pub fn is_internal_ip(ip: &IpAddr) -> bool {
     // - 198.18.0.0/15 (benchmark)
     // - 224.0.0.0/4 (multicast)
     // - ::1 (IPv6 loopback)
-    // - fc00::/7 (IPv6 unique local)
+    // - fc00::/7 (IPv6 unique local: fc00::/8 and fd00::/8)
     // - fe80::/10 (IPv6 link-local)
     // - ff00::/8 (IPv6 multicast)
     // - IPv4-mapped IPv6 (::ffff:x.x.x.x)
@@ -123,9 +123,9 @@ impl SandboxConfig {
 ```
 
 **Access Flags**:
-- `READ` - Read files
-- `WRITE` - Write files
-- `EXEC` - Execute files
+- `LANDLOCK_ACCESS_FS_READ` - Read files
+- `LANDLOCK_ACCESS_FS_WRITE` - Write files
+- `LANDLOCK_ACCESS_FS_EXEC` - Execute files
 
 **Configuration**: Landlock sandboxing is configured programmatically via `SandboxConfig` builder methods (`with_enabled()`, `with_allowed_paths()`, `with_deny_paths()`). Currently there is no TOML or file-based configuration for Landlock - the config must be set in code when initializing the bash tool.
 
@@ -194,7 +194,7 @@ Check against allowed_paths
 | `198.18.0.0/15` | Benchmark |
 | `224.0.0.0/4` | Multicast |
 | `::1` | IPv6 loopback |
-| `fc00::/7` | IPv6 unique local |
+| `fc00::/8` | IPv6 unique local (fd00::/8 only) |
 | `fe80::/10` | IPv6 link-local |
 | `ff00::/8` | IPv6 multicast |
 | `::ffff:x.x.x.x` | IPv4-mapped IPv6 |
