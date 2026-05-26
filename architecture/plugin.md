@@ -382,7 +382,7 @@ PluginService::dispatch_hook(ctx)
 
 ## Fuel Tracking
 
-Global and per-plugin fuel budgets:
+Per-plugin fuel budgets (DashMap in ModuleCache):
 
 ```rust
 // Constants
@@ -390,11 +390,6 @@ const MAX_WASM_SIZE: usize = 10 * 1024 * 1024;  // 10MB
 const WASM_FUEL_PER_HOOK: u64 = 1_000_000;
 const WASM_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;
-const FUEL_RESET_INTERVAL_SECS: u64 = 60;
-
-// Global budget (auto-resets every 60s)
-static PLUGIN_FUEL_BUDGET: AtomicU64 = AtomicU64::new(10_000_000);
-static PLUGIN_FUEL_LAST_RESET: AtomicU64 = AtomicU64::new(0);
 
 // Per-plugin budgets (DashMap in ModuleCache)
 ```
@@ -404,8 +399,6 @@ static PLUGIN_FUEL_LAST_RESET: AtomicU64 = AtomicU64::new(0);
 - WASM fuel set on Store via `store.set_fuel()`
 - Unused fuel returned after execution (including on errors - all error paths call return_fuel)
 - Budget exhausted → returns `HookResult::ok(ctx.input)` early
-
-**Note**: `check_and_reset_fuel_budget()` at `src/plugin/loader.rs:24-41` is defined but never called. The global fuel budget auto-resets via `ModuleCache::return_fuel()` on per-plugin basis rather than via this function.
 
 ## Security
 

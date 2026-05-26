@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::plugin::hooks::{HookContext, HookResult};
 use crate::plugin::install::InstallError;
@@ -12,33 +12,8 @@ const MAX_WASM_SIZE: usize = 10 * 1024 * 1024;
 const WASM_FUEL_PER_HOOK: u64 = 1_000_000;
 #[allow(dead_code)]
 const WASM_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
-static PLUGIN_FUEL_BUDGET: AtomicU64 = AtomicU64::new(10_000_000);
-#[allow(dead_code)]
-static PLUGIN_FUEL_LAST_RESET: AtomicU64 = AtomicU64::new(0);
 #[allow(dead_code)]
 const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;
-#[allow(dead_code)]
-const FUEL_RESET_INTERVAL_SECS: u64 = 60;
-
-#[allow(dead_code)]
-fn check_and_reset_fuel_budget() {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let last_reset = PLUGIN_FUEL_LAST_RESET.load(Ordering::Relaxed);
-
-    if last_reset == 0 {
-        PLUGIN_FUEL_LAST_RESET.store(now, Ordering::Relaxed);
-        return;
-    }
-
-    if now.saturating_sub(last_reset) >= FUEL_RESET_INTERVAL_SECS {
-        PLUGIN_FUEL_BUDGET.store(0, Ordering::Relaxed);
-        PLUGIN_FUEL_LAST_RESET.store(now, Ordering::Relaxed);
-        tracing::debug!("plugin fuel budget auto-reset");
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
