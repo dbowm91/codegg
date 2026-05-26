@@ -64,7 +64,7 @@ impl MemoryStore {
 
 ## Storage
 
-Memories stored as Markdown files with YAML frontmatter:
+Memories stored as Markdown files with YAML frontmatter. File operations use `flock()` for cross-process synchronization:
 
 ```
 ~/.config/codegg/memory/
@@ -75,6 +75,13 @@ Memories stored as Markdown files with YAML frontmatter:
     └── {project_hash}/
         └── MEMORY.md
 ```
+
+### File Locking (`src/memory/mod.rs:497-526`)
+
+The `flock_lock()` and `flock_unlock()` functions provide advisory locking for memory file operations:
+- `flock_lock()` - Acquires exclusive lock (LOCK_EX) before file operations
+- `flock_unlock()` - Releases lock (LOCK_UN) after operations complete
+- Non-blocking variants available (returns error if lock unavailable)
 
 ### Memory File Format
 

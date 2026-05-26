@@ -405,6 +405,8 @@ static PLUGIN_FUEL_LAST_RESET: AtomicU64 = AtomicU64::new(0);
 - Unused fuel returned after execution (including on errors - all error paths call return_fuel)
 - Budget exhausted → returns `HookResult::ok(ctx.input)` early
 
+**Note**: `check_and_reset_fuel_budget()` at `src/plugin/loader.rs:24-41` is defined but never called. The global fuel budget auto-resets via `ModuleCache::return_fuel()` on per-plugin basis rather than via this function.
+
 ## Security
 
 - **Fuel Limits**: Per-plugin budgets prevent infinite loops

@@ -272,7 +272,7 @@ pub enum LspError {
 }
 ```
 
-## Recent Bug Fixes
+## Implementation Notes
 
 All documented bugs have been fixed in the current implementation:
 

@@ -139,6 +139,27 @@ pub enum ConnectionState {
 - Heartbeat every 30s to keep connection alive
 - `ensure_connected()` spawns reconnection in background task when disconnected
 
+### SSE Connection Methods (`src/mcp/remote.rs:698-747`)
+
+The `RemoteClient` provides SSE (Server-Sent Events) connection methods:
+
+```rust
+pub async fn connect_sse(&self) -> Result<(), McpError> {
+    // Initiate SSE connection to MCP server
+    // Stores events in sse_events buffer for later retrieval
+}
+
+async fn connect_sse_stream(&self, resp: reqwest::Response) -> Result<(), McpError> {
+    // Process SSE stream and collect events
+}
+
+pub fn take_sse_events(&self) -> Vec<serde_json::Value> {
+    // Retrieve and clear collected SSE events
+}
+```
+
+**Note**: SSE methods exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent (Known Issue - see architecture/mcp.md Known Implementation Issues section).
+
 ### auth.rs - OAuth Token Management
 
 ```rust

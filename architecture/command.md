@@ -205,7 +205,7 @@ pub async fn find_command_files(base: &Path) -> Vec<Command>
 pub async fn load_command_from_file(path: &Path) -> Result<Command, String>
 ```
 
-## Recent Changes (2026-05-22)
+## Historical Implementation Notes (2026-05-22)
 
 - **Async file loading**: `find_command_files()` and `load_command_from_file()` now use `tokio::fs` for async I/O
 - **`subtask` field deprecated**: Added `#[deprecated]` attribute to `subtask` field as it's not yet implemented

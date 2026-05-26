@@ -174,9 +174,11 @@ pub async fn auth_middleware(...) -> Result<Response, StatusCode> {
     // 1. CODEGG_SERVER_AUTH_DISABLED env var (skip auth)
     // 2. CODEGG_SERVER_TOKEN env var
     // 3. server.token config field
-    // 4. Reject if none set
+    // 4. Allow if no token configured (no auth enforcement)
 }
 ```
+
+**Note**: When no token is configured, requests are **allowed** through without authentication. This is intentional for development mode. Set a token in production.
 
 ### routes/file.rs - Path Sanitization
 
@@ -194,15 +196,9 @@ The SSE handler at `/api/event` subscribes directly to `GlobalEventBus::subscrib
 
 The `/tui` WebSocket maintains a bounded event buffer and assigns a monotonically increasing sequence number to each outbound event. When a client sends `Resume { from_event_seq }`, the server replays buffered events with a higher sequence number before sending `ResyncRequired`.
 
-### Client SSE Methods (`src/mcp/remote.rs` - documented in detail in `architecture/mcp.md`)
+### Client SSE Methods
 
-The `RemoteClient` provides client-side SSE connection methods (full documentation in `architecture/mcp.md`):
-
-- `connect_sse()` - Initiate SSE connection to MCP server
-- `connect_sse_stream()` - Process SSE stream
-- `take_sse_events()` - Retrieve collected SSE events
-
-**Note**: SSE methods exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent (Known Issue - see architecture/mcp.md).
+Client SSE connection methods are documented in `architecture/mcp.md`. The `RemoteClient` in `src/mcp/remote.rs` provides `connect_sse()`, `connect_sse_stream()`, and `take_sse_events()` for MCP server connections.
 
 ## Protocol
 
@@ -225,6 +221,7 @@ The `RemoteClient` provides client-side SSE connection methods (full documentati
 |---------|--------|---------|
 | `EventEnvelope` | `event_seq: u64`, `payload: Box<TuiMessage>` | Sequence-tagged wrapper for replayable TUI events |
 | `TextDelta` | `delta: String` | Streaming text |
+| `RenderFrame` | `content: String` | Rendered UI frame content |
 | `ToolCallStarted` | `tool_name`, `tool_id`, `arguments` | Tool execution |
 | `ToolResult` | `tool_id`, `output`, `success` | Tool result |
 | `PermissionPending` | `id`, `tool`, `path` | Permission request |

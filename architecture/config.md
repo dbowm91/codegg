@@ -177,6 +177,9 @@ Validated fields:
 - Agent `mode`: must be `subagent|primary|all`
 - Agent `color`: must be hex color or theme color name
 - MCP server types: `local` requires `command`, `remote` requires `url`
+- `tool_timeout_seconds`: must be 1-3600 (0 = invalid, >3600 = invalid)
+- `max_parallel_tools`: must be 1-100 (0 = invalid, >100 = invalid)
+- `compaction_threshold`: must be 0.1-1.0 (threshold ratio for context compaction)
 
 ## Configuration Example (JSONC)
 

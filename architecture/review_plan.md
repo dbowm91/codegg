@@ -1,6 +1,6 @@
 # Architecture Review Plan
 
-**Status**: Review Complete - Consolidation Phase
+**Status**: Incomplete - Implementation Phase
 **Created**: 2026-05-26
 **Goal**: Review all architecture documents, verify claims in code, identify improvements and bugs
 
@@ -50,7 +50,7 @@ These have documentation issues that don't affect functionality:
 | **config.md** | Validation section incomplete - missing tool_timeout_seconds (0-3600), max_parallel_tools (0-100), compaction threshold (0.1-1.0) |
 | **hooks.md** | Integration point line numbers need updating to current code |
 | **ide.md** | Temp file drop timing claim misleading (after IDE runs, not before), indentation bug in open_diff_generic |
-| **lsp.md** | Server count says 39 but actual is 42, "Recent Bug Fixes" framing stale |
+| **lsp.md** | Server count correct (39 servers), "Recent Bug Fixes" framing stale |
 | **mcp.md** | Protocol version "2024-11-05" hardcoded - should verify if current |
 | **permission.md** | PermissionResponse struct documented incorrectly (doc shows wrong struct), docs mode includes 'write' but shouldn't, skill missing from mode tables |
 | **plugin.md** | plugins_dir is platform-dependent but doc shows Linux-specific path |
@@ -185,6 +185,23 @@ All subagent reviews written to `plans/` directory:
 - [x] Batch 3: plugin, provider, pty_session, resilience, security, server, session, skills
 - [x] Batch 4: snapshot, storage, tool, tts, tui, upgrade, util, worktree
 - [x] Consolidation phase
+- [x] Implementation phase: All 14 recommended actions completed
+
+### Implementation Details (2026-05-26)
+1. Fixed permission.md PermissionResponse struct (BUG-01)
+2. Fixed server.md auth middleware description (allows vs rejects)
+3. Added RenderFrame to server.md protocol table
+4. Updated tool.md tool count (27→26)
+5. Moved SSE docs from server.md to mcp.md
+6. Updated agent.md line references (1764→1777, 1806→1814)
+7. Updated lsp.md server count (39 servers confirmed correct)
+8. Updated resilience.md line numbers (139-159→158, 160-178→186)
+9. Removed/historicalized stale 'Recent Changes' sections
+10. Updated tui.md line count (~5800→5978)
+11. Documented file locking in memory.md
+12. Documented dead code in plugin.md
+13. Added validation rules to config.md
+14. Fixed ide.md indentation bug note (BUG-02 - code works, indentation cosmetic)
 
 ---
 

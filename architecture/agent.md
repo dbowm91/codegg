@@ -293,7 +293,7 @@ Related configurations in `config/`:
 2. **`SubAgentPool` bounded concurrency** - Uses semaphore with default of 5, RAII guard pattern for active_count
 3. **Tool definition caching** - Cache key includes mcp_tool_count, permission_version for proper invalidation (uses mcp_tool_count as proxy - known limitation)
 4. **DoomLoop detection** - Uses window-based counting (not consecutive), correctly documented
-5. **ToolExecuteBefore/After hooks** - Both hooks ARE invoked in `execute_tool_calls()` at loop.rs:1764 and 1806
+5. **ToolExecuteBefore/After hooks** - Both hooks ARE invoked in `execute_tool_calls()` at loop.rs:1777 and 1814
 6. **BackgroundScheduler task_id** - Uses `task.id.parse()` to use actual background task ID instead of random
 7. **`start_workers()` removed** - Dead no-op method was removed, workers start in constructors
 

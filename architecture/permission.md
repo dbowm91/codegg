@@ -58,14 +58,15 @@ impl PermissionChoice {
 }
 ```
 
-### PermissionResponse (src/server/routes/permission.rs)
+### PermissionResponse (src/permission/mod.rs:1141-1145)
 
-HTTP API type used by server routes (distinct from `PermissionResponse` in permission module):
+Internal permission response type used by the permission module:
 
 ```rust
+#[derive(Debug)]
 pub struct PermissionResponse {
-    pub id: String,
-    pub choice: String,
+    pub level: PermissionLevel,
+    pub persist: bool,
 }
 ```
 

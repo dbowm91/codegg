@@ -8,7 +8,7 @@ The `tool` module provides the built-in tools that the agent can use to interact
 
 **Key Responsibilities**:
 - Tool registry management
-- Built-in tool implementations (27 tools in `with_defaults()`)
+- Built-in tool implementations (26 tools in `with_defaults()`)
 - Tool execution with permission checking
 - Parameter validation
 
@@ -201,6 +201,8 @@ impl ToolExecutor {
     }
 }
 ```
+
+**Note**: `ToolExecutor` exists with retry logic but is **not currently integrated** into the tool registry. The retry functionality is available but not used by any registered tools.
 
 ## ToolError
 
