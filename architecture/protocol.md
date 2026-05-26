@@ -58,7 +58,7 @@ Wraps events with sequence number, timestamp, and optional session/turn context 
 
 ## CoreRequest Enum
 
-Located in `src/protocol/core.rs:50-175`. Variant count: **42**.
+Located in `src/protocol/core.rs:50-175`. Variant count: **35**.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
