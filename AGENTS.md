@@ -54,7 +54,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
-- `plans/plan.md`: Active implementation plan - verify against code before implementing
+- `plans/plan.md`: Implementation plan (verify against code before implementing)
 
 ## Critical Implementation Notes
 
@@ -94,9 +94,7 @@ These items are important for future agents to know when working with the codeba
 
 ### Known Issues (Lower Priority)
 
-- **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
-
-- **Tool definition cache staleness**: Using `mcp_tool_count` as proxy means if MCP tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
+- **Snapshot hash inconsistency**: `src/snapshot/mod.rs:431` uses MD5 for non-empty files while SHA256 is used elsewhere. Consider unifying to SHA256.
 
 - **ToolExecutor exists but unused**: `src/tool/executor.rs:8` has retry logic but is never called in the tool execution flow.
 
@@ -104,7 +102,7 @@ These items are important for future agents to know when working with the codeba
 
 - **TTS stop() silent failure**: `src/tts/mod.rs:85-103` returns `Ok(())` even when `pkill say` fails.
 
-- **PermissionResponse unused**: `src/permission/mod.rs:1141-1145` defines a struct not used internally.
+- **PermissionResponse unused**: `src/permission/mod.rs:1141-1145` defines a struct not used内部控制.
 
 - **check_external_directory unused**: `src/permission/mod.rs:1237-1248` marked `#[allow(dead_code)]`, never called.
 
@@ -113,6 +111,8 @@ These items are important for future agents to know when working with the codeba
 - **Histogram unbounded memory growth**: `src/util/metrics.rs:122-124` - only `pop_front()` at 1000 per name, but no limit on unique names.
 
 - **Worktree symlink detection issue**: `src/worktree/mod.rs:69-88` - current worktree detection via canonicalization may fail with symlinked directories.
+
+- **OAuth replay protection TOCTOU**: `src/mcp/auth.rs:318-332` - `is_code_used()` and `mark_code_used()` are not atomic.
 
 ### Key Lessons from Review Sessions
 
@@ -128,14 +128,6 @@ These items are important for future agents to know when working with the codeba
 
 6. **Use subagents for batch review work** - Process 4-5 plan files per subagent (2000 line context limit), consolidate results, then consolidate into final plan.
 
-7. **Subagent events ARE mapped** - Architecture docs may claim they're not mapped in `map_app_event_to_core_event`, but the code at `src/core/mod.rs:795-838` shows all 4 subagent events ARE mapped.
-
-8. **Client backoff is (1s, 2s, 4s)** - Not (2s, 4s) as some docs claim. At `src/client/attach.rs:39`: `2u64.saturating_pow((attempt - 1) as u32)` gives attempt 1→1s, 2→2s, 3→4s.
-
-9. **.skills/ directory is documentation-only** - Runtime only loads from `~/.config/codegg/skills/` and `.codegg/skills/`, NOT `.skills/` at repo root.
-
-10. **Permission route is /submit** - Server docs may show `POST /api/permission/:session_id` but actual route is `/api/permission/:session_id/submit`.
-
 ### Verified Codebase Facts
 
 These items were verified during review sessions:
@@ -144,12 +136,10 @@ These items were verified during review sessions:
 |------|-------|----------|
 | Tool count | 26 | `src/tool/mod.rs:89-119` |
 | LSP server count | 39 | `src/lsp/server.rs:27-385` |
-| PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | NOT integrated - exists but unused | `src/tool/executor.rs:8` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
-| InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
 | UiState fields | All documented fields present | `src/tui/app/state/ui.rs:27-74` |
 | Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
@@ -160,7 +150,7 @@ These items were verified during review sessions:
 | Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
-| AppEvent count | 34 (not 36) | `src/bus/events.rs:5-147` |
+| AppEvent count | 36 (verified 2026-05-26) | `src/bus/events.rs:5-147` |
 | Built-in command count | 39 (not 41) | `src/tui/command.rs:79-161` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `App` struct, NOT `UiState` | `src/tui/app/mod.rs:232-233` |
@@ -170,20 +160,41 @@ These items were verified during review sessions:
 
 - **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
 
-### Verified Codebase Facts (Additional)
-
-| Item | Value | Location |
-|------|-------|----------|
-| Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
-| HalfOpen→Open timeout | 30s default via `max_half_open_duration` | `src/resilience/circuit.rs:66` |
-| Hook timeout | 5s outer dispatch, 30s inner WASM | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
-| Protocol version | 1 | `src/protocol/core.rs:3` |
-
 ### CoreRequest Handler Attention Points
 
 - `CoreRequest` enum in `src/protocol/core.rs:50-175`
 - InprocCoreClient handlers at `src/core/mod.rs:52-355` handle: TurnSubmit, SessionMessagesLoad, SessionMessageCounts, SessionCreate, SessionLoad, SessionAttach, etc.
 - Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - verify if TUI actually sends these before implementing meaningful responses.
+
+## Helpful Patterns for Future Agents
+
+### Batch Review Pattern
+```
+Parent Agent:
+  1. Launch subagent batch 1 (4-5 plan files) → temp_consolidated_1.md
+  2. Launch subagent batch 2 (4-5 plan files) → temp_consolidated_2.md
+  3. Continue batches as needed
+  4. Read all temp files
+  5. Consolidate into final plan.md
+  6. Clean up temp files
+```
+
+### Parallel Implementation Pattern
+```
+Wave 1 (Parallel - 2 agents):
+  - W1-1: Fix plugin fuel leaks (loader.rs
+  - W1-2: Fix CoreEvent mapping (core/mod.rs)
+
+Wave 2 (Parallel - Documentation):
+  - Each agent takes one documentation fix
+  - Run 7 agents in parallel
+  - Verify each compiles/builds
+```
+
+### Provider Auto-Registration
+- Only `codegg_go` is auto-registered via `register_builtin()`
+- SAP AI Core, Zenmux, Kilo, Vercel AI Gateway are config-only, NOT auto-registered
+- Check `src/provider/mod.rs:register_builtin_with_config()` for details
 
 ## Documentation Structure
 
@@ -214,7 +225,7 @@ These items were verified during review sessions:
 ├── permission/         # PermissionChecker, DoomLoop, PermissionRegistry
 ├── plugin/             # WASM plugin system
 ├── provider/           # LLM provider implementations
-├── shell_session/    # Shell session metadata
+├── shell_session/      # Shell session metadata
 ├── question-response/  # Question/permission response shapes
 ├── resilience/          # Circuit breaker, FallbackProvider
 ├── router/             # Model auto-routing
@@ -262,8 +273,8 @@ When adding guidance for a new module:
 | Shell Session (shell session metadata) | `.opencode/skills/shell_session/SKILL.md` |
 | Agent (AgentLoop, compaction, router, team) | `.opencode/skills/agent-loop/SKILL.md` |
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
-| TUI (keyboard shortcuts, FocusManager, Component trait) | `.skills/tui/SKILL.md` |
-| Core (CoreClient facade, transports, protocol envelopes) | `.skills/core/SKILL.md` |
+| TUI (keyboard shortcuts, FocusManager, Component trait) | `.opencode/skills/tui/SKILL.md` |
+| Core (CoreClient facade, transports, protocol envelopes) | `.opencode/skills/core/SKILL.md` |
 | Security (SSRF, symlinks, Landlock) | `.opencode/skills/security/SKILL.md` |
 | WASM plugins | `.opencode/skills/plugin/SKILL.md` |
 | MCP (Model Context Protocol) | `.opencode/skills/mcp/SKILL.md` |
@@ -276,10 +287,10 @@ When adding guidance for a new module:
 | Tool (path validation, async command, ToolExecutor, ToolCatalog) | `.opencode/skills/tool/SKILL.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |
-| Client (remote TUI, WebSocket) | `.skills/client/SKILL.md` |
-| Server (HTTP, WebSocket, REST API, SSE) | `.skills/server/SKILL.md` |
+| Client (remote TUI, WebSocket) | `.opencode/skills/client/SKILL.md` |
+| Server (HTTP, WebSocket, REST API, SSE) | `.opencode/skills/server/SKILL.md` |
 | Snapshot (file state capture and restore) | `.opencode/skills/snapshot/SKILL.md` |
-| Skills (skill system overview) | `.skills/skills/SKILL.md` |
+| Skills (skill system overview) | `.opencode/skills/skills/SKILL.md` |
 | Command (slash commands, templates, execution) | `.opencode/skills/command/SKILL.md` |
 | IDE (VS Code, JetBrains detection, diff viewing) | `.opencode/skills/ide/SKILL.md` |
 | Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |
@@ -292,3 +303,31 @@ When adding guidance for a new module:
 | Compaction (context compaction strategies) | `.opencode/skills/compaction/SKILL.md` |
 | Router (model auto-routing) | `.opencode/skills/router/SKILL.md` |
 | Util (clipboard, fuzzy matching, truncation, metrics) | `.opencode/skills/util/SKILL.md` |
+
+## Testing Commands
+
+```bash
+# Always run before/after changes
+cargo build --all-features
+cargo clippy --all-features -- -D warnings
+cargo test --all-features
+
+# Specific feature testing
+cargo test --all-features -- --test-threads=1  # For integration tests
+
+# TUI tests
+cargo test tui::input
+cargo test tui
+cargo test messages
+
+# Run specific module tests
+cargo test --package codegg -- <module>_test_pattern
+```
+
+## Security Reminders
+
+- Security-sensitive changes require additional test coverage
+- SSRF protection follows RFC 6892
+- Command injection follows OWASP Cheat Sheets
+- Path traversal follows OWASP File Upload guidance
+- Feature gates: Changes to server/plugin modules need `--all-features` testing
