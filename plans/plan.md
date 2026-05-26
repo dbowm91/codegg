@@ -7,19 +7,32 @@
 
 ## Overview
 
-This plan consolidates findings from all module review files in `plans/`. Items are organized by priority and logical grouping. All items require verification against the codebase before implementation.
+This plan consolidates findings from 31 module review files in the `plans/` directory. The primary goal is to fix documentation discrepancies between architecture docs and actual code implementation. **No critical bugs found** - mostly documentation improvements and minor code enhancements.
 
-**Review Summary**: 31 review files analyzed. Many architecture documents are accurate with only documentation corrections needed. No critical bugs found - mostly documentation improvements and minor code enhancements.
+**Key Finding**: Many "bugs" in review files were actually correctly implemented - always verify claims against code before implementing.
 
 ---
 
-## Priority Classification
+## Verification Before Implementation
 
-| Priority | Description | Count |
-|----------|-------------|-------|
-| **HIGH** | Discrepancies that could cause confusion or bugs | ~12 items |
-| **MEDIUM** | Important improvements but not critical | ~20 items |
-| **LOW** | Nice to have, documentation polish | ~25 items |
+⚠️ **CRITICAL**: Before implementing ANY item, verify the claim against actual code. Many items marked as "bugs" in review files were already fixed or are correctly implemented.
+
+Verification commands:
+```bash
+# Line counts
+wc -l src/tui/app/mod.rs
+
+# Tool count (should be 26)
+rg "pub struct \w+Tool" src/tool/mod.rs | wc -l
+
+# LSP server count (should be 42)
+rg "LspServerDef" src/lsp/server.rs | wc -l
+
+# Check specific locations
+rg "fullscreen.*bool" src/tui/app/state/
+rg "PermissionResponse" src/permission/mod.rs
+rg "check_and_reset_fuel_budget" src/plugin/loader.rs
+```
 
 ---
 
@@ -299,78 +312,96 @@ The following items were reviewed and confirmed correct - no action needed:
 
 ---
 
-## Parallelization Strategy (Implementation Waves)
+## Implementation Waves (Parallelization Strategy)
 
-For future agents to implement items efficiently, work should be organized by module to minimize context switching.
+Items are organized into waves that can be executed in parallel by different agents. Each item includes specific file locations and verification steps so future agents can implement without heavy research.
 
-### Wave 1: HIGH Priority Documentation Fixes
+### Wave 1: HIGH Priority Documentation Fixes (All Independent - 9 Agents)
 
-| Agent | Items | Module | Description |
-|-------|-------|--------|-------------|
-| agent_1 | H-1 | TUI | Line count (5800→5978), fullscreen field, spinner reference |
-| agent_2 | H-2 | Tool | Tool count (27→26) |
-| agent_3 | H-3 | LSP | Server count (39→42) |
-| agent_4 | H-4 | Permission | PermissionResponse, mode tables, git/skill types |
-| agent_5 | H-5 | Agent | Hook invocation clarification, line number removal |
-| agent_6 | H-6 | Plugin | Dead code removal (fuel budget statics) |
-| agent_7 | H-7 | Provider | ToolDefinition comment, register_builtin_with_config |
-| agent_8 | H-8 | Session | Event publishing clarification |
-| agent_9 | H-9 | MCP | Config example update |
+| Agent | Items | Module | Description | Files to Modify |
+|-------|-------|--------|-------------|-----------------|
+| 1 | H-1 | TUI | Line count, fullscreen field, spinner | `architecture/tui.md` |
+| 2 | H-2 | Tool | Tool count correction | `architecture/tool.md` |
+| 3 | H-3 | LSP | Server count correction | `architecture/lsp.md` |
+| 4 | H-4 | Permission | PermissionResponse, mode tables | `architecture/permission.md` |
+| 5 | H-5 | Agent | Hook invocation clarification | `architecture/agent-loop.md` |
+| 6 | H-6 | Plugin | Dead code removal | `src/plugin/loader.rs`, `architecture/plugin.md` |
+| 7 | H-7 | Provider | ToolDefinition comment, API | `architecture/provider.md` |
+| 8 | H-8 | Session | Event publishing clarification | `architecture/session.md` |
+| 9 | H-9 | MCP | Config example update | `architecture/mcp.md` |
 
 **All 9 items are independent and can run in parallel.**
 
-### Wave 2: MEDIUM Priority Improvements
+**H-6 (Plugin Dead Code Removal)** involves actual code changes:
+```bash
+# Verify dead code location
+rg "PLUGIN_FUEL_BUDGET|check_and_reset_fuel_budget" src/plugin/loader.rs
 
-| Group | Items | Module | Description |
-|-------|-------|--------|-------------|
-| Group A | M-1 | Config | Missing validation documentation |
-| Group B | M-2 | Memory | frequency_bonus, file locking, namespace format |
-| Group C | M-3, M-10 | IDE | Temp file timing, register_panic_cleanup, indentation |
-| Group D | M-4 | Provider | ProviderError::Auth retry verification |
-| Group E | M-5 | Security | "Used by" list verification |
-| Group F | M-6 | LSP | Completion fallback behavior clarification |
-| Group G | M-7 | Command | normalize_name() documentation |
-| Group H | M-8 | Plugin | plugins_dir cross-platform doc |
-| Group I | M-9 | Hooks | InlineScript deprecation handling |
-| Group J | M-11 | Exec | Timeout documentation clarification |
-| Group K | M-12 | Server | Auth middleware security review |
-| Group L | M-13 | Core | Type precision improvements |
-| Group M | M-14 | Tool | ToolExecutor usage documentation |
-| Group N | M-15 | Worktree | force parameter consideration |
-
-**Each group is independent; agents should pick one group at a time.**
-
-### Wave 3: LOW Priority Polish
-
-| Category | Items | Description |
-|----------|-------|-------------|
-| Formatting | L-1 | Rename files, fix IPv6/Landlock naming, test location refs |
-| Line Numbers | L-2 | Remove fragile line number refs throughout docs |
-| Minor Code | L-3 | has_long_tool_outputs threshold, dispatch_provider doc |
-| Clarifications | L-4 | session_id types, empty receiver behavior |
+# Files to edit: src/plugin/loader.rs
+# Remove lines 15-21 (PLUGIN_FUEL_BUDGET, PLUGIN_FUEL_LAST_RESET statics)
+# Remove lines 24-41 (check_and_reset_fuel_budget function)
+```
 
 ---
 
-## Verified Items (No Further Verification Needed)
+### Wave 2: MEDIUM Priority Improvements (14 Groups - Independent)
 
-The following were verified during this review session:
+Each group is independent; agents should pick one group at a time:
 
-| Item | Status | Notes |
-|------|--------|-------|
-| Tool count = 26 | ✅ VERIFIED | at `src/tool/mod.rs:89-119` |
-| LSP server count = 42 | ✅ VERIFIED | at `src/lsp/server.rs:27-385` |
-| PermissionResponse = {level, persist} | ✅ VERIFIED | at `src/permission/mod.rs:1142-1145`, no `reason` field |
-| Auth middleware allows without token | ✅ VERIFIED | At `middleware/auth.rs:37-39` - security design question |
+| Group | Items | Module | Description | Files to Modify |
+|-------|-------|--------|-------------|-----------------|
+| A | M-1 | Config | Missing validation docs | `architecture/config.md` |
+| B | M-2 | Memory | frequency_bonus, file locking, namespace | `architecture/memory.md` |
+| C | M-3, M-10 | IDE | Temp file timing, indentation | `architecture/ide.md`, `src/ide/mod.rs` |
+| D | M-4 | Provider | Already verified - no action needed | - |
+| E | M-5 | Security | "Used by" list verification | `architecture/security.md` |
+| F | M-6 | LSP | Completion fallback clarification | `architecture/lsp.md` |
+| G | M-7 | Command | normalize_name() documentation | `architecture/command.md` |
+| H | M-8 | Plugin | plugins_dir cross-platform | `architecture/plugin.md` |
+| I | M-9 | Hooks | InlineScript deprecation handling | `src/hooks/mod.rs` OR `architecture/hooks.md` |
+| J | M-11 | Exec | Timeout documentation | `architecture/exec.md` |
+| K | M-12 | Server | Auth middleware security | `architecture/server.md` |
+| L | M-13 | Core | Type precision improvements | `architecture/core.md` |
+| M | M-14 | Tool | ToolExecutor usage docs | `architecture/tool.md` |
+| N | M-15 | Worktree | force parameter consideration | `architecture/worktree.md` |
+
+**M-4 (Provider Error Retry Status) is already VERIFIED - no action needed.**
+
+---
+
+### Wave 3: LOW Priority Polish
+
+| Category | Items | Description | Files to Modify |
+|----------|-------|-------------|-----------------|
+| Formatting | L-1 | Rename files, fix naming | Various architecture docs |
+| Line Numbers | L-2 | Remove fragile refs | All architecture docs |
+| Minor Code | L-3 | has_long_tool_outputs, dispatch_provider | `architecture/compaction.md`, `architecture/plugin.md` |
+| Clarifications | L-4 | session_id types, empty receiver | `architecture/bus.md`, `architecture/core.md` |
+
+---
+
+## Verified Items (Pre-Implementation Checklist)
+
+Before implementing any item, verify against this list:
+
+| Item | Verified Value | Location |
+|------|----------------|----------|
+| Tool count = 26 | ✅ | `src/tool/mod.rs:89-119` |
+| LSP server count = 42 | ✅ | `src/lsp/server.rs:27-385` |
+| PermissionResponse = {level, persist} | ✅ | `src/permission/mod.rs:1142-1145`, no `reason` field |
+| Auth middleware allows without token | ✅ | `src/server/middleware/auth.rs:37-39` - intentional dev mode |
 | Plugin fuel tracking logic | ✅ CORRECT | Condition NOT inverted - properly returns early when exhausted |
-| UiState.fullscreen exists | ✅ VERIFIED | At `src/tui/app/state/ui.rs:71` |
-| ToolExecutor IS used | ✅ VERIFIED | bash, read, glob at `executor.rs:72,92,112` |
-| ProviderError::Auth retryable | ✅ VERIFIED | At `src/error.rs:169` |
-| Memory frequency_bonus formula | ✅ VERIFIED | `(count - 1) * 2.0` at `patterns.rs:232` |
-| SessionCreated, MessageAdded published | ✅ VERIFIED | At `src/bus/events.rs:7,21` |
-| InlineScript deprecated | ✅ VERIFIED | `#[allow(deprecated)]` at `mod.rs:180` |
-| InprocCoreClient uses Option<Arc<>> | ✅ VERIFIED | At `src/core/mod.rs:22-28` |
-| CommandRegistry at line 72 | ✅ VERIFIED | At `src/tui/command.rs:72` |
-| register_panic_cleanup exists | ✅ VERIFIED | At `src/ide/mod.rs:65-78` |
+| UiState.fullscreen exists | ✅ | `src/tui/app/state/ui.rs:71` |
+| ToolExecutor IS used | ✅ | bash, read, glob at `executor.rs:72,92,112` |
+| ProviderError::Auth retryable | ✅ | `src/error.rs:169` |
+| Memory frequency_bonus formula | ✅ | `(count - 1) * 2.0` at `patterns.rs:232` |
+| SessionCreated, MessageAdded published | ✅ | `src/bus/events.rs:7,21` |
+| InlineScript deprecated | ✅ | `#[allow(deprecated)]` at `mod.rs:180` |
+| InprocCoreClient uses Option<Arc<>> | ✅ | `src/core/mod.rs:22-28` |
+| CommandRegistry at line 72 | ✅ | `src/tui/command.rs:72` |
+| register_panic_cleanup exists | ✅ | `src/ide/mod.rs:65-78` |
+| Plugin dead code | ✅ | `check_and_reset_fuel_budget()` at `loader.rs:24-41` - never called |
+| AppEvent count = 36 | ✅ | `src/bus/events.rs:5-190` |
 
 ---
 
@@ -378,30 +409,26 @@ The following were verified during this review session:
 
 Before implementing, investigate these:
 
-1. **Auth middleware security** (`middleware/auth.rs:37-39`): Is allowing requests without token intentional? This is a security design decision.
+1. **Auth middleware security** (`src/server/middleware/auth.rs:37-39`): Is allowing requests without token intentional? This is a security design decision - currently appears to be intentional for development mode.
 
-2. **IDE open_diff_generic** (`mod.rs:302-311`): Review guard drop placement for correctness.
+2. **IDE open_diff_generic** (`src/ide/mod.rs:302-311`): Review guard drop placement for correctness.
 
 3. **Security "Used by" list**: Verify all actual consumers of `ssrf.rs` functions.
 
 ---
 
-## Implementation Notes for Future Agents
-
-1. **Batch processing**: Process 4-5 review files per subagent to avoid context compaction
-2. **Plan consolidation pattern**: Subagent reads batch → writes consolidated temp file → parent reads all temp files → creates final plan
-3. **Subagent context limits**: Subagents undergo compaction after ~2000 lines
-4. **Accurate status tracking**: Many items flagged as "pending" were already fixed - verify before implementing
-5. **Line numbers fragile**: Always use code search to find exact locations
-
----
-
 ## Testing Commands
 
+After any changes, run:
+
 ```bash
-# Always run before/after changes
+# Build verification
 cargo build --all-features
+
+# Lint
 cargo clippy --all-features -- -D warnings
+
+# Test
 cargo test --all-features
 
 # TUI tests
@@ -413,5 +440,21 @@ cargo test --package codegg -- <module>_test_pattern
 ```
 
 ---
+
+## Implementation Notes for Future Agents
+
+1. **Batch processing**: Process 4-5 review files per subagent to avoid context compaction (~2000 line limit)
+2. **Plan consolidation pattern**: Subagent reads batch → writes consolidated temp file → parent reads all temp files → creates final plan
+3. **Subagent context limits**: Subagents undergo compaction after ~2000 lines
+4. **Accurate status tracking**: Many items flagged as "pending" were already fixed - verify before implementing
+5. **Line numbers fragile**: Always use code search to find exact locations, never trust line numbers in docs
+6. **Verification before assumption**: Many "bugs" in review files turned out to be correctly implemented after direct inspection
+7. **Implementation approach**: When implementing, read the current architecture doc first, then verify against actual source code, then make changes only if there's a real discrepancy
+
+---
+
+## Consolidated From
+
+This plan was consolidated from 31 individual module review files. The original review files have been removed; this consolidated plan contains all actionable items.
 
 *(End of file)*

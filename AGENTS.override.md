@@ -164,3 +164,37 @@ Phase 2 (Parallel - Documentation):
 | Memory frequency_bonus | `(count - 1) * 2.0` | `src/memory/patterns.rs:232` |
 | Session events published | SessionCreated, MessageAdded | `src/bus/events.rs:7,21` |
 | Auth middleware | Allows requests when no token set | `src/server/middleware/auth.rs:37-39` |
+| AppEvent count | 36 variants | `src/bus/events.rs:5-190` |
+| Plugin dead code | `check_and_reset_fuel_budget()` never called | `src/plugin/loader.rs:24-41` |
+
+---
+
+## Plan Consolidation Notes (2026-05-26)
+
+### Consolidated Plan Structure
+The implementation plan at `plans/plan.md` consolidates findings from 31 module review files. Key structure:
+
+1. **Verification Section**: Critical commands to verify claims before implementing
+2. **HIGH Priority Items** (9 items): Documentation fixes and one dead code removal
+3. **MEDIUM Priority Items** (15 items): Various improvements grouped by module
+4. **LOW Priority Items** (4 categories): Polish work
+5. **Implementation Waves**: Parallelization strategy with 9 parallel agents for Wave 1
+
+### Key Verification Findings
+Many "bugs" in review files were actually correctly implemented. Verified:
+- PermissionResponse shape is `{level, persist}` not `{id, choice}`
+- Auth middleware intentionally allows requests when no token configured (dev mode)
+- Plugin fuel tracking logic is CORRECT (not inverted as some reviews suggested)
+- LSP server count is 42 (not 39 as doc claimed)
+
+### Wave-Based Implementation
+- **Wave 1**: 9 independent agents can work in parallel (HIGH priority)
+- **Wave 2**: 14 groups, each independent (MEDIUM priority)
+- **Wave 3**: LOW priority polish
+
+### Files Modified by Each Agent
+Each implementation item includes `Files to Modify` column for clarity.
+
+---
+
+*Updated 2026-05-26: Consolidated plan review learnings, added verified codebase facts from 31 review files*

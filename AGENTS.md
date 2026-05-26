@@ -54,7 +54,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
-- `plans/tui_separation.md`: Completed TUI/core separation plan and phase notes
+- `plans/plan.md`: Consolidated implementation plan (31 module reviews) with wave-based parallelization strategy
 
 ## Critical Implementation Notes
 
