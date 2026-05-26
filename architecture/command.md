@@ -217,6 +217,16 @@ pub async fn load_command_from_file(path: &Path) -> Result<Command, String>
 - Empty `template:` in frontmatter now correctly falls back to markdown body
 - Improved duplicate detection across command sources
 
+The `CommandRegistry::normalize_name()` function (src/tui/command.rs:240-242) lowercases the input and strips leading `/` characters, enabling case-insensitive matching and consistent command lookup:
+
+```rust
+fn normalize_name(name: &str) -> String {
+    name.trim().trim_start_matches('/').to_lowercase()
+}
+```
+
+This function is used in `find_by_name_or_alias()` for case-insensitive command/alias matching, and is applied when deduplicating commands from different sources.
+
 ## See Also
 
 - [.opencode/skills/command/SKILL.md](../.opencode/skills/command/SKILL.md) - Agent guidance for command module
