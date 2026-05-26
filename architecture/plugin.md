@@ -234,7 +234,7 @@ impl PluginRegistry {
 ### install.rs - Plugin Installation
 
 ```rust
-pub fn plugins_dir() -> PathBuf;  // ~/.local/share/codegg/plugins
+pub fn plugins_dir() -> PathBuf;  // Cross-platform via dirs::data_local_dir()
 
 pub async fn install_from_path(path: &Path) -> Result<PathBuf, InstallError>;
 pub async fn install_from_url(url: &str) -> Result<PathBuf, InstallError>;
@@ -314,7 +314,10 @@ impl MarketplaceService {
 ## Plugin Directory Structure
 
 ```
-~/.local/share/codegg/plugins/     (via dirs::data_local_dir())
+~/.local/share/codegg/plugins/     (Linux)
+~/Library/Application Support/codegg/plugins/  (macOS)
+%LOCALAPPDATA%\codegg\plugins\     (Windows)
+via dirs::data_local_dir()
 ├── my-plugin/
 │   ├── manifest.toml
 │   └── plugin.wasm
