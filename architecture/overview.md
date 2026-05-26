@@ -48,8 +48,8 @@ The system follows a **layered architecture** separating the TUI frontend, Core 
 │  │  └─────────┘  └────────┘  └───────────┘  └────────┘  │       │
 │  └────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
-                      │                    │                    │
-          ┌───────────┴─────┐  ┌───────────┴──────┐  ┌─────────┴───────┐
+                       │                    │                    │
+           ┌───────────┴─────┐  ┌───────────┴──────┐  ┌─────────┴───────┐
 │  LLM Provider   │  │   MCP Servers    │  │   LSP Servers   │
             │  (20+ models)   │  │ (local/remote)  │  │   (39 servers)  │
            └─────────────────┘  └──────────────────┘  └────────────────┘
@@ -70,6 +70,7 @@ Each module has a dedicated `.md` file in `architecture/`. Click any link for a 
 | **[Tool](tool.md)** | Tool registry and 26 built-in tools for file ops, git, search, web, and more | [tool.md](tool.md) |
 | **[Event Bus](bus.md)** | GlobalEventBus (pub/sub), PermissionRegistry, QuestionRegistry | [bus.md](bus.md) |
 | **[Core](core.md)** | CoreClient facade, transport adapters (inproc/stdio/socket), protocol envelopes | [core.md](core.md) |
+| **[Compaction](compaction.md)** | Context window overflow management through intelligent compaction strategies | [compaction.md](compaction.md) |
 
 ### Security & Access Control
 
@@ -103,6 +104,7 @@ Each module has a dedicated `.md` file in `architecture/`. Click any link for a 
 | **[Server](server.md)** | Axum HTTP server with WebSocket, REST API, SSE events, rate limiting | [server.md](server.md) |
 | **[MCP](mcp.md)** | Model Context Protocol client (local via stdio, remote via HTTP) with OAuth | [mcp.md](mcp.md) |
 | **[LSP](lsp.md)** | Language Server Protocol client for diagnostics, code operations | [lsp.md](lsp.md) |
+| **[Protocol](protocol.md)** | CoreRequest/CoreResponse, TuiMessage, EventEnvelope protocol definitions | [protocol.md](protocol.md) |
 
 ### Extensibility
 
@@ -341,3 +343,4 @@ Configuration is loaded from (in order of precedence):
 | [worktree.md](worktree.md) | worktree | Git worktree management |
 | [tts.md](tts.md) | tts | Text-to-speech |
 | [compaction.md](compaction.md) | compaction | Context window overflow management |
+| [protocol.md](protocol.md) | protocol | CoreRequest/CoreResponse, TuiMessage definitions |
