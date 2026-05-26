@@ -54,7 +54,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
-- `plans/plan.md`: Completed implementation plan - all items verified and pruned
+- `plans/plan.md`: Active implementation plan - verify against code before implementing
 
 ## Critical Implementation Notes
 
@@ -114,7 +114,7 @@ These items are important for future agents to know when working with the codeba
 
 ### Verified Codebase Facts
 
-These items were verified during a 2026-05-26 architecture review session:
+These items were verified during review sessions:
 
 | Item | Value | Location |
 |------|-------|----------|
@@ -127,12 +127,11 @@ These items were verified during a 2026-05-26 architecture review session:
 | CoreEvent mapping | Incomplete - many events dropped | `src/core/mod.rs:728-797` |
 | InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
-| register_panic_cleanup | Private function for temp file cleanup | `src/ide/mod.rs:65-78` |
-| ProviderError::Auth | is_retryable = true | `src/error.rs:169` |
-| Memory frequency_bonus | `(count - 1) * 2.0` | `src/memory/patterns.rs:232` |
-| Session events published | SessionCreated, MessageAdded | `src/bus/events.rs:7,21` |
-| GlobalEventBus capacity | 2048 | `src/bus/global.rs:13` |
-| PermissionRegistry TTL | 300s | `src/bus/mod.rs:59` |
+| UiState fields | All documented fields present | `src/tui/app/state/ui.rs:27-74` |
+| Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
+| CoreEvent has subagent variants | SubagentStarted, SubagentCompleted | `src/protocol/core.rs:244,256` |
+| map_app_event_to_core_event | Maps TextDelta, ReasoningDelta, ToolCallStarted, ToolResult, PermissionPending, QuestionPending, AgentFinished, Error | `src/core/mod.rs:728-797` |
+| map_app_event_to_core_event | Subagent events NOT mapped (falls through to None) | `src/core/mod.rs:795` |
 
 ### Security Notes
 

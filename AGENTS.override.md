@@ -39,9 +39,16 @@ When implementing code changes in parallel using worktrees:
 - Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - TUI does not send these requests, so `Ack` is intentional
 
 ### Plugin Fuel System
-- Fuel reserved at `src/plugin/loader.rs:270` with `reserve_fuel()`
-- Fuel returned via `module_cache::CACHE.return_fuel(plugin_id, fuel)` on ALL exit paths
+- Fuel reserved at `src/plugin/loader.rs:245` with `reserve_fuel()`
+- Fuel returned via `module_cache::CACHE.return_fuel(plugin_id, fuel)` on CLEAN exit paths
+- **BUG**: Early error returns at lines 259, 270, 285 do NOT call `return_fuel()` - causes fuel leaks
 - Entry point: `execute_wasm_hook()` at loader.rs:230+
+
+### CoreEvent Mapping
+- `map_app_event_to_core_event()` at `src/core/mod.rs:728-797` drops most events via `_ => None`
+- **BUG**: SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed NOT mapped
+- Events that ARE mapped: TextDelta, ReasoningDelta, ToolCallStarted, ToolResult, PermissionPending, QuestionPending, AgentFinished, Error
+- CoreEvent has SubagentStarted (core.rs:244) and SubagentCompleted (core.rs:256) variants but they never receive data
 
 ### Permission/Question Registry Limitations
 - `PermissionRegistry::pending_permission_ids()` returns IDs in format `{tool_call_id}-{tool_name}`
@@ -82,9 +89,8 @@ Parent Agent:
 ### Parallel Implementation Pattern
 ```
 Phase 1 (Sequential - Code Bugs):
-  - Fix server bugs (permission.rs, question.rs)
-  - Fix core handlers (may need investigation for dependencies)
-  - Fix plugin fuel leaks
+  - Fix plugin fuel leaks (loader.rs:259,270,285)
+  - Fix CoreEvent mapping (core/mod.rs:728-797)
 
 Phase 2 (Parallel - Documentation):
   - Each agent takes 5-6 modules
@@ -101,10 +107,10 @@ Phase 2 (Parallel - Documentation):
 2. **Many review claims were WRONG** - current code was already correct:
    - Dialog count: 21 is CORRECT (not 22/23)
    - LSP language count: 41 is correct (not 44+)
-   - Tool count: 26 is correct (not 33+)
+   - Tool count: 26 is CORRECT (not 33+)
    - Hook types: 6 HookEvent variants (not 13)
    - Command count: doc already says 41 (not 36)
-   - LSP skill count: 41 (not 42)
+   - UiState: All documented fields ARE present (tts, tts_enabled, fullscreen, dirty_regions, render_panic_count, last_render_error)
 
 3. **Documentation Fix Approach**
    - Read the CURRENT architecture doc first to check need before fixing
@@ -114,44 +120,11 @@ Phase 2 (Parallel - Documentation):
 
 ---
 
-## Verified Codebase Facts (2026-05-26)
+## Current Active Bugs
 
-| Item | Value | Location |
-|------|-------|----------|
-| Tool count | 26 | `src/tool/mod.rs:89-119` |
-| LSP server count | 39 | `src/lsp/server.rs:27-385` |
-| PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
-| InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
-| ToolExecutor | NOT integrated - exists but unused | `architecture/tool.md:205` |
-| Plugin fuel logic | CORRECT - returns early when exhausted | `src/plugin/loader.rs:262-266` |
-| InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
-| CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
-| register_panic_cleanup | Private function for temp file cleanup | `src/ide/mod.rs:65-78` |
-| ProviderError::Auth | is_retryable = true | `src/error.rs:169` |
-| Memory frequency_bonus | `(count - 1) * 2.0` | `src/memory/patterns.rs:232` |
-| Session events published | SessionCreated, MessageAdded | `src/
-bus/events.rs:7,21` |
-| Auth middleware | Allows requests when no token set | `src/server/middleware/auth.rs:37-39` |
-| AppEvent count | 36 variants | `src/bus/events.rs:5-190` |
+| Bug | Location | Description |
+|-----|----------|-------------|
+| Plugin fuel leaks | `src/plugin/loader.rs:255-285` | `module_cache::CACHE.return_fuel()` not called on early exits at lines 259, 270, 285 |
+| CoreEvent mapping | `src/core/mod.rs:728-797` | Subagent* events dropped via `_ => None` in `map_app_event_to_core_event` |
 
-
----
-
-## New Verified Codebase Facts (2026-05-26 Review Session)
-
-| Item | Value | Location |
-|------|-------|----------|
-| Tool count | 26 | `src/tool/mod.rs:89-119` |
-| LSP server count | 39 | `src/lsp/server.rs:27-385` |
-| PermissionResponse | `{level: PermissionLevel, persist: bool}` | `src/permission/mod.rs:1142-1145` |
-| InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
-| ToolExecutor | NOT integrated - exists but unused | `architecture/tool.md:205` |
-| Plugin fuel logic | CORRECT - returns early when exhausted | `src/plugin/loader.rs:262-266` |
-| InlineScript | Deprecated, non-functional | `src/hooks/mod.rs:180-184` |
-| CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
-| register_panic_cleanup | Private function for temp file cleanup | `src/ide/mod.rs:65-78` |
-| ProviderError::Auth | is_retryable = true | `src/error.rs:169` |
-| Memory frequency_bonus | `(count - 1) * 2.0` | `src/memory/patterns.rs:232` |
-| Session events published | SessionCreated, MessageAdded | `src/bus/events.rs:7,21` |
-| Auth middleware | Allows requests when no token set | `src/server/middleware/auth.rs:37-39` |
-| AppEvent count | 36 variants | `src/bus/events.rs:5-190` |
+*(End of file)*
