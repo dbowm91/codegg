@@ -181,10 +181,14 @@ These items were discovered during the 2026-05-27 architecture review and are NO
 | MCP Debug command | Stub only | `src/mcp/cli.rs:309-318` | Only prints args, does NOT test connections |
 | OAuthManager sync methods | Silent error ignore | `src/mcp/auth.rs:119` | `let _ = load_tokens_sync()` ignores errors |
 | load_tokens_sync() usage | Actually used | `src/mcp/auth.rs:119` | Called in OAuthManager::new() but errors ignored |
+| WebSocket auth inconsistency | Bug | `src/server/ws.rs:103-106` vs `middleware/auth.rs:37-40` | HTTP allows no-token, WebSocket returns 500 |
+| StatsDialog | Missing | `/stats` command exists but no StatsDialog implementation | Dialog::Stats exists, no corresponding dialog file |
+| Snapshot restore() | Missing atomic write | `src/snapshot/mod.rs:292` | restore_to_path() uses temp+rename, restore() does not |
 
 ### Security Notes
 
 - **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
+- **WebSocket auth is stricter**: `src/server/ws.rs:103-106` returns 500 when no token configured, unlike HTTP middleware. This inconsistency should be reviewed for production deployments.
 
 ### CoreRequest Handler Attention Points
 
