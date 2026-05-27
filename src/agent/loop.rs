@@ -764,9 +764,19 @@ impl AgentLoop {
     }
 
     pub fn setup_question_channel(&mut self) {
+        self.setup_question_channel_impl(false);
+    }
+
+    pub fn setup_question_channel_for_exec(&mut self) {
+        self.setup_question_channel_impl(true);
+    }
+
+    fn setup_question_channel_impl(&mut self, exec_mode: bool) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.question_tx = Some(tx);
-        self.question_rx = Some(rx);
+        if exec_mode {
+            self.question_rx = Some(rx);
+        }
     }
 
     pub fn question_sender(&self) -> Option<&tokio::sync::oneshot::Sender<String>> {
@@ -1896,6 +1906,17 @@ impl AgentLoop {
                     }
                 }
                 QuestionRegistry::unregister(&self.session_id);
+            } else {
+                tool_results = tool_results
+                    .into_iter()
+                    .map(|(idx, id, output)| {
+                        if output == "__QUESTION_PENDING__" {
+                            (idx, id, "[question not supported in exec mode]".to_string())
+                        } else {
+                            (idx, id, output)
+                        }
+                    })
+                    .collect();
             }
         }
 

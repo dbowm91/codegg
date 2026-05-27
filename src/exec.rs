@@ -118,7 +118,7 @@ impl ExecMode {
 
         let session_id = self.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         loop_instance.set_session_id(&session_id);
-        loop_instance.setup_question_channel();
+        loop_instance.setup_question_channel_for_exec();
 
         let messages = vec![Message::User {
             content: vec![ContentPart::Text {
