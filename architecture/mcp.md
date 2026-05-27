@@ -291,7 +291,7 @@ MCP servers configured in `config.json`. The `servers` section maps server names
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `server_type` | `string` | Type of MCP server: `local` or `remote` (renamed from `type`) |
+| `type` | `string` | Type of MCP server: `local` or `remote` (the Rust struct field is `server_type` due to Rust naming conventions) |
 | `command` | `string` | Executable path for local servers (e.g., `npx`, `uvx`) |
 | `args` | `string[]` | Arguments passed to the command |
 | `env` | `object` | Environment variables for local servers |
