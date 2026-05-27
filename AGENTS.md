@@ -81,7 +81,7 @@ These items are important for future agents to know when working with the codeba
 
 - **Client timeouts**: Health check has 10s timeout, WebSocket connection has 30s timeout
 
-- **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`
+- **TTS is macOS-only**: Currently uses hardcoded `say` command in `src/tts/mod.rs`. TTS auto-stops when `AgentFinished` is received. Toggle with `/tts` or `/voice` command.
 
 - **Subprocess PATH**: All tools use `std::env::var_os("PATH")` instead of hardcoded paths for proper Homebrew/cargo/pyenv tool discovery
 
@@ -154,7 +154,7 @@ These items were verified during review sessions:
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
-| Built-in command count | 41 | `src/tui/command.rs:79-162` |
+| Built-in command count | 42 (includes /tts) | `src/tui/command.rs:79-165` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct | `src/tui/app/state/ui.rs:62-63` |
 | Snapshot hash | Uses MD5 in `collect_files_sync` (line 431), SHA256 elsewhere | `src/snapshot/mod.rs:431` |

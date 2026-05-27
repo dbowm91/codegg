@@ -60,6 +60,17 @@ TTS has two keyboard shortcuts defined in `src/tui/input.rs`:
 
 These can be customized via the keybind dialog.
 
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/tts` | Toggle text-to-speech on/off |
+| `/voice` | Alias for `/tts` |
+
+### Auto-Stop Behavior
+
+When an agent turn completes (receives `AgentFinished` event), TTS automatically stops if currently speaking. This is implemented in `src/tui/mod.rs` event loop handler.
+
 ### Footer Status
 
 When TTS is enabled, the footer displays a speaker icon:
