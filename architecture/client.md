@@ -105,7 +105,7 @@ The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag
 | `Error` | `message: String` | Error message |
 | `ResyncRequired` | `reason: Option<String>`, `pending_permissions: Vec<String>`, `pending_questions: Vec<String>` | Client re-sync needed |
 
-`App::handle_remote_event()` (in `src/tui/app/mod.rs`) unwraps `EventEnvelope` first and then dispatches the inner payload, so replayed events and live events share the same handler path.
+`App::handle_remote_event()` (in `src/tui/app/mod.rs:805`) unwraps `EventEnvelope` first and then dispatches the inner payload, so replayed events and live events share the same handler path.
 
 ## Error Handling
 
