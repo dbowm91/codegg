@@ -118,19 +118,44 @@ When no IDE is detected, `open_diff_generic()` searches PATH using `std::env::sp
 
 The `IdeServer` struct provides MCP server functionality for IDE communication with two transport modes:
 
-### `run_stdio()` - Standard I/O Transport
+### `run_stdio()` - Standard I/O Transport (lines 78-119)
 
 Uses tokio async I/O for stdio-based communication:
 
 ```rust
 pub async fn run_stdio(&self) -> Result<(), McpError> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-    let (reader, mut writer) = (tokio::io::stdin(), tokio::io::stdout());
-    // ...
+    let stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+    let mut lines = stdin.lines();
+    let mut input = String::new();
+
+    let mut initialized = false;
+
+    loop {
+        input.clear();
+        let read_result = lines.next_line().await;
+        match read_result {
+            Ok(Some(line)) => input = line,
+            Ok(None) | Err(_) => break,
+        }
+
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Ok(request) = serde_json::from_str::<JsonRpcRequest>(trimmed) {
+            let response = self.handle_request(request, &mut initialized).await;
+            // ... send JSON response
+        }
+    }
+
+    Ok(())
 }
 ```
 
-### `run_socket()` - Unix Socket Transport
+### `run_socket()` - Unix Socket Transport (lines 121-144)
 
 Uses Unix socket for network-based communication:
 
@@ -149,7 +174,10 @@ pub async fn run_socket(&self, socket_path: &str) -> Result<(), McpError> {
 }
 ```
 
-The `run_socket()` method uses async I/O via tokio's `UnixListener`, allowing multiple IDE connections. Each connection is handled in a spawned task via `handle_connection()`.
+The `run_socket()` method uses async I/O via tokio's `UnixListener`, allowing multiple IDE connections. Each connection is handled in a spawned task via `handle_connection()` and `clone_for_connection()`:
+
+- `clone_for_connection()` (lines 146-153): Creates a clone of the IdeServer for each connection, sharing the `tools`, `pending`, `shutdown`, and `shutdown_notify` fields via Arc
+- `handle_connection()` (lines 155-194): Handles JSON-RPC requests on a UnixStream connection, using BufReader for line-based reading and writing JSON responses
 
 ## See Also
 
