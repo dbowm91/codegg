@@ -34,7 +34,7 @@ pub trait CoreClient: Send + Sync {
 
 | Type | Purpose |
 |------|---------|
-| `InprocCoreClient` | Runs the core in the current process. Contains 4 fields: `subagent_pool` (SubAgentPool for subagent management), `memory_store` (MemoryStore for cross-session memory), `bg_scheduler` (BackgroundScheduler for task scheduling), and `pool` (SqlitePool for database access). `subscribe()` reads from GlobalEventBus and forwards events to the channel. Turn execution (spawned async) publishes `AgentFinished`/`Error` events to the bus. |
+| `InprocCoreClient` | Runs the core in the current process. Contains 4 fields, all wrapped in `Option<Arc<T>>`: `subagent_pool` (SubAgentPool for subagent management), `memory_store` (MemoryStore for cross-session memory), `bg_scheduler` (BackgroundScheduler for task scheduling), and `pool` (SqlitePool for database access). `subscribe()` reads from GlobalEventBus and forwards events to the channel. Turn execution (spawned async) publishes `AgentFinished`/`Error` events to the bus. |
 | `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests/responses over stdin/stdout |
 | `SocketCoreClient` | Connects to a Unix socket endpoint and exchanges JSONL requests/responses |
 
@@ -132,7 +132,9 @@ The `CoreRequest` enum (in `src/protocol/core.rs`) contains these variants:
 
 #### CoreEvent Enum
 
-The `CoreEvent` enum (in `src/protocol/core.rs`) is published by the core and received by in-process subscribers via `subscribe()`:
+The `CoreEvent` enum (in `src/protocol/core.rs`) is published by the core and received by in-process subscribers via `subscribe()`.
+
+**Note**: Snapshot events (`SnapshotSession`, `SnapshotWorkspace`, `SnapshotModels`) are defined in `CoreEvent` but are **not published** via `map_app_event_to_core_event` at `src/core/mod.rs:728-841`. The mapping function returns `None` for snapshot events (they fall through to the catch-all `_ => None` case).
 
 **Snapshot Events:**
 - `SnapshotSession { session_id }` - Session state snapshot requested
