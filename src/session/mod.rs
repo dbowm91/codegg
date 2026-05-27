@@ -25,7 +25,9 @@ pub use row::{MessageRow, PartRow, PermissionRow, SessionRow, TodoRow};
 pub use store::{
     escape_sql_like, generate_slug, MessageStore, PartStore, PermissionStore, SessionStore, TodoStore,
 };
-pub use checkpoint::CheckpointStore;
+pub use checkpoint::{
+    CheckpointStore, compute_checksum, create_working_file, verify_file,
+};
 
 const SESSION_COLUMNS: &str = r#"id, project_id, workspace_id, parent_id, slug, directory,
     title, version, share_url, summary_additions, summary_deletions,
