@@ -3,16 +3,40 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum SandboxMode {
+    #[default]
+    ReadOnly,
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl SandboxMode {
+    pub fn access_flags(&self) -> u64 {
+        match self {
+            SandboxMode::ReadOnly => 1 << 0,
+            SandboxMode::WorkspaceWrite => (1 << 0) | (1 << 1),
+            SandboxMode::DangerFullAccess => (1 << 0) | (1 << 1) | (1 << 2),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SandboxConfig {
     pub enabled: bool,
+    pub mode: SandboxMode,
     pub allowed_paths: Vec<String>,
     pub deny_paths: Vec<String>,
 }
 
 impl SandboxConfig {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            enabled: false,
+            mode: SandboxMode::default(),
+            allowed_paths: Vec::new(),
+            deny_paths: Vec::new(),
+        }
     }
 
     pub fn with_enabled(mut self, enabled: bool) -> Self {
@@ -55,7 +79,7 @@ impl SandboxConfig {
                 return Ok(());
             }
 
-            enforce_landlock(&self.allowed_paths, &self.deny_paths)?;
+            enforce_landlock(&self.allowed_paths, &self.deny_paths, &self.mode)?;
             tracing::info!(
                 "Landlock sandbox enforced with {} allowed paths",
                 self.allowed_paths.len()
@@ -82,18 +106,11 @@ fn landlock_is_supported() -> bool {
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-fn enforce_landlock(allowed_paths: &[String], deny_paths: &[String]) -> Result<(), ToolError> {
+fn enforce_landlock(allowed_paths: &[String], deny_paths: &[String], mode: &SandboxMode) -> Result<(), ToolError> {
     use std::ffi::CString;
-
-    const LANDLOCK_ACCESS_FS_READ: u64 = 1 << 0;
-    const LANDLOCK_ACCESS_FS_WRITE: u64 = 1 << 1;
-    const LANDLOCK_ACCESS_FS_EXEC: u64 = 1 << 2;
 
     const LANDLOCK_RULE_PATH_FD: u32 = 1;
 
-    #[allow(dead_code)]
-    const PR_SET_LANDLOCK: libc::c_int = 1;
-    #[allow(dead_code)]
     const PR_GET_LANDLOCK: libc::c_int = 2;
 
     const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 451;
@@ -115,8 +132,7 @@ fn enforce_landlock(allowed_paths: &[String], deny_paths: &[String]) -> Result<(
         return Err(ToolError::Permission("Landlock not available".to_string()));
     }
 
-    let handled_access =
-        LANDLOCK_ACCESS_FS_READ | LANDLOCK_ACCESS_FS_WRITE | LANDLOCK_ACCESS_FS_EXEC;
+    let handled_access = mode.access_flags();
 
     let attr = LandlockRulesetAttr {
         handled_access_fs: handled_access,

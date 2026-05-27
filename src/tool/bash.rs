@@ -166,6 +166,20 @@ impl BashTool {
         self
     }
 
+    pub fn with_sandbox_mode(mut self, mode: crate::security::sandbox::SandboxMode) -> Self {
+        if let Some(ref mut config) = self.landlock_sandbox {
+            config.mode = mode;
+        } else {
+            let mut config = SandboxConfig::new();
+            config.enabled = true;
+            config.mode = mode;
+            config.allowed_paths = crate::security::sandbox::get_default_allowed_paths();
+            config.deny_paths = crate::security::sandbox::get_sensitive_paths();
+            self.landlock_sandbox = Some(config);
+        }
+        self
+    }
+
     fn check_command_security(&self, command: &str, parts: &[&str]) -> Result<(), ToolError> {
         if parts.is_empty() {
             return Ok(());

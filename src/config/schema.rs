@@ -364,6 +364,7 @@ pub struct PermissionConfig {
     pub tools: Option<HashMap<String, String>>,
     pub paths: Option<Vec<String>>,
     pub doomloop_threshold: Option<usize>,
+    pub sandbox_mode: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
