@@ -619,13 +619,13 @@ pub struct EventProcessor {
 
 | Hook Event | Location | Purpose |
 |------------|----------|---------|
-| `SessionStart` | `loop.rs:1313-1328` | Before main loop |
-| `AgentStart` | `loop.rs:1409-1424` | Before each turn |
-| `PreToolExecute` | `loop.rs:1808-1826` | Before each tool |
-| `PostToolExecute` | `loop.rs:1882-1900` | After each tool |
-| `AgentEnd` | `loop.rs:1582-1597` | After each turn |
-| `SessionEnd` | `loop.rs:1603-1618` | After main loop |
-| `SessionCompacting` | `loop.rs:1261-1265` | Before compaction |
+| `SessionStart` | `run_session_start_hooks()` in `loop.rs` | Before main loop |
+| `AgentStart` | `run_agent_start_hooks()` in `loop.rs` | Before each turn |
+| `PreToolExecute` | `run_pre_tool_hooks()` in `loop.rs` | Before each tool |
+| `PostToolExecute` | `run_post_tool_hooks()` in `loop.rs` | After each tool |
+| `AgentEnd` | `run_agent_end_hooks()` in `loop.rs` | After each turn |
+| `SessionEnd` | `run_session_end_hooks()` in `loop.rs` | After main loop |
+| `SessionCompacting` | `dispatch_hook()` in `loop.rs` | Before compaction |
 
 ### Plugin Service Hooks
 

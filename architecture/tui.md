@@ -28,7 +28,7 @@ Local transport selection is handled by `--core-transport` or `CODEGG_CORE_TRANS
 ```
 tui/
 ├── app/                    # Main application state
-│   ├── mod.rs              # App struct (5978 lines), event loop, key handling
+│   ├── mod.rs              # App struct (6003 lines), event loop, key handling
 │   ├── types.rs            # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
 │   └── state/              # State domains
 │       ├── agent.rs        # AgentState (models, agents, selection)

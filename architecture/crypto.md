@@ -46,6 +46,8 @@ pub fn decrypt_from_string(encrypted_str: &str, password: &str) -> Result<String
 
 ### EncryptedData Struct
 
+The `EncryptedData` struct is not `pub` (internal to crypto module), but its fields are `pub` to allow construction and access where needed:
+
 ```rust
 pub struct EncryptedData {
     pub salt: Vec<u8>,       // 32 bytes (Argon2id salt)
@@ -60,7 +62,7 @@ Uses Argon2id for strong memory-hard key derivation:
 
 ```rust
 fn derive_key_argon2id(password: &str, salt: &[u8]) -> Result<[u8; 32], CryptoError> {
-    // Params: m=19,456 KiB, t=2 iterations, p=1 degree
+    // Params: m=19,456 KiB, t=2 iterations, p=1 degree, output=32 bytes (key length)
     let params = Params::new(19_456, 2, 1, Some(32))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     // ...

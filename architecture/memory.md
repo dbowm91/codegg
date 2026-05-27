@@ -145,6 +145,22 @@ When a new memory on the same topic has higher importance, the old one gets `sup
 
 Max 20 active memories per namespace.
 
+### Eviction Policy
+
+When the namespace reaches 20 memories, new memories are still processed but old memories on the same topic get superseded rather than evicted outright. Memories are **not automatically deleted** - they are marked as superseded via the `superseded_by` field when a newer memory on the same topic has higher importance.
+
+To reduce memory count, use `/memory-forget <id>` to manually delete superseded memories.
+
+### consolidate_session Limitations
+
+The `consolidate_session()` function has the following limitations:
+
+1. **Text-only pattern detection**: Only `PartData::Text` parts are analyzed for patterns. Tool call outputs (binary/image data, file contents) are not processed.
+
+2. **No automatic deletion**: When at the 20-memory limit, new memories can still be added and older ones superseded, but the total count may exceed 20 temporarily until cleanup occurs.
+
+3. **Score threshold**: Only patterns scoring >= 8.0 are stored as memories.
+
 ## Configuration
 
 Enable auto-consolidation via `opencode.jsonc`:

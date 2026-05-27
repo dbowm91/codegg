@@ -91,7 +91,17 @@ pub fn api_key(&self, prefix: &str) -> Option<String>
 
 The method checks environment variables first (e.g., `ANTHROPIC_API_KEY`), then `api_key` field, then encrypted `encrypted_api_key` field.
 
-ServerConfig has a `merge()` method that performs field-by-field merging, copying non-None fields from other config.
+### ProviderConfig merge() behavior
+
+`ProviderConfig` has a `merge()` method for field-level merging. Unlike HashMap fields which use full replace, `ProviderConfig::merge()` performs **field-by-field merging**: non-None fields from the override config replace the corresponding fields in the base config.
+
+```rust
+pub fn merge(&self, other: &ProviderConfig) -> ProviderConfig
+```
+
+Example: If global config has `api_key` and project config has `base_url`, the merged result has both.
+
+**Note**: This is different from HashMap-based fields (agents, mcp, commands, modes) which use full replacement when the key exists in the later config.
 
 ## Components
 
@@ -244,9 +254,11 @@ Validated fields:
 **Bug**: Invalid `medium_model` values not caught by validation.
 **Fix**: `medium_model` validation added.
 
-### Dead tui_config code removed
+### Dead tui_config code removed (historical note - 2026-05-22)
+**Historical**: This section documents a cleanup that was completed on 2026-05-22.
+
 **Bug**: `find_tui_config()` and `load_tui_config()` were exported but never used anywhere in the codebase.
-**Fix**: Removed from `paths.rs` and `mod.rs` to clean up dead code (2026-05-22).
+**Fix**: Removed from `paths.rs` and `mod.rs` to clean up dead code.
 
 ## See Also
 

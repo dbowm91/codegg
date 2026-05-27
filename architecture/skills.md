@@ -101,6 +101,8 @@ You have access to advanced git operations. Use these commands:
 
 Skills are loaded from two locations:
 - **Global**: `~/.config/codegg/skills/` (via `dirs::config_dir()`)
+  - On macOS: `~/Library/Application Support/codegg/skills/`
+  - On Linux: `~/.config/codegg/skills/`
 - **Project**: `.codegg/skills/` (in project directory)
 
 Loading is recursive:

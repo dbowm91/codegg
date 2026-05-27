@@ -194,7 +194,7 @@ Check against allowed_paths
 | `198.18.0.0/15` | Benchmark |
 | `224.0.0.0/4` | Multicast |
 | `::1` | IPv6 loopback |
-| `fc00::/7` | IPv6 unique local (fc00::/8 and fd00::/8) |
+| `fc00::/7` | IPv6 unique local: fc00::/8 and fd00::/8 |
 | `fe80::/10` | IPv6 link-local |
 | `ff00::/8` | IPv6 multicast |
 | `::ffff:x.x.x.x` | IPv4-mapped IPv6 |
