@@ -5,6 +5,7 @@ use tokio::time::sleep;
 
 use crate::error::ToolError;
 
+#[deprecated(since = "2026-05-27", note = "Not integrated - architectural mismatch with ToolRegistry")]
 pub struct ToolExecutor {
     max_attempts: usize,
     base_delay: Duration,
