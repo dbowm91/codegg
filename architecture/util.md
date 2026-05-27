@@ -51,7 +51,7 @@ pub fn truncate_bytes(text: &str, max_bytes: usize) -> String;
 - `truncate_lines`: Keeps `max_lines/2` from start and end, shows "[X lines truncated]" in middle
 - `truncate_bytes`: Safely truncates at UTF-8 character boundary, appends "... [truncated]"
 
-### stat_core.rs (misleading name - contains metrics, not file stats)
+### metrics.rs
 
 Internal metrics collection system for observability.
 
@@ -89,7 +89,7 @@ pub mod inner {
 }
 ```
 
-**Note**: `stat_core.rs` is a misleading filename - it contains metrics infrastructure, not file statistics as the name might suggest.
+**Note**: `metrics.rs` contains metrics infrastructure (counters, gauges, histograms), not file statistics as the misleading filename might suggest.
 
 ## Usage Examples
 

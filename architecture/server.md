@@ -32,6 +32,32 @@ pub use mdns::{discover_services, MdnsService};
 pub use state::ServerState;
 ```
 
+### mdns.rs - mDNS Service Discovery
+
+Provides mDNS service discovery for finding opencode server instances on the local network:
+
+```rust
+pub struct MdnsService {
+    running: Arc<AtomicBool>,
+    socket: Arc<Mutex<Option<Arc<UdpSocket>>>>,
+    service_name: String,
+    port: u16,
+    domain: String,
+}
+
+impl MdnsService {
+    pub fn new(port: u16, domain: Option<String>) -> Self;
+    pub async fn start(&self) -> Result<(), String>;
+    pub fn stop(&self);
+    pub fn is_running(&self) -> bool;
+}
+```
+
+- Advertises `_opencode._tcp.local.` service on port 5353 (mDNS standard)
+- `discover_services(timeout_ms)` broadcasts query and collects responses
+- Uses multicast address 224.0.0.251 for mDNS communication
+- Service name format: `codegg.{domain}` (default: `codegg.local.`)
+
 ### http.rs - Server Setup
 
 Main server initialization:
@@ -226,7 +252,7 @@ Client SSE connection methods are documented in `architecture/mcp.md`. The `Remo
 |---------|--------|---------|
 | `EventEnvelope` | `event_seq: u64`, `payload: Box<TuiMessage>` | Sequence-tagged wrapper for replayable TUI events |
 | `TextDelta` | `delta: String` | Streaming text |
-| `RenderFrame` | `content: String` | Rendered UI frame content |
+| `RenderFrame` | `content: String` | Rendered UI frame content (Server→Client: sent when TUI renders a complete frame, containing the full terminal output to display) |
 | `ToolCallStarted` | `tool_name`, `tool_id`, `arguments` | Tool execution |
 | `ToolResult` | `tool_id`, `output`, `success` | Tool result |
 | `PermissionPending` | `id`, `tool`, `path` | Permission request |

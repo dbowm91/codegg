@@ -391,6 +391,8 @@ CREATE TABLE checkpoints (
 )
 ```
 
+Note: The table schema has `session_id` BEFORE `timestamp`, but the `Checkpoint` struct (src/session/models.rs) defines fields in order: `id`, `timestamp`, `session_id`. This is intentional - the table uses `session_id` for the foreign key relationship while the struct prioritizes `timestamp` for chronological ordering.
+
 Note: The Checkpoint struct is serialized as JSON and stored in the `state` column. The struct contains:
 - `id`, `session_id`, `timestamp` (duplicated at table level)
 - `provider`, `model` - provider information
