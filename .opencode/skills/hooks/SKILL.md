@@ -306,7 +306,7 @@ if let Some(ref ps) = plugin_service {
 
 ### Plugin Hooks
 1. **Fuel Limits** - Per-plugin fuel budgets prevent runaway plugins.
-2. **Timeout** - 5 second timeout per hook.
+2. **Timeout** - Two timeouts: outer 5 second timeout (service.rs:18), inner 30 second timeout for WASM execution (loader.rs:14). Error format is at service.rs:108.
 3. **Blocked Execution** - If `blocked: true`, the agent loop aborts the operation.
 
 ## Adding a New Hook Event
