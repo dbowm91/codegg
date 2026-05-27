@@ -199,7 +199,7 @@ pub struct ModeDefinition {
 |------|---------|---------------|------------------|
 | `review` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, lsp | edit, bash, task, todowrite |
 | `debug` | Allow | read, glob, grep, list, bash, question, webfetch, websearch, codesearch, edit, lsp | task, todowrite |
-| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, lsp | bash, task, todowrite, write |
+| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, lsp | bash, task, todowrite |
 
 ## Permission Flow
 

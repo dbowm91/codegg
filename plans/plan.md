@@ -91,9 +91,8 @@ All W5 items completed via 6 phases of parallel documentation fixes:
 
 **Notes:**
 - W5-5: Theme count is actually 31 (not 33) - plan was incorrect
-- W5-3: Snapshot MD5→SHA256 already completed in prior work
+- W5-3: Snapshot MD5→SHA256 NOT YET FIXED - code still uses MD5 at `src/snapshot/mod.rs:431`
 - W5-37: Dialog::Info doesn't exist (InfoDialog is a component, not Dialog variant)
-- W5-38: UiState actually has 21 fields, not 25 - plan was incorrect
 - ToolExecutor: Decided to deprecate (not integrated, architectural mismatch)
 
 ### Wave 4: Large Refactors (DEFERRED - 12-16+ hours each)
@@ -224,12 +223,12 @@ These issues are documented but deferred for later attention:
 
 | Issue | Location | Priority |
 |-------|----------|----------|
-| Snapshot hash inconsistency | `src/snapshot/mod.rs:431` | MEDIUM |
+| Snapshot hash inconsistency | `src/snapshot/mod.rs:431` uses MD5 | MEDIUM | NOT FIXED |
 | ToolExecutor exists but unused | `src/tool/executor.rs:8` | MEDIUM |
 | Static CANONICAL_PATHS_CACHE never clears | `src/security/sandbox.rs:237` | MEDIUM |
 | TTS stop() returns Ok on failure | `src/tts/mod.rs:85-103` | LOW |
 | TTS init() ignores providers | `src/tts/mod.rs:45-49` | LOW |
-| Histogram unbounded memory | `src/util/metrics.rs:122-124` | LOW |
+| Histogram unbounded memory | `src/util/metrics.rs:122-124` | LOW | ✅ FIXED |
 | Worktree symlink detection | `src/worktree/mod.rs:69-88` | LOW |
 | OAuth replay protection TOCTOU | `src/mcp/auth.rs:318-332` | MEDIUM |
 | PermissionResponse unused | `src/permission/mod.rs:1141-1145` | LOW |
@@ -276,7 +275,7 @@ These issues are documented but deferred for later attention:
 | Item | Value | Location |
 |------|-------|----------|
 | Tool count | 26 | `src/tool/mod.rs:89-119` |
-| LSP server count | 40 | `src/lsp/server.rs:27-375` |
+| LSP server count | 39 | `src/lsp/server.rs:27-383` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | NOT integrated - exists but unused | `src/tool/executor.rs:8` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
@@ -292,7 +291,7 @@ These issues are documented but deferred for later attention:
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
-| Built-in command count | 39 | `src/tui/command.rs:79-161` |
+| Built-in command count | 41 | `src/tui/command.rs:79-162` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `App` struct, NOT `UiState` | `src/tui/app/mod.rs:232-233` |
 | Snapshot hash inconsistency | `collect_files_sync` uses MD5 for non-empty files, SHA256 elsewhere | `src/snapshot/mod.rs:431` |
