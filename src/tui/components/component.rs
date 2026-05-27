@@ -102,4 +102,13 @@ pub trait Component: Send + Any {
     /// Set the selected item index. Used to sync state from mouse clicks.
     /// Default implementation does nothing.
     fn set_selected(&mut self, _idx: usize) {}
+    fn focus_next(&mut self) {}
+    fn focus_prev(&mut self) {}
+    fn focusable_count(&self) -> usize {
+        1
+    }
+    fn focused_index(&self) -> usize {
+        0
+    }
+    fn set_focused(&mut self, _idx: usize) {}
 }

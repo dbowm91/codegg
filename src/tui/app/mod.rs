@@ -2085,14 +2085,6 @@ impl App {
                 return;
             }
         }
-        if key.code == crossterm::event::KeyCode::Tab
-            && !matches!(
-                self.ui_state.dialog,
-                Dialog::None | Dialog::Help | Dialog::Context | Dialog::Cost | Dialog::Usage
-            )
-        {
-            return;
-        }
         let action = handle_event_with_bindings_moded(
             crossterm::event::Event::Key(key),
             Some(&self.ui_state.bindings),

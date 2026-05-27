@@ -6,6 +6,7 @@ use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -296,20 +297,26 @@ impl OAuthManager {
     ) -> Result<TokenSet, McpError> {
         self.cleanup_expired_codes();
 
-        if self.is_code_used(code) {
-            return Err(McpError::OAuth(
-                "authorization code has already been used".into(),
-            ));
-        }
-
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let code_expires_at = now + 600;
 
-        self.mark_code_used(code.to_string(), code_expires_at)
-            .await?;
+        {
+            let entry = self.used_codes.entry(code.to_string());
+            if matches!(entry, Entry::Occupied(_)) {
+                return Err(McpError::OAuth(
+                    "authorization code has already been used".into(),
+                ));
+            }
+            entry.or_insert(UsedCode { expires_at: code_expires_at });
+        }
+
+        if let Err(e) = self.save_used_codes_async().await {
+            self.used_codes.remove(code);
+            return Err(e);
+        }
 
         let tokens = self
             .exchange_code_for_tokens(
@@ -320,9 +327,13 @@ impl OAuthManager {
                 code_verifier,
                 redirect_uri,
             )
-            .await?;
+            .await;
 
-        Ok(tokens)
+        if tokens.is_err() {
+            self.used_codes.remove(code);
+        }
+
+        tokens
     }
 
     pub async fn refresh_tokens(

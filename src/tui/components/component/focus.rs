@@ -13,12 +13,14 @@ use std::sync::Arc;
 
 pub struct FocusManager {
     stack: VecDeque<Box<dyn Component>>,
+    focus_index: usize,
 }
 
 impl FocusManager {
     pub fn new() -> Self {
         Self {
             stack: VecDeque::new(),
+            focus_index: 0,
         }
     }
 
@@ -61,9 +63,27 @@ impl FocusManager {
     }
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
+        if key.code == crossterm::event::KeyCode::Tab {
+            return self.handle_tab(key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT));
+        }
         if let Some(top) = self.stack.back_mut() {
             if let Some(msg) = top.handle_key(key) {
                 return Some(msg);
+            }
+        }
+        None
+    }
+
+    fn handle_tab(&mut self, reverse: bool) -> Option<TuiMsg> {
+        if let Some(top) = self.stack.back_mut() {
+            let count = top.focusable_count();
+            if count > 0 {
+                if reverse {
+                    self.focus_index = self.focus_index.saturating_sub(1);
+                } else {
+                    self.focus_index = (self.focus_index + 1) % count;
+                }
+                top.set_focused(self.focus_index);
             }
         }
         None

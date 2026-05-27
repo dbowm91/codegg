@@ -137,6 +137,18 @@ impl Component for ConfirmDialog {
     fn dialog_type(&self) -> DialogType {
         DialogType::Confirm
     }
+
+    fn focusable_count(&self) -> usize {
+        2
+    }
+
+    fn focused_index(&self) -> usize {
+        self.selected_option
+    }
+
+    fn set_focused(&mut self, idx: usize) {
+        self.selected_option = idx.min(1);
+    }
 }
 
 impl Default for ConfirmDialog {

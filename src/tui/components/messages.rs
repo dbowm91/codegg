@@ -12,6 +12,9 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 
+mod layout;
+use layout::MessageLayoutCache;
+
 use super::super::theme::Theme;
 use super::tool_output::ToolCallEntry;
 
@@ -146,6 +149,7 @@ pub struct MessagesWidget {
     pub tool_call_expanded: HashMap<String, bool>,
     pub visible_height: usize,
     flattened_tool_calls_cache: RefCell<Option<Vec<(usize, usize, String)>>>,
+    message_layout_cache: RefCell<Option<MessageLayoutCache>>,
 }
 
 fn find_any_tag(text: &str, start: bool) -> Option<(usize, usize)> {
@@ -235,6 +239,7 @@ impl MessagesWidget {
             tool_call_expanded: HashMap::new(),
             visible_height: 20,
             flattened_tool_calls_cache: RefCell::new(None),
+            message_layout_cache: RefCell::new(None),
         }
     }
 
@@ -356,6 +361,7 @@ impl MessagesWidget {
             }
         }
 
+        self.invalidate_layout_cache();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -373,6 +379,7 @@ impl MessagesWidget {
                         collapsed: false,
                     });
                 }
+                self.invalidate_layout_cache();
                 if self.auto_scroll && was_at_bottom {
                     self.scroll = usize::MAX;
                 }
@@ -388,6 +395,7 @@ impl MessagesWidget {
             timestamp: Some(chrono::Local::now().timestamp()),
             is_plan_mode: None,
         });
+        self.invalidate_layout_cache();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -424,6 +432,7 @@ impl MessagesWidget {
             },
         );
         self.flattened_tool_calls_cache.borrow_mut().take();
+        self.invalidate_layout_cache();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -468,6 +477,7 @@ impl MessagesWidget {
             entry.output_lines = output_lines;
         }
         self.flattened_tool_calls_cache.borrow_mut().take();
+        self.invalidate_layout_cache();
         if self.auto_scroll {
             self.scroll = usize::MAX;
         }
@@ -481,6 +491,7 @@ impl MessagesWidget {
                 }
             }
         }
+        self.invalidate_layout_cache();
     }
 
     pub fn clear(&mut self) {
@@ -492,6 +503,7 @@ impl MessagesWidget {
         self.sel_tool_call = None;
         self.tool_call_expanded.clear();
         self.flattened_tool_calls_cache.borrow_mut().take();
+        self.invalidate_layout_cache();
     }
 
     pub fn undo(&mut self) -> bool {
@@ -511,6 +523,7 @@ impl MessagesWidget {
             }
         }
         self.flattened_tool_calls_cache.borrow_mut().take();
+        self.invalidate_layout_cache();
         self.scroll = 0;
         true
     }
@@ -529,6 +542,7 @@ impl MessagesWidget {
             self.messages.push(msg);
         }
         self.flattened_tool_calls_cache.borrow_mut().take();
+        self.invalidate_layout_cache();
         self.scroll = usize::MAX;
         true
     }
@@ -547,6 +561,30 @@ impl MessagesWidget {
         }
         *self.flattened_tool_calls_cache.borrow_mut() = Some(tool_calls.clone());
         tool_calls
+    }
+
+    fn get_layout_cache(&self) -> MessageLayoutCache {
+        if let Some(ref cache) = *self.message_layout_cache.borrow() {
+            return cache.clone();
+        }
+        let cache = self.build_layout_cache();
+        *self.message_layout_cache.borrow_mut() = Some(cache.clone());
+        cache
+    }
+
+    fn invalidate_layout_cache(&self) {
+        *self.message_layout_cache.borrow_mut() = None;
+    }
+
+    fn build_layout_cache(&self) -> MessageLayoutCache {
+        let mut offsets = Vec::with_capacity(self.messages.len());
+        let mut total = 0usize;
+        for (idx, msg) in self.messages.iter().enumerate() {
+            let count = self.estimate_msg_lines(msg);
+            offsets.push((idx, total, count));
+            total += count;
+        }
+        MessageLayoutCache::new(offsets, total)
     }
 
     pub fn select_next_tool_call(&mut self) {
@@ -943,17 +981,8 @@ impl Widget for &MessagesWidget {
 
         let available = area.height as usize;
 
-        let msg_cumulative: Vec<usize> = {
-            let mut cumulative = Vec::with_capacity(self.messages.len());
-            let mut total = 0;
-            for msg in &self.messages {
-                cumulative.push(total);
-                total += self.estimate_msg_lines(msg);
-            }
-            cumulative
-        };
-
-        let total_lines = msg_cumulative.last().copied().unwrap_or(0);
+        let cache = self.get_layout_cache();
+        let total_lines = cache.total_lines();
         let max_scroll = total_lines.saturating_sub(available);
         let scroll = if self.scroll == usize::MAX {
             max_scroll
@@ -962,18 +991,8 @@ impl Widget for &MessagesWidget {
         };
 
         let visible_msg_range = {
-            let mut start_idx = 0;
-            let mut end_idx = self.messages.len();
-            for (i, &cum) in msg_cumulative.iter().enumerate() {
-                let msg_end = cum + self.estimate_msg_lines(&self.messages[i]);
-                if cum <= scroll && msg_end > scroll {
-                    start_idx = i.saturating_sub(2);
-                } else if cum >= scroll + available {
-                    end_idx = (i + 2).min(self.messages.len());
-                    break;
-                }
-            }
-            start_idx..end_idx
+            let (start, end) = cache.find_visible_range(scroll, available);
+            start..end
         };
 
         let mut lines: Vec<Line<'_>> = Vec::new();
@@ -1264,10 +1283,7 @@ impl Widget for &MessagesWidget {
         }
 
         let scroll_offset = scroll.saturating_sub(
-            msg_cumulative
-                .get(visible_msg_range.start)
-                .copied()
-                .unwrap_or(0),
+            cache.get_offset(visible_msg_range.start).unwrap_or(0),
         );
         let visible_start = scroll_offset.min(lines.len().saturating_sub(1));
         let visible_end = (visible_start + available).min(lines.len());

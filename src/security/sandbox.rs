@@ -1,7 +1,8 @@
 use crate::error::ToolError;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum SandboxMode {
@@ -250,17 +251,42 @@ fn enforce_landlock(allowed_paths: &[String], deny_paths: &[String], mode: &Sand
     Ok(())
 }
 
-static CANONICAL_PATHS_CACHE: Mutex<Option<HashMap<Vec<String>, Vec<PathBuf>>>> = Mutex::new(None);
+struct CachedPaths {
+    paths: Vec<PathBuf>,
+    timestamp: Instant,
+}
 
-fn get_canonical_paths(allowed_paths: &[String]) -> Vec<PathBuf> {
+static CANONICAL_PATHS_CACHE: Mutex<Option<(HashMap<Vec<String>, CachedPaths>, VecDeque<Vec<String>>)>> = Mutex::new(None);
+
+const MAX_CACHE_ENTRIES: usize = 100;
+const CACHE_TTL: Duration = Duration::from_secs(300);
+
+fn get_canonical_paths(allowed_paths: &[String])                           -> Vec<PathBuf> {
     let mut cache = CANONICAL_PATHS_CACHE.lock().unwrap();
     if cache.is_none() {
-        *cache = Some(HashMap::new());
+        *cache = Some((HashMap::new(), VecDeque::new()));
     }
-    let cache = cache.as_mut().unwrap();
+    let (cache_map, cache_order) = cache.as_mut().unwrap();
 
-    if let Some(canonical) = cache.get(allowed_paths) {
-        return canonical.clone();
+    if cache_map.is_empty() || cache_order.is_empty() {
+        cache_order.clear();
+    } else if let Some(oldest_key) = cache_order.front() {
+        if let Some(cached) = cache_map.get(oldest_key) {
+            if cached.timestamp.elapsed() > CACHE_TTL {
+                cache_map.clear();
+                cache_order.clear();
+            }
+        }
+    }
+
+    while cache_order.len() >= MAX_CACHE_ENTRIES {
+        if let Some(oldest_key) = cache_order.pop_front() {
+            cache_map.remove(&oldest_key);
+        }
+    }
+
+    if let Some(cached) = cache_map.get(allowed_paths) {
+        return cached.paths.clone();
     }
 
     let canonical: Vec<PathBuf> = allowed_paths
@@ -268,7 +294,8 @@ fn get_canonical_paths(allowed_paths: &[String]) -> Vec<PathBuf> {
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .collect();
 
-    cache.insert(allowed_paths.to_vec(), canonical.clone());
+    cache_map.insert(allowed_paths.to_vec(), CachedPaths { paths: canonical.clone(), timestamp: Instant::now() });
+    cache_order.push_back(allowed_paths.to_vec());
     canonical
 }
 

@@ -1138,12 +1138,6 @@ pub fn merge_rulesets(a: &PermissionRuleset, b: &PermissionRuleset) -> Permissio
     }
 }
 
-#[derive(Debug)]
-pub struct PermissionResponse {
-    pub level: PermissionLevel,
-    pub persist: bool,
-}
-
 pub fn default_store_path() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|d| d.join("codegg").join("permissions.json"))
 }

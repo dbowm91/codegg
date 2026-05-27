@@ -148,11 +148,12 @@ impl ToolRegistry {
     }
 
     pub fn definitions(&self) -> Vec<crate::provider::ToolDefinition> {
+        let interner = crate::util::interner::tool_interner();
         self.tools
             .values()
             .map(|t| crate::provider::ToolDefinition {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
+                name: interner.intern(t.name()).to_string(),
+                description: interner.intern(t.description()).to_string(),
                 parameters: t.parameters(),
             })
             .collect()
