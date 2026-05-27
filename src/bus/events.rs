@@ -109,6 +109,9 @@ pub enum AppEvent {
     AgentFinished {
         session_id: String,
         stop_reason: String,
+        input_tokens: Option<usize>,
+        output_tokens: Option<usize>,
+        cached_tokens: Option<usize>,
     },
     /// A file was modified externally.
     FileChanged {

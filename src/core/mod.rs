@@ -168,6 +168,9 @@ impl CoreClient for InprocCoreClient {
                             crate::bus::events::AppEvent::AgentFinished {
                                 session_id,
                                 stop_reason: "completed".to_string(),
+                                input_tokens: None,
+                                output_tokens: None,
+                                cached_tokens: None,
                             },
                         );
                     }
@@ -783,6 +786,9 @@ fn map_app_event_to_core_event(event: crate::bus::events::AppEvent) -> Option<Co
         crate::bus::events::AppEvent::AgentFinished {
             session_id,
             stop_reason,
+            input_tokens: _,
+            output_tokens: _,
+            cached_tokens: _,
         } => Some(CoreEvent::TurnCompleted {
             session_id,
             turn_id: String::new(),

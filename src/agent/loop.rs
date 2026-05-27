@@ -882,10 +882,13 @@ impl AgentLoop {
                                 },
                             );
                         }
-                        ChatEvent::Finish { stop_reason, .. } => {
+                        ChatEvent::Finish { stop_reason, usage } => {
                             crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
                                 session_id: self.session_id.clone(),
                                 stop_reason: stop_reason.to_string(),
+                                input_tokens: Some(usage.input_tokens),
+                                output_tokens: Some(usage.output_tokens),
+                                cached_tokens: usage.cached_tokens,
                             });
                         }
                         _ => {}

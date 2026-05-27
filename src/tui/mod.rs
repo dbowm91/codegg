@@ -1856,12 +1856,19 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         };
                         app.messages_state.messages.update_tool_call(&tool_id, output, status, None, None, None);
                     }
-                    AppEvent::AgentFinished { stop_reason, .. } => {
+                    AppEvent::AgentFinished { stop_reason, input_tokens, output_tokens, cached_tokens, .. } => {
                         debug_log!("Event loop: AgentFinished received stop_reason={}", stop_reason);
                         if stop_reason == "completed" {
                             app.session_state.session_status = SessionStatus::Idle;
                             app.prompt_state.pending_send = false;
                             app.footer.set_thinking(false, None);
+
+                            if let (Some(in_tok), Some(out_tok)) = (input_tokens, output_tokens) {
+                                app.set_tokens(in_tok as u64, out_tok as u64);
+                                if let Some(ct) = cached_tokens {
+                                    app.session_state.cached_tokens = ct as u64;
+                                }
+                            }
 
                             if let Some(ref _mem_store) = app.memory_store {
                                 let experimental = crate::config::schema::Config::load()
