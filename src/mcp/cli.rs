@@ -307,14 +307,105 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
         }
 
         McpCommand::Debug { name, url } => {
+            use tokio::runtime::Handle;
+            let handle = Handle::current();
+
             println!("Testing MCP server connection...");
-            if let Some(name) = name {
-                println!("Server: {}", name);
+
+            let config = cli.load_current_config()?;
+            match (name, url) {
+                (Some(server_name), None) => {
+                    if let Some(config) = config {
+                        if let Some(mcp) = &config.mcp {
+                            if let Some(entry) = mcp.get(&server_name) {
+                                if let Some(ref inner) = entry.inner {
+                                    let server_type = inner.server_type.as_deref().unwrap_or("local");
+                                    match server_type {
+                                        "remote" => {
+                                            if let Some(ref url) = inner.url {
+                                                let headers = inner.headers.clone().unwrap_or_default();
+                                                let result = handle.block_on(async {
+                                                    let mut manager = crate::mcp::remote::McpConnectionManager::new(
+                                                        url,
+                                                        headers,
+                                                        inner.timeout.unwrap_or(30000) as u64,
+                                                    )?;
+                                                    manager.connect().await?;
+                                                    println!("Connection successful!");
+                                                    let tools = manager.discover_tools().await?;
+                                                    println!("Server '{}' has {} tools", server_name, tools.len());
+                                                    let _ = manager.disconnect().await;
+                                                    Ok::<(), AppError>(())
+                                                });
+                                                if let Err(e) = result {
+                                                    return Err(e);
+                                                }
+                                            } else {
+                                                println!("No URL configured for server '{}'", server_name);
+                                            }
+                                        }
+                                        "local" => {
+                                            if let Some(ref cmd) = inner.command {
+                                                let args = inner.args.clone().unwrap_or_default();
+                                                println!("Local server - exec format not tested via debug");
+                                                println!("Command: {} {:?} (configured, not executed)", cmd, args);
+                                            } else {
+                                                println!("No command configured for server '{}'", server_name);
+                                            }
+                                        }
+                                        _ => {
+                                            println!("Unknown server type: {}", server_type);
+                                        }
+                                    }
+                                } else {
+                                    println!("Server '{}' config missing inner details", server_name);
+                                }
+                            } else {
+                                println!("Server '{}' not found in config", server_name);
+                            }
+                        } else {
+                            println!("No MCP servers configured");
+                        }
+                    } else {
+                        println!("No config file found");
+                    }
+                }
+                (None, Some(test_url)) => {
+                    let result = handle.block_on(async {
+                        let mut manager = crate::mcp::remote::McpConnectionManager::new(
+                            &test_url,
+                            HashMap::new(),
+                            30000,
+                        )?;
+                        manager.connect().await?;
+                        println!("Connection to {} successful!", test_url);
+                        let _ = manager.disconnect().await;
+                        Ok::<(), AppError>(())
+                    });
+                    if let Err(e) = result {
+                        return Err(e);
+                    }
+                }
+                (Some(test_name), Some(test_url)) => {
+                    let result = handle.block_on(async {
+                        let mut manager = crate::mcp::remote::McpConnectionManager::new(
+                            &test_url,
+                            HashMap::new(),
+                            30000,
+                        )?;
+                        manager.connect().await?;
+                        println!("Connection to {} successful!", test_url);
+                        let _ = manager.disconnect().await;
+                        Ok::<(), AppError>(())
+                    });
+                    if let Err(e) = result {
+                        return Err(e);
+                    }
+                }
+                (None, None) => {
+                    println!("Use --name <server> or --url <url> to specify a server to test");
+                }
             }
-            if let Some(url) = url {
-                println!("URL: {}", url);
-            }
-            println!("Use 'codegg mcp add' to add a new server first.");
         }
     }
 
