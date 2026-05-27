@@ -2,7 +2,7 @@
 
 ## Session-Specific Items (2026-05-27)
 
-Items learned during the 2026-05-27 architecture review session that are useful for future agents working on this codebase.
+Items learned during the 2026-05-27 architecture review session useful for future agents.
 
 ### Verified Codebase Facts
 
@@ -20,13 +20,32 @@ Items learned during the 2026-05-27 architecture review session that are useful 
 
 ### Known Code Issues
 
-| Issue | Location | Priority |
-|-------|----------|----------|
-| ToolExecutor deprecated | `src/tool/executor.rs:8` | MEDIUM |
-| CANONICAL_PATHS_CACHE never clears | `src/security/sandbox.rs:237` | MEDIUM |
-| TTS init() ignores providers | `src/tts/mod.rs:45-49` | LOW |
-| Worktree symlink detection | `src/worktree/mod.rs:69-88` | LOW |
-| OAuth replay protection TOCTOU | `src/mcp/auth.rs:318-332` | MEDIUM |
+| Issue | Location | Complexity | Action |
+|-------|----------|------------|--------|
+| ToolExecutor deprecated | `src/tool/executor.rs:8` | LOW | **REMOVE** - safe to delete |
+| CANONICAL_PATHS_CACHE never clears | `src/security/sandbox.rs:237` | MEDIUM | **FIX** - add TTL or LRU |
+| TTS init() ignores providers | `src/tts/mod.rs:45-49` | HIGH | **LEAVE** - macOS say works |
+| Worktree symlink detection | `src/worktree/mod.rs:69-88` | LOW | **LEAVE** |
+| OAuth replay protection TOCTOU | `src/mcp/auth.rs:318-332` | MEDIUM | **FIX** - security issue |
+| PermissionResponse struct unused | `src/permission/mod.rs:1141-1145` | LOW | **REMOVE** - no consumers |
+| check_external_directory unused | `src/permission/mod.rs:1237-1248` | LOW | **LEAVE** or **REMOVE** |
+
+### Wave 4 Active Items (Detailed)
+
+**TUI-5: Accessibility Improvements**
+- FocusManager is modal-only, Tab consumed in handle_dialog_key()
+- Implementation: Add focus_index tracking, intercept Tab before component
+- See `plans/plan.md` for detailed steps
+
+**LARGE-1: Virtual Scrolling for Messages**
+- O(n) linear scan on every render (4-5 passes through messages)
+- Implementation: MessageLayoutCache with binary search
+- See `plans/plan.md` for detailed steps
+
+**LARGE-2: String Interning System**
+- DashMap available, Hot spot: ToolRegistry::definitions()
+- Implementation: Global StringInterner static
+- See `plans/plan.md` for detailed steps
 
 ### Key Verification Commands
 
@@ -46,6 +65,10 @@ grep "ImageTool" src/tool/mod.rs
 
 ### Architecture Review Notes
 
-Waves R0-R3 completed (54 items, 25+ PRs). Wave 4 deferred (TUI-5, LARGE-1, LARGE-2).
+Waves R0-R3 completed (54 items, 25+ PRs). Wave 4 now ACTIVE:
+- TUI-5: MEDIUM complexity
+- LARGE-1: HIGH complexity  
+- LARGE-2: LOW complexity
+- Quick fixes (FIX-1 to FIX-4) also available
 
 *(End of file)*
