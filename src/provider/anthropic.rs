@@ -137,6 +137,13 @@ impl AnthropicProvider {
             body["max_tokens"] = json!(max);
         }
 
+        if let Some(budget) = req.thinking_budget {
+            body["thinking"] = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": budget
+            });
+        }
+
         body
     }
 }

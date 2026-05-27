@@ -941,6 +941,12 @@ impl AgentLoop {
             if let Some(top_p) = agent.top_p {
                 request.top_p = Some(top_p);
             }
+            if let Some(budget) = agent.thinking_budget {
+                request.thinking_budget = Some(budget);
+            }
+            if let Some(effort) = agent.reasoning_effort.clone() {
+                request.reasoning_effort = Some(effort);
+            }
         }
     }
 
@@ -2121,6 +2127,8 @@ impl AgentLoop {
             top_p: None,
             max_tokens: None,
             response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
 
         self.run(request).await

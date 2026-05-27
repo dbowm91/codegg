@@ -39,6 +39,8 @@ pub struct Agent {
     pub system_prompt: Option<String>,
     pub permissions: HashMap<String, String>,
     pub hidden: bool,
+    pub thinking_budget: Option<usize>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -334,6 +336,8 @@ pub fn resolve_agents(config: &Config) -> Result<Vec<Agent>, AgentError> {
                     )),
                     permissions: HashMap::new(),
                     hidden: false,
+                    thinking_budget: None,
+                    reasoning_effort: None,
                 };
                 agent = agent.with_config_mode(mode_cfg, None);
                 agents.push(agent);
@@ -382,6 +386,8 @@ fn merge_agent_config(agent: &Agent, cfg: &AgentConfig) -> Result<Agent, AgentEr
             perms
         },
         hidden: cfg.hidden.unwrap_or(agent.hidden),
+        thinking_budget: None,
+        reasoning_effort: None,
     })
 }
 
@@ -418,6 +424,8 @@ fn agent_from_config(key: &str, cfg: &AgentConfig) -> Result<Agent, AgentError> 
         system_prompt: cfg.prompt.clone(),
         permissions,
         hidden: cfg.hidden.unwrap_or(false),
+        thinking_budget: None,
+        reasoning_effort: None,
     })
 }
 

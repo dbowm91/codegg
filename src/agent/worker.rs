@@ -647,6 +647,8 @@ async fn execute_agent_task(
         top_p: agent.top_p,
         max_tokens: None,
         response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
     };
 
     let events = agent_loop.run(request).await?;

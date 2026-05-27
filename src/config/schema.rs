@@ -268,6 +268,8 @@ pub struct ModelConfig {
 #[serde(default)]
 pub struct ModelVariant {
     pub disabled: Option<bool>,
+    pub thinking_budget: Option<usize>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

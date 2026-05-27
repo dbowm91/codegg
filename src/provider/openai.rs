@@ -224,6 +224,10 @@ impl OpenAiProvider {
             body["max_tokens"] = serde_json::json!(max);
         }
 
+        if let Some(effort) = &req.reasoning_effort {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
+
         if !self.cfg.omit_stream_options {
             body["stream_options"] = serde_json::json!({"include_usage": true});
         }

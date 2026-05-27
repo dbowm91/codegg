@@ -104,6 +104,8 @@ pub struct ChatRequest {
     pub top_p: Option<f64>,
     pub max_tokens: Option<usize>,
     pub response_format: Option<ResponseFormat>,
+    pub thinking_budget: Option<usize>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

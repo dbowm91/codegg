@@ -423,6 +423,8 @@ pub async fn llm_summarize(
         top_p: None,
         max_tokens: Some(500),
         response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
     };
 
     let events = provider.stream(&request).await?;
