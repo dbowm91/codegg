@@ -54,7 +54,6 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
-- `plans/plan.md`: Implementation plan (verify against code before implementing)
 
 ## Critical Implementation Notes
 
@@ -92,6 +91,12 @@ These items are important for future agents to know when working with the codeba
 
 - **IdeServer async I/O**: `run_stdio()` uses `tokio::io::stdin()/stdout()` with async I/O, not blocking `std::io`
 
+- **ToolCatalog::register() takes `&dyn Tool`**: Not `Box<dyn Tool>`. Document in architecture but often overlooked.
+
+- **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum at `types.rs:2-25`.
+
+- **Exec mode question deadlock**: `src/exec.rs:121` has no handler for `question_rx` - question tool will deadlock if invoked in exec mode. Requires fix to `AgentLoop::setup_question_channel()`.
+
 ### Known Issues (Lower Priority)
 
 - **Snapshot hash inconsistency**: `src/snapshot/mod.rs:431` uses MD5 for non-empty files while SHA256 is used elsewhere. Consider unifying to SHA256.
@@ -102,7 +107,7 @@ These items are important for future agents to know when working with the codeba
 
 - **TTS stop() silent failure**: `src/tts/mod.rs:85-103` returns `Ok(())` even when `pkill say` fails.
 
-- **PermissionResponse unused**: `src/permission/mod.rs:1141-1145` defines a struct not used内部控制.
+- **PermissionResponse unused**: `src/permission/mod.rs:1141-1145` defines a struct not used in current control flow.
 
 - **check_external_directory unused**: `src/permission/mod.rs:1237-1248` marked `#[allow(dead_code)]`, never called.
 
@@ -122,7 +127,7 @@ These items are important for future agents to know when working with the codeba
 
 3. **Counts should be verified** - Component/dialog counts (TUI), server counts (LSP), command counts can drift from reality. When fixing documentation, count from actual source files, not from other documentation. **UiState has 25 fields** (not 21 as some docs claim).
 
-4. **Line numbers in docs are fragile** - References like `watcher.rs:157-158` should be verified as they can be off by several lines. Use code search to find exact locations.
+4. **Line numbers in docs are fragile** - References like `watcher.rs:157-158` should be verified; they can be off by several lines. Use code search to find exact locations.
 
 5. **Pre-verification before editing** - When a plan or review file claims "X is wrong in architecture doc", first check if it's been fixed since the review was written. Many "corrections" in old plans were already addressed.
 
@@ -131,6 +136,8 @@ These items are important for future agents to know when working with the codeba
 7. **multiedit tool exists but not in default registry** - `src/tool/multiedit.rs` exists and `multiedit` module is registered via `pub mod multiedit`, but it's NOT included in `ToolRegistry::with_defaults()`. Don't assume every tool in `/tool` is in the default registry.
 
 8. **LSP server count is 40** (verified 2026-05-27) - count entries in `server_definitions()` array at `src/lsp/server.rs:27-375`. cmake-language-server is NOT in the list despite some review claims. clangd, rust-analyzer, gopls, etc. are included.
+
+9. **Permission mode documentation correction needed** - `architecture/permission.md:202` incorrectly lists `write` as an allowed tool in restricted_tools; the code at `modes.rs:171` correctly puts `write` in `restricted_tools`. Documentation needs to be corrected, not code.
 
 ### Verified Codebase Facts
 
@@ -145,7 +152,7 @@ These items were verified during review sessions:
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
-| UiState fields | All documented fields present | `src/tui/app/state/ui.rs:27-74` |
+| UiState fields | All documented fields present (25 fields) | `src/tui/app/state/ui.rs:27-74` |
 | Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
 | CoreEvent has subagent variants | SubagentStarted, SubagentCompleted | `src/protocol/core.rs:244,256` |
 | map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
@@ -154,8 +161,8 @@ These items were verified during review sessions:
 | Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
-| AppEvent count | 36 (verified 2026-05-26) | `src/bus/events.rs:5-147` |
-| Built-in command count | 39 (not 41) | `src/tui/command.rs:79-161` |
+| AppEvent count | 36 | `src/bus/events.rs:5-147` |
+| Built-in command count | 39 | `src/tui/command.rs:79-161` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `App` struct, NOT `UiState` | `src/tui/app/mod.rs:232-233` |
 | Snapshot hash inconsistency | `collect_files_sync` uses MD5 for non-empty files, SHA256 elsewhere | `src/snapshot/mod.rs:431` |
@@ -171,17 +178,6 @@ These items were verified during review sessions:
 - Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - verify if TUI actually sends these before implementing meaningful responses.
 
 ## Helpful Patterns for Future Agents
-
-### Batch Review Pattern
-```
-Parent Agent:
-  1. Launch subagent batch 1 (4-5 plan files) → temp_consolidated_1.md
-  2. Launch subagent batch 2 (4-5 plan files) → temp_consolidated_2.md
-  3. Continue batches as needed
-  4. Read all temp files
-  5. Consolidate into final plan.md
-  6. Clean up temp files
-```
 
 ### Parallel Implementation Pattern
 ```
@@ -229,7 +225,7 @@ Wave 3 (Critical bug fix):
 ├── memory/             # Memory system, consolidation, patterns
 ├── mode/               # Mode system (Review/Debug/Docs)
 ├── model-dialog/       # Model selection/config dialog
-├── notifications/      # Desktop notifications
+├── notifications/       # Desktop notifications
 ├── permission/         # PermissionChecker, DoomLoop, PermissionRegistry
 ├── plugin/             # WASM plugin system
 ├── provider/           # LLM provider implementations

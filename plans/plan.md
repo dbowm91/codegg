@@ -1,177 +1,190 @@
 # Implementation Plan
 
-**Status**: POST-CONSOLIDATION
+**Status**: REVISION 2 - CONSOLIDATED AND CORRECTED
 **Last Updated**: 2026-05-27
 
 ---
 
 ## Executive Summary
 
-All implementation waves (0-3) have been completed via 33+ PRs. The codebase has undergone significant hardening through security fixes, performance optimizations, and new features.
+All implementation waves (0-3) completed via 33+ PRs. The codebase has undergone significant hardening through security fixes, performance optimizations, and new features.
 
-**Completed Waves**: Wave 0 (Quick Wins), Wave 1 (Critical Security), Wave 2 (High-Priority Infrastructure), Wave 3 (Medium-Priority Groups), Wave 4 (Large Refactors - deferred)
+**Completed Waves**: Wave 0 (Quick Wins), Wave 1 (Critical Security), Wave 2 (High-Priority Infrastructure), Wave 3 (Medium-Priority Groups)
 
-**Remaining Items**: Wave 5 documentation and minor code fixes pending completion.
+**Wave 4 (Large Refactors)**: DEFERRED - requires significant rewrites (12-16+ hours each)
+
+**Wave 5 (Documentation & Minor Fixes)**: IN PROGRESS - see below
 
 ---
 
 ## Completed Implementation (April-May 2026 Sprint)
 
 ### Security Fixes
-- IPv6 ULA (fc00::/7) and multicast (ff00::/8) blocking in SSRF module.
-- WASM fuel tracking with proper return after execution.
-- SSRF protection for `webfetch`, `websearch`, `codesearch`.
-- Symlink validation before canonicalization.
-- `env_clear()` and hardcoded minimal safe `PATH` in subprocess invocations.
-- No information leakage in `AppError` responses.
-- AES-256-GCM encryption module (`src/crypto/mod.rs`).
-- Write tool TOCTOU fix - validate parent path before `create_dir_all()`.
-- Error redaction for LLM safety - `redact_local_paths()`.
-- `#![deny(unsafe_code)]` in lib.rs.
-- Upgrade module - semver validation, env_clear, direct curl.
-- WASM fuel bug fixed - `return_fuel()` uses `MAX_PLUGIN_FUEL_BUDGET`.
-- Critical unwrap removed in plugin execution.
+- IPv6 ULA (fc00::/7) and multicast (ff00::/8) blocking in SSRF module
+- WASM fuel tracking with proper return after execution
+- SSRF protection for `webfetch`, `websearch`, `codesearch`
+- Symlink validation before canonicalization
+- `env_clear()` and hardcoded minimal safe `PATH` in subprocess invocations
+- No information leakage in `AppError` responses
+- AES-256-GCM encryption module (`src/crypto/mod.rs`)
+- Write tool TOCTOU fix - validate parent path before `create_dir_all()`
+- Error redaction for LLM safety - `redact_local_paths()`
+- `#![deny(unsafe_code)]` in lib.rs
+- Upgrade module - semver validation, env_clear, direct curl
+- WASM fuel bug fixed - `return_fuel()` uses `MAX_PLUGIN_FUEL_BUDGET`
+- Critical unwrap removed in plugin execution
 
 ### Async/Mutex
-- `TaskStore` uses `tokio::sync::Mutex` throughout.
-- LSP `DiagnosticsCollector` uses `tokio::sync::Mutex`.
-- `parking_lot::Mutex` replaced with `tokio::sync::Mutex` in `src/server/http.rs`.
-- `parking_lot::Mutex` replaced with `tokio::sync::Mutex` in `src/server/ws.rs`.
+- `TaskStore` uses `tokio::sync::Mutex` throughout
+- LSP `DiagnosticsCollector` uses `tokio::sync::Mutex`
+- `parking_lot::Mutex` replaced with `tokio::sync::Mutex` in `src/server/http.rs`
+- `parking_lot::Mutex` replaced with `tokio::sync::Mutex` in `src/server/ws.rs`
 
 ### Performance
-- HTTP client timeouts (60s request, 10s connect).
-- Database `busy_timeout` (5s WAL).
-- Per-tool timeouts in `bash`, `terminal`, `git` tools.
-- Token caching via `ModelDiscoveryService`.
-- Model-specific token estimation with `TokenizerType` (Claude: 1.4x, Gemini: 1.2x).
-- `ToolRegistry` lazy initialization via `once_cell::Lazy` (`default_registry()`).
-- `#[tracing::instrument]` added to `AgentLoop::run()`, `execute_tool_calls()`, and `CircuitBreaker::call()`.
+- HTTP client timeouts (60s request, 10s connect)
+- Database `busy_timeout` (5s WAL)
+- Per-tool timeouts in `bash`, `terminal`, `git` tools
+- Token caching via `ModelDiscoveryService`
+- Model-specific token estimation with `TokenizerType` (Claude: 1.4x, Gemini: 1.2x)
+- `ToolRegistry` lazy initialization via `once_cell::Lazy` (`default_registry()`)
+- `#[tracing::instrument]` added to `AgentLoop::run()`, `execute_tool_calls()`, and `CircuitBreaker::call()`
 
 ### Agent Capabilities
-- Context compaction (adaptive truncation/summarization).
-- `SubAgentPool` with bounded concurrency (5).
-- Background task scheduling with SQLite persistence.
-- `denied_tools` enforcement - `ToolRegistry::filter_out()`.
-- `/compact` command wired to `TuiCommand::CompactSession`.
-- Subagent `max_depth` configuration with recursion limits (default: 3).
+- Context compaction (adaptive truncation/summarization)
+- `SubAgentPool` with bounded concurrency (5)
+- Background task scheduling with SQLite persistence
+- `denied_tools` enforcement - `ToolRegistry::filter_out()`
+- `/compact` command wired to `TuiCommand::CompactSession`
+- Subagent `max_depth` configuration with recursion limits (default: 3)
 
 ### TUI Features
-- Background tasks UI via `/loop`, `/tasks`, `/task-del`.
-- Vim mode keybindings (hjkl navigation).
-- Diff output colorization.
-- Shift+Tab toggles Plan/Build mode.
-- `/compact`, `/unshare`, `/export`, `/fork`, `/rename` commands properly wired.
+- Background tasks UI via `/loop`, `/tasks`, `/task-del`
+- Vim mode keybindings (hjkl navigation)
+- Diff output colorization
+- Shift+Tab toggles Plan/Build mode
+- `/compact`, `/unshare`, `/export`, `/fork`, `/rename` commands properly wired
 
-### TUI Input/Scrolling/Message Flow (Completed May 2026)
-- Shift-modified printable characters insert correctly.
-- Paste updates completion state, dialog paste isolation.
-- Scrolling fixes: `set_visible_height`, `total_rendered_lines()`, `is_at_bottom()` sentinel.
-- Navigate/scroll key separation.
-- Thinking tag parsing, color-coded message bars, mode-based coloring.
-
-### Waves 0-3 Summary
-| Wave | Items | Status |
-|------|-------|--------|
-| Wave 0: Quick Wins | QW-3 through QW-15 (15 items) | ✅ COMPLETE |
-| Wave 1: Critical Security | CRIT-1 through CRIT-6 (6 items) | ✅ COMPLETE |
-| Wave 2: High-Priority Infrastructure | HIGH-1 through HIGH-7 (7 items) | ✅ COMPLETE |
-| Wave 3: Medium-Priority Groups | GROUP-A through GROUP-I (40+ items) | ✅ COMPLETE |
-| **Total PRs** | **33+ PRs** | ✅ |
+### TUI Input/Scrolling/Message Flow
+- Shift-modified printable characters insert correctly
+- Paste updates completion state, dialog paste isolation
+- Scrolling fixes: `set_visible_height`, `total_rendered_lines()`, `is_at_bottom()` sentinel
+- Navigate/scroll key separation
+- Thinking tag parsing, color-coded message bars, mode-based coloring
 
 ---
 
-## Wave 5: Documentation & Minor Fixes
+## Wave 5: Documentation & Minor Fixes (IN PROGRESS)
 
 ### Implementation Waves (Parallelizable)
 
-#### W5-Phase 1: Independent Code Fixes (Can run in parallel)
-| ID | Issue | Location | Verification |
-|----|-------|----------|--------------|
-| W5-2 | Session exports missing - add `compute_checksum`, `create_working_file`, `verify_file` to `pub use` | `src/session/mod.rs:28` | Check session exports in mod.rs |
-| W5-5 | TUI theme count mismatch - change "31" to "33" in comment | `src/tui/theme.rs:8` | Verify actual theme count |
-| W5-3 | Snapshot hash inconsistency - change MD5 to SHA256 in `collect_files_sync()` | `src/snapshot/mod.rs:431` | Verify other hash usages |
+#### W5-Phase 1: Independent Code Fixes (3 parallel agents)
 
-#### W5-Phase 2: ToolExecutor Integration (Requires research)
 | ID | Issue | Location | Action |
 |----|-------|----------|--------|
-| W5-4 | ToolExecutor exists but unused - determine if it should be integrated or removed | `src/tool/executor.rs:8` | Investigate why it was created but not used, decide to integrate or deprecate |
+| W5-2 | Session exports missing | `src/session/mod.rs:28` | Add `compute_checksum`, `create_working_file`, `verify_file` to `pub use` |
+| W5-5 | TUI theme count mismatch | `src/tui/theme.rs:8` | Change comment from "31" to "33" (actual theme count) |
+| W5-3 | Snapshot hash inconsistency | `src/snapshot/mod.rs:431` | Change MD5 to SHA256 in `collect_files_sync()` |
 
-#### W5-Phase 3: Exec Mode Question Channel Fix (Requires understanding)
+#### W5-Phase 2: ToolExecutor Investigation (1 agent)
+
+| ID | Issue | Location | Action |
+|----|-------|----------|--------|
+| W5-4 | ToolExecutor exists but unused | `src/tool/executor.rs:8` | Investigate why created but not used; decide to integrate or deprecate |
+
+#### W5-Phase 3: Critical Bug Fix (1 agent - MUST BE DONE FIRST)
+
 | ID | Issue | Location | Details |
 |----|-------|----------|---------|
-| W5-1 | Question tool deadlocks in exec mode - no handler for `question_rx` responses | `src/exec.rs:121` | Agent loop waits indefinitely if question tool invoked in exec mode. Add timeout or handler. |
+| W5-1 | Question tool deadlocks in exec mode | `src/exec.rs:121` | No handler for `question_rx` responses. AgentLoop waits indefinitely if question tool invoked in exec mode. Add timeout or handler. Requires understanding of `AgentLoop::setup_question_channel()`. |
 
 ### Priority 2: Documentation Fixes
 
-#### Architecture Doc Corrections
+#### W5-Phase 4: Architecture Doc Corrections - Core/Protocol/Error (3 parallel agents)
 
 | ID | File | Issue | Location |
 |----|------|-------|----------|
 | W5-6 | `architecture/core.md` | InprocCoreClient fields wrapped in `Option<Arc<T>>` | `src/core/mod.rs:22-28` |
 | W5-7 | `architecture/core.md` | Add note: Snapshot events defined but not published via `map_app_event_to_core_event` | `src/core/mod.rs:728-841` |
 | W5-8 | `architecture/error.md` | Line numbers incorrect; missing `ServerRuntimeError IntoResponse`, `ProviderError::api()` docs | `src/error.rs` |
-| W5-9 | `architecture/permission.md` | Mode tool fix: `write` is in `restricted_tools` (correct) | `modes.rs:171` |
-| W5-10 | `architecture/permission.md` | `PermissionResponse` at lines 1141-1145, not 61-71 | `src/permission/mod.rs:1141-1145` |
-| W5-11 | `architecture/protocol.md` | Update CoreEvent count: 20 → 21 | `src/protocol/core.rs:179` |
-| W5-12 | `architecture/protocol.md` | Update Turn events: 5 → 7 (add `TurnReasoningDelta`, `TurnCompleted`) | `src/protocol/core.rs` |
-| W5-13 | `architecture/protocol.md` | Update Server-to-Client count: 9 → 10 | `src/protocol/core.rs` |
-| W5-14 | `architecture/command.md` | Stale line numbers (203-205), bugs table contradicted by historical notes | `src/command/` |
-| W5-15 | `architecture/overview.md` | Tool count: "29" → "26" | `src/tool/mod.rs:89-119` |
-| W5-16 | `architecture/overview.md` | Remove "multiedit" from tool list - tool exists but NOT registered in `with_defaults()` | `src/tool/mod.rs:89-119` |
-| W5-17 | `architecture/provider.md` | HashMap vs DashMap: `catalog.rs` uses `HashMap`, not `DashMap` | `src/provider/` |
-| W5-18 | `architecture/lsp.md` | Server count: 39 → 40 (verified 40 servers at `src/lsp/server.rs:27-375`) | `src/lsp/server.rs:27-375` |
-| W5-19 | `architecture/lsp.md` | Extension count: "50+" → "~80" | `src/lsp/` |
-| W5-20 | `architecture/mcp.md` | JSON field is `type`, not `server_type` | `src/mcp/` |
-| W5-21 | `architecture/resilience.md` | Fix state transition diagram wording | `circuit.rs:114-127` |
-| W5-22 | `architecture/server.md` | mDNS module undocumented | `src/server/mdns.rs` |
-| W5-23 | `architecture/server.md` | Clarify `RenderFrame` direction (Client→Server) | `src/server/` |
-| W5-24 | `architecture/session.md` | Field order note for `timestamp` vs `session_id` | `src/session/` |
+| W5-9 | `architecture/permission.md` | Mode tool fix: `write` is in `restricted_tools` but docs incorrectly list it as allowed | `modes.rs:171` |
+| W5-10 | `architecture/permission.md` | `PermissionResponse` at lines 1141-1145 (not 61-71) | `src/permission/mod.rs:1141-1145` |
+| W5-11 | `architecture/protocol.md` | CoreEvent count: 20 → 21 | `src/protocol/core.rs:179` |
+| W5-12 | `architecture/protocol.md` | Turn events: 5 → 7 (add `TurnReasoningDelta`, `TurnCompleted`) | `src/protocol/core.rs` |
+| W5-13 | `architecture/protocol.md` | Server-to-Client count: 9 → 10 | `src/protocol/core.rs` |
+| W5-14 | `architecture/command.md` | Stale bugs table contradicts historical notes; line numbers 203-205 | `src/command/` |
 
-#### AGENTS.md Corrections
+#### W5-Phase 5: Architecture Doc Corrections - TUI/Overview/LSP (2 parallel agents)
 
 | ID | File | Issue | Location |
 |----|------|-------|----------|
-| W5-25 | `AGENTS.md` | LSP count: 39 → 40 (ALREADY FIXED) | `src/lsp/server.rs:27-375` |
-| W5-26 | `AGENTS.md` | Module naming: `pty_session/` → `shell_session/` in Quick Reference | `src/shell_session/` |
+| W5-15 | `architecture/overview.md` | Tool count: "29" → "26" | `src/tool/mod.rs:89-119` |
+| W5-16 | `architecture/overview.md` | Remove "multiedit" from tool list - tool exists but NOT registered in `with_defaults()` | `src/tool/mod.rs:89-119` |
+| W5-36 | `architecture/overview.md` | `pty_session/` → `shell_session/` in module references | `src/shell_session/` |
+| W5-37 | `architecture/overview.md` | Dialog::Info doesn't exist in Dialog enum | `src/tui/app/types.rs:2-25` |
+| W5-38 | `architecture/tui.md` | UiState code block shows 21 fields, actual is 25 | `src/tui/app/state/ui.rs:27-74` |
+| W5-18 | `architecture/lsp.md` | Server count: 39 → 40 (verified at `src/lsp/server.rs:27-375`) | `src/lsp/server.rs:27-375` |
+| W5-19 | `architecture/lsp.md` | Extension count: "50+" → "~80" | `src/lsp/` |
 
-#### SKILL.md Corrections
+#### W5-Phase 6: Architecture Doc Corrections - Provider/MCP/Skills (2 parallel agents)
+
+| ID | File | Issue | Location |
+|----|------|-------|----------|
+| W5-17 | `architecture/provider.md` | HashMap vs DashMap: `catalog.rs` uses `HashMap`, not `DashMap` | `src/provider/` |
+| W5-20 | `architecture/mcp.md` | JSON field is `type`, not `server_type` | `src/mcp/` |
+| W5-39 | `architecture/skills.md` | Document `resources` field in SkillTool output, `SkillIndex` Default impl, `SkillFrontmatter` struct | `src/tool/skill.rs` |
+| W5-28 | `architecture/skills.md` | Create missing snapshot skill guide | `.opencode/skills/snapshot/SKILL.md` |
+
+#### W5-Phase 7: Architecture Doc Corrections - Remaining Modules (2 parallel agents)
+
+| ID | File | Issue | Location |
+|----|------|-------|----------|
+| W5-21 | `architecture/resilience.md` | Fix state transition diagram wording | `circuit.rs:114-127` |
+| W5-40 | `architecture/resilience.md` | Document missing HalfOpen timeout check in `call()` method | `circuit.rs:114-127` |
+| W5-22 | `architecture/server.md` | mDNS module undocumented | `src/server/mdns.rs` |
+| W5-23 | `architecture/server.md` | Clarify `RenderFrame` direction (Client→Server) | `src/server/` |
+| W5-24 | `architecture/session.md` | Field order note for `timestamp` vs `session_id` | `src/session/` |
+| W5-29 | `architecture/compaction.md` | Threshold clarity: ">6 messages" → "7 or more" | `src/agent/compaction.rs:584` |
+| W5-30 | `architecture/config.md` | Field reference: `compaction_threshold` → `compaction.threshold` | `schema.rs:374` |
+| W5-31 | `architecture/util.md` | `stat_core.rs` → `metrics.rs` | `src/util/` |
+| W5-32 | `architecture/worktree.md` | Add `is_git_file()` to See Also | `workspace.rs:36,56` |
+| W5-33 | `architecture/pty_session.md` | Rename to `architecture/shell_session.md`, update `Pty*` → `Shell*` references | `src/shell_session/` |
+| W5-34 | `architecture/ide.md` | `run_stdio()` line numbers 125-130 → 78-119 | `src/ide/ide_server.rs:78-119` |
+| W5-35 | `architecture/ide.md` | `run_socket()` line numbers 138-149 → 121-144; document `handle_connection()` and `clone_for_connection()` | `src/ide/ide_server.rs:121-194` |
+
+#### W5-Phase 8: SKILL.md Corrections (1 agent)
 
 | ID | File | Issue | Location |
 |----|------|-------|----------|
 | W5-27 | `.opencode/skills/exec/SKILL.md` | Timeout claim incorrect (no 300s timeout exists in exec mode) | `src/exec.rs:121` |
-| W5-28 | `.opencode/skills/snapshot/SKILL.md` | Create missing skill guide (referenced but doesn't exist) | architecture docs |
-| W5-29 | `architecture/skills.md` | Document `resources` field, `SkillIndex` Default impl, `SkillFrontmatter` struct | `src/tool/skill.rs` |
-| W5-30 | `architecture/pty_session.md` | Rename to `architecture/shell_session.md`, update `Pty*` → `Shell*` references | `src/shell_session/` |
-| W5-31 | `architecture/util.md` | `stat_core.rs` → `metrics.rs` | `src/util/` |
-| W5-32 | `architecture/worktree.md` | Add `is_git_file()` to See Also | `workspace.rs:36,56` |
-| W5-33 | `architecture/compaction.md` | Threshold clarity: ">6 messages" → "7 or more" | `src/agent/compaction.rs:584` |
-| W5-34 | `architecture/config.md` | Field reference: `compaction_threshold` → `compaction.threshold` | `schema.rs:374` |
-| W5-35 | `architecture/memory.md` | Single-namespace vs dual-namespace decision needed | `src/tui/app/mod.rs:4386-4400` |
+| W5-41 | `.opencode/skills/hooks/SKILL.md` | Document `WASM_HOOK_TIMEOUT` (outer 5s, inner 30s); error format is in `service.rs` not `hooks.rs` | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
+
+#### W5-Phase 9: AGENTS.md Corrections (can be done alongside documentation)
+
+| ID | File | Issue | Location |
+|----|------|-------|----------|
+| W5-25 | `AGENTS.md` | LSP count: 39 → 40 (ALREADY FIXED per verified facts) | `src/lsp/server.rs:27-375` |
+| W5-26 | `AGENTS.md` | Module naming: `pty_session/` → `shell_session/` in Quick Reference | `src/shell_session/` |
 
 ### Wave 5 Implementation Notes
 
-- **W5-Phase 1** (W5-2, W5-5, W5-3) can be done independently by 3 parallel agents
-- **W5-Phase 2** (W5-4) requires investigation - may need to integrate or remove ToolExecutor
-- **W5-Phase 3** (W5-1) is the critical bug - requires understanding exec mode question handling
-- **Documentation fixes** (W5-6 through W5-35) can be split among multiple agents since they're independent
+- **W5-Phase 1** (W5-2, W5-5, W5-3) - 3 parallel agents, independent fixes
+- **W5-Phase 3** (W5-1) - CRITICAL BUG, do first before parallel work
+- **W5-Phase 4-9** - Documentation fixes, 9 parallel phases with 2-3 agents each
+- **W5-Phase 2** (W5-4) - Requires research, may produce additional code fix items
 
-### Wave 4: Large Refactors (2+ weeks each)
-
-These are large efforts requiring significant rewrites. Deferred unless absolutely necessary.
+### Wave 4: Large Refactors (DEFERRED - 12-16+ hours each)
 
 #### LARGE-1: Virtual Scrolling for Messages
 - **Files**: `src/tui/components/messages.rs`
-- **Effort**: 12-16 hours
 - **Action**: Pre-calculate line heights, binary search for visible range, cache rendered lines, add virtual list widget
 
 #### LARGE-2: String Interning System
 - **Files**: `src/provider/mod.rs`, `src/agent/`, `src/tool/`
-- **Effort**: 2-3 days
 - **Action**: Create `StringInterner` using `DashMap`, apply to repeated strings
 
 ---
 
-### TUI Enhancement Features (Future)
+## TUI Enhancement Features (Future/Partial)
 
 | Feature | Priority | Status |
 |---------|----------|--------|
@@ -202,7 +215,7 @@ These are large efforts requiring significant rewrites. Deferred unless absolute
 
 ---
 
-### Agent Capability Features (Future)
+## Agent Capability Features (Future)
 
 | Feature | Priority | Status |
 |---------|----------|--------|
@@ -235,7 +248,7 @@ These are large efforts requiring significant rewrites. Deferred unless absolute
 
 ---
 
-### Mode/Exec Features
+## Mode/Exec Features
 
 | Feature | Status |
 |---------|--------|
@@ -252,7 +265,7 @@ These are large efforts requiring significant rewrites. Deferred unless absolute
 
 ---
 
-### Model & Git Features (Future)
+## Model & Git Features (Future)
 
 | Feature | Priority | Status |
 |---------|----------|--------|
@@ -271,7 +284,7 @@ These are large efforts requiring significant rewrites. Deferred unless absolute
 
 ---
 
-### Documentation (Future)
+## Documentation (Future)
 
 See `docs/` directory for planned documentation:
 - Conceptual guides (agents-vs-skills, mcp, lsp, sessions, permissions, plugins)
@@ -324,6 +337,8 @@ These issues are documented but deferred for later attention:
 
 10. **Token Estimation**: `estimate_tokens_sync()` uses `TokenizerType` for model-specific multipliers. Claude: 1.4x, Gemini: 1.2x.
 
+11. **Exec Mode Question Handling**: `src/exec.rs:121` has no question_rx handler - question tool will deadlock in exec mode. Fix requires understanding AgentLoop::setup_question_channel().
+
 ### Implementation Patterns
 
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
@@ -332,15 +347,60 @@ These issues are documented but deferred for later attention:
 
 - **Registration-before-publish pattern**: When publishing `PermissionPending` or `QuestionPending`, register the responder BEFORE publishing the event.
 
+### Verified Codebase Facts
+
+| Item | Value | Location |
+|------|-------|----------|
+| Tool count | 26 | `src/tool/mod.rs:89-119` |
+| LSP server count | 40 | `src/lsp/server.rs:27-375` |
+| InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
+| ToolExecutor | NOT integrated - exists but unused | `src/tool/executor.rs:8` |
+| Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
+| CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
+| CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
+| UiState fields | All documented fields present (25 fields) | `src/tui/app/state/ui.rs:27-74` |
+| Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
+| CoreEvent has subagent variants | SubagentStarted, SubagentCompleted | `src/protocol/core.rs:244,256` |
+| map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
+| SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1197-1201` |
+| hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
+| Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
+| Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
+| Protocol version | 1 | `src/protocol/core.rs:3` |
+| AppEvent count | 36 | `src/bus/events.rs:5-147` |
+| Built-in command count | 39 | `src/tui/command.rs:79-161` |
+| ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` | `src/agent/loop.rs:60-67` |
+| Timeline fields location | `timeline_visible` and `timeline_selected` are in `App` struct, NOT `UiState` | `src/tui/app/mod.rs:232-233` |
+| Snapshot hash inconsistency | `collect_files_sync` uses MD5 for non-empty files, SHA256 elsewhere | `src/snapshot/mod.rs:431` |
+
+### Security Notes
+
+- **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
+
+### CoreRequest Handler Attention Points
+
+- `CoreRequest` enum in `src/protocol/core.rs:50-175`
+- InprocCoreClient handlers at `src/core/mod.rs:52-355` handle: TurnSubmit, SessionMessagesLoad, SessionMessageCounts, SessionCreate, SessionLoad, SessionAttach, etc.
+- Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - verify if TUI actually sends these before implementing meaningful responses.
+
 ### Testing Commands
 
 ```bash
+# Always run before/after changes
 cargo build --all-features
 cargo clippy --all-features -- -D warnings
 cargo test --all-features
+
+# Specific feature testing
+cargo test --all-features -- --test-threads=1  # For integration tests
+
+# TUI tests
 cargo test tui::input
 cargo test tui
 cargo test messages
+
+# Run specific module tests
+cargo test --package codegg -- <module>_test_pattern
 ```
 
 ---
@@ -351,7 +411,7 @@ cargo test messages
 |--------|-------|
 | Waves 0-3 Completed | ✅ All via 33+ PRs |
 | Wave 4 (Large Refactors) | ⏳ DEFERRED |
-| Wave 5 (Docs & Minor Fixes) | ⏳ IN PROGRESS |
+| Wave 5 (Docs & Minor Fixes) | ⏳ IN PROGRESS (43 items) |
 | TUI Enhancement | ⏳ MOSTLY DEFERRED |
 | Agent Capabilities | ⏳ PARTIAL (4/8 complete) |
 | Mode/Exec Features | ✅ Complete (MODE-1, EXEC-1) |
