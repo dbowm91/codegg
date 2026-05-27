@@ -13,11 +13,11 @@ The `plugin` module provides a WASM-based plugin system for extending agent capa
 - Built-in plugin support (copilot, gitlab, codex, poe)
 - Plugin installation and registry
 - TUI extensions for plugins
-- Marketplace for local plugin discovery
+- Fuel tracking to prevent infinite loops in WASM plugins
 
 ## Technology
 
-Uses **Wasmtime** runtime for WASM execution (feature-gated with `plugins` flag, not `plugin`).
+Uses **Wasmtime** runtime for WASM execution (feature-gated with `plugins` flag).
 
 ## Project Structure
 
@@ -33,18 +33,19 @@ src/plugin/
 ├── api.rs              # ApiVersion, Stability, API types
 ├── tui.rs              # TuiPluginRegistry, TuiRoute, TuiComponent
 ├── event_bus.rs        # PluginEventBus, PluginEventSubscription
-├── marketplace.rs      # MarketplaceService for local plugin discovery
 └── builtin/            # Built-in native Rust plugins
     ├── mod.rs          # BuiltinPlugin, handler registry, dispatch
     ├── copilot.rs      # GitHub Copilot auth provider
     ├── gitlab.rs       # GitLab auth provider
-    ├── codex.rs        # Anthropic Codex integration
+    ├── codex.rs        # OpenAI Codex integration
     └── poe.rs          # Poe API integration
 ```
 
 ## Key Types
 
 ### PluginManifest
+
+Parsed from `manifest.toml` in each plugin directory:
 
 ```rust
 pub struct PluginManifest {
@@ -55,68 +56,62 @@ pub struct PluginManifest {
     pub homepage: Option<String>,
     pub license: Option<String>,
     #[serde(default)]
-    pub hooks: Vec<HookSpec>,
+    pub hooks: Vec<HookSpec>,        // Hook specifications
     #[serde(default)]
-    pub config: HashMap<String, serde_json::Value>,
+    pub config: HashMap<String, serde_json::Value>,  // Plugin configuration
 }
 
 pub struct HookSpec {
     #[serde(rename = "type")]
-    pub hook_type: String,  // dot notation, e.g., "tool.execute.before"
-    pub priority: Option<i32>,
-}
-```
-
-### LoadedPlugin
-
-```rust
-pub struct LoadedPlugin {
-    pub manifest: PluginManifest,
-    pub wasm_path: PathBuf,
-    pub plugin_dir: PathBuf,
+    pub hook_type: String,           // e.g., "tool.execute.before"
+    pub priority: Option<i32>,        // Lower = earlier execution
 }
 ```
 
 ### HookType
 
-Hook types use dot notation for serialization:
+All hook types use snake_case serialization (via `strum` derive):
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumString, Display, EnumIter)]
 #[strum(serialize_all = "snake_case")]
 pub enum HookType {
-    Auth,              // "auth"
-    Provider,          // "provider"
-    ToolDefinition,    // "tool.definition"
-    ToolExecuteBefore, // "tool.execute.before"
-    ToolExecuteAfter,  // "tool.execute.after"
-    ChatParams,        // "chat.params"
-    ChatHeaders,       // "chat.headers"
-    Event,             // "event"
-    Config,            // "config"
-    ShellEnv,          // "shell.env"
-    TextComplete,      // "text.complete"
-    SessionCompacting, // "session.compacting"
-    MessagesTransform, // "messages.transform"
+    Auth,              // "auth" - Authentication provider injection
+    Provider,          // "provider" - Provider selection/modification
+    ToolDefinition,     // "tool.definition" - Modify tool definitions
+    ToolExecuteBefore,  // "tool.execute.before" - Pre-tool execution
+    ToolExecuteAfter,   // "tool.execute.after" - Post-tool execution
+    ChatParams,        // "chat.params" - Chat parameters
+    ChatHeaders,       // "chat.headers" - HTTP headers for chat
+    Event,             // "event" - General event handling
+    Config,            // "config" - Configuration hooks
+    ShellEnv,          // "shell.env" - Shell environment
+    TextComplete,      // "text.complete" - Text completion
+    SessionCompacting,  // "session.compacting" - Before session compaction
+    MessagesTransform,  // "messages.transform" - Transform messages
 }
 ```
 
 ### HookContext
 
+Passed to every hook:
+
 ```rust
 pub struct HookContext {
     pub hook_type: HookType,
-    pub input: serde_json::Value,
+    pub input: serde_json::Value,  // JSON input data (varies by hook type)
 }
 ```
 
 ### HookResult
 
+Returned by every hook handler:
+
 ```rust
 pub struct HookResult {
-    pub output: serde_json::Value,
-    pub blocked: bool,
-    pub error: Option<String>,
+    pub output: serde_json::Value,  // Transformed output (passed to next hook)
+    pub blocked: bool,              // If true, stops hook chain
+    pub error: Option<String>,      // Error message if any
 }
 
 impl HookResult {
@@ -128,90 +123,124 @@ impl HookResult {
 
 ## Components
 
-### loader.rs - WASM Loading
+### loader.rs - WASM Loading and Fuel Tracking
 
-WASM loading with module caching and fuel tracking:
+**Location**: `src/plugin/loader.rs`
+
+The loader handles WASM plugin execution with module caching and fuel tracking.
+
+**Key Functions:**
 
 ```rust
 pub async fn load_plugin(path: &Path) -> Result<LoadedPlugin, LoadError>
-
 pub async fn execute_wasm_hook(plugin_id: &str, ctx: HookContext) -> HookResult
 ```
 
-**Module Cache:**
+**Module Cache** (`loader.rs:103-218`):
+
 ```rust
 #[cfg(feature = "plugins")]
 mod module_cache {
     pub struct ModuleCache {
-        modules: DashMap<String, (Module, u64)>,  // path -> (module, mtime)
+        modules: DashMap<String, (Module, u64)>,  // path -> (WASM module, mtime)
         hits: AtomicU64,
         misses: AtomicU64,
-        fuel_budgets: DashMap<String, AtomicU64>,
+        fuel_budgets: DashMap<String, AtomicU64>,  // plugin_id -> remaining fuel
     }
 
-    pub fn get_or_compile<F>(&self, path: &str, compile_fn: F) -> Option<Module>;
-    pub fn get_plugin_fuel(&self, plugin_id: &str) -> u64;
-    pub fn reserve_fuel(&self, plugin_id: &str, fuel_needed: u64) -> Option<u64>;
-    pub fn return_fuel(&self, plugin_id: &str, fuel: u64);
+    impl ModuleCache {
+        pub fn get_or_compile<F>(&self, path: &str, compile_fn: F) -> Option<Module>;
+        pub fn get_plugin_fuel(&self, plugin_id: &str) -> u64;
+        pub fn reserve_fuel(&self, plugin_id: &str, fuel_needed: u64) -> Option<u64>;
+        pub fn return_fuel(&self, plugin_id: &str, fuel: u64);
+    }
+
+    pub static CACHE: once_cell::sync::Lazy<ModuleCache> = once_cell::sync::Lazy::new(ModuleCache::new);
 }
 ```
 
-### manifest.rs - Manifest Parsing
-
-Parses plugin metadata from `manifest.toml`:
+**Fuel Tracking Constants** (`loader.rs:8-15`):
 
 ```rust
-pub fn parse_manifest(toml: &str) -> Result<PluginManifest>;
+const MAX_WASM_SIZE: usize = 10 * 1024 * 1024;       // 10MB max WASM module
+const WASM_FUEL_PER_HOOK: u64 = 1_000_000;            // 1M fuel per hook call
+const WASM_HOOK_TIMEOUT: Duration = Duration::from_secs(30);  // 30s timeout for WASM exec
+const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;        // 10M initial budget per plugin
 ```
 
-### hooks.rs - Hook System
+**Fuel Flow** (`loader.rs:222-519`):
 
-Hook registration and types:
+1. **Reserve Fuel** (line 244): `module_cache::CACHE.reserve_fuel(plugin_id, fuel_for_this_call)`
+2. **Execute WASM** with `store.set_fuel(fuel_reserved)`
+3. **Return Fuel** on:
+   - Normal completion: consumed fuel (reserved - remaining)
+   - Early returns (lines 258, 270, 286, 329, 338, 353, 371, 386, 406, 431): full `fuel_reserved`
+   - Timeout: full `fuel_reserved` (line 510)
+   - WASM execution error: full `fuel_reserved` (line 505)
 
-```rust
-pub struct HookRegistration {
-    pub plugin_id: String,
-    pub hook_type: HookType,
-    pub priority: i32,
-}
+All early error returns at lines 255-285 correctly return fuel before exiting.
 
-impl HookType {
-    pub fn as_str(&self) -> &'static str;  // Returns dot notation
-    pub fn parse(s: &str) -> Option<Self>;  // Parses dot notation
-}
-```
+### service.rs - Plugin Service and Hook Dispatch
 
-### service.rs - Plugin Service
+**Location**: `src/plugin/service.rs`
 
-Main service for hook dispatch:
+**PluginService Structure:**
 
 ```rust
 pub struct PluginService {
     registry: Arc<PluginRegistry>,
-    hook_timeout: Duration,  // default 5 seconds
-}
-
-impl PluginService {
-    pub fn new(registry: Arc<PluginRegistry>) -> Self;
-    pub fn with_hook_timeout(mut self, timeout: Duration) -> Self;
-
-    pub async fn load_and_register(&self, loaded: LoadedPlugin) -> Result<(), LoadError>;
-    pub async fn dispatch_hook(&self, ctx: HookContext) -> HookResult;
-
-    // Individual dispatch methods
-    pub async fn dispatch_auth(&self, input: serde_json::Value) -> HookResult;
-    pub async fn dispatch_provider(&self, input: serde_json::Value) -> HookResult;
-    pub async fn dispatch_tool_execute_before(&self, input: serde_json::Value) -> HookResult;
-    pub async fn dispatch_tool_execute_after(&self, input: serde_json::Value) -> HookResult;
-    // ... other hook types
+    hook_timeout: Duration,  // Outer timeout for hook dispatch (default 5s)
 }
 ```
 
+**Hook Timeout Hierarchy:**
+- Outer timeout (service.rs:18): **5 seconds** - `hook_timeout` in `PluginService::new()`
+- Inner timeout (loader.rs:13): **30 seconds** - `WASM_HOOK_TIMEOUT` in `execute_wasm_hook()`
+
+**Key Methods:**
+
+```rust
+impl PluginService {
+    pub fn new(registry: Arc<PluginRegistry>) -> Self;
+    pub fn with_hook_timeout(mut self, timeout: Duration) -> Self;
+    pub async fn load_and_register(&self, loaded: LoadedPlugin) -> Result<(), LoadError>;
+    pub async fn dispatch_hook(&self, ctx: HookContext) -> HookResult;
+    
+    // Individual dispatch methods
+    pub async fn dispatch_auth(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_provider(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_tool_definition(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_tool_execute_before(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_tool_execute_after(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_chat_params(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_chat_headers(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_event(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_config(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_shell_env(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_text_complete(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_session_compacting(&self, input: serde_json::Value) -> HookResult;
+    pub async fn dispatch_messages_transform(&self, input: serde_json::Value) -> HookResult;
+}
+```
+
+**Hook Execution Flow** (`service.rs:63-114`):
+
+1. Get all hook registrations for the hook type from registry
+2. Sort by priority (lower first - done at registration time)
+3. For each hook:
+   - Check if plugin is enabled
+   - Execute with timeout
+   - If blocked, return immediately
+   - If error, return immediately
+   - Otherwise, pass output to next hook
+
 ### registry.rs - Plugin Registry
+
+**Location**: `src/plugin/registry.rs`
 
 ```rust
 pub struct PluginInfo {
-    pub id: String,
+    pub id: String,              // "plugin:name" or "builtin:name"
     pub manifest: PluginManifest,
     pub path: PathBuf,
     pub enabled: bool,
@@ -223,16 +252,20 @@ pub struct PluginRegistry {
     hooks: RwLock<Vec<HookRegistration>>,
 }
 
-impl PluginRegistry {
-    pub async fn register(&self, info: PluginInfo, hook_specs: Vec<HookRegistration>);
-    pub async fn unregister(&self, id: &str);
-    pub async fn hooks_for(&self, hook_type: HookType) -> Vec<HookRegistration>;
-    pub async fn is_enabled(&self, id: &str) -> bool;
-    pub async fn set_enabled(&self, id: &str, enabled: bool);
+pub struct HookRegistration {
+    pub plugin_id: String,
+    pub hook_type: HookType,
+    pub priority: i32,
 }
 ```
 
+**Plugin ID Prefixes:**
+- WASM plugins: `plugin:{name}` (e.g., `plugin:my-plugin`)
+- Built-in plugins: `builtin:{name}` (e.g., `builtin:copilot`)
+
 ### install.rs - Plugin Installation
+
+**Location**: `src/plugin/install.rs`
 
 ```rust
 pub fn plugins_dir() -> PathBuf;  // ~/.local/share/codegg/plugins
@@ -242,15 +275,18 @@ pub async fn install_from_url(url: &str) -> Result<PathBuf, InstallError>;
 pub async fn uninstall(plugin_name: &str) -> Result<(), InstallError>;
 ```
 
+**Security Measures:**
+- Symlinks not allowed in archives or installation
+- Path traversal prevention via canonicalization checks
+- HTTP download support for `.wasm` files or `.tar.gz` archives
+
 ### tui.rs - TUI Extensions
 
-```rust
-pub struct TuiPluginRegistry {
-    routes: Arc<RwLock<Vec<TuiRoute>>>,
-    components: Arc<RwLock<Vec<TuiComponent>>>,
-    plugin_configs: Arc<RwLock<HashMap<String, serde_json::Value>>>,
-}
+**Location**: `src/plugin/tui.rs`
 
+Allows plugins to register TUI routes and components:
+
+```rust
 pub struct TuiRoute {
     pub path: String,
     pub label: String,
@@ -263,13 +299,66 @@ pub struct TuiComponent {
     pub plugin_id: String,
     pub config: serde_json::Value,
 }
+
+pub struct TuiPluginRegistry {
+    routes: Arc<RwLock<Vec<TuiRoute>>>,
+    components: Arc<RwLock<Vec<TuiComponent>>>,
+    plugin_configs: Arc<RwLock<HashMap<String, serde_json::Value>>>,
+}
+
+impl TuiPluginRegistry {
+    pub async fn register_route(&self, route: TuiRoute);
+    pub async fn register_component(&self, component: TuiComponent);
+    pub async fn set_plugin_config(&self, plugin_id: &str, config: serde_json::Value);
+    pub async fn get_plugin_config(&self, plugin_id: &str) -> Option<serde_json::Value>;
+    pub async fn routes(&self) -> Vec<TuiRoute>;
+    pub async fn components(&self) -> Vec<TuiComponent>;
+    pub async fn routes_for_plugin(&self, plugin_id: &str) -> Vec<TuiRoute>;
+    pub async fn components_for_plugin(&self, plugin_id: &str) -> Vec<TuiComponent>;
+    pub async fn find_route(&self, path: &str) -> Option<TuiRoute>;
+}
+```
+
+### event_bus.rs - Plugin Event Bus
+
+**Location**: `src/plugin/event_bus.rs`
+
+Allows plugins to subscribe to app events:
+
+```rust
+pub struct PluginEventSubscription {
+    pub plugin_id: String,
+    pub event_patterns: Vec<String>,  // e.g., ["agent.*", "tool.*"]
+    pub priority: i32,
+}
+
+pub struct PluginEventBus {
+    subscriptions: Arc<RwLock<Vec<PluginEventSubscription>>>,
+    event_log: Arc<RwLock<Vec<AppEvent>>>,  // Circular buffer
+    max_log_size: usize,
+}
+
+impl PluginEventBus {
+    pub async fn subscribe(&self, subscription: PluginEventSubscription);
+    pub async fn unsubscribe(&self, plugin_id: &str);
+    pub async fn publish(&self, event: AppEvent);
+    pub async fn subscriptions(&self) -> Vec<PluginEventSubscription>;
+}
 ```
 
 ### builtin/mod.rs - Built-in Plugins
 
-Native Rust plugin handlers:
+**Location**: `src/plugin/builtin/mod.rs`
+
+Built-in plugins are native Rust handlers, not WASM:
 
 ```rust
+pub struct BuiltinPlugin {
+    pub manifest: PluginManifest,
+    pub handler: fn(HookContext) -> HookResult,
+}
+
+// Handler registry
 static BUILTIN_HANDLERS: std::sync::LazyLock<
     RwLock<HashMap<String, fn(HookContext) -> HookResult>>,
 > = std::sync::LazyLock::new(|| {
@@ -282,35 +371,19 @@ static BUILTIN_HANDLERS: std::sync::LazyLock<
 });
 
 pub fn builtin_hook_handler(plugin_name: &str, ctx: HookContext) -> HookResult;
-
 pub async fn register_builtins(registry: &PluginRegistry);
 ```
 
-**BuiltinPlugin**: The `BuiltinPlugin` struct holds a plugin manifest and handler function for native Rust plugins:
+**Built-in Plugin Handlers:**
 
-```rust
-pub struct BuiltinPlugin {
-    pub manifest: PluginManifest,
-    pub handler: fn(HookContext) -> HookResult,
-}
-```
+| Plugin | File | Hook Type | Purpose |
+|--------|------|-----------|---------|
+| copilot | builtin/copilot.rs | Auth | Injects Bearer token for GitHub Copilot provider |
+| gitlab | builtin/gitlab.rs | Auth | Injects Bearer token for GitLab provider |
+| codex | builtin/codex.rs | Auth | Injects Bearer token for OpenAI Codex provider |
+| poe | builtin/poe.rs | Auth | Injects Bearer token for Poe API provider |
 
-Built-in plugins (copilot, gitlab, codex, poe) all provide `auth` hook handlers that inject Bearer tokens.
-
-### marketplace.rs - Marketplace Service
-
-```rust
-pub struct MarketplaceService {
-    plugins_dir: PathBuf,
-}
-
-impl MarketplaceService {
-    pub async fn list_local_plugins(&self) -> Vec<MarketplacePlugin>;
-    pub async fn search_plugins(&self, query: &str) -> Vec<MarketplacePlugin>;
-    pub fn list_official_plugins() -> Vec<MarketplacePlugin>;  // TODO
-    pub fn list_repository_plugins() -> Vec<MarketplacePlugin>;  // TODO
-}
-```
+All built-in plugins handle the `auth` hook type and inject `Authorization: Bearer {token}` headers when the matching provider is detected.
 
 ## Plugin Directory Structure
 
@@ -368,48 +441,73 @@ PluginService::dispatch_hook(ctx)
                   │
                   ├─► If builtin:* → builtin_hook_handler(name, ctx)
                   │        │
-                  │        └─► Returns HookResult directly
+                  │        └─► Returns HookResult directly (no fuel tracking)
                   │
                   └─► Else (WASM plugin):
                           └─► execute_wasm_hook(plugin_id, ctx)
                                   │
-                                  ├─► Reserve fuel
-                                  ├─► Get/compile WASM module
-                                  ├─► Allocate memory, write input
-                                  ├─► Call hook function
-                                  ├─► Read output, return fuel
+                                  ├─► Check fuel budget (exhausted → early return)
+                                  ├─► Reserve fuel from per-plugin budget
+                                  ├─► Get/compile WASM module from cache
+                                  ├─► Allocate memory, write input JSON
+                                  ├─► Call hook function (30s timeout)
+                                  ├─► Read output JSON
+                                  ├─► Return unused fuel
                                   └─► Return HookResult
 ```
 
-## Fuel Tracking
+## Fuel Tracking Mechanism
 
-Per-plugin fuel budgets (DashMap in ModuleCache):
+**Fuel Constants:**
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `MAX_WASM_SIZE` | 10 MB | Maximum WASM module size |
+| `WASM_FUEL_PER_HOOK` | 1,000,000 | Fuel allocated per hook call |
+| `WASM_HOOK_TIMEOUT` | 30 seconds | Inner timeout for WASM execution |
+| `MAX_PLUGIN_FUEL_BUDGET` | 10,000,000 | Initial fuel budget per plugin |
 
-```rust
-// Constants
-const MAX_WASM_SIZE: usize = 10 * 1024 * 1024;  // 10MB
-const WASM_FUEL_PER_HOOK: u64 = 1_000_000;
-const WASM_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;
+**Fuel Flow:**
 
-// Per-plugin budgets (DashMap in ModuleCache)
-```
+1. **Initialization** (`loader.rs:236-248`):
+   - Get current plugin fuel from `module_cache::CACHE.get_plugin_fuel()`
+   - If budget exhausted, return early with `HookResult::ok(ctx.input)`
+   - Calculate `fuel_for_this_call = min(WASM_FUEL_PER_HOOK, current_plugin_fuel)`
+   - Reserve fuel via `module_cache::CACHE.reserve_fuel()`
 
-**Fuel Logic:**
-- Each hook reserves fuel before execution
-- WASM fuel set on Store via `store.set_fuel()`
-- Unused fuel returned after execution (including on errors - all error paths call return_fuel)
-- Budget exhausted → returns `HookResult::ok(ctx.input)` early
+2. **During Execution** (`loader.rs:292-293`):
+   - Set store fuel: `store.set_fuel(fuel_reserved).ok()`
+
+3. **After Execution** (`loader.rs:496-518`):
+   - On success: `consumed = fuel_reserved - remaining; return_fuel(plugin_id, consumed)`
+   - On error: `return_fuel(plugin_id, fuel_reserved)` (full amount)
+   - On timeout: `return_fuel(plugin_id, fuel_reserved)` (full amount)
+
+**All Early Return Paths with Fuel Return:**
+- Line 258: metadata read failure
+- Line 270: WASM size exceeds max
+- Line 286: module cache failure
+- Line 329: hook function not found
+- Line 338: no memory export
+- Line 353: no allocate function
+- Line 371: allocate returned no value
+- Line 386: input exceeds memory bounds
+- Line 406: hook returned no value
+- Line 431: output exceeds size limit
+- Line 505: WASM execution error
+- Line 510: hook timeout
 
 ## Security
 
-- **Fuel Limits**: Per-plugin budgets prevent infinite loops
-- **Timeout**: 5s outer dispatch timeout, 30s inner WASM execution timeout
-- **Memory Bounds**: Input validated before WASM memory write
-- **Output Size**: 10MB max from WASM output
-- **WASM Size**: 10MB max module size
-- **Path Traversal**: Archive extraction validates paths
-- **Symlinks**: Not allowed in archives or installation
+| Feature | Implementation |
+|---------|---------------|
+| Fuel Limits | Per-plugin budgets in `ModuleCache::fuel_budgets` prevent infinite loops |
+| Outer Timeout | 5s `hook_timeout` in `PluginService` (service.rs:18) |
+| Inner Timeout | 30s `WASM_HOOK_TIMEOUT` for WASM execution (loader.rs:13) |
+| Memory Bounds | Input validated before WASM memory write (loader.rs:384) |
+| Output Size Limit | 10MB max from WASM output (loader.rs:424) |
+| WASM Size Limit | 10MB max module size (loader.rs:263) |
+| Path Traversal | Archive extraction validates canonical paths (install.rs:136-156) |
+| Symlink Prevention | Not allowed in archives or installation (install.rs:191, 143) |
 
 ## Feature Flag
 
@@ -420,35 +518,91 @@ Requires `plugins` feature in `Cargo.toml`:
 plugins = ["dep:wasmtime", "dep:wasmtime-cache", "dep:wasmtime-wasi"]
 ```
 
-## Plugin IDs
-
-- **WASM plugins**: `plugin:{name}` (e.g., `plugin:my-plugin`)
-- **Built-in plugins**: `builtin:{name}` (e.g., `builtin:copilot`)
+When the `plugins` feature is disabled, `execute_wasm_hook` is a no-op stub that returns `HookResult::ok(ctx.input)` (loader.rs:521-524).
 
 ## WASM Plugin Contract
 
-Plugins must export:
-- `memory`: Wasmtime memory
-- `allocate(ptr, len) -> ptr`: Allocate memory in plugin
-- `deallocate(ptr, len)`: Optional, free memory
-- Hook functions: `on_auth`, `on_tool_execute_before`, etc.
+Plugins must export these functions:
 
-Hook function signature:
+| Export | Signature | Required | Description |
+|--------|-----------|----------|-------------|
+| `memory` | Memory | Yes | Wasmtime memory |
+| `allocate` | `(i32) -> i32` | Yes | Allocate `len` bytes, return pointer |
+| `deallocate` | `(i32, i32)` | No | Free memory |
+| Hook functions | See below | At least one | Handle specific hook types |
+
+**Hook Function Naming Convention:**
+
+| HookType | Function Name |
+|----------|---------------|
+| Auth | `on_auth` |
+| Provider | `on_provider` |
+| ToolDefinition | `on_tool_definition` |
+| ToolExecuteBefore | `on_tool_execute_before` |
+| ToolExecuteAfter | `on_tool_execute_after` |
+| ChatParams | `on_chat_params` |
+| ChatHeaders | `on_chat_headers` |
+| Event | `on_event` |
+| Config | `on_config` |
+| ShellEnv | `on_shell_env` |
+| TextComplete | `on_text_complete` |
+| SessionCompacting | `on_session_compacting` |
+| MessagesTransform | `on_messages_transform` |
+
+**Hook Function Signature:**
 ```rust
-// Input: (input_ptr: i32, input_len: i32)
-// Output: result_ptr i32 (points to serialized HookResponse)
+// Input: (input_ptr: i32, input_len: i32) - pointer to JSON input
+// Output: result_ptr i32 - pointer to serialized WasmHookResponse
 
 #[derive(serde::Deserialize)]
 struct WasmHookResponse {
     output: serde_json::Value,
-    blocked: Option<bool>,
+    blocked: Option<bool>,  // defaults to false
     error: Option<String>,
+}
+```
+
+**Memory Layout for Return Value:**
+```
+Offset 0: pointer to response (at offset 4)
+Offset 4: length of response JSON (u32 le)
+Offset 8: response JSON bytes
+```
+
+If result_ptr is 0, the original input is passed through unchanged.
+
+## API Version
+
+Current API version is `1.0.0` (api.rs:3):
+
+```rust
+pub const API_VERSION: &str = "1.0.0";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiVersion {
+    pub version: String,
+    pub stability: Stability,
+    pub features: Vec<String>,  // ["hooks", "custom_tools", "provider_middleware"]
+}
+
+impl ApiVersion {
+    pub fn current() -> Self {
+        Self {
+            version: API_VERSION.to_string(),
+            stability: Stability::Stable,
+            features: vec![
+                "hooks".to_string(),
+                "custom_tools".to_string(),
+                "provider_middleware".to_string(),
+            ],
+        }
+    }
 }
 ```
 
 ## See Also
 
-- [.opencode/skills/plugin/SKILL.md](../.opencode/skills/plugin/SKILL.md) - Detailed plugin skill guide
-- [hooks.md](hooks.md) - Hook system details (external hooks)
-- [agent.md](agent.md) - AgentLoop integration
-- [tool.md](tool.md) - Tool execution
+- [hooks.md](hooks.md) - External hooks system
+- [agent.md](agent.md) - AgentLoop integration with plugins
+- [tool.md](tool.md) - Tool execution hooks
+- [provider.md](provider.md) - Provider middleware hooks

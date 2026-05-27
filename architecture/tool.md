@@ -8,13 +8,14 @@ The `tool` module provides the built-in tools that the agent can use to interact
 
 **Key Responsibilities**:
 - Tool registry management
-- Built-in tool implementations (26 tools in `with_defaults()`)
+- Built-in tool implementations (27 tools in `with_defaults()`)
 - Tool execution with permission checking
 - Parameter validation
+- On-demand tool discovery via ToolCatalog
 
 ## Tool Trait
 
-All tools implement the `Tool` trait:
+All tools implement the `Tool` trait defined at `src/tool/mod.rs:54-60`:
 
 ```rust
 #[async_trait]
@@ -26,7 +27,9 @@ pub trait Tool: Send + Sync {
 }
 ```
 
-**Note**: Unlike the earlier architecture draft, tools do NOT receive a `ToolContext` struct. They receive only `serde_json::Value` as input.
+**Important Notes**:
+- Tools receive only `serde_json::Value` as input (no `ToolContext` struct)
+- `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`) - a common oversight
 
 ### ToolResult
 
@@ -40,119 +43,184 @@ pub struct ToolResult {
 }
 ```
 
-## Built-in Tools
+## Built-in Tools (27 total in default registry)
 
 ### File Operations
 
 | Tool | File | Description |
 |------|------|-------------|
-| **read** | `read.rs` | Read file contents |
-| **write** | `write.rs` | Write content to file |
-| **edit** | `edit.rs` | Make targeted edits to files |
-| **glob** | `glob.rs` | Find files by pattern |
-| **grep** | `grep.rs` | Search file contents |
-| **list** | `list.rs` | List directory contents |
-| **diff** | `diff.rs` | Show file differences |
-| **replace** | `replace.rs` | Find and replace |
-| **multiedit** | `multiedit.rs` | Multiple edits in one operation |
-| **apply_patch** | `apply_patch.rs` | Apply patches |
+| **read** | `read.rs` | Read file contents with line numbers. Images/PDFs returned as base64. Supports offset/limit. |
+| **write** | `write.rs` | Create or overwrite files. Runs auto-formatting after write if configured. |
+| **edit** | `edit.rs` | Surgically search and replace text with 8 matching strategies (exact, line-trimmed, whitespace-normalized, block-anchored, indentation-flexible, escape-normalized, trimmed-boundary, context-aware). |
+| **glob** | `glob.rs` | Find files matching glob patterns. Uses `ignore` crate for gitignore compliance. |
+| **grep** | `grep.rs` | Search file contents using regular expressions with context lines. Concurrent search with semaphore limiting (max 100 concurrent). |
+| **list** | `list.rs` | List directory tree with ignore patterns. Limited to 300 files by default. |
+| **diff** | `diff.rs` | Show differences between two file versions. Supports unified diff format and line ranges. |
+| **replace** | `replace.rs` | Find and replace using regex. Replaces all occurrences by default. Supports capture groups ($1, $2). |
+| **apply_patch** | `apply_patch.rs` | Apply unified diff patches. Supports update, create, delete, and move modes. |
 
 ### Shell Execution
 
 | Tool | File | Description |
 |------|------|-------------|
-| **bash** | `bash.rs` | Execute shell commands |
-| **terminal** | `terminal.rs` | Terminal operations |
-| **git** | `git.rs` | Git operations |
-| **commit** | `commit.rs` | Generate commit messages |
-
-### Code Operations
-
-| Tool | File | Description |
-|------|------|-------------|
-| **codesearch** | `codesearch.rs` | Advanced code search |
-| **review** | `review.rs` | Code review |
-| **lsp** | `lsp.rs` | Query LSP server for code intelligence |
+| **bash** | `bash.rs` | Execute shell commands with extensive security (blocked commands, blocked patterns regex, allowlist support, Landlock sandboxing). 120s default timeout. |
+| **terminal** | `terminal.rs` | Run commands in interactive terminal session. Similar security to bash but with env var filtering. 60s default timeout. |
+| **git** | `git.rs` | Execute git commands with subcommand/args model. 30s default timeout. |
+| **commit** | `commit.rs` | Generate commit messages from diff using LLM. Stages all changes, generates message, commits with optional Co-Authored-By. |
 
 ### Web Operations
 
 | Tool | File | Description |
 |------|------|-------------|
-| **webfetch** | `webfetch.rs` | Fetch web page content |
-| **websearch** | `websearch.rs` | Search the web |
+| **webfetch** | `webfetch.rs` | Fetch URLs and return as markdown. Handles Cloudflare challenges, images as base64, 5MB size limit. SSRF protection via `validate_host_ip` and `revalidate_dns`. |
+| **websearch** | `websearch.rs` | Search web using Exa AI API. Returns titled results with URLs and snippets. Uses EXA_API_KEY environment variable. |
+| **codesearch** | `codesearch.rs` | Search for code examples, library docs, SDK patterns using Exa Code API. Uses EXA_API_KEY or EXA_CODE_API_KEY. |
+| **image** | `image.rs` | Generate images using OpenAI's DALL-E model. Supports dall-e-3, size, quality parameters. Requires OPENAI_API_KEY. |
 
 ### Task Management
 
 | Tool | File | Description |
 |------|------|-------------|
-| **task** | `task.rs` | Execute subagent task |
-| **todo** | `todo.rs` | Todo list management |
-| **plan_enter** | `plan.rs` | Enter plan mode |
-| **plan_exit** | `plan.rs` | Exit plan mode |
+| **task** | `task.rs` | Spawn subagents to handle tasks independently. Supports spawn/get actions. Uses TaskStore for persistence. |
+| **todowrite** | `todo.rs` | Create, update, and manage todo items with persistent state. Supports priority (low/medium/high) and status (pending/in_progress/completed). |
 
-### Team Operations
+### Planning
 
 | Tool | File | Description |
 |------|------|-------------|
-| **team_create** | `teams.rs` | Create a new agent team |
-| **send_message** | `teams.rs` | Send message to a team |
-| **list_messages** | `teams.rs` | List team messages |
-| **team_status** | `teams.rs` | Check team status |
-| **list_teams** | `teams.rs` | List all teams |
+| **plan_enter** | `plan.rs` | Enter plan mode (experimental). Denies edit tools, only allows plan file editing. |
+| **plan_exit** | `plan.rs` | Exit plan mode and switch to build agent. Optionally specify plan file. |
 
-(TeamTools registered separately via `TeamTools::register_all()`)
-
-### External Integrations
+### User Interaction
 
 | Tool | File | Description |
 |------|------|-------------|
-| **question** | `question.rs` | Ask user questions |
-| **skill** | `skill.rs` | Activate skills |
-| **batch** | `batch.rs` | Batch operations |
-| **tool_search** | `tool_search.rs` | On-demand tool discovery |
-| **invalid** | `invalid.rs` | Handles calls to unregistered tools |
+| **question** | `question.rs` | Ask user clarifying questions. Returns answers to continue agent loop. Supports options and initial values. |
+| **skill** | `skill.rs` | Load a skill (SKILL.md) by name into context. Returns skill content and list of resource files. |
+
+### Code Operations
+
+| Tool | File | Description |
+|------|------|-------------|
+| **review** | `review.rs` | Analyze git diff and provide structured code review feedback using LLM. Uses emojis for categorization (bug, performance, style, suggestion). |
+| **lsp** | `lsp.rs` | Query LSP server for code intelligence (defined in `src/tool/lsp.rs`, not a built-in registry tool) |
+
+### Meta Operations
+
+| Tool | File | Description |
+|------|------|-------------|
+| **batch** | `batch.rs` | Execute up to 25 tool calls in parallel. Each call limited to 100KB input, total output limited to 500KB. |
+| **tool_search** | `tool_search.rs` | On-demand tool discovery. Searches catalog by name/description. Registered with catalog (not as a regular tool). |
+| **invalid** | `invalid.rs` | Catch-all for malformed tool calls. Returns tool name and error message. |
+
+## NOT Registered (exists but excluded from default registry)
+
+**multiedit** (`src/tool/multiedit.rs`):
+- Module exists and is registered via `pub mod multiedit` in `mod.rs`
+- NOT included in `ToolRegistry::with_defaults()`
+- Applies multiple edit operations to a single file sequentially
+- Uses same path validation as other file tools
+
+To register multiedit, add to `with_defaults()`:
+```rust
+registry.register(crate::tool::multiedit::MultiEditTool::default());
+```
 
 ## ToolRegistry
 
-Manages registration and lookup of tools:
+Manages registration and lookup of tools at `src/tool/mod.rs:70-73`:
 
 ```rust
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
-    catalog: ToolCatalog,
-}
-
-impl ToolRegistry {
-    pub fn new() -> Self;
-    pub fn with_defaults() -> Self;
-    pub fn register(&mut self, tool: impl Tool + 'static);
-    pub fn get(&self, name: &str) -> Option<&dyn Tool>;
-    pub fn list(&self) -> Vec<&dyn Tool>;
-    pub fn definitions(&self) -> Vec<ToolDefinition>;
-    pub fn filter_out(&mut self, denied_tools: &[String]);
-    pub fn catalog(&self) -> &ToolCatalog;
+    catalog: catalog::ToolCatalog,
 }
 ```
 
-### ToolCatalog
+### Methods
 
-The catalog maintains metadata and supports deferred loading:
+| Method | Description |
+|--------|-------------|
+| `new()` | Create empty registry |
+| `with_defaults()` | Create registry with all 27 built-in tools |
+| `register(&mut self, tool: impl Tool + 'static)` | Register a tool (takes `&dyn Tool` not `Box<dyn Tool>`) |
+| `get(&self, name: &str) -> Option<&dyn Tool>` | Get tool by name |
+| `list(&self) -> Vec<&dyn Tool>` | List all tools |
+| `filter_out(&mut self, denied_tools: &[String])` | Remove denied tools from registry |
+| `definitions(&self) -> Vec<ToolDefinition>` | Get tool definitions for LLM |
+| `catalog(&self) -> &ToolCatalog` | Access the tool catalog |
+
+### Registration in with_defaults() (lines 89-119)
+
+```rust
+pub fn with_defaults() -> Self {
+    let mut registry = Self::new();
+    registry.register(crate::tool::bash::BashTool::default());
+    registry.register(crate::tool::read::ReadTool::default());
+    registry.register(crate::tool::edit::EditTool::default());
+    registry.register(crate::tool::write::WriteTool::default());
+    registry.register(crate::tool::glob::GlobTool::default());
+    registry.register(crate::tool::grep::GrepTool::default());
+    registry.register(crate::tool::list::ListTool::default());
+    registry.register(crate::tool::task::TaskTool::default());
+    registry.register(crate::tool::webfetch::WebFetchTool::default());
+    registry.register(crate::tool::websearch::WebSearchTool::default());
+    registry.register(crate::tool::codesearch::CodeSearchTool);
+    registry.register(crate::tool::question::QuestionTool);
+    registry.register(crate::tool::todo::TodoTool::default());
+    registry.register(crate::tool::skill::SkillTool);
+    registry.register(crate::tool::apply_patch::ApplyPatchTool::new());
+    registry.register(crate::tool::diff::DiffTool::default());
+    registry.register(crate::tool::replace::ReplaceTool::default());
+    registry.register(crate::tool::review::ReviewTool::default());
+    registry.register(crate::tool::batch::BatchTool::default());
+    registry.register(crate::tool::terminal::TerminalTool::default());
+    registry.register(crate::tool::git::GitTool::default());
+    registry.register(crate::tool::commit::CommitTool::new());
+    registry.register(crate::tool::plan::PlanEnterTool);
+    registry.register(crate::tool::plan::PlanExitTool);
+    registry.register(crate::tool::invalid::InvalidTool);
+    // Register tool_search with catalog for on-demand tool discovery
+    let search_tool = crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
+    registry.register(search_tool);
+    registry
+}
+```
+
+Note: ImageTool is NOT in with_defaults() - it's registered separately when needed via provider configuration.
+
+## ToolCatalog
+
+Provides metadata management and search at `src/tool/catalog.rs:32-40`:
 
 ```rust
 pub struct ToolCatalog {
     tools: HashMap<String, ToolMetadata>,
     deferred_load: Vec<String>,
 }
+```
 
-impl ToolCatalog {
-    pub fn register(&mut self, tool: &dyn Tool);
-    pub fn search(&self, query: &str) -> Vec<&ToolMetadata>;
-    pub fn get(&self, name: &str) -> Option<&ToolMetadata>;
-    pub fn list(&self) -> Vec<&ToolMetadata>;
-    pub fn deferred_tools(&self) -> Vec<&ToolMetadata>;  // List tools marked for deferred loading
-    pub fn is_deferred(&self, name: &str) -> bool;  // Check if a tool is deferred
+### ToolMetadata
+
+```rust
+pub struct ToolMetadata {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+    pub defer_load: bool,
 }
 ```
+
+### Catalog Methods
+
+| Method | Description |
+|--------|-------------|
+| `register(&mut self, tool: &dyn Tool)` | Register tool metadata (takes reference, not owned) |
+| `search(&self, query: &str) -> Vec<&ToolMetadata>` | Search by name or description (case-insensitive) |
+| `get(&self, name: &str) -> Option<&ToolMetadata>` | Get metadata by name |
+| `list(&self) -> Vec<&ToolMetadata>` | List all metadata |
+| `deferred_tools(&self) -> Vec<&ToolMetadata>` | List tools marked for deferred loading |
+| `is_deferred(&self, name: &str) -> bool` | Check if tool is deferred |
 
 ## Tool Execution Flow
 
@@ -160,51 +228,103 @@ impl ToolCatalog {
 AgentLoop
 ├── Provider sends ToolCall event
 ├── ToolRegistry::get(tool_name)
-│   └── Tool::execute(input)
+│   └── tool.execute(input)
+│       ├── Parameter extraction
 │       ├── Path validation (for file tools)
+│       ├── Permission checking
 │       └── Execute tool logic
 └── Return Result<String, ToolError>
 ```
 
-## ToolExecutor
+### Execution Details by Tool Type
 
-Provides retry logic with exponential backoff for transient errors:
+**File Tools** (read, write, edit, glob, grep, list, diff, replace, apply_patch):
+1. Extract path from input JSON
+2. Call `validate_path()` or `canonicalize_path()` from `util.rs`
+3. Check symlinks with `check_path_for_symlinks()`
+4. Perform operation in `tokio::task::spawn_blocking()`
+5. Publish `AppEvent::FileChanged` for mutations
+
+**Shell Tools** (bash, terminal):
+1. Extract command from input
+2. Check against `BLOCKED_PATTERN` regex
+3. Check against `blocked_commands` HashSet
+4. Validate allowlist if configured
+5. Execute via `tokio::process::Command`
+6. Apply output truncation (2000 lines, 50KB default)
+
+**Web Tools** (webfetch, websearch, codesearch, image):
+1. Parse URL
+2. Call `validate_host_ip()` for SSRF protection
+3. Call `revalidate_dns()` to verify DNS
+4. Make HTTP request with appropriate headers
+5. Process response (markdown for HTML, base64 for images)
+
+**Subagent Tools** (task):
+1. Create task in TaskStore
+2. Send to SubAgentSpawner
+3. Return task_id for later retrieval via `action=get`
+
+## Path Validation
+
+All file operations use utility functions from `src/tool/util.rs`:
+
+### validate_path (for restricted tools)
 
 ```rust
-pub struct ToolExecutor {
-    max_attempts: usize,
-    base_delay: Duration,
-    max_delay: Duration,
-}
-
-impl ToolExecutor {
-    pub fn new(max_attempts: usize) -> Self {
-        Self {
-            max_attempts,
-            base_delay: Duration::from_millis(500),
-            max_delay: Duration::from_secs(30),
-        }
+pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolError> {
+    check_path_for_symlinks(path)?;
+    let canonical = canonicalize_path_internal(path)?;
+    let root_canonical = allowed_root.canonicalize()?;
+    if !canonical.starts_with(&root_canonical) {
+        return Err(ToolError::Permission(format!(
+            "path '{}' is outside allowed directory",
+            path.display()
+        )));
     }
-
-    pub fn with_delays(mut self, base_delay: Duration, max_delay: Duration) -> Self {
-        self.base_delay = base_delay;
-        self.max_delay = max_delay;
-        self
-    }
-
-    pub async fn execute_with_retry<F, Fut>(&self, f: F) -> Result<Value, ToolError>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<Value, ToolError>>,
-    {
-        // Exponential backoff with jitter for Io, Network, Timeout errors
-    }
+    Ok(canonical)
 }
 ```
 
-**Note**: `ToolExecutor` exists with retry logic but is **not currently integrated** into the tool registry. The retry functionality is available but not used by any registered tools.
+### canonicalize_path (for unrestricted tools)
+
+```rust
+pub fn canonicalize_path(path: &Path) -> Result<PathBuf, ToolError> {
+    check_path_for_symlinks(path)?;
+    canonicalize_path_internal(path)
+}
+```
+
+### check_path_for_symlinks
+
+```rust
+pub fn check_path_for_symlinks(path: &Path) -> Result<(), ToolError> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component);
+        if current.symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false) {
+            return Err(ToolError::Permission(format!(
+                "symlink not allowed in path: {}",
+                current.display()
+            )));
+        }
+    }
+    Ok(())
+}
+```
+
+### Key Validation Points
+
+- **Symlinks rejected**: Paths containing symlinks are rejected
+- **Allowed root enforcement**: File tools restrict operations to within `allowed_root`
+- **spawn_blocking for I/O**: All file I/O happens in `tokio::task::spawn_blocking()` to avoid blocking the async runtime
+- **Absolute path handling**: Relative paths are joined with allowed_root before validation
 
 ## ToolError
+
+Defined in `src/error/mod.rs`, used by all tools:
 
 ```rust
 pub enum ToolError {
@@ -233,43 +353,78 @@ impl ToolError {
 }
 ```
 
-## Path Validation
+## ToolExecutor (DEPRECATED)
 
-For file operations, tools use `validate_path` from `util.rs`:
+Located at `src/tool/executor.rs:8-58`, this struct provides retry logic but is **not currently integrated**:
 
 ```rust
-pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolError> {
-    check_path_for_symlinks(path)?;
-    let canonical = canonicalize_path_internal(path)?;
-    let root_canonical = allowed_root.canonicalize()?;
-    if !canonical.starts_with(&root_canonical) {
-        return Err(ToolError::Permission(...));
-    }
-    Ok(canonical)
+#[deprecated(since = "2026-05-27", note = "Not integrated - architectural mismatch with ToolRegistry")]
+pub struct ToolExecutor {
+    max_attempts: usize,
+    base_delay: Duration,
+    max_delay: Duration,
 }
 ```
 
-- Checks against allowed root directory
-- Validates symlinks for security (rejects paths containing symlinks)
-- Ensures paths are within allowed directories
+Features:
+- Exponential backoff: `2^i` multiplier
+- Jitter: adds `capped_ms / 2` random delay
+- Retryable errors: Io, Network, Timeout
+
+**Status**: Deprecated and unused. The retry functionality exists but is not wired into the tool execution flow.
 
 ## Security Considerations
 
-1. **Tool path validation** - All file paths validated before access
-2. **Symlink protection** - `check_path_for_symlinks()` rejects paths containing symlinks
-3. **Permission enforcement** - Tools check permissions before execution
-4. **Snapshot before modify** - File state captured before destructive operations
-5. **SSRF protection** - WebFetch validates URLs against internal IP ranges
-6. **BashTool blocked patterns** - Regex-based detection of dangerous commands
-7. **Subprocess PATH** - External processes use user's actual PATH (not hardcoded)
+1. **Tool path validation**: All file paths validated before access
+2. **Symlink protection**: `check_path_for_symlinks()` rejects paths containing symlinks
+3. **Permission enforcement**: Tools check permissions before execution
+4. **BashTool blocked patterns**: Regex-based detection of 40+ dangerous command patterns
+5. **BashTool blocked commands**: HashSet of full commands that are blocked (rm -rf /, mkfs, etc.)
+6. **SSRF protection**: WebFetch validates URLs against internal IP ranges
+7. **Subprocess PATH**: External processes use `std::env::var_os("PATH")` (not hardcoded)
+8. **Environment variable filtering**: TerminalTool filters dangerous env vars (LD_PRELOAD, DYLD_*)
+9. **Allowlist support**: BashTool and TerminalTool support command allowlists
 
-Path validation for tools is handled by the `permission` module, not here.
+## File Structure Summary
 
-## Known Implementation Notes
-
-1. **Tool definition caching**: Cache key includes version for proper invalidation
-2. **Plan tools split**: `plan_enter` and `plan_exit` are separate tools, not one `plan` tool
-3. **ToolCatalog for metadata**: The catalog tracks tool metadata separately from registry
+```
+src/tool/
+├── mod.rs          # Tool trait, ToolRegistry, with_defaults() (27 tools)
+├── catalog.rs      # ToolCatalog for metadata and search
+├── util.rs         # Path validation helpers
+├── executor.rs     # DEPRECATED ToolExecutor with retry logic
+├── bash.rs         # Shell command execution
+├── read.rs         # File reading with image/PDF base64 support
+├── write.rs        # File writing with auto-formatting
+├── edit.rs         # 8-strategy edit matching
+├── glob.rs         # Glob pattern file finding
+├── grep.rs         # Regex content search
+├── list.rs         # Directory tree listing
+├── diff.rs         # Unified diff generation
+├── replace.rs      # Regex find/replace
+├── apply_patch.rs  # Unified diff patch application
+├── task.rs         # Subagent task spawning
+├── todo.rs         # Todo list management
+├── webfetch.rs     # URL content fetching
+├── websearch.rs    # Web search via Exa
+├── codesearch.rs   # Code search via Exa
+├── question.rs     # User question asking
+├── skill.rs        # Skill loading
+├── review.rs       # LLM-based code review
+├── batch.rs        # Parallel tool execution
+├── terminal.rs     # Terminal command execution
+├── git.rs          # Git command execution
+├── commit.rs       # LLM-generated commit messages
+├── plan.rs         # plan_enter and plan_exit tools
+├── invalid.rs      # Malformed call handler
+├── multiedit.rs    # Multi-edit tool (NOT registered)
+├── image.rs        # DALL-E image generation
+├── tool_search.rs  # On-demand tool discovery
+├── lsp.rs          # LSP client tools
+├── teams.rs        # Team operation tools
+├── formatter.rs     # Auto-formatting support
+└── ...
+```
 
 ## See Also
 
@@ -277,3 +432,4 @@ Path validation for tools is handled by the `permission` module, not here.
 - [permission.md](permission.md) - Permission checking before execution
 - [snapshot.md](snapshot.md) - File state capture before modifications
 - [security.md](security.md) - SSRF and path validation
+- [subagent.md](../.opencode/skills/subagent/SKILL.md) - SubAgentPool and TaskStore for task tool

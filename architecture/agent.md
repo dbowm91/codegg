@@ -1,123 +1,590 @@
-# Agent Module
-
-The `agent` module is the core of the AI coding agent, responsible for orchestrating conversation between the LLM and tools.
+# Agent Module Architecture
 
 ## Overview
 
-**Location**: `src/agent/`
+The `agent` module (`src/agent/`) is the core orchestration engine for Codegg. It manages the main execution cycle that processes messages from the LLM provider, executes tools via the `ToolRegistry`, handles permissions via `PermissionChecker`, and manages context compaction when token limits are approached.
 
-**Key Responsibilities**:
-- Main agent loop (`AgentLoop`)
-- Message processing and event handling
-- Subagent pool management
-- Context compaction for long conversations
-- Model auto-routing based on task complexity
-- Team coordination for multi-agent tasks
+## Module Structure
 
-## Components
+```
+src/agent/
+├── mod.rs          # Agent struct, AgentMode enum, builtin_agents, agent resolution
+├── loop.rs         # AgentLoop - main execution cycle
+├── processor.rs    # EventProcessor - processes ChatEvents from provider
+├── compaction.rs  # ContextTracker, compaction strategies
+├── worker.rs       # SubAgentPool, SubAgentSpawner - background task execution
+├── router.rs       # ModelRouter - automatic model selection based on task complexity
+├── team.rs         # Team, TeamMessage, AgentRole - multi-agent coordination
+├── teams.rs        # TeamManager, SharedTaskList, team tools (team_create, send_message, etc.)
+├── mention.rs      # @mention parsing and agent filtering
+├── prompt.rs       # System prompt assembly, instruction file loading
+├── task.rs         # BackgroundTask, BackgroundScheduler
+└── prompts/        # Provider-specific system prompts
+    ├── anthropic.txt
+    ├── beast.txt
+    ├── codex.txt
+    ├── default.txt
+    ├── gemini.txt
+    ├── gpt.txt
+    ├── kimi.txt
+    └── trinity.txt
+```
 
-### loop.rs - AgentLoop
+---
 
-The central orchestrator that runs the conversation:
+## 1. AgentLoop (`loop.rs`)
+
+### Purpose
+
+`AgentLoop` is the main orchestration struct that manages the conversation cycle between the LLM and tools. It handles message streaming, tool execution, permission checks, context tracking, and hook dispatching.
+
+### Key Fields
 
 ```rust
 pub struct AgentLoop {
-    agents: HashMap<String, Agent>,
-    state: AgentLoopState,
-    limits: ExecutionLimits,
-    provider: Box<dyn crate::provider::Provider>,
-    permission_checker: PermissionChecker,
-    tool_registry: ToolRegistry,
-    hook_registry: Option<Arc<HookRegistry>>,
-    context_tracker: ContextTracker,
-    doom_detector: DoomLoopDetector,
-    steering: AtomicBool,
-    follow_up_tx: mpsc::UnboundedSender<String>,
-    follow_up_rx: mpsc::UnboundedReceiver<String>,
-    config: Config,
-    question_tx: Option<tokio::sync::oneshot::Sender<String>>,
-    question_rx: Option<tokio::sync::oneshot::Receiver<String>>,
-    plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
-    session_id: String,
-    mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
-    tool_def_cache: Option<ToolDefCache>,
-    model_router: ModelRouter,
-    snapshot_manager: Option<crate::snapshot::SnapshotManager>,
-    file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
+    agents: HashMap<String, Agent>,           // Available agents
+    state: AgentLoopState,                    // Turn count, tokens, plan mode
+    limits: ExecutionLimits,                  // Max turns, tokens, timeout
+    provider: Box<dyn Provider>,              // LLM provider
+    permission_checker: PermissionChecker,    // Permission enforcement
+    tool_registry: ToolRegistry,              // Tool execution
+    hook_registry: Option<Arc<HookRegistry>>,  // Hook system
+    context_tracker: ContextTracker,           // Token usage monitoring
+    doom_detector: DoomLoopDetector,          // Repetitive tool call detection
+    steering: AtomicBool,                     // User interruption signal
+    follow_up_tx/rx: mpsc::UnboundedChannel,  // Follow-up prompt queue
+    plugin_service: Option<Arc<PluginService>>, // WASM plugin hooks
+    model_router: ModelRouter,                // Auto-routing
+    snapshot_manager: Option<SnapshotManager>, // File state snapshots
+    // ...
+}
+```
+
+### AgentLoopState
+
+Tracks execution state:
+
+```rust
+pub struct AgentLoopState {
+    pub current_agent: String,    // Active agent name
+    pub turn_count: usize,         // Incremented each turn
+    pub total_tokens: usize,      // Running token total
+    pub start_time: Instant,      // Session start time
+    pub plan_mode: bool,          // Plan mode flag
+    pub plan_topic: Option<String>, // Plan mode topic
+}
+```
+
+### ExecutionLimits
+
+Bounds on execution:
+
+```rust
+pub struct ExecutionLimits {
+    pub max_turns: usize,      // Default: 100
+    pub max_tokens: usize,     // Default: 1,000,000
+    pub timeout: Duration,     // Default: 600 seconds
+}
+```
+
+### Main Execution Flow (`run()` method)
+
+```
+1. Pre-execution hooks (SessionStart)
+2. Apply auto-routing (ModelRouter)
+3. Apply agent config (model, temperature, top_p, thinking_budget)
+4. Build tool definitions (with MCP tools, plugin hooks)
+5. Add system prompt modifications for MiniMax models
+
+Main Loop:
+6. Check limits (max turns, tokens, timeout, steering)
+7. Pre-turn hooks (AgentStart)
+8. Compact if needed (context overflow detection)
+9. Harden history (fix orphan tool messages)
+10. Stream with retry (provider communication)
+11. Process events (EventProcessor)
+12. Handle missing structured tool calls (fallback to text parsing)
+13. Bootstrap tool for repo tasks (if conditions met)
+14. Execute tool calls (permission check → parallel execution)
+15. Publish tool results to event bus
+16. Detect plan mode changes
+17. Post-turn hooks (AgentEnd)
+18. Repeat until no tool calls
+
+Post-loop:
+19. Drain follow-up prompts
+20. SessionEnd hooks
+```
+
+### Tool Execution Flow (`execute_tool_calls()`)
+
+1. **Permission Check** (`check_tool_permission`):
+   - Empty tool name → deny
+   - `question` tool → register with QuestionRegistry, publish QuestionPending event
+   - Record tool call in DoomLoopDetector
+   - Check doom loop (repeated identical calls)
+   - Route to appropriate permission checker (bash/git/general)
+   - Auto-accept read-only tools within working directory
+   - For `Ask` permissions: register with PermissionRegistry, publish PermissionPending
+
+2. **Snapshot Capture**:
+   - Before file-modifying tools (write, edit, replace, multiedit, apply_patch)
+   - Drains file change events to only checkpoint this batch
+
+3. **MCP Tool Handling**:
+   - Parse MCP tool names (`mcp__server__tool`)
+   - Call MCP service via `try_read()` (non-blocking)
+   - Fall back gracefully if service is write-locked
+
+4. **Parallel Execution**:
+   - Semaphore-controlled concurrency (default max 100)
+   - Per-tool timeout via `get_tool_timeout()`
+   - Hook dispatch: PreToolExecute → plugin hook → ToolExecuteBefore → tool execution → ToolExecuteAfter → PostToolExecute
+
+5. **Question Handling**:
+   - Wait for question_rx (300s timeout)
+   - Format answers via `format_question_answers()`
+   - Handle cancelled/timeout cases
+
+### Stream Handling
+
+- **Timeout**: 120 seconds for stream initiation
+- **Idle Timeout**: 90 seconds between events
+- **Retry Logic**: 3 retries with exponential backoff (1s, 2s, 4s, max 30s)
+- **Retry Condition**: Only retryable `ProviderError` instances
+
+### Path Redaction
+
+Redacts local paths in tool outputs:
+- `/home/[user]`, `/Users/[user]`, `/var/[user]`, `/tmp/[user]`
+- `C:\Users\[user]`, `C:\Program Files\[user]`, `C:\Windows\[user]`
+- Current working directory and HOME replaced with `[CWD]` and `[HOME]`
+
+### History Hardening
+
+Ensures tool results match tool calls (no orphans):
+- Matches `tool_call_id` between assistant tool calls and tool results
+- Drops orphan tool messages with debug logging
+- Flushes pending tool calls at message boundaries
+
+---
+
+## 2. Agent Struct and AgentMode (`mod.rs`)
+
+### Agent Struct
+
+```rust
+pub struct Agent {
+    pub name: String,              // "build", "plan", "explore", etc.
+    pub description: String,       // Human-readable description
+    pub mode: AgentMode,           // Primary, Subagent, or All
+    pub mode_name: Option<String>, // Mode label (e.g., "review", "debug")
+    pub model: Option<String>,     // Override model
+    pub variant: Option<String>,    // Model variant
+    pub temperature: Option<f64>,   // Temperature override
+    pub top_p: Option<f64>,        // Top-p override
+    pub color: Option<String>,     // UI color hint
+    pub steps: Option<usize>,      // Max steps limit
+    pub system_prompt: Option<String>, // Custom system prompt
+    pub permissions: HashMap<String, String>, // Tool/path permissions
+    pub hidden: bool,              // Hidden from agent list
+    pub thinking_budget: Option<usize>,   // Thinking budget override
+    pub reasoning_effort: Option<String>, // Reasoning effort override
+}
+```
+
+### AgentMode Enum
+
+```rust
+pub enum AgentMode {
+    Primary,  // Full access agent
+    Subagent, // Limited agent (no todo management)
+    All,      // Combines multiple agents
+}
+```
+
+### Permission Ruleset Generation
+
+`Agent::permission_ruleset()` converts the permissions HashMap to a `PermissionRuleset`:
+
+- `"allow"` → `PermissionLevel::Allow`
+- `"deny"` → `PermissionLevel::Deny`
+- `_*` → `PermissionLevel::Ask`
+- Special `"paths"` key creates `PathRule` with `PermissionLevel::Ask`
+
+### Mode Application
+
+- `with_mode()`: Applies a `ModeDefinition` to an agent
+- `with_config_mode()`: Applies a `ModeConfig` from config file
+
+### Built-in Agents (7 total)
+
+| Name | Mode | Permissions | Hidden | Purpose |
+|------|------|-------------|--------|---------|
+| **build** | Primary | None (full access) | No | Default build agent |
+| **plan** | Primary | deny: write, edit, bash | No | Read-only planning |
+| **general** | Subagent | deny: todowrite | No | Subagent without todos |
+| **explore** | All | deny: write, edit | No | Read-only exploration |
+| **title** | Subagent | None | Yes | Generate session titles |
+| **summary** | Subagent | None | Yes | Generate session summaries |
+| **compaction** | Subagent | deny: * (all) | Yes | Context compaction agent |
+
+### Agent Resolution (`resolve_agents()`)
+
+Loads agents from multiple sources (in priority order):
+
+1. Built-in agents (base)
+2. `~/.config/codegg/agents/*.md` (user config)
+3. `.codegg/agents/*.md` (project config)
+4. Config file `agent` section
+5. Config file `mode` section (creates agents from modes)
+
+Markdown agent files use YAML frontmatter:
+
+```yaml
+---
+name: CustomAgent
+mode: primary
+description: Custom agent description
+model: gpt-4o
+temperature: 0.7
+permission:
+  bash: allow
+  write: deny
+---
+Agent-specific instructions or markdown content
+```
+
+---
+
+## 3. Compaction (`compaction.rs`)
+
+### ContextTracker
+
+Monitors token usage and determines when compaction is needed:
+
+```rust
+pub struct ContextTracker {
+    current_tokens: usize,      // Running token count
+    context_limit: usize,      // Max context (default 128,000)
+    threshold: f64,            // Compaction threshold (default 0.85)
+    message_token_counts: Vec<usize>, // Per-message token counts
+    max_messages: Option<usize>,    // Optional message cap
+    max_total_bytes: Option<usize>, // Optional byte cap
+    model: Option<String>,          // Model for tokenizer selection
+}
+```
+
+**Token Estimation**:
+- Uses tiktoken for base encoding
+- Model-specific multipliers:
+  - `Cl100kBase` (GPT models): 1.0x
+  - `Claude`: 1.4x
+  - `Gemini`: 1.2x
+  - `O200kBase`: 1.0x
+
+**Key Methods**:
+- `needs_compaction()`: Current tokens > limit × threshold
+- `needs_overflow_protection(reserved)`: Current tokens > limit - reserved
+- `reset()`: Clears counts for post-compaction
+
+### Compaction Strategies
+
+Three strategies defined in `CompactionStrategy` enum:
+
+1. **`TruncateToolOutputs`**: Truncates tool results > 500 chars to 500 + "...[truncated]"
+
+2. **`DropMiddleMessages`**: Keeps first 2 and last 2 non-system messages
+
+3. **`SummarizeOldTurns`**: Uses LLM to create a summary (async only)
+
+### Compaction Invariants
+
+All compaction must preserve:
+1. No orphan `Message::Tool` (every tool result needs matching tool call)
+2. No tool-call without its required tool results
+3. Relative order of tool call/result pairs
+4. `tool_call_id` field unchanged
+5. Multi-tool pair order preserved
+
+### Auto-Compaction Flow
+
+```
+detect_overflow() → prune_tool_outputs() → reset tracker
+                                            ↓
+                    if still needs compaction:
+                        dispatch SessionCompacting hook
+                        if not blocked:
+                            select_compaction_strategy()
+                            if SummarizeOldTurns + provider: async compaction
+                            else: sync compaction (DropMiddleMessages fallback)
+                        reset tracker and re-add messages
+```
+
+**Auto-compaction selection logic**:
+- `has_long_tool_outputs` (>2000 chars) AND `non_system_count > 6` → TruncateToolOutputs
+- `non_system_count > 8` → SummarizeOldTurns
+- Otherwise → DropMiddleMessages
+
+---
+
+## 4. Worker - SubAgentPool (`worker.rs`)
+
+### SubAgentRequest
+
+```rust
+pub struct SubAgentRequest {
+    pub task_id: u64,
+    pub prompt: String,
+    pub agent: String,              // Agent name to use
+    pub parent_id: Option<String>,   // Parent session ID
+    pub denied_tools: Vec<String>,   // Tools to exclude
+    pub allowed_paths: Vec<String>,  // Path restrictions
+    pub description: String,
+    pub depth: usize,               // Nesting depth (max_depth check)
+}
+```
+
+### SubAgentResult
+
+```rust
+pub struct SubAgentResult {
+    pub task_id: u64,
+    pub success: bool,
+    pub result: String,
+}
+```
+
+### SubAgentPool
+
+Manages a pool of background worker tasks:
+
+```rust
+pub struct SubAgentPool {
+    shutdown_tx: broadcast::Sender<()>,
+    active_count: Arc<AtomicUsize>,    // Currently running tasks
+    max_concurrent: usize,             // Default: 5
+    max_depth: usize,                   // Default: 3
+    task_store: Arc<TokioMutex<TaskStore>>,
+    request_tx: mpsc::Sender<WorkerRequest>,
+    // ...
 }
 ```
 
 **Key Methods**:
-- `run()` - Main event loop
-- `run_with_prompt()` - Convenience method for simple prompts
-- `drain_follow_up()` - Drains queued follow-up prompts non-blocking
-- `capture_snapshot_if_needed()` - Captures project state snapshot if configured
-- `drain_file_change_events()` - Drains file change events from broadcast channel
-- `process_event()` - Handle incoming ChatEvents
-- `check_tool_permission()` - Verify tool execution is allowed
-- `compact_if_needed()` - Context compaction if needed
-- `build_tool_definitions()` - Build tool definitions with caching
-- `execute_tool_calls()` - Execute tools with permission checks
-- `stream_with_retry()` - Stream with exponential backoff retry
+- `new()`: Creates pool with TaskStore initialization
+- `new_with_store()`: Uses provided TaskStore
+- `spawner()`: Returns `SubAgentSpawner` for enqueuing tasks
+- `shutdown()`: Graceful shutdown with 10x 100ms waits, then abort
 
-### ToolDefCache Type Alias
+### ActiveCountGuard (RAII)
+
+Ensures active count is decremented even on panic:
 
 ```rust
-type ToolDefCache = (
-    Option<String>,                    // model: Cached tools hash
-    bool,                             // plan_mode: Whether in plan mode
-    bool,                             // lsp_enabled: Whether LSP is enabled (affects tool definitions)
-    usize,                            // mcp_count: MCP tool count
-    u64,                              // perm_ver: Permission version
-    Vec<crate::provider::ToolDefinition>, // Cached tool definitions
-);
+struct ActiveCountGuard {
+    active_count: Arc<AtomicUsize>,
+}
+impl Drop for ActiveCountGuard {
+    fn drop(&mut self) {
+        self.active_count.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 ```
 
-Cache is invalidated when `plan_mode`, `lsp_enabled`, `mcp_count`, `permission_version`, or tool definitions change.
+### SubAgentSpawner
 
-### compaction.rs - Context Management
+Enqueues subagent requests:
 
-Handles context window management for long conversations:
+```rust
+pub struct SubAgentSpawner {
+    pool: SubAgentPool,
+}
+```
 
-**Key Types**:
-- `ContextTracker` - Tracks token usage and message count
-- `CompactionStrategy` - Determines how to compact context (TruncateToolOutputs, SummarizeOldTurns, DropMiddleMessages)
+- `send()`: Fire-and-forget with result handler
+- `send_async()`: Same as send (both spawn async task)
 
-**Key Functions**:
-- `detect_overflow()` - Check if overflow protection is needed
-- `prune_tool_outputs()` - Prune long tool outputs
-- `compact_messages_sync()` - Sync compaction
-- `compact_messages_async()` - Async compaction with LLM summarization
-- `auto_compact_async()` - Auto-compact with adaptive strategy
-- `llm_summarize()` - LLM-based summarization for context
+### Execution Flow (`execute_agent_task()`)
 
-### router.rs - Model Router
+1. Publish `SubagentStarted` event
+2. Update task status to `Running`
+3. Resolve agent and provider
+4. Create `ToolRegistry` (filtering denied tools)
+5. Build permission ruleset (allow specific paths, deny others)
+6. Create `AgentLoop` with filtered registry
+7. Set session ID, enter plan mode if needed
+8. Run agent loop with messages
+9. Extract text output from events
+10. Publish `SubagentCompleted` or `SubagentFailed`
+11. Update task store
 
-Auto-routes tasks to appropriate model complexity:
+### Depth Limiting
+
+Prevents infinite nesting:
+- `SubAgentSpawner::enqueue_request()` checks `request.depth >= max_depth`
+- Returns error if exceeded
+
+---
+
+## 5. Router - ModelRouter (`router.rs`)
+
+### TaskComplexity Enum
+
+```rust
+pub enum TaskComplexity {
+    Simple,   // Read-only, low cognitive load
+    Medium,   // Edit, write, moderate complexity
+    Complex,  // Debug, analyze, high cognitive load
+}
+```
+
+### ModelRouter
+
+Routes requests to appropriate models based on task complexity:
 
 ```rust
 pub struct ModelRouter {
     enabled: bool,
-    simple_model: Option<String>,
-    medium_model: Option<String>,
-    complex_model: Option<String>,
-}
-
-pub enum TaskComplexity {
-    Simple,
-    Medium,
-    Complex,
+    simple_model: Option<String>,   // e.g., gpt-4o-mini
+    medium_model: Option<String>,    // e.g., gpt-4o
+    complex_model: Option<String>,   // e.g., o1-preview
 }
 ```
 
-**Key Functions**:
-- `classify()` - Classify task complexity by tool name and content keywords
-- `route_model()` - Select appropriate model for task
-- `is_enabled()` - Check if routing is enabled
+**Configuration** (`from_config()`):
+- `enabled`: `config.auto_route_models.unwrap_or(false)`
+- `simple_model`: `config.small_model.clone()`
+- `medium_model`: `config.medium_model.clone()`
+- `complex_model`: `config.model.clone()` (default model)
 
-### processor.rs - Event Processor
+### Classification
 
-Processes `ChatEvent` stream from the provider into accumulated state:
+**By Tool Name**:
+- `Simple`: read, cat, ls, glob, list
+- `Medium`: edit, write, grep, search
+- `Complex`: debug, plan, review, architect, analyze
+
+**By Content** (keyword matching):
+- 2+ complex keywords OR "debug this"/"analyze the" → Complex
+- 1 complex keyword → Medium
+- 2+ medium keywords → Medium
+- 2+ simple keywords OR prompt < 50 chars → Simple
+- Otherwise → Medium
+
+### Routing
+
+If enabled, `apply_auto_routing()` modifies `request.model` based on classified complexity.
+
+---
+
+## 6. Team Coordination (`team.rs`, `teams.rs`)
+
+### Team (`team.rs`)
+
+File-based message passing between agents:
+
+```rust
+pub struct Team {
+    name: String,
+    agents: Vec<AgentRole>,
+    inbox_dir: PathBuf,   // .opencode/team/{team}/inbox/{agent}
+    outbox_dir: PathBuf,  // .opencode/team/{team}/outbox/{agent}
+    status_file: PathBuf, // .opencode/team/{team}/status.json
+}
+```
+
+**AgentRole**:
+```rust
+pub struct AgentRole {
+    pub name: String,
+    pub instructions: String,
+    pub capabilities: Vec<String>,
+}
+```
+
+**Message Delivery**:
+- `send_message()`: Writes JSON to recipient's inbox
+- `deliver_messages()`: Reads and marks messages as delivered
+- `mark_completed()`: Updates message status to Completed
+
+### TeamManager (`teams.rs`)
+
+In-memory team management:
+
+```rust
+pub struct TeamManager {
+    teams: RwLock<HashMap<String, Arc<Team>>>,
+    team_configs: RwLock<HashMap<String, TeamConfig>>,
+    shutdown_txs: RwLock<HashMap<String, broadcast::Sender<()>>>,
+}
+```
+
+**Operations**:
+- `create_team()`: Creates team and registers shutdown sender
+- `get_team()`: Lookup by name
+- `list_teams()`: All team names
+- `shutdown_team()`: Sends shutdown signal, removes from maps
+- `send_message()`: Delegates to Team
+- `deliver_messages()`: Delegates to Team
+- `get_team_status()`: Delegates to Team
+
+### Team Tools
+
+Implements tool interface for team operations:
+
+- **`team_create`**: Create a team with agents
+- **`send_message`**: Send message to team agent
+- **`list_messages`**: List pending messages for agent
+- **`team_status`**: Get team status
+- **`list_teams`**: List all teams
+
+### SharedTaskList
+
+Task dependency tracking:
+
+```rust
+pub struct SharedTaskList {
+    tasks: RwLock<HashMap<String, TaskDependency>>,
+    completed: RwLock<HashMap<String, bool>>,
+}
+```
+
+- `add_task(task_id, depends_on)`: Register task with dependencies
+- `mark_completed(task_id)`: Mark task done
+- `is_completed(task_id)`: Check completion status
+- `can_start(task_id)`: All dependencies satisfied?
+- `get_pending_tasks()`: Non-completed tasks
+
+### IdleNotifier
+
+Agent idle notification:
+
+```rust
+pub struct IdleNotifier {
+    listeners: RwLock<HashMap<String, broadcast::Sender<()>>>,
+}
+```
+
+- `register(agent_name)`: Returns receiver for idle notifications
+- `notify_idle(agent_name)`: Send notification
+
+### GracefulShutdown
+
+Coordinates team shutdown:
+
+```rust
+pub struct GracefulShutdown {
+    shutdown_tx: broadcast::Sender<TeamShutdownSignal>,
+    teams: Arc<TeamManager>,
+}
+```
+
+---
+
+## 7. EventProcessor (`processor.rs`)
+
+Accumulates streaming ChatEvents:
 
 ```rust
 pub struct EventProcessor {
@@ -128,69 +595,95 @@ pub struct EventProcessor {
     stop_reason: Option<String>,
     input_tokens: usize,
     output_tokens: usize,
+    cached_tokens: Option<usize>,
     is_complete: bool,
 }
 ```
 
-**Key Methods**:
-- `process(event)` - Process a single `ChatEvent` (TextDelta, ReasoningDelta, ToolCall, ToolResult, Finish, Error)
-- `text() / reasoning()` - Access accumulated content
-- `tool_calls() / tool_results()` - Access collected tool data
-- `to_assistant_message()` - Convert to `Message::Assistant`
-- `to_tool_messages()` - Convert tool results to `Message::Tool` vector
-- `is_complete() / has_tool_calls()` - State queries
-- `reset()` - Clear all accumulated state for reuse
+**Processing**:
+- `TextDelta` → append to `accumulated_text`
+- `ReasoningDelta` → append to `accumulated_reasoning`
+- `ToolCall` → add to `tool_calls`
+- `ToolResult` → add to `tool_results`
+- `Finish` → set stop_reason, tokens, `is_complete = true`
 
-**ChatEvent Types** (from `provider/mod.rs`):
-- `TextDelta(Arc<String>)` - Text content streamed
-- `ReasoningDelta(Arc<String>)` - Reasoning content streamed
-- `ToolCall(ToolCall)` - Request to execute a tool
-- `ToolResult{ tool_call_id, content }` - Tool execution result
-- `Finish{ stop_reason, usage, .. }` - End of message marker
-- `Error(Arc<String>)` - Error occurred (logged, not stored)
+**Output Methods**:
+- `to_assistant_message()`: Converts accumulated content to `Message::Assistant`
+- `to_tool_messages()`: Converts tool_results to `Vec<Message::Tool>`
 
-**Usage**: Used in exec mode (`src/exec/mod.rs`) and agent loop to process LLM response streams. Enables incremental display of streaming content and collection of tool calls for later execution.
+---
 
-### worker.rs - Subagent Pool
+## 8. Hooks Integration
 
-Manages concurrent subagent execution:
+### Hook Types Dispatched
+
+| Hook Event | Location | Purpose |
+|------------|----------|---------|
+| `SessionStart` | `loop.rs:1313-1328` | Before main loop |
+| `AgentStart` | `loop.rs:1409-1424` | Before each turn |
+| `PreToolExecute` | `loop.rs:1808-1826` | Before each tool |
+| `PostToolExecute` | `loop.rs:1882-1900` | After each tool |
+| `AgentEnd` | `loop.rs:1582-1597` | After each turn |
+| `SessionEnd` | `loop.rs:1603-1618` | After main loop |
+| `SessionCompacting` | `loop.rs:1261-1265` | Before compaction |
+
+### Plugin Service Hooks
+
+Tool definition hooks:
+- `dispatch_tool_definition()`: Modify tool list before sending to model
+
+Tool execution hooks:
+- `dispatch_tool_execute_before()`: Can block tool execution
+- `dispatch_tool_execute_after()`: Post-execution processing
+
+---
+
+## 9. Prompt Assembly (`prompt.rs`)
+
+### Provider Prompt Selection
+
+Selects model-specific system prompt:
 
 ```rust
-pub struct SubAgentPool {
-    shutdown_tx: broadcast::Sender<()>,
-    active_count: Arc<AtomicUsize>,
-    max_concurrent: usize,  // default: 5
-    max_depth: usize,       // default: 3
-    task_store: Arc<TokioMutex<TaskStore>>,
-    workers: Arc<TokioMutex<Vec<tokio::task::JoinHandle<()>>>>,
-    request_tx: mpsc::Sender<WorkerRequest>,
-    agents: Arc<Vec<Agent>>,
-    provider_registry: Arc<ProviderRegistry>,
-    config: Arc<Config>,
-    session_store: Arc<SessionStore>,
-    cancel_token: CancellationToken,
-    active_handles: Arc<TokioMutex<Vec<tokio::task::JoinHandle<()>>>>,
-    pool: Option<SqlitePool>,
+pub fn select_provider_prompt(model_id: &str) -> &'static str {
+    // GPT-4, O1, O3, O4 → beast.txt
+    // Codex → codex.txt
+    // GPT → gpt.txt
+    // Gemini → gemini.txt
+    // Claude, Sonnet, Opus, Haiku → anthropic.txt
+    // Trinity → trinity.txt
+    // Kimi → kimi.txt
+    // Default → default.txt
 }
 ```
 
-**Key Types**:
-- `SubAgentRequest` - Task request with task_id, prompt, agent, parent_id, denied_tools, allowed_paths, description, depth
-- `SubAgentResult` - Task result with task_id, success, result
-- `SubAgentSpawner` - Cloneable handle for sending requests to pool
+### System Prompt Assembly
 
-**Key Functions**:
-- `SubAgentPool::new()` / `new_with_store()` - Creates new pool with semaphore-based concurrency control, worker loop started immediately
-- `SubAgentSpawner::send()` / `send_async()` - Sends subagent request (both are async now, share implementation via `handle_response()`)
-- `SubAgentPool::shutdown()` - Clean shutdown with cooperative cancellation
-- Subagent execution publishes `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`/`SubagentFailed` events
-- RAII guard pattern (`ActiveCountGuard`) ensures proper active_count management
+`assemble_system_prompt()` builds system prompt from:
+1. Agent's custom system prompt (if any)
+2. Agent name and description
+3. Available tools list
+4. Available skills list
+5. Model name (if set)
+6. Config instructions
+7. Custom instructions (passed at runtime)
 
-**Note**: `start_workers()` method was removed (was a dead no-op method)
+### Instruction File Loading
 
-### task.rs - Background Tasks
+Looks for instruction files in order:
+1. `.codegg/instructions.md` (project)
+2. `INSTRUCTIONS.md` (project root)
+3. `~/.config/codegg/instructions.md` (global)
 
-Background task scheduling for periodic work:
+Searches from CWD to git root, plus config dir.
+
+Remote URLs in config instructions are fetched asynchronously.
+
+---
+
+## 10. Background Tasks (`task.rs`)
+
+### BackgroundTask
 
 ```rust
 pub struct BackgroundTask {
@@ -202,7 +695,16 @@ pub struct BackgroundTask {
     pub session_id: String,
     pub db_id: Option<i64>,
 }
+```
 
+- `is_expired()`: Created > 3 days ago
+- `should_fire()`: Since last_run >= interval
+
+### BackgroundScheduler
+
+Manages periodic task execution:
+
+```rust
 pub struct BackgroundScheduler {
     tasks: Arc<RwLock<Vec<BackgroundTask>>>,
     shutdown_tx: broadcast::Sender<()>,
@@ -211,124 +713,178 @@ pub struct BackgroundScheduler {
 }
 ```
 
-**Key Functions**:
-- `add()` - Add a new background task
-- `tick()` - Get all tasks that should fire
-- `spawn_loop()` - Spawn the background task loop
-- `load_tasks()` / `save_task()` - SQLite persistence
+- `add()`: Add task (optionally persist to DB)
+- `remove()`: Remove task
+- `tick()`: Return tasks that should fire now
+- `spawn_loop()`: Start background loop using SubAgentPool
 
-**Note**: BackgroundScheduler parses `task.id` and skips tasks with invalid IDs instead of using a random fallback. If parsing fails, the task is logged and skipped.
+### Duration Parsing
 
-### mention.rs - Agent Mentions
+Supports: `30s`, `5m`, `5min`, `1h`, `1d`
 
-Handles `@agent` mentions for routing to specific agents.
+---
 
-### prompt.rs - Prompt Templates
+## 11. Mention Parsing (`mention.rs`)
 
-Loads and manages prompt templates from files.
-
-### team.rs / teams.rs - Team Coordination
-
-Multi-agent team coordination via file-based inbox communication.
-
-## Key Types
-
-### Agent
+### MentionContext
 
 ```rust
-pub struct Agent {
-    pub name: String,
-    pub description: String,
-    pub mode: AgentMode,
-    pub mode_name: Option<String>,
-    pub model: Option<String>,
-    pub variant: Option<String>,
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub color: Option<String>,
-    pub steps: Option<usize>,
-    pub system_prompt: Option<String>,
-    pub permissions: HashMap<String, String>,
-    pub hidden: bool,
+pub struct MentionContext {
+    pub trigger_pos: usize,  // Position of @ in input
+    pub query: String,       // Full mention including @ (e.g., "@build")
 }
 ```
 
-### AgentMode
+### Parsing Rules
+
+- Must be at start of input or after whitespace
+- `@` must not be part of another word (e.g., `user@host`)
+- Query includes `@` prefix (e.g., `@build`)
+
+### Agent Filtering
+
+`filter_agents()` matches by name or description (case-insensitive).
+
+---
+
+## 12. Interaction with Other Modules
+
+### Provider Module
+
+- `AgentLoop` holds `Box<dyn Provider>`
+- `stream()` method for LLM communication
+- `ChatEvent` types for streaming responses
+- Tool definitions passed in `ChatRequest`
+
+### Tool Module
+
+- `ToolRegistry` for tool lookup and execution
+- `Tool` trait: `name()`, `description()`, `parameters()`, `execute()`
+- 27 built-in tools (including ImageTool)
+- Tool filtering based on model capabilities and plan mode
+
+### Permission Module
+
+- `PermissionChecker` for tool access control
+- `DoomLoopDetector` for repetitive call detection
+- `PermissionRegistry` for pending permission handling
+- `QuestionRegistry` for question tool handling
+
+### Bus Module
+
+- `GlobalEventBus` for event publishing
+- Key events:
+  - `ToolCallStarted`, `ToolResult` - tool lifecycle
+  - `TextDelta`, `ReasoningDelta` - streaming text
+  - `AgentFinished` - session completion
+  - `PermissionPending`, `QuestionPending` - pending user input
+  - `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` - subagent lifecycle
+
+### Session Module
+
+- `UsageStore` for tracking token usage and cost
+- `SessionStore` for session persistence
+- `snapshot` integration for file state capture
+
+### Config Module
+
+- `Config` struct for all settings
+- Agent config, mode config, compaction config
+- Server config for timeouts and limits
+
+### Plugin Module
+
+- `PluginService` for WASM hook dispatch
+- `HookRegistry` for hook management
+
+---
+
+## 13. Key Implementation Details
+
+### Tool Definition Caching
+
+`ToolDefCache` tuple:
+```rust
+(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)
+// model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions
+```
+
+Invalidated when any component changes. MCP tool count used as proxy for changes (limitation noted in code).
+
+### File-Modifying Tool Detection
 
 ```rust
-pub enum AgentMode {
-    Primary,    // Main agent handling user input
-    Subagent,   // Helper agent for specific tasks
-    All,        // Respond to all messages
+fn is_file_modifying_tool(name: &str) -> bool {
+    matches!(name, "write" | "edit" | "replace" | "multiedit" | "apply_patch")
 }
 ```
 
-### AgentLoopState
+Snapshots captured before these tools execute.
 
-Tracks runtime state:
-- `current_agent` - Current agent name
-- `turn_count` - Number of turns
-- `total_tokens` - Total tokens used
-- `start_time` - Start timestamp
-- `plan_mode` - Whether in plan mode
-- `plan_topic` - Current plan topic
+### Doom Loop Detection
 
-## Interactions
+Counts identical tool calls. If threshold exceeded (default 20, configurable):
+- Tool is denied even if permission would allow it
+- Message indicates potential doom loop
 
+### Auto-Accept Read-Only Tools
+
+Read-only tools (`read`, `glob`, `grep`, `list`, `webfetch`, `websearch`, `codesearch`) that target paths within the working directory are auto-accepted without user prompt.
+
+### MiniMax Model Handling
+
+Models containing "minimax" get special system prompt modification:
 ```
-AgentLoop
-├── Provider → LLM calls
-├── ToolRegistry → Tool execution
-├── PermissionChecker → Access control
-├── GlobalEventBus → Event publishing
-├── HookRegistry → Lifecycle hooks
-├── Snapshot → File state capture
-└── Session → Message history
+Tool-use contract: For repository/file/code/doc tasks, emit structured tool calls before giving conclusions.
 ```
 
-## Events Published
+Also avoids late system messages for MiniMax.
 
-- `SubagentStarted` - When subagent begins
-- `SubagentProgress` - Subagent progress update
-- `SubagentCompleted` - When subagent finishes successfully
-- `SubagentFailed` - When subagent fails
-- `TextDelta` - Text stream delta
-- `ReasoningDelta` - Reasoning stream delta
-- `ToolCallStarted` - Tool call initiated
-- `ToolResult` - Tool execution result
-- `AgentFinished` - Agent finished with stop reason
-- `PermissionPending` - Permission requested
-- `QuestionPending` - Question pending user response
+### Parallel Tool Execution
 
-**Note**: `AgentStarted`, `AgentEnded`, `CompactionStarted`, `CompactionEnded` are NOT published - hooks run these lifecycle events instead.
+- Semaphore-controlled (max configurable, default 100)
+- Per-tool timeout via `get_tool_timeout()`
+- MCP tools executed separately from regular tools
 
-## Configuration
+### Follow-up Prompt Handling
 
-Related configurations in `config/`:
-- `agent.model` - Default model
-- `agent.compaction_tokens` - Token threshold for compaction
-- `router.enabled` - Enable model auto-routing
-- `router.thresholds` - Complexity thresholds
-- `subagent.max_concurrent` - Max concurrent subagents (default: 5)
-- `subagent.max_depth` - Max recursion depth (default: 3)
+- `follow_up_sender()` returns channel for queuing prompts
+- `drain_follow_up()` processes queued follow-ups
+- Non-blocking `try_recv()` - late follow-ups require new `run()` call
 
-## Known Implementation Notes
+---
 
-1. **Subagent event publishing** - `SubagentStarted`/`SubagentCompleted`/`SubagentFailed` events properly published via `GlobalEventBus`
-2. **`SubAgentPool` bounded concurrency** - Uses semaphore with default of 5, RAII guard pattern for active_count
-3. **Tool definition caching** - Cache key includes mcp_tool_count, permission_version for proper invalidation (uses mcp_tool_count as proxy - known limitation)
-4. **DoomLoop detection** - Uses window-based counting (not consecutive), correctly documented
-5. **ToolExecuteBefore/After hooks** - Both hooks ARE invoked in `execute_tool_calls()` during tool execution
-6. **BackgroundScheduler task_id** - Uses `task.id.parse()` to use actual background task ID instead of random
-7. **`start_workers()` removed** - Dead no-op method was removed, workers start in constructors
+## 14. Snapshot Integration
 
-## See Also
+### Snapshot Capture Flow
 
-- [provider.md](provider.md) - LLM provider interface
-- [tool.md](tool.md) - Tool registry and execution
-- [permission.md](permission.md) - Access control
-- [bus.md](bus.md) - Event publishing
-- [hooks.md](hooks.md) - Lifecycle hooks
-- `.opencode/skills/subagent/SKILL.md` - Subagent infrastructure details
-- `.opencode/skills/compaction/SKILL.md` - Compaction system details
-- `.opencode/skills/router/SKILL.md` - Model routing details
+1. **Pre-change snapshot** (`capture_snapshot_if_needed()`):
+   - Before file-modifying tools
+   - Drains file change events to only capture current batch
+
+2. **Incremental snapshot** (`capture_incremental_snapshot_if_needed()`):
+   - After file-modifying tools complete
+   - Captures file changes since last snapshot
+
+### File Change Events
+
+`FileChanged` events are drained from the event bus subscription:
+- `path`: File path
+- `action`: Change type
+- `old_content`: Previous content (if available)
+
+---
+
+## Summary
+
+The `agent` module is the central coordinator for Codegg's AI-powered task execution. It orchestrates:
+
+1. **Message handling** via `AgentLoop` with streaming provider communication
+2. **Tool execution** via `ToolRegistry` with permission enforcement
+3. **Context management** via `ContextTracker` with automatic compaction
+4. **Background tasks** via `SubAgentPool` for parallel work
+5. **Multi-agent teams** via `Team` and `TeamManager` with file-based messaging
+6. **Model routing** via `ModelRouter` for automatic model selection
+7. **Hook system** integration for extensibility
+
+The module maintains strict boundaries with other components through clear interfaces (Provider trait, Tool trait, PermissionChecker), enabling testability and modularity.

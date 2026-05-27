@@ -1,72 +1,12 @@
-# Provider Module
-
-The `provider` module provides a unified interface for interacting with various LLM backends.
+# Provider Module Architecture
 
 ## Overview
 
-**Location**: `src/provider/`
+The provider module (`src/provider/`) provides the interface and implementations for interacting with various LLM (Large Language Model) backends. It offers a unified `Provider` trait that abstracts over different API providers (Anthropic, OpenAI, Google, Azure, etc.), handling authentication, request formatting, streaming responses, and error handling.
 
-**Key Responsibilities**:
-- Unified interface for LLM backends (Anthropic, OpenAI, Google, etc.)
-- Chat request/response handling
-- Model catalog and discovery
-- Response caching
-- Circuit breaker integration for provider fallback
+## Provider Trait and Core Types
 
-## Provider Implementations
-
-### Core Providers
-
-| Provider | File | Models |
-|----------|------|--------|
-| **Anthropic** | `anthropic.rs` | Claude Sonnet 4, Opus 4, 3.5 Sonnet, 3.5 Haiku |
-| **OpenAI** | `openai.rs` | GPT-4.1, GPT-4.1 Mini, GPT-4o |
-| **Google** | `google.rs` | Gemini 2.5 Pro, Flash, 2.0 Flash |
-| **Azure** | `azure.rs` | Azure OpenAI models |
-| **Vertex** | `vertex.rs` | Google Vertex AI |
-| **Bedrock** | `bedrock.rs` | AWS Bedrock (Claude, Llama, Mistral) |
-| **OpenRouter** | `openrouter.rs` | Aggregated models |
-| **CodeggZen** | `codegg_zen.rs` | big-pickle, minimax-m2.5-free, nemotron-3-super-free, qwen3.6-plus-free |
-
-### Additional Providers (in `additional.rs`)
-
-These are available via config or env var fallback (`register_builtin_with_config`):
-
-| Provider | Registration | Factory Function |
-|----------|--------------|------------------|
-| Mistral | Env/GitHub Copilot | `create_mistral()` |
-| Groq | Env/GitHub Copilot | `create_groq()` |
-| DeepInfra | Env/GitHub Copilot | `create_deepinfra()` |
-| Cerebras | Env/GitHub Copilot | `create_cerebras()` |
-| Cohere | Env/GitHub Copilot | `create_cohere()` |
-| TogetherAI | Env/GitHub Copilot | `create_together()` |
-| Perplexity | Env/GitHub Copilot | `create_perplexity()` |
-| xAI | Env/GitHub Copilot | `create_xai()` |
-| Venice | Env/GitHub Copilot | `create_venice()` |
-| MiniMax | Env/GitHub Copilot | `create_minimax()` |
-| Codegg Go | Env/GitHub Copilot only | `create_codegg_go()` |
-
-These providers exist in `additional.rs` but require explicit config to use:
-
-| Provider | Factory Function |
-|----------|-------------------|
-| SAP AI Core | `create_sap_ai_core()` |
-| Zenmux | `create_zenmux()` |
-| Kilo | `create_kilo()` |
-| Vercel AI Gateway | `create_vercel_ai_gateway()` |
-
-### Additional OpenAI-Compatible Providers
-
-| Provider | File |
-|----------|------|
-| Cloudflare Workers AI | `cloudflare.rs` |
-| GitHub Copilot | `copilot.rs` |
-| GitLab AI | `gitlab.rs` |
-| OpenAI Compatible | `openai_compatible.rs` |
-
-## Core Traits and Types
-
-### Provider Trait
+### Provider Trait (`src/provider/mod.rs:60-73`)
 
 ```rust
 #[async_trait]
@@ -85,7 +25,16 @@ pub trait Provider: Send + Sync {
 }
 ```
 
-### ChatRequest
+Key methods:
+- `id()` - Returns a unique identifier string (e.g., "anthropic", "openai")
+- `name()` - Returns a human-readable name (e.g., "Anthropic", "OpenAI")
+- `clone_box()` - Creates a boxed clone of the provider
+- `stream()` - Main method to send a chat request and receive a streaming response
+- `models()` - Returns a list of available models
+- `discover_models()` - Override point for dynamic model discovery (default calls `models()`)
+- `ping()` - Health check (default implementation calls `models()`)
+
+### ChatRequest (`src/provider/mod.rs:97-109`)
 
 ```rust
 pub struct ChatRequest {
@@ -97,12 +46,16 @@ pub struct ChatRequest {
     pub top_p: Option<f64>,
     pub max_tokens: Option<usize>,
     pub response_format: Option<ResponseFormat>,
+    pub thinking_budget: Option<usize>,
+    pub reasoning_effort: Option<String>,
 }
 ```
 
-### Message Enum
+### Message Types (`src/provider/mod.rs:111-128`)
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
     System { content: Arc<String> },
     User { content: Vec<ContentPart> },
@@ -111,69 +64,39 @@ pub enum Message {
 }
 ```
 
-### ContentPart Enum
+### ContentPart (`src/provider/mod.rs:130-135`)
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum ContentPart {
     Text { text: Arc<String> },
     Image { image_url: ImageUrl },
 }
-
-pub struct ImageUrl {
-    pub url: Arc<String>,
-}
 ```
 
-### ChatEvent Enum
+### ChatEvent (`src/provider/mod.rs:142-156`)
+
+The streaming response is a stream of `ChatEvent` values:
 
 ```rust
 pub enum ChatEvent {
-    TextDelta(Arc<String>),
-    ReasoningDelta(Arc<String>),
-    ToolCall(ToolCall),
-    ToolResult { tool_call_id: Arc<String>, content: Arc<String> },
-    Finish { stop_reason: Arc<String>, usage: TokenUsage },
-    Error(Arc<String>),
+    TextDelta(Arc<String>),           // Text content delta
+    ReasoningDelta(Arc<String>),        // Reasoning/thinking content
+    ToolCall(ToolCall),                 // Tool invocation
+    ToolResult {                        // Tool execution result
+        tool_call_id: Arc<String>,
+        content: Arc<String>,
+    },
+    Finish {                            // Response complete
+        stop_reason: Arc<String>,
+        usage: TokenUsage,
+    },
+    Error(Arc<String>),                 // Error occurred
 }
 ```
 
-### ToolCall Struct
-
-```rust
-pub struct ToolCall {
-    pub id: Arc<String>,
-    pub name: Arc<String>,
-    pub arguments: serde_json::Value,
-}
-```
-
-### ToolDefinition
-
-```rust
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
-
-impl ToolDefinition {
-    pub fn to_openai(&self) -> serde_json::Value { ... }
-    pub fn to_anthropic(&self) -> serde_json::Value { ... }
-}
-```
-
-### TokenUsage
-
-```rust
-pub struct TokenUsage {
-    pub input_tokens: usize,
-    pub output_tokens: usize,
-    pub total_tokens: usize,
-    pub reasoning_tokens: usize,
-}
-```
-
-### ModelInfo
+### ModelInfo (`src/provider/mod.rs:222-232`)
 
 ```rust
 pub struct ModelInfo {
@@ -188,20 +111,7 @@ pub struct ModelInfo {
 }
 ```
 
-### ResponseFormat
-
-```rust
-pub enum ResponseFormat {
-    JsonObject,
-    JsonSchema {
-        name: String,
-        schema: serde_json::Value,
-        strict: bool,
-    },
-}
-```
-
-### ModelVariant
+### ModelVariant (`src/provider/mod.rs:212-220`)
 
 ```rust
 pub struct ModelVariant {
@@ -213,9 +123,41 @@ pub struct ModelVariant {
 }
 ```
 
-## ProviderRegistry
+### TokenUsage (`src/provider/mod.rs:175-182`)
 
-Central registry for managing provider instances:
+```rust
+pub struct TokenUsage {
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub total_tokens: usize,
+    pub reasoning_tokens: usize,
+    pub cached_tokens: Option<usize>,
+}
+```
+
+### ToolDefinition (`src/provider/mod.rs:184-210`)
+
+```rust
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+```
+
+Methods for converting to provider-specific formats:
+- `to_openai()` - Converts to OpenAI function format
+- `to_anthropic()` - Converts to Anthropic tool format
+
+### EventStream Type
+
+```rust
+pub type EventStream = Pin<Box<dyn Stream<Item = Result<ChatEvent, ProviderError>> + Send>>;
+```
+
+## ProviderRegistry (`src/provider/mod.rs:234-263`)
+
+The registry manages all available providers:
 
 ```rust
 pub struct ProviderRegistry {
@@ -223,17 +165,301 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
+    pub fn new() -> Self;
     pub fn register(&mut self, provider: impl Provider + 'static);
     pub fn get(&self, id: &str) -> Option<&dyn Provider>;
     pub fn list(&self) -> Vec<&dyn Provider>;
 }
 ```
 
-## Key Components
+### Registration Functions
 
-### catalog.rs - Model Catalog
+#### `register_builtin()` (`src/provider/mod.rs:265-312`)
 
-Maintains registry of available models with TTL-based caching:
+Registers providers based on environment variables. Providers are only registered if the corresponding API key environment variable is set.
+
+| Environment Variable | Provider |
+|---------------------|----------|
+| `ANTHROPIC_API_KEY` | Anthropic |
+| `OPENAI_API_KEY` | OpenAI |
+| `GOOGLE_API_KEY` | Google |
+| `OPENROUTER_API_KEY` | OpenRouter |
+| `CODEGG_ZEN_API_KEY` | Codegg Zen |
+| `MISTRAL_API_KEY` | Mistral |
+| `GROQ_API_KEY` | Groq |
+| `DEEPINFRA_API_KEY` | DeepInfra |
+| `CEREBRAS_API_KEY` | Cerebras |
+| `COHERE_API_KEY` | Cohere |
+| `TOGETHERAI_API_KEY` | Together AI |
+| `PERPLEXITY_API_KEY` | Perplexity |
+| `XAI_API_KEY` | xAI |
+| `VENICE_API_KEY` | Venice |
+| `MINIMAX_API_KEY` | MiniMax |
+
+#### `register_builtin_with_config()` (`src/provider/mod.rs:376-523`)
+
+Registers providers from config file, with fallback to environment variables. This function:
+
+1. Checks config for provider settings (api_key, base_url)
+2. Falls back to environment variables if not in config
+3. Registers only `codegg_go` as auto-registered via `register_builtin()` (see AGENTS.md)
+4. Only calls `register_builtin()` if registry is empty after config-based registration
+
+Key distinction: Only `codegg_go` is auto-registered via `register_builtin()`. All others (SAP AI Core, Zenmux, Kilo, Vercel AI Gateway) are config-only, NOT auto-registered.
+
+## Provider Implementations
+
+### 1. Anthropic (`src/provider/anthropic.rs`)
+
+Direct implementation using Anthropic's Messages API.
+
+**Key features:**
+- Base URL: `https://api.anthropic.com`
+- API version header: `anthropic-version: 2023-06-01`
+- Uses SSE streaming with `stream: true`
+- Supports thinking budget via `thinking.budget_tokens`
+- Image support via base64 inline data
+- Custom SSE parsing via `parse_anthropic_buffer()`
+
+**Models (hardcoded):**
+- `claude-sonnet-4-20250514` (200K ctx, 64K output)
+- `claude-opus-4-20250514` (200K ctx, 32K output)
+- `claude-3-5-sonnet-20241022` (200K ctx, 8K output)
+- `claude-3-5-haiku-20241022` (200K ctx, 8K output)
+
+### 2. OpenAI (`src/provider/openai.rs`)
+
+Full implementation with `OpenAiConfig` for customization.
+
+**OpenAiConfig options:**
+- `api_key`, `base_url`
+- `provider_id`, `provider_name`
+- `requires_org_header` (default: false for generic, true for OpenAI brand)
+- `organization` (optional OpenAI org)
+- `omit_stream_options` (for some providers like Groq)
+- `tool_choice_auto` (enables `"tool_choice": "auto"`)
+
+**Factory methods:**
+- `OpenAiConfig::default_with_key(api_key)` - Generic OpenAI-compatible
+- `OpenAiConfig::openai(api_key)` - Official OpenAI (requires org header)
+- `OpenAiConfig::groq(api_key)` - Groq specific settings
+- `OpenAiConfig::xai(api_key)` - xAI specific settings
+- `OpenAiConfig::mistral(api_key)` - Mistral specific settings
+- `OpenAiConfig::cerebras(api_key)` - Cerebras specific settings
+
+### 3. Google (`src/provider/google.rs`)
+
+Uses Google's Generative Language API.
+
+**Key features:**
+- Uses `streamGenerateContent` with SSE
+- Custom message format with `contents` array
+- Tool definitions wrapped as `function_declarations` in `tools` array
+- Supports thinking/reasoning via `thought` flag in parts
+
+**Models:**
+- `gemini-2.5-pro` (1M ctx, 65K output)
+- `gemini-2.5-flash` (1M ctx, 65K output)
+- `gemini-2.0-flash` (1M ctx, 8K output)
+
+### 4. Azure (`src/provider/azure.rs`)
+
+Azure OpenAI Service implementation.
+
+**Key features:**
+- Endpoint format: `{endpoint}/openai/deployments/{model}/chat/completions?api-version=2024-10-21`
+- Uses `api-key` header instead of Authorization
+- Always includes `stream_options: { include_usage: true }`
+
+**Models:**
+- `gpt-4.1` (1M ctx, 32K output)
+- `gpt-4o` (128K ctx, 16K output)
+
+### 5. Vertex (`src/provider/vertex.rs`)
+
+Google Cloud Vertex AI implementation. Wraps `OpenAiCompatibleProvider`.
+
+**Key features:**
+- Base URL: `https://{project_id}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/us-central1/endpoints/openapi`
+- Uses Bearer token authentication
+
+### 6. Bedrock (`src/provider/bedrock.rs`)
+
+Amazon AWS Bedrock implementation.
+
+**Key features:**
+- Uses AWS Signature Version 4 signing
+- Endpoint: `https://bedrock-runtime.{region}.amazonaws.com/model/{model}/converse-stream`
+- Supports session tokens for temporary credentials
+- Custom SSE parsing for Bedrock's event stream format
+- Tool calls use `toolUse` format within message content
+
+**Models:**
+- `anthropic.claude-sonnet-4-20250514-v1:0` (200K ctx)
+- `anthropic.claude-3-5-sonnet-20241022-v2:0` (200K ctx)
+- `meta.llama3-1-405b-instruct-v1:0` (128K ctx)
+
+### 7. OpenRouter (`src/provider/openrouter.rs`)
+
+OpenRouter aggregator. Adds `HTTP-Referer` and `X-Title` headers.
+
+**Models:**
+- `anthropic/claude-sonnet-4` (200K ctx)
+- `openai/gpt-4.1` (1M ctx)
+- `google/gemini-2.5-pro` (1M ctx)
+
+### 8. OpenAI Compatible (`src/provider/openai_compatible.rs`)
+
+Generic OpenAI-compatible API provider. Used as base for many providers.
+
+**OpenAiCompatibleConfig:**
+```rust
+pub struct OpenAiCompatibleConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub auth_header: String,
+    pub extra_headers: Vec<(String, String)>,
+    pub models: Vec<ModelInfo>,
+    pub tool_choice_auto: bool,
+}
+```
+
+**Key features:**
+- Includes debug logging for request details (model, tool count, first tool arg shape)
+- 30-second timeout per chunk to prevent hanging
+- Dynamic model discovery via `/models` endpoint
+
+**Factory methods:**
+- `OpenAiCompatibleProvider::simple(id, name, api_key, base_url)` - Simple setup
+
+### 9. Copilot (`src/provider/copilot.rs`)
+
+GitHub Copilot implementation. Wraps `OpenAiCompatibleProvider`.
+
+**Key features:**
+- Base URL: `https://api.githubcopilot.com`
+- Adds `Editor-Version: codegg/1.0` header
+
+**Models:**
+- `copilot/gpt-4o` (128K ctx)
+- `copilot/o1` (200K ctx, 100K output)
+- `copilot/o3-mini` (200K ctx, 100K output)
+- `copilot/claude-sonnet-4` (200K ctx)
+
+### 10. Cloudflare (`src/provider/cloudflare.rs`)
+
+Cloudflare Workers AI. Wraps `OpenAiCompatibleProvider`.
+
+**Key features:**
+- Base URL: `https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1`
+
+**Models:**
+- `@cf/meta/llama-3.3-70b-instruct-fp8-fast` (128K ctx)
+- `@cf/meta/llama-3.1-8b-instruct` (128K ctx)
+- `@cf/qwen/qwen1.5-14b-chat-awq` (32K ctx)
+
+### 11. GitLab (`src/provider/gitlab.rs`)
+
+GitLab AI gateway. Wraps `OpenAiCompatibleProvider`.
+
+**Key features:**
+- Base URL: `https://gitlab.com/api/v4/ai/chat`
+- Supports custom base URL via `with_base_url()`
+
+**Models:**
+- `gitlab/claude-sonnet-4` (200K ctx)
+- `gitlab/gpt-4o` (128K ctx)
+
+### 12. Codegg Zen (`src/provider/codegg_zen.rs`)
+
+Codegg's own Zen service implementation. Not based on OpenAiCompatible.
+
+**Key features:**
+- Base URL: `https://opencode.ai/zen/v1`
+- Implements `discover_models()` to fetch from `/models` endpoint
+
+**Models (embedded):**
+- `big-pickle` (200K ctx, 64K output) - Free
+- `minimax-m2.5-free` (200K ctx, 64K output) - Free
+- `nemotron-3-super-free` (128K ctx, 32K output) - Free
+- `qwen3.6-plus-free` (128K ctx, 32K output) - Free
+
+### 13. Additional Providers (`src/provider/additional.rs`)
+
+Factory functions for additional OpenAI-compatible providers:
+
+| Function | ID | Name | Base URL |
+|----------|-----|------|----------|
+| `create_xai()` | xai | xAI | https://api.x.ai/v1 |
+| `create_mistral()` | mistral | Mistral | https://api.mistral.ai/v1 |
+| `create_groq()` | groq | Groq | https://api.groq.com/openai/v1 |
+| `create_deepinfra()` | deepinfra | DeepInfra | https://api.deepinfra.com/v1/openai |
+| `create_cerebras()` | cerebras | Cerebras | https://api.cerebras.ai/v1 |
+| `create_cohere()` | cohere | Cohere | https://api.cohere.ai/compatibility/v1 |
+| `create_together()` | together | Together AI | https://api.together.xyz/v1 |
+| `create_perplexity()` | perplexity | Perplexity | https://api.perplexity.ai |
+| `create_venice()` | venice | Venice | https://api.venice.ai/api/v1 |
+| `create_minimax()` | minimax | MiniMax | https://api.minimax.io/v1 |
+| `create_sap_ai_core()` | sap_ai_core | SAP AI Core | (config-only) |
+| `create_zenmux()` | zenmux | Zenmux | (config-only) |
+| `create_kilo()` | kilo | Kilo | (config-only) |
+| `create_vercel_ai_gateway()` | vercel_ai_gateway | Vercel AI Gateway | (config-only) |
+| `create_codegg_go()` | codegg_go | Codegg Go | https://opencode.ai/go/v1 |
+
+Note: `create_minimax()` includes embedded model definitions for MiniMax-M2.7 series.
+
+## FallbackProvider with Circuit Breaker
+
+### FallbackProvider (`src/provider/fallback.rs:8-31`)
+
+```rust
+pub struct FallbackProvider {
+    providers: Vec<Box<dyn Provider>>,
+    status_codes: Vec<u16>,
+    circuit_breakers: Vec<CircuitBreaker>,
+}
+```
+
+**Default retryable status codes:** `[429, 500, 502, 503, 504]`
+
+**Behavior:**
+1. Iterates through providers in order
+2. Checks circuit breaker before calling provider
+3. On success: records success in circuit breaker, returns stream
+4. On failure: records failure, checks if status code is retryable
+5. If retryable: waits with exponential backoff (1s, 2s, 4s... max 30s), tries next provider
+6. If not retryable: returns error immediately
+7. If all fail: returns last error
+
+### Circuit Breaker (`src/resilience/circuit.rs:44-186`)
+
+```rust
+pub struct CircuitBreaker {
+    inner: Arc<CircuitBreakerInner>,
+}
+
+pub enum CircuitState {
+    Closed,
+    Open,
+    HalfOpen,
+}
+```
+
+**Configuration options:**
+- `failure_threshold`: failures before opening (default: 3)
+- `timeout_secs`: seconds before trying half-open (default: 60)
+- `success_threshold`: successes in half-open to close (default: 2)
+- `max_half_open_duration`: max seconds in half-open (default: 30)
+
+**State transitions:**
+- Closed -> Open: after `failure_threshold` consecutive failures
+- Open -> HalfOpen: after `timeout_secs` elapsed
+- HalfOpen -> Closed: after `success_threshold` consecutive successes
+- HalfOpen -> Open: on any failure in half-open state
+
+## Model Discovery and Catalog
+
+### ModelCatalog (`src/provider/catalog.rs:5-109`)
 
 ```rust
 pub struct ModelCatalog {
@@ -243,46 +469,63 @@ pub struct ModelCatalog {
 }
 ```
 
-Note: The catalog seeds from embedded models (`models.rs`) and can fetch live model data from `https://models.dev/api/models`.
+**Features:**
+- Seeds from embedded models on creation
+- Can fetch live model list from `https://models.dev/api/models`
+- 1-hour cache TTL
+- `merge()` method to combine models from multiple sources
 
-### discovery.rs - Provider Discovery
+### Embedded Models (`src/provider/models.rs:3-46`)
 
-Auto-discovers providers from environment variables and database cache.
+```rust
+pub fn embedded_models() -> Vec<ModelInfo>
+```
 
-### cache.rs - Response Caching
+Returns free tier models:
+- Big Pickle (Free) - codegg_zen
+- MiniMax M2.5 Free - codegg_zen
+- Nemotron 3 Super Free - codegg_zen
+- Qwen3.6 Plus Free - codegg_zen
 
-LRU-like cache with TTL for provider responses:
+### ModelDiscoveryService (`src/provider/discovery.rs:9-265`)
+
+```rust
+pub struct ModelDiscoveryService {
+    models: Arc<RwLock<Vec<ModelInfoInternal>>>,
+    last_refresh: Arc<RwLock<Option<Instant>>>,
+    cache_path: PathBuf,
+    ttl: Duration,
+    pool: Option<SqlitePool>,
+}
+```
+
+**Features:**
+- Caches models in SQLite database (`cached_models` table)
+- TTL-based refresh (default: 1 hour)
+- Calls `provider.discover_models()` on each provider
+- Handles database persistence
+
+### ProviderCache (`src/provider/cache.rs:15-83`)
+
+Simple in-memory cache for provider responses.
 
 ```rust
 pub struct ProviderCache {
-    cache: HashMap<CacheKey, CacheEntry>,
+    cache: DashMap<CacheKey, CacheEntry>,
 }
 ```
 
-### fallback.rs - FallbackProvider
+- Key: `(provider, model, input_hash)`
+- TTL per entry
+- `clear()` method to remove expired entries
 
-Multi-provider fallback chain with circuit breaker integration:
+## SSE Parsing (`src/provider/sse_parser.rs`)
 
-```rust
-pub struct FallbackProvider {
-    providers: Vec<Box<dyn Provider>>,
-    status_codes: Vec<u16>,  // Default: [429, 500, 502, 503, 504]
-    circuit_breakers: Vec<CircuitBreaker>,
-}
-```
+Handles parsing of Server-Sent Events from various providers.
 
-### sse_parser.rs - SSE Parsing
-
-Unified SSE parser for OpenAI and Anthropic streaming formats:
+### SseParser (`src/provider/sse_parser.rs:16-382`)
 
 ```rust
-#[derive(Debug, Clone, Default)]
-struct OpenAiToolState {
-    id: String,
-    name: String,
-    args_buffer: String,
-}
-
 pub struct SseParser {
     buffer: String,
     delimiter: &'static str,
@@ -292,163 +535,76 @@ pub struct SseParser {
     args_buffer: String,
     openai_tool_states: HashMap<usize, OpenAiToolState>,
 }
-
-pub fn parse_openai_buffer(buffer: &mut String) -> Option<Result<ChatEvent, ProviderError>>;
-pub fn parse_anthropic_buffer(buffer: &mut String) -> Option<Result<ChatEvent, ProviderError>>;
-pub fn parse_anthropic_buffer_with_state(
-    buffer: &mut String,
-    current_tool: &mut Option<(String, String, String)>,
-    args_buffer: &mut String,
-) -> Option<Result<ChatEvent, ProviderError>>;
 ```
 
-## Registration Patterns
+**Key functions:**
+- `parse_openai_buffer()` - Parses OpenAI-compatible SSE
+- `parse_anthropic_buffer()` - Parses Anthropic SSE
+- Handles tool call streaming (accumulating arguments across chunks)
+- Supports reasoning content via `reasoning_content` or `reasoning` fields
+- Handles both `delta` and `message` tool call formats
 
-### register_builtin_with_config
+### State Preservation
 
-Primary entry point. Registers all providers from config with environment variable fallback:
+The parser preserves state across chunks via special markers in the buffer:
+- `\n__TC__:{json}` - Queued tool calls
+- `\n__OAI_STATE__:{json}` - OpenAI tool state for multi-part tool calls
+
+## Text Tool Parser (`src/provider/text_tool_parser.rs`)
+
+Parses plain text responses as potential tool calls via regex patterns.
 
 ```rust
-pub fn register_builtin_with_config(registry: &mut ProviderRegistry, config: &Config);
+pub fn parse_text_as_tool_calls(text: &str) -> Option<Vec<ToolCall>>
 ```
 
-Supports providers defined in config file with optional env var fallback for API keys.
+**Patterns:**
+1. `invoke("tool_name", {...})` - Direct invocation format
+2. ` ```tool_name\n{...}\n``` ` - Code block format
 
-### register_builtin
+## Request/Response Flow
 
-Registers providers from environment variables only (no config required):
+### Typical Provider Flow
 
-```rust
-pub fn register_builtin(registry: &mut ProviderRegistry);
-```
+1. **Build Request Body**
+   - Convert `ChatRequest` to provider-specific JSON format
+   - Handle system messages, user messages, assistant messages, tool messages
+   - Convert `ToolDefinition` to provider-specific format
+   - Add generation config (temperature, top_p, max_tokens)
 
-Providers registered: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, CODEGG_ZEN_API_KEY, MISTRAL_API_KEY, GROQ_API_KEY, DEEPINFRA_API_KEY, CEREBRAS_API_KEY, COHERE_API_KEY, TOGETHERAI_API_KEY, PERPLEXITY_API_KEY, XAI_API_KEY, VENICE_API_KEY, MINIMAX_API_KEY
+2. **Send Request**
+   - POST to provider endpoint
+   - Include auth headers (API key, Bearer token, etc.)
+   - Set content-type to application/json
 
-### register_config_provider
+3. **Handle Response**
+   - Check status code (429 = RateLimit, other failures = ProviderError::api)
+   - Stream response body as SSE
+   - Parse SSE events into `ChatEvent` stream
 
-For providers that read API key and optional base URL from config:
+4. **Stream Events**
+   - Return `EventStream` (async stream of `Result<ChatEvent, ProviderError>`)
+   - Events include: `TextDelta`, `ReasoningDelta`, `ToolCall`, `ToolResult`, `Finish`, `Error`
 
-```rust
-fn register_config_provider<F>(
-    registry: &mut ProviderRegistry,
-    providers: Option<&HashMap<String, ProviderConfig>>,
-    disabled: Option<&Vec<String>>,
-    name: &str,
-    factory: F,
-) where
-    F: FnOnce(String, Option<String>) -> Box<dyn Provider>,
-```
+### Message Format Mapping
 
-### register_env_fallback_provider
+| Message Type | OpenAI | Anthropic | Google | Bedrock |
+|-------------|--------|-----------|--------|---------|
+| System | `{"role": "system", "content": ...}` | `{"type": "text", "text": ...}` in system array | Triggers initial user/model exchange | `{"text": ...}` in system array |
+| User | `{"role": "user", "content": [...]}` | `{"role": "user", "content": [...]}` | `{"role": "user", "parts": [...]}` | `{"role": "user", "content": [...]}` |
+| Assistant | `{"role": "assistant", "content": ..., "tool_calls": [...]}` | `{"role": "assistant", "content": [...]}` with `tool_use` parts | `{"role": "model", "parts": [...]}` with `functionCall` | `{"role": "assistant", "content": [...]}` with `toolUse` parts |
+| Tool | `{"role": "tool", "tool_call_id": ..., "content": ...}` | `{"role": "user", "content": [{"type": "tool_result", ...}]}` | `{"role": "function", "parts": [{"functionResponse": ...}]}` | `{"role": "user", "content": [{"toolResult": ...}]}` |
 
-For providers that fall back to environment variables when no config API key is provided:
+### Tool Definition Mapping
 
-```rust
-fn register_env_fallback_provider<F>(
-    registry: &mut ProviderRegistry,
-    providers: Option<&HashMap<String, ProviderConfig>>,
-    disabled: Option<&Vec<String>>,
-    name: &str,
-    env_var: &str,
-    factory: F,
-) where
-    F: FnOnce(String) -> Box<dyn Provider>,
-```
+| Provider | Format |
+|----------|--------|
+| OpenAI | `{"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}` |
+| Anthropic | `{"name": ..., "description": ..., "input_schema": ...}` |
+| Google | `{"name": ..., "description": ..., "parameters": ...}` wrapped in `function_declarations` |
+| Bedrock | `{"toolSpec": {"name": ..., "description": ..., "inputSchema": {"json": ...}}}` |
 
-## ProviderError
-
-```rust
-pub enum ProviderError {
-    NotFound(String),
-    Api { code: String, message: String, url: String },
-    Stream(String),
-    RateLimit,
-    Auth(String),
-    ModelNotFound(String),
-    Timeout(String),
-    CircuitOpen(String),
-}
-
-impl ProviderError {
-    pub fn api(code: impl Into<String>, message: impl Into<String>) -> Self;
-    pub fn api_with_url(code: impl Into<String>, message: impl Into<String>, url: impl Into<String>) -> Self;
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            ProviderError::RateLimit
-                | ProviderError::Auth(_)
-                | ProviderError::Timeout(_)
-                | ProviderError::Stream(_)
-                | ProviderError::CircuitOpen(_)
-        )
-    }
-}
-```
-
-## Interactions
-
-```
-AgentLoop
-├── ProviderRegistry::get(provider_id)
-│   └── Provider::stream(request)
-│       └── HTTP request to LLM API
-├── FallbackProvider
-│   ├── CircuitBreaker::is_available()
-│   └── CircuitBreaker::record_success/failure
-└── Provider events → ChatEvent stream
-```
-
-## Configuration
-
-Related config fields:
-
-```toml
-[provider]
-default = "anthropic"
-
-[providers.anthropic]
-api_key = "sk-..."
-base_url = "https://api.anthropic.com"  # optional override
-
-[providers.openai]
-api_key = "sk-..."
-
-[providers.openrouter]
-api_key = "sk-..."
-base_url = "https://openrouter.ai/api/v1"  # required for OpenRouter
-```
-
-## Implementation Notes
-
-### Arc<String> Usage
-
-All content fields in `Message`, `ChatEvent`, `ToolCall` use `Arc<String>` for efficiency:
-
-```rust
-// When creating these types, use .into()
-Message::System { content: "hello".into() }
-ChatEvent::TextDelta("hello".into())
-ToolCall { id: id.into(), name: name.into(), arguments }
-```
-
-### Buffer Size Limits
-
-All streaming implementations must enforce buffer limits to prevent unbounded memory growth:
-
-```rust
-const MAX_BUFFER_SIZE: usize = 1024 * 1024;  // 1MB limit
-
-if buffer.len() > MAX_BUFFER_SIZE {
-    return Some((
-        Err(ProviderError::Stream("response buffer exceeded limit".to_string())),
-        (stream, buffer),
-    ));
-}
-```
-
-### HTTP Client Configuration
-
-All providers use a shared HTTP client configuration:
+## HTTP Client Configuration (`src/provider/mod.rs:46-56`)
 
 ```rust
 pub fn create_http_client() -> reqwest::Client {
@@ -459,15 +615,72 @@ pub fn create_http_client() -> reqwest::Client {
         .pool_idle_timeout(Duration::from_secs(30))
         .tcp_keepalive(Duration::from_secs(30))
         .build()
-        .inspect_err(|e| tracing::warn!("HTTP client builder failed, using default: {}", e))
-        .unwrap_or_default()
 }
 ```
 
-Note: Uses `.inspect_err()` for warning logging and `.unwrap_or_default()` for graceful fallback on build failure.
+## Provider Auto-Registration Summary
 
-## See Also
+### Auto-Registered (via `register_builtin()`)
+Only **`codegg_go`** is auto-registered. All others require either:
+- Environment variable presence
+- Config file entry
 
-- [agent.md](agent.md) - Uses providers for LLM calls
-- [resilience.md](resilience.md) - Circuit breaker pattern
-- [error.md](error.md) - ProviderError and error handling
+### Config-Only Providers (NOT auto-registered)
+These require explicit config:
+- SAP AI Core
+- Zenmux
+- Kilo
+- Vercel AI Gateway
+
+### Environment Variable Fallback Providers
+The following can be registered via environment variable OR config:
+- anthropic, openai, google, openrouter, codegg_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax
+
+## Error Handling
+
+### ProviderError (`src/error/mod.rs` - ProviderError variant)
+
+Key methods:
+- `is_retryable()` - Determines if error should trigger fallback/retry
+- Various variants: Api, RateLimit, Stream, etc.
+
+### Retry Logic in FallbackProvider
+
+1. Check circuit breaker status
+2. On error, extract status code
+3. If status code in retryable set (default: 429, 500-504), try next provider
+4. Exponential backoff: `2^i` seconds (1s, 2s, 4s, 8s... max 30s)
+5. Return last error if all providers exhausted
+
+## Related Architecture Documents
+
+- `architecture/core.md` - Core facade and transport adapters
+- `architecture/skills.md` - Runtime skill loader
+- `architecture/resilience.md` - Circuit breaker pattern details
+
+## Key Files Reference
+
+| File | Purpose |
+|------|---------|
+| `src/provider/mod.rs` | Provider trait, registry, core types, registration |
+| `src/provider/anthropic.rs` | Anthropic API implementation |
+| `src/provider/openai.rs` | OpenAI API implementation |
+| `src/provider/google.rs` | Google Generative AI implementation |
+| `src/provider/azure.rs` | Azure OpenAI implementation |
+| `src/provider/vertex.rs` | Google Vertex AI (wraps OpenAiCompatible) |
+| `src/provider/bedrock.rs` | AWS Bedrock with SigV4 signing |
+| `src/provider/openrouter.rs` | OpenRouter aggregator |
+| `src/provider/openai_compatible.rs` | Generic OpenAI-compatible provider |
+| `src/provider/copilot.rs` | GitHub Copilot |
+| `src/provider/cloudflare.rs` | Cloudflare Workers AI |
+| `src/provider/gitlab.rs` | GitLab AI |
+| `src/provider/codegg_zen.rs` | Codegg Zen service |
+| `src/provider/additional.rs` | Additional provider factories |
+| `src/provider/fallback.rs` | Fallback provider with circuit breaker |
+| `src/provider/catalog.rs` | Model catalog with live fetch |
+| `src/provider/discovery.rs` | Model discovery service with DB cache |
+| `src/provider/models.rs` | Embedded model definitions |
+| `src/provider/sse_parser.rs` | SSE parsing for streaming responses |
+| `src/provider/text_tool_parser.rs` | Text-based tool call parsing |
+| `src/provider/cache.rs` | Provider response cache |
+| `src/resilience/circuit.rs` | Circuit breaker implementation |
