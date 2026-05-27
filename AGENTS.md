@@ -112,6 +112,10 @@ These items are important for future agents to know when working with the codeba
 | **Histogram unbounded memory** | `src/util/metrics.rs:122-124` | ✅ FIXED |
 | **Worktree symlink detection** | `src/worktree/mod.rs:69-88` | Known issue |
 | **OAuth replay protection TOCTOU** | `src/mcp/auth.rs:318-332` | Known issue |
+| **OAuthManager sync error ignore** | `src/mcp/auth.rs:119` | `let _ = load_tokens_sync()` silently ignores errors |
+| **MCP connect_sse() dead code** | `src/mcp/remote.rs:698-740` | Never called externally |
+| **MCP run_socket() dead code** | `src/mcp/ide_server.rs:121-144` | Never called |
+| **MCP Debug command stub** | `src/mcp/cli.rs:309-318` | Only prints, doesn't test connections |
 
 ### Key Lessons from Review Sessions
 
@@ -162,6 +166,21 @@ These items were verified during review sessions:
 | Snapshot hash | Uses MD5 in `collect_files_sync` (line 431), SHA256 elsewhere | `src/snapshot/mod.rs:431` |
 | Git module | `src/git/mod.rs` - GitSession, GitStatus, git info in prompts | `src/git/mod.rs` |
 | Pricing service | `src/util/pricing.rs` - ModelPricing, calculate_cost | `src/util/pricing.rs` |
+| Auto-compact wrapper | Both `auto_compact()` and `auto_compact_sync()` exist | `src/agent/compaction.rs:550,594` |
+| ImageTool | IS registered in ToolRegistry::with_defaults() | `src/tool/mod.rs:102` |
+| Dialog::Stats | EXISTS in Dialog enum | `src/tui/app/types.rs:21` |
+
+### New Findings (2026-05-27 Architecture Review)
+
+These items were discovered during the 2026-05-27 architecture review and are NOT YET reflected in documentation:
+
+| Item | Status | Location | Notes |
+|------|--------|----------|-------|
+| MCP `connect_sse()` | Dead code | `src/mcp/remote.rs:698-740` | Defined but never called externally |
+| MCP `run_socket()` | Dead code | `src/mcp/ide_server.rs:121-144` | Unix socket server, never called |
+| MCP Debug command | Stub only | `src/mcp/cli.rs:309-318` | Only prints args, does NOT test connections |
+| OAuthManager sync methods | Silent error ignore | `src/mcp/auth.rs:119` | `let _ = load_tokens_sync()` ignores errors |
+| load_tokens_sync() usage | Actually used | `src/mcp/auth.rs:119` | Called in OAuthManager::new() but errors ignored |
 
 ### Security Notes
 
