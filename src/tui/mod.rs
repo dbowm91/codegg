@@ -1828,7 +1828,11 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                 match event {
                     AppEvent::TextDelta { delta, session_id, .. } => {
                         debug_log!("Event loop: TextDelta received session_id={}, delta_len={}", session_id, delta.len());
-                        app.messages_state.messages.add_assistant_text(delta.to_string());
+                        let delta_str = delta.to_string();
+                        if delta_str.contains('\n') {
+                            app.messages_state.messages.finalize_streaming();
+                        }
+                        app.messages_state.messages.add_streaming_token(&delta_str);
                         if matches!(app.session_state.session_status, SessionStatus::Working) {
                             app.footer.set_thinking(true, Some("Thinking...".to_string()));
                         }
@@ -1909,6 +1913,8 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                     }
                                 });
                             }
+
+                            app.messages_state.messages.finalize_streaming();
                         } else if matches!(app.session_state.session_status, SessionStatus::Working) {
                             app.footer.set_thinking(true, Some("Thinking...".to_string()));
                         }
