@@ -1,6 +1,6 @@
 # Implementation Plan
 
-**Status**: ACTIVE - Wave 1 complete, Waves 2-5 remaining items
+**Status**: ACTIVE - Detailed implementation steps added
 **Last Updated**: 2026-05-27
 
 ---
@@ -11,26 +11,47 @@
 - **Files**: `Cargo.toml`, `src/tui/components/image.rs`, `src/tui/components/image_preview.rs` (new)
 - **Status**: NOT IMPLEMENTED - ImageViewer methods are stubs
 - **Prerequisites**: Optional `image` crate with `png`, `jpeg`, `gif`, `webp` features
-- **Implementation**:
-  1. If `image` feature disabled, ImageViewer shows placeholder text explaining images require full features
-  2. If enabled:
-     - Create `image_preview.rs` widget that calls `image::open()` then renders via `ratatui::widgets::Widget`
-     - Handle image URLs (download via `reqwest`), base64 (decode), or local paths
-     - Support inline preview in message thread with aspect-ratio preservation
-     - Add mouse scroll zoom in preview mode
-- **Parallel**: Can proceed independently
+- **Implementation Steps**:
+  1. **Implement ImageViewer methods** (`src/tui/components/image.rs:21-39`):
+     - `load_from_data_uri()`: Parse data URI with `parse_data_uri()` (already exists at line 72), load via `image::load_from_memory()`, create `StatefulProtocol` state
+     - `load_from_path()`: Use `image::open()` then wrap in `StatefulProtocol`
+     - `zoom_in()/zoom_out()`: Call `state.resize()` on the protocol
+     - `is_visible()`: Return state.borrow().is_some()
+  2. **Implement Widget render** (`src/tui/components/image.rs:68-70`):
+     - Delegate to `state.render(area, buf)` if state exists
+  3. **Add MsgPart::Image variant** (`src/tui/components/messages.rs:40-58`):
+     - Add `Image { data_uri, alt_text, width, height }` to MsgPart enum
+  4. **Create `image_preview.rs`** widget for full-featured preview with zoom/scroll
+  5. **Handle image URLs**: Download via `reqwest`, convert to data URI, then load
+- **Dependencies**: `ratatui-image` v10 with `crossterm`, `image-defaults` features; `image` crate with `png,jpeg,gif,webp`
+- **Terminal Protocols**: kitty, iTerm2, sixel (see `detect_terminal_protocol()` at line 126)
 - **Test**: `cargo test --features image tui`
 
 ### AGENT-5: Image Generation
 - **Files**: `src/tool/image.rs` (new)
 - **Status**: NOT IMPLEMENTED
-- **Implementation**:
-  1. Create `ImageTool` struct implementing `Tool` trait
-  2. Accept prompt (required), model (default "dall-e-3"), size (default 1024x1024), quality (default "standard")
-  3. Wire to OpenAI `/v1/images/generations` endpoint (GPT Image API)
-  4. Return URL or base64 data depending on response format
-  5. Add `image` tool to `ToolRegistry::with_defaults()`
-- **Parallel**: Independent of TUI-3 but shares conceptually
+- **Implementation Steps**:
+  1. **Create `src/tool/image.rs`** with `ImageTool` struct:
+     ```rust
+     pub struct ImageTool {
+         client: Client,
+         api_key: Option<String>,
+         base_url: String,
+     }
+     ```
+  2. **Implement Tool trait** (`src/tool/mod.rs:54-60`):
+     - `name()`: "image"
+     - `description()`: "Generate images using OpenAI's DALL-E"
+     - `parameters()`: prompt (required), model (default "dall-e-3"), size, quality, response_format, n
+  3. **Execute API call**:
+     - POST to `https://api.openai.com/v1/images/generations`
+     - Include Bearer token auth with `OPENAI_API_KEY`
+     - Handle SSRF protection with `validate_host_ip()`
+  4. **Response handling**: Parse `ResponseData { data: [ImageData { url, b64_json, revised_prompt }] }`
+  5. **Register in `ToolRegistry::with_defaults()`** (`src/tool/mod.rs:119`): `registry.register(crate::tool::image::ImageTool::new())`
+  6. **Add `pub mod image;`** to `src/tool/mod.rs`
+- **Reference patterns**: `src/tool/webfetch.rs` (HTTP client), `src/tool/websearch.rs` (API key from env, SSRF)
+- **Security**: Must validate URLs with `validate_host_ip()` before making requests
 - **Test**: `cargo test tool`
 
 ---
@@ -40,53 +61,182 @@
 ### AGENT-6: GitHub Integration
 - **Files**: `src/command/github/`, `src/mcp/mod.rs`
 - **Status**: NOT IMPLEMENTED
-- **Implementation**:
-  1. Create GitHub MCP server configuration in `src/config/schema.rs`
-  2. Add `/pr` slash command: list PRs, view PR diff, post comments
-  3. Add `/issue` slash command: list issues, create issue, view issue details
-  4. Wire MCP connection to GitHub MCP server (mcp.github.com or self-hosted)
-  5. Handle OAuth for GitHub API if required
-- **Parallel**: Can proceed independently but MCP must be working first
+- **Implementation Steps**:
+  1. **No schema changes needed** - MCP config (`src/config/schema.rs:304-343`) already supports remote servers with OAuth
+  2. **Add config example** for GitHub MCP in docs or sample config:
+     ```yaml
+     mcp:
+       github:
+         enabled: true
+         type: remote
+         url: https://mcp.github.com
+         oauth:
+           client_id: YOUR_CLIENT_ID
+           client_secret: YOUR_CLIENT_SECRET
+           scope: repo workflow
+     ```
+  3. **Add `/pr` and `/issue` commands** in `src/tui/command.rs:78-166`:
+     ```rust
+     Command::new("/pr", CommandCategory::Agent, None)
+         .with_description("GitHub pull requests");
+     Command::new("/issue", CommandCategory::Agent, None)
+         .with_aliases(&["/bugs", "/features"])
+         .with_description("GitHub issues");
+     ```
+  4. **Add command handlers** in `src/tui/app/mod.rs:2812-2848`:
+     - `/pr`: Open PR dialog or trigger MCP tool call template
+     - `/issue`: Open issue dialog or trigger MCP tool call template
+  5. **MCP tools become available as**: `mcp__github__create_pull_request`, `mcp__github__list_pull_requests`, `mcp__github__create_issue`, `mcp__github__list_issues`
+  6. **OAuth flow**: Uses existing `McpOAuthConfig` in schema; `src/mcp/auth.rs` handles PKCE flow with localhost callback
+- **Endpoint**: `https://mcp.github.com` (official GitHub MCP server)
+- **Alternative**: Use template-based commands without custom handlers: `Command::new("/pr", ...).with_template("Use GitHub MCP to {{args}}")`
 - **Test**: `cargo test command`
 
 ### EXEC-2: Session Analytics & Cost Tracking
-- **Files**: `src/session/mod.rs`, `src/config/schema.rs`, `src/command/exec.rs`
+- **Files**: `src/session/mod.rs`, `src/session/schema.rs`, `src/util/pricing.rs` (new)
 - **Status**: NOT IMPLEMENTED
-- **Implementation**:
-  1. Add DB migrations for `usage` table: session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
-  2. Modify `AgentLoop::process_finish()` to emit usage to DB
-  3. Refactor pricing to service in `src/util/pricing.rs` (hardcoded rates per provider)
-  4. Add `/stats` command showing session costs, token counts, provider breakdown
-  5. Add `/usage` command for detailed usage over time
-- **Parallel**: Can proceed independently
+- **Implementation Steps**:
+  1. **Add DB migration v15** (`src/session/schema.rs:64-66`):
+     - Add to `migrate()`: `if current_version < 15 { migrate_and_record(pool, 15).await?; }`
+     - Add to match: `15 => migrate_v15(pool).await?`
+     - Create `usage` table: `id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp`
+     - Add indexes on `session_id` and `timestamp`
+  2. **Create `src/util/pricing.rs`** with `PricingService`:
+     - `struct ModelPricing { input_per_m: f64, output_per_m: f64 }`
+     - Hardcoded rates for OpenAI, Anthropic, Google, MiniMax
+     - `calculate_cost(provider, model, input, output, cached)` method
+     - Support cached token discounts (billable_input = max(0, input - cached))
+  3. **Add `UsageRecord` to `src/session/models.rs`**:
+     ```rust
+     pub struct UsageRecord {
+         pub id: String, pub session_id: String, pub provider: String,
+         pub model: String, pub input_tokens: i64, pub output_tokens: i64,
+         pub cached_tokens: i64, pub cost_usd: f64, pub timestamp: i64,
+     }
+     ```
+  4. **Add `UsageStore` to `src/session/store.rs`** with `insert()`, `get_session_usage()`, `get_all_usage()`
+  5. **Modify `AgentLoop::stream_once()`** (`src/agent/loop.rs:885-892`):
+     - After `ChatEvent::Finish` publishes `AppEvent::AgentFinished`, also insert into usage DB
+     - `AgentLoop` has `pool: Option<SqlitePool>` but doesn't use it - add `usage_store: Option<UsageStore>`
+  6. **Add `/stats` command** (`src/tui/command.rs:141`):
+     - New `Dialog::Stats` variant in `src/tui/app/types.rs`
+     - Handler shows session costs, token counts, provider breakdown
+  7. **Enhance `/usage`** - Currently shows rate limits; add historical DB data
+- **Note**: Plan mentions `AgentLoop::process_finish()` but actual finish handling is in `stream_once()` at line 885
 - **Test**: `cargo test session`
 
 ---
 
-## Wave 4: Large Refactors (DEFERRED - 12-16+ hours each)
+## Wave 6: Accessibility (DEFERRED - Complex refactor)
+
+### TUI-5: Accessibility Improvements
+- **Files**: `src/util/a11y.rs` (new), `src/tui/components/component/`, `src/tui/app/mod.rs`
+- **Status**: DEFERRED - Requires significant FocusManager architectural change
+- **Current Architecture Issues**:
+  - `FocusManager` (`src/tui/components/component/focus.rs:14-108`) is purely **modal** - only top component receives key events
+  - Tab key is consumed/ignored in most dialog contexts (`src/tui/app/mod.rs:2075-2088`)
+  - Tab key maps to `InputAction::SwitchAgent` (line 219) and `InputAction::TogglePermissionMode` (line 221) but events don't bubble
+- **Implementation Steps**:
+  1. **Create `src/util/a11y.rs`**:
+     ```rust
+     pub struct A11yFocusManager {
+         elements: Vec<FocusableElement>,
+         current_index: usize,
+     }
+     pub struct FocusableElement {
+         pub id: String,
+         pub component_type: String,
+         pub bounds: Rect,
+     }
+     ```
+  2. **Add focusable element methods to `Component` trait** (`src/tui/components/component.rs:82-103`):
+     ```rust
+     fn focusable_elements(&self) -> Vec<FocusableElement> { vec![] }
+     fn set_focus(&mut self, _element_id: &str) {}
+     ```
+  3. **Modify `FocusManager`** to support sequential Tab navigation:
+     - Add `a11y_manager: A11yFocusManager` field
+     - Add `tab_next(&mut self) -> Option<TuiMsg>` and `tab_prev()`
+  4. **Replace Tab handling in `handle_dialog_key()`** (`src/tui/app/mod.rs:2064`):
+     - Before current dialog-specific handling, check for global Tab
+     - Delegate to `focus_manager.tab_next()` / `tab_prev()`
+  5. **Implement `focusable_elements()` in each dialog** - each dialog reports its focusable children
+  6. **Add visual focus indicators** - each component renders focus rings when focused
+- **Architectural Challenges**:
+  - Modal (dialogs) vs Sequential (Tab) navigation conflict
+  - Focus boundaries: Tab cycles within dialog or across entire UI?
+  - Nested component focus (dialogs containing sub-components)
+  - Screen reader support for terminal
+- **Note**: This is a complex refactor that would benefit from a design doc first
+- **Test**: `cargo test tui -- input`
 
 ### LARGE-1: Virtual Scrolling for Messages
-- **Files**: `src/tui/components/messages.rs`
-- **Status**: DEFERRED
-- **Implementation**:
-  1. Pre-calculate line heights using `measure_text()` returns
-  2. Binary search for visible range given scroll position
-  3. Cache rendered lines in `HashMap<usize, Vec<Line>>`
-  4. Replace current scroll implementation with virtual list widget
-  5. Handle dynamic content changes (insert mid-list)
-- **Notes**: Performance-critical for sessions with 10k+ messages
-- **Parallel**: Standalone, high-risk refactor
+- **Files**: `src/tui/components/messages.rs`, `src/tui/components/messages/layout.rs` (new)
+- **Status**: DEFERRED - High risk refactor
+- **Current Issues**:
+  - Linear scan O(n) for visible range (lines 934-947)
+  - `total_rendered_lines()` recalculates all heights every scroll
+  - No caching of rendered lines - full re-render on every frame
+  - `estimate_msg_lines()` (lines 159-200) called O(n) times per render
+- **Implementation Steps**:
+  1. **Create `src/tui/components/messages/layout.rs`**:
+     - `struct MessageLayout { msg_idx, total_lines, part_offsets, rendered_cache }`
+     - `struct MessageLayoutCache` with `get_or_compute(msg_idx, width) -> Vec<Line>`
+     - `fn binary_search_visible(cumulative: &[usize], scroll: usize, visible: usize) -> Range<usize>`
+     - `fn invalidate_message(msg_idx)` to clear cache
+  2. **Add cache fields to `MessagesWidget`**:
+     ```rust
+     layout_cache: RefCell<Option<MessageLayoutCache>>,
+     last_width: Cell<Option<u16>>,
+     height_cache: RefCell<HashMap<usize, usize>>,
+     ```
+  3. **Modify `render()` method** (lines 900-1267) to use binary search instead of linear scan
+  4. **Add invalidation calls** in:
+     - `add_user_message()` (line 242)
+     - `add_assistant_text()` (line 256)
+     - `update_tool_call()` (line 417)
+     - `toggle_reasoning()` (line 461)
+     - `toggle_selected_tool_call_expanded()` (line 572)
+  5. **Cache markdown rendering** - `render_markdown()` (lines 1270-1378) is expensive
+  6. **Handle terminal resize** - cache invalidation on width change
+- **Cache key**: `(msg_idx, width, expansion_state_hash)` to handle dynamic content
+- **Consider LRU eviction** for sessions with 10k+ messages
+- **Risk**: HIGH - Scroll behavior deeply integrated with selection, search highlighting, streaming state
+- **Test Strategy**: Create test with 1000+ messages, verify 60fps scroll performance
+- **Alternative**: Feature flag `virtual-scroll` for incremental rollout, maintain current impl as fallback
 
 ### LARGE-2: String Interning System
-- **Files**: `src/provider/mod.rs`, `src/agent/`, `src/tool/`
-- **Status**: DEFERRED
-- **Implementation**:
-  1. Create `StringInterner` using `DashMap<String, u64>` with reverse `Vec<String>`
-  2. Apply to repeated strings: system prompts, tool definitions, common errors
-  3. Add `pub fn intern(&self, s: &str) -> u64` and `pub fn get(&self, id: u64) -> &str`
-  4. Profile first to identify high-frequency string allocations
-- **Notes**: Reduces memory allocations for repeated constant strings
-- **Parallel**: Standalone, architectural change
+- **Files**: `src/util/interner.rs` (new), `src/provider/mod.rs`, `src/agent/`, `src/tool/`
+- **Status**: DEFERRED - High risk architectural change
+- **Current State**: `Message` already uses `Arc<String>` for content, but `ToolDefinition` uses owned `String`
+- **Implementation Steps**:
+  1. **Create `src/util/interner.rs`**:
+     ```rust
+     pub struct StringInterner {
+         forward: DashMap<String, u64>,
+         backward: Vec<String>,
+     }
+     impl StringInterner {
+         pub fn intern(&mut self, s: &str) -> u64 { ... }
+         pub fn get(&self, id: u64) -> Option<&str> { ... }
+     }
+     ```
+  2. **Verify DashMap dependency** - `src/plugin/loader.rs` already uses it; check Cargo.toml
+  3. **Apply to ToolDefinition first** (`src/tool/mod.rs`):
+     - Modify `ToolDefinition` to use `Arc<String>` for name, description
+     - Add interning in `tool/mod.rs:definitions()` method
+  4. **Profile first** - Add metrics to identify highest frequency allocations:
+     - Track `system_prompt`, `tool_definition`, `tool_name` intern calls
+     - Measure hit rate vs misses
+  5. **Apply to system prompts** (`src/agent/prompt.rs`):
+     - Static `SYSTEM_PROMPT_INTERNER: LazyLock<StringInterner>`
+     - Intern repeated prompt segments
+  6. **Add metrics** via existing `src/util/metrics.rs` system
+  7. **Handle cache invalidation** - interner must not grow unbounded
+- **Key Challenge**: Global state lifetime management; DashMap overhead (~48 bytes/entry)
+- **Expected Benefit**: Reduced clone overhead, allocation pressure, GC pauses for 26 tools x 2-3 strings per turn
+- **Risk**: HIGH - Lifetime complexity, static initialization order, memory leaks if unbounded
+- **Test**: Run session with 100+ turns, verify memory reduction via metrics
 
 ---
 
@@ -94,14 +244,52 @@
 
 ### GIT-1: Enhanced Git Integration
 - **Files**: `src/git/mod.rs` (new)
-- **Status**: NOT IMPLEMENTED
-- **Implementation**:
-  1. Create `src/git/mod.rs` with `GitSession` struct
-  2. Inject branch name and git status into system prompt
-  3. Implement `/checkpoint` command - create `@checkpoint/2024-01-15-10:30` references
-  4. Auto-worktree per session: detect git worktrees, create/cleanup per session id
-  5. Integrate with existing `worktree/` module
-- **Parallel**: Independent but builds on worktree knowledge
+- **Status**: NOT IMPLEMENTED - No `src/git/` module exists yet
+- **Existing Infrastructure**:
+  - `src/worktree/mod.rs`: `create_worktree`, `list_worktrees`, `remove_worktree`, `find_git_root`
+  - `src/tool/git.rs`: GitTool for arbitrary git subcommands
+  - `src/tui/app/mod.rs:5965-5993`: `get_git_branch()` and `check_git_dirty()`
+  - `src/session/checkpoint.rs`: Checkpoint struct already exists
+  - `src/agent/prompt.rs:100-143`: `assemble_system_prompt()` - prompt building
+- **Implementation Steps**:
+  1. **Create `src/git/mod.rs`** with `GitSession` and `GitStatus`:
+     ```rust
+     pub struct GitSession {
+         pub session_id: String,
+         pub worktree_path: Option<PathBuf>,
+         pub git_root: PathBuf,
+         pub status: GitStatus,
+         pub auto_worktree: bool,
+     }
+     pub struct GitStatus {
+         pub branch: String,
+         pub is_dirty: bool,
+         pub commit_hash: Option<String>,
+         pub stash_count: usize,
+     }
+     ```
+  2. **Add `git_session: Option<GitSession>` to `AgentLoop`** (`src/agent/loop.rs:600-670`)
+  3. **Initialize git session in `AgentLoop::new()`** (around line 632) using `find_git_root()`
+  4. **Inject git status into system prompt** (`src/agent/prompt.rs:100-143`):
+     - Add `git_context: Option<&str>` parameter to `assemble_system_prompt()`
+     - Pass git info as first system message: `format!("[Git Info]\nBranch: {}\nStatus: {}\n...", status.branch, status_str)`
+  5. **Add `/checkpoint` command** (`src/tui/command.rs:165`):
+     - Create checkpoint using existing `Checkpoint` struct from `src/session/checkpoint.rs`
+     - Store with label and timestamp
+  6. **Auto-worktree per session**:
+     - In `CoreRequest::SessionCreate` handler (`src/core/mod.rs:215-241`): create worktree `{git_root}.worktrees/{session_id}/`
+     - On session delete: cleanup worktree via `git_session.remove_worktree()`
+  7. **Add `worktree_path` to Session model** (`src/session/models.rs:6-28`) and migration
+  8. **Export `pub mod git;`** in `src/lib.rs`
+- **Prompt Injection Format**:
+  ```
+  [Git Info]
+  Branch: feature/my-branch
+  Status: dirty (uncommitted changes)
+  Commit: a1b2c3d4
+  Stash: 2 entries
+  Worktree: /path/to/.git/worktrees/session-id/
+  ```
 - **Test**: `cargo test worktree`
 
 ---
@@ -224,6 +412,7 @@ cargo test --package codegg -- <module>_test_pattern
 | Wave 3 | AGENT-6 (GitHub), EXEC-2 (Analytics) | 6-12 hours | Ready |
 | Wave 4 | LARGE-1 (Virtual Scroll), LARGE-2 (String Interning) | 24-32 hours | Deferred |
 | Wave 5 | GIT-1 (Enhanced Git) | 4-6 hours | Ready |
+| Wave 6 | TUI-5 (Accessibility) | 4-6 hours | Deferred (complex) |
 | Completed | TTS auto-stop, /tts command | N/A | ✅ DONE |
 
 *(End of file)*
