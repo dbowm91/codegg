@@ -99,25 +99,17 @@ These items are important for future agents to know when working with the codeba
 
 ### Known Issues (Lower Priority)
 
-- **Snapshot hash inconsistency**: `src/snapshot/mod.rs:431` uses MD5 for non-empty files while SHA256 is used elsewhere. Consider unifying to SHA256.
-
-- **ToolExecutor exists but unused**: `src/tool/executor.rs:8` has retry logic but is never called in the tool execution flow. DECISION: Deprecate and remove in future PR - architectural mismatch (retry happens at LLM level, not per-tool).
-
-- **TTS init ignores providers**: `src/tts/mod.rs:45-49` silently accepts non-`None` providers without warning.
-
-- **TTS stop() silent failure**: `src/tts/mod.rs:85-103` returns `Ok(())` even when `pkill say` fails.
-
-- **PermissionResponse unused**: `src/permission/mod.rs:1141-1145` defines a struct not used in current control flow.
-
-- **check_external_directory unused**: `src/permission/mod.rs:1237-1248` marked `#[allow(dead_code)]`, never called.
-
-- **Static CANONICAL_PATHS_CACHE never clears**: `src/security/sandbox.rs:237` - if allowed paths change at runtime, cache won't reflect changes.
-
-- **Histogram unbounded memory growth**: `src/util/metrics.rs:122-124` - only `pop_front()` at 1000 per name, but no limit on unique names.
-
-- **Worktree symlink detection issue**: `src/worktree/mod.rs:69-88` - current worktree detection via canonicalization may fail with symlinked directories.
-
-- **OAuth replay protection TOCTOU**: `src/mcp/auth.rs:318-332` - `is_code_used()` and `mark_code_used()` are not atomic.
+| Issue | Location | Status |
+|-------|----------|--------|
+| **ToolExecutor exists but unused** | `src/tool/executor.rs:8` | DEPRECATED - to be removed |
+| **TTS init ignores providers** | `src/tts/mod.rs:45-49` | Known issue |
+| **TTS stop() silent failure** | `src/tts/mod.rs:85-103` | Known issue |
+| **PermissionResponse unused** | `src/permission/mod.rs:1141-1145` | Known issue |
+| **check_external_directory unused** | `src/permission/mod.rs:1237-1248` | Known issue |
+| **Static CANONICAL_PATHS_CACHE never clears** | `src/security/sandbox.rs:237` | Known issue |
+| **Histogram unbounded memory** | `src/util/metrics.rs:122-124` | Known issue |
+| **Worktree symlink detection** | `src/worktree/mod.rs:69-88` | Known issue |
+| **OAuth replay protection TOCTOU** | `src/mcp/auth.rs:318-332` | Known issue |
 
 ### Key Lessons from Review Sessions
 
@@ -148,7 +140,7 @@ These items were verified during review sessions:
 | Tool count | 26 | `src/tool/mod.rs:89-119` |
 | LSP server count | 40 | `src/lsp/server.rs:27-375` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
-| ToolExecutor | NOT integrated - exists but unused | `src/tool/executor.rs:8` |
+| ToolExecutor | DEPRECATED - exists but unused, to be removed | `src/tool/executor.rs:8` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
@@ -165,7 +157,7 @@ These items were verified during review sessions:
 | Built-in command count | 39 | `src/tui/command.rs:79-161` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `App` struct, NOT `UiState` | `src/tui/app/mod.rs:232-233` |
-| Snapshot hash inconsistency | `collect_files_sync` uses MD5 for non-empty files, SHA256 elsewhere | `src/snapshot/mod.rs:431` |
+| Snapshot hash | ✅ FIXED - All SHA256 | `src/snapshot/mod.rs:431` |
 
 ### Security Notes
 
