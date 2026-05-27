@@ -29,7 +29,7 @@ ToolRegistry → Tool implementations
     ├── TaskTool
     ├── WebFetchTool
     ├── WebSearchTool
-    └── ... (26 total)
+    └── ... (27 total including ImageTool)
 ```
 
 ## Tool Trait

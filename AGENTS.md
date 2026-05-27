@@ -156,7 +156,7 @@ These items were verified during review sessions:
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
-| Built-in command count | 45 (includes /tts, /pr, /issue, /checkpoint) | `src/tui/command.rs:79-165` |
+| Built-in command count | 46 (includes /tts, /pr, /issue, /checkpoint) | `src/tui/command.rs:79-182` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct | `src/tui/app/state/ui.rs:62-63` |
 | Snapshot hash | Uses MD5 in `collect_files_sync` (line 431), SHA256 elsewhere | `src/snapshot/mod.rs:431` |
