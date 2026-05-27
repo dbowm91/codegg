@@ -1,31 +1,7 @@
 # Implementation Plan
 
-**Status**: CONSOLIDATED - All completed items integrated, deferred prioritized
+**Status**: ACTIVE - Wave 1 complete, Waves 2-5 remaining items
 **Last Updated**: 2026-05-27
-
----
-
-## Wave 1: Quick Wins (Self-Contained, 1-3 hours each)
-
-### AGENT-8: TTS/Voice Integration (PARTIAL → COMPLETE)
-- **Files**: `src/tts/mod.rs`
-- **Status**: PARTIAL - `speak()` and `stop()` implemented (macOS `say` command)
-- **Remaining**: Hook Stop event for TTS auto-stop on new agent turn, add STT voice input
-- **Implementation**:
-  1. In `src/tui/app/mod.rs` `handle_agent_event()` - when new `AgentFinished` received, call `app.ui_state.tts.stop()` if speaking
-  2. For STT: Use `tokio::process::Command` with `say -o` for continuous voice input, or integrate system speech framework
-  3. Add TTS toggle command `/tts` in `src/tui/command.rs`
-- **Test**: `cargo test tts`
-
-### TUI-5: Accessibility Improvements (PARTIAL → COMPLETE)
-- **Files**: `src/tui/app/mod.rs`, `src/util/a11y.rs` (new)
-- **Status**: PARTIAL - focus indicators exist, missing global Tab handler
-- **Remaining**: Implement global Tab/Shift+Tab navigation across components
-- **Implementation**:
-  1. Create `src/util/a11y.rs` with accessibility helpers
-  2. Add Tab/Shift+Tab key handling in `handle_key()` at `src/tui/app/mod.rs` - when `focus_manager.focused_component != ComponentId::None`, delegate to component
-  3. Ensure all dialogs properly respond to focus traversal
-- **Test**: `cargo test tui -- input`
 
 ---
 
@@ -33,7 +9,7 @@
 
 ### TUI-3: Image Attachment Support
 - **Files**: `Cargo.toml`, `src/tui/components/image.rs`, `src/tui/components/image_preview.rs` (new)
-- **Status**: NOT IMPLEMENTED - ImageViewer is stub
+- **Status**: NOT IMPLEMENTED - ImageViewer methods are stubs
 - **Prerequisites**: Optional `image` crate with `png`, `jpeg`, `gif`, `webp` features
 - **Implementation**:
   1. If `image` feature disabled, ImageViewer shows placeholder text explaining images require full features
@@ -130,50 +106,6 @@
 
 ---
 
-## Completed Items (Preserved for Reference)
-
-### TUI Enhancement Features
-| Feature | Status |
-|---------|--------|
-| Inline Diff Rendering | ✅ IMPLEMENTED |
-| Native Desktop Notifications | ✅ COMPLETED - wired to AgentFinished/SubagentCompleted/SubagentFailed |
-| Streaming UX Enhancements | ✅ COMPLETED - newline-gated commit + 75ms resize debounce |
-
-### TUI-2: Native Desktop Notifications
-- **Status**: ✅ COMPLETED - `NotificationManager` wired to `AgentFinished`, `SubagentCompleted`, `SubagentFailed`
-
-### TUI-4: Streaming UX Enhancements
-- **Status**: ✅ COMPLETED - newline-gated commit + 75ms resize debounce
-- **Implementation**: TextDelta uses `add_streaming_token()`, newline triggers `finalize_streaming()`, AgentFinished commits remaining buffer
-
-### Agent Capability Features
-| Feature | Status |
-|---------|--------|
-| AGENT-1: Context Summarization | ✅ IMPLEMENTED |
-| AGENT-2: Review Command | ✅ COMPLETE |
-| AGENT-3: Multi-Agent Teams | ✅ COMPLETE |
-| AGENT-4: Tool Search | ✅ COMPLETE |
-| AGENT-7: Sandbox Security Modes | ✅ COMPLETED - Three-mode sandbox infrastructure |
-
-### AGENT-7: Sandbox Security Modes
-- **Status**: ✅ COMPLETED (Infrastructure) - `SandboxMode` enum defined, `PermissionConfig.sandbox_mode` added, `BashTool::with_sandbox_mode()` builder method
-- **Note**: Full config-to-AgentLoop wiring still needs follow-up (tool registry doesn't have config access in `with_defaults()`)
-
-### Mode/Exec Features
-| Feature | Status |
-|---------|--------|
-| MODE-1: Extended Mode System (5 modes) | ✅ COMPLETE |
-| EXEC-1: Non-Interactive Exec Mode | ✅ COMPLETE |
-| EXEC-3: Token Caching Display | ✅ COMPLETED - tokens flow through AgentFinished to TUI session_state |
-
-### Model & Git Features
-| Feature | Status |
-|---------|--------|
-| MODEL-1: Model Variants with Thinking | ✅ COMPLETED - thinking_budget (Anthropic), reasoning_effort (OpenAI) wired |
-| MODEL-2: Auto-Routing Model Selection | ✅ COMPLETE |
-
----
-
 ## Known Code Issues (Deferred/Low Priority)
 
 | Issue | Location | Priority |
@@ -215,6 +147,8 @@
 
 11. **Exec Mode Question Handling**: `src/exec.rs:121` has no question_rx handler - question tool returns "[question not supported in exec mode]" instead of deadlocking.
 
+12. **TTS Module**: Located at `src/tts/mod.rs`. Uses macOS `say` command. TTS auto-stops when agent finishes. Toggle with `/tts` or `/voice` command.
+
 ### Implementation Patterns
 
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
@@ -244,7 +178,7 @@
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
-| Built-in command count | 41 | `src/tui/command.rs:79-162` |
+| Built-in command count | 42 (includes /tts) | `src/tui/command.rs:79-165` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` in `UiState` | `src/tui/app/state/ui.rs:62-63` |
 | Snapshot hash | Uses MD5 in `collect_files_sync` (line 431), SHA256 elsewhere | `src/snapshot/mod.rs:431` |
@@ -286,11 +220,10 @@ cargo test --package codegg -- <module>_test_pattern
 
 | Wave | Items | Time Estimate | Status |
 |------|-------|---------------|--------|
-| Wave 1 | AGENT-8 (TTS), TUI-5 (Accessibility) | 2-4 hours | Ready |
 | Wave 2 | TUI-3 (Image Support), AGENT-5 (Image Generation) | 6-10 hours | Ready |
 | Wave 3 | AGENT-6 (GitHub), EXEC-2 (Analytics) | 6-12 hours | Ready |
 | Wave 4 | LARGE-1 (Virtual Scroll), LARGE-2 (String Interning) | 24-32 hours | Deferred |
 | Wave 5 | GIT-1 (Enhanced Git) | 4-6 hours | Ready |
-| Completed | TUI-2, TUI-4, AGENT-7, EXEC-3, MODEL-1, MODE-1, EXEC-1 | N/A | ✅ DONE |
+| Completed | TTS auto-stop, /tts command | N/A | ✅ DONE |
 
 *(End of file)*
