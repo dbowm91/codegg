@@ -1815,7 +1815,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         }
                     }
                     if let Event::Resize(_, _) = event {
-                        app.on_resize();
+                        app.ui_state.resize_debounce = Some(std::time::Instant::now());
                     }
                     if let Event::Mouse(mouse) = event {
                         app.on_mouse(mouse);
@@ -2020,6 +2020,15 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     Err(e) => {
                         tracing::warn!("Config reload error: {}", e);
+                    }
+                }
+            }
+
+            _ = tokio::time::sleep(Duration::from_millis(75)) => {
+                if let Some(debounce_start) = app.ui_state.resize_debounce {
+                    if debounce_start.elapsed() >= Duration::from_millis(75) {
+                        app.ui_state.resize_debounce = None;
+                        app.on_resize();
                     }
                 }
             }

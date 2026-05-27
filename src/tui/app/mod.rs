@@ -393,6 +393,7 @@ impl App {
                 tts_enabled: false,
                 fullscreen: false,
                 dirty_regions: Vec::new(),
+                resize_debounce: None,
             },
             session_state: SessionState {
                 session: None,
@@ -579,6 +580,7 @@ impl App {
                 tts_enabled: false,
                 fullscreen: false,
                 dirty_regions: Vec::new(),
+                resize_debounce: None,
             },
             session_state: SessionState {
                 session: None,

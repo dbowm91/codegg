@@ -71,6 +71,8 @@ pub struct UiState {
     pub fullscreen: bool,
     /// Dirty region for partial redraw optimization
     pub dirty_regions: Vec<Rect>,
+    /// Resize debounce timer
+    pub resize_debounce: Option<std::time::Instant>,
 }
 
 impl UiState {
