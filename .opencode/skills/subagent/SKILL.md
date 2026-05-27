@@ -363,23 +363,6 @@ impl TaskStore {
 }
 ```
 
-## Implementation Status
-
-| Component | Status |
-|-----------|--------|
-| SubAgentPool struct | Implemented |
-| SubAgentRequest/Result | Implemented |
-| SubAgentSpawner | Implemented |
-| TaskTool integration | Implemented |
-| Task SQLite persistence | Implemented |
-| Subagent events | Defined in bus/events.rs |
-| **Worker task spawning** | **IMPLEMENTED** - bounded worker loop |
-| **max_depth recursion limit** | **IMPLEMENTED** - SubAgentSpawner checks depth |
-| TUI event handling | Implemented |
-| **Packet 10: send_async()** | **✅ Complete** - Non-blocking async send |
-| **Packet 10: Real lifecycle tests** | **✅ Complete** - SubagentTestProvider, ControlledProvider |
-| **Packet 10: Concurrency tests** | **✅ Complete** - Barrier-based verification |
-
 ## Worker Loop Implementation
 
 Each request is now spawned as its own Tokio task with proper concurrency control:

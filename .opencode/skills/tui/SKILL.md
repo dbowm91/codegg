@@ -1052,17 +1052,16 @@ impl SpinnerWidget {
 
 ## Timeline Feature
 
-The TUI supports a Timeline feature for navigating through message history:
+The TUI supports a Timeline feature for navigating through message history.
 
-### UiState Fields
+### Timeline Fields Location
+
+**Note**: `timeline_visible` and `timeline_selected` are in the `App` struct (`src/tui/app/mod.rs:232-233`), NOT in `UiState`.
 
 ```rust
-pub struct UiState {
-    // ... other fields ...
-    pub timeline_visible: bool,    // Whether timeline panel is shown
-    pub timeline_selected: usize,   // Currently selected message index
-    // ... other fields ...
-}
+// In App struct (NOT UiState):
+pub timeline_visible: bool,    // Whether timeline panel is shown
+pub timeline_selected: usize,   // Currently selected message index
 ```
 
 ### Timeline Rendering

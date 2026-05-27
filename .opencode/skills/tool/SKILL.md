@@ -140,7 +140,6 @@ impl ToolCatalog {
 | `write` | Write content to file |
 | `edit` | Edit file by finding/replacing content |
 | `replace` | Replace content with exact matching |
-| `multiedit` | Multiple edits in one operation |
 | `glob` | Find files by glob pattern |
 | `grep` | Search file contents |
 | `list` | List directory contents |
@@ -213,6 +212,20 @@ Register via `TeamTools::register_all()`:
 ```rust
 let team_tools = TeamTools::new(manager, base_dir);
 team_tools.register_all(&mut registry);
+```
+
+### Multiedit Tool (`src/tool/multiedit.rs`)
+
+Multiple edits in one operation - NOT included in `with_defaults()`:
+
+| Tool | Description |
+|------|-------------|
+| `multiedit` | Apply multiple file edits atomically |
+
+Register via `MultieditTool::register()`:
+```rust
+let multiedit = MultieditTool::new();
+registry.register(multiedit);
 ```
 
 ### LSP Tool (`src/tool/lsp.rs`)
@@ -336,16 +349,17 @@ execute_tools()
   ↓
 ToolRegistry.get(tool_name)
   ↓
-ToolExecutor.execute_with_retry()
-  ↓
 tool.execute(input)
   ↓
 ToolResult
 ```
 
-### ToolExecutor with Retry Logic
+### ToolExecutor with Retry Logic (DEPRECATED)
+
+**Note**: `ToolExecutor` exists at `src/tool/executor.rs:8` but is NOT integrated into the tool execution flow. It has been deprecated and should not be used.
 
 ```rust
+#[deprecated(since = "2026-05-27", note = "Not integrated - architectural mismatch with ToolRegistry")]
 pub struct ToolExecutor {
     max_attempts: usize,
     base_delay: Duration,
@@ -355,7 +369,7 @@ pub struct ToolExecutor {
 impl ToolExecutor {
     pub fn new(max_attempts: usize) -> Self;
     pub fn with_delays(mut self, base_delay: Duration, max_delay: Duration) -> Self;
-    
+
     pub async fn execute_with_retry<F, Fut>(&self, f: F) -> Result<Value, ToolError>
     where
         F: Fn() -> Fut,
@@ -415,11 +429,9 @@ impl ToolError {
 }
 ```
 
-## ToolContext
+## Tool Input
 
-**Note**: The architecture documentation shows a `ToolContext` struct that is passed to tool execution. This is **outdated**. The actual implementation passes only `serde_json::Value` as input directly to `execute()`.
-
-The tools receive input directly without a context struct. Any context information (like `session_id`, `workspace_dir`, `permission_checker`) would need to be accessed through other means if needed.
+Tools receive `serde_json::Value` as input directly in their `execute()` method. There is no `ToolContext` struct - context information must be accessed through other means if needed.
 
 ## Tool Result
 
