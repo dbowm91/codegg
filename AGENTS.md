@@ -10,7 +10,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - **Axum** for HTTP server (feature-gated)
 - **Wasmtime** for WASM plugins (feature-gated)
 
-## Module Reference (32 Modules)
+## Module Reference (33 Modules)
 
 | Module | Purpose |
 |--------|---------|
@@ -22,6 +22,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
+| `git/` | Git session management, git info injection into prompts, worktree per session |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
 | `lsp/` | Language Server Protocol support (diagnostics, code operations) |
@@ -40,11 +41,11 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `skills/` | Skill system for specialized capabilities (git, research, etc.) |
 | `snapshot/` | Snapshot support for file state capture and restore |
 | `storage/` | SQLite database storage layer and initialization |
-| `tool/` | Built-in tools (bash, read, edit, task, webfetch, etc.) |
+| `tool/` | Built-in tools (bash, read, edit, task, webfetch, image, etc.) |
 | `tts/` | Text-to-speech module with provider support |
 | `tui/` | Terminal user interface (widgets, handlers, input processing, diff viewer, notifications, image support, CoreClient-backed flows) |
 | `upgrade/` | Self-upgrade functionality via GitHub releases |
-| `util/` | Utility functions (clipboard, fuzzy search, etc.) |
+| `util/` | Utility functions (clipboard, fuzzy search, pricing, etc.) |
 | `worktree/` | Git worktree support for project management |
 
 ## Architecture Index
@@ -54,6 +55,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
+- `architecture/git.md`: Git session management, git info injection, worktree per session
 
 ## Critical Implementation Notes
 
@@ -137,7 +139,7 @@ These items were verified during review sessions:
 
 | Item | Value | Location |
 |------|-------|----------|
-| Tool count | 26 | `src/tool/mod.rs:89-119` |
+| Tool count | 27 | `src/tool/mod.rs:89-119` (includes ImageTool) |
 | LSP server count | 39 | `src/lsp/server.rs:27-383` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | DEPRECATED - exists but unused, to be removed | `src/tool/executor.rs:8` |
@@ -146,7 +148,7 @@ These items were verified during review sessions:
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
 | UiState fields | 26 fields | `src/tui/app/state/ui.rs:27-76` |
 | Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
-| CoreEvent has subagent variants | SubagentStarted, SubagentCompleted | `src/protocol/core.rs:244,256` |
+| CoreEvent has subagent variants | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/protocol/core.rs:244-268` |
 | map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
 | SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1216-1220` |
 | hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
@@ -154,10 +156,12 @@ These items were verified during review sessions:
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
-| Built-in command count | 42 (includes /tts) | `src/tui/command.rs:79-165` |
+| Built-in command count | 45 (includes /tts, /pr, /issue, /checkpoint) | `src/tui/command.rs:79-165` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct | `src/tui/app/state/ui.rs:62-63` |
 | Snapshot hash | Uses MD5 in `collect_files_sync` (line 431), SHA256 elsewhere | `src/snapshot/mod.rs:431` |
+| Git module | `src/git/mod.rs` - GitSession, GitStatus, git info in prompts | `src/git/mod.rs` |
+| Pricing service | `src/util/pricing.rs` - ModelPricing, calculate_cost | `src/util/pricing.rs` |
 
 ### Security Notes
 
@@ -194,6 +198,7 @@ These items were verified during review sessions:
 ├── error/              # AppError, ProviderError, ToolError, is_retryable
 ├── event-bus/          # GlobalEventBus, PermissionRegistry, QuestionRegistry
 ├── exec/               # Exec mode for CI/CD
+├── git/                # Git session, git info in prompts, worktree management
 ├── hooks/              # Hooks system for agent lifecycle
 ├── ide/                # IDE integration (VS Code, JetBrains)
 ├── lsp/                # LSP client, diagnostics, code operations
@@ -271,7 +276,8 @@ When adding guidance for a new module:
 | Server (HTTP, WebSocket, REST API, SSE) | `.opencode/skills/server/SKILL.md` |
 | Snapshot (file state capture and restore) | `.opencode/skills/snapshot/SKILL.md` |
 | Skills (skill system overview) | `.opencode/skills/skills/SKILL.md` |
-| Command (slash commands, templates, execution) | `.opencode/skills/command/SKILL.md` |
+| Command (slash commands, templates, execution) | `.opencode/skills/command/SKILL.md`
+| Git (git session, git info in prompts) | `.opencode/skills/git/SKILL.md` |
 | IDE (VS Code, JetBrains detection, diff viewing) | `.opencode/skills/ide/SKILL.md` |
 | Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |
 | Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
