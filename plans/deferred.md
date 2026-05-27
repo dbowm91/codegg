@@ -4,6 +4,19 @@
 
 ---
 
+## Status Summary
+
+| Item | Status | Implementation |
+|------|--------|----------------|
+| EXEC-3: Token Display Wiring | ✅ COMPLETED | Commits: 3c9f472 |
+| TUI-4: Resize Debounce | ✅ COMPLETED | Commits: dc51515 |
+| MODEL-1: Thinking Params | ✅ COMPLETED | Commits: 80da66f |
+| AGENT-7: Sandbox Modes | ✅ COMPLETED (Partial) | Commits: 794c998 |
+
+**Note**: AGENT-7 implementation is complete for core infrastructure (SandboxMode enum, config field, builder method). Full wiring from config to BashTool via AgentLoop still needs follow-up.
+
+---
+
 ## EXEC-3: Token Flow - Display Wiring
 
 ### Problem
@@ -258,9 +271,36 @@ pub fn with_sandbox_mode(mut self, mode: SandboxMode) -> Self {
 
 ## Summary
 
-| Item | Complexity | Time Estimate | Priority |
-|------|------------|---------------|----------|
-| EXEC-3: Token Display Wiring | Low-Medium | 2-3 hours | HIGH |
-| TUI-4: Resize Debounce | Low | 1-2 hours | MEDIUM |
-| MODEL-1: Thinking Params | Medium | 3-4 hours | MEDIUM |
-| AGENT-7: Sandbox Modes | Medium-High | 4-6 hours | MEDIUM-LOW |
+| Item | Complexity | Time Estimate | Priority | Status |
+|------|------------|---------------|----------|--------|
+| EXEC-3: Token Display Wiring | Low-Medium | 2-3 hours | HIGH | ✅ COMPLETED |
+| TUI-4: Resize Debounce | Low | 1-2 hours | MEDIUM | ✅ COMPLETED |
+| MODEL-1: Thinking Params | Medium | 3-4 hours | MEDIUM | ✅ COMPLETED |
+| AGENT-7: Sandbox Modes | Medium-High | 4-6 hours | MEDIUM-LOW | ✅ COMPLETED (Partial) |
+
+## Implementation History
+
+### EXEC-3 (Commit 3c9f472)
+- Added token fields to `AppEvent::AgentFinished`
+- Updated `AgentLoop` to pass tokens
+- Updated `TUI` handler to set tokens via `app.set_tokens()`
+- `session_state.token_in/out/cached_tokens` now properly updated
+
+### TUI-4 (Commit dc51515)
+- Added `resize_debounce: Option<Instant>` to `UiState`
+- Resize events now set debounce timer instead of immediate call
+- Added 75ms debounce branch to `tokio::select!`
+
+### MODEL-1 (Commit 80da66f)
+- Added `thinking_budget` and `reasoning_effort` to `ModelVariant`
+- Added fields to `ChatRequest`
+- Updated `Anthropic::build_body()` for thinking param
+- Updated `OpenAI::build_body()` for reasoning_effort
+- Wired in `AgentLoop::apply_agent_config()`
+
+### AGENT-7 (Commit 794c998)
+- Defined `SandboxMode` enum with `ReadOnly`, `WorkspaceWrite`, `DangerFullAccess`
+- Added `mode` field to `SandboxConfig`
+- Updated `enforce_landlock()` to use `mode.access_flags()`
+- Added `sandbox_mode` to `PermissionConfig`
+- Added `BashTool::with_sandbox_mode()` builder method
