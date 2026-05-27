@@ -114,9 +114,13 @@ impl OAuthManager {
             used_codes: std::collections::HashMap::new(),
         };
 
-        let _ = manager.load_used_codes_sync();
+        if let Err(e) = manager.load_used_codes_sync() {
+            tracing::warn!("failed to load used codes sync: {}", e);
+        }
         if manager.token_store.exists() {
-            let _ = manager.load_tokens_sync();
+            if let Err(e) = manager.load_tokens_sync() {
+                tracing::warn!("failed to load tokens sync: {}", e);
+            }
         }
         manager
     }

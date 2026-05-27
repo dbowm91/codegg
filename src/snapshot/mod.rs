@@ -289,8 +289,12 @@ impl SnapshotManager {
                                 .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
                         }
                     }
-                    if let Err(e) = std::fs::write(&full_path, &file_snapshot.content) {
-                        return Err(format!("failed to write {}: {}", full_path.display(), e));
+                    let temp_path = full_path.with_extension("tmp");
+                    if let Err(e) = std::fs::write(&temp_path, &file_snapshot.content) {
+                        return Err(format!("failed to write {}: {}", temp_path.display(), e));
+                    }
+                    if let Err(e) = std::fs::rename(&temp_path, &full_path) {
+                        return Err(format!("failed to rename {}: {}", temp_path.display(), e));
                     }
                 }
                 Ok(())
@@ -428,7 +432,7 @@ fn collect_files_sync(project_root: &Path, options: &SnapshotOptions) -> HashMap
             };
 
             total_bytes = total_bytes.saturating_add(content.len() as u64);
-            let hash = format!("{:x}", md5::compute(content.as_bytes()));
+            let hash = format!("{:x}", sha2::Sha256::digest(content.as_bytes()));
             let rel_path = path
                 .strip_prefix(project_root)
                 .unwrap_or(path.as_path())
