@@ -1,101 +1,11 @@
 # Implementation Plan
 
-**Status**: REVISION 3 - WAVE 5 COMPLETED
+**Status**: DEFERRED ITEMS ONLY
 **Last Updated**: 2026-05-27
 
 ---
 
-## Executive Summary
-
-All implementation waves (0-3) completed via 33+ PRs. The codebase has undergone significant hardening through security fixes, performance optimizations, and new features.
-
-**Completed Waves**: Wave 0 (Quick Wins), Wave 1 (Critical Security), Wave 2 (High-Priority Infrastructure), Wave 3 (Medium-Priority Groups)
-
-**Wave 4 (Large Refactors)**: DEFERRED - requires significant rewrites (12-16+ hours each)
-
-**Wave 5 (Documentation & Minor Fixes)**: ✅ COMPLETED - 43 items resolved (2026-05-27)
-
----
-
-## Completed Implementation (April-May 2026 Sprint)
-
-### Security Fixes
-- IPv6 ULA (fc00::/7) and multicast (ff00::/8) blocking in SSRF module
-- WASM fuel tracking with proper return after execution
-- SSRF protection for `webfetch`, `websearch`, `codesearch`
-- Symlink validation before canonicalization
-- `env_clear()` and hardcoded minimal safe `PATH` in subprocess invocations
-- No information leakage in `AppError` responses
-- AES-256-GCM encryption module (`src/crypto/mod.rs`)
-- Write tool TOCTOU fix - validate parent path before `create_dir_all()`
-- Error redaction for LLM safety - `redact_local_paths()`
-- `#![deny(unsafe_code)]` in lib.rs
-- Upgrade module - semver validation, env_clear, direct curl
-- WASM fuel bug fixed - `return_fuel()` uses `MAX_PLUGIN_FUEL_BUDGET`
-- Critical unwrap removed in plugin execution
-
-### Async/Mutex
-- `TaskStore` uses `tokio::sync::Mutex` throughout
-- LSP `DiagnosticsCollector` uses `tokio::sync::Mutex`
-- `parking_lot::Mutex` replaced with `tokio::sync::Mutex` in `src/server/http.rs`
-- `parking_lot::Mutex` replaced with `tokio::sync::Mutex` in `src/server/ws.rs`
-
-### Performance
-- HTTP client timeouts (60s request, 10s connect)
-- Database `busy_timeout` (5s WAL)
-- Per-tool timeouts in `bash`, `terminal`, `git` tools
-- Token caching via `ModelDiscoveryService`
-- Model-specific token estimation with `TokenizerType` (Claude: 1.4x, Gemini: 1.2x)
-- `ToolRegistry` lazy initialization via `once_cell::Lazy` (`default_registry()`)
-- `#[tracing::instrument]` added to `AgentLoop::run()`, `execute_tool_calls()`, and `CircuitBreaker::call()`
-
-### Agent Capabilities
-- Context compaction (adaptive truncation/summarization)
-- `SubAgentPool` with bounded concurrency (5)
-- Background task scheduling with SQLite persistence
-- `denied_tools` enforcement - `ToolRegistry::filter_out()`
-- `/compact` command wired to `TuiCommand::CompactSession`
-- Subagent `max_depth` configuration with recursion limits (default: 3)
-
-### TUI Features
-- Background tasks UI via `/loop`, `/tasks`, `/task-del`
-- Vim mode keybindings (hjkl navigation)
-- Diff output colorization
-- Shift+Tab toggles Plan/Build mode
-- `/compact`, `/unshare`, `/export`, `/fork`, `/rename` commands properly wired
-
-### TUI Input/Scrolling/Message Flow
-- Shift-modified printable characters insert correctly
-- Paste updates completion state, dialog paste isolation
-- Scrolling fixes: `set_visible_height`, `total_rendered_lines()`, `is_at_bottom()` sentinel
-- Navigate/scroll key separation
-- Thinking tag parsing, color-coded message bars, mode-based coloring
-
----
-
-## Wave 5: Documentation & Minor Fixes (✅ COMPLETED 2026-05-27)
-
-All W5 items completed via 6 phases of parallel documentation fixes:
-
-| Phase | Issues | Branch | Status |
-|-------|---------|--------|--------|
-| W5-Phase 1 | W5-2 | `main` | ✅ Completed |
-| W5-Phase 2 | W5-4 | N/A | ✅ Deprecate ToolExecutor (not integrated) |
-| W5-Phase 3 | W5-1 | `main` | ✅ Fixed exec mode question deadlock |
-| W5-Phase 4 | W5-6,7,8,9,10,11,12,13,14 | `fix/w5-docs-phase4` | ✅ Merged |
-| W5-Phase 5 | W5-15,16,18,19,36,37,38 | `fix/w5-docs-phase5` | ✅ Merged |
-| W5-Phase 6 | W5-17,20,28,39 | `fix/w5-docs-phase6` | ✅ Merged |
-| W5-Phase 7 | W5-21,22,23,24,29,30,31,32,33,34,35 | `fix/w5-docs-phase7` | ✅ Merged |
-| W5-Phase 8 | W5-27,41 | `fix/w5-docs-phase8` | ✅ Merged |
-| W5-Phase 9 | W5-25,26 | N/A | ✅ Already correct |
-
-**Notes:**
-- W5-5: Theme count is actually 31 (not 33) - plan was incorrect
-- W5-3: Snapshot MD5→SHA256 NOT YET FIXED - code still uses MD5 at `src/snapshot/mod.rs:431`
-- W5-37: Dialog::Info doesn't exist (InfoDialog is a component, not Dialog variant)
-- ToolExecutor: Decided to deprecate (not integrated, architectural mismatch)
-
-### Wave 4: Large Refactors (DEFERRED - 12-16+ hours each)
+## Wave 4: Large Refactors (DEFERRED - 12-16+ hours each)
 
 #### LARGE-1: Virtual Scrolling for Messages
 - **Files**: `src/tui/components/messages.rs`
@@ -223,12 +133,11 @@ These issues are documented but deferred for later attention:
 
 | Issue | Location | Priority |
 |-------|----------|----------|
-| Snapshot hash inconsistency | `src/snapshot/mod.rs:431` uses MD5 | MEDIUM | NOT FIXED |
+| Snapshot hash inconsistency | `src/snapshot/mod.rs:431` uses MD5 | MEDIUM |
 | ToolExecutor exists but unused | `src/tool/executor.rs:8` | MEDIUM |
 | Static CANONICAL_PATHS_CACHE never clears | `src/security/sandbox.rs:237` | MEDIUM |
 | TTS stop() returns Ok on failure | `src/tts/mod.rs:85-103` | LOW |
 | TTS init() ignores providers | `src/tts/mod.rs:45-49` | LOW |
-| Histogram unbounded memory | `src/util/metrics.rs:122-124` | LOW | ✅ FIXED |
 | Worktree symlink detection | `src/worktree/mod.rs:69-88` | LOW |
 | OAuth replay protection TOCTOU | `src/mcp/auth.rs:318-332` | MEDIUM |
 | PermissionResponse unused | `src/permission/mod.rs:1141-1145` | LOW |
@@ -277,7 +186,7 @@ These issues are documented but deferred for later attention:
 | Tool count | 26 | `src/tool/mod.rs:89-119` |
 | LSP server count | 39 | `src/lsp/server.rs:27-383` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
-| ToolExecutor | NOT integrated - exists but unused | `src/tool/executor.rs:8` |
+| ToolExecutor | DEPRECATED - exists but unused | `src/tool/executor.rs:8` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
@@ -328,18 +237,15 @@ cargo test --package codegg -- <module>_test_pattern
 
 ---
 
-## Consolidated Statistics
+## Summary
 
-| Metric | Value |
-|--------|-------|
-| Waves 0-3 Completed | ✅ All via 33+ PRs |
+| Category | Status |
+|----------|--------|
 | Wave 4 (Large Refactors) | ⏳ DEFERRED |
-| Wave 5 (Docs & Minor Fixes) | ✅ COMPLETED (43 items) |
-| TUI Enhancement | ⏳ MOSTLY DEFERRED |
+| TUI Enhancement | ⏳ PARTIAL (2/6 complete) |
 | Agent Capabilities | ⏳ PARTIAL (4/8 complete) |
-| Mode/Exec Features | ✅ Complete (MODE-1, EXEC-1) |
+| Mode/Exec Features | ⏳ PARTIAL (2/4 complete) |
+| Model & Git Features | ⏳ PARTIAL (1/3 complete) |
 | Documentation | ⏳ FUTURE |
-
----
 
 *(End of file)*
