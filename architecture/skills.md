@@ -33,15 +33,23 @@ pub struct Skill {
 
 ```rust
 pub struct SkillIndex {
-    skills: Vec<Skill>,            // older docs incorrectly showed HashMap
+    skills: Vec<Skill>,
+}
+
+impl Default for SkillIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SkillIndex {
-    pub fn new() -> Self;
+    pub fn new() -> Self {
+        Self { skills: Vec::new() }
+    }
     pub async fn load(&mut self, project_dir: &str) -> Result<(), AppError>;
     pub fn get(&self, name: &str) -> Option<&Skill>;
     pub fn list(&self) -> &[Skill];
-    pub fn find_matching(&self, query: &str) -> Vec<&Skill>;  // older docs showed search()
+    pub fn find_matching(&self, query: &str) -> Vec<&Skill>;
     pub fn build_system_prompt(&self) -> String;
     pub fn activate(&self, name: &str) -> Option<String>;
 }
@@ -53,6 +61,19 @@ impl SkillIndex {
 - `find_matching(query)` - Case-insensitive partial match across name, description, and tags
 - `activate(name)` - Retrieves skill body by exact name match (case-sensitive)
 
+### SkillFrontmatter
+
+Internal struct for parsing YAML frontmatter:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkillFrontmatter {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
 ```
 
 ## Skill File Format
@@ -99,7 +120,7 @@ The `SkillTool` (`src/tool/skill.rs`) handles runtime skill loading:
 ```rust
 // Execute with /skill:<name>
 let result = skill_tool.execute(json!({"name": "git"})).await;
-// Returns JSON with name, description, body, and resources
+// Returns JSON with name, description, body, and resources (list of resource file names in skill directory)
 ```
 
 ## Usage in Agent

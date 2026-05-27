@@ -255,7 +255,7 @@ LRU-like cache with TTL for provider responses:
 
 ```rust
 pub struct ProviderCache {
-    cache: DashMap<CacheKey, CacheEntry>,
+    cache: HashMap<CacheKey, CacheEntry>,
 }
 ```
 
