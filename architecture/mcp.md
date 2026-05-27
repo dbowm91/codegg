@@ -368,11 +368,55 @@ fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result<(),
 - IPv4-mapped IPv6 addresses are handled correctly
 - Internal IPs (loopback, private, link-local) are blocked
 
+## Deferred / Incomplete Implementation
+
+The following features exist in the codebase but are not wired into the main event loop or service initialization:
+
+### R3-IMPL-1: MCP SSE Integration (`src/mcp/remote.rs:698-740`)
+
+```rust
+pub async fn connect_sse(&self) -> Result<(), McpError>
+```
+
+**Status**: Dead code - function never called automatically.
+
+**Description**: The `connect_sse()` method initiates a Server-Sent Events connection to an MCP server, and `connect_sse_stream()` processes the SSE stream. These methods fully implement the SSE protocol, collect events into `sse_events` buffer, and properly handle `Mcp-Session-Id` headers for session continuity.
+
+**Why it exists but isn't wired up**: SSE support requires integration into the main connection flow with event loop integration. The `McpConnectionManager` would need to detect SSE-capable servers and spawn a background task to handle server-initiated messages. Currently, remote connections use only HTTP request/response pattern (stdin/stdout style JSON-RPC over HTTP).
+
+**What would be needed to complete**:
+- Event loop task in `McpConnectionManager` that calls `connect_sse()` when server advertises SSE endpoint
+- Handler to dispatch collected SSE events to the agent as incoming notifications
+- Integration with the heartbeat system to keep SSE connection alive
+
+**Current workaround**: Remote MCP servers operate in request/response mode only. Server-initiated notifications are not received.
+
+### R3-IMPL-2: IdeServer Unix Socket Mode (`src/mcp/ide_server.rs:121-144`)
+
+```rust
+pub async fn run_socket(&self, socket_path: &str) -> Result<(), McpError>
+```
+
+**Status**: Dead code - Unix socket server never wired up.
+
+**Description**: The `IdeServer` implements `run_socket()` which creates a Unix domain socket listener, accepts connections, and handles MCP protocol over Unix sockets. This enables IDE extensions to connect to codegg as an MCP server.
+
+**Transport Modes** (from code):
+- stdio mode: Used by VS Code extension and JetBrains plugin (stdin/stdout communication)
+- Unix socket mode: Defined in code at lines 228-229 but never activated
+
+**Why it exists but isn't wired up**: Unix socket mode requires IDE extension integration to discover and connect to the socket. The primary stdio transport is used by IDE extensions instead.
+
+**What would be needed to complete**:
+- Socket path configuration (e.g., `~/.codegg/ide.sock`)
+- IDE extension to discover socket path and connect
+- Socket cleanup on shutdown
+
+**Current workaround**: IDE integration uses stdio transport via `IdeServer::run_stdio()`.
+
 ## Known Implementation Issues
 
 1. **Tool definition cache staleness**: Uses `mcp_tool_count` as proxy for MCP tool changes. If tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
-
-2. **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
 
 ## See Also
 
