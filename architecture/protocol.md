@@ -150,14 +150,12 @@ pub enum CoreEvent { ... }
 - `SnapshotWorkspace { project_dir }` - Workspace snapshot
 - `SnapshotModels { current_model, models }` - Model list snapshot
 
-### Turn Events (5)
+### Turn Events (7)
 - `TurnStarted { session_id, turn_id }` - Turn started
 - `TurnTextDelta { session_id, turn_id, delta }` - Text delta
 - `TurnReasoningDelta { session_id, turn_id, delta }` - Reasoning delta
 - `TurnCompleted { session_id, turn_id, stop_reason }` - Turn completed
 - `TurnFailed { session_id, turn_id, message }` - Turn failed
-
-### Tool Events (2)
 - `ToolStarted { session_id, turn_id, tool_name, tool_id, arguments }` - Tool started
 - `ToolCompleted { session_id, turn_id, tool_id, output, success }` - Tool completed
 

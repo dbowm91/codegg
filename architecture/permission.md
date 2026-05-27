@@ -60,7 +60,7 @@ impl PermissionChoice {
 
 ### PermissionResponse
 
-Internal permission response type used by the permission module:
+Internal permission response type used by the permission module (defined at `src/permission/mod.rs:1141-1145`):
 
 ```rust
 #[derive(Debug)]
@@ -199,7 +199,7 @@ pub struct ModeDefinition {
 |------|---------|---------------|------------------|
 | `review` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, lsp | edit, bash, task, todowrite |
 | `debug` | Allow | read, glob, grep, list, bash, question, webfetch, websearch, codesearch, edit, lsp | task, todowrite |
-| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, write, lsp | bash, task, todowrite |
+| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, lsp | bash, task, todowrite, write |
 
 ## Permission Flow
 

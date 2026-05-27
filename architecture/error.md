@@ -103,6 +103,14 @@ pub enum ProviderError {
 }
 
 impl ProviderError {
+    pub fn api(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Api { code: code.into(), message: message.into(), url: String::new() }
+    }
+
+    pub fn api_with_url(code: impl Into<String>, message: impl Into<String>, url: impl Into<String>) -> Self {
+        Self::Api { code: code.into(), message: message.into(), url: url.into() }
+    }
+
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -235,6 +243,13 @@ The `IntoResponse` implementation maps errors to appropriate HTTP status codes:
 | PluginError::NotFound | 404 |
 | PluginError::InvalidManifest | 400 |
 | PluginError::LoadFailed/HookFailed/InstallFailed | 500 |
+
+**ServerRuntimeError IntoResponse** (`src/error.rs:475-501`):
+
+| Status | Variants |
+|--------|----------|
+| 401 | `Auth` |
+| 500 | `Bind`, `Shutdown`, `WebSocket`, `Rpc` |
 
 ## See Also
 
