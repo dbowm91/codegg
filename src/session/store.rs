@@ -10,7 +10,7 @@ use super::import::{validate_import_size, SessionImport};
 use super::message;
 use super::models::{
     CreateSession, PermissionEntry, Session, SessionAnalytics, TodoItem, TodoItemInput,
-    UpdateSession,
+    UpdateSession, UsageRecord,
 };
 use super::row::{MessageRow, PartRow, SessionRow, TodoRow};
 use super::{
@@ -2057,5 +2057,136 @@ impl PermissionStore {
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
         Ok(())
+    }
+}
+
+pub struct UsageStore {
+    pool: SqlitePool,
+}
+
+impl UsageStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn insert(&self, record: UsageRecord) -> Result<(), StorageError> {
+        sqlx::query(
+            r#"
+            INSERT INTO usage (id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&record.id)
+        .bind(&record.session_id)
+        .bind(&record.provider)
+        .bind(&record.model)
+        .bind(record.input_tokens)
+        .bind(record.output_tokens)
+        .bind(record.cached_tokens)
+        .bind(record.cost_usd)
+        .bind(record.timestamp)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    pub async fn get_session_usage(&self, session_id: &str) -> Result<Vec<UsageRecord>, StorageError> {
+        let rows: Vec<(String, String, String, String, i64, i64, i64, f64, i64)> = sqlx::query_as(
+            r#"
+            SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
+            FROM usage WHERE session_id = ?
+            ORDER BY timestamp ASC
+            "#,
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp)| {
+                    UsageRecord {
+                        id,
+                        session_id,
+                        provider,
+                        model,
+                        input_tokens,
+                        output_tokens,
+                        cached_tokens,
+                        cost_usd,
+                        timestamp,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn get_all_usage(&self, limit: Option<usize>) -> Result<Vec<UsageRecord>, StorageError> {
+        let rows: Vec<(String, String, String, String, i64, i64, i64, f64, i64)> = if let Some(limit) = limit {
+            sqlx::query_as(
+                r#"
+                SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
+                FROM usage
+                ORDER BY timestamp DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?
+        } else {
+            sqlx::query_as(
+                r#"
+                SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
+                FROM usage
+                ORDER BY timestamp DESC
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp)| {
+                    UsageRecord {
+                        id,
+                        session_id,
+                        provider,
+                        model,
+                        input_tokens,
+                        output_tokens,
+                        cached_tokens,
+                        cost_usd,
+                        timestamp,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn get_session_cost_summary(
+        &self,
+        session_id: &str,
+    ) -> Result<(i64, i64, i64, f64), StorageError> {
+        let row: Option<(i64, i64, i64, f64)> = sqlx::query_as(
+            r#"
+            SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(cost_usd), 0.0)
+            FROM usage WHERE session_id = ?
+            "#,
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(row.unwrap_or((0, 0, 0, 0.0)))
     }
 }

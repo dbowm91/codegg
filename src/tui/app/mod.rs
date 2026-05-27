@@ -775,6 +775,13 @@ impl App {
                             content: output.clone().into(),
                         });
                     }
+                    MsgPart::Image { data_uri, .. } => {
+                        content.push(crate::provider::ContentPart::Image {
+                            image_url: crate::provider::ImageUrl {
+                                url: data_uri.clone().into(),
+                            },
+                        });
+                    }
                 }
             }
 
@@ -5579,6 +5586,7 @@ impl App {
                         Some(MsgPart::Reasoning { .. }) | Some(MsgPart::ToolCall { .. }) => {
                             String::new()
                         }
+                        Some(MsgPart::Image { .. }) => String::new(),
                         None => String::new(),
                     };
 
@@ -5634,6 +5642,7 @@ impl App {
                         }
                         Some(MsgPart::Reasoning { .. }) => "reasoning...".to_string(),
                         Some(MsgPart::ToolCall { name, .. }) => format!("[{}]", name),
+                        Some(MsgPart::Image { .. }) => String::new(),
                         None => String::new(),
                     };
 

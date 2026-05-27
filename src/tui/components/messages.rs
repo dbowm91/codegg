@@ -55,6 +55,12 @@ pub enum MsgPart {
         exit_code: Option<i32>,
         output_lines: Option<usize>,
     },
+    Image {
+        data_uri: String,
+        alt_text: String,
+        width: u32,
+        height: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +107,12 @@ impl UIMessage {
                         "Tool call: {} input: {} output: {}",
                         name, input, output
                     ));
+                }
+                MsgPart::Image { alt_text, .. } => {
+                    if !text.is_empty() {
+                        text.push(' ');
+                    }
+                    text.push_str(&format!("[Image: {}]", alt_text));
                 }
             }
         }
@@ -193,6 +205,9 @@ impl MessagesWidget {
                             lines += 1;
                         }
                     }
+                }
+                MsgPart::Image { .. } => {
+                    lines += 1;
                 }
             }
         }
@@ -620,6 +635,12 @@ impl MessagesWidget {
                             }
                             content.push_str(&format!("[{name}] {output}"));
                         }
+                        MsgPart::Image { alt_text, .. } => {
+                            if !content.is_empty() {
+                                content.push('\n');
+                            }
+                            content.push_str(&format!("[Image: {}]", alt_text));
+                        }
                     }
                 }
                 return content;
@@ -790,6 +811,9 @@ impl MessagesWidget {
                     } => {
                         format!("{}\n{}\n{}", name, input, output)
                     }
+                    MsgPart::Image { alt_text, .. } => {
+                        format!("[Image: {}]", alt_text)
+                    }
                 };
 
                 let lower_content = part_content.to_lowercase();
@@ -883,6 +907,12 @@ impl MessagesWidget {
                         }
                         content.push_str(name);
                         content.push_str(output);
+                    }
+                    MsgPart::Image { alt_text, .. } => {
+                        if !content.is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(&format!("[Image: {}]", alt_text));
                     }
                 }
             }
@@ -1219,6 +1249,13 @@ impl Widget for &MessagesWidget {
                                         )));
                                     }
                                 }
+                            }
+                            MsgPart::Image { alt_text, width, height, .. } => {
+                                let img_text = format!("📷 Image ({}x{}): {}", width, height, alt_text);
+                                lines.push(Line::from(Span::styled(
+                                    img_text,
+                                    Style::default().fg(self.theme.muted),
+                                )));
                             }
                         }
                     }

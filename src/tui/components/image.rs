@@ -6,12 +6,14 @@ use ratatui::widgets::Widget;
 use std::cell::RefCell;
 
 #[cfg(feature = "image")]
-use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::protocol::{ImageSource, StatefulProtocol, StatefulProtocolType};
 
 #[cfg(feature = "image")]
 pub struct ImageViewer {
     #[allow(dead_code)]
     state: RefCell<Option<StatefulProtocol>>,
+    #[allow(dead_code)]
+    font_size: (u16, u16),
 }
 
 #[cfg(not(feature = "image"))]
@@ -22,19 +24,53 @@ impl ImageViewer {
     pub fn new() -> Self {
         Self {
             state: RefCell::new(None),
+            font_size: (9, 18),
         }
     }
 
     pub fn toggle_visible(&mut self) {}
 
-    pub fn zoom_in(&mut self) {}
-    pub fn zoom_out(&mut self) {}
-
-    pub fn is_visible(&self) -> bool {
-        true
+    pub fn zoom_in(&mut self) {
+        self.font_size = (self.font_size.0 + 2, self.font_size.1 + 4);
     }
 
-    pub fn load_from_data_uri(&mut self, _uri: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn zoom_out(&mut self) {
+        if self.font_size.0 > 4 {
+            self.font_size = (self.font_size.0 - 2, self.font_size.1 - 4);
+        }
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.state.borrow().is_some()
+    }
+
+    pub fn load_from_data_uri(&mut self, uri: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let (mime, data) = parse_data_uri(uri).ok_or("Failed to parse data URI")?;
+        if !is_supported_image_format(&mime) {
+            return Err(format!("Unsupported image format: {}", mime).into());
+        }
+        let img = image::load_from_memory(&data)?;
+        let source = ImageSource::new(img, self.font_size, image::Rgba([0, 0, 0, 0]));
+        let protocol_type = match detect_terminal_protocol() {
+            "kitty" => StatefulProtocolType::Kitty(ratatui_image::protocol::kitty::StatefulKitty::new(rand::random(), false)),
+            "iterm2" => StatefulProtocolType::ITerm2(ratatui_image::protocol::iterm2::Iterm2::default()),
+            _ => StatefulProtocolType::Halfblocks(ratatui_image::protocol::halfblocks::Halfblocks::default()),
+        };
+        let state = StatefulProtocol::new(source, self.font_size, protocol_type);
+        *self.state.borrow_mut() = Some(state);
+        Ok(())
+    }
+
+    pub fn load_from_path(&mut self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let img = image::open(path)?;
+        let source = ImageSource::new(img, self.font_size, image::Rgba([0, 0, 0, 0]));
+        let protocol_type = match detect_terminal_protocol() {
+            "kitty" => StatefulProtocolType::Kitty(ratatui_image::protocol::kitty::StatefulKitty::new(rand::random(), false)),
+            "iterm2" => StatefulProtocolType::ITerm2(ratatui_image::protocol::iterm2::Iterm2::default()),
+            _ => StatefulProtocolType::Halfblocks(ratatui_image::protocol::halfblocks::Halfblocks::default()),
+        };
+        let state = StatefulProtocol::new(source, self.font_size, protocol_type);
+        *self.state.borrow_mut() = Some(state);
         Ok(())
     }
 }
@@ -55,7 +91,11 @@ impl ImageViewer {
     }
 
     pub fn load_from_data_uri(&mut self, _uri: &str) -> Result<(), Box<dyn std::error::Error>> {
-        Ok(())
+        Err("Image support not enabled".into())
+    }
+
+    pub fn load_from_path(&mut self, _path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        Err("Image support not enabled".into())
     }
 }
 

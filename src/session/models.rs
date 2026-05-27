@@ -88,6 +88,19 @@ pub struct PermissionEntry {
     pub data: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageRecord {
+    pub id: String,
+    pub session_id: String,
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cached_tokens: i64,
+    pub cost_usd: f64,
+    pub timestamp: i64,
+}
+
 #[async_trait::async_trait]
 pub trait SessionSummaryProvider: Send + Sync {
     async fn generate_summary(&self, conversation: &str) -> Result<String, crate::error::AppError>;

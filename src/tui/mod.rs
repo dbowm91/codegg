@@ -1197,9 +1197,14 @@ async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
                             exit_code: None,
                             output_lines: None,
                         },
-                        crate::session::message::PartData::Image { .. }
-                        | crate::session::message::PartData::File { .. } => MsgPart::Text {
-                            content: "[File/Image]".to_string(),
+                        crate::session::message::PartData::Image { url } => MsgPart::Image {
+                            data_uri: url.clone(),
+                            alt_text: "[Image]".to_string(),
+                            width: 0,
+                            height: 0,
+                        },
+                        crate::session::message::PartData::File { .. } => MsgPart::Text {
+                            content: "[File]".to_string(),
                         },
                     })
                     .collect()
