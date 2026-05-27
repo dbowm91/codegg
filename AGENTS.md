@@ -112,6 +112,10 @@ These items are important for future agents to know when working with the codeba
 | **Histogram unbounded memory** | `src/util/metrics.rs:122-124` | ✅ FIXED |
 | **Worktree symlink detection** | `src/worktree/mod.rs:69-88` | Known issue |
 | **OAuth replay protection TOCTOU** | `src/mcp/auth.rs:318-332` | Known issue |
+| **OAuthManager sync error ignore** | `src/mcp/auth.rs:119` | `let _ = load_tokens_sync()` silently ignores errors |
+| **MCP connect_sse() dead code** | `src/mcp/remote.rs:698-740` | Never called externally |
+| **MCP run_socket() dead code** | `src/mcp/ide_server.rs:121-144` | Never called |
+| **MCP Debug command stub** | `src/mcp/cli.rs:309-318` | Only prints, doesn't test connections |
 
 ### Key Lessons from Review Sessions
 
@@ -156,16 +160,35 @@ These items were verified during review sessions:
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
-| Built-in command count | 45 (includes /tts, /pr, /issue, /checkpoint) | `src/tui/command.rs:79-165` |
+| Built-in command count | 46 (includes /tts, /pr, /issue, /checkpoint) | `src/tui/command.rs:79-182` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct | `src/tui/app/state/ui.rs:62-63` |
 | Snapshot hash | Uses MD5 in `collect_files_sync` (line 431), SHA256 elsewhere | `src/snapshot/mod.rs:431` |
 | Git module | `src/git/mod.rs` - GitSession, GitStatus, git info in prompts | `src/git/mod.rs` |
 | Pricing service | `src/util/pricing.rs` - ModelPricing, calculate_cost | `src/util/pricing.rs` |
+| Auto-compact wrapper | Both `auto_compact()` and `auto_compact_sync()` exist | `src/agent/compaction.rs:550,594` |
+| ImageTool | IS registered in ToolRegistry::with_defaults() | `src/tool/mod.rs:102` |
+| Dialog::Stats | EXISTS in Dialog enum | `src/tui/app/types.rs:21` |
+
+### New Findings (2026-05-27 Architecture Review)
+
+These items were discovered during the 2026-05-27 architecture review and are NOT YET reflected in documentation:
+
+| Item | Status | Location | Notes |
+|------|--------|----------|-------|
+| MCP `connect_sse()` | Dead code | `src/mcp/remote.rs:698-740` | Defined but never called externally |
+| MCP `run_socket()` | Dead code | `src/mcp/ide_server.rs:121-144` | Unix socket server, never called |
+| MCP Debug command | Stub only | `src/mcp/cli.rs:309-318` | Only prints args, does NOT test connections |
+| OAuthManager sync methods | Silent error ignore | `src/mcp/auth.rs:119` | `let _ = load_tokens_sync()` ignores errors |
+| load_tokens_sync() usage | Actually used | `src/mcp/auth.rs:119` | Called in OAuthManager::new() but errors ignored |
+| WebSocket auth inconsistency | Bug | `src/server/ws.rs:103-106` vs `middleware/auth.rs:37-40` | HTTP allows no-token, WebSocket returns 500 |
+| StatsDialog | Missing | `/stats` command exists but no StatsDialog implementation | Dialog::Stats exists, no corresponding dialog file |
+| Snapshot restore() | Missing atomic write | `src/snapshot/mod.rs:292` | restore_to_path() uses temp+rename, restore() does not |
 
 ### Security Notes
 
 - **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
+- **WebSocket auth is stricter**: `src/server/ws.rs:103-106` returns 500 when no token configured, unlike HTTP middleware. This inconsistency should be reviewed for production deployments.
 
 ### CoreRequest Handler Attention Points
 

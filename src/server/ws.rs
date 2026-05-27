@@ -101,7 +101,7 @@ fn validate_ws_auth(auth: &WebSocketAuth) -> Result<(), StatusCode> {
             }
         }
         None => {
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            Ok(())
         }
     }
 

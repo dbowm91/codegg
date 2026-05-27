@@ -277,8 +277,43 @@ pub async fn uninstall(plugin_name: &str) -> Result<(), InstallError>;
 
 **Security Measures:**
 - Symlinks not allowed in archives or installation
-- Path traversal prevention via canonicalization checks
+- Path canonicalization checks prevent path traversal attacks
 - HTTP download support for `.wasm` files or `.tar.gz` archives
+
+### Path Canonicalization Security (`install.rs:136-156`)
+
+The installation process validates extracted paths to prevent directory traversal attacks:
+
+```rust
+fn validate_extracted_path(dest: &Path, entry_path: &Path) -> Result<PathBuf, InstallError> {
+    // Canonicalize the destination directory
+    let dest_canonical = dest.canonicalize()
+        .map_err(|e| InstallError::InvalidPath(format!("dest: {}", e)))?;
+
+    // Canonicalize the entry path (resolved against dest)
+    let entry_full = dest.join(entry_path);
+    let entry_canonical = entry_full.canonicalize()
+        .map_err(|e| InstallError::InvalidPath(format!("entry {}: {}", entry_path.display(), e)))?;
+
+    // Ensure the canonical path starts with the destination directory
+    if !entry_canonical.starts_with(&dest_canonical) {
+        return Err(InstallError::PathTraversal);
+    }
+
+    Ok(entry_canonical)
+}
+```
+
+This prevents attacks where malicious archive entries like `../../etc/passwd` could write outside the plugin directory.
+
+### Symlink Prevention (`install.rs:183-212`)
+
+Archive extraction rejects symlinks to prevent:
+- Symlink attacks: extracting `plugin.wasm` -> `/etc/passwd`
+- Time-of-check-time-of-use (TOCTOU) issues with relative path resolution
+- Arbitrary file overwrite via crafted archives
+
+The check verifies `entry.file_type().is_symlink()` returns false for all archive entries.
 
 ### tui.rs - TUI Extensions
 
@@ -348,7 +383,7 @@ impl PluginEventBus {
 
 ### builtin/mod.rs - Built-in Plugins
 
-**Location**: `src/plugin/builtin/mod.rs`
+**Location**: `src/plugin/builtin/mod.rs` (lines 1-137)
 
 Built-in plugins are native Rust handlers, not WASM:
 

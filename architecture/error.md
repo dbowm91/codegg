@@ -111,6 +111,7 @@ impl ProviderError {
         Self::Api { code: code.into(), message: message.into(), url: url.into() }
     }
 
+    // Note: api() sets url to String::new() (empty). Use api_with_url() when URL is available.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -192,6 +193,9 @@ impl McpError {
         )
     }
 }
+// Note: McpError::Encryption is NOT retryable (distinct from Connection/Server/ToolCall/OAuth/Timeout).
+// This is intentional because encryption failures typically require manual intervention.
+
 - **LspError**: ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json
 
 impl LspError {

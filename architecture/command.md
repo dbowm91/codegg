@@ -111,7 +111,7 @@ pub struct Command {
 }
 ```
 
-### Built-in Commands (39 total)
+### Built-in Commands (46 total)
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
@@ -146,16 +146,21 @@ pub struct Command {
 | `/context` | | View context window usage |
 | `/cost` | | View token usage and cost |
 | `/usage` | | View rate limits and quota |
+| `/stats` | | View session analytics and cost breakdown |
 | `/tui` | `fullscreen` | Toggle fullscreen mode |
-| `/loop` | | Schedule periodic task |
+| `/tts` | `voice` | Toggle text-to-speech |
+| `/loop` | | Schedule periodic task (e.g. /loop 5m "check status") |
 | `/tasks` | | List background tasks |
 | `/task-del` | | Delete background task |
 | `/memory` | | Memory dashboard |
-| `/memory-search` | | Search memories |
-| `/memory-list` | | List memories |
-| `/memory-remember` | | Remember something |
-| `/memory-forget` | | Forget a memory |
+| `/memory-search` | | Search memories (args: query) |
+| `/memory-list` | | List memories (args: namespace) |
+| `/memory-remember` | | Remember something (args: text) |
+| `/memory-forget` | | Forget a memory (args: id) |
 | `/memory-consolidate` | | Consolidate session into memories |
+| `/checkpoint` | | Create a checkpoint of current session |
+| `/pr` | | GitHub pull requests |
+| `/issue` | `bugs`, `features` | GitHub issues |
 
 ### Dynamic Commands
 
@@ -203,28 +208,6 @@ When a command with a template is executed:
 pub async fn find_command_files(base: &Path) -> Vec<Command>
 pub async fn load_command_from_file(path: &Path) -> Result<Command, String>
 ```
-
-## Historical Implementation Notes (2026-05-22)
-
-- **Async file loading**: `find_command_files()` and `load_command_from_file()` now use `tokio::fs` for async I/O
-- **`subtask` field deprecated**: Added `#[deprecated]` attribute to `subtask` field as it's not yet implemented
-- Fixed unused variable warnings in `load_command_from_file()` - refactored to tuple destructuring
-- Removed orphaned `src/tui/app/commands.rs` file (was never module-declared, contained duplicate command handlers)
-- Fixed non-deterministic HashMap iteration in template substitution (keys now sorted)
-- Added command name validation (rejects empty, whitespace, leading `/`)
-- Added logging for command loading failures
-- Empty `template:` in frontmatter now correctly falls back to markdown body
-- Improved duplicate detection across command sources
-
-The `CommandRegistry::normalize_name()` function lowercases the input and strips leading `/` characters, enabling case-insensitive matching and consistent command lookup:
-
-```rust
-fn normalize_name(name: &str) -> String {
-    name.trim().trim_start_matches('/').to_lowercase()
-}
-```
-
-This function is used in `find_by_name_or_alias()` for case-insensitive command/alias matching, and is applied when deduplicating commands from different sources.
 
 ## See Also
 

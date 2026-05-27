@@ -134,7 +134,7 @@ The `CoreRequest` enum (in `src/protocol/core.rs`) contains these variants:
 
 The `CoreEvent` enum (in `src/protocol/core.rs`) is published by the core and received by in-process subscribers via `subscribe()`.
 
-**Note**: Snapshot events (`SnapshotSession`, `SnapshotWorkspace`, `SnapshotModels`) are defined in `CoreEvent` but are **not published** via `map_app_event_to_core_event` at `src/core/mod.rs:728-841`. The mapping function returns `None` for snapshot events (they fall through to the catch-all `_ => None` case).
+**Note**: Snapshot events (`SnapshotSession`, `SnapshotWorkspace`, `SnapshotModels`) are defined in `CoreEvent` but are **not published** via `map_app_event_to_core_event` at `src/core/mod.rs:728-841`. The mapping function returns `None` for snapshot events (they fall through to the catch-all `_ => None` case). This is intentional because snapshot events are handled directly by the snapshot system in `src/snapshot/mod.rs` - they bypass the normal event publication flow and are instead triggered through explicit `CoreRequest::SnapshotSession`/`SnapshotWorkspace`/`SnapshotModels` requests. The snapshot subsystem manages its own event emission separately from the global event bus.
 
 **Snapshot Events:**
 - `SnapshotSession { session_id }` - Session state snapshot requested

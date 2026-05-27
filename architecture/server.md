@@ -189,7 +189,7 @@ The primary WebSocket for remote TUI communication. Handles bidirectional TuiMes
 | `Error` | `message: String` | Error message |
 | `ResyncRequired` | `reason`, `pending_permissions`, `pending_questions` | Client sync required |
 
-**Important Implementation Detail**: The server uses `TuiMessage::ResyncRequired` variant directly when serializing (not raw JSON). See `ws.rs:455-461` and `ws.rs:470-477`.
+**Important Implementation Detail**: The server uses `TuiMessage::ResyncRequired` variant directly when serializing (not raw JSON). See `ws.rs` WebSocket handler for the implementation.
 
 ### Auth Validation
 
@@ -462,10 +462,10 @@ pub enum ServerRuntimeError {
 
 ## Client Timeouts
 
-- **Health check timeout**: 10 seconds
-- **WebSocket connection timeout**: 30 seconds
+- **Health check timeout**: 10 seconds (HTTP client `connect_timeout` in `src/client/sdk.rs`)
+- **WebSocket connection timeout**: 30 seconds (tungstenite `connect_async` timeout in `src/client/attach.rs`)
 
-These timeouts are configured client-side (see `src/client/attach.rs`).
+These timeouts are configured client-side.
 
 ## See Also
 

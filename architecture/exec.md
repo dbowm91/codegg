@@ -166,7 +166,7 @@ Note: Error messages include execution duration in milliseconds for debugging pu
 If a `session_id` is provided via `ExecMode::new()`, it will be used. Otherwise, a new UUID is generated.
 
 ### Question Channel
-`loop_instance.setup_question_channel()` is called to enable question tool handling. Question tool timeout behavior is inherited from AgentLoop's general processing, not a specific 300-second timeout.
+`loop_instance.setup_question_channel()` is called to enable question tool handling. In exec mode, the question tool returns "[question not supported in exec mode]" immediately without waiting, as no question channel receiver is set up.
 
 ### Config Loading
 Config is loaded via `Config::load()` and errors are properly returned as `CONFIG_ERROR` rather than silently using defaults.

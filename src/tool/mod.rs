@@ -5,6 +5,7 @@
 //! services. Each tool implements the Tool trait with name, description, parameters,
 //! and execution logic.
 
+pub mod image;
 pub mod apply_patch;
 pub mod bash;
 pub mod batch;
@@ -98,6 +99,7 @@ impl ToolRegistry {
         registry.register(crate::tool::task::TaskTool::default());
         registry.register(crate::tool::webfetch::WebFetchTool::default());
         registry.register(crate::tool::websearch::WebSearchTool::default());
+        registry.register(crate::tool::image::ImageTool::default());
         registry.register(crate::tool::codesearch::CodeSearchTool);
         registry.register(crate::tool::question::QuestionTool);
         registry.register(crate::tool::todo::TodoTool::default());

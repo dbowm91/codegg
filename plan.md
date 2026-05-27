@@ -1,7 +1,7 @@
 # Implementation Plan
 
 **Status**: IN PROGRESS
-**Last Updated**: 2026-05-26
+**Last Updated**: 2026-05-27
 
 ---
 
@@ -78,800 +78,7 @@
 
 ---
 
-## Implementation Waves (Parallelization Strategy)
-
-The implementation is organized into **5 waves** to maximize parallel work:
-
-| Wave | Focus | Items | Parallel Potential |
-|------|-------|-------|-------------------|
-| 0 | Quick Wins | ~15 items | All independent |
-| 1 | Critical Security | ~10 items | 3 groups, items within group sequential |
-| 2 | High-Priority Infrastructure | ~12 items | Groups independent |
-| 3 | Medium-Priority Groups | ~25 items | Groups independent |
-| 4 | Large Refactors | 2 items | Sequential (large effort) |
-
----
-
-## Wave 0: Quick Wins (Under 2 Hours Each)
-
-These items are small, independent, and can be done in parallel by multiple agents.
-
-### QW-1: Delete Dead Code in TUI (5 min)
-- **File**: `src/tui/app/render.rs` (953 lines)
-- **Action**: File does not exist. Only `mod.rs`, `types.rs`, and `commands.rs` exist in `src/tui/app/`. No action needed - REMOVE THIS ITEM.
-
-### QW-2: Verify Redis Fallback Logic (15 min)
-- **File**: `src/server/ws.rs:168-178`
-- **Status**: VERIFIED CORRECT - if `REDIS_URL` is set → use Redis; otherwise → use in-memory. This is proper fallback behavior, not inverted.
-- **Action**: REMOVE THIS ITEM - no fix needed.
-
-### QW-3: Delete Duplicate handle_slash_command (30 min)
-- **Files**: `src/tui/app/commands.rs:62-288` and `323-536`
-- **Action**: Remove duplicate `handle_slash_command`, `on_paste()`, `on_resize()`
-- **Fix**: Keep one implementation, remove the duplicate
-
-### QW-4: Remove or Implement execute_command (15 min)
-- **File**: `src/tui/app/commands.rs:538-727`
-- **Issue**: `execute_command` appears unused - dead code
-- **Action**: Either implement it properly or remove it
-
-### QW-5: Fix Early Return Bug (15 min)
-- **File**: `src/tui/app/commands.rs:612-623`
-- **Issue**: Early return bypasses intended return value
-- **Action**: Fix the return statement logic
-
-### QW-6: Add DeniedTools Audit Log (30 min)
-- **File**: `src/tool/mod.rs` or wherever `filter_out()` is called
-- **Action**: Add `tracing::info!` when tools are filtered
-- **Reference**: Keep existing `denied_tools` enforcement
-
-### QW-7: Standardize DB Pool Size (5 min)
-- **Files**: `storage/mod.rs`, `session/store.rs`
-- **Issue**: `init()` uses 10, `Database::new()` uses 5
-- **Fix**: Standardize to single value (recommend 10)
-
-### QW-8: Make DoomLoop Threshold Configurable (30 min)
-- **Files**: `config/schema.rs`, `permission/mod.rs`
-- **Action**: Add `doomloop_threshold` to config schema
-- **Reference**: `DoomLoopDetector` at `permission/mod.rs:1162-1231`
-
-### QW-9: Add Config Watcher Debounce (1 hr)
-- **Files**: `config/schema.rs`, `config/watcher.rs`
-- **Action**:
-  - Add `debounce_duration_ms` config (default 500ms)
-  - Implement debounce using `tokio::time::sleep`
-  - Add content hash before reload
-  - Validate config before applying
-
-### QW-10: Fix Upgrade Duplicate Logic (30 min)
-- **Files**: `main.rs:549-590`, `upgrade/mod.rs`
-- **Action**: Refactor `cmd_upgrade()` to use module instead of duplicating logic
-
-### QW-11: Add Request Timeout to Upgrade (15 min)
-- **File**: `upgrade/mod.rs:72-78`
-- **Action**: Add `-m 300` (5 min timeout) to curl command
-
-### QW-12: Add Content Hash Before Reload (1 hr)
-- **File**: `config/watcher.rs`
-- **Action**: Hash content before triggering reload to avoid unnecessary reloads
-
-### QW-13: DoomLoop O(n) to O(1) Fix (1 hr)
-- **File**: `src/permission/mod.rs:1162-1231`
-- **Action**: Replace `VecDeque` iteration with `HashMap<String, usize>` for count tracking
-- **Impact**: Changes O(n) to O(1) for doomloop detection
-
-### QW-14: Rename/Mark PTY Module (15 min)
-- **Files**: `src/pty/`, `docs/ARCHITECTURE.md`
-- **Issue**: Module misleadingly named - no actual PTY functionality
-- **Action**: Update documentation to clarify actual functionality, or rename
-
-### QW-15: Fix Worktree is_current/is_detached (30 min)
-- **Files**: `src/worktree/mod.rs:36-56`
-- **Action**:
-  - Parse HEAD line to detect current worktree
-  - Set `is_detached=true` when HEAD points to commit (not branch)
-
----
-
-## Wave 1: Critical Security & Data Integrity (Week 1)
-
-Items in this wave address critical bugs that could cause data loss, security vulnerabilities, or crashes.
-
-### CRIT-1: Tool Module Security Fixes
-| Item | Location | Action |
-|------|----------|--------|
-| 1.1 | `tool/util.rs:26-28`, `tool/read.rs:99` | Use `check_path_for_symlinks()` before canonicalization to fix symlink bypass |
-| 1.2 | `tool/write.rs:80-115` | Re-validate final path after creation (TOCTOU fix) |
-| 1.3 | `tool/replace.rs:114-120` | Always validate `allowed_root` unless `unrestricted=true` |
-| 1.4 | `tool/diff.rs` | Add `unrestricted` field to `DiffTool` like other tools |
-| 1.5 | `tool/terminal.rs` | Add `HashSet<String>` for blocked commands (like `bash.rs:86-120`) |
-| 1.6 | `tool/bash.rs` | Check entire command string for allowlist bypass, not just first word |
-
-**Dependencies**: None - all independent
-
-### CRIT-2: Server Module Auth Middleware (CRITICAL)
-- **Files**: `src/server/middleware/auth.rs` (broken), `src/server/http.rs`, `src/server/ws.rs`
-- **Issues**:
-  - Auth middleware completely broken - wrong signature, undefined variables
-  - WebSocket auth returns 500 instead of 401/503
-  - Rate limiter cleanup race condition
-  - CORS config inconsistent (`cors` field unused, `cors_origins` used)
-- **Action**:
-  1. Rewrite `AuthMiddleware` as proper Axum middleware
-  2. Fix 500 → 401/503 in WebSocket auth
-  3. Add WebSocket message timeouts
-  4. Remove or use unused `cors` config field
-  5. Fix rate limiter cleanup to prevent unbounded growth
-
-### CRIT-3: Session Module Data Integrity
-- **Files**: `src/session/store.rs`
-- **Issues**:
-  - Race condition in `share_session` - UPSERT + set_share_url not atomic (line ~1290-1313)
-  - SQL construction pattern in `revert_to_message` - fragile dynamic SQL (line ~1114-1119)
-  - Missing error handling in `unrevert_session` transaction (line ~1412-1450)
-  - `CheckpointStore::save()` lacks transaction
-- **Action**:
-  1. Wrap `share_session` in transaction
-  2. Add transaction to `CheckpointStore::save`
-  3. Fix `revert_to_message` SQL construction
-  4. Add proper error handling in `unrevert_session`
-
-### CRIT-4: Storage/Database Race Conditions
-- **Files**: `src/storage/mod.rs:87-96`
-- **Issues**:
-  - Race condition in database creation - `std::fs::File::create` vs SQLite
-  - Inconsistent blocking I/O in async context
-  - Hardcoded connection pool limit (10)
-  - No WAL checkpoint configuration
-- **Action**:
-  1. Remove `std::fs::File::create` check - let SQLite handle creation atomically
-  2. Replace with `tokio::fs::File::create()`
-  3. Make `max_connections` configurable
-
-### CRIT-5: Memory Module Persistence
-- **Files**: `src/memory/mod.rs`
-- **Issues**:
-  - Race condition in `save()` - non-atomic file ops (line 119-151)
-  - `add()`/`delete()` don't persist - silent data loss (line 92-117)
-  - No file locking - multi-process corruption risk
-  - Namespace path traversal vulnerability (line 74-78)
-- **Action**:
-  1. Fix non-atomic save with temp file pattern (write to temp, rename)
-  2. Add auto-save option for add/delete
-  3. Add file locking for concurrent access
-  4. Add namespace path traversal validation
-
-### CRIT-6: Snapshot Module Persistence
-- **Files**: `src/snapshot/mod.rs`, `src/snapshot/diff.rs`
-- **Issues**:
-  - **No persistence** - snapshots lost on restart, in-memory `Vec` only
-  - `collect_files()` race condition - no depth limit, stack overflow risk
-  - MD5 hash for integrity - cryptographically weak
-  - **No restore functionality** - one-way capture only
-  - `diff_files()` creates single massive hunk for large files
-- **Action**:
-  1. Implement SQLite persistence for snapshots
-  2. Add depth limit to recursive file collection
-  3. Implement `restore(snapshot_id)` functionality
-  4. Upgrade MD5 to SHA-256 or BLAKE3
-
----
-
-## Wave 2: High-Priority Infrastructure (Week 2-3)
-
-### HIGH-1: MCP Automatic Reconnection
-- **Files**: `config/schema.rs`, `mcp/mod.rs`, `mcp/local.rs`, `mcp/remote.rs`
-- **Reference**: `remote.rs` has `reconnect()` method at line 470 - needs to be wired up
-- **Action**:
-  1. Add `reconnect_config` to `McpServerConfig` schema
-  2. Create `McpConnectionManager` actor in `mcp/connection.rs`
-  3. Implement exponential backoff retry
-  4. Add ping/pong heartbeat mechanism
-  5. Wire auto-reconnection into `McpService::connect()`
-  6. Add connection health tracking and status updates
-
-### HIGH-2: MCP Critical Fixes
-| Item | Location | Action |
-|------|----------|--------|
-| 2.1 | `mcp/local.rs:414-460` | Fix `LocalClient::read_loop` race condition on drop |
-| 2.2 | `mcp/ide_server.rs:79-113` | Replace blocking I/O in `IdeServer::run_stdio` with async |
-| 2.3 | `mcp/remote.rs:608-653` | Add timeout on SSE buffer to prevent memory exhaustion |
-| 2.4 | `mcp/remote.rs:179-193` | Fix or remove `McpConnectionManager::clone` (unsound) |
-| 2.5 | `mcp/auth.rs:318-332` | Fix OAuth replay protection race |
-
-### HIGH-3: Resilience Module Fixes
-- **Files**: `src/resilience/circuit.rs`
-- **Issues**:
-  - TOCTOU race in `is_available()` (line 67-84)
-  - Clone creates inconsistent snapshot (line 158-171)
-  - `success_count` not reset on HalfOpen
-  - Missing `Send + Sync` bounds
-- **Action**:
-  1. Use atomic compare-and-swap in `is_available()`
-  2. Implement transaction-like snapshot or atomic snapshot
-  3. Reset `success_count` when transitioning to HalfOpen
-  4. Add `static_assertions::assert_impl_all!(CircuitBreaker: Send, Sync)`
-
-### HIGH-4: Config Module Race Conditions
-- **Files**: `config/watcher.rs`, `config/schema.rs`, `config/paths.rs`
-- **Issues**:
-  - Race Condition in ConfigWatcher - closure captures `tx`, stored in `self.watcher` (line 55-76)
-  - Missing Error on Config Watch Failure - `start()` fails silently
-  - Hash Collision in Config Change Detection - `DefaultHasher` vulnerable to HashDOS
-  - Env Var Interpolation Silent Failure - missing env vars replaced with empty strings
-  - JSONC Comment Stripping Bug - `//` inside string values incorrectly stripped
-  - Config Migration is a No-Op - `migrate_from_v0()` only logs
-- **Action**:
-  1. Fix ConfigWatcher race condition (use `Arc<Mutex<...>>`)
-  2. Add error propagation in `recv()` for watch failures
-  3. Use a DoS-resistant hasher for config changes
-  4. Add warning for missing env vars
-  5. Fix JSONC stripping to not affect URLs
-  6. Implement actual migration logic
-
-### HIGH-5: Hooks Module - Emit Events
-- **Files**: `src/hooks/mod.rs`, `src/agent/loop.rs`
-- **Issues**:
-  - Unused hook events (`SessionStart`, `SessionEnd`, `AgentStart`, `AgentEnd`) never triggered
-  - Silent error swallowing - failures not logged (line 1326-1329, 1366-1370)
-  - `InlineScript` placeholder always fails
-  - No hook failure isolation - one failure stops subsequent hooks
-- **Action**:
-  1. Emit `SessionStart`/`SessionEnd` in `AgentLoop::run()`
-  2. Replace silent error swallowing with proper logging/tracing
-  3. Modify `run_hooks()` to execute all hooks and collect errors
-  4. Implement `InlineScript` or remove the variant
-
-### HIGH-6: Bus Module Memory Leak
-- **Files**: `src/bus/mod.rs`, `src/bus/global.rs`
-- **Issues**:
-  - Dead letter channels - memory leak if sender dropped without response (line 21-36, 70-85)
-  - Silent send failure when broadcast buffer (2048) is full
-  - Synchronous file I/O on every `publish()` call
-  - Unnecessary `async` on sync methods
-- **Action**:
-  1. Add TTL cleanup or use channel with drop notification
-  2. Log errors on broadcast failures or implement backpressure
-  3. Remove debug logging or make it async
-  4. Remove `async` from synchronous methods
-
-### HIGH-7: SSRF Implementation Duplication
-- **Files**: `src/security/ssrf.rs` (canonical), `src/tool/webfetch.rs:21-138` (duplicate), `src/mcp/remote.rs:45-95` (duplicate)
-- **Action**:
-  1. Audit all three implementations for differences
-  2. Move `validate_url_host()` from `mcp/remote.rs` to `security/ssrf.rs`
-  3. Replace `webfetch.rs` copy with re-export from `ssrf.rs`
-  4. Update MCP to use centralized SSRF module
-
----
-
-## Wave 3: Medium-Priority Groups (Week 4-8)
-
-Groups can be worked on in parallel by different agents. Items within a group may have dependencies.
-
-### GROUP-A: Security Hardening
-
-| Item | Files | Action |
-|------|-------|--------|
-| A-1 | `src/provider/google.rs:185-188` | Test `x-goog-api-key` header auth |
-| A-2 | `src/tool/bash.rs` | Add `${`, `$VAR` expansion blocking, block input redirect |
-| A-3 | `server/file.rs`, `tool/replace.rs`, `tool/grep.rs`, `tool/glob.rs` | Use `util.rs` validation, fix bypasses |
-| A-4 | `src/server/http.rs` | Restrict CORS `allow_methods` to required set |
-| A-5 | `src/plugin/loader.rs:156-162` | Fix mtime cache invalidation (use UNIX_EPOCH comparison) |
-| A-6 | `src/plugin/loader.rs:136` | Make `Module` `Send+Sync` or change caching strategy |
-| A-7 | `src/plugin/event_bus.rs:63-69` | Implement `dispatch_to_plugin` or remove dead code |
-
-### GROUP-B: Performance Optimization
-
-| Item | Files | Action |
-|------|-------|--------|
-| B-1 | `src/agent/loop.rs:48-80`, `src/tui/app/handlers.rs:~1990` | Use `LazyLock` for redact patterns |
-| B-2 | `src/storage/mod.rs:106-120` | Add PRAGMAs, LIMIT constraints |
-| B-3 | `agent/loop.rs`, `provider/mod.rs`, `tool/mod.rs` | Wrap `ToolCall`, `Message` fields in `Arc` |
-| B-4 | `src/provider/cache.rs` (new) | Create `ResponseCache` with `DashMap` |
-| B-5 | `src/provider/mod.rs:7-17` | Replace `debug_log!` macro with `tracing::debug!` |
-| B-6 | `src/provider/fallback.rs` | Add exponential backoff with jitter |
-| B-7 | `src/provider/sse_parser.rs:11-13` | Ensure parser not shared across concurrent streams |
-
-### GROUP-C: TUI Improvements
-
-| Item | Files | Action |
-|------|-------|--------|
-| C-1 | `tui/app/handlers.rs` (2543 lines) | Extract dialog handlers to trait objects |
-| C-2 | `tui/components/messages.rs` (1289 lines) | Split into smaller widgets |
-| C-3 | Various TUI files | Implement `Drop` for dialogs |
-| C-4 | `tui/mod.rs` | Add dirty region instead of full redraw |
-| C-5 | `tui/app/commands.rs:86,112` | Make hardcoded width 50 configurable |
-| C-6 | `src/tts/mod.rs:51` | Add cross-platform TTS provider abstraction |
-| C-7 | `src/tts/mod.rs:67-70` | Fix `stop()` race condition by awaiting child process |
-
-### GROUP-D: Agent Loop Improvements
-
-| Item | Files | Action |
-|------|-------|--------|
-| D-1 | `agent/compaction.rs` | Implement LLM-based summarization (current is placeholder) |
-| D-2 | `permission/mod.rs:1054-1128` | Decide behavior for DoomLoop doc mismatch, fix impl or docs |
-| D-3 | `tool/catalog.rs` (new) | On-demand tool discovery |
-| D-4 | `agent/worker.rs:278-303` | Review `process_request()` - it IS implemented (publishes events, returns success) |
-| D-5 | `agent/plan_registry.rs:85-97` | Implement or remove `PlanRegistry` |
-| D-6 | `agent/worker.rs:276` | Implement `start_workers()` |
-| D-7 | `agent/loop.rs:834-841` | Add MCP version hash for precise cache invalidation |
-| D-8 | `agent/compaction.rs:414` | Use configured model instead of hardcoded `gpt-4o-mini` |
-
-### GROUP-E: Provider System
-
-| Item | Files | Action |
-|------|-------|--------|
-| E-1 | `provider/*.rs` | Extract shared SSE parser utilities, create base trait |
-| E-2 | `provider/mod.rs` | Wire `context_window`, `max_output_tokens` |
-| E-3 | `provider/*.rs` | Add `ping` or `models` call on startup for health check |
-| E-4 | All 17 providers | Create shared base trait to reduce inconsistencies |
-| E-5 | `src/provider/google.rs:353` | Extract ID from API response, use UUID as fallback |
-
-### GROUP-F: IDE/LSP Fixes
-
-| Item | Files | Action |
-|------|-------|--------|
-| F-1 | `src/ide/ide.rs:53-60` | Fix temp file race with `mkstemp` or `tempfile` crate |
-| F-2 | `src/ide/ide.rs:78-107` | Fix JetBrains line range handling |
-| F-3 | `src/ide/ide.rs:65-66` | Remove unsafe `unwrap()` on temp path |
-| F-4 | `src/ide/ide.rs:97-98,116-117,132-133` | Escape paths for command arguments |
-| F-5 | `src/lsp/client.rs:451-457` | Fix request ID wrap-around race condition |
-| F-6 | `src/lsp/launch.rs:38` | Remove hardcoded PATH in server launch |
-| F-7 | `src/lsp/launch.rs` | Add stderr draining background task |
-| F-8 | `src/lsp/download.rs` | Add path traversal check to `extract_zip` |
-| F-9 | `src/lsp/operations.rs:388-391` | Fix `format_signature_help` panic on invalid params |
-
-### GROUP-G: Skills Module
-
-| Item | Files | Action |
-|------|-------|--------|
-| G-1 | `src/skills/mod.rs:18-24` | Add `permission: Option<SkillPermission>` to structs |
-| G-2 | `src/skills/mod.rs:59-84` | Replace `fs::read_dir()` with `tokio::fs::read_dir()` |
-| G-3 | `src/skills/mod.rs:156-167` | Add bounds checking in `parse_frontmatter` |
-| G-4 | `src/tool/skill.rs:44-47` | Cache `SkillIndex` instead of reloading on every call |
-
-### GROUP-H: Plugin Module
-
-| Item | Files | Action |
-|------|-------|--------|
-| H-1 | `src/plugin/api.rs:39-117` vs `hooks.rs:1-115` | Unify `HookType` definitions |
-| H-2 | `src/plugin/loader.rs:276-277` | Validate and canonicalize plugin paths |
-| H-3 | `src/plugin/service.rs:18` vs `loader.rs:14` | Align 5s service timeout with 30s WASM timeout |
-| H-4 | `src/plugin/loader.rs:204-226` | Use proper atomic operations for fuel budget |
-
-### GROUP-I: Client Module
-
-| Item | Files | Action |
-|------|-------|--------|
-| I-1 | `src/client/attach.rs:98,105-115` | Fix orphaned input channel - wire up or remove |
-| I-2 | `src/client/attach.rs:112` | Handle WebSocket send errors properly |
-| I-3 | `src/client/attach.rs:140-141` | Graceful task shutdown with `JoinSet` or `CancellationToken` |
-| I-4 | `attach.rs:87-89`, `sdk.rs:32-41` | Add connection timeouts |
-| I-5 | `src/client/attach.rs:75-146` | Add reconnection logic for WS drops |
-| I-6 | `attach.rs:149-171` | Fix URL scheme replacement edge cases |
-
----
-
-## Wave 4: Large Refactors (Deferred - 2+ weeks each)
-
-These are large efforts that should be done after Wave 3 is complete.
-
-### LARGE-1: Virtual Scrolling for Messages
-- **Files**: `src/tui/components/messages.rs`
-- **Effort**: 12-16 hours
-- **Action**:
-  - Pre-calculate line heights
-  - Use binary search for visible range
-  - Cache rendered lines
-  - Add virtual list widget
-
-### LARGE-2: String Interning System
-- **Files**: `src/provider/mod.rs`, `src/agent/`, `src/tool/`
-- **Effort**: 2-3 days
-- **Action**:
-  - Create `StringInterner` using `DashMap`
-  - Apply to repeated strings in provider, agent, tool modules
-
----
-
-## TUI Enhancement Features (SKIPPED - Future)
-
-These are enhancement features that build on Wave 3 TUI work.
-
-### TUI-1: Inline Diff Rendering (HIGH)
-- **Files**: `Cargo.toml`, `src/tui/components/diff.rs` (new), `src/tui/components/mod.rs`
-- **Action**:
-  - Add `similar = "3"` dependency for diff algorithm
-  - Create `diff.rs` widget
-  - Export from `mod.rs`
-- **Dependencies**: TUI C-1, C-2 (widget splitting)
-
-### TUI-2: Native Desktop Notifications (HIGH)
-- **Files**: `Cargo.toml`, `src/util/notifications.rs` (new), `src/tui/mod.rs`
-- **Action**:
-  - Add `notify-rust = "4.16"` dependency
-  - Create notifications module
-  - Wire `AppEvent::AgentFinished`, `AppEvent::SubagentCompleted`
-  - Add config option
-
-### TUI-3: Image Attachment Support (HIGH)
-- **Files**: `Cargo.toml`, `src/tui/components/image_preview.rs` (new), `src/tui/components/messages.rs`
-- **Action**:
-  - Add `ratatui-image = "10"` dependency
-  - Create image preview widget
-  - Render images in messages widget
-
-### TUI-4: Streaming UX Enhancements (MEDIUM)
-- **Files**: `src/tui/app/state/messages.rs`, `src/tui/mod.rs`, `src/tui/components/messages.rs`
-- **Action**:
-  - Add streaming state to `MessagesState`
-  - Newline-gated commit
-  - 75ms resize debounce
-  - Finalize on complete
-  - Live overlay rendering
-
-### TUI-5: Accessibility Improvements (MEDIUM)
-- **Files**: `src/tui/components/*.rs`, `src/tui/app/handlers.rs`, `src/util/a11y.rs` (new)
-- **Action**:
-  - Add focus indicator rendering
-  - Global Tab/Shift+Tab handler
-  - Screen reader announcer utility
-  - Announce dialog open/close
-
-### TUI-6: Mouse Support Enhancements (LOW)
-- **Files**: `src/tui/app/handlers.rs`, `src/tui/components/sidebar.rs`
-- **Action**:
-  - Scrollbar navigation (click/drag)
-  - Sidebar collapse (click on headers)
-  - Dialog buttons (click to activate)
-  - Selection (click to select items)
-
----
-
-## Agent Capabilities Features (In Progress)
-
-### AGENT-1: Context Summarization & Compaction (HIGH)
-- **Files**: `src/agent/compaction.rs`, `src/agent/loop.rs`, `src/config/schema.rs`
-- **Reference**: Claude Code three-tier system
-- **Action**:
-  - Add microcompaction tier (Tier 1: clear stale tool results)
-  - Create structured 9-section summary prompt
-  - Implement auto-compact trigger (~83%)
-  - Add rehydration - re-read 5 recent files
-  - Wire into AgentLoop context tracking
-- **Note**: Current `summarize_old_turns()` is placeholder
-
-### AGENT-2: Review Command (HIGH) - ✅ COMPLETED PR #33
-- **Files**: `src/tool/review.rs`, `src/tool/mod.rs`, `src/command/`
-- **Reference**: Claude Code `/review`, Codex `/review`
-- **Action**: ✅ Create `ReviewTool` struct, git diff parsing, review subagent, emoji categorization, `/review` slash command
-
-### AGENT-3: Multi-Agent Teams (HIGH) - ✅ COMPLETED PR #33
-- **Files**: `src/agent/teams.rs`, `src/tool/mod.rs`, `src/agent/mod.rs`, `src/config/schema.rs`
-- **Reference**: Claude Code TeamCreate + SendMessage
-- **Action**: ✅ Team directory structure, TeamCreate tool, SendMessage tool, shared task list, idle notifications, graceful shutdown
-  - Add shared task list with dependencies
-  - Add idle notification system
-  - Graceful shutdown protocol
-- **Note**: SubAgentPool and Task tool exist, need team coordination layer
-
-### AGENT-4: Tool Search / On-Demand Discovery (MEDIUM)
-- **Files**: `src/tool/catalog.rs` (new), `src/tool/mod.rs`, `src/agent/loop.rs`, `src/provider/`
-- **Reference**: Claude Code Tool Search
-- **Action**:
-  - Add `defer_loading` flag to tool definitions
-  - Create tool catalog index
-  - Implement ToolSearch tool
-  - Wire into AgentLoop build_tools
-  - Add MCP deferred loading
-
-### AGENT-5: Image Generation (MEDIUM)
-- **Files**: `src/tool/image.rs` (new)
-- **Reference**: Codex CLI built-in, Gemini CLI native
-- **Action**:
-  - Create ImageTool struct
-  - Integrate GPT Image API
-  - Add output path management
-  - Add transparent support
-
-### AGENT-6: GitHub Integration (MEDIUM)
-- **Files**: `config/`, `src/command/`, `src/command/github/` (new)
-- **Action**:
-  - Add GitHub MCP configuration
-  - Create `/pr`, `/issue` slash commands
-  - Add workflow templates
-
-### AGENT-7: Sandbox Security Modes (MEDIUM)
-- **Files**: `src/sandbox/mod.rs` (new), `src/sandbox/linux.rs` (new), `src/sandbox/mac.rs` (new), `src/tool/bash.rs`
-- **Reference**: Codex CLI native sandbox
-- **Action**:
-  - Three sandbox modes: `read-only`, `workspace-write`, `danger-full-access`
-  - Network access control
-  - Kernel-level enforcement (Landlock on Linux, Seatbelt on macOS)
-  - Sandbox escalation with approval integration
-
-### AGENT-8: TTS/Voice Integration (LOW)
-- **Files**: `src/tts/`, `src/hooks/`
-- **Action**:
-  - Hook Stop event for TTS
-  - Add voice input (STT)
-
----
-
-## Mode System Feature - ✅ COMPLETED PR #33
-
-### MODE-1: Extended Mode System (HIGH)
-- **Files**: `src/config/schema.rs`, `src/agent/mod.rs`, `src/tui/app/mod.rs`, `src/tui/app/handlers.rs`, `src/tui/command.rs`, `src/permission/mod.rs`
-- **Current**: Two modes (Plan, Build), toggle via Shift+Tab
-- **Target**: Five modes (Build, Plan, Review, Debug, Docs) with per-mode tool permissions
-- **Action**: ✅ `ModeConfig` structure, mode selection in agent loop, mode state in TUI, `/mode` command, mode-based permissions
-
----
-
-## Scripting/Exec Mode Feature - ✅ COMPLETED PR #33
-
-### EXEC-1: Non-Interactive Exec Mode (HIGH) - ✅ COMPLETED PR #33
-- **Files**: `src/main.rs`, `src/agent/mod.rs`, `src/exec.rs`
-- **Reference**: Codex CLI
-- **Action**: ✅ `exec` subcommand, `--json`, `--resume`, `--output-file`, exit codes, `--dangerously-bypass-approvals`
-
-### EXEC-2: Session Analytics & Cost Tracking (MEDIUM)
-- **Files**: `src/session/schema.rs`, `src/agent/processor.rs`, `src/tui/app/render.rs`, `src/tui/command.rs`
-- **Current**: In-memory token tracking, hardcoded pricing
-- **Action**:
-  - Add database migrations for usage persistence
-  - Emit usage to DB on each response
-  - Refactor pricing to service
-  - Add `/stats` command
-
-### EXEC-3: Token Caching Display (LOW)
-- **Files**: `src/provider/mod.rs`, `src/session/store.rs`, `src/tui/app/render.rs`
-- **Action**:
-  - Parse `prompt_tokens_details.cached_tokens` (OpenAI)
-  - Parse `cache_read_input_tokens` (Anthropic)
-  - Display cache hit rate in `/usage` or `/cost`
-
----
-
-## Plugin Marketplace Feature - ✅ COMPLETED PR #33
-
-### PLUGIN-1: Plugin Marketplace (MEDIUM)
-- **Files**: `src/plugin/marketplace.rs`, `src/plugin/registry.rs`, `src/command/clap.rs`, `src/command/plugin.rs`
-- **Action**: ✅ Three-tier system (Official, Repository, Personal), `codegg plugin install/search/list`, plugin discovery, local/remote storage
-
----
-
-## Model Variants & Routing (Future)
-
-### MODEL-1: Model Variants with Thinking (MEDIUM)
-- **Files**: `src/config/schema.rs`, `src/provider/mod.rs`, `src/provider/anthropic.rs`, `src/provider/openai.rs`, `src/tui/app/mod.rs`
-- **Current**: Basic variant structure exists at schema.rs:154, provider/mod.rs:191
-- **Action**:
-  - Extend `ModelVariant` with thinking/reasoning settings
-  - Add variant option builder for API parameters
-  - Add thinking parameter support to Anthropic
-  - Add `reasoning_effort` parameter to OpenAI
-
-### MODEL-2: Auto-Routing Model Selection (MEDIUM)
-- **Files**: `src/provider/router.rs` (new), `src/agent/mod.rs`, `src/config/schema.rs`
-- **Action**:
-  - Task complexity classification (Simple/Complex)
-  - Automatic model selection based on complexity
-  - Routing strategies
-
----
-
-## Git Integration Enhancement (Future)
-
-### GIT-1: Enhanced Git Integration (MEDIUM)
-- **Files**: `src/git/mod.rs` (new), `src/agent/prompt.rs`, `src/worktree/mod.rs`
-- **Action**:
-  - Git branch/status injection into system prompt
-  - Checkpoint system with shadow git repo
-  - Auto-worktree per session
-
----
-
-## Documentation (Future)
-
-### DOC-1: Conceptual Guides (Phase 1)
-| File | Content |
-|------|---------|
-| `docs/conceptual/agents-vs-skills.md` | When to use Agents, Skills, Subagents |
-| `docs/conceptual/mcp.md` | MCP system, Local vs Remote, OAuth, DNS rebinding |
-| `docs/conceptual/lsp.md` | 36+ languages, lsp_tool experimental flag |
-| `docs/conceptual/sessions.md` | Sessions (SQLite), Memory (cross-session) |
-| `docs/conceptual/permissions.md` | Three levels, path restrictions, DoomLoop |
-| `docs/conceptual/plugins.md` | WASM extensibility, fuel tracking, hook system |
-
-### DOC-2: Reference Documentation (Phase 2)
-| File | Content |
-|------|---------|
-| `docs/reference/configuration.md` | Complete config reference (expand ARCHITECTURE.md) |
-| `docs/reference/tools.md` | 27 tools with JSON schema |
-| `docs/reference/commands.md` | All 34 slash commands |
-| `docs/reference/environment.md` | All environment variables |
-
-### DOC-3: Workflow Guides (Phase 3)
-| File | Content |
-|------|---------|
-| `docs/workflows/quick-start.md` | Agent loop, context window, Plan vs Build |
-| `docs/workflows/debugging.md` | Debug workflow |
-| `docs/workflows/code-review.md` | Code review workflow |
-| `docs/workflows/refactoring.md` | Refactoring workflow |
-| `docs/workflows/tdd.md` | TDD workflow |
-
-### DOC-4: Operations & Troubleshooting (Phase 4)
-| File | Content |
-|------|---------|
-| `docs/operations/troubleshooting.md` | Common issues and solutions |
-| `docs/operations/security-hardening.md` | Production deployment, threat model |
-| `docs/operations/migration.md` | From Claude Code, Cursor |
-
-### DOC-5: README Improvements (Phase 5)
-- Replace feature lists with explanations
-- Add decision framework
-- Expand security section
-- Add migration section
-
----
-
-## Deferred Items (Large Rewrites Not Recommended)
-
-The following are large refactors that would require rewriting thousands of lines. They are deferred unless absolutely necessary:
-
-### Large Refactors (DEFERRED)
-- **handlers.rs refactor**: Splitting `src/tui/app/handlers.rs` (2543 lines) and `tui/app/mod.rs` (4487 lines)
-- **session/store.rs refactor**: Splitting `src/session/store.rs` (2005 lines)
-- **agent/loop.rs refactor**: Splitting `src/agent/loop.rs` (1296 lines)
-
-### TUI Features (DEFERRED)
-- **PTY Support**: Basic exists, full interactive not implemented
-- **UI Parity**: Leader keys, session tabs not implemented
-- **Headless Mode**: `--auto-approve` not implemented
-
-### Resilience (DEFERRED - Already Implemented)
-- **LLM Summarization**: ✅ IMPLEMENTED - `summarize_old_turns()` uses LLM-based summarization (see `src/agent/compaction.rs`)
-- **Checkpointing**: ✅ IMPLEMENTED - SnapshotManager wired to AgentLoop, captures snapshots before file-modifying tools
-- **CircuitBreaker Integration**: ✅ IMPLEMENTED - CircuitBreaker integrated into FallbackProvider (see `src/provider/fallback.rs`)
-
-### Cloud Tasks (DEFERRED)
-- **Cloud Tasks**: Requires significant infrastructure investment
-
----
-
-## Notes for Future Agents
-
-### Critical Implementation Notes
-
-1. **WASM Plugin Fuel**: Fuel is consumed per-hook execution. Unused fuel is returned after execution. Check `module_cache::CACHE` in `src/plugin/loader.rs`. `return_fuel()` uses `MAX_PLUGIN_FUEL_BUDGET`.
-
-2. **Async in TUI**: Command handlers are sync but use `TuiCommand` pattern to bridge to async handlers. Use `tui_cmd_tx.try_send(TuiCommand::YourCommand { ... })`.
-
-3. **Plan/Build Mode**: Controlled by `agent_state.plan_mode` in TUI and `state.plan_mode` in AgentLoop. Toggle via markers, `/plan` tool, or Shift+Tab.
-
-4. **LSP Diagnostics**: `DiagnosticsCollector` uses async mutex. `should_debounce()` is async.
-
-5. **Subagent Tasks**: Tasks are persisted to SQLite. `TaskStore` manages in-memory state. Task IDs are atomic u64 counters. Subagent `max_depth` limit (default: 3) prevents infinite recursion.
-
-6. **Adding TuiCommand variants**: Add to enum in `src/tui/app/mod.rs`, add async handler in `src/tui/mod.rs`, use `tui_cmd_tx.try_send()` from sync handlers.
-
-7. **Crypto Module**: `src/crypto/mod.rs` provides AES-256-GCM encryption (`encrypt_to_string`, `decrypt_from_string`).
-
-8. **Tool Path Validation**: `validate_path()` in `src/tool/util.rs` checks symlinks and verifies paths. `check_path_for_symlinks()` rejects symlink components.
-
-9. **Write Tool TOCTOU Fix**: Parent path validated BEFORE `create_dir_all()`.
-
-10. **Token Estimation**: `estimate_tokens_sync()` uses `TokenizerType` for model-specific multipliers. Claude: 1.4x, Gemini: 1.2x.
-
-### Implementation Notes from Review Sessions
-
-11. **`/compact` Command**: Wired to `TuiCommand::CompactSession`. Compaction happens during agent processing.
-
-12. **`/unshare` Command**: Fully implemented via `TuiCommand::UnshareSession` -> `handle_unshare_session()` -> `store.unshare_session()`.
-
-13. **`/export` Command**: Fully implemented via `TuiCommand::ExportSession` -> `handle_export_session()` -> `store.export_session()` -> clipboard.
-
-14. **`/fork` Command**: Fully wired to existing `TuiCommand::ForkSession` handler.
-
-15. **`/rename` Command**: Redirects to session dialog for user interaction.
-
-16. **ToolRegistry Caching**: Use `crate::tool::default_registry()` for singleton registry.
-
-17. **Tracing Instrumentation**: `#[tracing::instrument]` added to `AgentLoop::run()`, `execute_tool_calls()`, and `CircuitBreaker::call()`.
-
-18. **MCP reconnect wired**: HIGH-1 completed auto-reconnection with exponential backoff.
-
-19. **TUI render.rs dead code**: This was a duplicate of mod.rs - left as-is (large file, low priority deletion).
-
-20. **DoomLoop doc mismatch FIXED**: D-2 updated docs to correctly describe window-based counting behavior.
-
-21. **WebSocket rate limiter**: VERIFIED CORRECT - if `REDIS_URL` is set → use Redis; otherwise → use in-memory. Proper fallback behavior.
-
-22. **OAuth tokens verified good**: AES-256-GCM with CODEGG_TOKEN_KEY, file permissions 0o600.
-
-23. **Symlink bypass in tools**: `canonicalize_path()` in `util.rs` doesn't check intermediate symlinks. Use `check_path_for_symlinks()` before canonicalization.
-
-24. **TTS is macOS-only**: Currently uses hardcoded `say` command. Cross-platform abstraction needed.
-
-25. **Memory module doesn't persist**: `add()`/`delete()` in `src/memory/mod.rs` don't actually save to disk.
-
-26. **Commands.rs has duplicate code**: `handle_slash_command` appears twice (lines 62-288 and 323-536).
-
-27. **Agent `process_request()` is implemented**: It publishes `SubagentStarted`/`SubagentCompleted` events and returns `SubAgentResult::success()`. Review if behavior is correct.
-
-28. **PlanRegistry unused**: `wait_for_response()` has send-then-discard bug.
-
-29. **Bus module memory leak**: Dead letter channels if sender dropped without response.
-
-30. **Auth middleware broken**: Wrong signature and undefined variables in `src/server/middleware/auth.rs`.
-
-31. **Session `share_session` race**: UPSERT + set_share_url not atomic.
-
-32. **Snapshot no persistence**: In-memory only, lost on restart.
-
-33. **Storage race condition**: `std::fs::File::create` vs SQLite atomic creation.
-
-34. **IDE temp file race**: Predictable filenames, needs `mkstemp` or `tempfile` crate.
-
-35. **LSP request ID race**: Wrap-around issue in `client.rs:451-457`.
-
-36. **Config watcher race**: Closure captures `tx` before stored in `self.watcher`.
-
-### Testing Commands
-
-```bash
-# Always run before/after changes
-cargo build --all-features
-cargo clippy --all-features -- -D warnings
-cargo test --all-features
-
-# Specific feature testing
-cargo test --all-features -- --test-threads=1  # For integration tests
-
-# TUI tests
-cargo test tui::input
-cargo test tui
-cargo test messages
-
-# Run specific module tests
-cargo test --package codegg -- <module>_test_pattern
-```
-
-### Security Reminders
-
-- Security-sensitive changes require additional test coverage
-- SSRF protection follows RFC 6892
-- Command injection follows OWASP Cheat Sheets
-- Path traversal follows OWASP File Upload guidance
-- Feature gates: Changes to server/plugin modules need `--all-features` testing
-
----
-
-## Status Summary
-
-| Category | Status |
-|----------|--------|
-| Historical Completed | ✅ |
-| TUI Input Repair (Completed 2026-05-01) | ✅ |
-| TUI Scrolling Fix (Completed 2026-05-06) | ✅ |
-| TUI Message Flow (Completed 2026-05-05) | ✅ |
-| Wave 0: Quick Wins | ✅ COMPLETE |
-| Wave 1: Critical Security | ✅ COMPLETE |
-| Wave 2: High-Priority | ✅ COMPLETE |
-| Wave 3: Medium-Priority | ✅ COMPLETE |
-| Wave 4: Large Refactors | ⏳ DEFERRED |
-| TUI Enhancement Features | ⏳ SKIPPED |
-| Agent Capability Features | ✅ PARTIAL (AGENT-2, AGENT-3 done via PR #33) |
-| Mode/Exec Features | ✅ COMPLETE (MODE-1, EXEC-1 done via PR #33) |
-| Plugin Marketplace | ✅ COMPLETE (PLUGIN-1 done via PR #33) |
-| Architecture Review Items (2026-05-26) | ⏳ NEW - ~55 items |
-| Documentation | ⏳ FUTURE |
-
----
-
-## Implementation Completed (2026-05-06)
+## Implementation Completed 2026-05-06
 
 ### Wave 0: Quick Wins
 | PR | Item | Status | Notes |
@@ -924,20 +131,338 @@ cargo test --package codegg -- <module>_test_pattern
 
 ---
 
+## Architecture Review Items (New - 2026-05-27)
+
+This section consolidates ~72 items identified during architecture review sessions (batches 1-5). Items are grouped by module and organized into waves for parallelization.
+
+### Wave Structure
+
+| Wave | Focus | Items | Type | Parallel Potential |
+|------|-------|-------|------|-------------------|
+| R0 | Documentation-Only Fixes | ~25 items | Docs | All fully parallel |
+| R1 | Code Fixes (Low Risk) | ~15 items | Code/Docs | All fully parallel |
+| R2 | Code Fixes (Medium Risk) | ~20 items | Code/Docs | By module group |
+| R3 | Incomplete Implementation | ~12 items | Code | Some dependencies |
+
+---
+
+## Wave R0: Documentation-Only Fixes (~25 items)
+
+All items in this wave are pure documentation fixes - no code changes required. These can be done in parallel by multiple agents.
+
+### R0-DOCS-1: Count/Number Corrections
+
+| ID | Item | Location | Fix |
+|----|------|----------|-----|
+| B1-1 | Fix LSP server count: "40 servers" → "39 servers" | `architecture/lsp.md:229` | Change number |
+| B1-2 | Fix Session Lifecycle count: "(16 variants)" → "(19 variants)" | `architecture/protocol.md:69` | Change number |
+| B1-3 | Fix compaction docs inequality: "7 or more" → "more than 6" | `architecture/compaction.md:91` | Change inequality |
+| B3-1 | Fix built-in command count: "39" → "46" | `architecture/command.md` | Regenerate table |
+| B3-2 | Add missing commands to table: `/stats`, `/tts`, `/pr`, `/issue`, `/checkpoint` | `architecture/command.md` | Regenerate table |
+| B5-1 | Fix SSE Parser line numbers: "16-382" → "16-24" | `architecture/provider.md:526` | Update range |
+
+### R0-DOCS-2: Stale Reference Fixes
+
+| ID | Item | Location | Fix |
+|----|------|----------|-----|
+| B1-4 | Replace hook dispatch table line numbers with function names | `architecture/agent.md:621-628` | Use function names |
+| B1-5 | Replace all line number references with function/class names | `architecture/bus.md` | General cleanup |
+| B2-1 | Update app/mod.rs line count: "~5978" → "6003" | `architecture/tui.md` | Update count |
+| B2-2 | Update worktree.md line references: `is_git_file()` line 36→172, `is_git_worktree()` line 56→180 | `architecture/worktree.md:117` | Update line refs |
+| B4-1 | Fix stale line number references in server docs | `architecture/server.md` | Use more generic refs |
+| B4-2 | Verify client timeout code location and update reference | `architecture/server.md:465-468` vs `src/client/attach.rs` | Verify and fix |
+
+### R0-DOCS-3: Documentation Completeness
+
+| ID | Item | Location | Fix |
+|----|------|----------|-----|
+| B1-6 | Mark "Dead tui_config code removed" section as historical (dated 2026-05-22) | `architecture/config.md:247-249` | Add historical note |
+| B1-7 | Document ProviderConfig::merge() behavior (field-level merge vs full replace) | `architecture/config.md` | Add merge behavior docs |
+| B1-8 | Add note: multiedit exists but NOT in default ToolRegistry | `architecture/agent.md:818` | Add clarifying note |
+| B1-9 | Clarify shutdown sequence wording: "10x 100ms waits" → "up to 10 attempts with 100ms delays" | `architecture/agent.md:375-378` | Improve wording |
+| B1-10 | Clarify PermissionChecker struct range at line 392 | `architecture/permission.md:392` | Clarify range |
+| B1-11 | Document missing PermissionChecker methods (check_bash, check_git, check_with_args, always_allow_legacy, always_deny_legacy) | `architecture/permission.md:156-173` | Add to Key Methods |
+| B1-12 | Add InprocCoreClient field names to docs: subagent_pool, memory_store, bg_scheduler, pool | `architecture/core.md:37` | Add field names |
+| B1-13 | Explain why snapshot events are NOT mapped via map_app_event_to_core_event | `architecture/core.md` | Add explanation |
+| B1-14 | Add line number ranges for plugin builtin/mod.rs in Project Structure | `architecture/plugin.md` | Add line ranges |
+| B1-15 | Document path canonicalization security checks in Security table | `architecture/plugin.md:136-156,183-212` | Add security docs |
+| B2-3 | Add `resize_debounce: Option<std::time::Instant>` to UiState docs | `architecture/tui.md` | Add field to UiState section |
+| B2-4 | Update Component trait docs: `Send` → `Send + Any` | `architecture/tui.md:284` vs `src/tui/components/component.rs:84` | Update bound |
+| B2-5 | Add `Stats` variant to Dialog enum documentation | `architecture/tui.md:189-196` vs `src/tui/app/types.rs:21` | Add variant |
+| B2-6 | Add documentation for `pricing.rs`: ModelPricing struct, PricingService, calculate_cost() | `src/util/pricing.rs` | Document module |
+| B3-3 | Remove stale historical note about "Removed orphaned src/tui/app/commands.rs" | `architecture/command.md:212` | Remove stale content |
+| B3-4 | Document `/pr` and `/issue` use GitHub MCP templates | `architecture/command.md` | Add template docs |
+| B3-5 | Expand Shell Session architecture (currently brief 80 lines) | `architecture/shell_session.md` | Expand documentation |
+| B3-6 | Document memory eviction criteria (lowest importance when at limit) | `architecture/memory.md` | Add eviction policy |
+| B3-7 | Document consolidate_session limitations with binary data | `architecture/memory.md` | Add limitations section |
+| B4-3 | Document RateLimiter vs WsRateLimiter mutex implementation divergence | `architecture/server.md` | Add implementation note |
+| B4-4 | Update skills path docs for platform-specific paths (macOS: ~/Library/Application Support/) | `architecture/skills.md:44-56` | Update platform docs |
+| B4-5 | Document specific index names in session migration v1: session.project_idx, etc. | `architecture/session.md:192-199` | Add index names |
+| B4-6 | Fix migrate() pattern description to reflect actual version-check implementation | `architecture/session.md:206-216` | Update description |
+| B5-2 | Fix IPv6 unique local description: "fc00::/8 and fd00::/8" → "fc00::/7 (unique local: fc00::/8 and fd00::/8)" | `architecture/security.md:197` | Update range description |
+| B5-3 | Add CANONICAL_PATHS_CACHE known issue to security.md (already in AGENTS.md) | `architecture/security.md` | Sync known issues |
+| B5-4 | Clarify Question Channel immediate-answer behavior in exec docs | `architecture/exec.md:168-169` | Update docs |
+| B5-5 | Consider documenting EncryptedData visibility intent (struct not pub but fields are) | `architecture/crypto.md` | Document design intent |
+| B5-6 | Consider clarifying Argon2idParams last param is output key length | `architecture/crypto.md:63` | Add param explanation |
+| B5-7 | Consider clarifying ProviderError::api() url field behavior | `architecture/error.md:106-108` | Add clarification |
+| B5-8 | Note Encryption exclusion in McpError::is_retryable docs | `architecture/error.md:188-192` | Add note |
+
+---
+
+## Wave R1: Code Fixes - Low Risk (~15 items)
+
+These are code fixes that are isolated, low-risk, and can be done in parallel.
+
+### R1-CODE-1: Tool Module Fixes
+
+| ID | Item | Location | Type | Fix | Status |
+|----|------|----------|------|-----|--------|
+| B2-7 | ~~Fix ImageTool registration~~ | ~~`src/tool/image.rs`~~ | ~~Code~~ | ~~ImageTool IS registered - REMOVE~~ | VERIFIED FALSE - already registered |
+| B2-8 | Clarify tool count: ImageTool IS registered, so count is 27 not 26 | `architecture/tool.md:11,190` | Docs | Update count | VERIFIED CORRECT |
+
+### R1-CODE-2: Server Module Fixes
+
+| ID | Item | Location | Type | Fix | Status |
+|----|------|----------|------|-----|--------|
+| B4-7 | Fix WebSocket validate_ws_auth() inconsistency: returns 500 when no token configured, but HTTP allows | `src/server/ws.rs:103-106` | Code | Make consistent | NEW |
+
+### R1-CODE-3: Session Module Fixes
+
+| ID | Item | Location | Type | Fix | Status |
+|----|------|----------|------|-----|--------|
+| B4-8 | ~~Fix tool name in redact_for_export~~ | ~~`src/session/import.rs:133`~~ | ~~Code~~ | ~~Uses `terminal` correctly~~ | VERIFIED FALSE - code is correct |
+
+### R1-CODE-4: MCP Module Fixes
+
+| ID | Item | Location | Type | Fix | Status |
+|----|------|----------|------|-----|--------|
+| B3-8 | Wire up SSE event processing in agent loop (connect_sse() exists but never called) | `src/mcp/remote.rs:698-740` | Code/Docs | Wire to agent loop | UNIMPLEMENTED - dead code |
+| B3-9 | run_socket() exists but not called anywhere (Unix socket server for IDE MCP) | `src/mcp/ide_server.rs:121-144` | Code | Document or wire up | UNIMPLEMENTED - dead code |
+| B3-10 | McpCli Debug command is STUB only - doesn't actually test connections | `src/mcp/cli.rs:309-318` | Code | Implement properly or remove | STUB ONLY |
+
+### R1-CODE-5: Agent/Compaction Fixes
+
+| ID | Item | Location | Type | Fix |
+|----|------|----------|------|-----|
+| B1-16 | Remove auto_compact() wrapper or document why both exist | `src/agent/compaction.rs:550,594` | Code | Remove or document |
+| B3-10 | Verify OV-1: codegg_zen vs codegg_go naming in overview.md | `architecture/overview.md` | Docs | Verify and fix |
+
+### R1-CODE-6: Command Module Fixes
+
+| ID | Item | Location | Type | Fix | Status |
+|----|------|----------|------|-----|--------|
+| B2-9 | ~~Investigate /stats command~~ | ~~`src/tui/command.rs:147`~~ | ~~Code~~ | ~~Dialog::Stats EXISTS, but StatsDialog may not exist~~ | NEEDS VERIFY - Dialog exists but handler may not |
+
+### R1-CODE-7: Client Module Fixes
+
+| ID | Item | Location | Type | Fix | Status |
+|----|------|----------|------|-----|--------|
+| B3-11 | Add handle_remote_event line number to docs | `src/tui/app/mod.rs:794` | Docs | Add line ref | NEW |
+
+### R1-CODE-8: Snapshot Module Fixes
+
+| ID | Item | Location | Type | Fix | Status |
+|----|------|----------|------|-----|--------|
+| B2-10 | Update storage migration version in docs: "v1-v14" → "v1-v15" | `architecture/storage.md:106` | Docs | Update version | NEW - Verified actual is v1-v15 |
+
+---
+
+## Wave R2: Code Fixes - Medium Risk (~20 items)
+
+These involve actual code changes with moderate complexity. Grouped by module for parallelization.
+
+### R2-CODE-1: Snapshot Module (Code Changes)
+
+| ID | Item | Location | Type | Fix |
+|----|------|----------|------|-----|
+| B2-11 | Add atomic write pattern to restore() method (use temp file + rename like restore_to_path()) | `src/snapshot/mod.rs:292` | Code | Add atomic write |
+| B2-12 | Decide on unified hash algorithm (MD5 at line 431 vs SHA256 elsewhere) | `src/snapshot/mod.rs:431,143` | Code | Decide and unify |
+
+### R2-CODE-2: MCP Module (Incomplete Implementation)
+
+| ID | Item | Location | Type | Fix |
+|----|------|----------|------|-----|
+| B3-12 | Implement or remove McpCli Debug command (currently just prints message) | `src/mcp/cli.rs:309-318` | Code | Implement or remove |
+| B3-13 | OAuthManager sync methods unused: load_tokens_sync() and load_used_codes_sync() marked #[allow(dead_code)] | `src/mcp/auth.rs` | Code | Implement or remove |
+
+### R2-CODE-3: Exec Module (Documentation Clarification)
+
+| ID | Item | Location | Type | Fix |
+|----|------|----------|------|-----|
+| B5-9 | Error code count discrepancy: doc lists 25 but implementation has 26 (CLIPBOARD_ERROR, TUI_ERROR) | `architecture/exec.md:124-154` | Docs | Update count |
+
+### R2-CODE-4: Server Module (Documentation vs Code)
+
+| ID | Item | Location | Type | Fix |
+|----|------|----------|------|-----|
+| B4-9 | Clarify auth middleware docs: "allow when no token" applies to HTTP only, not WebSocket | `src/server/middleware/auth.rs:37-40` | Docs | Clarify behavior |
+
+### R2-CODE-5: Config/Provider Module
+
+| ID | Item | Location | Type | Fix |
+|----|------|----------|------|-----|
+| B5-10 | Verify ProviderConfig::api_key(prefix) method exists at schema.rs | `src/config/schema.rs` | Code | Verify and document |
+
+---
+
+## Wave R3: Incomplete Implementation (~12 items)
+
+These items involve incomplete implementations that may require more design work.
+
+### R3-IMPL-1: MCP SSE Integration (High Priority)
+
+| ID | Item | Location | Issue | Action |
+|----|------|----------|-------|--------|
+| B3-12 | connect_sse() exists but never called automatically - no consumer for take_sse_events() in agent loop | `src/mcp/remote.rs:698-740` | Dead code | Wire SSE events to agent loop OR document limitation |
+
+### R3-IMPL-2: IdeServer Socket (Medium Priority)
+
+| ID | Item | Location | Issue | Action |
+|----|------|----------|-------|--------|
+| B3-13 | run_socket() returns Ok(()) without socket handling - Unix socket server for IDE MCP not wired up | `src/mcp/ide_server.rs:121-144` | Unused | Implement IDE integration or remove from docs |
+
+### R3-IMPL-3: MCP Debug Command (Medium Priority)
+
+| ID | Item | Location | Issue | Action |
+|----|------|----------|-------|--------|
+| B3-14 | McpCli Debug command just prints arguments and help message - does NOT test connections | `src/mcp/cli.rs:309-318` | Stub | Implement actual connection test OR strip from CLI |
+
+### R3-IMPL-4: OAuth Sync Methods (Low Priority - Previously Overlooked)
+
+| ID | Item | Location | Issue | Action |
+|----|------|----------|-------|--------|
+| B3-15 | load_tokens_sync() called in OAuthManager::new() at auth.rs:119 but errors silently ignored via `let _` | `src/mcp/auth.rs:119` | Silent error | Handle errors properly or remove sync method |
+
+### R3-IMPL-5: Pricing Module Documentation (Medium Priority)
+
+| ID | Item | Location | Issue | Action |
+|----|------|----------|-------|--------|
+| B2-11 | pricing.rs (84 lines) completely undocumented | `src/util/pricing.rs` | Missing docs | Add comprehensive documentation |
+
+### R3-IMPL-6: Server Route Verification (Low Priority)
+
+| ID | Item | Location | Issue | Action |
+|----|------|----------|-------|--------|
+| B2-12 | Verify src/server/routes/workspace.rs and project.rs exist and use is_git_file/is_git_worktree | `architecture/worktree.md:117-118` | May be stale | Verify and update or remove references |
+
+---
+
+## Summary by Module
+
+| Module | R0-Docs | R1-Code | R2-Code | R3-Impl | Total |
+|--------|---------|---------|---------|---------|-------|
+| Agent | 3 | 1 | - | - | 4 |
+| Bus | 1 | - | - | - | 1 |
+| Client | 1 | - | - | - | 1 |
+| Command | 2 | - | - | - | 2 |
+| Compaction | 1 | - | - | - | 1 |
+| Config | 1 | - | 1 | - | 2 |
+| Core | 2 | - | - | - | 2 |
+| Crypto | 2 | - | - | - | 2 |
+| Error | 2 | - | - | - | 2 |
+| Exec | 1 | - | 1 | - | 2 |
+| Hooks | 1 | - | - | - | 1 |
+| IDE/LSP | - | - | - | - | 0 |
+| MCP | 1 | 3 | - | 4 | 8 |
+| Memory | 2 | - | - | - | 2 |
+| Permission | 2 | - | - | - | 2 |
+| Plugin | 2 | - | - | - | 2 |
+| Provider | 1 | - | 1 | - | 2 |
+| Security | 2 | - | - | - | 2 |
+| Server | 4 | 1 | 1 | - | 6 |
+| Session | 2 | - | - | - | 2 |
+| Shell Session | 1 | - | - | - | 1 |
+| Skills | 1 | - | - | - | 1 |
+| Storage | 1 | - | - | - | 1 |
+| Snapshot | - | - | 2 | - | 2 |
+| TTS | - | - | - | - | 0 |
+| Tool | 1 | - | - | - | 1 |
+| TUI | 4 | 1 | - | - | 5 |
+| Upgrade | - | - | - | - | 0 |
+| Util | 1 | - | - | - | 1 |
+| Worktree | 1 | - | - | 1 | 2 |
+| **Total** | **38** | **6** | **5** | **5** | **54** |
+
+---
+
+## Status Summary
+
+| Category | Status |
+|----------|--------|
+| Historical Completed | ✅ |
+| TUI Input Repair (Completed 2026-05-01) | ✅ |
+| TUI Scrolling Fix (Completed 2026-05-06) | ✅ |
+| TUI Message Flow (Completed 2026-05-05) | ✅ |
+| Wave 0-3 Original Plan | ✅ COMPLETE |
+| Wave R0: Documentation-Only | ⏳ NEW - ~38 items |
+| Wave R1: Code Fixes (Low Risk) | ⏳ NEW - ~6 items |
+| Wave R2: Code Fixes (Medium Risk) | ⏳ NEW - ~5 items |
+| Wave R3: Incomplete Implementation | ⏳ NEW - ~5 items |
+| Wave 4: Large Refactors | ⏳ DEFERRED |
+| Agent Capabilities | ✅ PARTIAL |
+| Documentation | ⏳ FUTURE |
+
+---
+
 ## Consolidated Statistics
 
 | Metric | Value |
 |--------|-------|
 | Waves 0-3 Completed | ✅ All (via 25+ PRs) |
-| Architecture Review Items | ~55 new items (ARCH-1 to ARCH-3) |
-| Future Features | ~15 items remaining |
+| Architecture Review Items (R0-R3) | ~54 new items |
+| Documentation-Only (R0) | ~38 items |
+| Code Changes Required | ~16 items (R1+R2+R3) |
 | PRs Created (Waves 0-3 + Features) | 33 |
 | Wave 4 (Large Refactors) | ⏳ DEFERRED |
-| TUI Enhancement | ⏳ SKIPPED |
-| Agent Capabilities | ✅ Partial (2/8 done) |
-| Mode/Exec Features | ✅ Complete (MODE-1, EXEC-1) |
-| Plugin Marketplace | ✅ Complete (PLUGIN-1) |
-| Documentation | ⏳ FUTURE |
+
+---
+
+## Notes for Future Agents
+
+### Architecture Review Items Guidance
+
+1. **R0 items are pure documentation** - no code changes, safe to do in parallel
+2. **R1 items are isolated code fixes** - can be done in parallel, low risk
+3. **R2 items involve actual code changes** - review carefully before merging
+4. **R3 items are incomplete implementations** - may need design discussion before implementation
+5. **Batches 1-5 review files are source of truth** - see:
+   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch1.md`
+   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch2.md`
+   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch3.md`
+   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch4.md`
+   - `/var/folders/2j/dlwhrpps66scv9bw8f7vdfg40000gq/T/opencode/consolidated_batch5.md`
+
+### Critical Implementation Notes (From AGENTS.md)
+
+1. **WASM Plugin Fuel**: Fuel is consumed per-hook execution. Unused fuel is returned after execution. Check `module_cache::CACHE` in `src/plugin/loader.rs`. `return_fuel()` uses `MAX_PLUGIN_FUEL_BUDGET`.
+
+2. **Async in TUI**: Command handlers are sync but use `TuiCommand` pattern to bridge to async handlers. Use `tui_cmd_tx.try_send(TuiCommand::YourCommand { ... })`.
+
+3. **Plan/Build Mode**: Controlled by `agent_state.plan_mode` in TUI and `state.plan_mode` in AgentLoop. Toggle via markers, `/plan` tool, or Shift+Tab.
+
+4. **LSP Diagnostics**: `DiagnosticsCollector` uses async mutex. `should_debounce()` is async.
+
+5. **Subagent Tasks**: Tasks are persisted to SQLite. `TaskStore` manages in-memory state. Task IDs are atomic u64 counters. Subagent `max_depth` limit (default: 3) prevents infinite recursion.
+
+6. **Adding TuiCommand variants**: Add to enum in `src/tui/app/mod.rs`, add async handler in `src/tui/mod.rs`, use `tui_cmd_tx.try_send()` from sync handlers.
+
+7. **Crypto Module**: `src/crypto/mod.rs` provides AES-256-GCM encryption (`encrypt_to_string`, `decrypt_from_string`).
+
+8. **Tool Path Validation**: `validate_path()` in `src/tool/util.rs` checks symlinks and verifies paths. `check_path_for_symlinks()` rejects symlink components.
+
+9. **Write Tool TOCTOU Fix**: Parent path validated BEFORE `create_dir_all()`.
+
+10. **Token Estimation**: `estimate_tokens_sync()` uses `TokenizerType` for model-specific multipliers. Claude: 1.4x, Gemini: 1.2x.
+
+### Known Issues (Previously Documented - Confirmed Accurate)
+
+| Issue | Location | Status |
+|-------|----------|--------|
+| PermissionRegistry/QuestionRegistry lack session_id in keys | `src/bus/mod.rs` | CONFIRMED |
+| check_external_directory unused | `src/permission/mod.rs:1237-1248` | CONFIRMED |
+| PermissionResponse unused | `src/permission/mod.rs:1141-1145` | CONFIRMED |
+| ToolExecutor deprecated | `src/tool/executor.rs:8` | CONFIRMED |
+| STATIC CANONICAL_PATHS_CACHE never clears | `src/security/sandbox.rs:237` | CONFIRMED - needs docs sync |
 
 ---
 

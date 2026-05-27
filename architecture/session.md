@@ -202,6 +202,8 @@ src/session/
 | permission_time_idx | permission | time_created, time_updated |
 | cached_models_provider_idx | cached_models | provider |
 
+**Note**: Index names are defined by migrations. For example, `session_project_idx` is created in migration v1, `session_title_idx` and `session_slug_idx` in v2, etc.
+
 ---
 
 ## Migration System
@@ -211,12 +213,13 @@ The migration system resides in `src/session/schema.rs` and implements a sequent
 ### Migration Flow
 
 ```
-migrate() -> migrate_and_record() -> migrate_vN()
-                                 -> update migration_version
+migrate() -> reads version -> for each version N not applied:
+    migrate_and_record(N) -> calls migrate_vN() in transaction
+                            -> updates migration_version table
 ```
 
 1. `migrate()` checks current version from `migration_version` table
-2. For each version not yet applied, calls `migrate_and_record(pool, version)`
+2. Iterates through versions 1..N sequentially, calling `migrate_and_record()` for each unapplied version
 3. `migrate_and_record()` wraps each migration in a transaction:
    - BEGIN IMMEDIATE
    - Execute migration

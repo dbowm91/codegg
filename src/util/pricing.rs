@@ -1,17 +1,30 @@
 use std::collections::HashMap;
 
+/// Pricing data for a single model.
+///
+/// All prices are in USD per million tokens.
 #[derive(Debug, Clone)]
 pub struct ModelPricing {
+    /// Price per million input tokens
     pub input_per_m: f64,
+    /// Price per million output tokens
     pub output_per_m: f64,
+    /// Discount factor for cached tokens (0.0 = no discount, 1.0 = free)
     pub cached_discount: f64,
 }
 
+/// Service for calculating LLM API costs based on token usage.
+///
+/// Provides pricing for major providers: OpenAI, Anthropic, Google, and MiniMax.
+/// Pricing is looked up by provider/model key (e.g., "openai/gpt-4o").
 pub struct PricingService {
     rates: HashMap<String, ModelPricing>,
 }
 
 impl PricingService {
+    /// Creates a new PricingService with default pricing rates for known models.
+    ///
+    /// Covers OpenAI (GPT-4, GPT-3.5, o1, o3), Anthropic (Claude), Google (Gemini), and MiniMax.
     pub fn new() -> Self {
         let mut rates = HashMap::new();
 
@@ -44,6 +57,30 @@ impl PricingService {
         Self { rates }
     }
 
+    /// Calculates the cost in USD for an API call.
+    ///
+    /// # Arguments
+    ///
+    /// * `provider` - Provider name (e.g., "openai", "anthropic")
+    /// * `model` - Model name (e.g., "gpt-4o", "claude-sonnet")
+    /// * `input_tokens` - Total input tokens (including cached)
+    /// * `output_tokens` - Output tokens consumed
+    /// * `cached_tokens` - Portion of input tokens that were cached
+    ///
+    /// # Returns
+    ///
+    /// Cost in USD, or 0.0 if the model is not found in the pricing table.
+    ///
+    /// # Pricing Formula
+    ///
+    /// ```text
+    /// input_cost = ((non_cached_input / 1_000_000) * input_per_m)
+    ///            + ((cached_input / 1_000_000) * input_per_m * cached_discount)
+    /// output_cost = (output_tokens / 1_000_000) * output_per_m
+    /// total = input_cost + output_cost
+    /// ```
+    ///
+    /// Where `non_cached_input = input_tokens - cached_tokens`.
     pub fn calculate_cost(
         &self,
         provider: &str,

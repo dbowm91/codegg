@@ -66,7 +66,7 @@ Located in `src/protocol/core.rs`. Variant count: **35**.
 pub enum CoreRequest { ... }
 ```
 
-### Session Lifecycle (16 variants)
+### Session Lifecycle (19 variants)
 - `Initialize` - Initialize session
 - `Subscribe { session_id }` - Subscribe to session events
 - `Resume { session_id, from_event_seq }` - Resume from event sequence
