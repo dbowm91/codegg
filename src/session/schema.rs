@@ -64,6 +64,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 14 {
         migrate_and_record(pool, 14).await?;
     }
+    if current_version < 15 {
+        migrate_and_record(pool, 15).await?;
+    }
 
     Ok(())
 }
@@ -90,6 +93,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             12 => migrate_v12(pool).await?,
             13 => migrate_v13(pool).await?,
             14 => migrate_v14(pool).await?,
+            15 => migrate_v15(pool).await?,
             _ => return Err(StorageError::Migration(format!("unknown migration version {}", version))),
         }
         sqlx::query(
@@ -505,6 +509,35 @@ async fn migrate_v13(pool: &SqlitePool) -> Result<(), StorageError> {
 
 async fn migrate_v14(pool: &SqlitePool) -> Result<(), StorageError> {
     sqlx::query("ALTER TABLE task ADD COLUMN allowed_paths TEXT")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v15(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS usage (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            cached_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL NOT NULL,
+            timestamp INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS usage_session_idx ON usage(session_id)")
         .execute(pool)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;

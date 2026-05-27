@@ -159,6 +159,7 @@ clap_complete = "4.6.2"
 
 # Image support (optional)
 ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"], optional = true }
+image = { version = "0.25", optional = true, features = ["png", "jpeg", "gif", "webp"] }
 num-traits = "0.2.19"
 
 [dev-dependencies]
@@ -176,7 +177,7 @@ server = [
     "tower-http",
     "tokio-tungstenite",
 ]
-image = ["dep:ratatui-image"]
+image = ["dep:ratatui-image", "dep:image"]
 
 [profile.release]
 lto = true

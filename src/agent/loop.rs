@@ -568,6 +568,8 @@ pub struct AgentLoop {
     model_router: ModelRouter,
     snapshot_manager: Option<crate::snapshot::SnapshotManager>,
     file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
+    usage_store: Option<Arc<crate::session::UsageStore>>,
+    pricing_service: crate::util::pricing::PricingService,
 }
 
 impl AgentLoop {
@@ -610,7 +612,7 @@ impl AgentLoop {
         let model_router = ModelRouter::from_config(&config);
 
         let snapshot_manager = if config.snapshot.unwrap_or(false) {
-            if let Some(pool) = pool {
+            if let Some(pool) = pool.clone() {
                 let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let options = config
                     .snapshot_config
@@ -628,6 +630,9 @@ impl AgentLoop {
         } else {
             None
         };
+
+        let usage_store = pool.map(|p| Arc::new(crate::session::UsageStore::new(p)));
+        let pricing_service = crate::util::pricing::PricingService::new();
 
         Self {
             agents: map,
@@ -666,6 +671,8 @@ impl AgentLoop {
             model_router,
             snapshot_manager,
             file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
+            usage_store,
+            pricing_service,
         }
     }
 
@@ -842,6 +849,10 @@ impl AgentLoop {
             })??;
         let mut events = Vec::with_capacity(64);
         let session_id_arc: Arc<str> = Arc::from(self.session_id.as_str());
+        let model_name = request.model.clone();
+        let provider_name = self.provider.name().to_string();
+        let usage_store = self.usage_store.clone();
+        let pricing_service = crate::util::pricing::PricingService::new();
 
         use futures::StreamExt;
         let mut stream = stream;
@@ -890,6 +901,40 @@ impl AgentLoop {
                                 output_tokens: Some(usage.output_tokens),
                                 cached_tokens: usage.cached_tokens,
                             });
+
+                            if let Some(ref store) = usage_store {
+                                let session_id = self.session_id.clone();
+                                let model = model_name.clone();
+                                let provider = provider_name.clone();
+                                let input_tokens = usage.input_tokens as i64;
+                                let output_tokens = usage.output_tokens as i64;
+                                let cached_tokens = usage.cached_tokens.unwrap_or(0) as i64;
+                                let cost_usd = pricing_service.calculate_cost(
+                                    &provider,
+                                    &model,
+                                    input_tokens,
+                                    output_tokens,
+                                    cached_tokens,
+                                );
+                                let timestamp = chrono::Utc::now().timestamp_millis();
+                                let record = crate::session::UsageRecord {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    session_id,
+                                    provider,
+                                    model,
+                                    input_tokens,
+                                    output_tokens,
+                                    cached_tokens,
+                                    cost_usd,
+                                    timestamp,
+                                };
+                                let store = store.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = store.insert(record).await {
+                                        tracing::error!("failed to insert usage record: {}", e);
+                                    }
+                                });
+                            }
                         }
                         _ => {}
                     }

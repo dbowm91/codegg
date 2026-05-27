@@ -62,6 +62,11 @@ impl Command {
         self
     }
 
+    pub fn with_template(mut self, template: &str) -> Self {
+        self.template = Some(template.to_string());
+        self
+    }
+
     pub fn all_names(&self) -> Vec<&str> {
         let mut names = vec![self.name.as_str()];
         names.extend(self.aliases.iter().map(|s| s.as_str()));
@@ -139,6 +144,8 @@ impl CommandRegistry {
                 .with_description("View token usage and cost"),
             Command::new("/usage", CommandCategory::Session, None)
                 .with_description("View rate limits and quota"),
+            Command::new("/stats", CommandCategory::Session, Some(Dialog::Stats))
+                .with_description("View session analytics and cost breakdown"),
             Command::new("/tui", CommandCategory::System, None)
                 .with_aliases(&["fullscreen"])
                 .with_description("Toggle fullscreen mode"),
@@ -163,6 +170,15 @@ impl CommandRegistry {
                 .with_description("Forget a memory (args: id)"),
             Command::new("/memory-consolidate", CommandCategory::Session, None)
                 .with_description("Consolidate session into memories"),
+            Command::new("/checkpoint", CommandCategory::Session, None)
+                .with_description("Create a checkpoint of current session"),
+            Command::new("/pr", CommandCategory::Agent, None)
+                .with_description("GitHub pull requests")
+                .with_template("Use GitHub MCP (mcp__github) to {args}"),
+            Command::new("/issue", CommandCategory::Agent, None)
+                .with_aliases(&["/bugs", "/features"])
+                .with_description("GitHub issues")
+                .with_template("Use GitHub MCP (mcp__github) to {args}"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

@@ -18,6 +18,7 @@ pub enum Dialog {
     Context,
     Cost,
     Usage,
+    Stats,
     Goto,
     Plan,
     Diff,
@@ -45,6 +46,7 @@ impl Dialog {
                 | Self::Context
                 | Self::Cost
                 | Self::Usage
+                | Self::Stats
                 | Self::Goto
                 | Self::Plan
                 | Self::Diff

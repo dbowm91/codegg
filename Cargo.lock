@@ -1014,6 +1014,7 @@ dependencies = [
  "html2text",
  "http",
  "ignore",
+ "image",
  "json5",
  "libc",
  "lsp-server",
