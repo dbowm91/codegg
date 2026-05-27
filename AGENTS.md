@@ -103,7 +103,7 @@ These items are important for future agents to know when working with the codeba
 |-------|----------|--------|
 | **ToolExecutor exists but unused** | `src/tool/executor.rs:8` | DEPRECATED - to be removed |
 | **TTS init ignores providers** | `src/tts/mod.rs:45-49` | Known issue |
-| **TTS stop() silent failure** | `src/tts/mod.rs:85-103` | Known issue |
+| TTS stop() silent failure | `src/tts/mod.rs:85-103` | ✅ FIXED - returns Err on pkill failure |
 | **PermissionResponse unused** | `src/permission/mod.rs:1141-1145` | Known issue |
 | **check_external_directory unused** | `src/permission/mod.rs:1237-1248` | Known issue |
 | **Static CANONICAL_PATHS_CACHE never clears** | `src/security/sandbox.rs:237` | Known issue |
@@ -117,7 +117,7 @@ These items are important for future agents to know when working with the codeba
 
 2. **Documentation can become stale** - Struct fields get added/removed; always compare architecture docs against actual source code.
 
-3. **Counts should be verified** - Component/dialog counts (TUI), server counts (LSP), command counts can drift from reality. When fixing documentation, count from actual source files, not from other documentation. **UiState has 25 fields** (not 21 as some docs claim).
+3. **Counts should be verified** - Component/dialog counts (TUI), server counts (LSP), command counts can drift from reality. When fixing documentation, count from actual source files, not from other documentation. **UiState has 26 fields** (not 25 as some docs claim). `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct.
 
 4. **Line numbers in docs are fragile** - References like `watcher.rs:157-158` should be verified; they can be off by several lines. Use code search to find exact locations.
 
@@ -144,11 +144,11 @@ These items were verified during review sessions:
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
-| UiState fields | All documented fields present (25 fields) | `src/tui/app/state/ui.rs:27-74` |
+| UiState fields | 26 fields | `src/tui/app/state/ui.rs:27-76` |
 | Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
 | CoreEvent has subagent variants | SubagentStarted, SubagentCompleted | `src/protocol/core.rs:244,256` |
 | map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
-| SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1197-1201` |
+| SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1216-1220` |
 | hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
 | Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
@@ -156,7 +156,7 @@ These items were verified during review sessions:
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
 | Built-in command count | 41 | `src/tui/command.rs:79-162` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
-| Timeline fields location | `timeline_visible` and `timeline_selected` are in `App` struct, NOT `UiState` | `src/tui/app/mod.rs:232-233` |
+| Timeline fields location | `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct | `src/tui/app/state/ui.rs:62-63` |
 | Snapshot hash | Uses MD5 in `collect_files_sync` (line 431), SHA256 elsewhere | `src/snapshot/mod.rs:431` |
 
 ### Security Notes

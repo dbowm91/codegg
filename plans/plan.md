@@ -1,142 +1,186 @@
 # Implementation Plan
 
-**Status**: DEFERRED ITEMS ONLY
+**Status**: CONSOLIDATED - All completed items integrated, deferred prioritized
 **Last Updated**: 2026-05-27
+
+---
+
+## Wave 1: Quick Wins (Self-Contained, 1-3 hours each)
+
+### AGENT-8: TTS/Voice Integration (PARTIAL → COMPLETE)
+- **Files**: `src/tts/mod.rs`
+- **Status**: PARTIAL - `speak()` and `stop()` implemented (macOS `say` command)
+- **Remaining**: Hook Stop event for TTS auto-stop on new agent turn, add STT voice input
+- **Implementation**:
+  1. In `src/tui/app/mod.rs` `handle_agent_event()` - when new `AgentFinished` received, call `app.ui_state.tts.stop()` if speaking
+  2. For STT: Use `tokio::process::Command` with `say -o` for continuous voice input, or integrate system speech framework
+  3. Add TTS toggle command `/tts` in `src/tui/command.rs`
+- **Test**: `cargo test tts`
+
+### TUI-5: Accessibility Improvements (PARTIAL → COMPLETE)
+- **Files**: `src/tui/app/mod.rs`, `src/util/a11y.rs` (new)
+- **Status**: PARTIAL - focus indicators exist, missing global Tab handler
+- **Remaining**: Implement global Tab/Shift+Tab navigation across components
+- **Implementation**:
+  1. Create `src/util/a11y.rs` with accessibility helpers
+  2. Add Tab/Shift+Tab key handling in `handle_key()` at `src/tui/app/mod.rs` - when `focus_manager.focused_component != ComponentId::None`, delegate to component
+  3. Ensure all dialogs properly respond to focus traversal
+- **Test**: `cargo test tui -- input`
+
+---
+
+## Wave 2: Graphical/Visual (Independent, 3-5 hours each)
+
+### TUI-3: Image Attachment Support
+- **Files**: `Cargo.toml`, `src/tui/components/image.rs`, `src/tui/components/image_preview.rs` (new)
+- **Status**: NOT IMPLEMENTED - ImageViewer is stub
+- **Prerequisites**: Optional `image` crate with `png`, `jpeg`, `gif`, `webp` features
+- **Implementation**:
+  1. If `image` feature disabled, ImageViewer shows placeholder text explaining images require full features
+  2. If enabled:
+     - Create `image_preview.rs` widget that calls `image::open()` then renders via `ratatui::widgets::Widget`
+     - Handle image URLs (download via `reqwest`), base64 (decode), or local paths
+     - Support inline preview in message thread with aspect-ratio preservation
+     - Add mouse scroll zoom in preview mode
+- **Parallel**: Can proceed independently
+- **Test**: `cargo test --features image tui`
+
+### AGENT-5: Image Generation
+- **Files**: `src/tool/image.rs` (new)
+- **Status**: NOT IMPLEMENTED
+- **Implementation**:
+  1. Create `ImageTool` struct implementing `Tool` trait
+  2. Accept prompt (required), model (default "dall-e-3"), size (default 1024x1024), quality (default "standard")
+  3. Wire to OpenAI `/v1/images/generations` endpoint (GPT Image API)
+  4. Return URL or base64 data depending on response format
+  5. Add `image` tool to `ToolRegistry::with_defaults()`
+- **Parallel**: Independent of TUI-3 but shares conceptually
+- **Test**: `cargo test tool`
+
+---
+
+## Wave 3: External Integrations (3-6 hours each)
+
+### AGENT-6: GitHub Integration
+- **Files**: `src/command/github/`, `src/mcp/mod.rs`
+- **Status**: NOT IMPLEMENTED
+- **Implementation**:
+  1. Create GitHub MCP server configuration in `src/config/schema.rs`
+  2. Add `/pr` slash command: list PRs, view PR diff, post comments
+  3. Add `/issue` slash command: list issues, create issue, view issue details
+  4. Wire MCP connection to GitHub MCP server (mcp.github.com or self-hosted)
+  5. Handle OAuth for GitHub API if required
+- **Parallel**: Can proceed independently but MCP must be working first
+- **Test**: `cargo test command`
+
+### EXEC-2: Session Analytics & Cost Tracking
+- **Files**: `src/session/mod.rs`, `src/config/schema.rs`, `src/command/exec.rs`
+- **Status**: NOT IMPLEMENTED
+- **Implementation**:
+  1. Add DB migrations for `usage` table: session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
+  2. Modify `AgentLoop::process_finish()` to emit usage to DB
+  3. Refactor pricing to service in `src/util/pricing.rs` (hardcoded rates per provider)
+  4. Add `/stats` command showing session costs, token counts, provider breakdown
+  5. Add `/usage` command for detailed usage over time
+- **Parallel**: Can proceed independently
+- **Test**: `cargo test session`
 
 ---
 
 ## Wave 4: Large Refactors (DEFERRED - 12-16+ hours each)
 
-#### LARGE-1: Virtual Scrolling for Messages
+### LARGE-1: Virtual Scrolling for Messages
 - **Files**: `src/tui/components/messages.rs`
-- **Action**: Pre-calculate line heights, binary search for visible range, cache rendered lines, add virtual list widget
+- **Status**: DEFERRED
+- **Implementation**:
+  1. Pre-calculate line heights using `measure_text()` returns
+  2. Binary search for visible range given scroll position
+  3. Cache rendered lines in `HashMap<usize, Vec<Line>>`
+  4. Replace current scroll implementation with virtual list widget
+  5. Handle dynamic content changes (insert mid-list)
+- **Notes**: Performance-critical for sessions with 10k+ messages
+- **Parallel**: Standalone, high-risk refactor
 
-#### LARGE-2: String Interning System
+### LARGE-2: String Interning System
 - **Files**: `src/provider/mod.rs`, `src/agent/`, `src/tool/`
-- **Action**: Create `StringInterner` using `DashMap`, apply to repeated strings
+- **Status**: DEFERRED
+- **Implementation**:
+  1. Create `StringInterner` using `DashMap<String, u64>` with reverse `Vec<String>`
+  2. Apply to repeated strings: system prompts, tool definitions, common errors
+  3. Add `pub fn intern(&self, s: &str) -> u64` and `pub fn get(&self, id: u64) -> &str`
+  4. Profile first to identify high-frequency string allocations
+- **Notes**: Reduces memory allocations for repeated constant strings
+- **Parallel**: Standalone, architectural change
 
 ---
 
-## TUI Enhancement Features (Future/Partial)
+## Wave 5: Git Integration (DEFERRED - 4-6 hours)
 
-| Feature | Priority | Status |
-|---------|----------|--------|
-| Inline Diff Rendering | HIGH | ✅ IMPLEMENTED |
-| Native Desktop Notifications | HIGH | ✅ COMPLETED - wired to AgentFinished/SubagentCompleted/SubagentFailed |
-| Image Attachment Support | HIGH | NOT IMPLEMENTED |
-| Streaming UX Enhancements | MEDIUM | ✅ COMPLETED - newline-gated commit + 75ms resize debounce DONE |
-| Accessibility Improvements | MEDIUM | Partial - focus indicators exist, missing global Tab handler |
-| Mouse Support Enhancements | LOW | ✅ MOSTLY IMPLEMENTED |
+### GIT-1: Enhanced Git Integration
+- **Files**: `src/git/mod.rs` (new)
+- **Status**: NOT IMPLEMENTED
+- **Implementation**:
+  1. Create `src/git/mod.rs` with `GitSession` struct
+  2. Inject branch name and git status into system prompt
+  3. Implement `/checkpoint` command - create `@checkpoint/2024-01-15-10:30` references
+  4. Auto-worktree per session: detect git worktrees, create/cleanup per session id
+  5. Integrate with existing `worktree/` module
+- **Parallel**: Independent but builds on worktree knowledge
+- **Test**: `cargo test worktree`
 
-#### TUI-2: Native Desktop Notifications
-- **Files**: `src/tui/components/notification.rs`, `src/tui/mod.rs`
-- **Status**: ✅ COMPLETED - `NotificationManager` now wired to `AgentFinished`, `SubagentCompleted`, `SubagentFailed`
-- **Implementation**: Added `blocking_send_with_config()` method, spawn_blocking for notification send
+---
 
-#### TUI-3: Image Attachment Support
-- **Files**: `Cargo.toml`, `src/tui/components/image.rs` (stub)
-- **Status**: NOT IMPLEMENTED - dependency optional/feature-gated, ImageViewer is stub
-- **Action**: Implement `image_preview.rs` widget, render images in messages
+## Completed Items (Preserved for Reference)
 
-#### TUI-4: Streaming UX Enhancements
+### TUI Enhancement Features
+| Feature | Status |
+|---------|--------|
+| Inline Diff Rendering | ✅ IMPLEMENTED |
+| Native Desktop Notifications | ✅ COMPLETED - wired to AgentFinished/SubagentCompleted/SubagentFailed |
+| Streaming UX Enhancements | ✅ COMPLETED - newline-gated commit + 75ms resize debounce |
+
+### TUI-2: Native Desktop Notifications
+- **Status**: ✅ COMPLETED - `NotificationManager` wired to `AgentFinished`, `SubagentCompleted`, `SubagentFailed`
+
+### TUI-4: Streaming UX Enhancements
 - **Status**: ✅ COMPLETED - newline-gated commit + 75ms resize debounce
-- **Implementation**: TextDelta uses `add_streaming_token()`, newline triggers `finalize_streaming()`, AgentFinished commits remaining buffer. Resize debounce added via `tokio::select!` branch.
+- **Implementation**: TextDelta uses `add_streaming_token()`, newline triggers `finalize_streaming()`, AgentFinished commits remaining buffer
 
-#### TUI-5: Accessibility Improvements
-- **Status**: Partial - focus indicators exist, global Tab handler and screen reader not implemented
-- **Action**: Implement global Tab and Shift+Tab handler, create `src/util/a11y.rs`
+### Agent Capability Features
+| Feature | Status |
+|---------|--------|
+| AGENT-1: Context Summarization | ✅ IMPLEMENTED |
+| AGENT-2: Review Command | ✅ COMPLETE |
+| AGENT-3: Multi-Agent Teams | ✅ COMPLETE |
+| AGENT-4: Tool Search | ✅ COMPLETE |
+| AGENT-7: Sandbox Security Modes | ✅ COMPLETED - Three-mode sandbox infrastructure |
 
----
-
-## Agent Capability Features (Future)
-
-| Feature | Priority | Status |
-|---------|----------|--------|
-| AGENT-1: Context Summarization | HIGH | ✅ IMPLEMENTED |
-| AGENT-2: Review Command | HIGH | ✅ COMPLETE |
-| AGENT-3: Multi-Agent Teams | HIGH | ✅ COMPLETE |
-| AGENT-4: Tool Search | MEDIUM | ✅ COMPLETE |
-| AGENT-5: Image Generation | MEDIUM | NOT IMPLEMENTED |
-| AGENT-6: GitHub Integration | MEDIUM | NOT IMPLEMENTED |
-| AGENT-7: Sandbox Security Modes | MEDIUM | ✅ COMPLETED - Three-mode sandbox infrastructure (SandboxMode enum, config field, builder method) |
-| AGENT-8: TTS/Voice Integration | LOW | PARTIAL - basic speak/stop |
-
-#### AGENT-5: Image Generation
-- **Files**: `src/tool/image.rs` (new)
-- **Status**: NOT IMPLEMENTED
-- **Action**: Create `ImageTool` struct, integrate GPT Image API
-
-#### AGENT-6: GitHub Integration
-- **Files**: `src/command/github/` (new)
-- **Status**: NOT IMPLEMENTED
-- **Action**: Add GitHub MCP configuration, `/pr` and `/issue` slash commands
-
-#### AGENT-7: Sandbox Security Modes
+### AGENT-7: Sandbox Security Modes
 - **Status**: ✅ COMPLETED (Infrastructure) - `SandboxMode` enum defined, `PermissionConfig.sandbox_mode` added, `BashTool::with_sandbox_mode()` builder method
 - **Note**: Full config-to-AgentLoop wiring still needs follow-up (tool registry doesn't have config access in `with_defaults()`)
 
-#### AGENT-8: TTS/Voice Integration
-- **Status**: PARTIAL - only `speak()` and `stop()` using macOS `say` command
-- **Action**: Hook Stop event for TTS, add STT voice input
-
----
-
-## Mode/Exec Features
-
+### Mode/Exec Features
 | Feature | Status |
 |---------|--------|
 | MODE-1: Extended Mode System (5 modes) | ✅ COMPLETE |
 | EXEC-1: Non-Interactive Exec Mode | ✅ COMPLETE |
-| EXEC-2: Session Analytics & Cost Tracking | NOT IMPLEMENTED |
 | EXEC-3: Token Caching Display | ✅ COMPLETED - tokens flow through AgentFinished to TUI session_state |
 
-#### EXEC-2: Session Analytics & Cost Tracking
-- **Action**: Add DB migrations for usage, emit usage to DB, refactor pricing to service, add `/stats` command
-
-#### EXEC-3: Token Caching Display
-- **Action**: Parse `prompt_tokens_details.cached_tokens` (OpenAI), `cache_read_input_tokens` (Anthropic)
-
----
-
-## Model & Git Features (Future)
-
-| Feature | Priority | Status |
-|---------|----------|--------|
-| MODEL-1: Model Variants with Thinking | MEDIUM | ✅ COMPLETED - thinking_budget (Anthropic), reasoning_effort (OpenAI) wired |
-| MODEL-2: Auto-Routing Model Selection | MEDIUM | ✅ COMPLETE |
-| GIT-1: Enhanced Git Integration | MEDIUM | NOT IMPLEMENTED |
-
-#### MODEL-1: Model Variants with Thinking
-- **Status**: ✅ COMPLETED - `thinking_budget` (Anthropic) and `reasoning_effort` (OpenAI) params wired to ChatRequest
-- **Implementation**: Added fields to `ModelVariant`, `ChatRequest`, updated `build_body()` methods, wired in `AgentLoop::apply_agent_config()`
-
-#### GIT-1: Enhanced Git Integration
-- **Files**: `src/git/mod.rs` (new)
-- **Status**: NOT IMPLEMENTED
-- **Action**: Branch/status injection, checkpoint system, auto-worktree per session
-
----
-
-## Documentation (Future)
-
-See `docs/` directory for planned documentation:
-- Conceptual guides (agents-vs-skills, mcp, lsp, sessions, permissions, plugins)
-- Reference documentation (configuration, tools, commands, environment)
-- Workflow guides (quick-start, debugging, code-review, refactoring, tdd)
-- Operations & troubleshooting
+### Model & Git Features
+| Feature | Status |
+|---------|--------|
+| MODEL-1: Model Variants with Thinking | ✅ COMPLETED - thinking_budget (Anthropic), reasoning_effort (OpenAI) wired |
+| MODEL-2: Auto-Routing Model Selection | ✅ COMPLETE |
 
 ---
 
 ## Known Code Issues (Deferred/Low Priority)
-
-These issues are documented but deferred for later attention:
 
 | Issue | Location | Priority |
 |-------|----------|----------|
 | Snapshot hash inconsistency | `src/snapshot/mod.rs:431` uses MD5 | MEDIUM |
 | ToolExecutor exists but unused | `src/tool/executor.rs:8` | MEDIUM |
 | Static CANONICAL_PATHS_CACHE never clears | `src/security/sandbox.rs:237` | MEDIUM |
-| TTS stop() returns Ok on failure | `src/tts/mod.rs:85-103` | LOW | ✅ FIXED |
 | TTS init() ignores providers | `src/tts/mod.rs:45-49` | LOW |
 | Worktree symlink detection | `src/worktree/mod.rs:69-88` | LOW |
 | OAuth replay protection TOCTOU | `src/mcp/auth.rs:318-332` | MEDIUM |
@@ -169,13 +213,13 @@ These issues are documented but deferred for later attention:
 
 10. **Token Estimation**: `estimate_tokens_sync()` uses `TokenizerType` for model-specific multipliers. Claude: 1.4x, Gemini: 1.2x.
 
-11. **Exec Mode Question Handling**: `src/exec.rs:121` has no question_rx handler - question tool will deadlock in exec mode. Fix requires understanding AgentLoop::setup_question_channel().
+11. **Exec Mode Question Handling**: `src/exec.rs:121` has no question_rx handler - question tool returns "[question not supported in exec mode]" instead of deadlocking.
 
 ### Implementation Patterns
 
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 
-- **Registry Limitations**: Permission IDs are in format `{tool_call_id}-{tool_name}`, not `{session_id}-...`. `get_pending_permissions_for_session()` and `get_pending_questions_for_session()` cannot properly filter by session_id.
+- **Registry Limitations**: Permission IDs are in format `{tool_call_id}-{tool_name}`, not `{session_id}-...`. `get_pending_permissions_for_session()` and `get_pending_questions_for_session()` cannot properly filter by session_id without code changes.
 
 - **Registration-before-publish pattern**: When publishing `PermissionPending` or `QuestionPending`, register the responder BEFORE publishing the event.
 
@@ -185,16 +229,16 @@ These issues are documented but deferred for later attention:
 |------|-------|----------|
 | Tool count | 26 | `src/tool/mod.rs:89-119` |
 | LSP server count | 39 | `src/lsp/server.rs:27-383` |
-| InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
+|InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | DEPRECATED - exists but unused | `src/tool/executor.rs:8` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
-| UiState fields | All documented fields present (25 fields) | `src/tui/app/state/ui.rs:27-74` |
+| UiState fields | 26 fields | `src/tui/app/state/ui.rs:27-76` |
 | Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
-| CoreEvent has subagent variants | SubagentStarted, SubagentCompleted | `src/protocol/core.rs:244,256` |
+| CoreEvent has subagent variants | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/protocol/core.rs:244-268` |
 | map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
-| SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1197-1201` |
+| SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1216-1220` |
 | hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
 | Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
@@ -202,8 +246,9 @@ These issues are documented but deferred for later attention:
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
 | Built-in command count | 41 | `src/tui/command.rs:79-162` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` | `src/agent/loop.rs:60-67` |
-| Timeline fields location | `timeline_visible` and `timeline_selected` are in `App` struct, NOT `UiState` | `src/tui/app/mod.rs:232-233` |
-| Snapshot hash inconsistency | `collect_files_sync` uses MD5 for non-empty files, SHA256 elsewhere | `src/snapshot/mod.rs:431` |
+| Timeline fields location | `timeline_visible` and `timeline_selected` in `UiState` | `src/tui/app/state/ui.rs:62-63` |
+| Snapshot hash | Uses MD5 in `collect_files_sync` (line 431), SHA256 elsewhere | `src/snapshot/mod.rs:431` |
+| TTS stop() | Fixed - returns Err on pkill failure | `src/tts/mod.rs:85-107` |
 
 ### Security Notes
 
@@ -239,13 +284,13 @@ cargo test --package codegg -- <module>_test_pattern
 
 ## Summary
 
-| Category | Status |
-|----------|--------|
-| Wave 4 (Large Refactors) | ⏳ DEFERRED |
-| TUI Enhancement | ⏳ PARTIAL (2/6 complete) |
-| Agent Capabilities | ⏳ PARTIAL (4/8 complete) |
-| Mode/Exec Features | ⏳ PARTIAL (2/4 complete) |
-| Model & Git Features | ⏳ PARTIAL (1/3 complete) |
-| Documentation | ⏳ FUTURE |
+| Wave | Items | Time Estimate | Status |
+|------|-------|---------------|--------|
+| Wave 1 | AGENT-8 (TTS), TUI-5 (Accessibility) | 2-4 hours | Ready |
+| Wave 2 | TUI-3 (Image Support), AGENT-5 (Image Generation) | 6-10 hours | Ready |
+| Wave 3 | AGENT-6 (GitHub), EXEC-2 (Analytics) | 6-12 hours | Ready |
+| Wave 4 | LARGE-1 (Virtual Scroll), LARGE-2 (String Interning) | 24-32 hours | Deferred |
+| Wave 5 | GIT-1 (Enhanced Git) | 4-6 hours | Ready |
+| Completed | TUI-2, TUI-4, AGENT-7, EXEC-3, MODEL-1, MODE-1, EXEC-1 | N/A | ✅ DONE |
 
 *(End of file)*
