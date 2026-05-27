@@ -209,28 +209,6 @@ pub async fn find_command_files(base: &Path) -> Vec<Command>
 pub async fn load_command_from_file(path: &Path) -> Result<Command, String>
 ```
 
-## Historical Implementation Notes (2026-05-22)
-
-- **Async file loading**: `find_command_files()` and `load_command_from_file()` now use `tokio::fs` for async I/O
-- **`subtask` field deprecated**: Added `#[deprecated]` attribute to `subtask` field as it's not yet implemented
-- Fixed unused variable warnings in `load_command_from_file()` - refactored to tuple destructuring
-- Removed orphaned `src/tui/app/commands.rs` file (was never module-declared, contained duplicate command handlers)
-- Fixed non-deterministic HashMap iteration in template substitution (keys now sorted)
-- Added command name validation (rejects empty, whitespace, leading `/`)
-- Added logging for command loading failures
-- Empty `template:` in frontmatter now correctly falls back to markdown body
-- Improved duplicate detection across command sources
-
-The `CommandRegistry::normalize_name()` function lowercases the input and strips leading `/` characters, enabling case-insensitive matching and consistent command lookup:
-
-```rust
-fn normalize_name(name: &str) -> String {
-    name.trim().trim_start_matches('/').to_lowercase()
-}
-```
-
-This function is used in `find_by_name_or_alias()` for case-insensitive command/alias matching, and is applied when deduplicating commands from different sources.
-
 ## See Also
 
 - [.opencode/skills/command/SKILL.md](../.opencode/skills/command/SKILL.md) - Agent guidance for command module

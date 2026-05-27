@@ -103,7 +103,7 @@ Gracefully closes the connection pool using async pool shutdown. The `self` para
 
 Migrations are implemented in `src/session/schema.rs`, not in the storage module itself. The storage module calls `session::schema::migrate()` during initialization.
 
-Migration versions v1-v14 are supported, covering:
+Migration versions v1-v15 are supported, covering:
 - v1: Initial schema (project, session, message, part, todo, permission, session_share tables)
 - v2: Additional indexes
 - v3: cached_models table
@@ -116,6 +116,7 @@ Migration versions v1-v14 are supported, covering:
 - v12: session.time_deleted column
 - v13: snapshot table
 - v14: task.allowed_paths column
+- v15: Additional fields
 
 ## See Also
 

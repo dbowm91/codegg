@@ -117,6 +117,7 @@ pub struct UiState {
     pub dirty_regions: Vec<Rect>,       // Partial redraw optimization
     pub render_panic_count: usize,
     pub last_render_error: Option<String>,
+    pub resize_debounce: Option<std::time::Instant>, // Resize debounce timer
 }
 ```
 
@@ -192,7 +193,7 @@ pub enum Dialog {
     Model, Agent, Session, Help, Tree, Theme,
     Question, Permission, Mcp, Keybind,
     Share, Import, Template, Connect,
-    Context, Cost, Usage, Goto, Plan, Diff, Confirm,
+    Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
 }
 ```
 
@@ -282,7 +283,7 @@ pub enum TuiCommand {
 All dialogs implement the `Component` trait from `src/tui/components/component.rs`:
 
 ```rust
-pub trait Component: Send {
+pub trait Component: Send + Any {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg>;
     fn handle_paste(&mut self, text: String) -> Option<TuiMsg> { None }
     fn update(&mut self, msg: TuiMsg) -> Option<TuiMsg>;
@@ -309,7 +310,7 @@ pub enum DialogType {
 Modal focus handling via stack in `components/component/focus.rs`:
 
 ```rust
-pub struct FocusManager {
+pubruct FocusManager {
     stack: VecDeque<Box<dyn Component>>,
 }
 ```
@@ -350,7 +351,7 @@ Key methods:
 
 ### Render Order
 
-1. **Header**: Agent name, model, session info, active indicators
+1. **Header**: Agent name, model, session info, and active indicators
 2. **Timeline**: Optional timeline panel (when `timeline_visible` is true)
 3. **Viewport**: Messages (Home or Session view)
 4. **Prompt**: Input area with status indicator, mode indicator

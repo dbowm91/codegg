@@ -114,6 +114,6 @@ if let Some(git_root) = find_git_root(&some_path) {
 ## See Also
 
 - [tool.md](tool.md) - Git operations tool
-- `src/worktree/mod.rs` - Contains `is_git_file()` at line 36, `is_git_worktree()` at line 56
+- `src/worktree/mod.rs` - Contains `is_git_file()` at line 172, `is_git_worktree()` at line 180
 - `src/server/routes/workspace.rs` - Uses `is_git_worktree()` for workspace detection
 - `src/server/routes/project.rs` - Uses `find_git_root()` for project git root discovery
