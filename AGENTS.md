@@ -107,7 +107,7 @@ These items are important for future agents to know when working with the codeba
 | **PermissionResponse unused** | `src/permission/mod.rs:1141-1145` | Known issue |
 | **check_external_directory unused** | `src/permission/mod.rs:1237-1248` | Known issue |
 | **Static CANONICAL_PATHS_CACHE never clears** | `src/security/sandbox.rs:237` | Known issue |
-| **Histogram unbounded memory** | `src/util/metrics.rs:122-124` | Known issue |
+| **Histogram unbounded memory** | `src/util/metrics.rs:122-124` | ✅ FIXED |
 | **Worktree symlink detection** | `src/worktree/mod.rs:69-88` | Known issue |
 | **OAuth replay protection TOCTOU** | `src/mcp/auth.rs:318-332` | Known issue |
 
@@ -127,9 +127,9 @@ These items are important for future agents to know when working with the codeba
 
 7. **multiedit tool exists but not in default registry** - `src/tool/multiedit.rs` exists and `multiedit` module is registered via `pub mod multiedit`, but it's NOT included in `ToolRegistry::with_defaults()`. Don't assume every tool in `/tool` is in the default registry.
 
-8. **LSP server count is 40** (verified 2026-05-27) - count entries in `server_definitions()` array at `src/lsp/server.rs:27-375`. cmake-language-server is NOT in the list despite some review claims. clangd, rust-analyzer, gopls, etc. are included.
+8. **LSP server count is 39** (verified 2026-05-27) - count entries in `server_definitions()` array at `src/lsp/server.rs:27-383`. cmake-language-server is NOT in the list despite some review claims. clangd, rust-analyzer, gopls, etc. are included.
 
-9. **Permission mode documentation correction needed** - `architecture/permission.md:202` incorrectly lists `write` as an allowed tool in restricted_tools; the code at `modes.rs:171` correctly puts `write` in `restricted_tools`. Documentation needs to be corrected, not code.
+9. **Permission mode documentation corrected** - `architecture/permission.md:202` (docs mode) now correctly shows restricted tools as `bash, task, todowrite` (without `write`). Code at `modes.rs:174-178` correctly excludes `write`.
 
 ### Verified Codebase Facts
 
@@ -138,7 +138,7 @@ These items were verified during review sessions:
 | Item | Value | Location |
 |------|-------|----------|
 | Tool count | 26 | `src/tool/mod.rs:89-119` |
-| LSP server count | 40 | `src/lsp/server.rs:27-375` |
+| LSP server count | 39 | `src/lsp/server.rs:27-383` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | DEPRECATED - exists but unused, to be removed | `src/tool/executor.rs:8` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
@@ -154,10 +154,10 @@ These items were verified during review sessions:
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `src/protocol/core.rs:3` |
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
-| Built-in command count | 39 | `src/tui/command.rs:79-161` |
+| Built-in command count | 41 | `src/tui/command.rs:79-162` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `App` struct, NOT `UiState` | `src/tui/app/mod.rs:232-233` |
-| Snapshot hash | ✅ FIXED - All SHA256 | `src/snapshot/mod.rs:431` |
+| Snapshot hash | Uses MD5 in `collect_files_sync` (line 431), SHA256 elsewhere | `src/snapshot/mod.rs:431` |
 
 ### Security Notes
 
@@ -170,22 +170,6 @@ These items were verified during review sessions:
 - Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - verify if TUI actually sends these before implementing meaningful responses.
 
 ## Helpful Patterns for Future Agents
-
-### Parallel Implementation Pattern
-```
-Wave 1 (Parallel - independent code fixes):
-  - Agent 1: Session exports (session/mod.rs:28), Theme count (theme.rs:8)
-  - Agent 2: Snapshot hash MD5→SHA256 (snapshot/mod.rs:431)
-  - Agent 3: Investigate ToolExecutor usage or deprecation (tool/executor.rs:8)
-
-Wave 2 (Parallel - documentation fixes):
-  - Each agent takes 5-10 architecture doc corrections
-  - Verify each fix against source code before applying
-
-Wave 3 (Critical bug fix):
-  - Single agent: Fix exec mode question channel deadlock (exec.rs:121)
-  - Requires understanding of AgentLoop::setup_question_channel()
-```
 
 ### Provider Auto-Registration
 - Only `codegg_go` is auto-registered via `register_builtin()`
