@@ -170,25 +170,24 @@ These items were verified during review sessions:
 | ImageTool | IS registered in ToolRegistry::with_defaults() | `src/tool/mod.rs:102` |
 | Dialog::Stats | EXISTS in Dialog enum | `src/tui/app/types.rs:21` |
 
-### New Findings (2026-05-27 Architecture Review)
+### New Findings (2026-05-27 Architecture Review) - UPDATED
 
 These items were discovered during the 2026-05-27 architecture review and are NOT YET reflected in documentation:
 
 | Item | Status | Location | Notes |
 |------|--------|----------|-------|
-| MCP `connect_sse()` | Dead code | `src/mcp/remote.rs:698-740` | Defined but never called externally |
-| MCP `run_socket()` | Dead code | `src/mcp/ide_server.rs:121-144` | Unix socket server, never called |
-| MCP Debug command | Stub only | `src/mcp/cli.rs:309-318` | Only prints args, does NOT test connections |
-| OAuthManager sync methods | Silent error ignore | `src/mcp/auth.rs:119` | `let _ = load_tokens_sync()` ignores errors |
-| load_tokens_sync() usage | Actually used | `src/mcp/auth.rs:119` | Called in OAuthManager::new() but errors ignored |
-| WebSocket auth inconsistency | Bug | `src/server/ws.rs:103-106` vs `middleware/auth.rs:37-40` | HTTP allows no-token, WebSocket returns 500 |
-| StatsDialog | Missing | `/stats` command exists but no StatsDialog implementation | Dialog::Stats exists, no corresponding dialog file |
-| Snapshot restore() | Missing atomic write | `src/snapshot/mod.rs:292` | restore_to_path() uses temp+rename, restore() does not |
+| MCP `connect_sse()` | Dead code | `src/mcp/remote.rs:698-740` | Defined but never called externally - DOCUMENTED in architecture/mcp.md |
+| MCP `run_socket()` | Dead code | `src/mcp/ide_server.rs:121-144` | Unix socket server, never called - DOCUMENTED in architecture/mcp.md |
+| MCP Debug command | IMPLEMENTED | `src/mcp/cli.rs:309-318` | Implemented actual connection testing in R1 wave |
+| OAuthManager sync methods | FIXED | `src/mcp/auth.rs:119` | Now logs warnings instead of silent ignore |
+| WebSocket auth inconsistency | NOT A BUG | `src/server/ws.rs:103-106` vs `middleware/auth.rs:37-40` | Both consistently return Ok for no-token |
+| Snapshot restore() | FIXED | `src/snapshot/mod.rs:292` | Now uses atomic write (temp+rename) |
+| Snapshot hash | FIXED | `src/snapshot/mod.rs:431` | Now uses SHA256 consistently |
 
 ### Security Notes
 
 - **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
-- **WebSocket auth is stricter**: `src/server/ws.rs:103-106` returns 500 when no token configured, unlike HTTP middleware. This inconsistency should be reviewed for production deployments.
+- **WebSocket auth is consistent with HTTP**: Both `src/server/ws.rs:103-106` and `middleware/auth.rs:37-39` return Ok when no token is configured.
 
 ### CoreRequest Handler Attention Points
 
