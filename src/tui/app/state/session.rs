@@ -19,6 +19,7 @@ pub struct SessionState {
     pub token_in: u64,
     pub token_out: u64,
     pub reasoning_tokens: usize,
+    pub cached_tokens: u64,
     pub history: VecDeque<HistoryEntry>,
     pub history_pos: Option<usize>,
     pub indexed_files: Arc<RwLock<Vec<String>>>,

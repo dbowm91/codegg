@@ -338,6 +338,13 @@ impl SseParser {
                         {
                             usage.output_tokens = completion as usize;
                         }
+                        if let Some(cached) = u
+                            .get("prompt_tokens_details")
+                            .and_then(|v| v.get("cached_tokens"))
+                            .and_then(|v| v.as_u64())
+                        {
+                            usage.cached_tokens = Some(cached as usize);
+                        }
                         usage.total_tokens = usage.input_tokens + usage.output_tokens;
                     }
                     return Some(Ok(ChatEvent::Finish {
@@ -355,6 +362,13 @@ impl SseParser {
             }
             if let Some(completion) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
                 u.output_tokens = completion as usize;
+            }
+            if let Some(cached) = usage
+                .get("prompt_tokens_details")
+                .and_then(|v| v.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+            {
+                u.cached_tokens = Some(cached as usize);
             }
             u.total_tokens = u.input_tokens + u.output_tokens;
             return Some(Ok(ChatEvent::Finish {
@@ -635,6 +649,9 @@ fn parse_anthropic_event_with_state(
                     {
                         u.output_tokens = output_tokens as usize;
                     }
+                    if let Some(cached) = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+                        u.cached_tokens = Some(cached as usize);
+                    }
                     u.total_tokens = u.input_tokens + u.output_tokens;
                     return Some(Ok(ChatEvent::Finish {
                         stop_reason: "stop".to_string().into(),
@@ -711,6 +728,13 @@ pub fn parse_openai_chunk_standalone(
                     if let Some(completion) = u.get("completion_tokens").and_then(|v| v.as_u64()) {
                         usage.output_tokens = completion as usize;
                     }
+                    if let Some(cached) = u
+                        .get("prompt_tokens_details")
+                        .and_then(|v| v.get("cached_tokens"))
+                        .and_then(|v| v.as_u64())
+                    {
+                        usage.cached_tokens = Some(cached as usize);
+                    }
                     usage.total_tokens = usage.input_tokens + usage.output_tokens;
                 }
                 return Some(Ok(ChatEvent::Finish {
@@ -746,6 +770,13 @@ pub fn parse_openai_chunk_standalone(
         }
         if let Some(completion) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
             u.output_tokens = completion as usize;
+        }
+        if let Some(cached) = usage
+            .get("prompt_tokens_details")
+            .and_then(|v| v.get("cached_tokens"))
+            .and_then(|v| v.as_u64())
+        {
+            u.cached_tokens = Some(cached as usize);
         }
         u.total_tokens = u.input_tokens + u.output_tokens;
         return Some(Ok(ChatEvent::Finish {

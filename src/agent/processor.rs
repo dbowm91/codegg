@@ -8,6 +8,7 @@ pub struct EventProcessor {
     stop_reason: Option<String>,
     input_tokens: usize,
     output_tokens: usize,
+    cached_tokens: Option<usize>,
     is_complete: bool,
 }
 
@@ -21,6 +22,7 @@ impl EventProcessor {
             stop_reason: None,
             input_tokens: 0,
             output_tokens: 0,
+            cached_tokens: None,
             is_complete: false,
         }
     }
@@ -49,6 +51,7 @@ impl EventProcessor {
                 self.stop_reason = Some(stop_reason.to_string());
                 self.input_tokens = usage.input_tokens;
                 self.output_tokens = usage.output_tokens;
+                self.cached_tokens = usage.cached_tokens;
                 self.is_complete = true;
             }
             ChatEvent::Error(err) => {
@@ -65,6 +68,7 @@ impl EventProcessor {
         self.stop_reason = None;
         self.input_tokens = 0;
         self.output_tokens = 0;
+        self.cached_tokens = None;
         self.is_complete = false;
     }
 
@@ -94,6 +98,10 @@ impl EventProcessor {
 
     pub fn output_tokens(&self) -> usize {
         self.output_tokens
+    }
+
+    pub fn cached_tokens(&self) -> Option<usize> {
+        self.cached_tokens
     }
 
     pub fn is_complete(&self) -> bool {

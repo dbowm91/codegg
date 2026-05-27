@@ -35,6 +35,7 @@ impl NotificationType {
     }
 }
 
+#[derive(Clone)]
 pub struct NotificationManager {
     config: Arc<RwLock<NotificationConfig>>,
 }
@@ -109,6 +110,29 @@ impl NotificationManager {
         body: &str,
         enabled: bool,
     ) -> Result<(), notify_rust::error::Error> {
+        if !enabled {
+            return Ok(());
+        }
+
+        Self::with_platform_options(Notification::new(), notification_type)
+            .summary(notification_type.title())
+            .body(body)
+            .show()?;
+
+        Ok(())
+    }
+
+    pub fn blocking_send_with_config(
+        &self,
+        notification_type: NotificationType,
+        body: &str,
+    ) -> Result<(), notify_rust::error::Error> {
+        let cfg = self.config.blocking_read();
+        let enabled = match notification_type {
+            NotificationType::Error => cfg.on_error.unwrap_or(true),
+            NotificationType::Info | NotificationType::Success => cfg.on_task_complete.unwrap_or(true),
+            NotificationType::Warning => true,
+        };
         if !enabled {
             return Ok(());
         }

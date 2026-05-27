@@ -400,6 +400,7 @@ impl App {
                 token_in: 0,
                 token_out: 0,
                 reasoning_tokens: 0,
+                cached_tokens: 0,
                 history: std::collections::VecDeque::new(),
                 history_pos: None,
                 indexed_files,
@@ -585,6 +586,7 @@ impl App {
                 token_in: 0,
                 token_out: 0,
                 reasoning_tokens: 0,
+                cached_tokens: 0,
                 history: std::collections::VecDeque::new(),
                 history_pos: None,
                 indexed_files,
@@ -5266,9 +5268,18 @@ impl App {
                 self.session_state.token_out
             ))),
             Line::from(Span::raw(format!("  Total:  {} tokens", total_tokens))),
-            Line::from(""),
-            Line::from(Span::raw("  Estimated Cost")),
         ];
+
+        if self.session_state.cached_tokens > 0 {
+            let cache_pct = (self.session_state.cached_tokens as f64 / self.session_state.token_in as f64 * 100.0) as u64;
+            lines.push(Line::from(Span::raw(format!(
+                "  Cached: {} tokens ({}%)",
+                self.session_state.cached_tokens, cache_pct
+            ))));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::raw("  Estimated Cost")));
 
         let cost = estimate_cost(
             &self.session_state.token_in,

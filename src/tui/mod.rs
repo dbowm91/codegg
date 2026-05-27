@@ -1898,6 +1898,17 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                     });
                                 }
                             }
+
+                            if let Some(ref notif_mgr) = app.notification_manager {
+                                let notif_type = crate::tui::components::notification::NotificationType::Success;
+                                let body = "Agent finished: completed".to_string();
+                                let mgr = notif_mgr.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    if let Err(e) = mgr.blocking_send_with_config(notif_type, &body) {
+                                        tracing::warn!("Failed to send notification: {}", e);
+                                    }
+                                });
+                            }
                         } else if matches!(app.session_state.session_status, SessionStatus::Working) {
                             app.footer.set_thinking(true, Some("Thinking...".to_string()));
                         }
@@ -1950,10 +1961,30 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     AppEvent::SubagentCompleted { agent, result_summary: _, .. } => {
                         debug_log!("Event loop: SubagentCompleted agent={}", agent);
                         app.messages_state.toasts.add(Toast::success(&format!("Subagent '{}' completed", agent)));
+                        if let Some(ref notif_mgr) = app.notification_manager {
+                            let notif_type = crate::tui::components::notification::NotificationType::Success;
+                            let body = format!("Subagent '{}' completed", agent);
+                            let mgr = notif_mgr.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Err(e) = mgr.blocking_send_with_config(notif_type, &body) {
+                                    tracing::warn!("Failed to send notification: {}", e);
+                                }
+                            });
+                        }
                     }
                     AppEvent::SubagentFailed { agent, error, .. } => {
                         debug_log!("Event loop: SubagentFailed agent={}, error={}", agent, error);
                         app.messages_state.toasts.add(Toast::error(&format!("Subagent '{}' failed: {}", agent, error)));
+                        if let Some(ref notif_mgr) = app.notification_manager {
+                            let notif_type = crate::tui::components::notification::NotificationType::Error;
+                            let body = format!("Subagent '{}' failed: {}", agent, error);
+                            let mgr = notif_mgr.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Err(e) = mgr.blocking_send_with_config(notif_type, &body) {
+                                    tracing::warn!("Failed to send notification: {}", e);
+                                }
+                            });
+                        }
                     }
                     _ => {
                         debug_log!("Event loop: unhandled event");
