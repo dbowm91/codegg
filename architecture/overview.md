@@ -129,7 +129,7 @@ Each module has a dedicated `.md` file in `architecture/`. Click any link for a 
 | Module | Description | Deep Dive |
 |--------|-------------|-----------|
 | **[Exec](exec.md)** | Non-interactive exec mode for CI/CD with JSON I/O | [exec.md](exec.md) |
-| **[PTY Session](pty_session.md)** | Shell session metadata management (in-memory, no actual PTY) | [pty_session.md](pty_session.md) |
+| **[Shell Session](shell_session.md)** | Shell session metadata management (in-memory, no actual PTY) | [shell_session.md](shell_session.md) |
 | **[Worktree](worktree.md)** | Git worktree management, git root detection | [worktree.md](worktree.md) |
 | **[TTS](tts.md)** | Text-to-speech (macOS only via `say` command) | [tts.md](tts.md) |
 | **[Upgrade](upgrade.md)** | Self-upgrade functionality via GitHub releases | [upgrade.md](upgrade.md) |
@@ -219,7 +219,7 @@ src/
 ├── plugin/             # WASM plugin system
 ├── protocol/           # CoreRequest/CoreResponse, TuiMessage
 ├── provider/           # LLM provider implementations
-├── pty_session/        # Shell session metadata
+├── shell_session/        # Shell session metadata
 ├── resilience/         # Circuit breaker, FallbackProvider
 ├── security/           # SSRF protection, Landlock
 ├── server/             # HTTP server, WebSocket handlers
@@ -274,7 +274,7 @@ Configuration is loaded from (in order of precedence):
 
 ---
 
-## Built-in Tools (29)
+## Built-in Tools (26)
 
 | Category | Tools |
 |----------|-------|
@@ -282,7 +282,7 @@ Configuration is loaded from (in order of precedence):
 | **Search** | `grep`, `codesearch` |
 | **Shell** | `bash`, `terminal` |
 | **Git** | `git`, `commit`, `diff`, `review` |
-| **Code** | `apply_patch`, `replace`, `multiedit`, `lsp`, `formatter` |
+| **Code** | `apply_patch`, `replace`, `lsp`, `formatter` |
 | **Web** | `webfetch`, `websearch` |
 | **Tasks** | `task`, `todo`, `batch`, `plan_enter`, `plan_exit` |
 | **Special** | `question`, `skill`, `tool_search`, `invalid` |
@@ -337,7 +337,7 @@ Configuration is loaded from (in order of precedence):
 | [resilience.md](resilience.md) | resilience | Circuit breaker, FallbackProvider |
 | [exec.md](exec.md) | exec | Non-interactive exec mode |
 | [hooks.md](hooks.md) | hooks | Lifecycle hooks system |
-| [pty_session.md](pty_session.md) | pty_session | Shell session metadata |
+| [shell_session.md](shell_session.md) | shell_session | Shell session metadata |
 | [upgrade.md](upgrade.md) | upgrade | Self-upgrade via GitHub |
 | [util.md](util.md) | util | Clipboard, fuzzy, truncate |
 | [worktree.md](worktree.md) | worktree | Git worktree management |

@@ -183,7 +183,7 @@ pub fn extension_to_language_id(ext: &str) -> Option<&'static str>
 pub fn language_id_to_server_id(lang_id: &str) -> Option<&'static str>
 ```
 
-Supports 50+ extensions including Rust, Python, JavaScript/TypeScript, Go, Java, C/C++, C#, Ruby, Kotlin, Scala, Dart, Swift, Haskell, Lua, PHP, Perl/Raku, and more.
+Supports ~80 extensions including Rust, Python, JavaScript/TypeScript, Go, Java, C/C++, C#, Ruby, Kotlin, Scala, Dart, Swift, Haskell, Lua, PHP, Perl/Raku, and more.
 
 ### root.rs - Project Root Detection
 
@@ -226,7 +226,7 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
 
 ```
 
-## Supported Languages (39 servers)
+## Supported Languages (40 servers)
 
 | Language | Server | Command |
 |----------|--------|---------|
