@@ -142,6 +142,9 @@ impl CommandRegistry {
             Command::new("/tui", CommandCategory::System, None)
                 .with_aliases(&["fullscreen"])
                 .with_description("Toggle fullscreen mode"),
+            Command::new("/tts", CommandCategory::System, None)
+                .with_aliases(&["voice"])
+                .with_description("Toggle text-to-speech"),
             Command::new("/loop", CommandCategory::Agent, None)
                 .with_description("Schedule periodic task (e.g. /loop 5m \"check status\")"),
             Command::new("/tasks", CommandCategory::Agent, None)

@@ -1922,6 +1922,15 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             }
 
                             app.messages_state.messages.finalize_streaming();
+
+                            let tts = app.ui_state.tts.clone();
+                            if tts.is_speaking() {
+                                tokio::spawn(async move {
+                                    if let Err(e) = tts.stop().await {
+                                        tracing::debug!("TTS stop error: {}", e);
+                                    }
+                                });
+                            }
                         } else if matches!(app.session_state.session_status, SessionStatus::Working) {
                             app.footer.set_thinking(true, Some("Thinking...".to_string()));
                         }

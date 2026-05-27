@@ -2911,6 +2911,9 @@ impl App {
             "/tui" => {
                 self.toggle_fullscreen();
             }
+            "/tts" => {
+                self.toggle_tts();
+            }
             "/sessions" => {
                 self.open_dialog(Dialog::Session);
             }
