@@ -1,154 +1,190 @@
 # Architecture Review Plan
 
-**Status**: REVIEW_COMPLETE - Iterative Improvement Pending
-**Last Updated**: 2026-05-26
-**Review Summary**: All 34 modules reviewed, consolidated findings at `plans/consolidated_review.md`
+**Status**: ACTIVE - Systematic review completed
+**Last Updated**: 2026-05-27
+**Objective**: Review all architecture documents, verify claims against code, identify bugs and improvements
 
 ---
 
-## Modules to Review (34 total, excluding review_plan.md)
+## Overview
 
-| # | Module | File |
-|---|--------|------|
-| 1 | Overview | `architecture/overview.md` |
-| 2 | Protocol | `architecture/protocol.md` |
-| 3 | Command | `architecture/command.md` |
-| 4 | Client | `architecture/client.md` |
-| 5 | Bus | `architecture/bus.md` |
-| 6 | Agent | `architecture/agent.md` |
-| 7 | Skills | `architecture/skills.md` |
-| 8 | Provider | `architecture/provider.md` |
-| 9 | Plugin | `architecture/plugin.md` |
-| 10 | Upgrade | `architecture/upgrade.md` |
-| 11 | Session | `architecture/session.md` |
-| 12 | Server | `architecture/server.md` |
-| 13 | Resilience | `architecture/resilience.md` |
-| 14 | Compaction | `architecture/compaction.md` |
-| 15 | Util | `architecture/util.md` |
-| 16 | Permission | `architecture/permission.md` |
-| 17 | Core | `architecture/core.md` |
-| 18 | Memory | `architecture/memory.md` |
-| 19 | Config | `architecture/config.md` |
-| 20 | IDE | `architecture/ide.md` |
-| 21 | MCP | `architecture/mcp.md` |
-| 22 | Hooks | `architecture/hooks.md` |
-| 23 | Worktree | `architecture/worktree.md` |
-| 24 | Security | `architecture/security.md` |
-| 25 | LSP | `architecture/lsp.md` |
-| 26 | PTY Session | `architecture/pty_session.md` |
-| 27 | Exec | `architecture/exec.md` |
-| 28 | TUI | `architecture/tui.md` |
-| 29 | Tool | `architecture/tool.md` |
-| 30 | Error | `architecture/error.md` |
-| 31 | TTS | `architecture/tts.md` |
-| 32 | Snapshot | `architecture/snapshot.md` |
-| 33 | Crypto | `architecture/crypto.md` |
-| 34 | Storage | `architecture/storage.md` |
+This plan systematically reviews all architecture documentation in the `architecture/` directory. Each module was reviewed by a dedicated subagent that:
+1. Read the architecture document
+2. Cross-referenced with actual source code in `src/`
+3. Verified claims, counts, and line numbers against code
+4. Identified bugs, inconsistencies, and improvements
+5. Wrote findings to `plans/<batch>_*_review.md`
 
-## Review Process
+All 12 review batches have been completed.
 
-### Phase 1: Subagent Batch Reviews (Parallel Execution)
+---
 
-Launch subagents in batches of 5-6 modules each. Each subagent will:
+## Review Batch Results Summary
 
-1. Read the architecture document for their assigned module(s)
-2. Read the corresponding source code in `src/`
-3. Verify claims in the documentation against actual code
-4. Identify:
-   - Stale/incorrect documentation claims
-   - Bugs discovered during review
-   - Improvement opportunities
-   - Missing features that are documented as existing
-   - Features documented but not implemented
-5. Write findings to `plans/<module>_review.md`
+| Batch | Modules Reviewed | Output File | Issues Found |
+|-------|-----------------|-------------|--------------|
+| 1 | Agent, Bus | `plans/batch1_agent_bus_review.md` | 3 minor documentation issues |
+| 1 | Client, Command, Shell Session | `plans/batch1_client_command_shell_review.md` | Command count error (39 vs 46) |
+| 1 | Compaction, Config, Core | `plans/batch1_compaction_config_core_review.md` | Compaction inequality representation |
+| 1 | Crypto, Error, Exec | `plans/batch1_crypto_error_exec_review.md` | All claims verified correct |
+| 1 | Hooks, IDE, LSP | `plans/batch1_hooks_ide_lsp_review.md` | LSP count error (40 vs 39) |
+| 1 | MCP, Memory, Overview | `plans/batch1_mcp_memory_overview_review.md` | IdeServer socket mode incomplete |
+| 1 | Permission, Plugin, Protocol | `plans/batch1_permission_plugin_protocol_review.md` | Session lifecycle count (16 vs 19) |
+| 1 | Provider, Resilience, Security | `plans/batch1_provider_resilience_security_review.md` | SSE parser line numbers stale |
+| 2 | Server, Session, Skills | `plans/batch2_server_session_skills_review.md` | Auth inconsistency (HTTP vs WS) |
+| 2 | Snapshot, Storage, Tool | `plans/batch2_snapshot_storage_tool_review.md` | ImageTool not registered, hash inconsistency |
+| 2 | TTS, TUI, Upgrade | `plans/batch2_tts_tui_upgrade_review.md` | UiState missing resize_debounce field |
+| 2 | Util, Worktree | `plans/batch2_util_worktree_review.md` | pricing.rs undocumented, line numbers stale |
 
-### Batch Assignments
+---
 
-**Batch 1** (Modules 1-5): Overview, Protocol, Command, Client, Bus
-- Task: `plans/overview_review.md`, `plans/protocol_review.md`, `plans/command_review.md`, `plans/client_review.md`, `plans/bus_review.md`
+## Consolidated Findings
 
-**Batch 2** (Modules 6-10): Agent, Skills, Provider, Plugin, Upgrade
-- Task: `plans/agent_review.md`, `plans/skills_review.md`, `plans/provider_review.md`, `plans/plugin_review.md`, `plans/upgrade_review.md`
+### Critical Issues Requiring Fixes
 
-**Batch 3** (Modules 11-15): Session, Server, Resilience, Compaction, Util
-- Task: `plans/session_review.md`, `plans/server_review.md`, `plans/resilience_review.md`, `plans/compaction_review.md`, `plans/util_review.md`
+| # | Module | Issue | Severity | Fix Location |
+|---|--------|-------|----------|---------------|
+| 1 | LSP | "40 servers" should be "39 servers" | HIGH | `architecture/lsp.md:229` |
+| 2 | Command | Built-in command count is 46, not 39 | HIGH | `architecture/command.md:51` |
+| 3 | Tool | ImageTool exists but is NOT registered | HIGH | `src/tool/mod.rs` |
+| 4 | Protocol | Session lifecycle "(16 variants)" should be "(19 variants)" | MEDIUM | `architecture/protocol.md:69` |
+| 5 | Server | Auth inconsistency: HTTP allows no-token, WS returns 500 | MEDIUM | `src/server/ws.rs:103-106` vs `middleware/auth.rs:37-40` |
+| 6 | TUI | UiState missing `resize_debounce` 26th field | MEDIUM | `architecture/tui.md` |
+| 7 | Storage | Migration versions "v1-v14" should be "v1-v15" | LOW | `architecture/storage.md:106` |
+| 8 | Worktree | Line numbers 36/56 are actually 172/180 | LOW | `architecture/worktree.md:117` |
 
-**Batch 4** (Modules 16-20): Permission, Core, Memory, Config, IDE
-- Task: `plans/permission_review.md`, `plans/core_review.md`, `plans/memory_review.md`, `plans/config_review.md`, `plans/ide_review.md`
+### Verified Correct Counts
 
-**Batch 5** (Modules 21-25): MCP, Hooks, Worktree, Security, LSP
-- Task: `plans/mcp_review.md`, `plans/hooks_review.md`, `plans/worktree_review.md`, `plans/security_review.md`, `plans/lsp_review.md`
+| Item | Documented | Actual | Module |
+|------|------------|--------|--------|
+| LSP servers | 40 | 39 | `src/lsp/server.rs:27-383` |
+| AppEvent variants | 36 | 36 | `src/bus/events.rs:5-147` |
+| Built-in agents | 7 | 7 | `src/agent/mod.rs:147-262` |
+| UiState fields | 25 | 26 | `src/tui/app/state/ui.rs:27-76` |
+| Tool count (with_defaults) | 27 | 27 | `src/tool/mod.rs:89-119` |
+| Permission types | 16 | 16 | `src/permission/mod.rs:70-87` |
+| HookType variants | 13 | 13 | `src/plugin/hooks.rs:6-20` |
+| CoreRequest variants | 35 | 35 | `src/protocol/core.rs:50-175` |
+| CoreEvent variants | 19 | 19 | `src/protocol/core.rs:179-271` |
+| CoreResponse variants | 7 | 7 | `src/protocol/core.rs:24-46` |
+| TuiMessage variants | 18 | 18 | `src/protocol/tui.rs:3-75` |
 
-**Batch 6** (Modules 26-30): PTY Session, Exec, TUI, Tool, Error
-- Task: `plans/pty_session_review.md`, `plans/exec_review.md`, `plans/tui_review.md`, `plans/tool_review.md`, `plans/error_review.md`
+---
 
-**Batch 7** (Modules 31-34): TTS, Snapshot, Crypto, Storage
-- Task: `plans/tts_review.md`, `plans/snapshot_review.md`, `plans/crypto_review.md`, `plans/storage_review.md`
+## Stale Items to Prune
 
-### Phase 2: Stale Item Detection
+### Documentation Corrections Needed
 
-After all subagents complete, the parent agent will:
+| # | File | Issue | Action |
+|---|------|-------|--------|
+| 1 | `architecture/lsp.md:229` | "40 servers" → "39 servers" | UPDATE |
+| 2 | `architecture/command.md` | Command table missing 7 commands (/stats, /tts, /pr, /issue, /checkpoint, +2) | UPDATE TABLE |
+| 3 | `architecture/command.md:114-158` | "39 commands" → "46 commands" | UPDATE |
+| 4 | `architecture/protocol.md:69` | "(16 variants)" → "(19 variants)" | UPDATE |
+| 5 | `architecture/tui.md` | Add `resize_debounce: Option<std::time::Instant>` to UiState | UPDATE |
+| 6 | `architecture/tui.md` | Component trait is `Send + Any`, not just `Send` | UPDATE |
+| 7 | `architecture/tui.md` | Dialog enum missing `Stats` variant | UPDATE |
+| 8 | `architecture/storage.md:106` | "v1-v14" → "v1-v15" | UPDATE |
+| 9 | `architecture/worktree.md:117` | "line 36, line 56" → "line 172, line 180" | UPDATE |
+| 10 | `architecture/provider.md:526` | SseParser line range is 988 lines, not 382 | UPDATE or REMOVE LINE REFS |
+| 11 | `architecture/security.md:197` | "fc00::/8" should be "fc00::/7" | UPDATE |
+| 12 | `architecture/compaction.md:91` | "7 or more" → "more than 6" for accuracy | UPDATE |
+| 13 | `architecture/command.md:207-217` | "Removed orphaned src/tui/app/commands.rs" - stale historical note | REMOVE |
+| 14 | `architecture/command.md:207-217` | "Fixed unused variable warnings" - stale historical note | REMOVE |
 
-1. **Cross-reference all `plans/*_review.md` files**
-   - Compile a list of all identified stale documentation items
-   - Compile a list of all identified stale module files
+### Code Bugs to Address
 
-2. **Check for stale items in architecture directory**:
-   - Modules that exist in `architecture/` but have no corresponding source in `src/`
-   - Modules that describe features that have been removed or significantly changed
-   - Line numbers and field counts that no longer match source
-   - File references that point to moved/renamed files
+| # | Module | Bug | Priority |
+|---|--------|-----|----------|
+| 1 | Tool | ImageTool at `src/tool/image.rs` not registered anywhere | HIGH |
+| 2 | Server | ws.rs validate_ws_auth() returns 500 when no token, HTTP allows - inconsistent | MEDIUM |
+| 3 | Snapshot | `collect_files_sync()` uses MD5 while `capture_incremental()` uses SHA256 | LOW |
+| 4 | Snapshot | `restore()` lacks atomic write pattern that `restore_to_path()` has | LOW |
 
-3. **Verify module organization**:
-   - Compare `architecture/` listing against what modules actually exist in `src/`
-   - Identify orphaned architecture files
-   - Note any source modules without architecture documentation
+### Incomplete Implementations
 
-### Phase 3: Review Summary (Parent Agent)
+| # | Module | Issue | Status |
+|---|--------|-------|--------|
+| 1 | MCP | IdeServer::run_socket() exists but returns Ok(()) without actual socket handling | UNFINISHED |
+| 2 | MCP | SSE methods (`connect_sse()`, `take_sse_events()`) exist but no consumer in agent loop | NOT INTEGRATED |
+| 3 | MCP | McpCli Debug command doesn't actually test connections | UNFINISHED |
+| 4 | TUI | `/stats` command exists but StatsDialog not found in `src/tui/components/dialogs/` | POSSIBLE DEAD CODE |
 
-After all subagent reviews and stale detection:
-1. Consolidate findings into a summary document at `plans/consolidated_review.md`
-2. Produce final list of recommended:
-   - Documentation corrections
-   - Documentation files to remove (stale)
-   - Architecture files to remove (stale)
-   - Code improvements (for separate implementation)
+---
 
-## Subagent Instructions
+## Known Issues (Pre-existing, Not From This Review)
 
-Each subagent should:
-- Work only in `/Users/davidbowman/projects/codegg`
-- Verify every claim by checking actual source code
-- Note exact line numbers for discrepancies
-- Document what should be fixed but NOT make direct code changes
-- Write findings to the specified output file in `plans/`
+These are documented in AGENTS.md but verified during review:
 
-## Output Structure
+| Issue | Location | Status |
+|-------|----------|--------|
+| ToolExecutor exists but unused | `src/tool/executor.rs:8` | DEPRECATED |
+| CANONICAL_PATHS_CACHE never clears | `src/security/sandbox.rs:237` | KNOWN |
+| TTS init() ignores providers | `src/tts/mod.rs:45-49` | KNOWN |
+| Worktree symlink detection | `src/worktree/mod.rs:69-88` | KNOWN |
+| OAuth replay protection TOCTOU | `src/mcp/auth.rs:318-332` | KNOWN |
+| PermissionResponse unused | `src/permission/mod.rs:1141-1145` | KNOWN |
+| check_external_directory unused | `src/permission/mod.rs:1237-1248` | KNOWN |
+| ImageTool not in registry | `src/tool/image.rs` | CONFIRMED |
 
-Each `plans/<module>_review.md` should contain:
+---
 
-```markdown
-# <Module> Architecture Review
+## Files to Review/Update
 
-## Documentation Accuracy
-- [List verified accurate claims]
-- [List stale/incorrect claims with corrections]
+### Architecture Files Requiring Updates
 
-## Code Bugs Found
-- [Bug description with location]
+| Priority | File | Action | Summary |
+|----------|------|--------|---------|
+| HIGH | `architecture/lsp.md` | UPDATE | Fix 40 → 39 servers |
+| HIGH | `architecture/command.md` | UPDATE | Fix command count 39 → 46, update table |
+| HIGH | `architecture/tool.md` | UPDATE | Document ImageTool status (dead code or register) |
+| MEDIUM | `architecture/tui.md` | UPDATE | Add resize_debounce, Stats dialog, Component trait |
+| MEDIUM | `architecture/protocol.md` | UPDATE | Fix 16 → 19 Session Lifecycle variants |
+| MEDIUM | `architecture/storage.md` | UPDATE | v1-v14 → v1-v15 |
+| MEDIUM | `architecture/worktree.md` | UPDATE | Fix line numbers 36/56 → 172/180 |
+| LOW | `architecture/provider.md` | UPDATE | Fix SSE parser line references |
+| LOW | `architecture/security.md` | UPDATE | Fix fc00::/8 → fc00::/7, add CANONICAL_PATHS_CACHE issue |
+| LOW | `architecture/compaction.md` | UPDATE | Fix inequality representation |
 
-## Improvement Opportunities
-- [Suggested improvements]
+### Architecture Files to Prune
 
-## Stale Items to Remove from Architecture Directory
-- [Any items that should be pruned]
+| File | Reason |
+|------|--------|
+| `architecture/command.md:207-217` | Historical implementation notes no longer relevant |
 
-## Missing Documentation
-- [Features with no docs or incomplete docs]
-```
+---
 
-## Notes
+## Execution Plan
 
-- This is a research/review task only - no code changes should be made by subagents
-- Subagents should verify using grep, glob, and Read tools against actual source
-- All work stays within `/Users/davidbowman/projects/codegg`
+1. **Phase 1 (Immediate)**: Fix critical count errors in:
+   - `architecture/lsp.md:229` - 40 → 39
+   - `architecture/command.md` - 39 → 46 commands
+   - `architecture/protocol.md:69` - 16 → 19 variants
+
+2. **Phase 2 (Next)**: Address code bugs:
+   - Register or remove ImageTool (`src/tool/mod.rs`)
+   - Fix Server auth inconsistency (ws.rs vs middleware/auth.rs)
+
+3. **Phase 3 (Later)**: Update all other documentation issues listed above
+
+4. **Phase 4 (Ongoing)**: Add verification tests for counts:
+   - LSP server count test
+   - AppEvent count test
+   - Command count test
+
+---
+
+## Review Methodology Notes
+
+For future architecture reviews, subagents should:
+
+1. **Verify counts first** - These are most likely to drift
+2. **Check line numbers conservatively** - If off by >5 lines, flag as stale
+3. **Note incomplete implementations** - Don't assume incomplete code is a bug
+4. **Distinguish docs vs code bugs** - Not everything is a code bug
+
+---
+
+*Review plan created: 2026-05-27*
+*All 12 review batches completed*
+*Total issues identified: 30+ (8 critical/medium, rest informational)*
