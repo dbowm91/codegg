@@ -120,13 +120,17 @@ These items are important for future agents to know when working with the codeba
 
 2. **Documentation can become stale** - Struct fields get added/removed; always compare architecture docs against actual source code.
 
-3. **Counts should be verified** - Component/dialog counts (TUI), server counts (LSP), command counts can drift from reality. When fixing documentation, count from actual source files, not from other documentation.
+3. **Counts should be verified** - Component/dialog counts (TUI), server counts (LSP), command counts can drift from reality. When fixing documentation, count from actual source files, not from other documentation. **UiState has 25 fields** (not 21 as some docs claim).
 
 4. **Line numbers in docs are fragile** - References like `watcher.rs:157-158` should be verified as they can be off by several lines. Use code search to find exact locations.
 
 5. **Pre-verification before editing** - When a plan or review file claims "X is wrong in architecture doc", first check if it's been fixed since the review was written. Many "corrections" in old plans were already addressed.
 
 6. **Use subagents for batch review work** - Process 4-5 plan files per subagent (2000 line context limit), consolidate results, then consolidate into final plan.
+
+7. **multiedit tool exists but not in default registry** - `src/tool/multiedit.rs` exists and `multiedit` module is registered via `pub mod multiedit`, but it's NOT included in `ToolRegistry::with_defaults()`. Don't assume every tool in `/tool` is in the default registry.
+
+8. **LSP server count is 40** (verified 2026-05-27) - count entries in `server_definitions()` array at `src/lsp/server.rs:27-375`. cmake-language-server is NOT in the list despite some review claims. clangd, rust-analyzer, gopls, etc. are included.
 
 ### Verified Codebase Facts
 
@@ -135,7 +139,7 @@ These items were verified during review sessions:
 | Item | Value | Location |
 |------|-------|----------|
 | Tool count | 26 | `src/tool/mod.rs:89-119` |
-| LSP server count | 39 | `src/lsp/server.rs:27-385` |
+| LSP server count | 40 | `src/lsp/server.rs:27-375` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | NOT integrated - exists but unused | `src/tool/executor.rs:8` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
@@ -181,14 +185,18 @@ Parent Agent:
 
 ### Parallel Implementation Pattern
 ```
-Wave 1 (Parallel - 2 agents):
-  - W1-1: Fix plugin fuel leaks (loader.rs
-  - W1-2: Fix CoreEvent mapping (core/mod.rs)
+Wave 1 (Parallel - independent code fixes):
+  - Agent 1: Session exports (session/mod.rs:28), Theme count (theme.rs:8)
+  - Agent 2: Snapshot hash MD5→SHA256 (snapshot/mod.rs:431)
+  - Agent 3: Investigate ToolExecutor usage or deprecation (tool/executor.rs:8)
 
-Wave 2 (Parallel - Documentation):
-  - Each agent takes one documentation fix
-  - Run 7 agents in parallel
-  - Verify each compiles/builds
+Wave 2 (Parallel - documentation fixes):
+  - Each agent takes 5-10 architecture doc corrections
+  - Verify each fix against source code before applying
+
+Wave 3 (Critical bug fix):
+  - Single agent: Fix exec mode question channel deadlock (exec.rs:121)
+  - Requires understanding of AgentLoop::setup_question_channel()
 ```
 
 ### Provider Auto-Registration

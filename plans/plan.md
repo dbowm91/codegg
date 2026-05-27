@@ -1,7 +1,7 @@
 # Implementation Plan
 
 **Status**: POST-CONSOLIDATION
-**Last Updated**: 2026-05-26
+**Last Updated**: 2026-05-27
 
 ---
 
@@ -9,9 +9,9 @@
 
 All implementation waves (0-3) have been completed via 33+ PRs. The codebase has undergone significant hardening through security fixes, performance optimizations, and new features.
 
-**Completed Waves**: Wave 0 (Quick Wins), Wave 1 (Critical Security), Wave 2 (High-Priority Infrastructure), Wave 3 (Medium-Priority Groups)
+**Completed Waves**: Wave 0 (Quick Wins), Wave 1 (Critical Security), Wave 2 (High-Priority Infrastructure), Wave 3 (Medium-Priority Groups), Wave 4 (Large Refactors - deferred)
 
-**Remaining Items**: Deferred features classified as large refactors, TUI enhancements, agent capability features, and documentation work.
+**Remaining Items**: Wave 5 documentation and minor code fixes pending completion.
 
 ---
 
@@ -80,7 +80,80 @@ All implementation waves (0-3) have been completed via 33+ PRs. The codebase has
 
 ---
 
-## Deferred Items
+## Wave 5: Documentation & Minor Fixes
+
+### Implementation Waves (Parallelizable)
+
+#### W5-Phase 1: Independent Code Fixes (Can run in parallel)
+| ID | Issue | Location | Verification |
+|----|-------|----------|--------------|
+| W5-2 | Session exports missing - add `compute_checksum`, `create_working_file`, `verify_file` to `pub use` | `src/session/mod.rs:28` | Check session exports in mod.rs |
+| W5-5 | TUI theme count mismatch - change "31" to "33" in comment | `src/tui/theme.rs:8` | Verify actual theme count |
+| W5-3 | Snapshot hash inconsistency - change MD5 to SHA256 in `collect_files_sync()` | `src/snapshot/mod.rs:431` | Verify other hash usages |
+
+#### W5-Phase 2: ToolExecutor Integration (Requires research)
+| ID | Issue | Location | Action |
+|----|-------|----------|--------|
+| W5-4 | ToolExecutor exists but unused - determine if it should be integrated or removed | `src/tool/executor.rs:8` | Investigate why it was created but not used, decide to integrate or deprecate |
+
+#### W5-Phase 3: Exec Mode Question Channel Fix (Requires understanding)
+| ID | Issue | Location | Details |
+|----|-------|----------|---------|
+| W5-1 | Question tool deadlocks in exec mode - no handler for `question_rx` responses | `src/exec.rs:121` | Agent loop waits indefinitely if question tool invoked in exec mode. Add timeout or handler. |
+
+### Priority 2: Documentation Fixes
+
+#### Architecture Doc Corrections
+
+| ID | File | Issue | Location |
+|----|------|-------|----------|
+| W5-6 | `architecture/core.md` | InprocCoreClient fields wrapped in `Option<Arc<T>>` | `src/core/mod.rs:22-28` |
+| W5-7 | `architecture/core.md` | Add note: Snapshot events defined but not published via `map_app_event_to_core_event` | `src/core/mod.rs:728-841` |
+| W5-8 | `architecture/error.md` | Line numbers incorrect; missing `ServerRuntimeError IntoResponse`, `ProviderError::api()` docs | `src/error.rs` |
+| W5-9 | `architecture/permission.md` | Mode tool fix: `write` is in `restricted_tools` (correct) | `modes.rs:171` |
+| W5-10 | `architecture/permission.md` | `PermissionResponse` at lines 1141-1145, not 61-71 | `src/permission/mod.rs:1141-1145` |
+| W5-11 | `architecture/protocol.md` | Update CoreEvent count: 20 → 21 | `src/protocol/core.rs:179` |
+| W5-12 | `architecture/protocol.md` | Update Turn events: 5 → 7 (add `TurnReasoningDelta`, `TurnCompleted`) | `src/protocol/core.rs` |
+| W5-13 | `architecture/protocol.md` | Update Server-to-Client count: 9 → 10 | `src/protocol/core.rs` |
+| W5-14 | `architecture/command.md` | Stale line numbers (203-205), bugs table contradicted by historical notes | `src/command/` |
+| W5-15 | `architecture/overview.md` | Tool count: "29" → "26" | `src/tool/mod.rs:89-119` |
+| W5-16 | `architecture/overview.md` | Remove "multiedit" from tool list - tool exists but NOT registered in `with_defaults()` | `src/tool/mod.rs:89-119` |
+| W5-17 | `architecture/provider.md` | HashMap vs DashMap: `catalog.rs` uses `HashMap`, not `DashMap` | `src/provider/` |
+| W5-18 | `architecture/lsp.md` | Server count: 39 → 40 (verified 40 servers at `src/lsp/server.rs:27-375`) | `src/lsp/server.rs:27-375` |
+| W5-19 | `architecture/lsp.md` | Extension count: "50+" → "~80" | `src/lsp/` |
+| W5-20 | `architecture/mcp.md` | JSON field is `type`, not `server_type` | `src/mcp/` |
+| W5-21 | `architecture/resilience.md` | Fix state transition diagram wording | `circuit.rs:114-127` |
+| W5-22 | `architecture/server.md` | mDNS module undocumented | `src/server/mdns.rs` |
+| W5-23 | `architecture/server.md` | Clarify `RenderFrame` direction (Client→Server) | `src/server/` |
+| W5-24 | `architecture/session.md` | Field order note for `timestamp` vs `session_id` | `src/session/` |
+
+#### AGENTS.md Corrections
+
+| ID | File | Issue | Location |
+|----|------|-------|----------|
+| W5-25 | `AGENTS.md` | LSP count: 39 → 40 (ALREADY FIXED) | `src/lsp/server.rs:27-375` |
+| W5-26 | `AGENTS.md` | Module naming: `pty_session/` → `shell_session/` in Quick Reference | `src/shell_session/` |
+
+#### SKILL.md Corrections
+
+| ID | File | Issue | Location |
+|----|------|-------|----------|
+| W5-27 | `.opencode/skills/exec/SKILL.md` | Timeout claim incorrect (no 300s timeout exists in exec mode) | `src/exec.rs:121` |
+| W5-28 | `.opencode/skills/snapshot/SKILL.md` | Create missing skill guide (referenced but doesn't exist) | architecture docs |
+| W5-29 | `architecture/skills.md` | Document `resources` field, `SkillIndex` Default impl, `SkillFrontmatter` struct | `src/tool/skill.rs` |
+| W5-30 | `architecture/pty_session.md` | Rename to `architecture/shell_session.md`, update `Pty*` → `Shell*` references | `src/shell_session/` |
+| W5-31 | `architecture/util.md` | `stat_core.rs` → `metrics.rs` | `src/util/` |
+| W5-32 | `architecture/worktree.md` | Add `is_git_file()` to See Also | `workspace.rs:36,56` |
+| W5-33 | `architecture/compaction.md` | Threshold clarity: ">6 messages" → "7 or more" | `src/agent/compaction.rs:584` |
+| W5-34 | `architecture/config.md` | Field reference: `compaction_threshold` → `compaction.threshold` | `schema.rs:374` |
+| W5-35 | `architecture/memory.md` | Single-namespace vs dual-namespace decision needed | `src/tui/app/mod.rs:4386-4400` |
+
+### Wave 5 Implementation Notes
+
+- **W5-Phase 1** (W5-2, W5-5, W5-3) can be done independently by 3 parallel agents
+- **W5-Phase 2** (W5-4) requires investigation - may need to integrate or remove ToolExecutor
+- **W5-Phase 3** (W5-1) is the critical bug - requires understanding exec mode question handling
+- **Documentation fixes** (W5-6 through W5-35) can be split among multiple agents since they're independent
 
 ### Wave 4: Large Refactors (2+ weeks each)
 
@@ -125,7 +198,7 @@ These are large efforts requiring significant rewrites. Deferred unless absolute
 
 #### TUI-5: Accessibility Improvements
 - **Status**: Partial - focus indicators exist, global Tab handler and screen reader not implemented
-- **Action**: Implement global Tab/Shift+Tab handler, create `src/util/a11y.rs`
+- **Action**: Implement global Tab and Shift+Tab handler, create `src/util/a11y.rs`
 
 ---
 
@@ -245,7 +318,7 @@ These issues are documented but deferred for later attention:
 
 7. **Crypto Module**: `src/crypto/mod.rs` provides AES-256-GCM encryption (`encrypt_to_string`, `decrypt_from_string`).
 
-8. **Tool Path Validation**: `validate_path()` in `src/tool/util.rs` checks symlinks and verifies paths. `check_path_for_symlinks()` rejects symlink components.
+8. **Tool Path Validation**: `validate_path()` in `src/tool/util.rs` checks symlinks and verifies path components. `check_path_for_symlinks()` rejects symlink paths.
 
 9. **Write Tool TOCTOU Fix**: Parent path validated BEFORE `create_dir_all()`.
 
@@ -278,6 +351,7 @@ cargo test messages
 |--------|-------|
 | Waves 0-3 Completed | ✅ All via 33+ PRs |
 | Wave 4 (Large Refactors) | ⏳ DEFERRED |
+| Wave 5 (Docs & Minor Fixes) | ⏳ IN PROGRESS |
 | TUI Enhancement | ⏳ MOSTLY DEFERRED |
 | Agent Capabilities | ⏳ PARTIAL (4/8 complete) |
 | Mode/Exec Features | ✅ Complete (MODE-1, EXEC-1) |
