@@ -111,7 +111,7 @@ pub struct Command {
 }
 ```
 
-### Built-in Commands (39 total)
+### Built-in Commands (46 total)
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
@@ -146,16 +146,21 @@ pub struct Command {
 | `/context` | | View context window usage |
 | `/cost` | | View token usage and cost |
 | `/usage` | | View rate limits and quota |
+| `/stats` | | View session analytics and cost breakdown |
 | `/tui` | `fullscreen` | Toggle fullscreen mode |
-| `/loop` | | Schedule periodic task |
+| `/tts` | `voice` | Toggle text-to-speech |
+| `/loop` | | Schedule periodic task (e.g. /loop 5m "check status") |
 | `/tasks` | | List background tasks |
 | `/task-del` | | Delete background task |
 | `/memory` | | Memory dashboard |
-| `/memory-search` | | Search memories |
-| `/memory-list` | | List memories |
-| `/memory-remember` | | Remember something |
-| `/memory-forget` | | Forget a memory |
+| `/memory-search` | | Search memories (args: query) |
+| `/memory-list` | | List memories (args: namespace) |
+| `/memory-remember` | | Remember something (args: text) |
+| `/memory-forget` | | Forget a memory (args: id) |
 | `/memory-consolidate` | | Consolidate session into memories |
+| `/checkpoint` | | Create a checkpoint of current session |
+| `/pr` | | GitHub pull requests |
+| `/issue` | `bugs`, `features` | GitHub issues |
 
 ### Dynamic Commands
 
