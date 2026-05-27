@@ -762,6 +762,8 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         top_p: selected_agent.top_p,
         max_tokens: None,
         response_format: None,
+        thinking_budget: selected_agent.thinking_budget,
+        reasoning_effort: selected_agent.reasoning_effort,
     };
 
     let events = agent_loop.run(request).await?;

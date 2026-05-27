@@ -662,6 +662,8 @@ mod tests {
             top_p: None,
             max_tokens: Some(1024),
             response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
         assert_eq!(req.model, "test/model");
     }

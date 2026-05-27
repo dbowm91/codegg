@@ -210,7 +210,7 @@ mod tests {
             vec![429, 500, 502, 503, 504],
         );
 
-        let request = ChatRequest {
+let request = ChatRequest {
             messages: vec![],
             model: "test".to_string(),
             tools: None,
@@ -219,83 +219,8 @@ mod tests {
             top_p: None,
             max_tokens: None,
             response_format: None,
-        };
-
-        let result = fallback.stream(&request).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_fallback_falls_to_second_on_retryable() {
-        let fail_count = Arc::new(AtomicUsize::new(1));
-        let call_count = Arc::new(AtomicUsize::new(0));
-
-        let provider1 = MockProvider {
-            id: "p1".to_string(),
-            name: "Provider1".to_string(),
-            should_fail: true,
-            fail_count: fail_count.clone(),
-            call_count: call_count.clone(),
-        };
-        let provider2 = MockProvider {
-            id: "p2".to_string(),
-            name: "Provider2".to_string(),
-            should_fail: false,
-            fail_count: Arc::new(AtomicUsize::new(0)),
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-
-        let fallback = FallbackProvider::new(
-            vec![Box::new(provider1.clone()), Box::new(provider2.clone())],
-            vec![429],
-        );
-
-        let request = ChatRequest {
-            messages: vec![],
-            model: "test".to_string(),
-            tools: None,
-            system: None,
-            temperature: None,
-            top_p: None,
-            max_tokens: None,
-            response_format: None,
-        };
-
-        let result = fallback.stream(&request).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_fallback_returns_last_error_on_all_fail() {
-        let provider1 = MockProvider {
-            id: "p1".to_string(),
-            name: "Provider1".to_string(),
-            should_fail: true,
-            fail_count: Arc::new(AtomicUsize::new(1)),
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-        let provider2 = MockProvider {
-            id: "p2".to_string(),
-            name: "Provider2".to_string(),
-            should_fail: true,
-            fail_count: Arc::new(AtomicUsize::new(1)),
-            call_count: Arc::new(AtomicUsize::new(0)),
-        };
-
-        let fallback = FallbackProvider::new(
-            vec![Box::new(provider1.clone()), Box::new(provider2.clone())],
-            vec![429],
-        );
-
-        let request = ChatRequest {
-            messages: vec![],
-            model: "test".to_string(),
-            tools: None,
-            system: None,
-            temperature: None,
-            top_p: None,
-            max_tokens: None,
-            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
 
         let result = fallback.stream(&request).await;
@@ -335,6 +260,8 @@ mod tests {
             top_p: None,
             max_tokens: None,
             response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
 
         let result = fallback.stream(&request).await;

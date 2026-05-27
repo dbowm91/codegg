@@ -92,6 +92,8 @@ impl ReviewTool {
             top_p: None,
             max_tokens: Some(1000),
             response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
 
         let mut stream = provider

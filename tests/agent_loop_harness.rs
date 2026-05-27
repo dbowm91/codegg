@@ -539,6 +539,8 @@ fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistr
         system_prompt: None,
         permissions: std::collections::HashMap::new(),
         hidden: false,
+        thinking_budget: None,
+        reasoning_effort: None,
     }];
 
     let permission_checker =
@@ -593,6 +595,8 @@ fn build_test_agent_loop_with_permissions(
         system_prompt: None,
         permissions: std::collections::HashMap::new(),
         hidden: false,
+        thinking_budget: None,
+        reasoning_effort: None,
     }];
 
     let config = Config::default();
@@ -629,6 +633,8 @@ fn build_test_agent_loop_with_config(
         system_prompt: None,
         permissions: std::collections::HashMap::new(),
         hidden: false,
+        thinking_budget: None,
+        reasoning_effort: None,
     }];
 
     AgentLoop::new(
@@ -656,6 +662,8 @@ fn make_chat_request(prompt: &str) -> ChatRequest {
         top_p: None,
         max_tokens: None,
         response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
     }
 }
 
@@ -878,6 +886,8 @@ async fn test_agent_loop_harness_smoke_test() {
         top_p: None,
         max_tokens: None,
         response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
     };
 
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
@@ -1041,6 +1051,8 @@ async fn test_agent_loop_harness_records_requests() {
         top_p: None,
         max_tokens: None,
         response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
     };
 
     let _: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
@@ -1146,6 +1158,8 @@ async fn test_agent_loop_harness_fails_without_second_call() {
         top_p: None,
         max_tokens: None,
         response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
     };
 
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
@@ -1856,6 +1870,8 @@ fn build_agent_loop_with_error_config(
         system_prompt: None,
         permissions: std::collections::HashMap::new(),
         hidden: false,
+        thinking_budget: None,
+        reasoning_effort: None,
     }];
 
     let permission_checker =
@@ -2912,8 +2928,10 @@ async fn test_task_tool_integration_with_subagent() {
             color: None,
             steps: None,
             system_prompt: None,
-            permissions: std::collections::HashMap::new(),
+permissions: std::collections::HashMap::new(),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
         Agent {
             name: "subagent".to_string(),
@@ -2929,6 +2947,8 @@ async fn test_task_tool_integration_with_subagent() {
             system_prompt: Some("You are a subagent".to_string()),
             permissions: std::collections::HashMap::new(),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
     ];
 
@@ -3104,6 +3124,8 @@ async fn test_task_tool_denied_tools_passthrough() {
             system_prompt: None,
             permissions: std::collections::HashMap::new(),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
         Agent {
             name: "subagent".to_string(),
@@ -3119,6 +3141,8 @@ async fn test_task_tool_denied_tools_passthrough() {
             system_prompt: Some("You are a subagent".to_string()),
             permissions: std::collections::HashMap::new(),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
     ];
 

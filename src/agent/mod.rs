@@ -160,6 +160,8 @@ pub fn builtin_agents() -> Vec<Agent> {
             system_prompt: None,
             permissions: HashMap::new(),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
         Agent {
             name: "plan".to_string(),
@@ -179,6 +181,8 @@ pub fn builtin_agents() -> Vec<Agent> {
                 ("bash".to_string(), "deny".to_string()),
             ]),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
         Agent {
             name: "general".to_string(),
@@ -194,6 +198,8 @@ pub fn builtin_agents() -> Vec<Agent> {
             system_prompt: None,
             permissions: HashMap::from([("todowrite".to_string(), "deny".to_string())]),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
         Agent {
             name: "explore".to_string(),
@@ -212,6 +218,8 @@ pub fn builtin_agents() -> Vec<Agent> {
                 ("edit".to_string(), "deny".to_string()),
             ]),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
         Agent {
             name: "title".to_string(),
@@ -227,6 +235,8 @@ pub fn builtin_agents() -> Vec<Agent> {
             system_prompt: None,
             permissions: HashMap::new(),
             hidden: true,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
         Agent {
             name: "summary".to_string(),
@@ -242,6 +252,8 @@ pub fn builtin_agents() -> Vec<Agent> {
             system_prompt: None,
             permissions: HashMap::new(),
             hidden: true,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
         Agent {
             name: "compaction".to_string(),
@@ -257,6 +269,8 @@ pub fn builtin_agents() -> Vec<Agent> {
             system_prompt: None,
             permissions: HashMap::from([("*".to_string(), "deny".to_string())]),
             hidden: true,
+            thinking_budget: None,
+            reasoning_effort: None,
         },
     ]
 }
@@ -683,6 +697,8 @@ mod tests {
             system_prompt: None,
             permissions: HashMap::new(),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         }];
         let default = find_default_agent(&agents).unwrap();
         assert_eq!(default.name, "custom");
@@ -724,6 +740,8 @@ mod tests {
             system_prompt: None,
             permissions,
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
         let ruleset = agent.permission_ruleset();
         assert_eq!(ruleset.tool_rules.len(), 2);
@@ -749,6 +767,8 @@ mod tests {
             system_prompt: None,
             permissions,
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
         let config_ruleset = crate::permission::PermissionRuleset {
             default: crate::permission::PermissionLevel::Ask,

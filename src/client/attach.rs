@@ -83,36 +83,31 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
     app.set_remote_send_tx(out_tx);
 
     let event_task = tokio::spawn(async move {
-        let result = std::panic::catch_unwind(move || async {
-            while let Some(msg) = ws_rx.next().await {
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        match serde_json::from_str::<serde_json::Value>(&text) {
-                            Ok(event) => {
-                                if event_tx.send(event).is_err() {
-                                    tracing::debug!("event_tx closed, stopping event_task");
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("failed to parse WebSocket message: {}", e);
+        while let Some(msg) = ws_rx.next().await {
+            match msg {
+                Ok(Message::Text(text)) => {
+                    match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(event) => {
+                            if event_tx.send(event).is_err() {
+                                tracing::debug!("event_tx closed, stopping event_task");
+                                break;
                             }
                         }
+                        Err(e) => {
+                            tracing::warn!("failed to parse WebSocket message: {}", e);
+                        }
                     }
-                    Ok(Message::Close(_)) => {
-                        info!("Server closed connection");
-                        break;
-                    }
-                    Err(e) => {
-                        error!("WebSocket error: {}", e);
-                        break;
-                    }
-                    _ => {}
                 }
+                Ok(Message::Close(_)) => {
+                    info!("Server closed connection");
+                    break;
+                }
+                Err(e) => {
+                    error!("WebSocket error: {}", e);
+                    break;
+                }
+                _ => {}
             }
-        });
-        if let Err(panic_err) = result {
-            tracing::error!("event_task panicked: {:?}", panic_err);
         }
     });
 

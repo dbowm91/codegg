@@ -153,6 +153,8 @@ mod tests {
             system_prompt: system_prompt.map(|s| s.to_string()),
             permissions: std::collections::HashMap::new(),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         }
     }
 

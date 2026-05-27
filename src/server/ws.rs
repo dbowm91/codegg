@@ -100,9 +100,7 @@ fn validate_ws_auth(auth: &WebSocketAuth) -> Result<(), StatusCode> {
                 return Err(StatusCode::UNAUTHORIZED);
             }
         }
-        None => {
-            Ok(())
-        }
+        None => {}
     }
 
     Ok(())
@@ -133,7 +131,7 @@ async fn upgrade_ws(
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<axum::extract::ws::Message>();
 
     let state_clone = state.clone();
-    let send_task = tokio::spawn(async move {
+let mut send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         while let Some(msg) = out_rx.recv().await {
             let _ = ws_tx.send(msg).await;
@@ -143,7 +141,7 @@ async fn upgrade_ws(
 
     let rate_limiter = state.ws_rate_limiter.clone();
 
-    let recv_task = tokio::spawn(async move {
+    let mut recv_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
         while let Some(Ok(msg)) = ws_rx.next().await {
             if let axum::extract::ws::Message::Text(text) = msg {
@@ -174,10 +172,10 @@ async fn upgrade_ws(
     });
 
     tokio::select! {
-        _ = send_task => {
+        _ = &mut send_task => {
             recv_task.abort();
         }
-        _ = recv_task => {
+        _ = &mut recv_task => {
             send_task.abort();
         }
     }
@@ -224,12 +222,11 @@ async fn handle_rpc_request(
             }
         }
         "sessions.get" => {
-            let id = req
-                .params
-                .as_ref()
-                .and_then(|p| p.get("id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let id = if let serde_json::Value::Object(ref p) = req.params {
+                p.get("id").and_then(|v| v.as_str()).unwrap_or("")
+            } else {
+                ""
+            };
             let store = crate::session::SessionStore::new(state.pool.clone());
             match store.get(id).await {
                 Ok(Some(s)) => {
@@ -279,12 +276,11 @@ async fn handle_rpc_request(
             }
         }
         "sessions.create" => {
-            let dir = req
-                .params
-                .as_ref()
-                .and_then(|p| p.get("directory"))
-                .and_then(|v| v.as_str())
-                .unwrap_or(&state.project_dir);
+            let dir = if let serde_json::Value::Object(ref p) = req.params {
+                p.get("directory").and_then(|v| v.as_str()).unwrap_or(&state.project_dir)
+            } else {
+                &state.project_dir
+            };
             let store = crate::session::SessionStore::new(state.pool.clone());
             let input = crate::session::CreateSession {
                 project_id: state.project_dir.clone(),
@@ -388,7 +384,7 @@ async fn upgrade_tui(
     let bus_tx_clone2 = bus_tx.clone();
     let bus_tx_clone3 = bus_tx.clone();
 
-let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         loop {
             tokio::select! {
@@ -406,7 +402,7 @@ let send_task = tokio::spawn(async move {
 
     let session_state = Arc::new(Mutex::new(TuiSessionState::new(addr.to_string())));
 
-    let recv_task = tokio::spawn(async move {
+    let mut recv_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
         while let Some(Ok(msg)) = ws_rx.next().await {
             if let axum::extract::ws::Message::Text(text) = msg {

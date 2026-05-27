@@ -23,6 +23,8 @@ mod tests {
             top_p: None,
             max_tokens: None,
             response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
         }
     }
 

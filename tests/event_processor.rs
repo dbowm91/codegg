@@ -34,6 +34,7 @@ mod tests {
                 output_tokens,
                 total_tokens: input_tokens + output_tokens,
                 reasoning_tokens: 0,
+                cached_tokens: None,
             },
         }
     }

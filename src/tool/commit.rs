@@ -115,6 +115,8 @@ impl CommitTool {
             top_p: None,
             max_tokens: Some(200),
             response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
 
         let mut stream = provider

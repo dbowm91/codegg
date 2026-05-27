@@ -77,6 +77,8 @@ mod tests {
             system_prompt: None,
             permissions: HashMap::new(),
             hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
         }
     }
 
