@@ -22,16 +22,16 @@
 | Feature | Priority | Status |
 |---------|----------|--------|
 | Inline Diff Rendering | HIGH | ✅ IMPLEMENTED |
-| Native Desktop Notifications | HIGH | Partial - manager exists, not wired to events |
+| Native Desktop Notifications | HIGH | ✅ COMPLETED - wired to AgentFinished/SubagentCompleted/SubagentFailed |
 | Image Attachment Support | HIGH | NOT IMPLEMENTED |
-| Streaming UX Enhancements | MEDIUM | Partial - basic streaming exists, missing features |
-| Accessibility Improvements | MEDIUM | Partial - focus indicators, missing screen reader |
+| Streaming UX Enhancements | MEDIUM | Partial - newline-gated commit DONE, resize debounce missing |
+| Accessibility Improvements | MEDIUM | Partial - focus indicators exist, missing global Tab handler |
 | Mouse Support Enhancements | LOW | ✅ MOSTLY IMPLEMENTED |
 
 #### TUI-2: Native Desktop Notifications
-- **Files**: `Cargo.toml`, `src/tui/components/notification.rs`, `src/config/schema.rs`
-- **Status**: Partial - `NotificationManager` exists but NOT wired to `AgentFinished`/`SubagentCompleted`
-- **Action**: Wire `AppEvent::AgentFinished` and `AppEvent::SubagentCompleted` to `NotificationManager::send()`
+- **Files**: `src/tui/components/notification.rs`, `src/tui/mod.rs`
+- **Status**: ✅ COMPLETED - `NotificationManager` now wired to `AgentFinished`, `SubagentCompleted`, `SubagentFailed`
+- **Implementation**: Added `blocking_send_with_config()` method, spawn_blocking for notification send
 
 #### TUI-3: Image Attachment Support
 - **Files**: `Cargo.toml`, `src/tui/components/image.rs` (stub)
@@ -39,8 +39,9 @@
 - **Action**: Implement `image_preview.rs` widget, render images in messages
 
 #### TUI-4: Streaming UX Enhancements
-- **Status**: Partial - streaming state exists, newline-gated commit, resize debounce missing
-- **Action**: Add 75ms resize debounce, complete newline-gated commit
+- **Status**: Partial - newline-gated commit implemented, resize debounce still missing
+- **Implementation**: TextDelta uses `add_streaming_token()`, newline triggers `finalize_streaming()`, AgentFinished commits remaining buffer
+- **Action**: Add 75ms resize debounce
 
 #### TUI-5: Accessibility Improvements
 - **Status**: Partial - focus indicators exist, global Tab handler and screen reader not implemented
@@ -136,7 +137,7 @@ These issues are documented but deferred for later attention:
 | Snapshot hash inconsistency | `src/snapshot/mod.rs:431` uses MD5 | MEDIUM |
 | ToolExecutor exists but unused | `src/tool/executor.rs:8` | MEDIUM |
 | Static CANONICAL_PATHS_CACHE never clears | `src/security/sandbox.rs:237` | MEDIUM |
-| TTS stop() returns Ok on failure | `src/tts/mod.rs:85-103` | LOW |
+| TTS stop() returns Ok on failure | `src/tts/mod.rs:85-103` | LOW | ✅ FIXED |
 | TTS init() ignores providers | `src/tts/mod.rs:45-49` | LOW |
 | Worktree symlink detection | `src/worktree/mod.rs:69-88` | LOW |
 | OAuth replay protection TOCTOU | `src/mcp/auth.rs:318-332` | MEDIUM |
