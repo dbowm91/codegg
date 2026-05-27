@@ -893,15 +893,7 @@ impl AgentLoop {
                                 },
                             );
                         }
-                        ChatEvent::Finish { stop_reason, usage } => {
-                            crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
-                                session_id: self.session_id.clone(),
-                                stop_reason: stop_reason.to_string(),
-                                input_tokens: Some(usage.input_tokens),
-                                output_tokens: Some(usage.output_tokens),
-                                cached_tokens: usage.cached_tokens,
-                            });
-
+                        ChatEvent::Finish { usage, .. } => {
                             if let Some(ref store) = usage_store {
                                 let session_id = self.session_id.clone();
                                 let model = model_name.clone();
@@ -945,6 +937,34 @@ impl AgentLoop {
         }
 
         Ok(events)
+    }
+
+    fn publish_agent_finished(&self, events: &[ChatEvent]) {
+        let last_finish = events.iter().rev().find_map(|event| {
+            if let ChatEvent::Finish { stop_reason, usage } = event {
+                Some((stop_reason, usage))
+            } else {
+                None
+            }
+        });
+
+        if let Some((stop_reason, usage)) = last_finish {
+            crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
+                session_id: self.session_id.clone(),
+                stop_reason: stop_reason.to_string(),
+                input_tokens: Some(usage.input_tokens),
+                output_tokens: Some(usage.output_tokens),
+                cached_tokens: usage.cached_tokens,
+            });
+        } else {
+            crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
+                session_id: self.session_id.clone(),
+                stop_reason: "completed".to_string(),
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+            });
+        }
     }
 
     fn check_limits(&self) -> Option<String> {
@@ -1599,6 +1619,7 @@ impl AgentLoop {
 
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
             .await;
+        self.publish_agent_finished(&all_events);
 
         let session_end_ctx = crate::hooks::HookContext {
             event: crate::hooks::HookEvent::SessionEnd,

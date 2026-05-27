@@ -1009,6 +1009,101 @@ async fn test_agent_loop_harness_smoke_test() {
 }
 
 #[tokio::test]
+async fn test_tool_call_turn_does_not_publish_premature_agent_finished() {
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_1".to_string().into(),
+            name: "echo_args".to_string().into(),
+            arguments: serde_json::json!({"value": "explore"}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![
+        ChatEvent::TextDelta("Done exploring".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+
+    let mut agent_loop = build_test_agent_loop(scripted_provider, registry);
+    let session_id = "test-no-premature-finish-tool-calls".to_string();
+    agent_loop.set_session_id(&session_id);
+    let mut event_collector = EventCollector::with_session(session_id);
+
+    agent_loop
+        .run(make_chat_request("Explore the codebase"))
+        .await
+        .expect("agent loop should run");
+    event_collector.collect();
+
+    let finished_reasons: Vec<&str> = event_collector
+        .events
+        .iter()
+        .filter_map(|event| {
+            if let AppEvent::AgentFinished { stop_reason, .. } = event {
+                Some(stop_reason.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(finished_reasons, vec!["stop"]);
+}
+
+#[tokio::test]
+async fn test_tool_call_turn_with_stop_finish_does_not_publish_premature_agent_finished() {
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_1".to_string().into(),
+            name: "echo_args".to_string().into(),
+            arguments: serde_json::json!({"value": "anthropic-style"}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![
+        ChatEvent::TextDelta("Done".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+
+    let mut agent_loop = build_test_agent_loop(scripted_provider, registry);
+    let session_id = "test-no-premature-finish-stop-after-tool".to_string();
+    agent_loop.set_session_id(&session_id);
+    let mut event_collector = EventCollector::with_session(session_id);
+
+    agent_loop
+        .run(make_chat_request("Explore the codebase"))
+        .await
+        .expect("agent loop should run");
+    event_collector.collect();
+
+    let finished_count = event_collector
+        .events
+        .iter()
+        .filter(|event| matches!(event, AppEvent::AgentFinished { .. }))
+        .count();
+    assert_eq!(finished_count, 1);
+}
+
+#[tokio::test]
 async fn test_agent_loop_harness_records_requests() {
     let response1 = vec![
         ChatEvent::TextDelta("Using tool".to_string().into()),
