@@ -38,7 +38,7 @@ pub struct Command {
 
 ### TUI CommandRegistry (`src/tui/command.rs`)
 
-Manages built-in commands and dynamic commands with 41 built-in slash commands.
+Manages built-in commands and dynamic commands with 42 built-in slash commands.
 
 ```rust
 pub struct Command {
@@ -65,7 +65,7 @@ TUI dialog for fuzzy-filtering and executing commands.
 
 ### Sources (in priority order)
 
-1. **Built-in commands**: 41 hardcoded commands (highest priority)
+1. **Built-in commands**: 42 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **File commands**: From `command/` or `commands/` directories in CWD
 
