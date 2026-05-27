@@ -95,13 +95,13 @@ These items are important for future agents to know when working with the codeba
 
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum at `types.rs:2-25`.
 
-- **Exec mode question deadlock**: `src/exec.rs:121` has no handler for `question_rx` - question tool will deadlock if invoked in exec mode. Requires fix to `AgentLoop::setup_question_channel()`.
+- **Exec mode question deadlock**: ✅ FIXED in `src/exec.rs:121` - `setup_question_channel_for_exec()` doesn't set `question_rx`, so question tool returns "[question not supported in exec mode]" instead of deadlocking.
 
 ### Known Issues (Lower Priority)
 
 - **Snapshot hash inconsistency**: `src/snapshot/mod.rs:431` uses MD5 for non-empty files while SHA256 is used elsewhere. Consider unifying to SHA256.
 
-- **ToolExecutor exists but unused**: `src/tool/executor.rs:8` has retry logic but is never called in the tool execution flow.
+- **ToolExecutor exists but unused**: `src/tool/executor.rs:8` has retry logic but is never called in the tool execution flow. DECISION: Deprecate and remove in future PR - architectural mismatch (retry happens at LLM level, not per-tool).
 
 - **TTS init ignores providers**: `src/tts/mod.rs:45-49` silently accepts non-`None` providers without warning.
 
