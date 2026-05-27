@@ -1,7 +1,7 @@
 ---
 name: snapshot
 description: Snapshot support for file state capture and restore
-version: 1.1.0
+version: 1.2.0
 tags:
   - snapshot
   - checkpoint
@@ -153,7 +153,7 @@ SnapshotManager supports restore operations:
 
 **Security**: `restore_to_path()` validates that restored paths don't escape the target directory via path traversal (e.g., `../../etc/passwd`). Uses `canonicalize()` to resolve symlinks and validate paths stay within target.
 
-**Atomic Write**: `restore_to_path()` uses an atomic write pattern (temp file + rename) to prevent partial writes if the process is interrupted.
+**Atomic Write**: Both `restore()` and `restore_to_path()` use atomic write pattern (temp file + rename) to prevent partial writes if the process is interrupted.
 
 ## Future Work#
 

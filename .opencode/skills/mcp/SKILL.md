@@ -1,7 +1,7 @@
 ---
 name: mcp
 description: MCP client/server system, local vs remote, OAuth flow
-version: 1.2.0
+version: 1.3.0
 tags:
   - mcp
   - model context protocol
@@ -441,6 +441,10 @@ Note: `McpError` is defined in `src/error.rs` and re-exported in the `mcp` modul
 
 1. **Tool definition cache staleness**: Uses `mcp_tool_count` as proxy for MCP tool changes. If tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
 
-2. **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
+2. **SSE support not integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but require event loop integration to process.
 
 3. **OAuthManager structure**: The skill documentation showed an outdated `pending_auths`/`completed_flows` structure. Actual implementation uses `token_store` and `servers` HashMap for token persistence.
+
+4. **OAuthManager error handling**: Sync token loading methods (`load_tokens_sync()`, `load_used_codes_sync()`) are called during initialization with errors logged via `tracing::warn!` instead of silently ignored.
+
+5. **IdeServer socket mode**: `run_socket()` Unix socket server exists but is not wired to any IDE extension integration. Uses `run_stdio()` for IDE communication.
