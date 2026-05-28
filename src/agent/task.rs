@@ -243,7 +243,7 @@ impl BackgroundScheduler {
                                 denied_tools: Vec::new(),
                                 allowed_paths: Vec::new(),
                                 description: "Background loop task".to_string(),
-                                depth: 0,
+                                depth: 1,
                             };
                             if let Err(e) = pool.spawner().send(request).await {
                                 tracing::warn!("Failed to dispatch background task: {}", e);

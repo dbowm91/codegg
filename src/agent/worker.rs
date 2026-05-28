@@ -192,6 +192,8 @@ impl SubAgentPool {
 
         let handle = tokio::spawn(async move {
             let sem = Arc::new(Semaphore::new(max_concurrent));
+            let mut cleanup_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {
                 tokio::select! {
@@ -199,6 +201,10 @@ impl SubAgentPool {
                     _ = cancel_token.cancelled() => {
                         tracing::info!("Worker loop received cancellation signal");
                         break;
+                    }
+                    _ = cleanup_interval.tick() => {
+                        let mut handles = active_handles.lock().await;
+                        handles.retain(|h| !h.is_finished());
                     }
                     Some(WorkerRequest { request, response_tx }) = request_rx.recv() => {
                         if cancel_token.is_cancelled() {
@@ -300,9 +306,6 @@ impl SubAgentPool {
         tracing::info!("SubAgentPool initiating shutdown");
         self.cancel_token.cancel();
 
-        // Drop the request channel to stop accepting new work
-        drop(self.request_tx.clone());
-
         // Wait briefly for cooperative cancellation to finish
         let mut attempts = 0;
         while self.active_count.load(Ordering::SeqCst) > 0 && attempts < 10 {
@@ -380,17 +383,11 @@ impl SubAgentSpawner {
                 } else if result.result.contains("cancelled")
                     || result.result.contains("Task cancelled")
                 {
-                    let store = task_store.lock().await;
-                    if let Some(task) = store.get_task(task_id).await {
-                        if task.status != crate::tool::task::TaskStatus::Interrupted {
-                            drop(store);
-                            task_store
-                                .lock()
-                                .await
-                                .set_failed(task_id, result.result.clone())
-                                .await;
-                        }
-                    }
+                    task_store
+                        .lock()
+                        .await
+                        .set_failed_if_not_interrupted(task_id, result.result.clone())
+                        .await;
                 } else {
                     task_store
                         .lock()
@@ -448,15 +445,7 @@ impl SubAgentSpawner {
     }
 
     pub async fn send_async(&self, request: SubAgentRequest) -> Result<(), String> {
-        let task_id = request.task_id;
-        let response_rx = self.enqueue_request(request).await?;
-        let task_store = Arc::clone(&self.pool.task_store);
-
-        tokio::spawn(async move {
-            Self::handle_response(task_id, response_rx.await, task_store).await;
-        });
-
-        Ok(())
+        self.send(request).await
     }
 }
 

@@ -132,6 +132,7 @@ impl TaskStore {
                     "running" => TaskStatus::Running,
                     "completed" => TaskStatus::Completed,
                     "failed" => TaskStatus::Failed,
+                    "interrupted" => TaskStatus::Interrupted,
                     _ => TaskStatus::Pending,
                 };
 
@@ -259,6 +260,25 @@ impl TaskStore {
         }
     }
 
+    /// Set the task as failed, but only if it's not already Interrupted.
+    /// Returns true if the status was changed.
+    pub async fn set_failed_if_not_interrupted(&self, id: u64, error: String) -> bool {
+        let mut tasks = self.tasks.lock().await;
+        if let Some(task) = tasks.get_mut(&id) {
+            if task.status == TaskStatus::Interrupted {
+                return false;
+            }
+            task.result = Some(error.clone());
+            task.status = TaskStatus::Failed;
+            let _ = self
+                .update_status_in_db(id, &TaskStatus::Failed, Some(&error))
+                .await;
+            true
+        } else {
+            false
+        }
+    }
+
     pub async fn get_task(&self, id: u64) -> Option<SubAgentTask> {
         self.tasks.lock().await.get(&id).cloned()
     }
@@ -299,6 +319,7 @@ pub struct TaskTool {
     spawner: Option<SubAgentSpawner>,
     parent_session_id: Option<String>,
     denied_tools: Vec<String>,
+    depth: usize,
 }
 
 impl TaskTool {
@@ -313,6 +334,23 @@ impl TaskTool {
             spawner,
             parent_session_id,
             denied_tools,
+            depth: 0,
+        }
+    }
+
+    pub fn new_with_depth(
+        store: Arc<Mutex<TaskStore>>,
+        spawner: Option<SubAgentSpawner>,
+        parent_session_id: Option<String>,
+        denied_tools: Vec<String>,
+        depth: usize,
+    ) -> Self {
+        Self {
+            store,
+            spawner,
+            parent_session_id,
+            denied_tools,
+            depth,
         }
     }
 
@@ -322,15 +360,20 @@ impl TaskTool {
         denied_tools: Vec<String>,
     ) -> Self {
         Self {
-            store: Arc::new(Mutex::new(TaskStore::new())),
+            store: pool.task_store(),
             spawner: Some(pool.spawner()),
             parent_session_id,
             denied_tools,
+            depth: 0,
         }
     }
 
     pub fn store(&self) -> Arc<Mutex<TaskStore>> {
         self.store.clone()
+    }
+
+    pub fn depth(&self) -> usize {
+        self.depth
     }
 }
 
@@ -453,7 +496,7 @@ impl Tool for TaskTool {
                     parent_id: self.parent_session_id.clone(),
                     denied_tools,
                     allowed_paths,
-                    depth: 0,
+                    depth: self.depth + 1,
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))

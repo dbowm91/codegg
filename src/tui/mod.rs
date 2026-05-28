@@ -1080,7 +1080,7 @@ async fn handle_spawn_subagent(app: &mut app::App, agent_name: String, prompt: S
             agent_name,
             prompt.chars().take(100).collect::<String>()
         ),
-        depth: 0,
+        depth: 1,
     };
 
     let spawner = pool.spawner();
