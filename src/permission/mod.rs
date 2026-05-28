@@ -462,6 +462,45 @@ impl PermissionChecker {
         self
     }
 
+    /// Configure for exec mode (CI/CD) where no TUI is available to respond
+    /// to permission requests. All destructive tools are auto-allowed.
+    pub fn with_exec_mode(mut self) -> Self {
+        self.session_rules = PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![
+                ToolRule {
+                    tool: "bash".to_string(),
+                    level: PermissionLevel::Allow,
+                    paths: None,
+                    bash_patterns: None,
+                },
+                ToolRule {
+                    tool: "edit".to_string(),
+                    level: PermissionLevel::Allow,
+                    paths: None,
+                    bash_patterns: None,
+                },
+                ToolRule {
+                    tool: "task".to_string(),
+                    level: PermissionLevel::Allow,
+                    paths: None,
+                    bash_patterns: None,
+                },
+                ToolRule {
+                    tool: "todowrite".to_string(),
+                    level: PermissionLevel::Allow,
+                    paths: None,
+                    bash_patterns: None,
+                },
+            ],
+            path_rules: Vec::new(),
+        };
+        self.compiled_globs = compile_path_rules(&self.effective_path_rules());
+        self.canonicalized_session_tool_rules =
+            canonicalize_tool_rules(&self.session_rules.tool_rules);
+        self
+    }
+
     pub async fn check_legacy(&self, tool: &str, path: Option<&str>) -> PermissionResult {
         self.check(tool, path, None).await
     }
@@ -760,6 +799,11 @@ impl PermissionChecker {
         {
             return Some(level);
         }
+        // If agent default is non-Ask, it overrides lower-level tool rules
+        if self.agent_rules.default != PermissionLevel::Ask {
+            return Some(self.agent_rules.default.clone());
+        }
+
         if let Some(level) = find_canonicalized_tool_rule(
             &self.canonicalized_session_tool_rules,
             tool,
@@ -769,6 +813,11 @@ impl PermissionChecker {
         {
             return Some(level);
         }
+        // If session default is non-Ask, it overrides lower-level tool rules
+        if self.session_rules.default != PermissionLevel::Ask {
+            return Some(self.session_rules.default.clone());
+        }
+
         find_canonicalized_tool_rule(
             &self.canonicalized_config_tool_rules,
             tool,
@@ -808,6 +857,11 @@ impl PermissionChecker {
         {
             return Some(level);
         }
+        // If agent default is non-Ask, it overrides lower-level tool rules
+        if self.agent_rules.default != PermissionLevel::Ask {
+            return Some(self.agent_rules.default.clone());
+        }
+
         if let Some(level) = find_tool_rule_with_args(
             &self.session_rules.tool_rules,
             tool,
@@ -818,6 +872,11 @@ impl PermissionChecker {
         {
             return Some(level);
         }
+        // If session default is non-Ask, it overrides lower-level tool rules
+        if self.session_rules.default != PermissionLevel::Ask {
+            return Some(self.session_rules.default.clone());
+        }
+
         find_tool_rule_with_args(
             &self.config_rules.tool_rules,
             tool,
@@ -942,13 +1001,108 @@ pub fn config_ruleset(config: Option<&Config>) -> PermissionRuleset {
     let mut tool_rules = Vec::new();
     let mut path_rules = Vec::new();
 
+    // Handle bash permissions with pattern support
+    if perm.allow_all_bash.unwrap_or(false) {
+        // allow_all_bash=true: auto-approve all bash commands
+        tool_rules.push(ToolRule {
+            tool: "bash".to_string(),
+            level: PermissionLevel::Allow,
+            paths: None,
+            bash_patterns: Some(vec!["*".to_string()]),
+        });
+    } else if perm.bash.is_some() {
+        // bash is explicitly configured (e.g., "bash": "allow", "bash": "deny")
+        // Use the explicit config; also add default allow patterns if set to "ask"
+        // so safe commands are auto-allowed while destructive ones require permission
+        let level = match perm.bash.as_ref().unwrap() {
+            PermissionRule::Action(s) => parse_level(s),
+            PermissionRule::Object(obj) => {
+                if let Some(level) = obj.get("default").or_else(|| obj.get("action")) {
+                    parse_level(level)
+                } else {
+                    PermissionLevel::Ask
+                }
+            }
+        };
+        if matches!(level, PermissionLevel::Ask) {
+            // "ask" is the default: add allow patterns for safe commands
+            let mut bash_allow = default_bash_allow_patterns();
+            if let Some(extra) = &perm.bash_allow_patterns {
+                bash_allow.extend(extra.iter().cloned());
+            }
+            if !bash_allow.is_empty() {
+                tool_rules.push(ToolRule {
+                    tool: "bash".to_string(),
+                    level: PermissionLevel::Allow,
+                    paths: None,
+                    bash_patterns: Some(bash_allow),
+                });
+            }
+            if let Some(deny_patterns) = &perm.bash_deny_patterns {
+                if !deny_patterns.is_empty() {
+                    tool_rules.push(ToolRule {
+                        tool: "bash".to_string(),
+                        level: PermissionLevel::Deny,
+                        paths: None,
+                        bash_patterns: Some(deny_patterns.clone()),
+                    });
+                }
+            }
+            // Unmatched bash commands fall through to Ask
+            tool_rules.push(ToolRule {
+                tool: "bash".to_string(),
+                level: PermissionLevel::Ask,
+                paths: None,
+                bash_patterns: None,
+            });
+        } else {
+            // Explicit "allow" or "deny" applies to ALL bash commands
+            tool_rules.push(ToolRule {
+                tool: "bash".to_string(),
+                level,
+                paths: None,
+                bash_patterns: None,
+            });
+        }
+    } else {
+        // bash is not configured: use default allow patterns + config default as fallback
+        let mut bash_allow = default_bash_allow_patterns();
+        if let Some(extra) = &perm.bash_allow_patterns {
+            bash_allow.extend(extra.iter().cloned());
+        }
+        if !bash_allow.is_empty() {
+            tool_rules.push(ToolRule {
+                tool: "bash".to_string(),
+                level: PermissionLevel::Allow,
+                paths: None,
+                bash_patterns: Some(bash_allow),
+            });
+        }
+        if let Some(deny_patterns) = &perm.bash_deny_patterns {
+            if !deny_patterns.is_empty() {
+                tool_rules.push(ToolRule {
+                    tool: "bash".to_string(),
+                    level: PermissionLevel::Deny,
+                    paths: None,
+                    bash_patterns: Some(deny_patterns.clone()),
+                });
+            }
+        }
+        // Unmatched bash commands use the config default
+        tool_rules.push(ToolRule {
+            tool: "bash".to_string(),
+            level: default.clone(),
+            paths: None,
+            bash_patterns: None,
+        });
+    }
+
     let tool_mappings = [
         ("read", &perm.read),
         ("edit", &perm.edit),
         ("glob", &perm.glob),
         ("grep", &perm.grep),
         ("list", &perm.list),
-        ("bash", &perm.bash),
         ("task", &perm.task),
         ("lsp", &perm.lsp),
         ("skill", &perm.skill),
@@ -1022,6 +1176,105 @@ pub fn config_ruleset(config: Option<&Config>) -> PermissionRuleset {
     }
 }
 
+/// Default bash commands that are read-only and non-destructive.
+/// These are auto-allowed without user confirmation.
+pub fn default_bash_allow_patterns() -> Vec<String> {
+    vec![
+        // Build/check commands (read-only, write to target/ only)
+        "cargo build*".into(),
+        "cargo check*".into(),
+        "cargo test*".into(),
+        "cargo bench*".into(),
+        "cargo clippy*".into(),
+        "cargo fmt*".into(),
+        "cargo doc*".into(),
+        "cargo metadata*".into(),
+        "cargo locate-project*".into(),
+        "cargo pkgid*".into(),
+        "cargo read-manifest*".into(),
+        "cargo tree*".into(),
+        "cargo audit*".into(),
+        // Rustup read-only
+        "rustup show*".into(),
+        "rustup check*".into(),
+        // Rust toolchain queries
+        "rustc --version".into(),
+        "rustc --print*".into(),
+        // File system read-only
+        "ls*".into(),
+        "ls -la*".into(),
+        "ls -l*".into(),
+        "cat*".into(),
+        "head*".into(),
+        "tail*".into(),
+        "wc*".into(),
+        "file*".into(),
+        "stat*".into(),
+        "du*".into(),
+        "df*".into(),
+        "which*".into(),
+        "whereis*".into(),
+        "type*".into(),
+        "realpath*".into(),
+        "basename*".into(),
+        "dirname*".into(),
+        // Text processing (read-only)
+        "grep*".into(),
+        "rg*".into(),
+        "ag*".into(),
+        "find*".into(),
+        "tree*".into(),
+        "diff*".into(),
+        "cmp*".into(),
+        "sort*".into(),
+        "uniq*".into(),
+        "cut*".into(),
+        "awk*".into(),
+        "sed -n*".into(),
+        "tr -d*".into(),
+        // Environment info
+        "env".into(),
+        "printenv*".into(),
+        "echo*".into(),
+        "date".into(),
+        "whoami".into(),
+        "hostname".into(),
+        "pwd".into(),
+        "uname*".into(),
+        // Process info (read-only)
+        "ps*".into(),
+        "top -l 1*".into(),
+        // Git read-only (via bash, not git tool)
+        "git status*".into(),
+        "git log*".into(),
+        "git diff*".into(),
+        "git branch*".into(),
+        "git show*".into(),
+        "git remote -v*".into(),
+        "git stash list*".into(),
+        "git reflog*".into(),
+        "git describe*".into(),
+        "git rev-parse*".into(),
+        // Package managers read-only
+        "npm list*".into(),
+        "npm ls*".into(),
+        "npm outdated*".into(),
+        "npm info*".into(),
+        "yarn list*".into(),
+        "yarn info*".into(),
+        "pip list*".into(),
+        "pip show*".into(),
+        // Misc safe commands
+        "make help*".into(),
+        "make -n*".into(),
+        "make --dry-run*".into(),
+        // JSON/text inspection
+        "jq*".into(),
+        "python3 -m json.tool*".into(),
+        "python -m json.tool*".into(),
+    ]
+}
+
 pub fn default_ruleset() -> PermissionRuleset {
     let mut tool_rules = Vec::new();
 
@@ -1044,7 +1297,24 @@ pub fn default_ruleset() -> PermissionRuleset {
         });
     }
 
-    let destructive = ["edit", "bash", "task", "todowrite"];
+    // Bash: read-only patterns are auto-allowed, destructive patterns require ask
+    let bash_read_only = default_bash_allow_patterns();
+    tool_rules.push(ToolRule {
+        tool: "bash".to_string(),
+        level: PermissionLevel::Allow,
+        paths: None,
+        bash_patterns: Some(bash_read_only),
+    });
+
+    // All other bash commands require permission
+    tool_rules.push(ToolRule {
+        tool: "bash".to_string(),
+        level: PermissionLevel::Ask,
+        paths: None,
+        bash_patterns: None,
+    });
+
+    let destructive = ["edit", "task", "todowrite"];
     for tool in destructive {
         tool_rules.push(ToolRule {
             tool: tool.to_string(),

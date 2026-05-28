@@ -427,7 +427,16 @@ pub async fn llm_summarize(
         reasoning_effort: None,
     };
 
-    let events = provider.stream(&request).await?;
+    let events = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        provider.stream(&request),
+    )
+    .await
+    .map_err(|_| {
+        crate::error::AppError::Provider(
+            "Compaction LLM call timed out after 120s".into(),
+        )
+    })??;
     let mut summary = String::new();
     let mut stream = events;
     while let Some(event) = stream.next().await {

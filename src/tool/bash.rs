@@ -374,10 +374,44 @@ impl Tool for BashTool {
         let output = tokio::time::timeout(timeout, async {
             let mut cmd = Command::new("sh");
             cmd.env_clear();
-            if let Some(path) = std::env::var_os("PATH") {
-                cmd.env("PATH", path);
-            } else {
-                cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            // Restore essential environment variables for development tools
+            let preserve_vars = [
+                "PATH",
+                "HOME",
+                "USER",
+                "SHELL",
+                "LANG",
+                "LC_ALL",
+                "TERM",
+                "CARGO_HOME",
+                "RUSTUP_HOME",
+                "CARGO_INCREMENTAL",
+                "CARGO_TERM_COLOR",
+                "CARGO_TERM_PROGRESS",
+                "RUSTFLAGS",
+                "RUSTDOCFLAGS",
+                "CARGO_PROFILE_*",
+                "npm_config_*",
+                "NVM_DIR",
+                "PYENV_ROOT",
+                "VIRTUAL_ENV",
+                "PYTHONPATH",
+                "JAVA_HOME",
+                "GOPATH",
+                "GOBIN",
+            ];
+            for var in &preserve_vars {
+                if var.ends_with('*') {
+                    // Handle wildcard prefix matching (e.g., "CARGO_PROFILE_*")
+                    let prefix = &var[..var.len() - 1];
+                    for (key, value) in std::env::vars() {
+                        if key.starts_with(prefix) {
+                            cmd.env(&key, &value);
+                        }
+                    }
+                } else if let Some(value) = std::env::var_os(var) {
+                    cmd.env(var, &value);
+                }
             }
             cmd.arg("-c").arg(command);
             if let Some(ref dir) = canonical_workdir {

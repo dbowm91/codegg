@@ -101,7 +101,7 @@ impl ExecMode {
             return Err(AppError::Other(anyhow::anyhow!("Agent not found: {}", agent_name)));
         }
 
-        let permission_checker = PermissionChecker::new(Some(&config), None);
+        let permission_checker = PermissionChecker::new(Some(&config), None).with_exec_mode();
         let tool_registry = crate::tool::ToolRegistry::with_defaults();
 
         let mcp_service = None;
