@@ -383,6 +383,7 @@ impl Tool for BashTool {
             if let Some(ref dir) = canonical_workdir {
                 cmd.current_dir(dir);
             }
+            cmd.kill_on_drop(true);
             cmd.output().await
         })
         .await

@@ -40,6 +40,7 @@ impl CommitTool {
         } else {
             cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
         }
+        cmd.kill_on_drop(true);
         let output = cmd.args(&args)
             .current_dir(&self.workdir)
             .output()
@@ -66,6 +67,7 @@ impl CommitTool {
         } else {
             cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
         }
+        cmd.kill_on_drop(true);
         let output = cmd.args(&["add", "-A"])
             .current_dir(&self.workdir)
             .output()
@@ -174,6 +176,7 @@ impl CommitTool {
         } else {
             cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
         }
+        cmd.kill_on_drop(true);
         let output = cmd.args(&args)
             .current_dir(&self.workdir)
             .output()

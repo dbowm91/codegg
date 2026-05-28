@@ -5,6 +5,9 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TOOL_CALL_FALLBACK_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Default)]
 struct OpenAiToolState {
@@ -803,7 +806,15 @@ pub fn parse_openai_chunk_standalone(
 }
 
 fn parse_openai_tool_call_value(tc: &serde_json::Value) -> Option<ToolCall> {
-    let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = tc
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            let seq = TOOL_CALL_FALLBACK_ID.fetch_add(1, Ordering::Relaxed);
+            format!("call_fallback_{}", seq)
+        });
     let (name, arguments) = if let Some(function) = tc.get("function") {
         (
             function.get("name").and_then(|v| v.as_str())?.to_string(),

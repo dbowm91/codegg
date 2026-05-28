@@ -1519,7 +1519,7 @@ impl AgentLoop {
                             tool_name: "list".to_string(),
                             session_id: self.session_id.clone(),
                             output: content.clone(),
-                            success: !content.starts_with("Error:"),
+                            success: !content.starts_with("Error: ") && !content.starts_with("Error:"),
                         });
                         let redacted_content = redact_local_paths(content);
                         let msg = Message::Tool {
@@ -1585,7 +1585,7 @@ impl AgentLoop {
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
 
-            if tool_results.iter().any(|(_, out)| !out.starts_with("Error:")) {
+            if tool_results.iter().any(|(_, out)| !out.starts_with("Error: ")) {
                 self.doom_detector.reset();
             }
 
@@ -1633,6 +1633,9 @@ impl AgentLoop {
                 self.context_tracker.add_message(&msg);
                 request.messages.push(msg);
             }
+
+            // Compact after tool results to prevent context overflow from large outputs
+            self.compact_if_needed(&mut request.messages).await;
 
             processor.reset();
 
@@ -1801,45 +1804,48 @@ impl AgentLoop {
             })
             .collect();
 
+        let mcp_timeout = Duration::from_secs(60);
+        let mut mcp_futures = Vec::with_capacity(mcp_tool_calls.len());
         for (orig_idx, tc) in mcp_tool_calls {
             let name = tc.name.clone();
-            if let Some((server, tool)) = parse_mcp_tool_name(&name) {
-                if let Some(ref mcp_arc) = self.mcp_service {
-                    if let Ok(mcp) = mcp_arc.try_read() {
-                        match mcp.call_tool(server, tool, tc.arguments.clone()).await {
-                            Ok(result) => {
-                                tool_results.push((orig_idx, tc.id.to_string(), result));
+            let mcp_arc = self.mcp_service.clone();
+            mcp_futures.push(async move {
+                if let Some((server, tool)) = parse_mcp_tool_name(&name) {
+                    if let Some(mcp_arc) = mcp_arc {
+                        if let Ok(mcp) = mcp_arc.try_read() {
+                            let call_result = tokio::time::timeout(
+                                mcp_timeout,
+                                mcp.call_tool(server, tool, tc.arguments.clone()),
+                            )
+                            .await;
+                            match call_result {
+                                Ok(Ok(result)) => {
+                                    (orig_idx, tc.id.to_string(), result)
+                                }
+                                Ok(Err(e)) => {
+                                    (orig_idx, tc.id.to_string(), format!("Error: {}", e))
+                                }
+                                Err(_) => {
+                                    (orig_idx, tc.id.to_string(), format!(
+                                        "Error: MCP tool '{}' on server '{}' timed out after {:?}",
+                                        tool, server, mcp_timeout
+                                    ))
+                                }
                             }
-                            Err(e) => {
-                                tool_results.push((
-                                    orig_idx,
-                                    tc.id.to_string(),
-                                    format!("Error: {}", e),
-                                ));
-                            }
+                        } else {
+                            (orig_idx, tc.id.to_string(), "Error: MCP service locked, please retry".to_string())
                         }
                     } else {
-                        tracing::debug!(server = %server, tool = %tool, "MCP service temporarily unavailable (write locked)");
-                        tool_results.push((
-                            orig_idx,
-                            tc.id.to_string(),
-                            "Error: MCP service locked, please retry".to_string(),
-                        ));
+                        (orig_idx, tc.id.to_string(), "Error: MCP service not available".to_string())
                     }
                 } else {
-                    tool_results.push((
-                        orig_idx,
-                        tc.id.to_string(),
-                        "Error: MCP service not available".to_string(),
-                    ));
+                    (orig_idx, tc.id.to_string(), format!("Error: Invalid MCP tool name '{}'", name))
                 }
-            } else {
-                tool_results.push((
-                    orig_idx,
-                    tc.id.to_string(),
-                    format!("Error: Invalid MCP tool name '{}'", name),
-                ));
-            }
+            });
+        }
+        let mcp_results = futures::future::join_all(mcp_futures).await;
+        for result in mcp_results {
+            tool_results.push(result);
         }
 
         let mut results = Vec::with_capacity(regular_tool_count);
@@ -1971,12 +1977,25 @@ impl AgentLoop {
         }
         let all_results = futures::future::join_all(futures).await;
         results.extend(all_results);
+
+        const MAX_TOOL_RESULT_BYTES: usize = 512 * 1024; // 512KB per tool result
         for (idx, id, result) in results {
             let output = match result {
                 Ok(output) => output,
                 Err(e) => format!("Error: {}", e),
             };
-            tool_results.push((idx, id.to_string(), output));
+            let truncated = if output.len() > MAX_TOOL_RESULT_BYTES {
+                let mut truncated = output[..MAX_TOOL_RESULT_BYTES].to_string();
+                truncated.push_str(&format!(
+                    "\n... [truncated: output was {} bytes, limit is {} bytes]",
+                    output.len(),
+                    MAX_TOOL_RESULT_BYTES
+                ));
+                truncated
+            } else {
+                output
+            };
+            tool_results.push((idx, id.to_string(), truncated));
         }
 
         if has_file_modifying {
@@ -2188,12 +2207,13 @@ impl AgentLoop {
                     .find(|tc| *tc.id == id.as_str())
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
-                let success = !content.starts_with("Error:");
+                let success = !content.starts_with("Error: ") && !content.starts_with("Error:");
+                let redacted_output = redact_local_paths(content);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),
                     tool_name,
                     session_id: self.session_id.clone(),
-                    output: content.clone(),
+                    output: redacted_output,
                     success,
                 });
             }

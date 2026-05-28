@@ -396,7 +396,10 @@ impl LocalClient {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        self.write_json(&request).await?;
+        if let Err(e) = self.write_json(&request).await {
+            self.pending.lock().await.remove(&id);
+            return Err(e);
+        }
 
         let timeout = Duration::from_millis(self.timeout);
         let result = tokio::time::timeout(timeout, rx)
@@ -506,6 +509,14 @@ impl LocalClient {
                     }
                 }
             }
+        }
+
+        // Drain all pending senders so callers get an error instead of hanging
+        let mut pending_lock = pending.lock().await;
+        for (_, tx) in pending_lock.drain() {
+            let _ = tx.send(Err(McpError::Connection(
+                "MCP server connection closed".into(),
+            )));
         }
     }
 }

@@ -124,6 +124,7 @@ impl Tool for GitTool {
             }
             cmd.args(&full_args)
                 .current_dir(&workdir)
+                .kill_on_drop(true)
                 .output()
                 .await
         })

@@ -373,7 +373,10 @@ impl PermissionStore {
                 let _ = std::fs::create_dir_all(parent);
             }
             if let Ok(json) = serde_json::to_string_pretty(&self.decisions) {
-                let _ = std::fs::write(path, json);
+                let path = path.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::write(&path, json);
+                });
             }
         }
     }

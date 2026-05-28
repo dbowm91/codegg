@@ -304,6 +304,7 @@ impl Tool for TerminalTool {
                 cmd.current_dir(dir);
             }
 
+            cmd.kill_on_drop(true);
             cmd.output().await
         })
         .await

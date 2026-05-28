@@ -35,6 +35,7 @@ impl ReviewTool {
         } else {
             cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
         }
+        cmd.kill_on_drop(true);
         let output = cmd.args(&args)
             .current_dir(&self.workdir)
             .output()
