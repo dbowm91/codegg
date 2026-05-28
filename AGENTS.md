@@ -109,7 +109,6 @@ These items are important for future agents to know when working with the codeba
 |-------|----------|--------|
 | **TTS init ignores providers** | `src/tts/mod.rs:45-49` | Known issue - macOS say adequate |
 | **Static CANONICAL_PATHS_CACHE** | `src/security/sandbox.rs:262` | Has 300s TTL + 100-entry cap now |
-| **Worktree symlink detection** | `src/worktree/mod.rs:69-88` | Known issue |
 | **OAuth replay protection TOCTOU** | `src/mcp/auth.rs:318-332` | Known issue |
 
 ### Key Lessons from Review Sessions

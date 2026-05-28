@@ -21,7 +21,7 @@ All waves (R0-R5) completed. Key achievements:
 | Issue | Location | Priority | Status |
 |-------|----------|----------|--------|
 | TTS init() ignores providers | `src/tts/mod.rs:45-49` | LOW | **LEAVE** - macOS say adequate |
-| Worktree symlink detection | `src/worktree/mod.rs:69-88` | LOW | **LEAVE** |
+| Worktree symlink detection | `src/worktree/mod.rs:69-88` | LOW | **FIXED** - now uses `paths_match()` with proper symlink resolution |
 
 ---
 

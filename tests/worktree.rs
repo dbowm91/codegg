@@ -186,3 +186,74 @@ fn test_is_git_file_without_gitdir_prefix() {
     let result = codegg::worktree::is_git_file(&git_file);
     assert!(!result, "file without gitdir: prefix should return false");
 }
+
+#[cfg(unix)]
+#[test]
+fn test_list_worktrees_symlink_detection() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let repo_dir = temp_dir.path().join("repo");
+    let symlink_dir = temp_dir.path().join("repo-link");
+    std::fs::create_dir_all(&repo_dir).expect("failed to create repo dir");
+
+    git(&["init"], &repo_dir);
+    git(&["config", "user.name", "Test User"], &repo_dir);
+    git(&["config", "user.email", "test@example.com"], &repo_dir);
+    std::fs::write(repo_dir.join("README.md"), "hello\n").expect("failed to write README");
+    git(&["add", "README.md"], &repo_dir);
+    git(&["commit", "-m", "initial"], &repo_dir);
+
+    // Create symlink to repo
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&repo_dir, &symlink_dir).expect("failed to create symlink");
+
+    // List worktrees from symlinked path - should still detect current worktree
+    let trees = list_worktrees(&symlink_dir).expect("list_worktrees failed");
+    assert_eq!(trees.len(), 1);
+
+    let main_tree = &trees[0];
+    assert!(
+        main_tree.is_current,
+        "worktree accessed via symlink should be detected as current"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_list_worktrees_symlink_worktree_path() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let repo_dir = temp_dir.path().join("repo");
+    let wt_dir = temp_dir.path().join("wt-real");
+    let wt_symlink = temp_dir.path().join("wt-link");
+    std::fs::create_dir_all(&repo_dir).expect("failed to create repo dir");
+
+    git(&["init"], &repo_dir);
+    git(&["config", "user.name", "Test User"], &repo_dir);
+    git(&["config", "user.email", "test@example.com"], &repo_dir);
+    std::fs::write(repo_dir.join("README.md"), "hello\n").expect("failed to write README");
+    git(&["add", "README.md"], &repo_dir);
+    git(&["commit", "-m", "initial"], &repo_dir);
+
+    // Create worktree
+    let wt_dir_str = wt_dir.to_string_lossy().to_string();
+    git(&["worktree", "add", "-b", "feature/test", &wt_dir_str], &repo_dir);
+
+    // Create symlink to worktree
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&wt_dir, &wt_symlink).expect("failed to create symlink");
+
+    // Create another worktree that uses the symlink as its path
+    let wt2_dir = temp_dir.path().join("wt2");
+    let wt2_dir_str = wt2_dir.to_string_lossy().to_string();
+    git(&["worktree", "add", "-b", "feature/two", &wt2_dir_str], &repo_dir);
+
+    // List worktrees and verify detection works with symlinks
+    let trees = list_worktrees(&repo_dir).expect("list_worktrees failed");
+    assert!(trees.len() >= 2, "should have at least 2 worktrees");
+
+    // The main worktree should be detected as current
+    let main_tree = trees
+        .iter()
+        .find(|t| t.is_current)
+        .expect("no current worktree found");
+    assert!(!main_tree.is_detached);
+}
