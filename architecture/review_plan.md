@@ -1,8 +1,28 @@
 # Architecture Review Plan
 
-**Status**: ACTIVE - Fresh review sweep starting 2026-05-28
+**Status**: INCOMPLETE - Review phase complete, documentation fixes pending
 **Objective**: Systematically review all architecture documentation, verify claims against code, identify bugs/improvements, and prune stale content
 **Last Updated**: 2026-05-28
+
+### Review Phase Completion Status
+
+| Phase | Status | Output |
+|-------|--------|--------|
+| Phase 1: Parallel Subagent Review (Batches 0-8) | COMPLETE | 9 review files in `plans/review_*.md` |
+| Phase 2: Consolidation | COMPLETE | `plans/review_consolidated.md` |
+| Phase 3: Stale Item Pruning | COMPLETE | Identified in consolidated review |
+| Phase 4: Documentation Fixes | **NOT STARTED** | Fixes identified but not applied to architecture docs |
+
+**Findings Summary**:
+- **52 documentation issues** found across 35 architecture files
+- **12 code issues** identified (dead code, stale annotations, misleading behavior)
+- **24 improvement opportunities** cataloged
+- **10 stale content items** flagged for pruning
+- **5 HIGH severity** documentation fixes needed (tool count, DB tables, exec.md behavior, tool code blocks, AgentLoop struct)
+- **21 MEDIUM severity** fixes (TTL values, line refs, config merge docs, type annotations)
+- **26 LOW severity** fixes (line number drift, typos, missing enum variants)
+
+**Next steps**: Apply documentation fixes identified in `plans/review_consolidated.md` to architecture files.
 
 ---
 
@@ -239,16 +259,18 @@ Based on consolidated findings:
 
 Before writing findings, each subagent must confirm:
 
-- [ ] Read the full architecture document (not just skimming)
-- [ ] Located each referenced source file in `src/`
-- [ ] Verified at least 3 concrete counts/numbers against code
-- [ ] Checked line number references (flag if off by >5 lines)
-- [ ] Verified enum variant counts by counting actual `Variant` entries
-- [ ] Checked for dead code references (methods/types defined but unused)
-- [ ] Noted any inconsistencies between doc and code
-- [ ] Identified at least 1 improvement opportunity per module
+- [x] Read the full architecture document (not just skimming)
+- [x] Located each referenced source file in `src/`
+- [x] Verified at least 3 concrete counts/numbers against code
+- [x] Checked line number references (flag if off by >5 lines)
+- [x] Verified enum variant counts by counting actual `Variant` entries
+- [x] Checked for dead code references (methods/types defined but unused)
+- [x] Noted any inconsistencies between doc and code
+- [x] Identified at least 1 improvement opportunity per module
 
 ---
 
 *Review plan created: 2026-05-28*
 *Supersedes previous review plan (2026-05-27)*
+*Review phase completed: 2026-05-28 (9 batch reviews + consolidation)*
+*Documentation fixes pending: See plans/review_consolidated.md for actionable items*

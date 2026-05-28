@@ -97,7 +97,7 @@ These items are important for future agents to know when working with the codeba
 
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum at `types.rs:2-25`.
 
-- **Exec mode question deadlock**: ✅ FIXED in `src/exec.rs:121` - `setup_question_channel_for_exec()` doesn't set `question_rx`, so question tool returns "[question not supported in exec mode]" instead of deadlocking.
+- **Exec mode question behavior**: `setup_question_channel_for_exec()` at `src/exec.rs:121` DOES set `question_rx`, meaning exec mode waits up to 300s before timing out. The "[question not supported]" string is in the `else` branch (non-exec path when `question_rx` is None). `setup_question_channel()` (non-exec version) at `src/agent/loop.rs:784` is dead code - never called.
 
 ### Known Issues (Lower Priority)
 
@@ -108,14 +108,14 @@ These items are important for future agents to know when working with the codeba
 | TTS stop() silent failure | `src/tts/mod.rs:85-103` | ✅ FIXED - returns Err on pkill failure |
 | **PermissionResponse unused** | `src/permission/mod.rs:1141-1145` | Known issue |
 | **check_external_directory unused** | `src/permission/mod.rs:1237-1248` | Known issue |
-| **Static CANONICAL_PATHS_CACHE never clears** | `src/security/sandbox.rs:237` | Known issue |
+| **Static CANONICAL_PATHS_CACHE never clears** | `src/security/sandbox.rs:237` | Known issue - has 300s TTL now |
 | **Histogram unbounded memory** | `src/util/metrics.rs:122-124` | ✅ FIXED |
 | **Worktree symlink detection** | `src/worktree/mod.rs:69-88` | Known issue |
 | **OAuth replay protection TOCTOU** | `src/mcp/auth.rs:318-332` | Known issue |
 | **OAuthManager sync error ignore** | `src/mcp/auth.rs:119` | `let _ = load_tokens_sync()` silently ignores errors |
 | **MCP connect_sse() dead code** | `src/mcp/remote.rs:698-740` | Never called externally |
 | **MCP run_socket() dead code** | `src/mcp/ide_server.rs:121-144` | Never called |
-| **MCP Debug command stub** | `src/mcp/cli.rs:309-318` | Only prints, doesn't test connections |
+| **MCP Debug command** | `src/mcp/cli.rs:309-318` | IMPLEMENTED - tests connections for remote servers |
 
 ### Key Lessons from Review Sessions
 
@@ -143,9 +143,9 @@ These items were verified during review sessions:
 
 | Item | Value | Location |
 |------|-------|----------|
-| Tool count | 27 | `src/tool/mod.rs:89-119` (includes ImageTool) |
+| Tool count | 28 | `src/tool/mod.rs:90-122` (includes ImageTool and tool_search) |
 | LSP server count | 39 | `src/lsp/server.rs:27-383` |
-| InprocCoreClient fields | All wrapped in `Option<Arc<...>>` | `src/core/mod.rs:22-28` |
+| InprocCoreClient fields | All wrapped in `Option<Arc<...>>` except pool which is `Option<SqlitePool>` | `src/core/mod.rs:22-28` |
 | ToolExecutor | DEPRECATED - exists but unused, to be removed | `src/tool/executor.rs:8` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
@@ -183,6 +183,26 @@ These items were discovered during the 2026-05-27 architecture review and are NO
 | WebSocket auth inconsistency | NOT A BUG | `src/server/ws.rs:103-106` vs `middleware/auth.rs:37-40` | Both consistently return Ok for no-token |
 | Snapshot restore() | FIXED | `src/snapshot/mod.rs:292` | Now uses atomic write (temp+rename) |
 | Snapshot hash | FIXED | `src/snapshot/mod.rs:431` | Now uses SHA256 consistently |
+
+### New Findings (2026-05-28 Architecture Review) - UPDATED
+
+These items were discovered during the 2026-05-28 full architecture review sweep:
+
+| Item | Status | Location | Notes |
+|------|--------|----------|-------|
+| Tool count | 28 (not 27) | `src/tool/mod.rs:90-122` | Includes `tool_search` (ToolSearchTool) |
+| DB tables | 13 (not 7) | `src/session/schema.rs:25-69` | Missing: migration_version, project, session_share, cached_models, task, checkpoints |
+| exec.md question behavior | WRONG IN DOC | `src/exec.rs:121` | `setup_question_channel_for_exec()` DOES set question_rx; exec waits 300s |
+| `setup_question_channel()` | Dead code | `src/agent/loop.rs:784` | Non-exec version never called |
+| Provider auto-registration | 15 providers via env vars | `src/provider/mod.rs:279-326` | `register_builtin()` registers all env-var providers; codegg_go uses separate path |
+| Config merge behavior | Only provider merges field-by-field | `src/config/schema.rs` | agents/mcp/commands/modes use key replacement |
+| Feature gate name | `plugins` (plural) | `Cargo.toml:169` | Not `plugin` |
+| Instruction files | AGENTS.md, CLAUDE.md, CONTEXT.md | `src/agent/prompt.rs:7` | Primary sources via INSTRUCTION_FILES constant |
+| DoomLoop key | tool_name:hash(arguments) | `src/permission/mod.rs:1249` | Per-tool+args, not per-tool as documented |
+| TTL value | 310s (not 300s) | `src/bus/mod.rs:59` | PermissionRegistry cleanup TTL |
+| CANONICAL_PATHS_CACHE | Has 300s TTL now | `src/security/sandbox.rs:262` | Was "never clears", now has TTL + 100-entry cap |
+| PermissionResponse | Type does not exist | N/A | Referenced in permission.md but never defined |
+| `src/git/mod.rs` | Orphaned code | `src/git/mod.rs` | Not declared in lib.rs, unused |
 
 ### Security Notes
 
