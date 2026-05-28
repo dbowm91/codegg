@@ -354,43 +354,6 @@ tool.execute(input)
 ToolResult
 ```
 
-### ToolExecutor with Retry Logic (DEPRECATED)
-
-**Note**: `ToolExecutor` exists at `src/tool/executor.rs:8` but is NOT integrated into the tool execution flow. It has been deprecated and should not be used.
-
-```rust
-#[deprecated(since = "2026-05-27", note = "Not integrated - architectural mismatch with ToolRegistry")]
-pub struct ToolExecutor {
-    max_attempts: usize,
-    base_delay: Duration,
-    max_delay: Duration,
-}
-
-impl ToolExecutor {
-    pub fn new(max_attempts: usize) -> Self;
-    pub fn with_delays(mut self, base_delay: Duration, max_delay: Duration) -> Self;
-
-    pub async fn execute_with_retry<F, Fut>(&self, f: F) -> Result<Value, ToolError>
-    where
-        F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<Value, ToolError>>,
-    {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            match f().await {
-                Ok(result) => return Ok(result),
-                Err(e) if e.is_retryable() && attempt < self.max_attempts => {
-                    let delay = self.calculate_delay(attempt);
-                    sleep(delay).await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-}
-```
-
 ### ToolError Retry Logic
 
 ```rust

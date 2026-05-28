@@ -1,87 +1,18 @@
 # Implementation Plan
 
-**Status**: WAVE 5 - COMPLETED
+**Status**: COMPLETED (all waves finished 2026-05-28)
 **Last Updated**: 2026-05-28
-**Consolidated from**: All plans/ review files (now removed)
 
 ---
 
-## Historical Completed Items
+## Completed Work Summary
 
-### Wave 5 (2026-05-28)
-- **Wave 5A**: COMPLETED - 21 architecture documentation files fixed (all subagents A-E)
-- **Wave 5B**: COMPLETED - 5 dead code items removed
-- **Wave 5C**: COMPLETED - 4 improvement items implemented, 2 skipped (design decisions)
-- **Bonus**: Fixed pre-existing `doom_loop.rs` test compilation error (missing `arguments` parameter)
-
-### Wave 4 (2026-05-27)
-- **TUI-5**: COMPLETED - Accessibility (FocusManager + Component trait)
-- **LARGE-1**: COMPLETED - Virtual scrolling (MessageLayoutCache with binary search)
-- **LARGE-2**: COMPLETED - String interning (StringInterner with DashMap)
-- **Quick fixes**: 4 minor issues resolved (OAuth TOCTOU, CANONICAL_PATHS_CACHE, ToolExecutor removed, PermissionResponse removed)
-
-### Previous Waves (R0-R3)
-- **R0**: 38 documentation-only fixes
-- **R1**: 4 code fixes (low risk)
-- **R2**: 4 code fixes (medium risk)
-- **R3**: 4 incomplete implementations documented
-
----
-
-## Wave 5 Completion Summary
-
-### Wave 5A: Documentation Fixes (21 files)
-
-| File | Status | Notes |
-|------|--------|-------|
-| `architecture/agent.md` | ✅ DONE | AgentLoop fields expanded to 24, instruction files corrected |
-| `architecture/overview.md` | ✅ DONE | Tool count=27, feature gate=plugins, 13 DB tables, 16 providers, modules updated |
-| `architecture/provider.md` | ✅ DONE | 13 line refs fixed, auto-registration corrected, error path fixed |
-| `architecture/config.md` | ✅ DONE | ProviderConfig::merge() signature fixed, merge strategies documented |
-| `architecture/tui.md` | ✅ DONE | FocusManager typo/location fixed, 13 Component methods, Stats variant, vim keys |
-| `architecture/tool.md` | ✅ DONE | ImageTool/LspTool registration fixed, ToolExecutor removed, error path fixed |
-| `architecture/protocol.md` | ✅ DONE | TurnFailed/ToolStarted/ToolCompleted optionality fixed, Special count fixed |
-| `architecture/bus.md` | ✅ DONE | TTL 310s fixed in all locations, timeout clarification |
-| `architecture/exec.md` | ✅ DONE | setup_question_channel_for_exec() fixed, exec question behavior corrected |
-| `architecture/permission.md` | ✅ DONE | Line numbers fixed, TTL=310s, PermissionResponse removed, DoomLoop key fixed, SandboxMode added |
-| `architecture/security.md` | ✅ DONE | CANONICAL_PATHS_CACHE TTL/cap, SandboxMode enum, Landlock bitmasks |
-| `architecture/core.md` | ✅ DONE | InprocCoreClient.pool type fixed, map_app_event line ref fixed |
-| `architecture/mcp.md` | ✅ DONE | McpClientType derive, RemoteClient field types, max_retries fixed |
-| `architecture/resilience.md` | ✅ DONE | Duplicate state diagram removed, call() line ref fixed |
-| `architecture/session.md` | ✅ DONE | Missing SessionStore methods added |
-| `architecture/storage.md` | ✅ DONE | init() code example fixed, v15 description fixed |
-| `architecture/crypto.md` | ✅ DONE | EncryptedData visibility fixed |
-| `architecture/util.md` | ✅ DONE | pricing.rs, interner.rs, Histogram documented |
-| `architecture/tts.md` | ✅ DONE | TUI integration documented |
-| `architecture/memory.md` | ✅ DONE | Soft limit clarified |
-| `architecture/skills.md` | ✅ DONE | .skills/ directory purpose clarified |
-
-### Wave 5B: Code Fixes (5 items)
-
-| Item | Status | Notes |
-|------|--------|-------|
-| 5B-1: Remove `setup_question_channel()` | ✅ DONE | Dead code removed from `src/agent/loop.rs` |
-| 5B-2: Remove `connect_sse()` | ✅ DONE | Dead code removed from `src/mcp/remote.rs` |
-| 5B-3: Remove `run_socket()` | ✅ DONE | Dead code removed from `src/mcp/ide_server.rs` |
-| 5B-4: Remove `check_external_directory()` | ✅ DONE | Dead code removed from `src/permission/mod.rs` |
-| 5B-5: Remove stale `#[allow(dead_code)]` | ✅ DONE | Annotation removed from `handle_tui` in `src/server/ws.rs` |
-
-### Wave 5C: Improvements (4 done, 2 skipped)
-
-| Item | Status | Notes |
-|------|--------|-------|
-| 5C-1: CircuitBreakerConfig | ⏭️ SKIPPED | Would change public API; hardcoded 30s is fine as-is |
-| 5C-2: Provider registration docs | ✅ DONE | Per-provider independence clarified in provider.md |
-| 5C-3: Snapshot config validation | ✅ DONE | Clamping zero values to 1 in `new_with_options()` |
-| 5C-4: ProviderCache rename | ✅ DONE | `clear()` → `evict_expired()` in cache.rs |
-| 5C-5: Align TTLs | ⏭️ SKIPPED | 10s gap is intentional (permissions survive agent timeout) |
-| 5C-6: serde skip_serializing_if | ✅ DONE | 6 optional fields annotated in CoreEvent |
-
-### Bonus: Test Fix
-
-| Item | Status | Notes |
-|------|--------|-------|
-| `doom_loop.rs` test | ✅ FIXED | Pre-existing compilation error: `record_tool_call` needs 2 args |
+All waves (R0-R5) completed. Key achievements:
+- 21 architecture documentation files corrected
+- 5 dead code items removed
+- 4 improvements implemented (SnapshotOptions clamping, ProviderCache rename, serde skip_serializing_if, provider registration docs)
+- Pre-existing `doom_loop.rs` test fixed
+- Virtual scrolling, string interning, accessibility (FocusManager) implemented
 
 ---
 

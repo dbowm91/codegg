@@ -202,7 +202,7 @@ impl PermissionRegistry {
 }
 ```
 
-**Note**: All methods are synchronous (`fn`), NOT async. Entries have a 300s TTL.
+**Note**: All methods are synchronous (`fn`), NOT async. Entries have a 310s TTL (5s buffer above agent loop timeout).
 
 ### Test Patterns
 
@@ -276,16 +276,6 @@ QuestionRegistry::answer_question("test-session-123".to_string(), answers);  // 
 let response = rx.await.unwrap();
 assert!(response.contains("red"));
 ```
-
-## Security Utilities
-
-### check_external_directory
-
-```rust
-pub fn check_external_directory(path: &str, project_root: &str) -> bool
-```
-
-Security utility for path traversal prevention. Returns `true` if the path is inside the project root (safe), `false` if outside (potential security risk). Uses canonicalization to resolve symlinks.
 
 ## Reference
 

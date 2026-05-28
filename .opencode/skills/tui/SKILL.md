@@ -164,9 +164,11 @@ Each dialog returns its type via `dialog_type()`:
 pub enum DialogType {
     Share, Model, Agent, Session, Help, Tree, Theme, Permission,
     Mcp, Question, Diff, Import, Template, Connect, Keybind,
-    Context, Cost, Usage, Goto, Plan, Confirm, None,
+    Context, Cost, Usage, Stats, Goto, Plan, Confirm, None,
 }
 ```
+
+**Note**: 23 variants total (includes `Stats` and `None`).
 
 ### Migrating a Dialog to Component
 
@@ -1056,10 +1058,10 @@ The TUI supports a Timeline feature for navigating through message history.
 
 ### Timeline Fields Location
 
-**Note**: `timeline_visible` and `timeline_selected` are in the `App` struct (`src/tui/app/mod.rs:232-233`), NOT in `UiState`.
+**Note**: `timeline_visible` and `timeline_selected` are in `UiState` (`src/tui/app/state/ui.rs:62-63`), NOT in `App` struct directly.
 
 ```rust
-// In App struct (NOT UiState):
+// In UiState struct (src/tui/app/state/ui.rs):
 pub timeline_visible: bool,    // Whether timeline panel is shown
 pub timeline_selected: usize,   // Currently selected message index
 ```
