@@ -627,12 +627,26 @@ fn parse_anthropic_event_with_state(
             if let Some((id, name, _)) = current_tool.take() {
                 let args_str = std::mem::take(args_buffer);
                 if !args_str.is_empty() {
-                    if let Ok(args) = serde_json::from_str::<serde_json::Value>(&args_str) {
-                        return Some(Ok(ChatEvent::ToolCall(ToolCall {
-                            id: id.into(),
-                            name: name.into(),
-                            arguments: args,
-                        })));
+                    match serde_json::from_str::<serde_json::Value>(&args_str) {
+                        Ok(args) => {
+                            return Some(Ok(ChatEvent::ToolCall(ToolCall {
+                                id: id.into(),
+                                name: name.into(),
+                                arguments: args,
+                            })));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to parse Anthropic tool call JSON for '{}' (id={}): {}",
+                                name,
+                                id,
+                                e
+                            );
+                            return Some(Err(ProviderError::Stream(format!(
+                                "malformed tool call JSON for '{}': {}",
+                                name, e
+                            ))));
+                        }
                     }
                 }
             }
@@ -802,7 +816,13 @@ fn parse_openai_tool_call_value(tc: &serde_json::Value) -> Option<ToolCall> {
         )
     };
     let args = if let Some(s) = arguments.as_str() {
-        serde_json::from_str::<serde_json::Value>(s).ok()?
+        match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to parse tool call '{}' arguments: {}", name, e);
+                serde_json::Value::Object(serde_json::Map::new())
+            }
+        }
     } else {
         arguments.clone()
     };
@@ -817,7 +837,13 @@ fn parse_openai_legacy_function_call(function_call: &serde_json::Value) -> Optio
     let name = function_call.get("name").and_then(|v| v.as_str())?.to_string();
     let arguments = function_call.get("arguments")?;
     let args = if let Some(s) = arguments.as_str() {
-        serde_json::from_str::<serde_json::Value>(s).ok()?
+        match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to parse legacy function call '{}' arguments: {}", name, e);
+                serde_json::Value::Object(serde_json::Map::new())
+            }
+        }
     } else {
         arguments.clone()
     };

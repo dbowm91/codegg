@@ -288,6 +288,10 @@ impl PermissionStore {
                 if let Some(level) = self.find_decision(tool, path, sid, &k) {
                     return Some(level);
                 }
+            } else {
+                if let Some(level) = self.find_decision_no_sig(tool, path, sid) {
+                    return Some(level);
+                }
             }
         }
 
@@ -332,6 +336,25 @@ impl PermissionStore {
                 if !verify_signature(d, key) {
                     return None;
                 }
+                Some(d.level.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn find_decision_no_sig(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        session_id: &str,
+    ) -> Option<PermissionLevel> {
+        self.decisions.iter().rev().find_map(|d| {
+            if d.tool == tool
+                && d.path.as_deref() == path
+                && d.session_id.as_deref() == Some(session_id)
+                && d.signature.is_empty()
+            {
                 Some(d.level.clone())
             } else {
                 None
@@ -1184,12 +1207,8 @@ impl DoomLoopDetector {
         }
     }
 
-    fn normalize_tool_name(name: &str) -> String {
-        name.trim().to_lowercase()
-    }
-
-    pub fn record_tool_call(&mut self, tool_name: &str) {
-        let normalized = Self::normalize_tool_name(tool_name);
+    pub fn record_tool_call(&mut self, tool_name: &str, arguments: &serde_json::Value) {
+        let key = Self::make_key(tool_name, arguments);
         if self.history.len() >= self.max_window {
             if let Some(evicted) = self.history.pop_front() {
                 if let Some(count) = self.counts.get_mut(&evicted) {
@@ -1200,8 +1219,8 @@ impl DoomLoopDetector {
                 }
             }
         }
-        self.history.push_back(normalized.clone());
-        *self.counts.entry(normalized).or_insert(0) += 1;
+        self.history.push_back(key.clone());
+        *self.counts.entry(key).or_insert(0) += 1;
     }
 
     pub fn is_doom_loop(&self) -> bool {
@@ -1209,16 +1228,28 @@ impl DoomLoopDetector {
             return false;
         }
 
-        let Some(last_tool) = self.history.back() else {
+        let Some(last_key) = self.history.back() else {
             return false;
         };
 
-        self.counts.get(last_tool).map(|&c| c >= self.threshold).unwrap_or(false)
+        self.counts
+            .get(last_key)
+            .map(|&c| c >= self.threshold)
+            .unwrap_or(false)
     }
 
     pub fn reset(&mut self) {
         self.history.clear();
         self.counts.clear();
+    }
+
+    fn make_key(tool_name: &str, arguments: &serde_json::Value) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        tool_name.hash(&mut hasher);
+        arguments.to_string().hash(&mut hasher);
+        format!("{}:{:x}", tool_name, hasher.finish())
     }
 }
 

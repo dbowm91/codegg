@@ -349,11 +349,13 @@ fn extract_git_subcommand(tc: &ToolCall) -> Option<String> {
 
 fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("mcp__")?;
-    let parts: Vec<&str> = rest.split("__").collect();
-    if parts.len() == 2 {
-        Some((parts[0], parts[1]))
-    } else {
+    let delimiter_pos = rest.find("__")?;
+    let server = &rest[..delimiter_pos];
+    let tool = &rest[delimiter_pos + 2..];
+    if server.is_empty() || tool.is_empty() {
         None
+    } else {
+        Some((server, tool))
     }
 }
 
@@ -417,7 +419,7 @@ impl AgentLoop {
             }
         }
 
-        self.doom_detector.record_tool_call(&tc.name);
+        self.doom_detector.record_tool_call(&tc.name, &tc.arguments);
         let doom_loop = self.doom_detector.is_doom_loop();
 
         let path = extract_path_from_tool_call(tc);
@@ -1112,10 +1114,14 @@ impl AgentLoop {
             .unwrap_or(false);
 
         let mcp_tools = if let Some(ref mcp_arc) = self.mcp_service {
-            mcp_arc
-                .try_read()
-                .map(|mcp| mcp.list_tools())
-                .unwrap_or_default()
+            match mcp_arc.try_read() {
+                Ok(mcp) => mcp.list_tools(),
+                Err(_) => {
+                    tracing::debug!("MCP service write-locked during tool def building, retrying");
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    mcp_arc.try_read().map(|mcp| mcp.list_tools()).unwrap_or_default()
+                }
+            }
         } else {
             Vec::new()
         };
@@ -1579,6 +1585,10 @@ impl AgentLoop {
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
 
+            if tool_results.iter().any(|(_, out)| !out.starts_with("Error:")) {
+                self.doom_detector.reset();
+            }
+
             if let Some(msg) = processor.to_assistant_message() {
                 self.context_tracker.add_message(&msg);
                 request.messages.push(msg);
@@ -1590,7 +1600,7 @@ impl AgentLoop {
                     .find(|tc| *tc.id == id.as_str())
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
-                let success = !content.starts_with("Error:");
+                let success = !content.starts_with("Error: ") && !content.starts_with("Error:");
                 let redacted_output = redact_local_paths(content);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),
@@ -1848,10 +1858,18 @@ impl AgentLoop {
             let session_id = self.session_id.clone();
             let idx_for_results = orig_idx;
             futures.push(async move {
-                let permit = sem
-                    .acquire()
-                    .await
-                    .expect("failed to acquire semaphore permit for tool execution");
+                let permit = match sem.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        return (
+                            idx_for_results,
+                            id,
+                            Err(ToolError::Execution(
+                                "semaphore closed during tool execution".into(),
+                            )),
+                        );
+                    }
+                };
 
                 let pre_ctx = crate::hooks::HookContext {
                     event: crate::hooks::HookEvent::PreToolExecute,
@@ -2297,7 +2315,7 @@ fn filter_tools_for_model<'a>(
 
 fn compute_model_flags(model: Option<&String>) -> ModelFlags {
     let model_id = model.map(|s| s.to_lowercase()).unwrap_or_default();
-    let is_gpt = model_id.contains("gpt") && !model_id.contains("gpt-4");
+    let is_gpt = model_id.contains("gpt");
     let is_non_oss =
         model_id.contains("gpt") || model_id.contains("claude") || model_id.contains("gemini");
     let exa_available =

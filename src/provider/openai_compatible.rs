@@ -313,7 +313,15 @@ impl Provider for OpenAiCompatibleProvider {
 
                         let chunk = match chunk_result {
                             Ok(Some(c)) => c,
-                            Ok(None) => return None,
+                            Ok(None) => {
+                                if buffer.is_empty() {
+                                    return None;
+                                }
+                                if let Some(event) = parse_openai_buffer(&mut buffer) {
+                                    return Some((event, (stream, buffer)));
+                                }
+                                return None;
+                            }
                             Err(_) => {
                                 tracing::error!("{}: stream chunk timeout", provider_name);
                                 return Some((

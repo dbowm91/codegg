@@ -101,6 +101,13 @@ impl Tool for BatchTool {
                 )));
             }
 
+            if tool_name.starts_with("mcp__") {
+                return Err(ToolError::Execution(format!(
+                    "MCP tool '{}' cannot be used through the batch tool (MCP tools are dispatched separately)",
+                    tool_name
+                )));
+            }
+
             let registry = self.registry.clone();
             let fut = async move {
                 let tool = registry

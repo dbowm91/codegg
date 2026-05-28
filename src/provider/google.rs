@@ -237,9 +237,17 @@ impl Provider for GoogleProvider {
                         return Some((event, (stream, buffer)));
                     }
 
-                    let chunk = stream.next().await?;
-                    match chunk {
-                        Ok(bytes) => {
+                    match stream.next().await {
+                        None => {
+                            if buffer.is_empty() {
+                                return None;
+                            }
+                            if let Some(event) = parse_google_buffer(&mut buffer) {
+                                return Some((event, (stream, buffer)));
+                            }
+                            return None;
+                        }
+                        Some(Ok(bytes)) => {
                             let text = String::from_utf8_lossy(&bytes).to_string();
                             buffer.push_str(&text);
                             if buffer.len() > MAX_BUFFER_SIZE {
@@ -251,7 +259,7 @@ impl Provider for GoogleProvider {
                                 ));
                             }
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             return Some((
                                 Err(ProviderError::Stream(e.to_string())),
                                 (stream, buffer),

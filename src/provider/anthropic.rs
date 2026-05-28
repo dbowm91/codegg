@@ -1,5 +1,5 @@
 use crate::error::ProviderError;
-use crate::provider::sse_parser::parse_anthropic_buffer;
+use crate::provider::sse_parser::parse_anthropic_buffer_with_state;
 use crate::provider::{
     create_http_client, ChatRequest, ContentPart, EventStream, Message, ModelInfo,
     Provider, MAX_BUFFER_SIZE,
@@ -205,13 +205,17 @@ impl Provider for AnthropicProvider {
 
         let stream = resp.bytes_stream();
         let buffer = String::new();
+        let current_tool: Option<(String, String, String)> = None;
+        let args_buffer = String::new();
 
         Ok(Box::pin(unfold(
-            (stream, buffer),
-            |(mut stream, mut buffer)| async move {
+            (stream, buffer, current_tool, args_buffer),
+            |(mut stream, mut buffer, mut current_tool, mut args_buffer)| async move {
                 loop {
-                    if let Some(event) = parse_anthropic_buffer(&mut buffer) {
-                        return Some((event, (stream, buffer)));
+                    if let Some(event) =
+                        parse_anthropic_buffer_with_state(&mut buffer, &mut current_tool, &mut args_buffer)
+                    {
+                        return Some((event, (stream, buffer, current_tool, args_buffer)));
                     }
 
                     let chunk = stream.next().await;
@@ -224,22 +228,24 @@ impl Provider for AnthropicProvider {
                                     Err(ProviderError::Stream(
                                         "response buffer exceeded limit".to_string(),
                                     )),
-                                    (stream, buffer),
+                                    (stream, buffer, current_tool, args_buffer),
                                 ));
                             }
                         }
                         Some(Err(e)) => {
                             return Some((
                                 Err(ProviderError::Stream(e.to_string())),
-                                (stream, buffer),
+                                (stream, buffer, current_tool, args_buffer),
                             ));
                         }
                         None => {
                             if buffer.is_empty() {
                                 return None;
                             }
-                            if let Some(event) = parse_anthropic_buffer(&mut buffer) {
-                                return Some((event, (stream, buffer)));
+                            if let Some(event) =
+                                parse_anthropic_buffer_with_state(&mut buffer, &mut current_tool, &mut args_buffer)
+                            {
+                                return Some((event, (stream, buffer, current_tool, args_buffer)));
                             }
                             return None;
                         }

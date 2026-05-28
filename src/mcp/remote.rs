@@ -81,9 +81,9 @@ impl McpConnectionManager {
     }
 
     pub async fn connect(&mut self) -> Result<(), McpError> {
-        *self.state.lock().await = ConnectionState::Connected;
         self.retry_count.store(0, Ordering::SeqCst);
         self.client.initialize().await?;
+        *self.state.lock().await = ConnectionState::Connected;
         self.start_heartbeat().await;
         Ok(())
     }
@@ -159,6 +159,7 @@ impl McpConnectionManager {
                     *self.state.lock().await = ConnectionState::Connected;
                     self.retry_count.store(0, Ordering::SeqCst);
                     self.start_heartbeat().await;
+                    self.reconnect_needed.notify_waiters();
                     return Ok(());
                 }
                 Err(e) => {
@@ -329,11 +330,11 @@ pub struct RemoteClient {
     url: String,
     headers: HashMap<String, String>,
     client: reqwest::Client,
-    session_id: Mutex<Option<String>>,
-    sse_url: Mutex<Option<String>>,
-    oauth_token: Mutex<Option<String>>,
+    session_id: Arc<Mutex<Option<String>>>,
+    sse_url: Arc<Mutex<Option<String>>>,
+    oauth_token: Arc<Mutex<Option<String>>>,
     sse_events: Arc<Mutex<Vec<serde_json::Value>>>,
-    request_id: AtomicU64,
+    request_id: Arc<AtomicU64>,
     shutdown: Arc<Mutex<bool>>,
     sse_shutdown: Arc<Notify>,
     validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,
@@ -345,11 +346,11 @@ impl Clone for RemoteClient {
             url: self.url.clone(),
             headers: self.headers.clone(),
             client: self.client.clone(),
-            session_id: Mutex::new(None),
-            sse_url: Mutex::new(None),
-            oauth_token: Mutex::new(None),
+            session_id: Arc::clone(&self.session_id),
+            sse_url: Arc::clone(&self.sse_url),
+            oauth_token: Arc::clone(&self.oauth_token),
             sse_events: Arc::clone(&self.sse_events),
-            request_id: AtomicU64::new(1),
+            request_id: Arc::clone(&self.request_id),
             shutdown: Arc::clone(&self.shutdown),
             sse_shutdown: Arc::clone(&self.sse_shutdown),
             validated_ips: Arc::clone(&self.validated_ips),
@@ -416,11 +417,11 @@ impl RemoteClient {
             url: url.to_string(),
             headers,
             client,
-            session_id: Mutex::new(None),
-            sse_url: Mutex::new(None),
-            oauth_token: Mutex::new(None),
+            session_id: Arc::new(Mutex::new(None)),
+            sse_url: Arc::new(Mutex::new(None)),
+            oauth_token: Arc::new(Mutex::new(None)),
             sse_events: Arc::new(Mutex::new(Vec::new())),
-            request_id: AtomicU64::new(1),
+            request_id: Arc::new(AtomicU64::new(1)),
             shutdown: Arc::new(Mutex::new(false)),
             sse_shutdown: Arc::new(Notify::default()),
             validated_ips: Arc::new(Mutex::new(Some(validated_ips))),
@@ -866,7 +867,12 @@ impl RemoteClient {
             );
 
             if let Some(ref ips) = valid {
-                revalidate_dns(&host, port, ips).map_err(McpError::Connection)?;
+                let host = host.to_string();
+                let ips = ips.clone();
+                tokio::task::spawn_blocking(move || revalidate_dns(&host, port, &ips))
+                    .await
+                    .map_err(|e| McpError::Connection(format!("DNS revalidation task failed: {}", e)))?
+                    .map_err(McpError::Connection)?;
             }
 
             (oauth, sid)

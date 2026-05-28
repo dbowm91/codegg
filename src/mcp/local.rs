@@ -422,20 +422,41 @@ impl LocalClient {
 
     async fn write_json<T: Serialize>(&mut self, msg: &T) -> Result<(), McpError> {
         let data = serde_json::to_string(msg).map_err(|e| McpError::Server(e.to_string()))?;
+
+        if let Some(ref mut child) = self.child {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    return Err(McpError::Connection(format!(
+                        "MCP server process exited with status: {}",
+                        status
+                    )));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(McpError::Connection(format!(
+                        "failed to check MCP server process status: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
         let stdin = self
             .stdin
             .as_mut()
-            .ok_or_else(|| McpError::Connection("stdin not available".into()))?;
+            .ok_or_else(|| McpError::Connection(
+                "MCP server process has no stdin available (process may have exited)".into()
+            ))?;
 
         let line = format!("{data}\n");
         stdin
             .write_all(line.as_bytes())
             .await
-            .map_err(|e| McpError::Connection(e.to_string()))?;
+            .map_err(|e| McpError::Connection(format!("stdin write failed: {}", e)))?;
         stdin
             .flush()
             .await
-            .map_err(|e| McpError::Connection(e.to_string()))?;
+            .map_err(|e| McpError::Connection(format!("stdin flush failed: {}", e)))?;
 
         Ok(())
     }

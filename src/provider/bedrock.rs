@@ -285,9 +285,17 @@ Ok::<_, ProviderError>(format!(
                         return Some((event, (stream, buffer)));
                     }
 
-                    let chunk = stream.next().await?;
-                    match chunk {
-                        Ok(bytes) => {
+                    match stream.next().await {
+                        None => {
+                            if buffer.is_empty() {
+                                return None;
+                            }
+                            if let Some(event) = parse_bedrock_buffer(&mut buffer) {
+                                return Some((event, (stream, buffer)));
+                            }
+                            return None;
+                        }
+                        Some(Ok(bytes)) => {
                             let text = String::from_utf8_lossy(&bytes).to_string();
                             buffer.push_str(&text);
                             if buffer.len() > MAX_BUFFER_SIZE {
@@ -299,7 +307,7 @@ Ok::<_, ProviderError>(format!(
                                 ));
                             }
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             return Some((
                                 Err(ProviderError::Stream(e.to_string())),
                                 (stream, buffer),
@@ -431,11 +439,13 @@ fn parse_bedrock_sse(chunk: &str) -> Option<Result<ChatEvent, ProviderError>> {
                     }
                     if let Some(tool_input) = delta.get("toolUse") {
                         if let Some(input) = tool_input.get("input") {
-                            return Some(Ok(ChatEvent::ToolCall(ToolCall {
-                                id: String::new().into(),
-                                name: String::new().into(),
-                                arguments: input.clone(),
-                            })));
+                            let args_str = input.to_string();
+                            if !args_str.is_empty() && args_str != "{}" {
+                                tracing::debug!(
+                                    "Bedrock contentBlockDelta toolUse ignored (partial args)"
+                                );
+                            }
+                            return None;
                         }
                     }
                 }

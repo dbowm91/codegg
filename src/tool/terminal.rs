@@ -352,7 +352,13 @@ fn truncate_output(output: &str, max_lines: usize, max_bytes: usize) -> String {
     };
 
     if truncated.len() > max_bytes {
-        format!("{}... [output truncated]", &truncated[..max_bytes])
+        let truncate_at = truncated
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= max_bytes)
+            .last()
+            .unwrap_or(0);
+        format!("{}... [output truncated]", &truncated[..truncate_at])
     } else {
         truncated
     }

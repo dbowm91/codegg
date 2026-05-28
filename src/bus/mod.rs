@@ -56,7 +56,7 @@ impl PermissionRegistry {
     }
 
     fn cleanup() {
-        let ttl = Duration::from_secs(300);
+        let ttl = Duration::from_secs(310);
         PERMISSION_REGISTRY
             .senders
             .retain(|_, (_, created)| created.elapsed() < ttl);
@@ -123,7 +123,7 @@ impl QuestionRegistry {
     }
 
     fn cleanup() {
-        let ttl = Duration::from_secs(300);
+        let ttl = Duration::from_secs(310);
         QUESTION_REGISTRY
             .senders
             .retain(|_, (_, created)| created.elapsed() < ttl);
