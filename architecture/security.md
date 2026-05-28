@@ -99,7 +99,11 @@ pub fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result
 pub fn validate_url_host(url: &str) -> Result<String, String>
 ```
 
-Used by: `webfetch`, `websearch`, `codesearch`, `mcp/remote`
+Used by:
+- `webfetch` - `validate_url_host` at `src/tool/webfetch.rs:90`
+- `websearch` - `validate_host_ip` at `src/tool/websearch.rs:58`, `revalidate_dns` at `src/tool/websearch.rs:68`
+- `codesearch` - `validate_host_ip` at `src/tool/codesearch.rs:86`, `revalidate_dns` at `src/tool/codesearch.rs:99`
+- `mcp/remote` - `validate_url_host` at `src/mcp/remote.rs:400`, `validate_host_ip` at `src/mcp/remote.rs:407`
 
 ### sandbox.rs - Landlock Sandboxing
 
