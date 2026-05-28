@@ -202,8 +202,14 @@ impl Tool for ReadTool {
             .ok_or_else(|| ToolError::Execution("missing 'path' parameter".to_string()))?
             .to_string();
 
-        let offset = input["offset"].as_u64().unwrap_or(1) as usize;
-        let limit = input["limit"].as_u64().unwrap_or(2000) as usize;
+        let offset = input["offset"]
+            .as_f64()
+            .map(|v| v.max(1.0) as usize)
+            .unwrap_or(1);
+        let limit = input["limit"]
+            .as_f64()
+            .map(|v| v.max(1.0) as usize)
+            .unwrap_or(2000);
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
@@ -281,6 +287,16 @@ impl Tool for ReadTool {
 
             let lines: Vec<&str> = content.lines().collect();
             let start = offset.saturating_sub(1);
+            if start >= lines.len() {
+                if lines.is_empty() {
+                    return Ok("(empty file)".to_string());
+                }
+                return Ok(format!(
+                    "(offset {} is beyond end of file which has {} lines)",
+                    offset,
+                    lines.len()
+                ));
+            }
             let end = (start + limit).min(lines.len());
             let selected = &lines[start..end];
 
