@@ -1,28 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::AppError;
-
-/// Compare two paths, resolving symlinks if necessary.
-/// Returns true if both paths refer to the same filesystem location.
-fn paths_match(a: &Path, b: &Path) -> bool {
-    // Fast path: direct comparison works for non-symlinked paths
-    if a == b {
-        return true;
-    }
-
-    // Try canonicalizing both paths to resolve symlinks
-    let a_canonical = fs::canonicalize(a);
-    let b_canonical = fs::canonicalize(b);
-
-    match (a_canonical, b_canonical) {
-        (Ok(a), Ok(b)) => a == b,
-        // If canonicalization fails (e.g., path doesn't exist), fall back to string comparison
-        _ => a == b,
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Worktree {
@@ -101,7 +81,8 @@ pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
             current_branch.clear();
             current_head = None;
             current_is_detached = false;
-            current_is_current = paths_match(Path::new(path), git_root);
+            current_is_current = Path::new(path) == git_root
+                || Path::new(path).canonicalize().map_or(false, |p| p == git_root.canonicalize().unwrap_or_else(|_| git_root.to_path_buf()));
         } else if let Some(branch) = line.strip_prefix("branch ") {
             current_branch = branch.to_string();
         } else if let Some(head) = line.strip_prefix("HEAD ") {
