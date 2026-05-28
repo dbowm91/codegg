@@ -108,7 +108,7 @@ impl Tool for ReplaceTool {
         let pattern_clone = pattern.clone();
         let replacement_clone = replacement.clone();
 
-        let (path_str_out, _matches_len, old_content) = tokio::task::spawn_blocking(move || {
+        let (path_str_out, matches_len, old_content) = tokio::task::spawn_blocking(move || {
             let path = Path::new(&path_str_clone);
 
             let canonical = if unrestricted {
@@ -139,7 +139,11 @@ impl Tool for ReplaceTool {
                 )));
             }
 
-            let group_count = pattern_clone.matches('(').count();
+            let group_count = {
+                let test_re = Regex::new(&pattern_clone)
+                    .map_err(|e| ToolError::Execution(format!("invalid regex pattern: {}", e)))?;
+                test_re.capture_names().flatten().count()
+            };
             if group_count > MAX_PATTERN_GROUPS {
                 return Err(ToolError::Execution(format!(
                     "too many capture groups (max {})",
@@ -194,7 +198,7 @@ impl Tool for ReplaceTool {
 
         Ok(format!(
             "Replaced {} occurrence(s) in {} with pattern '{}'",
-            "all", path_str, pattern
+            matches_len, path_str, pattern
         ))
     }
 }

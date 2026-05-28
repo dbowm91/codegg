@@ -93,7 +93,9 @@ impl Tool for GrepTool {
             )));
         }
 
-        let group_count = pattern.matches('(').count();
+        let test_re = regex::Regex::new(&pattern)
+            .map_err(|e| ToolError::Execution(format!("invalid regex: {e}")))?;
+        let group_count = test_re.capture_names().flatten().count();
         if group_count > MAX_PATTERN_GROUPS {
             return Err(ToolError::Execution(format!(
                 "pattern has too many capture groups ({}), maximum is {}",
@@ -113,9 +115,6 @@ impl Tool for GrepTool {
         } else {
             validate_path(search_path, &allowed_root)?
         };
-
-        RegexMatcher::new(&pattern)
-            .map_err(|e| ToolError::Execution(format!("invalid regex: {e}")))?;
 
         let walk = WalkBuilder::new(&search_path)
             .hidden(false)
@@ -198,13 +197,59 @@ impl Tool for GrepTool {
                             }
                         };
                         drop(permit);
+                        let ctx = context;
                         Ok(tokio::task::spawn_blocking(move || {
                             let matcher = RegexMatcher::new(&pattern)
                                 .map_err(|e| ToolError::Execution(e.to_string()))?;
                             let mut searcher = Searcher::new();
-                            let mut sink = GrepSink::new(&path, context);
+                            let mut sink = GrepSink::new();
                             let _ = searcher.search_path(&matcher, &path, &mut sink);
-                            Ok::<_, ToolError>((path, sink.matches, sink.hit_limit))
+                            let matches = if ctx > 0 {
+                                let mut expanded = Vec::new();
+                                let mut prev_end = 0;
+                                for (line_num, line) in sink.matches {
+                                    let pre_ctx = read_context_lines(&path, line_num, ctx);
+                                    for (ctx_line_num, ctx_line) in &pre_ctx {
+                                        if *ctx_line_num > prev_end {
+                                            expanded.push(format!(
+                                                "{}:{}:- {}",
+                                                path.display(),
+                                                ctx_line_num,
+                                                ctx_line
+                                            ));
+                                        }
+                                    }
+                                    expanded.push(format!(
+                                        "{}:{}:{}",
+                                        path.display(),
+                                        line_num,
+                                        line
+                                    ));
+                                    let post_ctx = read_context_lines(&path, line_num, ctx);
+                                    for (ctx_line_num, ctx_line) in &post_ctx {
+                                        if ctx_line_num > &line_num
+                                            && !expanded.iter().any(|e| e.starts_with(&format!("{}:{}:", path.display(), ctx_line_num)))
+                                        {
+                                            expanded.push(format!(
+                                                "{}:{}:- {}",
+                                                path.display(),
+                                                ctx_line_num,
+                                                ctx_line
+                                            ));
+                                        }
+                                    }
+                                    prev_end = line_num + ctx;
+                                }
+                                expanded
+                            } else {
+                                sink.matches
+                                    .into_iter()
+                                    .map(|(line_num, line)| {
+                                        format!("{}:{}:{}", path.display(), line_num, line)
+                                    })
+                                    .collect()
+                            };
+                            Ok::<_, ToolError>((path, matches, sink.hit_limit))
                         }))
                     }
                 })
@@ -245,15 +290,13 @@ impl Tool for GrepTool {
 }
 
 struct GrepSink {
-    path: std::path::PathBuf,
-    matches: Vec<String>,
+    matches: Vec<(usize, String)>,
     hit_limit: bool,
 }
 
 impl GrepSink {
-    fn new(path: &std::path::Path, _context: usize) -> Self {
+    fn new() -> Self {
         Self {
-            path: path.to_path_buf(),
             matches: Vec::new(),
             hit_limit: false,
         }
@@ -268,12 +311,33 @@ impl Sink for GrepSink {
             return Ok(false);
         }
         let line = String::from_utf8_lossy(mat.bytes()).to_string();
-        let line_num = mat.line_number().unwrap_or(0);
-        self.matches
-            .push(format!("{}:{}:{}", self.path.display(), line_num, line));
+        let line_num = mat.line_number().unwrap_or(0) as usize;
+        self.matches.push((line_num, line));
         if self.matches.len() >= MAX_PER_FILE_RESULTS {
             self.hit_limit = true;
         }
         Ok(true)
     }
+}
+
+fn read_context_lines(path: &std::path::Path, line_num: usize, context: usize) -> Vec<(usize, String)> {
+    if context == 0 {
+        return Vec::new();
+    }
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() || line_num == 0 {
+        return Vec::new();
+    }
+    let start = line_num.saturating_sub(context).max(1);
+    let end = (line_num + context).min(lines.len());
+    let mut result = Vec::new();
+    for i in start..=end {
+        if i != line_num {
+            result.push((i, lines[i - 1].to_string()));
+        }
+    }
+    result
 }

@@ -433,13 +433,11 @@ fn trimmed_boundary_match(content: &str, old_string: &str, new_string: &str) -> 
     let content_trimmed = content.trim();
 
     if content_trimmed == old_trimmed {
-        let trimmed_byte_len = content_trimmed.len();
-        return Some(format!(
-            "{}{}{}",
-            &content[..content.len() - trimmed_byte_len],
-            new_string,
-            &content[content.len() - trimmed_byte_len..]
-        ));
+        let leading_ws_len = content.len() - content.trim_start().len();
+        let trailing_ws_len = content.len() - content.trim_end().len();
+        let prefix = &content[..leading_ws_len];
+        let suffix = &content[content.len() - trailing_ws_len..];
+        return Some(format!("{}{}{}", prefix, new_string, suffix));
     }
 
     let old_lines: Vec<&str> = old_trimmed.lines().collect();

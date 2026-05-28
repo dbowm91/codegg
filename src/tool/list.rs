@@ -1,9 +1,10 @@
 use crate::error::ToolError;
+use crate::tool::util::validate_path;
 use crate::tool::Tool;
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::task;
 
 #[derive(Debug, Deserialize)]
@@ -43,29 +44,6 @@ impl Default for ListTool {
     }
 }
 
-fn validate_path(path: &Path, allowed_root: &Option<PathBuf>) -> Result<(), ToolError> {
-    let effective_root = allowed_root
-        .clone()
-        .or_else(|| std::env::current_dir().ok())
-        .ok_or_else(|| {
-            ToolError::Execution(
-                "no allowed root and cannot determine current directory".to_string(),
-            )
-        })?;
-
-    let canonical_path = std::fs::canonicalize(path)
-        .map_err(|_| ToolError::Execution(format!("invalid path: {}", path.display())))?;
-    let canonical_root = std::fs::canonicalize(&effective_root)
-        .map_err(|_| ToolError::Execution("invalid allowed root".to_string()))?;
-    if !canonical_path.starts_with(&canonical_root) {
-        return Err(ToolError::Permission(format!(
-            "path '{}' is outside allowed directory",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
 #[async_trait]
 impl Tool for ListTool {
     fn name(&self) -> &str {
@@ -103,7 +81,9 @@ impl Tool for ListTool {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
         if !self.unrestricted {
-            validate_path(&dir, &self.allowed_root)?;
+            let default_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let root = self.allowed_root.as_deref().unwrap_or(&default_root);
+            validate_path(&dir, root)?;
         }
 
         if !dir.is_dir() {

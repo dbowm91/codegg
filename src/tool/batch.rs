@@ -108,6 +108,12 @@ impl Tool for BatchTool {
                 )));
             }
 
+            if tool_name == "batch" {
+                return Err(ToolError::Execution(
+                    "the batch tool cannot call itself recursively".to_string()
+                ));
+            }
+
             let registry = self.registry.clone();
             let fut = async move {
                 let tool = registry
