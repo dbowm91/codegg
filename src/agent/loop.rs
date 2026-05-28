@@ -124,14 +124,10 @@ fn harden_history(messages: &mut Vec<Message>) {
                         content,
                     });
                 } else {
-                    tracing::warn!(
+                    tracing::debug!(
                         tool_call_id = %tool_call_id,
-                        "Orphan tool message during history hardening - preserving to avoid breaking message contract"
+                        "Dropping orphan tool message during history hardening"
                     );
-                    hardened.push(Message::Tool {
-                        tool_call_id,
-                        content,
-                    });
                 }
             }
             Message::User { content } => {
@@ -195,10 +191,6 @@ fn indicates_more_work(text: &str) -> bool {
         || t.contains("now i")
 }
 
-fn is_soft_stop_reason(stop_reason: Option<&str>) -> bool {
-    matches!(stop_reason, Some("stop" | "end_turn"))
-}
-
 fn is_repo_task_prompt(prompt: &str) -> bool {
     let p = prompt.to_lowercase();
     p.contains("review")
@@ -208,11 +200,6 @@ fn is_repo_task_prompt(prompt: &str) -> bool {
         || p.contains("project")
         || p.contains("repository")
         || p.contains("codebase")
-        || p.contains("source")
-        || p.contains("structure")
-        || p.contains("symbols")
-        || p.contains("architecture")
-        || p.contains("outline")
 }
 
 #[derive(Copy, Clone)]
@@ -332,7 +319,7 @@ fn extract_path_from_tool_call(tc: &ToolCall) -> Option<String> {
         "read" | "write" | "edit" | "glob" | "grep" | "list" => {
             args.get("path")?.as_str().map(String::from)
         }
-        "apply_patch" => args.get("path")?.as_str().map(String::from),
+        "apply_patch" => args.get("patch_path")?.as_str().map(String::from),
         _ => None,
     }
 }
@@ -353,13 +340,11 @@ fn extract_git_subcommand(tc: &ToolCall) -> Option<String> {
 
 fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("mcp__")?;
-    let delimiter_pos = rest.rfind("__")?;
-    let server = &rest[..delimiter_pos];
-    let tool = &rest[delimiter_pos + 2..];
-    if server.is_empty() || tool.is_empty() {
-        None
+    let parts: Vec<&str> = rest.split("__").collect();
+    if parts.len() == 2 {
+        Some((parts[0], parts[1]))
     } else {
-        Some((server, tool))
+        None
     }
 }
 
@@ -368,14 +353,6 @@ fn is_auto_accept_read_only_tool(tool_name: &str) -> bool {
         tool_name,
         "read" | "glob" | "grep" | "list" | "webfetch" | "websearch" | "codesearch"
     )
-}
-
-fn is_mcp_tool(tool_name: &str) -> bool {
-    tool_name.starts_with("mcp__")
-}
-
-fn tool_result_is_success(output: &str) -> bool {
-    !output.starts_with("Error: ")
 }
 
 fn is_path_within_working_directory(path: Option<&str>) -> bool {
@@ -431,7 +408,7 @@ impl AgentLoop {
             }
         }
 
-        self.doom_detector.record_tool_call(&tc.name, &tc.arguments);
+        self.doom_detector.record_tool_call(&tc.name);
         let doom_loop = self.doom_detector.is_doom_loop();
 
         let path = extract_path_from_tool_call(tc);
@@ -478,8 +455,7 @@ impl AgentLoop {
                 message: format!("Tool '{}' denied by permissions", tc.name),
             },
             PermissionResult::Ask(req) => {
-                if (is_auto_accept_read_only_tool(tc.name.as_str())
-                    || is_mcp_tool(tc.name.as_str()))
+                if is_auto_accept_read_only_tool(tc.name.as_str())
                     && is_path_within_working_directory(req.path.as_deref())
                 {
                     if doom_loop {
@@ -794,6 +770,10 @@ impl AgentLoop {
         self.follow_up_tx.clone()
     }
 
+    pub fn setup_question_channel(&mut self) {
+        self.setup_question_channel_impl(false);
+    }
+
     pub fn setup_question_channel_for_exec(&mut self) {
         self.setup_question_channel_impl(true);
     }
@@ -913,7 +893,15 @@ impl AgentLoop {
                                 },
                             );
                         }
-                        ChatEvent::Finish { usage, .. } => {
+                        ChatEvent::Finish { stop_reason, usage } => {
+                            crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
+                                session_id: self.session_id.clone(),
+                                stop_reason: stop_reason.to_string(),
+                                input_tokens: Some(usage.input_tokens),
+                                output_tokens: Some(usage.output_tokens),
+                                cached_tokens: usage.cached_tokens,
+                            });
+
                             if let Some(ref store) = usage_store {
                                 let session_id = self.session_id.clone();
                                 let model = model_name.clone();
@@ -957,34 +945,6 @@ impl AgentLoop {
         }
 
         Ok(events)
-    }
-
-    fn publish_agent_finished(&self, events: &[ChatEvent]) {
-        let last_finish = events.iter().rev().find_map(|event| {
-            if let ChatEvent::Finish { stop_reason, usage } = event {
-                Some((stop_reason, usage))
-            } else {
-                None
-            }
-        });
-
-        if let Some((stop_reason, usage)) = last_finish {
-            crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
-                session_id: self.session_id.clone(),
-                stop_reason: stop_reason.to_string(),
-                input_tokens: Some(usage.input_tokens),
-                output_tokens: Some(usage.output_tokens),
-                cached_tokens: usage.cached_tokens,
-            });
-        } else {
-            crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
-                session_id: self.session_id.clone(),
-                stop_reason: "completed".to_string(),
-                input_tokens: None,
-                output_tokens: None,
-                cached_tokens: None,
-            });
-        }
     }
 
     fn check_limits(&self) -> Option<String> {
@@ -1123,14 +1083,10 @@ impl AgentLoop {
             .unwrap_or(false);
 
         let mcp_tools = if let Some(ref mcp_arc) = self.mcp_service {
-            match mcp_arc.try_read() {
-                Ok(mcp) => mcp.list_tools(),
-                Err(_) => {
-                    tracing::debug!("MCP service write-locked during tool def building, retrying");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    mcp_arc.try_read().map(|mcp| mcp.list_tools()).unwrap_or_default()
-                }
-            }
+            mcp_arc
+                .try_read()
+                .map(|mcp| mcp.list_tools())
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -1199,11 +1155,6 @@ impl AgentLoop {
                 parameters: t.parameters(),
             })
             .collect();
-
-        // Update tool_search with available tool names so search results
-        // only include tools the LLM can actually call
-        let available_names: Vec<String> = filtered.iter().map(|t| t.name().to_string()).collect();
-        self.tool_registry.set_search_tool_available_tools(available_names);
 
         self.tool_def_cache = Some((
             model.map(|s| s.to_string()),
@@ -1479,7 +1430,7 @@ impl AgentLoop {
                 Ok(events) => events,
                 Err(e) => {
                     tracing::error!("Stream error: {}", e);
-                    return Err(e);
+                    break;
                 }
             };
 
@@ -1506,7 +1457,7 @@ impl AgentLoop {
             if tool_calls.is_empty() {
                 if !did_bootstrap_tool
                     && self.state.turn_count <= 2
-                    && is_soft_stop_reason(processor.stop_reason())
+                    && matches!(processor.stop_reason(), Some("stop"))
                     && is_repo_task_prompt(&original_prompt)
                 {
                     let synthetic = ToolCall {
@@ -1533,7 +1484,7 @@ impl AgentLoop {
                             tool_name: "list".to_string(),
                             session_id: self.session_id.clone(),
                             output: content.clone(),
-                            success: tool_result_is_success(content),
+                            success: !content.starts_with("Error:"),
                         });
                         let redacted_content = redact_local_paths(content);
                         let msg = Message::Tool {
@@ -1548,8 +1499,8 @@ impl AgentLoop {
                     continue;
                 }
                 if just_executed_tools
-                    && post_tool_continuation_retry_budget < 2
-                    && is_soft_stop_reason(processor.stop_reason())
+                    && post_tool_continuation_retry_budget < 1
+                    && matches!(processor.stop_reason(), Some("stop"))
                     && (processor.text().trim().len() < 220
                         || indicates_more_work(processor.text()))
                 {
@@ -1558,19 +1509,6 @@ impl AgentLoop {
                         request.messages.push(msg);
                     }
                     post_tool_continuation_retry_budget += 1;
-                    just_executed_tools = false;
-                    processor.reset();
-                    continue;
-                }
-                if just_executed_tools
-                    && is_repo_task_prompt(&original_prompt)
-                    && is_soft_stop_reason(processor.stop_reason())
-                {
-                    push_control_instruction(
-                        &mut request.messages,
-                        &request.model,
-                        "Continue working and use additional structured tool calls as needed to complete repository analysis before finalizing.",
-                    );
                     just_executed_tools = false;
                     processor.reset();
                     continue;
@@ -1587,31 +1525,12 @@ impl AgentLoop {
                     processor.reset();
                     continue;
                 }
-                if matches!(processor.stop_reason(), Some("tool_calls")) {
-                    crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                        message: "Model returned stop_reason=tool_calls without parseable structured tool calls after retries".to_string(),
-                    });
-                }
                 break;
             }
             missing_structured_tool_call_retries = 0;
             post_tool_continuation_retry_budget = 0;
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
-
-            if tool_results.iter().any(|(_, out)| tool_result_is_success(out)) {
-                if let Some(doom_tool) = self.doom_detector.current_doom_tool() {
-                    let doom_tool_owned = doom_tool.to_string();
-                    let dominated = tool_calls.iter().zip(tool_results.iter()).any(|(tc, (_, out))| {
-                        tc.name.as_str() == doom_tool_owned && tool_result_is_success(out)
-                    });
-                    if dominated {
-                        self.doom_detector.reset();
-                    }
-                } else {
-                    self.doom_detector.reset();
-                }
-            }
 
             if let Some(msg) = processor.to_assistant_message() {
                 self.context_tracker.add_message(&msg);
@@ -1624,7 +1543,7 @@ impl AgentLoop {
                     .find(|tc| *tc.id == id.as_str())
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
-                let success = tool_result_is_success(content);
+                let success = !content.starts_with("Error:");
                 let redacted_output = redact_local_paths(content);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),
@@ -1658,9 +1577,6 @@ impl AgentLoop {
                 request.messages.push(msg);
             }
 
-            // Compact after tool results to prevent context overflow from large outputs
-            self.compact_if_needed(&mut request.messages).await;
-
             processor.reset();
 
             let agent_end_ctx = crate::hooks::HookContext {
@@ -1683,7 +1599,6 @@ impl AgentLoop {
 
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
             .await;
-        self.publish_agent_finished(&all_events);
 
         let session_end_ctx = crate::hooks::HookContext {
             event: crate::hooks::HookEvent::SessionEnd,
@@ -1828,62 +1743,45 @@ impl AgentLoop {
             })
             .collect();
 
-        let mcp_timeout = Duration::from_secs(60);
-        let mut mcp_futures = Vec::with_capacity(mcp_tool_calls.len());
         for (orig_idx, tc) in mcp_tool_calls {
             let name = tc.name.clone();
-            let mcp_arc = self.mcp_service.clone();
-            mcp_futures.push(async move {
-                if let Some((server, tool)) = parse_mcp_tool_name(&name) {
-                    if let Some(mcp_arc) = mcp_arc {
-                        // Retry up to 3 times with brief backoff if RwLock is held
-                        let mut last_err = None;
-                        for attempt in 0..3 {
-                            if attempt > 0 {
-                                tokio::time::sleep(Duration::from_millis(50 * (attempt as u64))).await;
+            if let Some((server, tool)) = parse_mcp_tool_name(&name) {
+                if let Some(ref mcp_arc) = self.mcp_service {
+                    if let Ok(mcp) = mcp_arc.try_read() {
+                        match mcp.call_tool(server, tool, tc.arguments.clone()).await {
+                            Ok(result) => {
+                                tool_results.push((orig_idx, tc.id.to_string(), result));
                             }
-                            match mcp_arc.try_read() {
-                                Ok(mcp) => {
-                                    let call_result = tokio::time::timeout(
-                                        mcp_timeout,
-                                        mcp.call_tool(server, tool, tc.arguments.clone()),
-                                    )
-                                    .await;
-                                    match call_result {
-                                        Ok(Ok(result)) => {
-                                            return (orig_idx, tc.id.to_string(), result);
-                                        }
-                                        Ok(Err(e)) => {
-                                            return (orig_idx, tc.id.to_string(), format!("Error: {}", e));
-                                        }
-                                        Err(_) => {
-                                            return (orig_idx, tc.id.to_string(), format!(
-                                                "Error: MCP tool '{}' on server '{}' timed out after {:?}",
-                                                tool, server, mcp_timeout
-                                            ));
-                                        }
-                                    }
-                                }
-                                Err(_) => {
-                                    last_err = Some(format!(
-                                        "MCP service locked (attempt {}/3)",
-                                        attempt + 1
-                                    ));
-                                }
+                            Err(e) => {
+                                tool_results.push((
+                                    orig_idx,
+                                    tc.id.to_string(),
+                                    format!("Error: {}", e),
+                                ));
                             }
                         }
-                        (orig_idx, tc.id.to_string(), format!("Error: {}", last_err.unwrap_or_default()))
                     } else {
-                        (orig_idx, tc.id.to_string(), "Error: MCP service not available".to_string())
+                        tracing::debug!(server = %server, tool = %tool, "MCP service temporarily unavailable (write locked)");
+                        tool_results.push((
+                            orig_idx,
+                            tc.id.to_string(),
+                            "Error: MCP service locked, please retry".to_string(),
+                        ));
                     }
                 } else {
-                    (orig_idx, tc.id.to_string(), format!("Error: Invalid MCP tool name '{}'", name))
+                    tool_results.push((
+                        orig_idx,
+                        tc.id.to_string(),
+                        "Error: MCP service not available".to_string(),
+                    ));
                 }
-            });
-        }
-        let mcp_results = futures::future::join_all(mcp_futures).await;
-        for result in mcp_results {
-            tool_results.push(result);
+            } else {
+                tool_results.push((
+                    orig_idx,
+                    tc.id.to_string(),
+                    format!("Error: Invalid MCP tool name '{}'", name),
+                ));
+            }
         }
 
         let mut results = Vec::with_capacity(regular_tool_count);
@@ -1902,18 +1800,10 @@ impl AgentLoop {
             let session_id = self.session_id.clone();
             let idx_for_results = orig_idx;
             futures.push(async move {
-                let permit = match sem.acquire().await {
-                    Ok(p) => p,
-                    Err(_) => {
-                        return (
-                            idx_for_results,
-                            id,
-                            Err(ToolError::Execution(
-                                "semaphore closed during tool execution".into(),
-                            )),
-                        );
-                    }
-                };
+                let permit = sem
+                    .acquire()
+                    .await
+                    .expect("failed to acquire semaphore permit for tool execution");
 
                 let pre_ctx = crate::hooks::HookContext {
                     event: crate::hooks::HookEvent::PreToolExecute,
@@ -1959,58 +1849,18 @@ impl AgentLoop {
                         .ok_or_else(|| ToolError::NotFound(tc_inner.name.to_string()));
                     match tool {
                         Ok(t) => {
-                            let mut last_result: Result<String, ToolError> =
-                                Err(ToolError::NotFound("no attempts made".into()));
-                            for attempt in 0..2 {
-                                if attempt > 0 {
-                                    tokio::time::sleep(Duration::from_millis(500)).await;
-                                    tracing::info!(
-                                        "Retrying tool '{}' (attempt {})",
-                                        tc_inner.name,
-                                        attempt + 1
-                                    );
-                                }
-                                match tokio::time::timeout(
-                                    timeout,
-                                    t.execute(tc_inner.arguments.clone()),
-                                )
-                                .await
-                                {
-                                    Ok(r) => {
-                                        match &r {
-                                            Ok(_) => {
-                                                last_result = r;
-                                                break;
-                                            }
-                                            Err(e) if e.is_retryable() => {
-                                                tracing::warn!(
-                                                    "Tool '{}' retryable error: {}",
-                                                    tc_inner.name,
-                                                    e
-                                                );
-                                                last_result = r;
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    "Tool '{}' non-retryable error: {}",
-                                                    tc_inner.name,
-                                                    e
-                                                );
-                                                last_result = r;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Err(_) => {
-                                        last_result = Err(ToolError::Execution(format!(
-                                            "Tool '{}' timed out after {:?}",
-                                            tc_inner.name, timeout
-                                        )));
-                                        break;
-                                    }
-                                }
+                            match tokio::time::timeout(
+                                timeout,
+                                t.execute(tc_inner.arguments.clone()),
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => Err(ToolError::Execution(format!(
+                                    "Tool '{}' timed out after {:?}",
+                                    tc_inner.name, timeout
+                                ))),
                             }
-                            last_result
                         }
                         Err(e) => Err(e),
                     }
@@ -2055,26 +1905,12 @@ impl AgentLoop {
         }
         let all_results = futures::future::join_all(futures).await;
         results.extend(all_results);
-
-        const MAX_TOOL_RESULT_BYTES: usize = 512 * 1024; // 512KB per tool result
         for (idx, id, result) in results {
             let output = match result {
                 Ok(output) => output,
                 Err(e) => format!("Error: {}", e),
             };
-            let truncated = if output.len() > MAX_TOOL_RESULT_BYTES {
-                let safe_end = output.floor_char_boundary(MAX_TOOL_RESULT_BYTES);
-                let mut truncated = output[..safe_end].to_string();
-                truncated.push_str(&format!(
-                    "\n... [truncated: output was {} bytes, limit is {} bytes]",
-                    output.len(),
-                    MAX_TOOL_RESULT_BYTES
-                ));
-                truncated
-            } else {
-                output
-            };
-            tool_results.push((idx, id.to_string(), truncated));
+            tool_results.push((idx, id.to_string(), output));
         }
 
         if has_file_modifying {
@@ -2220,8 +2056,8 @@ impl AgentLoop {
 
             if tool_calls.is_empty() {
                 if just_executed_tools
-                    && post_tool_continuation_retry_budget < 2
-                    && is_soft_stop_reason(processor.stop_reason())
+                    && post_tool_continuation_retry_budget < 1
+                    && matches!(processor.stop_reason(), Some("stop"))
                     && (processor.text().trim().len() < 220
                         || indicates_more_work(processor.text()))
                 {
@@ -2229,16 +2065,6 @@ impl AgentLoop {
                         request.messages.push(msg);
                     }
                     post_tool_continuation_retry_budget += 1;
-                    just_executed_tools = false;
-                    processor.reset();
-                    continue;
-                }
-                if just_executed_tools && is_soft_stop_reason(processor.stop_reason()) {
-                    push_control_instruction(
-                        &mut request.messages,
-                        &request.model,
-                        "Continue the task and emit structured tool calls as needed before finalizing.",
-                    );
                     just_executed_tools = false;
                     processor.reset();
                     continue;
@@ -2254,11 +2080,6 @@ impl AgentLoop {
                     missing_structured_tool_call_retries += 1;
                     processor.reset();
                     continue;
-                }
-                if matches!(processor.stop_reason(), Some("tool_calls")) {
-                    crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                        message: "Model returned stop_reason=tool_calls without parseable structured tool calls after retries".to_string(),
-                    });
                 }
                 processor.reset();
                 break;
@@ -2286,13 +2107,12 @@ impl AgentLoop {
                     .find(|tc| *tc.id == id.as_str())
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
-                let success = tool_result_is_success(content);
-                let redacted_output = redact_local_paths(content);
+                let success = !content.starts_with("Error:");
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),
                     tool_name,
                     session_id: self.session_id.clone(),
-                    output: redacted_output,
+                    output: content.clone(),
                     success,
                 });
             }
@@ -2414,7 +2234,7 @@ fn filter_tools_for_model<'a>(
 
 fn compute_model_flags(model: Option<&String>) -> ModelFlags {
     let model_id = model.map(|s| s.to_lowercase()).unwrap_or_default();
-    let is_gpt = model_id.contains("gpt");
+    let is_gpt = model_id.contains("gpt") && !model_id.contains("gpt-4");
     let is_non_oss =
         model_id.contains("gpt") || model_id.contains("claude") || model_id.contains("gemini");
     let exa_available =
