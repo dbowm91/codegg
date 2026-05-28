@@ -771,7 +771,7 @@ impl MessagesWidget {
         if self.scroll < max_scroll {
             self.scroll += 1;
         }
-        self.auto_scroll = false;
+        self.auto_scroll = self.scroll >= max_scroll;
     }
 
     pub fn scroll_page_up(&mut self) {
@@ -789,7 +789,7 @@ impl MessagesWidget {
         let max_scroll = total_lines.saturating_sub(self.visible_height);
         let page = self.visible_height.saturating_sub(2).max(1);
         self.scroll = (self.scroll + page).min(max_scroll);
-        self.auto_scroll = false;
+        self.auto_scroll = self.scroll >= max_scroll;
     }
 
     pub fn scroll_to_top(&mut self) {
@@ -808,11 +808,33 @@ impl MessagesWidget {
 
     pub fn add_streaming_token(&mut self, token: &str) {
         const MAX_STREAMING_TOKENS_SIZE: usize = 1024 * 1024;
+        let was_at_bottom = self.is_at_bottom();
+
+        // Ensure streaming text is visible even before first finalized line.
+        let needs_placeholder = self
+            .messages
+            .last()
+            .map(|m| m.role != MessageRole::Assistant)
+            .unwrap_or(true);
+        if needs_placeholder {
+            self.messages.push(UIMessage {
+                role: MessageRole::Assistant,
+                parts: vec![],
+                timestamp: Some(chrono::Local::now().timestamp()),
+                is_plan_mode: None,
+            });
+            self.invalidate_layout_cache();
+        }
+
         if self.streaming_tokens.len() + token.len() > MAX_STREAMING_TOKENS_SIZE {
             self.streaming_tokens
                 .truncate(MAX_STREAMING_TOKENS_SIZE / 2);
         }
         self.streaming_tokens.push_str(token);
+
+        if self.auto_scroll && was_at_bottom {
+            self.scroll = usize::MAX;
+        }
     }
 
     pub fn finalize_streaming(&mut self) {
@@ -1660,4 +1682,45 @@ pub fn highlight_code(code: &str, lang: &str, code_theme: &str) -> Vec<Line<'sta
         lines.push(Line::from(spans));
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scrolling_down_to_bottom_reenables_auto_scroll() {
+        let mut widget = MessagesWidget::default();
+        widget.set_visible_height(3);
+        for i in 0..12 {
+            widget.add_user_message(format!("msg {i}"), None);
+        }
+
+        widget.scroll_to_top();
+        assert!(!widget.auto_scroll);
+
+        for _ in 0..64 {
+            widget.scroll_down();
+        }
+
+        assert!(widget.is_at_bottom());
+        assert!(widget.auto_scroll);
+    }
+
+    #[test]
+    fn streaming_token_creates_assistant_placeholder_and_follows_bottom() {
+        let mut widget = MessagesWidget::default();
+        widget.set_visible_height(4);
+        widget.add_user_message("hello".to_string(), None);
+        widget.scroll_to_bottom();
+
+        widget.add_streaming_token("partial");
+
+        assert!(matches!(
+            widget.messages.last().map(|m| &m.role),
+            Some(MessageRole::Assistant)
+        ));
+        assert_eq!(widget.streaming_tokens, "partial");
+        assert_eq!(widget.scroll, usize::MAX);
+    }
 }
