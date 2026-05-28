@@ -1,8 +1,8 @@
 # CodeGG Architecture Overview
 
-CodeGG is a high-performance AI coding agent built in Rust, designed for terminal-based interaction with deep IDE and LSP integration.
+CodeGG is a high-performance AI coding agent built in Rust, designed for terminal-based interaction with deep IDE and LSP integration. This document provides a bird's eye view of the entire system and serves as an index to detailed architecture documents.
 
-## Architecture Summary
+## System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -63,6 +63,7 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 | [permission/](permission.md) | Access control, DoomLoop detection, mode system | `mod.rs`, `modes.rs` |
 | [plugin/](plugin.md) | WASM plugin system with hooks and fuel tracking | `loader.rs`, `service.rs`, `manifest.rs` |
 | [provider/](provider.md) | LLM providers (Anthropic, OpenAI, Google, etc.) | `mod.rs`, `anthropic.rs`, `fallback.rs` |
+| [protocol/](protocol.md) | Shared request/response envelopes and message types | `core.rs`, `tui.rs` |
 | [resilience/](resilience.md) | Circuit breaker, retry mechanisms | `circuit.rs` |
 | [security/](security.md) | SSRF protection, Landlock sandboxing | `ssrf.rs`, `sandbox.rs` |
 | [server/](server.md) | HTTP/WebSocket server for remote TUI | `http.rs`, `ws.rs`, `routes/` |
@@ -113,7 +114,7 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 | LSP servers | 39 | `lsp/server.rs:27-383` |
 | UiState fields | 26 | `tui/app/state/ui.rs:27-76` |
 | AppEvent variants | 36 | `bus/events.rs:5-147` |
-| Built-in commands | 45 | `tui/command.rs:79-165` |
+| Built-in commands | 46 | `tui/command.rs:79-182` |
 | Built-in agents | 7 | `agent/mod.rs:147-262` |
 
 ## Feature Gates
@@ -122,7 +123,7 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 |---------|-------------|
 | `server` | Axum HTTP server, WebSocket TUI |
 | `plugin` | WASM plugin system with wasmtime |
-| `mcp` | Model Context Protocol support |
+| `image` | Image support via ratatui-image |
 
 ## Database Schema
 
@@ -184,12 +185,35 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 
 - [Agent Loop](agent.md) - Main execution cycle, compaction, routing
 - [Bus/Events](bus.md) - Event bus and registries
+- [Client](client.md) - Remote TUI WebSocket client
+- [Command](command.md) - Slash command registry
+- [Compaction](compaction.md) - Context window overflow management
+- [Config](config.md) - Configuration loading and validation
 - [Core](core.md) - CoreClient facade and transports
-- [Provider](provider.md) - LLM provider implementations
-- [Tool](tool.md) - Tool system and registry
-- [Permission](permission.md) - Access control and modes
-- [TUI](tui.md) - Terminal user interface
-- [Session](session.md) - SQLite storage and message history
-- [Server](server.md) - HTTP/WebSocket for remote TUI
+- [Crypto](crypto.md) - API key encryption
+- [Error](error.md) - Centralized error handling
+- [Exec](exec.md) - Non-interactive execution mode
+- [Git](git.md) - Git session management
+- [Hooks](hooks.md) - Lifecycle hooks
+- [IDE](ide.md) - VS Code/JetBrains integration
+- [LSP](lsp.md) - Language Server Protocol
 - [MCP](mcp.md) - Model Context Protocol
+- [Memory](memory.md) - Persistent memory system
+- [Permission](permission.md) - Access control and modes
 - [Plugin](plugin.md) - WASM plugin system
+- [Protocol](protocol.md) - Shared request/response envelopes
+- [Provider](provider.md) - LLM provider implementations
+- [Resilience](resilience.md) - Circuit breaker patterns
+- [Security](security.md) - SSRF, sandboxing
+- [Server](server.md) - HTTP/WebSocket for remote TUI
+- [Session](session.md) - SQLite storage and message history
+- [Shell Session](shell_session.md) - Shell session metadata
+- [Skills](skills.md) - Runtime skill loader
+- [Snapshot](snapshot.md) - File state capture and restore
+- [Storage](storage.md) - SQLite initialization
+- [Tool](tool.md) - Tool system and registry
+- [TTS](tts.md) - Text-to-speech
+- [TUI](tui.md) - Terminal user interface
+- [Upgrade](upgrade.md) - Self-upgrade functionality
+- [Util](util.md) - Utility functions
+- [Worktree](worktree.md) - Git worktree management
