@@ -57,6 +57,20 @@ pub fn create_http_client() -> reqwest::Client {
 
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<ChatEvent, ProviderError>> + Send>>;
 
+pub fn assistant_text_content_value(content: &[ContentPart]) -> serde_json::Value {
+    let mut text = String::new();
+    for part in content {
+        if let ContentPart::Text { text: part_text } = part {
+            text.push_str(part_text);
+        }
+    }
+    serde_json::json!(text)
+}
+
+pub fn openai_tool_arguments_value(arguments: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!(arguments.to_string())
+}
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn id(&self) -> &str;

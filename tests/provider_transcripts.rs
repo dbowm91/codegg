@@ -531,8 +531,10 @@ mod tests {
             assistant_msg.get("role").unwrap().as_str().unwrap(),
             "assistant"
         );
-        let content = assistant_msg.get("content").unwrap();
-        assert!(content.is_null() || content.as_str().map_or(false, |s| s.is_empty()));
+        assert_eq!(
+            assistant_msg.get("content").unwrap().as_str().unwrap(),
+            ""
+        );
 
         let tool_calls = assistant_msg.get("tool_calls").unwrap().as_array().unwrap();
         assert_eq!(tool_calls.len(), 1);
@@ -551,6 +553,60 @@ mod tests {
             args.get("value").unwrap().as_str().unwrap(),
             "test"
         );
+    }
+
+    #[test]
+    fn test_minimax_serialize_assistant_tool_call_only() {
+        use codegg::provider::openai_compatible::{
+            OpenAiCompatibleConfig, OpenAiCompatibleProvider,
+        };
+
+        let provider = OpenAiCompatibleProvider::new(
+            "minimax",
+            "MiniMax",
+            OpenAiCompatibleConfig {
+                api_key: "test-key".to_string(),
+                base_url: "https://api.minimax.io/v1".to_string(),
+                auth_header: "Authorization".to_string(),
+                extra_headers: Vec::new(),
+                models: Vec::new(),
+                tool_choice_auto: false,
+            },
+        );
+
+        let messages = vec![Message::Assistant {
+            content: vec![],
+            tool_calls: vec![tc(
+                "call_1",
+                "echo_args",
+                serde_json::json!({"value": "test"}),
+            )],
+        }];
+
+        let request = make_chat_request(messages);
+        let body = provider.build_body(&request);
+        let msgs = body.get("messages").unwrap().as_array().unwrap();
+
+        assert_eq!(msgs.len(), 1);
+        let assistant_msg = &msgs[0];
+        assert_eq!(
+            assistant_msg.get("role").unwrap().as_str().unwrap(),
+            "assistant"
+        );
+        assert_eq!(
+            assistant_msg.get("content").unwrap().as_str().unwrap(),
+            ""
+        );
+
+        let tool_calls = assistant_msg.get("tool_calls").unwrap().as_array().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        let func = tool_calls[0].get("function").unwrap();
+        assert_eq!(func.get("name").unwrap().as_str().unwrap(), "echo_args");
+        let args: serde_json::Value = serde_json::from_str(
+            func.get("arguments").unwrap().as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(args.get("value").unwrap().as_str().unwrap(), "test");
     }
 
     #[test]

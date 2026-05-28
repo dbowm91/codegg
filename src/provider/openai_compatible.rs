@@ -1,8 +1,8 @@
 use crate::error::ProviderError;
 use crate::provider::sse_parser::parse_openai_buffer;
 use crate::provider::{
-    create_http_client, ChatRequest, ContentPart, EventStream, Message, ModelInfo, Provider,
-    MAX_BUFFER_SIZE,
+    assistant_text_content_value, create_http_client, openai_tool_arguments_value, ChatRequest,
+    ContentPart, EventStream, Message, ModelInfo, Provider, MAX_BUFFER_SIZE,
 };
 use async_trait::async_trait;
 use futures::stream::unfold;
@@ -53,21 +53,8 @@ impl OpenAiCompatibleProvider {
             },
         )
     }
-}
 
-#[async_trait]
-impl Provider for OpenAiCompatibleProvider {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
-        let url = format!("{}/chat/completions", self.config.base_url);
-
+    pub fn build_body(&self, request: &ChatRequest) -> serde_json::Value {
         let mut messages: Vec<serde_json::Value> = Vec::new();
         for msg in &request.messages {
             match msg {
@@ -102,22 +89,9 @@ impl Provider for OpenAiCompatibleProvider {
                     content,
                     tool_calls,
                 } => {
-                    let text_parts: Vec<String> = content
-                        .iter()
-                        .filter_map(|p| match p {
-                            ContentPart::Text { text } => Some(text.to_string()),
-                            _ => None,
-                        })
-                        .collect();
-                    let text = text_parts.join("");
-
                     let mut assistant_msg = json!({
                         "role": "assistant",
-                        "content": if text.is_empty() {
-                            serde_json::Value::Null
-                        } else {
-                            json!(text)
-                        }
+                        "content": assistant_text_content_value(content)
                     });
 
                     if !tool_calls.is_empty() {
@@ -129,7 +103,7 @@ impl Provider for OpenAiCompatibleProvider {
                                     "type": "function",
                                     "function": {
                                         "name": tc.name,
-                                        "arguments": tc.arguments,
+                                        "arguments": openai_tool_arguments_value(&tc.arguments),
                                     }
                                 })
                             })
@@ -183,6 +157,24 @@ impl Provider for OpenAiCompatibleProvider {
         {
             body["tool_choice"] = json!("auto");
         }
+
+        body
+    }
+}
+
+#[async_trait]
+impl Provider for OpenAiCompatibleProvider {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
+        let url = format!("{}/chat/completions", self.config.base_url);
+        let body = self.build_body(request);
 
         let tool_count = request.tools.as_ref().map(|t| t.len()).unwrap_or(0);
         let tool_preview = request

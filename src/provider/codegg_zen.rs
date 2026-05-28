@@ -1,8 +1,8 @@
 use crate::error::ProviderError;
 use crate::provider::sse_parser::parse_openai_buffer;
 use crate::provider::{
-    create_http_client, ChatRequest, ContentPart, EventStream, Message, ModelInfo, Provider,
-    MAX_BUFFER_SIZE,
+    assistant_text_content_value, create_http_client, ChatRequest, ContentPart, EventStream,
+    Message, ModelInfo, Provider, MAX_BUFFER_SIZE,
 };
 use async_trait::async_trait;
 use futures::stream::unfold;
@@ -68,22 +68,9 @@ impl CodeggZenProvider {
                     content,
                     tool_calls,
                 } => {
-                    let text_parts: Vec<String> = content
-                        .iter()
-                        .filter_map(|p| match p {
-                            ContentPart::Text { text } => Some(text.to_string()),
-                            _ => None,
-                        })
-                        .collect();
-                    let text = text_parts.join("");
-
                     let mut assistant_msg = json!({
                         "role": "assistant",
-                        "content": if text.is_empty() {
-                            serde_json::Value::Null
-                        } else {
-                            json!(text)
-                        }
+                        "content": assistant_text_content_value(content)
                     });
 
                     if !tool_calls.is_empty() {
