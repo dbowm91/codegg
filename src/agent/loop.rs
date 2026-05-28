@@ -204,6 +204,11 @@ fn is_repo_task_prompt(prompt: &str) -> bool {
         || p.contains("project")
         || p.contains("repository")
         || p.contains("codebase")
+        || p.contains("source")
+        || p.contains("structure")
+        || p.contains("symbols")
+        || p.contains("architecture")
+        || p.contains("outline")
 }
 
 #[derive(Copy, Clone)]
@@ -1562,6 +1567,11 @@ impl AgentLoop {
                     processor.reset();
                     continue;
                 }
+                if matches!(processor.stop_reason(), Some("tool_calls")) {
+                    crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                        message: "Model returned stop_reason=tool_calls without parseable structured tool calls after retries".to_string(),
+                    });
+                }
                 break;
             }
             missing_structured_tool_call_retries = 0;
@@ -2128,6 +2138,11 @@ impl AgentLoop {
                     missing_structured_tool_call_retries += 1;
                     processor.reset();
                     continue;
+                }
+                if matches!(processor.stop_reason(), Some("tool_calls")) {
+                    crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                        message: "Model returned stop_reason=tool_calls without parseable structured tool calls after retries".to_string(),
+                    });
                 }
                 processor.reset();
                 break;

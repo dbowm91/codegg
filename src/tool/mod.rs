@@ -110,6 +110,9 @@ impl ToolRegistry {
         registry.register(crate::tool::review::ReviewTool::default());
         registry.register(crate::tool::terminal::TerminalTool::default());
         registry.register(crate::tool::git::GitTool::default());
+        registry.register(crate::tool::lsp::LspTool::new(Arc::new(
+            crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default()),
+        )));
         registry.register(crate::tool::commit::CommitTool::new());
         registry.register(crate::tool::plan::PlanEnterTool);
         registry.register(crate::tool::plan::PlanExitTool);

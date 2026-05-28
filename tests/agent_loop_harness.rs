@@ -3592,3 +3592,117 @@ async fn test_registry_recovery_after_missed_event() {
         "Question should be removed after answer"
     );
 }
+
+#[tokio::test]
+async fn test_source_structure_prompt_triggers_bootstrap_list() {
+    let response1 = vec![ChatEvent::Finish {
+        stop_reason: "stop".to_string().into(),
+        usage: TokenUsage::default(),
+    }];
+    let response2 = vec![ChatEvent::Finish {
+        stop_reason: "stop".to_string().into(),
+        usage: TokenUsage::default(),
+    }];
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+    let registry = ToolRegistry::with_defaults();
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    agent_loop.set_session_id("test-source-structure-bootstrap");
+
+    let request = make_chat_request("get source code structure for this project");
+    let result = agent_loop.run(request).await;
+    assert!(result.is_ok(), "run should succeed: {:?}", result.err());
+
+    let requests = scripted_provider.get_requests().await;
+    assert!(
+        requests.len() >= 2,
+        "Expected at least 2 provider calls after bootstrap, got {}",
+        requests.len()
+    );
+
+    let second_request = &requests[1];
+    let has_bootstrap_assistant = second_request.messages.iter().any(|m| {
+        matches!(
+            m,
+            Message::Assistant { tool_calls, .. }
+            if tool_calls.iter().any(|tc| tc.id.as_ref() == "synthetic_bootstrap_list" && tc.name.as_ref() == "list")
+        )
+    });
+    assert!(
+        has_bootstrap_assistant,
+        "Expected synthetic bootstrap list tool call in second request"
+    );
+
+    assert!(
+        second_request.messages.iter().any(|m| matches!(
+            m,
+            Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "synthetic_bootstrap_list"
+        )),
+        "Expected synthetic bootstrap list tool result in second request"
+    );
+}
+
+#[tokio::test]
+async fn test_missing_structured_tool_calls_emits_diagnostic_error_event() {
+    let response1 = vec![ChatEvent::Finish {
+        stop_reason: "tool_calls".to_string().into(),
+        usage: TokenUsage::default(),
+    }];
+    let response2 = vec![ChatEvent::Finish {
+        stop_reason: "tool_calls".to_string().into(),
+        usage: TokenUsage::default(),
+    }];
+    let response3 = vec![ChatEvent::Finish {
+        stop_reason: "tool_calls".to_string().into(),
+        usage: TokenUsage::default(),
+    }];
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2, response3]));
+    let registry = ToolRegistry::with_defaults();
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    agent_loop.set_session_id("test-structured-tool-calls-diagnostic");
+
+    let mut rx = GlobalEventBus::subscribe();
+
+    let request = make_chat_request("analyze this repository");
+    let result = agent_loop.run(request).await;
+    assert!(result.is_ok(), "run should succeed: {:?}", result.err());
+
+    let requests = scripted_provider.get_requests().await;
+    assert_eq!(
+        requests.len(),
+        3,
+        "Expected 3 provider calls (initial + 2 retries) before stopping"
+    );
+
+    let mut saw_diagnostic = false;
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::Error { message }) => {
+                if message.contains("stop_reason=tool_calls without parseable structured tool calls")
+                {
+                    saw_diagnostic = true;
+                    break;
+                }
+            }
+            Ok(_) => continue,
+            Err(broadcast::error::TryRecvError::Empty) => break,
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Closed) => break,
+        }
+    }
+
+    assert!(
+        saw_diagnostic,
+        "Expected explicit diagnostic AppEvent::Error for missing structured tool calls"
+    );
+}
+
+#[test]
+fn test_default_registry_includes_lsp_tool() {
+    let registry = ToolRegistry::with_defaults();
+    assert!(
+        registry.get("lsp").is_some(),
+        "Default tool registry should include lsp tool"
+    );
+}
