@@ -97,22 +97,24 @@ These items are important for future agents to know when working with the codeba
 
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum at `types.rs:2-25`.
 
+- **DialogType is in component.rs**: Not in `types.rs`. FocusManager is in `component/focus.rs`.
+
+- **AgentLoop has 24 fields**: The struct at `src/agent/loop.rs:559-584` has 24 fields; many docs list only 15.
+
 - **Exec mode question behavior**: `setup_question_channel_for_exec()` at `src/exec.rs:121` DOES set `question_rx`, meaning exec mode waits up to 300s before timing out. The "[question not supported]" string is in the `else` branch (non-exec path when `question_rx` is None). `setup_question_channel()` (non-exec version) at `src/agent/loop.rs:784` is dead code - never called.
 
 ### Known Issues (Lower Priority)
 
 | Issue | Location | Status |
 |-------|----------|--------|
-| **ToolExecutor exists but unused** | `src/tool/executor.rs:8` | DEPRECATED - to be removed |
 | **TTS init ignores providers** | `src/tts/mod.rs:45-49` | Known issue |
 | TTS stop() silent failure | `src/tts/mod.rs:85-103` | ✅ FIXED - returns Err on pkill failure |
-| **PermissionResponse unused** | `src/permission/mod.rs:1141-1145` | Known issue |
-| **check_external_directory unused** | `src/permission/mod.rs:1237-1248` | Known issue |
-| **Static CANONICAL_PATHS_CACHE never clears** | `src/security/sandbox.rs:237` | Known issue - has 300s TTL now |
+| **check_external_directory unused** | `src/permission/mod.rs:1264-1276` | Known issue - `#[allow(dead_code)]` |
+| **Static CANONICAL_PATHS_CACHE** | `src/security/sandbox.rs:262` | Has 300s TTL + 100-entry cap now |
 | **Histogram unbounded memory** | `src/util/metrics.rs:122-124` | ✅ FIXED |
 | **Worktree symlink detection** | `src/worktree/mod.rs:69-88` | Known issue |
 | **OAuth replay protection TOCTOU** | `src/mcp/auth.rs:318-332` | Known issue |
-| **OAuthManager sync error ignore** | `src/mcp/auth.rs:119` | `let _ = load_tokens_sync()` silently ignores errors |
+| **OAuthManager sync error ignore** | `src/mcp/auth.rs:119` | ✅ FIXED - now logs warnings |
 | **MCP connect_sse() dead code** | `src/mcp/remote.rs:698-740` | Never called externally |
 | **MCP run_socket() dead code** | `src/mcp/ide_server.rs:121-144` | Never called |
 | **MCP Debug command** | `src/mcp/cli.rs:309-318` | IMPLEMENTED - tests connections for remote servers |
@@ -143,10 +145,10 @@ These items were verified during review sessions:
 
 | Item | Value | Location |
 |------|-------|----------|
-| Tool count | 28 | `src/tool/mod.rs:90-122` (includes ImageTool and tool_search) |
+| Tool count | 27 | `src/tool/mod.rs:90-122` (27 registrations in with_defaults()) |
 | LSP server count | 39 | `src/lsp/server.rs:27-383` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` except pool which is `Option<SqlitePool>` | `src/core/mod.rs:22-28` |
-| ToolExecutor | DEPRECATED - exists but unused, to be removed | `src/tool/executor.rs:8` |
+| ToolExecutor | REMOVED | `src/tool/executor.rs` deleted in Wave 4 |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
@@ -190,11 +192,11 @@ These items were discovered during the 2026-05-28 full architecture review sweep
 
 | Item | Status | Location | Notes |
 |------|--------|----------|-------|
-| Tool count | 28 (not 27) | `src/tool/mod.rs:90-122` | Includes `tool_search` (ToolSearchTool) |
+| Tool count | 27 (not 28) | `src/tool/mod.rs:90-122` | 27 registrations in with_defaults() |
 | DB tables | 13 (not 7) | `src/session/schema.rs:25-69` | Missing: migration_version, project, session_share, cached_models, task, checkpoints |
 | exec.md question behavior | WRONG IN DOC | `src/exec.rs:121` | `setup_question_channel_for_exec()` DOES set question_rx; exec waits 300s |
 | `setup_question_channel()` | Dead code | `src/agent/loop.rs:784` | Non-exec version never called |
-| Provider auto-registration | 15 providers via env vars | `src/provider/mod.rs:279-326` | `register_builtin()` registers all env-var providers; codegg_go uses separate path |
+| Provider auto-registration | 16 providers via env vars | `src/provider/mod.rs:390-536` | `register_builtin_with_config()` registers all env-var providers including codegg_go |
 | Config merge behavior | Only provider merges field-by-field | `src/config/schema.rs` | agents/mcp/commands/modes use key replacement |
 | Feature gate name | `plugins` (plural) | `Cargo.toml:169` | Not `plugin` |
 | Instruction files | AGENTS.md, CLAUDE.md, CONTEXT.md | `src/agent/prompt.rs:7` | Primary sources via INSTRUCTION_FILES constant |
@@ -203,6 +205,9 @@ These items were discovered during the 2026-05-28 full architecture review sweep
 | CANONICAL_PATHS_CACHE | Has 300s TTL now | `src/security/sandbox.rs:262` | Was "never clears", now has TTL + 100-entry cap |
 | PermissionResponse | Type does not exist | N/A | Referenced in permission.md but never defined |
 | `src/git/mod.rs` | Orphaned code | `src/git/mod.rs` | Not declared in lib.rs, unused |
+| AgentLoop fields | 24 fields (not 15 as docs claim) | `src/agent/loop.rs:559-584` | Missing: config, question_tx, question_rx, session_id, plugin_service, mcp_service, tool_def_cache, file_change_rx, usage_store, pricing_service |
+| DialogType location | In component.rs (not types.rs) | `src/tui/components/component.rs:22` | 23 variants including Stats |
+| FocusManager location | In component/focus.rs (not types.rs) | `src/tui/components/component/focus.rs:14` | Has focus_index: usize field |
 
 ### Security Notes
 
@@ -218,7 +223,8 @@ These items were discovered during the 2026-05-28 full architecture review sweep
 ## Helpful Patterns for Future Agents
 
 ### Provider Auto-Registration
-- Only `codegg_go` is auto-registered via `register_builtin()`
+- `register_builtin_with_config()` at `src/provider/mod.rs:390-536` registers 16 providers via env vars (anthropic, openai, google, openrouter, codegg_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax, codegg_go)
+- Adding ANY provider via config disables all env-var auto-registration (intentional design)
 - SAP AI Core, Zenmux, Kilo, Vercel AI Gateway are config-only, NOT auto-registered
 - Check `src/provider/mod.rs:register_builtin_with_config()` for details
 
