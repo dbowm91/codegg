@@ -402,12 +402,17 @@ impl LocalClient {
         }
 
         let timeout = Duration::from_millis(self.timeout);
-        let result = tokio::time::timeout(timeout, rx)
-            .await
-            .map_err(|_| McpError::ToolCall(format!("request {method} timed out")))?
-            .map_err(|_| McpError::Connection("receiver dropped".into()))??;
+        let result = tokio::time::timeout(timeout, rx).await;
+        let value = match result {
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                return Err(McpError::ToolCall(format!("request {method} timed out")));
+            }
+            Ok(Err(_)) => return Err(McpError::Connection("receiver dropped".into())),
+            Ok(Ok(val)) => val?,
+        };
 
-        Ok(result)
+        Ok(value)
     }
 
     async fn send_notification(

@@ -361,6 +361,12 @@ impl Clone for SubAgentPool {
     }
 }
 
+impl Drop for SubAgentPool {
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
+    }
+}
+
 #[derive(Clone)]
 pub struct SubAgentSpawner {
     pool: SubAgentPool,

@@ -164,7 +164,7 @@ mod module_cache {
             self.fuel_budgets
                 .get(plugin_id)
                 .map(|entry| entry.value().load(Ordering::Relaxed))
-                .unwrap_or(MAX_PLUGIN_FUEL_BUDGET)
+                .unwrap_or(0)
         }
 
         #[allow(dead_code)]

@@ -136,8 +136,7 @@ impl McpService {
         headers: HashMap<String, String>,
         timeout: u64,
     ) -> Result<(), McpError> {
-        let key = format!("{}:{}", name, url);
-        if self.servers.contains_key(&key) {
+        if self.servers.contains_key(name) {
             return Err(McpError::Server(format!(
                 "server {name} with URL {url} already exists"
             )));
@@ -167,7 +166,7 @@ impl McpService {
             tools: mcp_tools,
             client: McpClientType::Remote(Arc::new(RwLock::new(manager))),
         };
-        self.servers.insert(key, server);
+        self.servers.insert(name.to_string(), server);
         Ok(())
     }
 
