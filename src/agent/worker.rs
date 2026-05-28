@@ -409,7 +409,10 @@ impl SubAgentSpawner {
         }
     }
 
-    fn enqueue_request(&self, request: SubAgentRequest) -> Result<oneshot::Receiver<SubAgentResult>, String> {
+    async fn enqueue_request(
+        &self,
+        request: SubAgentRequest,
+    ) -> Result<oneshot::Receiver<SubAgentResult>, String> {
         if request.depth >= self.pool.max_depth {
             return Err(format!(
                 "subagent max depth {} exceeded (request depth: {})",
@@ -425,7 +428,8 @@ impl SubAgentSpawner {
 
         self.pool
             .request_tx
-            .blocking_send(worker_request)
+            .send(worker_request)
+            .await
             .map_err(|e| format!("failed to queue request: {}", e))?;
 
         Ok(response_rx)
@@ -433,7 +437,7 @@ impl SubAgentSpawner {
 
     pub async fn send(&self, request: SubAgentRequest) -> Result<(), String> {
         let task_id = request.task_id;
-        let response_rx = self.enqueue_request(request)?;
+        let response_rx = self.enqueue_request(request).await?;
         let task_store = Arc::clone(&self.pool.task_store);
 
         tokio::spawn(async move {
@@ -445,7 +449,7 @@ impl SubAgentSpawner {
 
     pub async fn send_async(&self, request: SubAgentRequest) -> Result<(), String> {
         let task_id = request.task_id;
-        let response_rx = self.enqueue_request(request)?;
+        let response_rx = self.enqueue_request(request).await?;
         let task_store = Arc::clone(&self.pool.task_store);
 
         tokio::spawn(async move {
