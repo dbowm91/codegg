@@ -106,8 +106,19 @@ Used by: `webfetch`, `websearch`, `codesearch`, `mcp/remote`
 Linux-specific filesystem sandboxing using Landlock LSM:
 
 ```rust
+pub enum SandboxMode {
+    ReadOnly,           // Read-only access (flag: 1)
+    WorkspaceWrite,     // Read + write access (flag: 3)
+    DangerFullAccess,   // Read + write + execute access (flag: 7)
+}
+
+impl SandboxMode {
+    pub fn access_flags(&self) -> u64  // Returns raw Landlock bitmask
+}
+
 pub struct SandboxConfig {
     pub enabled: bool,
+    pub mode: SandboxMode,
     pub allowed_paths: Vec<String>,
     pub deny_paths: Vec<String>,
 }
@@ -122,10 +133,10 @@ impl SandboxConfig {
 }
 ```
 
-**Access Flags**:
-- `LANDLOCK_ACCESS_FS_READ` - Read files
-- `LANDLOCK_ACCESS_FS_WRITE` - Write files
-- `LANDLOCK_ACCESS_FS_EXEC` - Execute files
+**Access Flags** (raw bitmasks, not named constants):
+- `ReadOnly` → `1` (read files)
+- `WorkspaceWrite` → `3` (read + write files)
+- `DangerFullAccess` → `7` (read + write + execute files)
 
 **Configuration**: Landlock sandboxing is configured programmatically via `SandboxConfig` builder methods (`with_enabled()`, `with_allowed_paths()`, `with_deny_paths()`). Currently there is no TOML or file-based configuration for Landlock - the config must be set in code when initializing the bash tool.
 
@@ -199,7 +210,7 @@ Check against allowed_paths
 | `ff00::/8` | IPv6 multicast |
 | `::ffff:x.x.x.x` | IPv4-mapped IPv6 |
 
-**Note**: `CANONICAL_PATHS_CACHE` is a static cache that never clears (see `src/security/sandbox.rs:237`). This is a known issue for long-running sessions.
+**Note**: `CANONICAL_PATHS_CACHE` is a static cache with a 300-second TTL and 100-entry cap (see `src/security/sandbox.rs:259-286`). Entries older than 300s are evicted on access; the cache is capped at 100 entries.
 
 ## See Also
 

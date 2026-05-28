@@ -28,7 +28,7 @@ Local transport selection is handled by `--core-transport` or `CODEGG_CORE_TRANS
 ```
 tui/
 ├── app/                    # Main application state
-│   ├── mod.rs              # App struct (6003 lines), event loop, key handling
+│   ├── mod.rs              # App struct (5995 lines), event loop, key handling
 │   ├── types.rs            # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
 │   └── state/              # State domains
 │       ├── agent.rs        # AgentState (models, agents, selection)
@@ -292,6 +292,11 @@ pub trait Component: Send + Any {
     fn is_modal(&self) -> bool { self.dialog_type().is_modal() }
     fn hit_test(&self, rel_y: usize) -> Option<usize> { None }
     fn set_selected(&mut self, idx: usize) {}
+    fn focus_next(&mut self) {}
+    fn focus_prev(&mut self) {}
+    fn focusable_count(&self) -> usize { 1 }
+    fn focused_index(&self) -> usize { 0 }
+    fn set_focused(&mut self, idx: usize) {}
 }
 ```
 
@@ -301,7 +306,7 @@ pub trait Component: Send + Any {
 pub enum DialogType {
     Share, Model, Agent, Session, Help, Tree, Theme, Permission,
     Mcp, Question, Diff, Import, Template, Connect, Keybind,
-    Context, Cost, Usage, Goto, Plan, Confirm, None,
+    Context, Cost, Usage, Stats, Goto, Plan, Confirm, None,
 }
 ```
 
@@ -310,8 +315,9 @@ pub enum DialogType {
 Modal focus handling via stack in `components/component/focus.rs`:
 
 ```rust
-pubruct FocusManager {
+pub struct FocusManager {
     stack: VecDeque<Box<dyn Component>>,
+    focus_index: usize,
 }
 ```
 
@@ -385,7 +391,7 @@ TUI subscribes to `GlobalEventBus` for:
 | `Enter` | Insert | Send prompt |
 | `Shift+Enter` | Insert | Newline in prompt |
 | `Esc`, `Ctrl+C` | Any | Cancel operation |
-| `↑/j`, `↓/k` | Normal | Navigate up/down |
+| `↑/k`, `↓/j` | Normal | Navigate up/down |
 | `Tab` | Normal | Switch agent |
 | `Shift+Tab` | Normal | Toggle permission mode |
 | `Ctrl+L` | Normal | Model selector |

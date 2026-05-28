@@ -143,7 +143,7 @@ Final score = base + frequency_bonus. Only memories with score >= 8.0 are stored
 
 When a new memory on the same topic has higher importance, the old one gets `superseded_by` set (linked, not deleted).
 
-Max 20 active memories per namespace.
+Max 20 active memories per namespace (soft per-consolidation limit -- `consolidate_session()` processes at most 20 scored candidates via `.take(20)`, but the total count can temporarily exceed 20 when adding individual memories).
 
 ### Eviction Policy
 

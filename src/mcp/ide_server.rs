@@ -118,31 +118,6 @@ impl IdeServer {
         Ok(())
     }
 
-    pub async fn run_socket(&self, socket_path: &str) -> Result<(), McpError> {
-        let listener = UnixListener::bind(socket_path)
-            .map_err(|e| McpError::Connection(format!("failed to bind socket: {}", e)))?;
-
-        loop {
-            tokio::select! {
-                biased;
-                _ = self.shutdown_notify.notified() => break,
-                result = listener.accept() => {
-                    match result {
-                        Ok((stream, _)) => {
-                            let server = Arc::new(self.clone_for_connection());
-                            tokio::spawn(async move {
-                                let _ = server.handle_connection(stream).await;
-                            });
-                        }
-                        Err(_) => continue,
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     fn clone_for_connection(&self) -> Self {
         Self {
             tools: self.tools.clone(),

@@ -54,7 +54,8 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 | [config/](config.md) | Configuration loading, validation, file watching | `schema.rs`, `paths.rs`, `watcher.rs` |
 | [core/](core.md) | Core facade, transport adapters, request handling | `mod.rs`, `transport/` |
 | [crypto/](crypto.md) | AES-256-GCM encryption, Argon2id key derivation | `mod.rs` |
-| [git/](git.md) | Git session management, worktree per session | `mod.rs` |
+| [error/](error.md) | Centralized AppError enum with error classification | `mod.rs` |
+| [exec/](exec.md) | Non-interactive exec mode for CI/CD with JSON I/O | `exec.rs` |
 | [hooks/](hooks.md) | Lifecycle hooks for agent events | `mod.rs` |
 | [ide/](ide.md) | VS Code / JetBrains detection and diff viewing | `mod.rs` |
 | [lsp/](lsp.md) | Language Server Protocol support (39 servers) | `server.rs`, `service.rs`, `operations.rs` |
@@ -79,6 +80,8 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 | [util/](util.md) | Clipboard, fuzzy search, pricing, metrics | `mod.rs` |
 | [worktree/](worktree.md) | Git worktree management | `mod.rs` |
 
+**Orphaned module**: `git/` exists at `src/git/mod.rs` but is not declared in `lib.rs` and has no references.
+
 ## Key Types
 
 ### Agent Loop
@@ -98,12 +101,12 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 
 ### Session
 - SQLite storage with WAL mode, 15 migrations
-- Tables: sessions, messages, parts, permissions, todos, usage, snapshots
+- Tables (13): `migration_version`, `project`, `session`, `message`, `part`, `todo`, `permission`, `session_share`, `cached_models`, `task`, `checkpoints`, `snapshot`, `usage`
 
 ### Provider
 - `Provider` trait with `chat()` streaming method
 - `FallbackProvider` with circuit breaker (backoff: `2^i`)
-- Auto-registered: codegg_zen only
+- Auto-registered via env vars (16 providers): anthropic, openai, google, openrouter, codegg_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax, codegg_go
 - Config-only (not auto-registered): SAP AI Core, Zenmux, Kilo, Vercel AI Gateway
 
 ## Verified Counts
@@ -122,27 +125,22 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 | Feature | Description |
 |---------|-------------|
 | `server` | Axum HTTP server, WebSocket TUI |
-| `plugin` | WASM plugin system with wasmtime |
+| `plugins` | WASM plugin system with wasmtime |
 | `image` | Image support via ratatui-image |
+| `arboard` | Clipboard support (default feature) |
+| `debug-logging` | Debug logging output |
 
 ## Database Schema
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ Sessions                                              │
-│ id, created_at, updated_at, title, mode, status      │
-│ metadata (JSON), permission_version, compact_count  │
-├─────────────────────────────────────────────────────┤
-│ Messages                                              │
-│ id, session_id, role, created_at, tool_call_id      │
-│ name, success, error, compact, usage                │
-├─────────────────────────────────────────────────────┤
-│ Parts                                                 │
-│ id, message_id, index, part_type (text/reasoning/   │
-│ tool_call/image/file), content (JSON)               │
-├─────────────────────────────────────────────────────┤
-│ Permissions │ Todos │ Usage │ Snapshots             │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│ Tables (13 total, 15 migrations)                                  │
+├───────────────────────────────────────────────────────────────────┤
+│ migration_version  │ project        │ session        │ message    │
+│ part               │ todo           │ permission     │ session_share │
+│ cached_models      │ task           │ checkpoints    │ snapshot   │
+│ usage              │                                                     │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ## Event Flow

@@ -73,37 +73,9 @@ pub enum CircuitState {
          └─────────┘     └───────────┘
 ```
 
-The `call()` method (circuit.rs:114-127) checks for HalfOpen timeout before executing the operation:
+The `call()` method (circuit.rs:101-137) checks for HalfOpen timeout before executing the operation:
 - If `max_half_open_duration` (30s default) elapses while in HalfOpen state, transitions to Open and returns `CircuitError::Open`
 - This ensures the circuit doesn't stay in HalfOpen indefinitely when the underlying service remains unavailable
-            failure_threshold exceeded
-     ┌─────────────────────────────────────┐
-     ▼                                     │
- ┌─────────┐                              │
- │ Closed  │──────────────────────────────►│
- │ (normal)│◄──────────────────────────────│
- └─────────┘     success in HalfOpen      │
-     ▲                ▲                    │
-     │                │                    │
-     │ recovery_timeout elapsed           │
-     │                │                    │
-     └────────┬───────┘                    │
-              │                            │
-              │ failure                    │
-              ▼                            │
-         ┌─────────┐                       │
-         │  Open   │───────────────────────┘
-         │(reject) │          │
-         └─────────┘          │
-              ▲                │ timeout after max_half_open_duration
-              │                │ (HalfOpen → Open)
-              │ failure        │
-              │                ▼
-         ┌─────────┐     ┌───────────┐
-         │ HalfOpen │────►│   Open    │
-         │(testing)│     │ (reject)  │
-         └─────────┘     └───────────┘
-```
 
 ### is_available() Implementation
 

@@ -99,7 +99,14 @@ The TTS module has **no configuration integration**. There is no `[tts]` config 
 - TTS enabled state is managed in-memory in the UI layer (`tts_enabled` in `UiState`)
 - No config options for voice, rate, or provider selection
 
-## Usage
+## TUI Integration
+
+TTS is integrated into the TUI with the following behaviors:
+
+- **Auto-stop on AgentFinished**: When the agent finishes a turn, the TUI automatically calls `tts.stop()` if TTS is currently speaking (prevents leftover speech from a completed turn).
+- **Toggle via `/tts` command**: The `/tts` slash command (alias: `/voice`) toggles TTS on/off. When enabled, it speaks the currently selected message text. When disabled, it stops playback.
+- **Keybindings**: `Ctrl+Y` toggles TTS, `Ctrl+Shift+Y` stops TTS playback.
+- **State management**: TTS enabled state is tracked in `UiState.tts_enabled` and the `Tts` instance lives in `UiState.tts`.
 
 ```rust
 let tts = Tts::new();

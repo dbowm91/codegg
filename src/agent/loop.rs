@@ -781,10 +781,6 @@ impl AgentLoop {
         self.follow_up_tx.clone()
     }
 
-    pub fn setup_question_channel(&mut self) {
-        self.setup_question_channel_impl(false);
-    }
-
     pub fn setup_question_channel_for_exec(&mut self) {
         self.setup_question_channel_impl(true);
     }

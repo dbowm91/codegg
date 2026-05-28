@@ -72,7 +72,7 @@ impl ProviderCache {
         );
     }
 
-    pub fn clear(&self) {
+    pub fn evict_expired(&self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

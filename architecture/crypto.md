@@ -46,7 +46,7 @@ pub fn decrypt_from_string(encrypted_str: &str, password: &str) -> Result<String
 
 ### EncryptedData Struct
 
-The `EncryptedData` struct is not `pub` (internal to crypto module), but its fields are `pub` to allow construction and access where needed:
+The `EncryptedData` struct is `pub` (visible outside the crypto module), and its fields are `pub`:
 
 ```rust
 pub struct EncryptedData {

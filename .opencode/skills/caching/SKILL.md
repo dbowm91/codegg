@@ -120,5 +120,5 @@ pub struct ProviderConfig {
 
 | File | Purpose |
 |------|---------|
-| `src/provider/cache.rs` | `ProviderCache` struct with get/put/clear methods |
+| `src/provider/cache.rs` | `ProviderCache` struct with get/put/evict_expired methods |
 | `src/provider/mod.rs` | Provider trait and registry - cache integration needed here |

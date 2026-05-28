@@ -359,8 +359,12 @@ Primary store for session CRUD operations.
 | `create(CreateSession) -> Session` | Create new session with auto-generated slug |
 | `get(&str) -> Option<Session>` | Get session by ID |
 | `list(project_id, limit) -> Vec<Session>` | List active sessions (non-archived, non-deleted) |
-| `list_with_offset(...)` | Paginated session listing |
-| `list_all(project_id, limit)` | List all non-deleted sessions |
+| `list_with_offset(project_id, limit, offset) -> Vec<Session>` | Paginated session listing |
+| `list_all(project_id, limit: Option<usize>) -> Vec<Session>` | List all non-deleted sessions |
+| `list_all_with_offset(project_id, limit, offset) -> Vec<Session>` | Paginated listing of all non-deleted sessions |
+| `list_deleted(project_id) -> Vec<Session>` | List soft-deleted sessions (time_deleted IS NOT NULL) |
+| `create_from_template(template, project_id, directory) -> Session` | Create session from a SessionTemplate |
+| `set_tags(id, tags) -> Session` | Set tags on a session |
 | `session_count(project_id) -> usize` | Count active sessions |
 | `message_count(session_id) -> usize` | Count messages in session |
 | `message_counts(session_ids) -> HashMap` | Batch message count |

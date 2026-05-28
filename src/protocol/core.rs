@@ -184,6 +184,7 @@ pub enum CoreEvent {
         project_dir: String,
     },
     SnapshotModels {
+        #[serde(skip_serializing_if = "Option::is_none")]
         current_model: Option<String>,
         models: Vec<String>,
     },
@@ -203,6 +204,7 @@ pub enum CoreEvent {
     },
     ToolStarted {
         session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         tool_name: String,
         tool_id: String,
@@ -210,6 +212,7 @@ pub enum CoreEvent {
     },
     ToolCompleted {
         session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         tool_id: String,
         output: String,
@@ -218,6 +221,7 @@ pub enum CoreEvent {
     PermissionPending {
         id: String,
         tool: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
     QuestionPending {
@@ -231,6 +235,7 @@ pub enum CoreEvent {
     },
     TurnFailed {
         session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         message: String,
     },

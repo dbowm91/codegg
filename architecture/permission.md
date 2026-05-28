@@ -120,7 +120,7 @@ The following permission types are defined in `src/permission/mod.rs:70-87`:
 
 ## PermissionChecker
 
-Main enforcement point located at `src/permission/mod.rs:392-421`:
+Main enforcement point located at `src/permission/mod.rs:418-428`:
 
 ```rust
 pub struct PermissionChecker {
@@ -138,7 +138,7 @@ pub struct PermissionChecker {
 
 ### Check Flow
 
-The `check()` method at lines 443-520 evaluates permissions in this order:
+The `check()` method at lines 469-546 evaluates permissions in this order:
 
 1. **Check PermissionStore** (cached HMAC-verified decisions)
    - Per-session decisions checked first
@@ -228,26 +228,27 @@ fn compute_signature(
 
 ## DoomLoopDetector
 
-Located at `src/permission/mod.rs:1161-1229`, detects when an agent gets stuck in repetitive tool calls:
+Located at `src/permission/mod.rs:1181-1257`, detects when an agent gets stuck in repetitive tool calls:
 
 ### Algorithm
 
 ```
 1. Maintain a sliding window of recent tool calls (up to max_window, capped at 1000)
 2. Use HashMap for O(1) count lookups
-3. Consider it a doom loop when the most recent tool appears threshold times anywhere in window
+3. Each entry is keyed by "tool_name:hash(tool_name + arguments)" (per-tool+args, not per-tool)
+4. Consider it a doom loop when the most recent key appears threshold times anywhere in window
 ```
 
 ### Implementation Details
 
 - **Time complexity**: O(1) for both `record_tool_call()` and `is_doom_loop()`
 - **Window enforcement**: When window is full, oldest entry is evicted and count decremented
-- **Normalization**: Tool names are lowercased and_trimmed for comparison
+- **Normalization**: Tool names are lowercased and trimmed for comparison
 - **Limits**: 
   - `max_window` capped at 1000
   - `threshold` capped at 100, minimum 1
 
-### Detection Logic (lines 1213-1223)
+### Detection Logic (lines 1229-1242)
 
 ```rust
 pub fn is_doom_loop(&self) -> bool {
@@ -255,15 +256,15 @@ pub fn is_doom_loop(&self) -> bool {
         return false;
     }
 
-    let Some(last_tool) = self.history.back() else {
+    let Some(last_key) = self.history.back() else {
         return false;
     };
 
-    self.counts.get(last_tool).map(|&c| c >= self.threshold).unwrap_or(false)
+    self.counts.get(last_key).map(|&c| c >= self.threshold).unwrap_or(false)
 }
 ```
 
-**Important**: Detection is NOT consecutive - it checks if the **most recently added** tool has been called `threshold` or more times anywhere in the window.
+**Important**: Detection is NOT consecutive - it checks if the **most recently added** key (which includes both tool name and arguments) has been called `threshold` or more times anywhere in the window.
 
 ### Agent Integration
 
@@ -398,11 +399,11 @@ impl PermissionRegistry {
     pub fn unregister(perm_id: &str);
     pub fn is_registered(perm_id: &str) -> bool;
     pub fn pending_permission_ids() -> Vec<String>;
-    fn cleanup();  // Removes entries older than 300s
+    fn cleanup();  // Removes entries older than 310s
 }
 ```
 
-**Important**: All methods are synchronous (`fn`), NOT `async fn`. TTL of 300s for entries.
+**Important**: All methods are synchronous (`fn`), NOT `async fn`. TTL of 310s for entries.
 
 ### Permission ID Format
 
@@ -468,7 +469,7 @@ Security utility that checks if a path is within a project root directory. Retur
 
 ## Default Ruleset
 
-The `default_ruleset()` function at lines 999-1056 provides baseline permissions:
+The `default_ruleset()` function at lines 1025-1082 provides baseline permissions:
 
 **Allowed tools** (no prompting):
 - `read`, `glob`, `grep`, `list`, `question`, `webfetch`, `websearch`, `codesearch`
@@ -487,8 +488,7 @@ The `default_ruleset()` function at lines 999-1056 provides baseline permissions
 | Issue | Location | Impact |
 |-------|----------|--------|
 | Session filtering not possible | `PermissionRegistry` key format | `get_pending_permissions_for_session()` cannot filter |
-| PermissionResponse unused | `src/permission/mod.rs:1141-1145` | Internal type not wired to any consumer |
-| check_external_directory unused | `src/permission/mod.rs:1237-1248` | Marked #[allow(dead_code)] |
+| check_external_directory unused | `src/permission/mod.rs:1265-1276` | Marked #[allow(dead_code)] |
 
 ## See Also
 

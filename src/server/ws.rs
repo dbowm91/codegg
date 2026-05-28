@@ -354,7 +354,6 @@ async fn handle_rpc_request(
     }
 }
 
-#[allow(dead_code)]
 pub async fn handle_tui(
     ws: WebSocketUpgrade,
     State(state): State<crate::server::state::ServerState>,

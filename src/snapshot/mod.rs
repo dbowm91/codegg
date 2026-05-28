@@ -65,14 +65,18 @@ impl SnapshotManager {
     }
 
     pub fn new_with_options(pool: SqlitePool, project_root: PathBuf, options: SnapshotOptions) -> Self {
+        let mut options = options;
         if options.max_files == 0 {
-            tracing::warn!("SnapshotOptions: max_files is 0, setting to 1");
+            tracing::warn!("SnapshotOptions: max_files is 0, clamping to 1");
+            options.max_files = 1;
         }
         if options.max_file_bytes == 0 {
-            tracing::warn!("SnapshotOptions: max_file_bytes is 0, setting to 1");
+            tracing::warn!("SnapshotOptions: max_file_bytes is 0, clamping to 1");
+            options.max_file_bytes = 1;
         }
         if options.max_total_bytes == 0 {
-            tracing::warn!("SnapshotOptions: max_total_bytes is 0, setting to 1");
+            tracing::warn!("SnapshotOptions: max_total_bytes is 0, clamping to 1");
+            options.max_total_bytes = 1;
         }
         Self {
             pool,

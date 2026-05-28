@@ -52,11 +52,20 @@ pub struct AgentLoop {
     context_tracker: ContextTracker,           // Token usage monitoring
     doom_detector: DoomLoopDetector,          // Repetitive tool call detection
     steering: AtomicBool,                     // User interruption signal
-    follow_up_tx/rx: mpsc::UnboundedChannel,  // Follow-up prompt queue
+    follow_up_tx: mpsc::UnboundedSender<String>,  // Follow-up prompt sender
+    follow_up_rx: mpsc::UnboundedReceiver<String>, // Follow-up prompt receiver
+    config: Config,                           // App configuration
+    question_tx: Option<oneshot::Sender<String>>,  // Question response sender
+    question_rx: Option<oneshot::Receiver<String>>, // Question response receiver
     plugin_service: Option<Arc<PluginService>>, // WASM plugin hooks
+    session_id: String,                       // Current session ID
+    mcp_service: Option<Arc<RwLock<McpService>>>, // MCP client service
+    tool_def_cache: Option<ToolDefCache>,     // Cached tool definitions
     model_router: ModelRouter,                // Auto-routing
     snapshot_manager: Option<SnapshotManager>, // File state snapshots
-    // ...
+    file_change_rx: broadcast::Receiver<AppEvent>, // File change events
+    usage_store: Option<Arc<UsageStore>>,     // Token usage tracking
+    pricing_service: PricingService,          // Cost calculation
 }
 ```
 
@@ -670,7 +679,12 @@ pub fn select_provider_prompt(model_id: &str) -> &'static str {
 
 ### Instruction File Loading
 
-Looks for instruction files in order:
+Primary instruction files (via `INSTRUCTION_FILES` constant):
+1. `AGENTS.md`
+2. `CLAUDE.md`
+3. `CONTEXT.md`
+
+Secondary/fallback paths (via `find_instructions_file()`):
 1. `.codegg/instructions.md` (project)
 2. `INSTRUCTIONS.md` (project root)
 3. `~/.config/codegg/instructions.md` (global)

@@ -22,13 +22,14 @@ MCP (Model Context Protocol) allows external tools and resources to be exposed t
 ### McpClientType (in `mod.rs`)
 
 ```rust
+#[derive(Clone)]
 pub enum McpClientType {
     Local(Arc<RwLock<LocalClient>>),
     Remote(Arc<RwLock<McpConnectionManager>>),
 }
 ```
 
-Note: `Local` and `Remote` variants wrap Arc<RwLock> to allow shared access across the application.
+Note: Only `#[derive(Clone)]` is used (no Debug, Serialize, or Deserialize). `Local` and `Remote` variants wrap Arc<RwLock> to allow shared access across the application.
 
 ## Key Components
 
@@ -92,16 +93,18 @@ pub struct RemoteClient {
     url: String,
     headers: HashMap<String, String>,
     client: reqwest::Client,
-    session_id: Mutex<Option<String>>,
-    sse_url: Mutex<Option<String>>,
-    oauth_token: Mutex<Option<String>>,
+    session_id: Arc<Mutex<Option<String>>>,
+    sse_url: Arc<Mutex<Option<String>>>,
+    oauth_token: Arc<Mutex<Option<String>>>,
     sse_events: Arc<Mutex<Vec<serde_json::Value>>>,
-    request_id: AtomicU64,
+    request_id: Arc<AtomicU64>,
     shutdown: Arc<Mutex<bool>>,
     sse_shutdown: Arc<Notify>,
-    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,  // Arc<Mutex<...>> for Clone semantics
+    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,
 }
 ```
+
+Note: `session_id`, `sse_url`, `oauth_token` all use `Arc<Mutex<Option<String>>>` (not bare `Mutex`). `request_id` uses `Arc<AtomicU64>` (not bare `AtomicU64`). This enables `Clone` semantics for the `RemoteClient`.
 
 **Auto-reconnect wrapper:**
 
@@ -135,7 +138,7 @@ pub enum ConnectionState {
 - DNS rebinding protection (IP re-validation on each request)
 - SSE (Server-Sent Events) support for server-initiated messages
 - Exponential backoff: 1s → 2s → 4s → ... → max 60s
-- Max 5 retry attempts before giving up
+- Max 5 retry attempts before giving up (`max_retries: 5`, checked via `>=` so attempts 0-3 are allowed, yielding 4 actual reconnection attempts)
 - Heartbeat every 30s to keep connection alive
 - `ensure_connected()` spawns reconnection in background task when disconnected
 

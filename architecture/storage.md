@@ -36,14 +36,14 @@ impl Database {
 
 ```rust
 pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError> {
-    let database = Database::new(db_path).await?;
-
-    // Run migrations
-    session::schema::migrate(&database.pool).await?;
-
-    Ok(database)
+    let db_path = get_db_path(project_dir);
+    // ... directory creation and permission checks ...
+    let pool = connect_and_configure(&db_path_str).await?;
+    Ok(pool)
 }
 ```
+
+Note: `init()` calls `connect_and_configure()` directly and returns a bare `SqlitePool` (not a `Database` struct). The `Database` struct is a separate wrapper used when you need `health_check()` or `migrate()` methods.
 
 **Path Resolution**:
 - If `project_dir` is non-empty: `{project_dir}/.codegg/sessions.db`
@@ -116,7 +116,7 @@ Migration versions v1-v15 are supported, covering:
 - v12: session.time_deleted column
 - v13: snapshot table
 - v14: task.allowed_paths column
-- v15: Additional fields
+- v15: Creates `usage` table for token/cost tracking
 
 ## See Also
 

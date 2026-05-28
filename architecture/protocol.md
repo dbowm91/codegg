@@ -155,9 +155,9 @@ pub enum CoreEvent { ... }
 - `TurnTextDelta { session_id, turn_id, delta }` - Text delta
 - `TurnReasoningDelta { session_id, turn_id, delta }` - Reasoning delta
 - `TurnCompleted { session_id, turn_id, stop_reason }` - Turn completed
-- `TurnFailed { session_id, turn_id, message }` - Turn failed
-- `ToolStarted { session_id, turn_id, tool_name, tool_id, arguments }` - Tool started
-- `ToolCompleted { session_id, turn_id, tool_id, output, success }` - Tool completed
+- `TurnFailed { session_id, turn_id, message }` - Turn failed (turn_id is `Option<String>`)
+- `ToolStarted { session_id, turn_id, tool_name, tool_id, arguments }` - Tool started (turn_id is `Option<String>`)
+- `ToolCompleted { session_id, turn_id, tool_id, output, success }` - Tool completed (turn_id is `Option<String>`)
 
 ### Permission/Question Events (2)
 - `PermissionPending { id, tool, path }` - Permission pending
@@ -214,8 +214,7 @@ pub enum TuiMessage { ... }
 | `ToolResult` | `tool_id, output, success` | Tool result |
 | `Error` | `message` | Error message |
 
-### Special (2)
-- `EventEnvelope { event_seq, payload }` - Wrapped event
+### Special (1)
 - `ResyncRequired { reason, pending_permissions, pending_questions }` - Resync needed
 
 ### QuestionSpec

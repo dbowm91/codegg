@@ -6,7 +6,7 @@ The provider module (`src/provider/`) provides the interface and implementations
 
 ## Provider Trait and Core Types
 
-### Provider Trait (`src/provider/mod.rs:60-73`)
+### Provider Trait (`src/provider/mod.rs:74-87`)
 
 ```rust
 #[async_trait]
@@ -34,7 +34,7 @@ Key methods:
 - `discover_models()` - Override point for dynamic model discovery (default calls `models()`)
 - `ping()` - Health check (default implementation calls `models()`)
 
-### ChatRequest (`src/provider/mod.rs:97-109`)
+### ChatRequest (`src/provider/mod.rs:111-123`)
 
 ```rust
 pub struct ChatRequest {
@@ -51,7 +51,7 @@ pub struct ChatRequest {
 }
 ```
 
-### Message Types (`src/provider/mod.rs:111-128`)
+### Message Types (`src/provider/mod.rs:125-142`)
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +64,7 @@ pub enum Message {
 }
 ```
 
-### ContentPart (`src/provider/mod.rs:130-135`)
+### ContentPart (`src/provider/mod.rs:144-149`)
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,7 +75,7 @@ pub enum ContentPart {
 }
 ```
 
-### ChatEvent (`src/provider/mod.rs:142-156`)
+### ChatEvent (`src/provider/mod.rs:156-170`)
 
 The streaming response is a stream of `ChatEvent` values:
 
@@ -96,7 +96,7 @@ pub enum ChatEvent {
 }
 ```
 
-### ModelInfo (`src/provider/mod.rs:222-232`)
+### ModelInfo (`src/provider/mod.rs:236-246`)
 
 ```rust
 pub struct ModelInfo {
@@ -111,7 +111,7 @@ pub struct ModelInfo {
 }
 ```
 
-### ModelVariant (`src/provider/mod.rs:212-220`)
+### ModelVariant (`src/provider/mod.rs:226-234`)
 
 ```rust
 pub struct ModelVariant {
@@ -123,7 +123,7 @@ pub struct ModelVariant {
 }
 ```
 
-### TokenUsage (`src/provider/mod.rs:175-182`)
+### TokenUsage (`src/provider/mod.rs:189-196`)
 
 ```rust
 pub struct TokenUsage {
@@ -135,7 +135,7 @@ pub struct TokenUsage {
 }
 ```
 
-### ToolDefinition (`src/provider/mod.rs:184-210`)
+### ToolDefinition (`src/provider/mod.rs:198-224`)
 
 ```rust
 pub struct ToolDefinition {
@@ -155,7 +155,7 @@ Methods for converting to provider-specific formats:
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<ChatEvent, ProviderError>> + Send>>;
 ```
 
-## ProviderRegistry (`src/provider/mod.rs:234-263`)
+## ProviderRegistry (`src/provider/mod.rs:248-277`)
 
 The registry manages all available providers:
 
@@ -174,9 +174,9 @@ impl ProviderRegistry {
 
 ### Registration Functions
 
-#### `register_builtin()` (`src/provider/mod.rs:265-312`)
+#### `register_builtin()` (`src/provider/mod.rs:279-326`)
 
-Registers providers based on environment variables. Providers are only registered if the corresponding API key environment variable is set.
+Registers 15 providers based on environment variables. Each provider is only registered if the corresponding API key environment variable is set. Providers are independent - adding one via config does NOT disable others; each provider checks its own config key.
 
 | Environment Variable | Provider |
 |---------------------|----------|
@@ -196,16 +196,15 @@ Registers providers based on environment variables. Providers are only registere
 | `VENICE_API_KEY` | Venice |
 | `MINIMAX_API_KEY` | MiniMax |
 
-#### `register_builtin_with_config()` (`src/provider/mod.rs:376-523`)
+#### `register_builtin_with_config()` (`src/provider/mod.rs:390-537`)
 
-Registers providers from config file, with fallback to environment variables. This function:
+Registers 16 providers from config file, with fallback to environment variables. This function:
 
-1. Checks config for provider settings (api_key, base_url)
-2. Falls back to environment variables if not in config
-3. Registers only `codegg_go` as auto-registered via `register_builtin()` (see AGENTS.md)
-4. Only calls `register_builtin()` if registry is empty after config-based registration
+1. Registers 16 providers: the same 15 as `register_builtin()` plus `codegg_go`, each checking config first then env var
+2. **Per-provider independence**: Each provider is checked independently against the config map. Adding one provider (e.g., `anthropic`) via config does NOT suppress or disable other providers that fall back to env vars. This is a per-provider fallback, not a global toggle.
+3. Only calls `register_builtin()` if registry is still empty after config-based registration
 
-Key distinction: Only `codegg_go` is auto-registered via `register_builtin()`. All others (SAP AI Core, Zenmux, Kilo, Vercel AI Gateway) are config-only, NOT auto-registered.
+Config-only providers (SAP AI Core, Zenmux, Kilo, Vercel AI Gateway) are NOT auto-registered - they require explicit config entries.
 
 ## Provider Implementations
 
@@ -517,7 +516,7 @@ pub struct ProviderCache {
 
 - Key: `(provider, model, input_hash)`
 - TTL per entry
-- `clear()` method to remove expired entries
+- `evict_expired()` method to remove expired entries
 
 ## SSE Parsing (`src/provider/sse_parser.rs`)
 
@@ -620,25 +619,20 @@ pub fn create_http_client() -> reqwest::Client {
 
 ## Provider Auto-Registration Summary
 
-### Auto-Registered (via `register_builtin()`)
-Only **`codegg_go`** is auto-registered. All others require either:
-- Environment variable presence
-- Config file entry
+### Auto-Registered via Environment Variables (`register_builtin()`)
+These 15 providers register automatically if their env var is set (no config needed):
+- anthropic, openai, google, openrouter, codegg_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax
+
+### Config + Env Var Fallback (`register_builtin_with_config()`)
+16 providers check config first, then fall back to env vars. Includes all 15 above plus `codegg_go`. Providers are independent - adding one via config does NOT disable others.
 
 ### Config-Only Providers (NOT auto-registered)
-These require explicit config:
-- SAP AI Core
-- Zenmux
-- Kilo
-- Vercel AI Gateway
-
-### Environment Variable Fallback Providers
-The following can be registered via environment variable OR config:
-- anthropic, openai, google, openrouter, codegg_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax
+These require explicit config entries and have no env var fallback:
+- SAP AI Core, Zenmux, Kilo, Vercel AI Gateway
 
 ## Error Handling
 
-### ProviderError (`src/error/mod.rs` - ProviderError variant)
+### ProviderError (`src/error.rs` - ProviderError variant)
 
 Key methods:
 - `is_retryable()` - Determines if error should trigger fallback/retry

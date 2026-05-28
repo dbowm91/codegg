@@ -696,50 +696,6 @@ impl RemoteClient {
         self.initialize().await
     }
 
-    pub async fn connect_sse(&self) -> Result<(), McpError> {
-        let sse_url = self
-            .sse_url
-            .lock()
-            .await
-            .clone()
-            .ok_or_else(|| McpError::Connection("no SSE endpoint available".into()))?;
-
-        let mut request = self.client.get(&sse_url);
-
-        for (k, v) in &self.headers {
-            if v.contains('\r') || v.contains('\n') {
-                return Err(McpError::Server(
-                    "header value contains invalid characters".into(),
-                ));
-            }
-            request = request.header(k, v);
-        }
-
-        if let Some(ref token) = *self.oauth_token.lock().await {
-            request = request.header("Authorization", format!("Bearer {token}"));
-        }
-
-        if let Some(ref session_id) = *self.session_id.lock().await {
-            request = request.header("Mcp-Session-Id", session_id);
-        }
-
-        request = request.header("Accept", "text/event-stream");
-
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| McpError::Connection(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            return Err(McpError::Connection(format!(
-                "SSE connection failed: HTTP {}",
-                resp.status()
-            )));
-        }
-
-        self.connect_sse_stream(resp).await
-    }
-
     pub async fn shutdown(&self) {
         *self.shutdown.lock().await = true;
         self.sse_shutdown.notify_one();

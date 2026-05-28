@@ -11,7 +11,7 @@ The `skills` module provides specialized capabilities activated via `/skill:` co
 - Skill activation via `/skill:<name>` commands
 - System prompt augmentation with skill content
 
-The repository also keeps agent-facing skill docs in `.skills/` for maintenance. Those files should stay aligned with the runtime loader semantics documented below.
+The `.skills/` directory at the repository root is a repo-maintained copy of agent-facing skill documentation. It mirrors the skill files that the runtime loader reads from `~/.config/codegg/skills/` (global) and `.codegg/skills/` (project). The runtime `SkillIndex::load()` loads from the global and project directories, not from `.skills/`. The `.skills/` directory exists for version-controlled documentation and is not directly consumed by the runtime skill loader.
 
 ## Key Types
 

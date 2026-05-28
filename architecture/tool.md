@@ -103,7 +103,7 @@ pub struct ToolResult {
 | Tool | File | Description |
 |------|------|-------------|
 | **review** | `review.rs` | Analyze git diff and provide structured code review feedback using LLM. Uses emojis for categorization (bug, performance, style, suggestion). |
-| **lsp** | `lsp.rs` | Query LSP server for code intelligence (defined in `src/tool/lsp.rs`, not a built-in registry tool) |
+| **lsp** | `lsp.rs` | Query LSP server for code intelligence (defined in `src/tool/lsp.rs`, registered in `with_defaults()` at lines 113-115) |
 
 ### Meta Operations
 
@@ -165,6 +165,7 @@ pub fn with_defaults() -> Self {
     registry.register(crate::tool::task::TaskTool::default());
     registry.register(crate::tool::webfetch::WebFetchTool::default());
     registry.register(crate::tool::websearch::WebSearchTool::default());
+    registry.register(crate::tool::image::ImageTool::default());
     registry.register(crate::tool::codesearch::CodeSearchTool);
     registry.register(crate::tool::question::QuestionTool);
     registry.register(crate::tool::todo::TodoTool::default());
@@ -176,6 +177,9 @@ pub fn with_defaults() -> Self {
     registry.register(crate::tool::batch::BatchTool::default());
     registry.register(crate::tool::terminal::TerminalTool::default());
     registry.register(crate::tool::git::GitTool::default());
+    registry.register(crate::tool::lsp::LspTool::new(Arc::new(
+        crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default()),
+    )));
     registry.register(crate::tool::commit::CommitTool::new());
     registry.register(crate::tool::plan::PlanEnterTool);
     registry.register(crate::tool::plan::PlanExitTool);
@@ -187,7 +191,7 @@ pub fn with_defaults() -> Self {
 }
 ```
 
-Note: ImageTool is NOT in with_defaults() - it's registered separately when needed via provider configuration.
+Note: ImageTool IS registered in `with_defaults()` at line 102.
 
 ## ToolCatalog
 
@@ -324,7 +328,7 @@ pub fn check_path_for_symlinks(path: &Path) -> Result<(), ToolError> {
 
 ## ToolError
 
-Defined in `src/error/mod.rs`, used by all tools:
+Defined in `src/error.rs`, used by all tools:
 
 ```rust
 pub enum ToolError {
@@ -353,26 +357,6 @@ impl ToolError {
 }
 ```
 
-## ToolExecutor (DEPRECATED)
-
-Located at `src/tool/executor.rs:8-58`, this struct provides retry logic but is **not currently integrated**:
-
-```rust
-#[deprecated(since = "2026-05-27", note = "Not integrated - architectural mismatch with ToolRegistry")]
-pub struct ToolExecutor {
-    max_attempts: usize,
-    base_delay: Duration,
-    max_delay: Duration,
-}
-```
-
-Features:
-- Exponential backoff: `2^i` multiplier
-- Jitter: adds `capped_ms / 2` random delay
-- Retryable errors: Io, Network, Timeout
-
-**Status**: Deprecated and unused. The retry functionality exists but is not wired into the tool execution flow.
-
 ## Security Considerations
 
 1. **Tool path validation**: All file paths validated before access
@@ -392,7 +376,6 @@ src/tool/
 ├── mod.rs          # Tool trait, ToolRegistry, with_defaults() (27 tools)
 ├── catalog.rs      # ToolCatalog for metadata and search
 ├── util.rs         # Path validation helpers
-├── executor.rs     # DEPRECATED ToolExecutor with retry logic
 ├── bash.rs         # Shell command execution
 ├── read.rs         # File reading with image/PDF base64 support
 ├── write.rs        # File writing with auto-formatting

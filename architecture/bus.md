@@ -123,7 +123,7 @@ Example: `"call_abc123-write"`
 
 **Important Limitation**: The key does NOT include `session_id`. This means `get_pending_permissions_for_session()` cannot properly filter by session.
 
-**TTL**: 300 seconds (5 minutes), cleanup runs on each `register()` call.
+**TTL**: 310 seconds (5 minutes 10 seconds), cleanup runs on each `register()` call.
 
 **Registration Pattern**:
 ```rust
@@ -143,7 +143,7 @@ GlobalEventBus::publish(AppEvent::PermissionPending {
     args: req.args.clone(),
 });
 
-// 4. Wait for response with timeout
+// 4. Wait for response with timeout (agent loop waits 300s; registry TTL is 310s)
 let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await {
     Ok(Ok(choice)) => choice,
     _ => PermissionChoice::DenyOnce,  // timeout defaults to deny
@@ -194,7 +194,7 @@ impl QuestionRegistry {
 
 **Important Limitation**: The key does NOT include additional context. This means `get_pending_questions_for_session()` cannot properly filter when multiple questions are pending for the same session.
 
-**TTL**: 300 seconds (5 minutes), cleanup runs on each `register()` call.
+**TTL**: 310 seconds (5 minutes 10 seconds), cleanup runs on each `register()` call.
 
 **Registration Pattern**:
 ```rust
@@ -331,11 +331,11 @@ pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>>
 
 ## TTL Behavior
 
-Both registries auto-expire entries after 300 seconds (5 minutes):
+Both registries auto-expire entries after 310 seconds (5 minutes 10 seconds):
 
 ```rust
 fn cleanup() {
-    let ttl = Duration::from_secs(300);
+    let ttl = Duration::from_secs(310);
     PERMISSION_REGISTRY
         .senders
         .retain(|_, (_, created)| created.elapsed() < ttl);
@@ -352,7 +352,7 @@ Cleanup is called on each `register()` operation. This prevents stale entries fr
 
 3. **Registry Keys Lack Session ID**: Permission IDs are `"{tool_call_id}-{tool_name}"` and question IDs are just `session_id`. Neither contains enough information to filter by session in multi-session scenarios.
 
-4. **Timeout Handling**: Permission and question waits have 300-second timeouts. On timeout, the operation defaults to deny/empty response.
+4. **Timeout Handling**: The agent loop waits up to 300 seconds for a permission/question response (separate from the 310-second registry TTL). On timeout, the operation defaults to deny/empty response.
 
 5. **Unregister After Response**: Always call `unregister()` after receiving a response or after a timeout to prevent memory leaks.
 

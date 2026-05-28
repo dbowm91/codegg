@@ -91,6 +91,57 @@ pub mod inner {
 
 **Note**: `metrics.rs` contains metrics infrastructure (counters, gauges, histograms), not file statistics as the misleading filename might suggest.
 
+**Histogram bound**: The `Histogram` keeps a bounded buffer of at most 1000 entries (uses `VecDeque` with `pop_front()` when length exceeds 1000). This prevents unbounded memory growth.
+
+### pricing.rs
+
+LLM API cost calculation based on token usage.
+
+```rust
+pub struct ModelPricing {
+    pub input_per_m: f64,    // Price per million input tokens (USD)
+    pub output_per_m: f64,   // Price per million output tokens (USD)
+    pub cached_discount: f64, // Discount factor for cached tokens (0.0=no discount, 1.0=free)
+}
+
+pub struct PricingService {
+    rates: HashMap<String, ModelPricing>,
+}
+
+impl PricingService {
+    pub fn new() -> Self;
+    pub fn calculate_cost(&self, provider: &str, model: &str, input_tokens: i64, output_tokens: i64, cached_tokens: i64) -> f64;
+}
+```
+
+- `calculate_cost()` returns cost in USD (0.0 if model not found in pricing table)
+- Pricing lookup is by `"{provider}/{model}"` key (e.g., `"openai/gpt-4o"`)
+- Covers OpenAI, Anthropic, Google, and MiniMax providers
+- Cached tokens receive a discount based on `cached_discount` factor
+
+### interner.rs
+
+Thread-safe string interning for reducing memory allocation of repeated strings.
+
+```rust
+pub struct StringInterner {
+    map: DashMap<Arc<str>, Arc<str>>,
+}
+
+impl StringInterner {
+    pub fn new() -> Self;
+    pub fn intern(&self, s: &str) -> Arc<str>;
+    pub fn intern_string(&self, s: String) -> Arc<str>;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+}
+
+pub fn tool_interner() -> &'static StringInterner;
+```
+
+- `tool_interner()` returns a global `LazyLock<StringInterner>` used for interning tool names and identifiers
+- `intern()` deduplicates strings via `DashMap` (concurrent hash map), returning `Arc<str>` references
+
 ## Usage Examples
 
 ```rust

@@ -93,15 +93,22 @@ The method checks environment variables first (e.g., `ANTHROPIC_API_KEY`), then 
 
 ### ProviderConfig merge() behavior
 
-`ProviderConfig` has a `merge()` method for field-level merging. Unlike HashMap fields which use full replace, `ProviderConfig::merge()` performs **field-by-field merging**: non-None fields from the override config replace the corresponding fields in the base config.
+`ProviderConfig` has a `merge()` method for field-level merging. Unlike HashMap fields which use key replacement, `ProviderConfig::merge()` performs **field-by-field merging**: non-None fields from the override config replace the corresponding fields in the base config.
 
 ```rust
-pub fn merge(&self, other: &ProviderConfig) -> ProviderConfig
+pub fn merge(&mut self, other: &ProviderConfig)
 ```
 
 Example: If global config has `api_key` and project config has `base_url`, the merged result has both.
 
-**Note**: This is different from HashMap-based fields (agents, mcp, commands, modes) which use full replacement when the key exists in the later config.
+### merge_configs() behavior
+
+`merge_configs()` at `src/config/paths.rs:164-284` uses different merge strategies per field type:
+
+- **Field-by-field merging**: `provider` (via `ProviderConfig::merge()`), `server` (via `ServerConfig::merge()`), `watcher` (manual field merge)
+- **Key replacement**: `agent`, `mcp`, `commands`, `mode` (insert overwrites existing keys)
+- **Concatenation**: `instructions` (appended to list)
+- **Simple override**: all other fields via `merge_option!` macro (schema, version, log_level, model, small_model, medium_model, auto_route_models, default_agent, username, share, autoupdate, disabled_providers, enabled_providers, permission, compaction, subagent, skills, templates, layout, tools, formatter, lsp, snapshot, snapshot_config, plugin, enterprise, experimental, keybinds, vim_mode, hooks, notifications, catalog)
 
 ## Components
 
@@ -123,7 +130,7 @@ Key functions:
 - `resolve_config_paths()` - Collects all config file paths
 - `load_config()` - Parses a single config file
 - `parse_config()` - JSONC comment stripping + JSON5 parsing
-- `merge_configs()` - Combines multiple configs (HashMap fields use full replace for agents/mcp/commands/modes)
+- `merge_configs()` - Combines multiple configs (strategies vary: field-by-field for provider/server/watcher, key replacement for agents/mcp/commands/mode, concatenation for instructions)
 - `interpolate_env_vars()` - Expands `${VAR_NAME}` syntax
 
 ### watcher.rs - Hot Reload
@@ -169,7 +176,7 @@ Master key lookup order:
 Config::load()
 1. resolve_config_paths() → collect config file paths
 2. load_config() → parse each file (JSONC → JSON5)
-3. merge_configs() → later files override earlier (HashMaps merge field-by-field)
+3. merge_configs() → later files override earlier (strategies vary: field-by-field for provider/server/watcher, key replacement for agent/mcp/commands/mode, concatenation for instructions)
 4. decrypt_provider_keys() → decrypt API keys if encrypted
 5. migrate() → apply version migrations
 6. validate() → validate config values (warnings, not errors)

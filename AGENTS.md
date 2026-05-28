@@ -101,7 +101,7 @@ These items are important for future agents to know when working with the codeba
 
 - **AgentLoop has 24 fields**: The struct at `src/agent/loop.rs:559-584` has 24 fields; many docs list only 15.
 
-- **Exec mode question behavior**: `setup_question_channel_for_exec()` at `src/exec.rs:121` DOES set `question_rx`, meaning exec mode waits up to 300s before timing out. The "[question not supported]" string is in the `else` branch (non-exec path when `question_rx` is None). `setup_question_channel()` (non-exec version) at `src/agent/loop.rs:784` is dead code - never called.
+- **Exec mode question behavior**: `setup_question_channel_for_exec()` at `src/exec.rs:121` DOES set `question_rx`, meaning exec mode waits up to 300s before timing out. The "[question not supported]" string is in the `else` branch (non-exec path when `question_rx` is None).
 
 ### Known Issues (Lower Priority)
 
@@ -109,15 +109,18 @@ These items are important for future agents to know when working with the codeba
 |-------|----------|--------|
 | **TTS init ignores providers** | `src/tts/mod.rs:45-49` | Known issue |
 | TTS stop() silent failure | `src/tts/mod.rs:85-103` | ✅ FIXED - returns Err on pkill failure |
-| **check_external_directory unused** | `src/permission/mod.rs:1264-1276` | Known issue - `#[allow(dead_code)]` |
 | **Static CANONICAL_PATHS_CACHE** | `src/security/sandbox.rs:262` | Has 300s TTL + 100-entry cap now |
 | **Histogram unbounded memory** | `src/util/metrics.rs:122-124` | ✅ FIXED |
 | **Worktree symlink detection** | `src/worktree/mod.rs:69-88` | Known issue |
 | **OAuth replay protection TOCTOU** | `src/mcp/auth.rs:318-332` | Known issue |
 | **OAuthManager sync error ignore** | `src/mcp/auth.rs:119` | ✅ FIXED - now logs warnings |
-| **MCP connect_sse() dead code** | `src/mcp/remote.rs:698-740` | Never called externally |
-| **MCP run_socket() dead code** | `src/mcp/ide_server.rs:121-144` | Never called |
+| **MCP connect_sse() dead code** | `src/mcp/remote.rs` | ✅ FIXED - removed Wave 5B |
+| **MCP run_socket() dead code** | `src/mcp/ide_server.rs` | ✅ FIXED - removed Wave 5B |
+| **check_external_directory unused** | `src/permission/mod.rs` | ✅ FIXED - removed Wave 5B |
 | **MCP Debug command** | `src/mcp/cli.rs:309-318` | IMPLEMENTED - tests connections for remote servers |
+| **ProviderCache::clear() misnamed** | `src/provider/cache.rs` | ✅ FIXED - renamed to `evict_expired()` |
+| **SnapshotOptions zero values** | `src/snapshot/mod.rs` | ✅ FIXED - clamps to 1 |
+| **doom_loop.rs test broken** | `tests/doom_loop.rs` | ✅ FIXED - missing `arguments` param |
 
 ### Key Lessons from Review Sessions
 
@@ -181,7 +184,7 @@ These items were discovered during the 2026-05-28 full architecture review sweep
 | Tool count | 27 (not 28) | `src/tool/mod.rs:90-122` | 27 registrations in with_defaults() |
 | DB tables | 13 (not 7) | `src/session/schema.rs:25-69` | Missing: migration_version, project, session_share, cached_models, task, checkpoints |
 | exec.md question behavior | WRONG IN DOC | `src/exec.rs:121` | `setup_question_channel_for_exec()` DOES set question_rx; exec waits 300s |
-| `setup_question_channel()` | Dead code | `src/agent/loop.rs:784` | Non-exec version never called |
+| `setup_question_channel()` | ✅ REMOVED | `src/agent/loop.rs:784` | Removed Wave 5B - non-exec version was dead code |
 | Provider auto-registration | 16 providers via env vars | `src/provider/mod.rs:390-536` | `register_builtin_with_config()` registers all env-var providers including codegg_go |
 | Config merge behavior | Heterogeneous per field type | `src/config/paths.rs:164-284` | provider/server/watcher merge field-by-field; agents/mcp/commands/modes use key replacement; instructions concatenates |
 | Feature gate name | `plugins` (plural) | `Cargo.toml:169` | Not `plugin` |
@@ -194,6 +197,10 @@ These items were discovered during the 2026-05-28 full architecture review sweep
 | AgentLoop fields | 24 fields (not 15 as docs claim) | `src/agent/loop.rs:559-584` | Missing: config, question_tx, question_rx, session_id, plugin_service, mcp_service, tool_def_cache, file_change_rx, usage_store, pricing_service |
 | DialogType location | In component.rs (not types.rs) | `src/tui/components/component.rs:22` | 23 variants including Stats |
 | FocusManager location | In component/focus.rs (not types.rs) | `src/tui/components/component/focus.rs:14` | Has focus_index: usize field |
+| ProviderCache::clear() | Renamed to evict_expired() | `src/provider/cache.rs:75` | Only removes expired entries via .retain(), not all |
+| SnapshotOptions zero values | Clamped to 1 | `src/snapshot/mod.rs:68-76` | new_with_options() now clamps zero capture/restore counts |
+| CoreEvent serde | skip_serializing_if added | `src/protocol/core.rs` | 6 optional fields now skip when None |
+| doom_loop.rs test | Pre-existing broken test | `tests/doom_loop.rs` | record_tool_call takes 2 args (tool_name + arguments) |
 
 ### Security Notes
 
