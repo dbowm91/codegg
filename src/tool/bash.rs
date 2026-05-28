@@ -372,23 +372,14 @@ impl Tool for BashTool {
         let start = std::time::Instant::now();
 
         let output = tokio::time::timeout(timeout, async {
-            let (program, args) = match parts.split_first() {
-                Some((p, a)) => (p, a),
-                None => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "empty command",
-                    ))
-                }
-            };
-            let mut cmd = Command::new(program);
+            let mut cmd = Command::new("sh");
             cmd.env_clear();
             if let Some(path) = std::env::var_os("PATH") {
                 cmd.env("PATH", path);
             } else {
                 cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
             }
-            cmd.args(args);
+            cmd.arg("-c").arg(command);
             if let Some(ref dir) = canonical_workdir {
                 cmd.current_dir(dir);
             }

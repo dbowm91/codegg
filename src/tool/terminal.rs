@@ -280,15 +280,21 @@ impl Tool for TerminalTool {
 
         tracing::info!("Running terminal command: {} {:?}", command, args);
 
+        let full_command = if args.is_empty() {
+            command.to_string()
+        } else {
+            format!("{} {}", command, args.join(" "))
+        };
+
         let output = tokio::time::timeout(timeout, async {
-            let mut cmd = Command::new(command);
+            let mut cmd = Command::new("sh");
             cmd.env_clear();
             if let Some(path) = std::env::var_os("PATH") {
                 cmd.env("PATH", path);
             } else {
                 cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
             }
-            cmd.args(&args);
+            cmd.arg("-c").arg(&full_command);
 
             for (key, value) in env_vars {
                 cmd.env(&key, &value);
