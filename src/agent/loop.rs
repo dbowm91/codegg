@@ -1523,7 +1523,7 @@ impl AgentLoop {
                     continue;
                 }
                 if just_executed_tools
-                    && post_tool_continuation_retry_budget < 1
+                    && post_tool_continuation_retry_budget < 2
                     && is_soft_stop_reason(processor.stop_reason())
                     && (processor.text().trim().len() < 220
                         || indicates_more_work(processor.text()))
@@ -1533,6 +1533,19 @@ impl AgentLoop {
                         request.messages.push(msg);
                     }
                     post_tool_continuation_retry_budget += 1;
+                    just_executed_tools = false;
+                    processor.reset();
+                    continue;
+                }
+                if just_executed_tools
+                    && is_repo_task_prompt(&original_prompt)
+                    && is_soft_stop_reason(processor.stop_reason())
+                {
+                    push_control_instruction(
+                        &mut request.messages,
+                        &request.model,
+                        "Continue working and use additional structured tool calls as needed to complete repository analysis before finalizing.",
+                    );
                     just_executed_tools = false;
                     processor.reset();
                     continue;
@@ -2081,7 +2094,7 @@ impl AgentLoop {
 
             if tool_calls.is_empty() {
                 if just_executed_tools
-                    && post_tool_continuation_retry_budget < 1
+                    && post_tool_continuation_retry_budget < 2
                     && is_soft_stop_reason(processor.stop_reason())
                     && (processor.text().trim().len() < 220
                         || indicates_more_work(processor.text()))
@@ -2090,6 +2103,16 @@ impl AgentLoop {
                         request.messages.push(msg);
                     }
                     post_tool_continuation_retry_budget += 1;
+                    just_executed_tools = false;
+                    processor.reset();
+                    continue;
+                }
+                if just_executed_tools && is_soft_stop_reason(processor.stop_reason()) {
+                    push_control_instruction(
+                        &mut request.messages,
+                        &request.model,
+                        "Continue the task and emit structured tool calls as needed before finalizing.",
+                    );
                     just_executed_tools = false;
                     processor.reset();
                     continue;

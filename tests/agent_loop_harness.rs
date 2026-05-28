@@ -1104,6 +1104,75 @@ async fn test_tool_call_turn_with_stop_finish_does_not_publish_premature_agent_f
 }
 
 #[tokio::test]
+async fn test_post_tool_soft_stop_retries_and_continues_for_repo_task() {
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_1".to_string().into(),
+            name: "echo_args".to_string().into(),
+            arguments: serde_json::json!({"value": "first"}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![
+        ChatEvent::TextDelta("Let me continue".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response3 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_2".to_string().into(),
+            name: "echo_args".to_string().into(),
+            arguments: serde_json::json!({"value": "second"}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response4 = vec![
+        ChatEvent::TextDelta("Done exploring".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![
+        response1, response2, response3, response4,
+    ]));
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    agent_loop
+        .run(make_chat_request("Review this codebase layout"))
+        .await
+        .expect("agent loop should continue after post-tool soft stop");
+
+    let requests = scripted_provider.get_requests().await;
+    assert!(
+        requests.len() >= 4,
+        "Expected at least 4 provider requests, got {}",
+        requests.len()
+    );
+
+    let has_second_tool_result = requests.iter().any(|r| {
+        r.messages
+            .iter()
+            .any(|m| matches!(m, Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "call_2"))
+    });
+    assert!(
+        has_second_tool_result,
+        "Expected a tool result for call_2 in a later provider request"
+    );
+}
+
+#[tokio::test]
 async fn test_agent_loop_harness_records_requests() {
     let response1 = vec![
         ChatEvent::TextDelta("Using tool".to_string().into()),

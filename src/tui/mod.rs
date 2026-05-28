@@ -1863,7 +1863,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     AppEvent::AgentFinished { stop_reason, input_tokens, output_tokens, cached_tokens, .. } => {
                         debug_log!("Event loop: AgentFinished received stop_reason={}", stop_reason);
-                        if stop_reason == "completed" {
+                        if stop_reason != "tool_calls" {
                             app.session_state.session_status = SessionStatus::Idle;
                             app.prompt_state.pending_send = false;
                             app.footer.set_thinking(false, None);
@@ -1917,7 +1917,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
 
                             if let Some(ref notif_mgr) = app.notification_manager {
                                 let notif_type = crate::tui::components::notification::NotificationType::Success;
-                                let body = "Agent finished: completed".to_string();
+                                let body = format!("Agent finished: {}", stop_reason);
                                 let mgr = notif_mgr.clone();
                                 tokio::task::spawn_blocking(move || {
                                     if let Err(e) = mgr.blocking_send_with_config(notif_type, &body) {

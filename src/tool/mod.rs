@@ -108,7 +108,6 @@ impl ToolRegistry {
         registry.register(crate::tool::diff::DiffTool::default());
         registry.register(crate::tool::replace::ReplaceTool::default());
         registry.register(crate::tool::review::ReviewTool::default());
-        registry.register(crate::tool::batch::BatchTool::default());
         registry.register(crate::tool::terminal::TerminalTool::default());
         registry.register(crate::tool::git::GitTool::default());
         registry.register(crate::tool::commit::CommitTool::new());
