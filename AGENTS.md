@@ -172,20 +172,6 @@ These items were verified during review sessions:
 | ImageTool | IS registered in ToolRegistry::with_defaults() | `src/tool/mod.rs:102` |
 | Dialog::Stats | EXISTS in Dialog enum | `src/tui/app/types.rs:21` |
 
-### New Findings (2026-05-27 Architecture Review) - UPDATED
-
-These items were discovered during the 2026-05-27 architecture review and are NOT YET reflected in documentation:
-
-| Item | Status | Location | Notes |
-|------|--------|----------|-------|
-| MCP `connect_sse()` | Dead code | `src/mcp/remote.rs:698-740` | Defined but never called externally - DOCUMENTED in architecture/mcp.md |
-| MCP `run_socket()` | Dead code | `src/mcp/ide_server.rs:121-144` | Unix socket server, never called - DOCUMENTED in architecture/mcp.md |
-| MCP Debug command | IMPLEMENTED | `src/mcp/cli.rs:309-318` | Implemented actual connection testing in R1 wave |
-| OAuthManager sync methods | FIXED | `src/mcp/auth.rs:119` | Now logs warnings instead of silent ignore |
-| WebSocket auth inconsistency | NOT A BUG | `src/server/ws.rs:103-106` vs `middleware/auth.rs:37-40` | Both consistently return Ok for no-token |
-| Snapshot restore() | FIXED | `src/snapshot/mod.rs:292` | Now uses atomic write (temp+rename) |
-| Snapshot hash | FIXED | `src/snapshot/mod.rs:431` | Now uses SHA256 consistently |
-
 ### New Findings (2026-05-28 Architecture Review) - UPDATED
 
 These items were discovered during the 2026-05-28 full architecture review sweep:
@@ -197,10 +183,10 @@ These items were discovered during the 2026-05-28 full architecture review sweep
 | exec.md question behavior | WRONG IN DOC | `src/exec.rs:121` | `setup_question_channel_for_exec()` DOES set question_rx; exec waits 300s |
 | `setup_question_channel()` | Dead code | `src/agent/loop.rs:784` | Non-exec version never called |
 | Provider auto-registration | 16 providers via env vars | `src/provider/mod.rs:390-536` | `register_builtin_with_config()` registers all env-var providers including codegg_go |
-| Config merge behavior | Only provider merges field-by-field | `src/config/schema.rs` | agents/mcp/commands/modes use key replacement |
+| Config merge behavior | Heterogeneous per field type | `src/config/paths.rs:164-284` | provider/server/watcher merge field-by-field; agents/mcp/commands/modes use key replacement; instructions concatenates |
 | Feature gate name | `plugins` (plural) | `Cargo.toml:169` | Not `plugin` |
 | Instruction files | AGENTS.md, CLAUDE.md, CONTEXT.md | `src/agent/prompt.rs:7` | Primary sources via INSTRUCTION_FILES constant |
-| DoomLoop key | tool_name:hash(arguments) | `src/permission/mod.rs:1249` | Per-tool+args, not per-tool as documented |
+| DoomLoop key | `tool_name:hash(tool_name + arguments)` | `src/permission/mod.rs:1249-1256` | Hasher includes both tool_name AND arguments; per-tool+args |
 | TTL value | 310s (not 300s) | `src/bus/mod.rs:59` | PermissionRegistry cleanup TTL |
 | CANONICAL_PATHS_CACHE | Has 300s TTL now | `src/security/sandbox.rs:262` | Was "never clears", now has TTL + 100-entry cap |
 | PermissionResponse | Type does not exist | N/A | Referenced in permission.md but never defined |
