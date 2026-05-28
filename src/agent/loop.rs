@@ -191,6 +191,10 @@ fn indicates_more_work(text: &str) -> bool {
         || t.contains("now i")
 }
 
+fn is_soft_stop_reason(stop_reason: Option<&str>) -> bool {
+    matches!(stop_reason, Some("stop" | "end_turn"))
+}
+
 fn is_repo_task_prompt(prompt: &str) -> bool {
     let p = prompt.to_lowercase();
     p.contains("review")
@@ -1450,7 +1454,7 @@ impl AgentLoop {
                 Ok(events) => events,
                 Err(e) => {
                     tracing::error!("Stream error: {}", e);
-                    break;
+                    return Err(e);
                 }
             };
 
@@ -1477,7 +1481,7 @@ impl AgentLoop {
             if tool_calls.is_empty() {
                 if !did_bootstrap_tool
                     && self.state.turn_count <= 2
-                    && matches!(processor.stop_reason(), Some("stop"))
+                    && is_soft_stop_reason(processor.stop_reason())
                     && is_repo_task_prompt(&original_prompt)
                 {
                     let synthetic = ToolCall {
@@ -1520,7 +1524,7 @@ impl AgentLoop {
                 }
                 if just_executed_tools
                     && post_tool_continuation_retry_budget < 1
-                    && matches!(processor.stop_reason(), Some("stop"))
+                    && is_soft_stop_reason(processor.stop_reason())
                     && (processor.text().trim().len() < 220
                         || indicates_more_work(processor.text()))
                 {
@@ -2078,7 +2082,7 @@ impl AgentLoop {
             if tool_calls.is_empty() {
                 if just_executed_tools
                     && post_tool_continuation_retry_budget < 1
-                    && matches!(processor.stop_reason(), Some("stop"))
+                    && is_soft_stop_reason(processor.stop_reason())
                     && (processor.text().trim().len() < 220
                         || indicates_more_work(processor.text()))
                 {
