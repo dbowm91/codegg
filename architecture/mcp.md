@@ -22,14 +22,13 @@ MCP (Model Context Protocol) allows external tools and resources to be exposed t
 ### McpClientType (in `mod.rs`)
 
 ```rust
-#[derive(Clone)]
 pub enum McpClientType {
     Local(Arc<RwLock<LocalClient>>),
     Remote(Arc<RwLock<McpConnectionManager>>),
 }
 ```
 
-Note: Only `#[derive(Clone)]` is used (no Debug, Serialize, or Deserialize). `Local` and `Remote` variants wrap Arc<RwLock> to allow shared access across the application.
+Note: `Local` and `Remote` variants wrap Arc<RwLock> to allow shared access across the application.
 
 ## Key Components
 
@@ -93,18 +92,16 @@ pub struct RemoteClient {
     url: String,
     headers: HashMap<String, String>,
     client: reqwest::Client,
-    session_id: Arc<Mutex<Option<String>>>,
-    sse_url: Arc<Mutex<Option<String>>>,
-    oauth_token: Arc<Mutex<Option<String>>>,
+    session_id: Mutex<Option<String>>,
+    sse_url: Mutex<Option<String>>,
+    oauth_token: Mutex<Option<String>>,
     sse_events: Arc<Mutex<Vec<serde_json::Value>>>,
-    request_id: Arc<AtomicU64>,
+    request_id: AtomicU64,
     shutdown: Arc<Mutex<bool>>,
     sse_shutdown: Arc<Notify>,
-    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,
+    validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,  // Arc<Mutex<...>> for Clone semantics
 }
 ```
-
-Note: `session_id`, `sse_url`, `oauth_token` all use `Arc<Mutex<Option<String>>>` (not bare `Mutex`). `request_id` uses `Arc<AtomicU64>` (not bare `AtomicU64`). This enables `Clone` semantics for the `RemoteClient`.
 
 **Auto-reconnect wrapper:**
 
@@ -138,11 +135,11 @@ pub enum ConnectionState {
 - DNS rebinding protection (IP re-validation on each request)
 - SSE (Server-Sent Events) support for server-initiated messages
 - Exponential backoff: 1s → 2s → 4s → ... → max 60s
-- Max 5 retry attempts before giving up (`max_retries: 5`, checked via `>=` so attempts 0-3 are allowed, yielding 4 actual reconnection attempts)
+- Max 5 retry attempts before giving up
 - Heartbeat every 30s to keep connection alive
 - `ensure_connected()` spawns reconnection in background task when disconnected
 
-### SSE Connection Methods
+### SSE Connection Methods (`src/mcp/remote.rs:698-747`)
 
 The `RemoteClient` provides SSE (Server-Sent Events) connection methods:
 
@@ -294,7 +291,7 @@ MCP servers configured in `config.json`. The `servers` section maps server names
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | `string` | Type of MCP server: `local` or `remote` (the Rust struct field is `server_type` due to Rust naming conventions) |
+| `server_type` | `string` | Type of MCP server: `local` or `remote` (renamed from `type`) |
 | `command` | `string` | Executable path for local servers (e.g., `npx`, `uvx`) |
 | `args` | `string[]` | Arguments passed to the command |
 | `env` | `object` | Environment variables for local servers |
@@ -371,55 +368,11 @@ fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result<(),
 - IPv4-mapped IPv6 addresses are handled correctly
 - Internal IPs (loopback, private, link-local) are blocked
 
-## Deferred / Incomplete Implementation
-
-The following features exist in the codebase but are not wired into the main event loop or service initialization:
-
-### R3-IMPL-1: MCP SSE Integration (`src/mcp/remote.rs:698-740`)
-
-```rust
-pub async fn connect_sse(&self) -> Result<(), McpError>
-```
-
-**Status**: Dead code - function never called automatically.
-
-**Description**: The `connect_sse()` method initiates a Server-Sent Events connection to an MCP server, and `connect_sse_stream()` processes the SSE stream. These methods fully implement the SSE protocol, collect events into `sse_events` buffer, and properly handle `Mcp-Session-Id` headers for session continuity.
-
-**Why it exists but isn't wired up**: SSE support requires integration into the main connection flow with event loop integration. The `McpConnectionManager` would need to detect SSE-capable servers and spawn a background task to handle server-initiated messages. Currently, remote connections use only HTTP request/response pattern (stdin/stdout style JSON-RPC over HTTP).
-
-**What would be needed to complete**:
-- Event loop task in `McpConnectionManager` that calls `connect_sse()` when server advertises SSE endpoint
-- Handler to dispatch collected SSE events to the agent as incoming notifications
-- Integration with the heartbeat system to keep SSE connection alive
-
-**Current workaround**: Remote MCP servers operate in request/response mode only. Server-initiated notifications are not received.
-
-### R3-IMPL-2: IdeServer Unix Socket Mode (`src/mcp/ide_server.rs:121-144`)
-
-```rust
-pub async fn run_socket(&self, socket_path: &str) -> Result<(), McpError>
-```
-
-**Status**: Dead code - Unix socket server never wired up.
-
-**Description**: The `IdeServer` implements `run_socket()` which creates a Unix domain socket listener, accepts connections, and handles MCP protocol over Unix sockets. This enables IDE extensions to connect to codegg as an MCP server.
-
-**Transport Modes** (from code):
-- stdio mode: Used by VS Code extension and JetBrains plugin (stdin/stdout communication)
-- Unix socket mode: Defined in code at lines 228-229 but never activated
-
-**Why it exists but isn't wired up**: Unix socket mode requires IDE extension integration to discover and connect to the socket. The primary stdio transport is used by IDE extensions instead.
-
-**What would be needed to complete**:
-- Socket path configuration (e.g., `~/.codegg/ide.sock`)
-- IDE extension to discover socket path and connect
-- Socket cleanup on shutdown
-
-**Current workaround**: IDE integration uses stdio transport via `IdeServer::run_stdio()`.
-
 ## Known Implementation Issues
 
 1. **Tool definition cache staleness**: Uses `mcp_tool_count` as proxy for MCP tool changes. If tool identities change without count changing, cache may be stale. MCP service would need to expose a version/hash for more precise invalidation.
+
+2. **SSE support not fully integrated**: `connect_sse()` and `connect_sse_stream()` exist but are not automatically called during remote connection setup. SSE events are collected but not yet processed by the agent.
 
 ## See Also
 
