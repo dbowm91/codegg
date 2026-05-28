@@ -124,10 +124,14 @@ fn harden_history(messages: &mut Vec<Message>) {
                         content,
                     });
                 } else {
-                    tracing::debug!(
+                    tracing::warn!(
                         tool_call_id = %tool_call_id,
-                        "Dropping orphan tool message during history hardening"
+                        "Orphan tool message during history hardening - preserving to avoid breaking message contract"
                     );
+                    hardened.push(Message::Tool {
+                        tool_call_id,
+                        content,
+                    });
                 }
             }
             Message::User { content } => {
@@ -328,7 +332,7 @@ fn extract_path_from_tool_call(tc: &ToolCall) -> Option<String> {
         "read" | "write" | "edit" | "glob" | "grep" | "list" => {
             args.get("path")?.as_str().map(String::from)
         }
-        "apply_patch" => args.get("patch_path")?.as_str().map(String::from),
+        "apply_patch" => args.get("path")?.as_str().map(String::from),
         _ => None,
     }
 }
@@ -349,7 +353,7 @@ fn extract_git_subcommand(tc: &ToolCall) -> Option<String> {
 
 fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("mcp__")?;
-    let delimiter_pos = rest.find("__")?;
+    let delimiter_pos = rest.rfind("__")?;
     let server = &rest[..delimiter_pos];
     let tool = &rest[delimiter_pos + 2..];
     if server.is_empty() || tool.is_empty() {
@@ -364,6 +368,14 @@ fn is_auto_accept_read_only_tool(tool_name: &str) -> bool {
         tool_name,
         "read" | "glob" | "grep" | "list" | "webfetch" | "websearch" | "codesearch"
     )
+}
+
+fn is_mcp_tool(tool_name: &str) -> bool {
+    tool_name.starts_with("mcp__")
+}
+
+fn tool_result_is_success(output: &str) -> bool {
+    !output.starts_with("Error: ")
 }
 
 fn is_path_within_working_directory(path: Option<&str>) -> bool {
@@ -466,7 +478,8 @@ impl AgentLoop {
                 message: format!("Tool '{}' denied by permissions", tc.name),
             },
             PermissionResult::Ask(req) => {
-                if is_auto_accept_read_only_tool(tc.name.as_str())
+                if (is_auto_accept_read_only_tool(tc.name.as_str())
+                    || is_mcp_tool(tc.name.as_str()))
                     && is_path_within_working_directory(req.path.as_deref())
                 {
                     if doom_loop {
@@ -1187,6 +1200,11 @@ impl AgentLoop {
             })
             .collect();
 
+        // Update tool_search with available tool names so search results
+        // only include tools the LLM can actually call
+        let available_names: Vec<String> = filtered.iter().map(|t| t.name().to_string()).collect();
+        self.tool_registry.set_search_tool_available_tools(available_names);
+
         self.tool_def_cache = Some((
             model.map(|s| s.to_string()),
             self.state.plan_mode,
@@ -1515,7 +1533,7 @@ impl AgentLoop {
                             tool_name: "list".to_string(),
                             session_id: self.session_id.clone(),
                             output: content.clone(),
-                            success: !content.starts_with("Error: ") && !content.starts_with("Error:"),
+                            success: tool_result_is_success(content),
                         });
                         let redacted_content = redact_local_paths(content);
                         let msg = Message::Tool {
@@ -1581,8 +1599,18 @@ impl AgentLoop {
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
 
-            if tool_results.iter().any(|(_, out)| !out.starts_with("Error: ")) {
-                self.doom_detector.reset();
+            if tool_results.iter().any(|(_, out)| tool_result_is_success(out)) {
+                if let Some(doom_tool) = self.doom_detector.current_doom_tool() {
+                    let doom_tool_owned = doom_tool.to_string();
+                    let dominated = tool_calls.iter().zip(tool_results.iter()).any(|(tc, (_, out))| {
+                        tc.name.as_str() == doom_tool_owned && tool_result_is_success(out)
+                    });
+                    if dominated {
+                        self.doom_detector.reset();
+                    }
+                } else {
+                    self.doom_detector.reset();
+                }
             }
 
             if let Some(msg) = processor.to_assistant_message() {
@@ -1596,7 +1624,7 @@ impl AgentLoop {
                     .find(|tc| *tc.id == id.as_str())
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
-                let success = !content.starts_with("Error: ") && !content.starts_with("Error:");
+                let success = tool_result_is_success(content);
                 let redacted_output = redact_local_paths(content);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),
@@ -1808,29 +1836,43 @@ impl AgentLoop {
             mcp_futures.push(async move {
                 if let Some((server, tool)) = parse_mcp_tool_name(&name) {
                     if let Some(mcp_arc) = mcp_arc {
-                        if let Ok(mcp) = mcp_arc.try_read() {
-                            let call_result = tokio::time::timeout(
-                                mcp_timeout,
-                                mcp.call_tool(server, tool, tc.arguments.clone()),
-                            )
-                            .await;
-                            match call_result {
-                                Ok(Ok(result)) => {
-                                    (orig_idx, tc.id.to_string(), result)
-                                }
-                                Ok(Err(e)) => {
-                                    (orig_idx, tc.id.to_string(), format!("Error: {}", e))
+                        // Retry up to 3 times with brief backoff if RwLock is held
+                        let mut last_err = None;
+                        for attempt in 0..3 {
+                            if attempt > 0 {
+                                tokio::time::sleep(Duration::from_millis(50 * (attempt as u64))).await;
+                            }
+                            match mcp_arc.try_read() {
+                                Ok(mcp) => {
+                                    let call_result = tokio::time::timeout(
+                                        mcp_timeout,
+                                        mcp.call_tool(server, tool, tc.arguments.clone()),
+                                    )
+                                    .await;
+                                    match call_result {
+                                        Ok(Ok(result)) => {
+                                            return (orig_idx, tc.id.to_string(), result);
+                                        }
+                                        Ok(Err(e)) => {
+                                            return (orig_idx, tc.id.to_string(), format!("Error: {}", e));
+                                        }
+                                        Err(_) => {
+                                            return (orig_idx, tc.id.to_string(), format!(
+                                                "Error: MCP tool '{}' on server '{}' timed out after {:?}",
+                                                tool, server, mcp_timeout
+                                            ));
+                                        }
+                                    }
                                 }
                                 Err(_) => {
-                                    (orig_idx, tc.id.to_string(), format!(
-                                        "Error: MCP tool '{}' on server '{}' timed out after {:?}",
-                                        tool, server, mcp_timeout
-                                    ))
+                                    last_err = Some(format!(
+                                        "MCP service locked (attempt {}/3)",
+                                        attempt + 1
+                                    ));
                                 }
                             }
-                        } else {
-                            (orig_idx, tc.id.to_string(), "Error: MCP service locked, please retry".to_string())
                         }
+                        (orig_idx, tc.id.to_string(), format!("Error: {}", last_err.unwrap_or_default()))
                     } else {
                         (orig_idx, tc.id.to_string(), "Error: MCP service not available".to_string())
                     }
@@ -1917,18 +1959,58 @@ impl AgentLoop {
                         .ok_or_else(|| ToolError::NotFound(tc_inner.name.to_string()));
                     match tool {
                         Ok(t) => {
-                            match tokio::time::timeout(
-                                timeout,
-                                t.execute(tc_inner.arguments.clone()),
-                            )
-                            .await
-                            {
-                                Ok(r) => r,
-                                Err(_) => Err(ToolError::Execution(format!(
-                                    "Tool '{}' timed out after {:?}",
-                                    tc_inner.name, timeout
-                                ))),
+                            let mut last_result: Result<String, ToolError> =
+                                Err(ToolError::NotFound("no attempts made".into()));
+                            for attempt in 0..2 {
+                                if attempt > 0 {
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    tracing::info!(
+                                        "Retrying tool '{}' (attempt {})",
+                                        tc_inner.name,
+                                        attempt + 1
+                                    );
+                                }
+                                match tokio::time::timeout(
+                                    timeout,
+                                    t.execute(tc_inner.arguments.clone()),
+                                )
+                                .await
+                                {
+                                    Ok(r) => {
+                                        match &r {
+                                            Ok(_) => {
+                                                last_result = r;
+                                                break;
+                                            }
+                                            Err(e) if e.is_retryable() => {
+                                                tracing::warn!(
+                                                    "Tool '{}' retryable error: {}",
+                                                    tc_inner.name,
+                                                    e
+                                                );
+                                                last_result = r;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "Tool '{}' non-retryable error: {}",
+                                                    tc_inner.name,
+                                                    e
+                                                );
+                                                last_result = r;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        last_result = Err(ToolError::Execution(format!(
+                                            "Tool '{}' timed out after {:?}",
+                                            tc_inner.name, timeout
+                                        )));
+                                        break;
+                                    }
+                                }
                             }
+                            last_result
                         }
                         Err(e) => Err(e),
                     }
@@ -1981,7 +2063,8 @@ impl AgentLoop {
                 Err(e) => format!("Error: {}", e),
             };
             let truncated = if output.len() > MAX_TOOL_RESULT_BYTES {
-                let mut truncated = output[..MAX_TOOL_RESULT_BYTES].to_string();
+                let safe_end = output.floor_char_boundary(MAX_TOOL_RESULT_BYTES);
+                let mut truncated = output[..safe_end].to_string();
                 truncated.push_str(&format!(
                     "\n... [truncated: output was {} bytes, limit is {} bytes]",
                     output.len(),
@@ -2203,7 +2286,7 @@ impl AgentLoop {
                     .find(|tc| *tc.id == id.as_str())
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
-                let success = !content.starts_with("Error: ") && !content.starts_with("Error:");
+                let success = tool_result_is_success(content);
                 let redacted_output = redact_local_paths(content);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),

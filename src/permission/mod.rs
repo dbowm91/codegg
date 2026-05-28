@@ -1241,6 +1241,12 @@ impl DoomLoopDetector {
             .unwrap_or(false)
     }
 
+    pub fn current_doom_tool(&self) -> Option<&str> {
+        self.history.back().map(|s| {
+            s.split_once(':').map(|(name, _)| name).unwrap_or(s.as_str())
+        })
+    }
+
     pub fn reset(&mut self) {
         self.history.clear();
         self.counts.clear();
@@ -1251,8 +1257,29 @@ impl DoomLoopDetector {
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         tool_name.hash(&mut hasher);
-        arguments.to_string().hash(&mut hasher);
+        // Sort JSON object keys for deterministic hashing
+        let canonical = Self::canonicalize_json(arguments);
+        canonical.hash(&mut hasher);
         format!("{}:{:x}", tool_name, hasher.finish())
+    }
+
+    fn canonicalize_json(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut sorted: Vec<_> = map.iter().collect();
+                sorted.sort_by_key(|(k, _)| (*k).clone());
+                let parts: Vec<String> = sorted
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\":{}", k, Self::canonicalize_json(v)))
+                    .collect();
+                format!("{{{}}}", parts.join(","))
+            }
+            serde_json::Value::Array(arr) => {
+                let items: Vec<String> = arr.iter().map(Self::canonicalize_json).collect();
+                format!("[{}]", items.join(","))
+            }
+            other => other.to_string(),
+        }
     }
 }
 

@@ -58,6 +58,10 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError>;
+
+    /// Set the list of tool names available for on-demand discovery.
+    /// Only relevant for the `tool_search` tool; default is no-op.
+    fn set_available_tools(&mut self, _tools: Vec<String>) {}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,7 +147,22 @@ impl ToolRegistry {
 
     pub fn filter_out(&mut self, denied_tools: &[String]) {
         for tool_name in denied_tools {
-            if self.tools.remove(tool_name).is_some() {
+            if tool_name.contains('*') || tool_name.contains('?') {
+                // Glob pattern matching for dynamic tool names (e.g., mcp__*)
+                if let Ok(glob) = globset::Glob::new(tool_name) {
+                    let matcher = glob.compile_matcher();
+                    let to_remove: Vec<String> = self
+                        .tools
+                        .keys()
+                        .filter(|name| matcher.is_match(name))
+                        .cloned()
+                        .collect();
+                    for name in to_remove {
+                        tracing::info!(tool_name = %name, "Tool filtered out (denied by pattern)");
+                        self.tools.remove(&name);
+                    }
+                }
+            } else if self.tools.remove(tool_name).is_some() {
                 tracing::info!(tool_name = %tool_name, "Tool filtered out (denied)");
             }
         }
@@ -159,5 +178,11 @@ impl ToolRegistry {
                 parameters: t.parameters(),
             })
             .collect()
+    }
+
+    pub fn set_search_tool_available_tools(&mut self, available: Vec<String>) {
+        if let Some(tool) = self.tools.get_mut("tool_search") {
+            tool.set_available_tools(available);
+        }
     }
 }

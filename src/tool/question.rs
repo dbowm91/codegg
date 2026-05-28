@@ -67,6 +67,12 @@ impl Tool for QuestionTool {
         })
     }
 
+    /// Execute the question tool.
+    ///
+    /// NOTE: In normal AgentLoop flow, this method is never called because
+    /// `check_tool_permission` intercepts the "question" tool before execution
+    /// and routes it through `QuestionRegistry`. This fallback is only reached
+    /// if the tool bypasses permission checks (e.g., exec mode with Allow default).
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let parsed: QuestionInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Execution(format!("invalid question input: {e}")))?;

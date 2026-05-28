@@ -20,12 +20,22 @@ use crate::tool::Tool;
 #[derive(Clone)]
 pub struct ToolSearchTool {
     catalog: Arc<ToolCatalog>,
+    available_tools: Option<Vec<String>>,
 }
 
 impl ToolSearchTool {
     /// Create a new ToolSearchTool with the given catalog.
     pub fn new(catalog: Arc<ToolCatalog>) -> Self {
-        Self { catalog }
+        Self {
+            catalog,
+            available_tools: None,
+        }
+    }
+
+    /// Set the list of tool names that are currently available (after filtering).
+    /// When set, search results are restricted to these tools.
+    pub fn set_available_tools(&mut self, tools: Vec<String>) {
+        self.available_tools = Some(tools);
     }
 }
 
@@ -39,6 +49,10 @@ impl Tool for ToolSearchTool {
         "Search for available tools by name or description. \
          Returns a list of tools matching the query. \
          Use this to discover tools available for on-demand use."
+    }
+
+    fn set_available_tools(&mut self, tools: Vec<String>) {
+        self.available_tools = Some(tools);
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -61,7 +75,15 @@ impl Tool for ToolSearchTool {
 
         let results = self.catalog.search(query);
 
-        if results.is_empty() {
+        let filtered: Vec<&crate::tool::catalog::ToolMetadata> = match &self.available_tools {
+            Some(available) => results
+                .into_iter()
+                .filter(|m| available.iter().any(|a| a == &m.name))
+                .collect(),
+            None => results,
+        };
+
+        if filtered.is_empty() {
             return Ok(json!({
                 "status": "no_results",
                 "query": query,
@@ -70,7 +92,7 @@ impl Tool for ToolSearchTool {
             .to_string());
         }
 
-        let tools: Vec<serde_json::Value> = results
+        let tools: Vec<serde_json::Value> = filtered
             .into_iter()
             .map(|metadata| {
                 json!({
