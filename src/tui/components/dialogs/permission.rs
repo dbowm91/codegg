@@ -10,6 +10,8 @@ use crossterm::event::KeyEvent;
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use crate::permission::PermissionRequest;
+use crate::session::events::ToolRisk;
+use crate::tool::risk::classify_tool_risk;
 use crate::tui::app::TuiMsg;
 
 #[derive(Clone)]
@@ -19,16 +21,19 @@ pub struct PermissionDialog {
     pub theme: Arc<Theme>,
     pub confirm_persistent: bool,
     pub pending_persistent: Option<usize>,
+    pub risk: ToolRisk,
 }
 
 impl PermissionDialog {
     pub fn new(request: PermissionRequest, theme: Arc<Theme>) -> Self {
+        let risk = classify_tool_risk(&request.tool, request.args.as_ref().unwrap_or(&serde_json::Value::Null));
         Self {
             request,
             selected_option: 0,
             theme,
             confirm_persistent: false,
             pending_persistent: None,
+            risk,
         }
     }
 
@@ -78,15 +83,31 @@ impl PermissionDialog {
         }
     }
 
+    fn risk_color(&self) -> ratatui::style::Color {
+        match self.risk {
+            ToolRisk::Read => ratatui::style::Color::Rgb(100, 180, 255),
+            ToolRisk::Write => ratatui::style::Color::Rgb(255, 200, 60),
+            ToolRisk::GitMutation => ratatui::style::Color::Rgb(255, 150, 50),
+            ToolRisk::DependencyMutation => ratatui::style::Color::Rgb(200, 130, 255),
+            ToolRisk::Network => ratatui::style::Color::Rgb(130, 200, 255),
+            ToolRisk::Destructive => ratatui::style::Color::Rgb(255, 80, 80),
+            ToolRisk::CredentialAdjacent => ratatui::style::Color::Rgb(255, 120, 120),
+            ToolRisk::Unknown => ratatui::style::Color::Rgb(140, 140, 150),
+        }
+    }
+
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let chunks = Layout::vertical([
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Min(4),
             Constraint::Length(5),
         ])
         .split(area);
 
         let tool_icon = self.tool_icon();
+        let risk_label = format!("{}", self.risk);
+        let risk_color = self.risk_color();
+
         let title = Paragraph::new(Line::from(vec![
             Span::styled(
                 format!("{} ", tool_icon),
@@ -95,6 +116,10 @@ impl PermissionDialog {
             Span::styled(
                 format!("Tool '{}' requires permission", self.request.tool),
                 Style::default().fg(theme.foreground),
+            ),
+            Span::styled(
+                format!("  [{risk_label}]"),
+                Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
             ),
         ]))
         .block(
@@ -113,27 +138,92 @@ impl PermissionDialog {
             ]));
         }
         if let Some(ref args) = self.request.args {
-            let args_str = if args.is_string() {
-                args.as_str().unwrap_or("").to_string()
+            // Extract command preview for bash-like tools
+            let command_preview = if self.request.tool == "bash" || self.request.tool == "terminal" {
+                args.get("command")
+                    .or_else(|| args.get("cmd"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
             } else {
-                args.to_string()
+                None
             };
-            if !args_str.is_empty() && args_str != "null" {
-                let truncated = if args_str.chars().count() > 50 {
-                    let count = args_str.chars().count() - 47;
+
+            if let Some(ref cmd) = command_preview {
+                let truncated = if cmd.chars().count() > 80 {
+                    let count = cmd.chars().count() - 77;
                     format!(
                         "{}... (+{count} chars)",
-                        args_str.chars().take(47).collect::<String>()
+                        cmd.chars().take(77).collect::<String>()
                     )
                 } else {
-                    args_str
+                    cmd.clone()
                 };
                 details.push(Line::from(vec![
-                    Span::styled("Args: ", Style::default().fg(theme.muted)),
-                    Span::styled(truncated, Style::default().fg(theme.foreground)),
+                    Span::styled("Command: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        truncated,
+                        Style::default()
+                            .fg(ratatui::style::Color::Rgb(200, 220, 255))
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ]));
+            } else {
+                let args_str = if args.is_string() {
+                    args.as_str().unwrap_or("").to_string()
+                } else {
+                    args.to_string()
+                };
+                if !args_str.is_empty() && args_str != "null" {
+                    let truncated = if args_str.chars().count() > 50 {
+                        let count = args_str.chars().count() - 47;
+                        format!(
+                            "{}... (+{count} chars)",
+                            args_str.chars().take(47).collect::<String>()
+                        )
+                    } else {
+                        args_str
+                    };
+                    details.push(Line::from(vec![
+                        Span::styled("Args: ", Style::default().fg(theme.muted)),
+                        Span::styled(truncated, Style::default().fg(theme.foreground)),
+                    ]));
+                }
             }
         }
+
+        // Risk warning for destructive/credential tools
+        match self.risk {
+            ToolRisk::Destructive => {
+                details.push(Line::from(vec![
+                    Span::styled(
+                        "! ",
+                        Style::default()
+                            .fg(ratatui::style::Color::Rgb(255, 80, 80))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "This command may permanently delete files or modify system state",
+                        Style::default().fg(ratatui::style::Color::Rgb(255, 120, 120)),
+                    ),
+                ]));
+            }
+            ToolRisk::CredentialAdjacent => {
+                details.push(Line::from(vec![
+                    Span::styled(
+                        "! ",
+                        Style::default()
+                            .fg(ratatui::style::Color::Rgb(255, 120, 120))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "This command may access sensitive data (keys, tokens, credentials)",
+                        Style::default().fg(ratatui::style::Color::Rgb(255, 150, 150)),
+                    ),
+                ]));
+            }
+            _ => {}
+        }
+
         if details.is_empty() {
             details.push(Line::from(Span::styled(
                 "No additional details",

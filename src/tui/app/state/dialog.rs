@@ -44,6 +44,7 @@ pub struct DialogState {
     pub goto_dialog: Option<crate::tui::components::dialogs::goto::GotoDialog>,
     pub plan_dialog: Option<crate::tui::components::dialogs::plan::PlanDialog>,
     pub diff_dialog: Option<crate::tui::components::dialogs::diff::DiffDialog>,
+    pub review_dialog: Option<crate::tui::components::dialogs::review::ReviewDialog>,
     pub help_dialog: Option<crate::tui::components::dialogs::help::HelpDialog>,
     pub info_dialog: Option<crate::tui::components::dialogs::info::InfoDialog>,
     pub pending_delete_session: Option<String>,

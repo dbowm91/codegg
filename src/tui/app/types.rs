@@ -23,6 +23,7 @@ pub enum Dialog {
     Plan,
     Diff,
     Confirm,
+    Review,
 }
 
 impl Dialog {
@@ -48,9 +49,10 @@ impl Dialog {
                 | Self::Usage
                 | Self::Stats
                 | Self::Goto
-                | Self::Plan
-                | Self::Diff
-                | Self::Confirm
+            | Self::Plan
+            | Self::Diff
+            | Self::Confirm
+            | Self::Review
         )
     }
 }
@@ -172,6 +174,9 @@ pub enum TuiMsg {
         session_ids: Vec<String>,
     },
     ConfirmResult(Option<bool>),
+    ReviewOpenDiff {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -2156,7 +2156,27 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     AppEvent::CompactionTriggered { .. } => {
                         debug_log!("Event loop: CompactionTriggered");
-                        app.messages_state.toasts.add(Toast::info("Context compacted"));
+                        let tokens_before = app.session_state.context_tokens;
+                        let limit = app.session_state.context_limit;
+                        let compact_count = app.session_state.compaction_count + 1;
+                        app.session_state.compaction_count = compact_count;
+                        let before_str = if tokens_before > 0 {
+                            format!("{}k", tokens_before / 1000)
+                        } else {
+                            "unknown".to_string()
+                        };
+                        let toast = Toast::info(&format!(
+                            "Compaction #{} completed\nBefore: ~{} tokens\nLimit: {}k tokens",
+                            compact_count, before_str, limit / 1000
+                        ));
+                        app.messages_state.toasts.add(toast);
+                    }
+                    AppEvent::ModelChanged { model } => {
+                        debug_log!("Event loop: ModelChanged model={}", model);
+                        let short = model.split('/').next_back().unwrap_or(&model);
+                        app.messages_state
+                            .toasts
+                            .info(&format!("Model routed: {}", short));
                     }
                     AppEvent::SubagentStarted { agent, description, .. } => {
                         debug_log!("Event loop: SubagentStarted agent={}", agent);

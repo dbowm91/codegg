@@ -70,6 +70,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 16 {
         migrate_and_record(pool, 16).await?;
     }
+    if current_version < 17 {
+        migrate_and_record(pool, 17).await?;
+    }
 
     Ok(())
 }
@@ -98,6 +101,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             14 => migrate_v14(pool).await?,
             15 => migrate_v15(pool).await?,
             16 => migrate_v16(pool).await?,
+            17 => migrate_v17(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -599,6 +603,33 @@ async fn migrate_v16(pool: &SqlitePool) -> Result<(), StorageError> {
         .execute(pool)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v17(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS session_events (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_session_events_session_created ON session_events(session_id, created_at)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }

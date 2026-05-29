@@ -200,6 +200,31 @@ impl ContextTracker {
         self.context_limit
     }
 
+    pub fn estimate_tokens_for_messages(&self, messages: &[Message]) -> usize {
+        let mut total = 0usize;
+        for msg in messages {
+            total += match msg {
+                Message::System { content } => Self::estimate_tokens(content),
+                Message::User { content } => content
+                    .iter()
+                    .map(|p| match p {
+                        ContentPart::Text { text } => Self::estimate_tokens(text),
+                        _ => 0,
+                    })
+                    .sum(),
+                Message::Assistant { content, .. } => content
+                    .iter()
+                    .map(|p| match p {
+                        ContentPart::Text { text } => Self::estimate_tokens(text),
+                        _ => 0,
+                    })
+                    .sum(),
+                Message::Tool { content, .. } => Self::estimate_tokens(content),
+            };
+        }
+        total
+    }
+
     pub fn set_threshold(&mut self, threshold: f64) {
         self.threshold = threshold;
     }

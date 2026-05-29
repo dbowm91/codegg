@@ -41,6 +41,7 @@ pub enum DialogType {
     Stats,
     Goto,
     Plan,
+    Review,
     Confirm,
     None,
 }
@@ -75,6 +76,7 @@ impl From<DialogType> for Dialog {
             DialogType::Stats => Dialog::Stats,
             DialogType::Goto => Dialog::Goto,
             DialogType::Plan => Dialog::Plan,
+            DialogType::Review => Dialog::Review,
             DialogType::Confirm => Dialog::Confirm,
             DialogType::None => Dialog::None,
         }

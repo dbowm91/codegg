@@ -274,6 +274,7 @@ pub struct App {
     pub notification_manager: Option<crate::tui::components::notification::NotificationManager>,
     pub focus_manager: crate::tui::components::component::FocusManager,
     pub busy_spinner: crate::tui::components::spinner::SpinnerWidget,
+    pub session_state_derived: crate::session::state::TuiSessionState,
 }
 
 impl App {
@@ -485,6 +486,7 @@ impl App {
                 goto_dialog: None,
                 plan_dialog: None,
                 diff_dialog: None,
+                review_dialog: None,
                 help_dialog: None,
                 info_dialog: None,
                 pending_delete_session: None,
@@ -535,6 +537,7 @@ impl App {
             notification_manager: None,
             focus_manager,
             busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
+            session_state_derived: crate::session::state::TuiSessionState::default(),
         }
     }
 
@@ -672,6 +675,7 @@ impl App {
                 goto_dialog: None,
                 plan_dialog: None,
                 diff_dialog: None,
+                review_dialog: None,
                 help_dialog: None,
                 info_dialog: None,
                 pending_delete_session: None,
@@ -718,6 +722,7 @@ impl App {
             notification_manager: None,
             focus_manager,
             busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
+            session_state_derived: crate::session::state::TuiSessionState::default(),
         }
     }
 
@@ -981,6 +986,11 @@ impl App {
             self.render_sidebar(frame, main_chunks[1]);
         } else {
             self.sidebar_area = None;
+        }
+
+        // Render task panel when terminal is wide enough (>= 120 cols) and sidebar is visible
+        if self.ui_state.sidebar_visible && main_chunks.len() > 2 {
+            self.render_task_panel(frame, main_chunks[2]);
         }
 
         if self.ui_state.dialog.is_open() {
@@ -1295,7 +1305,20 @@ impl App {
         self.footer
             .set_tts(self.ui_state.tts_enabled, self.ui_state.tts.is_speaking());
         self.footer.update_keybinds(&self.ui_state.bindings);
-        self.footer.set_context_hint(self.context_hint.clone());
+        let ctx_hint = if self.session_state.context_limit > 0 {
+            let pct = (self.session_state.context_tokens as f64
+                / self.session_state.context_limit as f64
+                * 100.0)
+                .min(100.0);
+            if self.context_hint.is_empty() {
+                format!("ctx: {:.0}%", pct)
+            } else {
+                format!("ctx: {:.0}% | {}", pct, self.context_hint)
+            }
+        } else {
+            self.context_hint.clone()
+        };
+        self.footer.set_context_hint(ctx_hint);
         frame.render_widget(&self.footer, area);
     }
 
@@ -1337,6 +1360,149 @@ impl App {
         }
 
         frame.render_widget(&self.sidebar, area);
+    }
+
+    fn render_task_panel(&self, frame: &mut Frame, area: Rect) {
+        let mut lines: Vec<Line> = Vec::new();
+        let state = &self.session_state_derived;
+        let theme = &self.ui_state.theme;
+
+        // Goal section
+        lines.push(Line::from(Span::styled(
+            " Goal ",
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )));
+        if let Some(ref goal) = state.goal {
+            let display = if goal.len() > (area.width as usize).saturating_sub(4) {
+                format!("{}…", &goal[..(area.width as usize).saturating_sub(5)])
+            } else {
+                goal.clone()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {}", display),
+                Style::default().fg(theme.foreground),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  (none)",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        lines.push(Line::from(""));
+
+        // Plan section
+        lines.push(Line::from(Span::styled(
+            " Plan ",
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )));
+        if let Some(ref plan) = state.plan {
+            if plan.items.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "  (empty)",
+                    Style::default().fg(theme.muted),
+                )));
+            } else {
+                for item in &plan.items {
+                    let (icon, style) = match item.status {
+                        crate::session::events::PlanItemStatus::Done => {
+                            ("[x]", Style::default().fg(theme.success))
+                        }
+                        crate::session::events::PlanItemStatus::InProgress => {
+                            ("[>]", Style::default().fg(theme.warning))
+                        }
+                        crate::session::events::PlanItemStatus::Skipped => {
+                            ("[-]", Style::default().fg(theme.muted))
+                        }
+                        crate::session::events::PlanItemStatus::Pending => {
+                            ("[ ]", Style::default().fg(theme.muted))
+                        }
+                    };
+                    let text = if item.text.len() > (area.width as usize).saturating_sub(8) {
+                        format!(
+                            "{}…",
+                            &item.text[..(area.width as usize).saturating_sub(9)]
+                        )
+                    } else {
+                        item.text.clone()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {} ", icon), style),
+                        Span::styled(text, Style::default().fg(theme.foreground)),
+                    ]));
+                }
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  (no plan)",
+                Style::default().fg(theme.muted),
+            )));
+        }
+        lines.push(Line::from(""));
+
+        // State section
+        lines.push(Line::from(Span::styled(
+            " State ",
+            Style::default()
+                .fg(theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )));
+
+        let model_short = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next_back()
+            .unwrap_or(&self.agent_state.current_model);
+        lines.push(Line::from(vec![
+            Span::styled("  Model: ", Style::default().fg(theme.muted)),
+            Span::raw(model_short.to_string()),
+        ]));
+
+        let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
+        lines.push(Line::from(vec![
+            Span::styled("  Agent: ", Style::default().fg(theme.muted)),
+            Span::raw(agent_name.clone()),
+        ]));
+
+        let files_changed = state.changed_files.len();
+        lines.push(Line::from(vec![
+            Span::styled("  Files: ", Style::default().fg(theme.muted)),
+            Span::raw(format!("{} changed", files_changed)),
+        ]));
+
+        let ctx_pct = if self.session_state.context_limit > 0 {
+            (self.session_state.context_tokens as f64
+                / self.session_state.context_limit as f64
+                * 100.0) as u64
+        } else {
+            0
+        };
+        let ctx_style = if ctx_pct > 80 {
+            Style::default().fg(theme.error)
+        } else if ctx_pct > 60 {
+            Style::default().fg(theme.warning)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Context: ", Style::default().fg(theme.muted)),
+            Span::styled(format!("{}%", ctx_pct), ctx_style),
+        ]));
+
+        let block = Block::default()
+            .title(" Task ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .style(Style::default().bg(theme.background));
+
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
     }
 
     fn render_dialog(&mut self, frame: &mut Frame, area: Rect) {
@@ -1915,6 +2081,9 @@ impl App {
                     }
                     self.undo_until = None;
                 }
+            }
+            TuiMsg::ReviewOpenDiff { path } => {
+                self.handle_diff_command(Some(&path));
             }
             _ => {}
         }
@@ -3005,9 +3174,16 @@ impl App {
                 }
             }
             "/export" => {
-                self.messages_state
-                    .toasts
-                    .info("Exporting session - copy to clipboard");
+                let sub = raw_input
+                    .map(|s| s.trim_start_matches("/export").trim())
+                    .unwrap_or("");
+                if sub == "handoff" {
+                    self.export_handoff();
+                } else {
+                    self.messages_state
+                        .toasts
+                        .info("Exporting session - copy to clipboard");
+                }
             }
             "/import" => {
                 self.dialog_state.import_dialog =
@@ -3251,10 +3427,220 @@ impl App {
                         }
                     }
                     _ => {
+                        // Treat bare text as goal set (e.g., /goal fix the bug)
+                        if !subcmd.is_empty() && subcmd != "set" && subcmd != "from-file"
+                            && subcmd != "show" && subcmd != "pause" && subcmd != "resume"
+                            && subcmd != "clear" && subcmd != "done" && subcmd != "checkpoint"
+                        {
+                            // The whole query is the goal text
+                            let goal_text = query.trim();
+                            if !goal_text.is_empty() {
+                                if let Some(ref tx) = self.tui_cmd_tx {
+                                    let _ = tx.try_send(TuiCommand::GoalSet {
+                                        session_id,
+                                        project_id,
+                                        objective: goal_text.to_string(),
+                                    });
+                                }
+                            } else {
+                                self.messages_state.toasts.warning(
+                                    "Usage: /goal <text> or /goal set <text>",
+                                );
+                            }
+                        } else {
+                            self.messages_state.toasts.warning(
+                                "Usage: /goal <text> or /goal set <text>",
+                            );
+                        }
+                    }
+                }
+            }
+            "/plan" => {
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let parts: Vec<&str> = query.splitn(2, ' ').collect();
+                let subcmd = parts.get(0).copied().unwrap_or("");
+                let args = parts.get(1).copied().unwrap_or("").trim();
+
+                match subcmd {
+                    "add" => {
+                        if args.is_empty() {
+                            self.messages_state
+                                .toasts
+                                .warning("Usage: /plan add <text>");
+                            return;
+                        }
+                        let item_id = format!("plan-{}", uuid::Uuid::new_v4().to_string());
+                        let mut plan = self
+                            .session_state_derived
+                            .plan
+                            .clone()
+                            .unwrap_or(crate::session::events::AgentPlan {
+                                items: Vec::new(),
+                                updated_at: chrono::Utc::now(),
+                            });
+                        plan.items.push(crate::session::events::AgentPlanItem {
+                            id: item_id,
+                            text: args.to_string(),
+                            status: crate::session::events::PlanItemStatus::Pending,
+                            note: None,
+                        });
+                        plan.updated_at = chrono::Utc::now();
+                        self.session_state_derived.plan = Some(plan.clone());
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Plan item added: {}", args));
+                    }
+                    "done" | "skip" | "block" => {
+                        let status = match subcmd {
+                            "done" => crate::session::events::PlanItemStatus::Done,
+                            "skip" => crate::session::events::PlanItemStatus::Skipped,
+                            "block" => crate::session::events::PlanItemStatus::Pending,
+                            _ => crate::session::events::PlanItemStatus::Pending,
+                        };
+                        let index: Option<usize> = args.parse().ok();
+                        if let Some(idx) = index {
+                            if let Some(ref mut plan) = self.session_state_derived.plan {
+                                if let Some(item) = plan.items.get_mut(idx) {
+                                    item.status = status;
+                                    self.messages_state.toasts.info(&format!(
+                                        "Plan item {} marked as {}",
+                                        idx,
+                                        subcmd
+                                    ));
+                                } else {
+                                    self.messages_state
+                                        .toasts
+                                        .warning(&format!("Plan item {} not found", idx));
+                                }
+                            } else {
+                                self.messages_state
+                                    .toasts
+                                    .warning("No active plan");
+                            }
+                        } else {
+                            self.messages_state
+                                .toasts
+                                .warning(&format!("Usage: /plan {} <index>", subcmd));
+                        }
+                    }
+                    "clear" => {
+                        self.session_state_derived.plan = None;
+                        self.messages_state.toasts.info("Plan cleared");
+                    }
+                    "" => {
+                        // Show current plan
+                        if let Some(ref plan) = self.session_state_derived.plan {
+                            if plan.items.is_empty() {
+                                self.messages_state.toasts.info("Plan is empty");
+                            } else {
+                                let items: Vec<String> = plan
+                                    .items
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, item)| {
+                                        let icon = match item.status {
+                                            crate::session::events::PlanItemStatus::Done => "[x]",
+                                            crate::session::events::PlanItemStatus::InProgress => "[>]",
+                                            crate::session::events::PlanItemStatus::Skipped => "[-]",
+                                            crate::session::events::PlanItemStatus::Pending => "[ ]",
+                                        };
+                                        format!("{} {} {}", i, icon, item.text)
+                                    })
+                                    .collect();
+                                self.messages_state
+                                    .toasts
+                                    .info(&format!("Plan ({} items):\n{}", plan.items.len(), items.join("\n")));
+                            }
+                        } else {
+                            self.messages_state.toasts.info("No active plan");
+                        }
+                    }
+                    _ => {
                         self.messages_state.toasts.warning(
-                            "Usage: /goal <set|from-file|show|pause|resume|clear|done|checkpoint> [args]",
+                            "Usage: /plan [add <text>|done <i>|skip <i>|block <i>|clear]",
                         );
                     }
+                }
+            }
+            "/state" => {
+                let state = &self.session_state_derived;
+                let mut lines = Vec::new();
+
+                if let Some(ref goal) = state.goal {
+                    lines.push(format!("Goal: {}", goal));
+                }
+
+                if let Some(ref plan) = state.plan {
+                    let done = plan
+                        .items
+                        .iter()
+                        .filter(|i| i.status == crate::session::events::PlanItemStatus::Done)
+                        .count();
+                    lines.push(format!("Plan: {}/{} done", done, plan.items.len()));
+                }
+
+                let model_short = self
+                    .agent_state
+                    .current_model
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(&self.agent_state.current_model);
+                lines.push(format!(
+                    "Model: {}",
+                    model_short
+                ));
+
+                let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
+                lines.push(format!("Agent: {}", agent_name));
+
+                lines.push(format!(
+                    "Files: {} changed",
+                    state.changed_files.len()
+                ));
+
+                lines.push(format!(
+                    "Context: {}%",
+                    (self.session_state.context_tokens as f64
+                        / self.session_state.context_limit as f64
+                        * 100.0) as u64
+                ));
+
+                self.messages_state.toasts.info(&lines.join(" | "));
+            }
+            "/review" => {
+                self.ui_state.command_mode = false;
+                self.open_dialog(Dialog::Review);
+            }
+            "/diff" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let path_arg = query
+                    .trim_start_matches("/diff")
+                    .trim();
+                self.ui_state.command_mode = false;
+                if path_arg.is_empty() {
+                    self.handle_diff_command(None);
+                } else {
+                    self.handle_diff_command(Some(path_arg));
+                }
+            }
+            "/tests" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let subcmd = query.trim_start_matches("/tests").trim();
+                self.ui_state.command_mode = false;
+                self.handle_tests_command(subcmd);
+            }
+            "/revert" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let path_arg = query
+                    .trim_start_matches("/revert")
+                    .trim();
+                self.ui_state.command_mode = false;
+                if path_arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /revert <path>");
+                } else {
+                    self.handle_revert_command(path_arg);
                 }
             }
             _ => {}
@@ -4237,6 +4623,29 @@ impl App {
                     self.focus_manager.push(Box::new(plan_dialog.clone()));
                 }
             }
+            Dialog::Review => {
+                let changed_files = self.session_state.changed_files.clone();
+                let items: Vec<crate::tui::components::dialogs::review::ReviewItem> = changed_files
+                    .iter()
+                    .map(|f| crate::tui::components::dialogs::review::ReviewItem {
+                        path: f.path.to_string_lossy().into_owned(),
+                        kind: f.action.clone(),
+                        additions: 0,
+                        deletions: 0,
+                    })
+                    .collect();
+                if self.dialog_state.review_dialog.is_none() {
+                    self.dialog_state.review_dialog =
+                        Some(crate::tui::components::dialogs::review::ReviewDialog::new(
+                            Arc::clone(&self.ui_state.theme),
+                        ));
+                }
+                if let Some(ref mut review_dialog) = self.dialog_state.review_dialog {
+                    review_dialog.set_items(items);
+                    review_dialog.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(review_dialog.clone()));
+                }
+            }
             Dialog::Confirm => {
                 self.focus_manager.push(Box::new(ConfirmDialog::new(
                     "Confirm".to_string(),
@@ -4445,6 +4854,182 @@ impl App {
             }
             Err(e) => {
                 self.messages_state.toasts.info(&format!("Error: {}", e));
+            }
+        }
+    }
+
+    fn handle_diff_command(&mut self, path: Option<&str>) {
+        let project_dir = std::path::PathBuf::from(&self.session_state.project_dir);
+        let git_root = match crate::worktree::find_git_root(&project_dir) {
+            Some(r) => r,
+            None => {
+                self.messages_state
+                    .toasts
+                    .info("Not in a git repository - showing text diff");
+                return;
+            }
+        };
+
+        let output = if let Some(path) = path {
+            std::process::Command::new("git")
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .args(["diff", "--", path])
+                .current_dir(&git_root)
+                .output()
+        } else {
+            std::process::Command::new("git")
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .args(["diff"])
+                .current_dir(&git_root)
+                .output()
+        };
+
+        match output {
+            Ok(o) if o.status.success() => {
+                let diff_text = String::from_utf8_lossy(&o.stdout).to_string();
+                if diff_text.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("No changes detected");
+                    return;
+                }
+                let title = path
+                    .map(|p| format!("Diff: {}", p))
+                    .unwrap_or_else(|| "Repository Diff".to_string());
+                let empty = "";
+                self.process_msg(TuiMsg::OpenDiffDialog {
+                    old_content: empty.to_string().into_boxed_str(),
+                    new_content: diff_text.into_boxed_str(),
+                    title: title.into_boxed_str(),
+                });
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                self.messages_state
+                    .toasts
+                    .error(&format!("git diff failed: {}", stderr));
+            }
+            Err(e) => {
+                self.messages_state
+                    .toasts
+                    .error(&format!("Failed to run git diff: {}", e));
+            }
+        }
+    }
+
+    fn handle_tests_command(&mut self, subcmd: &str) {
+        match subcmd {
+            "" | "last" => {
+                let state = &self.session_state_derived;
+                match &state.test_state {
+                    crate::session::state::TestState::Unknown => {
+                        self.messages_state
+                            .toasts
+                            .info("Test state: unknown (no tests run yet)");
+                    }
+                    crate::session::state::TestState::Stale => {
+                        self.messages_state
+                            .toasts
+                            .info("Test state: stale (files changed since last run)");
+                    }
+                    crate::session::state::TestState::Running { command } => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Test state: running ({})", command));
+                    }
+                    crate::session::state::TestState::Passed {
+                        command,
+                        duration_ms,
+                    } => {
+                        let duration_str = duration_ms
+                            .map(|ms| format!(" ({:.1}s)", ms as f64 / 1000.0))
+                            .unwrap_or_default();
+                        self.messages_state.toasts.info(&format!(
+                            "Test state: passed{} | command: {}",
+                            duration_str, command
+                        ));
+                    }
+                    crate::session::state::TestState::Failed {
+                        command,
+                        duration_ms,
+                        summary,
+                    } => {
+                        let duration_str = duration_ms
+                            .map(|ms| format!(" ({:.1}s)", ms as f64 / 1000.0))
+                            .unwrap_or_default();
+                        self.messages_state.toasts.info(&format!(
+                            "Test state: failed{} | command: {} | {}",
+                            duration_str, command, summary
+                        ));
+                    }
+                }
+                let file_count = state.changed_files.len();
+                if file_count > 0 {
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Changed files since last run: {}", file_count));
+                }
+            }
+            "failed" => {
+                let state = &self.session_state_derived;
+                match &state.test_state {
+                    crate::session::state::TestState::Failed { summary, .. } => {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Failed tests: {}", summary));
+                    }
+                    _ => {
+                        self.messages_state
+                            .toasts
+                            .info("No failed tests");
+                    }
+                }
+            }
+            _ => {
+                self.messages_state
+                    .toasts
+                    .warning("Usage: /tests [last|failed]");
+            }
+        }
+    }
+
+    fn handle_revert_command(&mut self, path: &str) {
+        let project_dir = std::path::PathBuf::from(&self.session_state.project_dir);
+        let git_root = match crate::worktree::find_git_root(&project_dir) {
+            Some(r) => r,
+            None => {
+                self.messages_state
+                    .toasts
+                    .error("Not in a git repository");
+                return;
+            }
+        };
+
+        let output = std::process::Command::new("git")
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .args(["checkout", "HEAD", "--", path])
+            .current_dir(&git_root)
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                self.messages_state
+                    .toasts
+                    .success(&format!("Reverted: {}", path));
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                self.messages_state
+                    .toasts
+                    .error(&format!("git checkout failed: {}", stderr));
+            }
+            Err(e) => {
+                self.messages_state
+                    .toasts
+                    .error(&format!("Failed to run git: {}", e));
             }
         }
     }
@@ -5357,12 +5942,16 @@ impl App {
     fn get_context_lines(&self) -> Vec<Line<'_>> {
         let mut lines = vec![
             Line::from(""),
+            Line::from(Span::styled(
+                "  Context Window",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
             Line::from(Span::raw(format!(
-                "  Current context: {} tokens",
+                "  Current: {} tokens",
                 self.session_state.context_tokens
             ))),
             Line::from(Span::raw(format!(
-                "  Context limit: {} tokens",
+                "  Limit: {} tokens",
                 self.session_state.context_limit
             ))),
         ];
@@ -5386,7 +5975,71 @@ impl App {
             }
         }
 
+        let derived = &self.session_state_derived;
         lines.push(Line::from(""));
+
+        lines.push(Line::from(Span::styled(
+            "  Pinned",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if derived.context_state.pinned_items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (none)",
+                Style::default().fg(self.ui_state.theme.muted),
+            )));
+        } else {
+            for item in &derived.context_state.pinned_items {
+                lines.push(Line::from(Span::raw(format!("    {}", item.label))));
+            }
+        }
+
+        lines.push(Line::from(Span::styled(
+            "  Summarized",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if derived.context_state.summarized_items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (none)",
+                Style::default().fg(self.ui_state.theme.muted),
+            )));
+        } else {
+            for item in &derived.context_state.summarized_items {
+                lines.push(Line::from(Span::raw(format!("    {}", item.label))));
+            }
+        }
+
+        lines.push(Line::from(Span::styled(
+            "  Retrieved",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if derived.context_state.retrieved_items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (none)",
+                Style::default().fg(self.ui_state.theme.muted),
+            )));
+        } else {
+            for item in &derived.context_state.retrieved_items {
+                lines.push(Line::from(Span::raw(format!("    {}", item.label))));
+            }
+        }
+
+        lines.push(Line::from(Span::styled(
+            "  Excluded",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        if derived.context_state.excluded_items.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    (none)",
+                Style::default().fg(self.ui_state.theme.muted),
+            )));
+        } else {
+            for item in &derived.context_state.excluded_items {
+                lines.push(Line::from(Span::raw(format!("    {}", item.label))));
+            }
+        }
+
+        lines.push(Line::from(""));
+
         lines.push(Line::from(Span::styled(
             "  Providers (Active Keys):",
             Style::default().add_modifier(Modifier::BOLD),
@@ -5932,16 +6585,137 @@ impl App {
         let pos_para = Paragraph::new(pos_indicator).alignment(Alignment::Center);
         frame.render_widget(pos_para, pos_area);
     }
-}
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new(
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default(),
-        )
+    fn export_handoff(&mut self) {
+        let derived = &self.session_state_derived;
+        let session = self.session_state.session.as_ref();
+
+        let goal = derived.goal.as_deref().unwrap_or("(no goal set)");
+        let model = self.agent_state.current_model.clone();
+        let branch = session
+            .map(|s| s.directory.clone())
+            .unwrap_or_default();
+        let ctx_pct = if self.session_state.context_limit > 0 {
+            format!(
+                "{:.0}%",
+                self.session_state.context_tokens as f64
+                    / self.session_state.context_limit as f64
+                    * 100.0
+            )
+        } else {
+            "unknown".to_string()
+        };
+
+        let mut md = String::new();
+        md.push_str("# Codegg Handoff\n\n");
+
+        md.push_str("## Goal\n");
+        md.push_str(goal);
+        md.push_str("\n\n");
+
+        md.push_str("## Current plan\n");
+        if let Some(ref plan) = derived.plan {
+            for item in &plan.items {
+                let check = match item.status {
+                    crate::session::events::PlanItemStatus::Done => "[x]",
+                    crate::session::events::PlanItemStatus::InProgress => "[~]",
+                    crate::session::events::PlanItemStatus::Skipped => "[-]",
+                    crate::session::events::PlanItemStatus::Pending => "[ ]",
+                };
+                md.push_str(&format!("- {} {}", check, item.text));
+                if let Some(ref note) = item.note {
+                    md.push_str(&format!(" ({})", note));
+                }
+                md.push('\n');
+            }
+        } else {
+            md.push_str("- (no plan)\n");
+        }
+        md.push('\n');
+
+        md.push_str("## Current state\n");
+        md.push_str(&format!("- Model: {}\n", model));
+        if !branch.is_empty() {
+            md.push_str(&format!("- Branch/dir: {}\n", branch));
+        }
+        if !derived.changed_files.is_empty() {
+            md.push_str(&format!("- Changed files: {}\n", derived.changed_files.len()));
+        }
+        match &derived.test_state {
+            crate::session::state::TestState::Passed { command, .. } => {
+                md.push_str(&format!("- Tests: passed ({})\n", command));
+            }
+            crate::session::state::TestState::Failed { command, summary, .. } => {
+                md.push_str(&format!("- Tests: FAILED ({}) - {}\n", command, summary));
+            }
+            crate::session::state::TestState::Running { command } => {
+                md.push_str(&format!("- Tests: running ({})\n", command));
+            }
+            _ => {
+                md.push_str("- Tests: unknown\n");
+            }
+        }
+        md.push_str(&format!("- Context pressure: {}\n", ctx_pct));
+        md.push('\n');
+
+        if !derived.changed_files.is_empty() {
+            md.push_str("## Files changed\n");
+            for f in &derived.changed_files {
+                md.push_str(&format!(
+                    "- {} ({:+}/-{})\n",
+                    f.path, f.additions, f.deletions
+                ));
+            }
+            md.push('\n');
+        }
+
+        if !derived.findings.is_empty() {
+            md.push_str("## Relevant findings\n");
+            for f in &derived.findings {
+                md.push_str(&format!("- [{}] {}\n", f.severity, f.message));
+            }
+            md.push('\n');
+        }
+
+        md.push_str("## Latest test result\n");
+        match &derived.test_state {
+            crate::session::state::TestState::Passed { command, duration_ms } => {
+                md.push_str(&format!(
+                    "PASSED: {} ({:.1}s)\n",
+                    command,
+                    duration_ms.unwrap_or(0) as f64 / 1000.0
+                ));
+            }
+            crate::session::state::TestState::Failed {
+                command,
+                duration_ms,
+                summary,
+            } => {
+                md.push_str(&format!(
+                    "FAILED: {} ({:.1}s) - {}\n",
+                    command,
+                    duration_ms.unwrap_or(0) as f64 / 1000.0,
+                    summary
+                ));
+            }
+            _ => {
+                md.push_str("(no recent test run)\n");
+            }
+        }
+        md.push('\n');
+
+        md.push_str("## Suggested next steps\n");
+        md.push_str("- (agent should fill in based on current state)\n\n");
+
+        md.push_str("## Notes for smaller model\n");
+        md.push_str("- Do not broaden scope.\n");
+        md.push_str("- Prefer minimal patches.\n");
+        md.push_str("- Run targeted tests first.\n");
+
+        let _ = crate::util::clipboard::copy_to_clipboard(&md);
+        self.messages_state
+            .toasts
+            .info("Handoff exported to clipboard");
     }
 }
 

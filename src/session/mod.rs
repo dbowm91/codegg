@@ -5,8 +5,10 @@
 //! resumed across CLI invocations.
 
 pub mod checkpoint;
+pub mod events;
 pub mod message;
 pub mod schema;
+pub mod state;
 pub mod status;
 
 pub mod import;
@@ -22,9 +24,13 @@ pub use models::{
     TodoItemInput, UpdateSession, UsageRecord,
 };
 pub use row::{MessageRow, PartRow, PermissionRow, SessionRow, TodoRow};
+pub use events::{
+    AgentPlan, AgentPlanItem, EventMeta, FileChangeKind, PlanItemStatus, SessionEvent, ToolRisk,
+};
+pub use state::TuiSessionState;
 pub use store::{
-    escape_sql_like, generate_slug, MessageStore, PartStore, PermissionStore, SessionStore, TodoStore,
-    UsageStore,
+    escape_sql_like, generate_slug, EventStore, MessageStore, PartStore, PermissionStore,
+    SessionStore, TodoStore, UsageStore,
 };
 pub use checkpoint::{
     CheckpointStore, compute_checksum, create_working_file, verify_file,

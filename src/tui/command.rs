@@ -174,6 +174,10 @@ impl CommandRegistry {
                 .with_description("Create a checkpoint of current session"),
             Command::new("/goal", CommandCategory::Session, None)
                 .with_description("Manage active long-running goal (/goal set, show, pause, resume, clear, done, checkpoint, from-file)"),
+            Command::new("/plan", CommandCategory::Session, None)
+                .with_description("Manage task plan (/plan, /plan add, done, skip, block, clear)"),
+            Command::new("/state", CommandCategory::Session, None)
+                .with_description("Show work/session state view"),
             Command::new("/pr", CommandCategory::Agent, None)
                 .with_description("GitHub pull requests")
                 .with_template("Use GitHub MCP (mcp__github) to {args}"),
@@ -181,6 +185,14 @@ impl CommandRegistry {
                 .with_aliases(&["/bugs", "/features"])
                 .with_description("GitHub issues")
                 .with_template("Use GitHub MCP (mcp__github) to {args}"),
+            Command::new("/review", CommandCategory::Session, Some(Dialog::Review))
+                .with_description("Review changed files"),
+            Command::new("/diff", CommandCategory::Session, None)
+                .with_description("Show diff for a file (/diff <path>)"),
+            Command::new("/tests", CommandCategory::Session, None)
+                .with_description("Show test state (/tests, /tests last, /tests failed)"),
+            Command::new("/revert", CommandCategory::Agent, None)
+                .with_description("Revert a file change (/revert <path>)"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

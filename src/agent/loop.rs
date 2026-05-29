@@ -31,6 +31,7 @@ use crate::provider::text_tool_parser::parse_text_as_tool_calls;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
 use crate::tool::plan::detect_plan_mode_change;
 use crate::tool::question::{format_question_answers, parse_question_questions};
+use crate::tool::risk::{classify_tool_risk, summarize_tool_output};
 use crate::tool::ToolRegistry;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -325,6 +326,30 @@ fn extract_bash_command(tc: &ToolCall) -> Option<String> {
         return None;
     }
     tc.arguments.get("command")?.as_str().map(String::from)
+}
+
+fn is_test_command(command: &str) -> bool {
+    let cmd = command.trim();
+    let test_patterns = [
+        "cargo test",
+        "cargo nextest",
+        "npm test",
+        "pnpm test",
+        "yarn test",
+        "pytest",
+        "uv run pytest",
+        "go test",
+        "zig build test",
+        "make test",
+        "make check",
+        "bun test",
+    ];
+    for pattern in &test_patterns {
+        if cmd.starts_with(pattern) {
+            return true;
+        }
+    }
+    false
 }
 
 fn extract_git_subcommand(tc: &ToolCall) -> Option<String> {
@@ -653,6 +678,8 @@ pub struct AgentLoop {
     todo_state: std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
     task_state_policy: crate::model_profile::types::TaskStatePolicy,
     todo_pool: Option<sqlx::SqlitePool>,
+    event_store: Option<Arc<crate::session::EventStore>>,
+    active_tool_timings: HashMap<String, Instant>,
 }
 
 impl AgentLoop {
@@ -721,7 +748,7 @@ impl AgentLoop {
 
         let todo_pool = pool.clone();
 
-        let usage_store = pool.map(|p| Arc::new(crate::session::UsageStore::new(p)));
+        let usage_store = pool.clone().map(|p| Arc::new(crate::session::UsageStore::new(p)));
         let pricing_service = crate::util::pricing::PricingService::new();
         let security_service =
             crate::security::service::SecurityService::new(config.security.as_ref());
@@ -769,7 +796,9 @@ impl AgentLoop {
             recent_findings: Vec::new(),
             todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new())),
             task_state_policy: crate::model_profile::types::TaskStatePolicy::explicit_todo(),
-            todo_pool,
+            todo_pool: todo_pool.clone(),
+            event_store: pool.map(|p| Arc::new(crate::session::EventStore::new(p))),
+            active_tool_timings: HashMap::new(),
         }
     }
 
@@ -1151,6 +1180,9 @@ impl AgentLoop {
                 complexity,
                 prompt
             );
+            let _ = crate::bus::global::GlobalEventBus::publish(AppEvent::ModelChanged {
+                model: model.clone(),
+            });
             request.model = model;
         }
     }
@@ -1454,8 +1486,13 @@ impl AgentLoop {
                     compact_messages_sync(messages.clone(), CompactionStrategy::DropMiddleMessages);
             }
 
+            let _tokens_after = self.context_tracker.estimate_tokens_for_messages(messages);
             self.context_tracker.reset();
             self.context_tracker.add_messages(messages);
+
+            let _ = crate::bus::global::GlobalEventBus::publish(AppEvent::CompactionTriggered {
+                session_id: self.session_id.clone(),
+            });
         }
     }
 
@@ -2058,6 +2095,7 @@ impl AgentLoop {
         let mut futures = Vec::with_capacity(regular_tool_count);
         let hook_registry = self.hook_registry.as_ref().map(Arc::clone);
         let plugin_service = self.plugin_service.as_ref().map(Arc::clone);
+        let event_store = self.event_store.clone();
         for (orig_idx, tc) in regular_tools {
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);
@@ -2068,6 +2106,7 @@ impl AgentLoop {
             let plugin_service = plugin_service.clone();
             let session_id = self.session_id.clone();
             let idx_for_results = orig_idx;
+            let event_store = event_store.clone();
             futures.push(async move {
                 let permit = match sem.acquire().await {
                     Ok(p) => p,
@@ -2120,6 +2159,30 @@ impl AgentLoop {
                     }
                     if let Some(err) = hook_result.error {
                         tracing::warn!("ToolExecuteBefore hook error: {}", err);
+                    }
+                }
+
+                let tool_start = Instant::now();
+                let risk = classify_tool_risk(&tool_name, &tc_arc.arguments);
+                {
+                    let meta = crate::session::events::EventMeta::new(&session_id);
+                    let event = crate::session::events::SessionEvent::ToolCallStarted(
+                        crate::session::events::ToolCallStartedEvent {
+                            meta,
+                            tool_call_id: id.to_string(),
+                            tool_name: tool_name.to_string(),
+                            arguments: tc_arc.arguments.to_string(),
+                            risk: risk.clone(),
+                        },
+                    );
+                    if let Some(ref store) = event_store {
+                        let store = Arc::clone(store);
+                        let ev = event.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = store.append(&ev).await {
+                                tracing::warn!("Failed to store ToolCallStarted event: {}", e);
+                            }
+                        });
                     }
                 }
 
@@ -2200,7 +2263,7 @@ impl AgentLoop {
 
                 let post_ctx = crate::hooks::HookContext {
                     event: crate::hooks::HookEvent::PostToolExecute,
-                    session_id: Some(session_id),
+                    session_id: Some(session_id.clone()),
                     tool_name: Some(tool_name.to_string()),
                     tool_arguments: Some(tc_arc.arguments.clone()),
                     tool_result: result.as_ref().ok().cloned(),
@@ -2215,6 +2278,100 @@ impl AgentLoop {
                         .await
                     {
                         tracing::error!("Post-tool hook error: {}", err);
+                    }
+                }
+
+                let duration_ms = tool_start.elapsed().as_millis() as u64;
+                let success = result.is_ok();
+                let output_preview = result.as_ref().ok().map(|o| {
+                    summarize_tool_output(&tool_name, o, success).unwrap_or_else(|| {
+                        if o.len() > 200 {
+                            format!("{}...", &o[..197])
+                        } else {
+                            o.clone()
+                        }
+                    })
+                });
+                {
+                    let meta = crate::session::events::EventMeta::new(&session_id);
+                    let event = crate::session::events::SessionEvent::ToolCallFinished(
+                        crate::session::events::ToolCallFinishedEvent {
+                            meta,
+                            tool_call_id: id.to_string(),
+                            tool_name: tool_name.to_string(),
+                            status: if success {
+                                crate::session::events::ToolCallStatus::Success
+                            } else {
+                                crate::session::events::ToolCallStatus::Error
+                            },
+                            duration_ms: Some(duration_ms),
+                            output_preview,
+                        },
+                    );
+                    if let Some(ref store) = event_store {
+                        let store = Arc::clone(store);
+                        let ev = event.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = store.append(&ev).await {
+                                tracing::warn!("Failed to store ToolCallFinished event: {}", e);
+                            }
+                        });
+                    }
+
+                    // Emit test run events for test commands
+                    if *tool_name == *"bash" {
+                        if let Some(cmd) = tc_arc.arguments.get("command").and_then(|v| v.as_str()) {
+                            if is_test_command(cmd) {
+                                let test_meta = crate::session::events::EventMeta::new(&session_id);
+                                let start_event = crate::session::events::SessionEvent::TestRunStarted(
+                                    crate::session::events::TestRunStartedEvent {
+                                        meta: test_meta,
+                                        command: cmd.to_string(),
+                                    },
+                                );
+                                if let Some(ref store) = event_store {
+                                    let store = Arc::clone(store);
+                                    let ev = start_event;
+                                    tokio::spawn(async move {
+                                        if let Err(e) = store.append(&ev).await {
+                                            tracing::warn!("Failed to store TestRunStarted event: {}", e);
+                                        }
+                                    });
+                                }
+
+                                let test_output = result.as_ref().ok().cloned().unwrap_or_default();
+                                let passed = success && !test_output.starts_with("Error: ");
+                                let summary = if passed {
+                                    "passed".to_string()
+                                } else {
+                                    let preview = if test_output.len() > 200 {
+                                        format!("{}...", &test_output[..197])
+                                    } else {
+                                        test_output.clone()
+                                    };
+                                    format!("failed: {}", preview)
+                                };
+                                let finish_meta = crate::session::events::EventMeta::new(&session_id);
+                                let finish_event = crate::session::events::SessionEvent::TestRunFinished(
+                                    crate::session::events::TestRunFinishedEvent {
+                                        meta: finish_meta,
+                                        command: cmd.to_string(),
+                                        passed,
+                                        duration_ms: Some(duration_ms),
+                                        summary,
+                                    },
+                                );
+                                if let Some(ref store) = event_store {
+                                    let store = Arc::clone(store);
+                                    let ev = finish_event;
+                                    tokio::spawn(async move {
+                                        if let Err(e) = store.append(&ev).await {
+                                            tracing::warn!("Failed to store TestRunFinished event: {}", e);
+                                        }
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -2601,5 +2758,58 @@ fn compute_model_flags(model: Option<&String>) -> ModelFlags {
         is_gpt,
         is_non_oss,
         exa_available,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_test_command_cargo() {
+        assert!(is_test_command("cargo test"));
+        assert!(is_test_command("cargo test --release"));
+        assert!(is_test_command("cargo test -- --test-threads=1"));
+        assert!(is_test_command("cargo nextest run"));
+    }
+
+    #[test]
+    fn test_is_test_command_npm() {
+        assert!(is_test_command("npm test"));
+        assert!(is_test_command("pnpm test"));
+        assert!(is_test_command("yarn test"));
+        assert!(is_test_command("bun test"));
+    }
+
+    #[test]
+    fn test_is_test_command_python() {
+        assert!(is_test_command("pytest"));
+        assert!(is_test_command("pytest tests/"));
+        assert!(is_test_command("uv run pytest"));
+        assert!(is_test_command("uv run pytest -v"));
+    }
+
+    #[test]
+    fn test_is_test_command_go() {
+        assert!(is_test_command("go test"));
+        assert!(is_test_command("go test ./..."));
+        assert!(is_test_command("go test -v ./pkg/..."));
+    }
+
+    #[test]
+    fn test_is_test_command_other() {
+        assert!(is_test_command("zig build test"));
+        assert!(is_test_command("make test"));
+        assert!(is_test_command("make check"));
+    }
+
+    #[test]
+    fn test_is_not_test_command() {
+        assert!(!is_test_command("ls"));
+        assert!(!is_test_command("cargo build"));
+        assert!(!is_test_command("cargo run"));
+        assert!(!is_test_command("git status"));
+        assert!(!is_test_command("echo hello"));
+        assert!(!is_test_command(""));
     }
 }

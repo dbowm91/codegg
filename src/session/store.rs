@@ -2190,3 +2190,62 @@ impl UsageStore {
         Ok(row.unwrap_or((0, 0, 0, 0.0)))
     }
 }
+
+pub struct EventStore {
+    pool: SqlitePool,
+}
+
+impl EventStore {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn append(&self, event: &super::events::SessionEvent) -> Result<(), StorageError> {
+        let meta = event.meta();
+        let event_type = event.event_type_tag();
+        let payload_json =
+            serde_json::to_string(event).map_err(|e| StorageError::Database(e.to_string()))?;
+        let created_at = meta.created_at.to_rfc3339();
+
+        sqlx::query(
+            r#"
+            INSERT INTO session_events (id, session_id, created_at, event_type, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&meta.id)
+        .bind(&meta.session_id)
+        .bind(&created_at)
+        .bind(event_type)
+        .bind(&payload_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    pub async fn list_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<super::events::SessionEvent>, StorageError> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            r#"
+            SELECT payload_json FROM session_events
+            WHERE session_id = ?
+            ORDER BY created_at ASC, id ASC
+            "#,
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        rows.into_iter()
+            .map(|(payload,)| {
+                serde_json::from_str::<super::events::SessionEvent>(&payload)
+                    .map_err(|e| StorageError::Database(format!("failed to deserialize event: {}", e)))
+            })
+            .collect()
+    }
+}

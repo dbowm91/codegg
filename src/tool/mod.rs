@@ -26,6 +26,7 @@ pub mod plan;
 pub mod question;
 pub mod read;
 pub mod replace;
+pub mod risk;
 pub mod review;
 pub mod security;
 pub mod skill;

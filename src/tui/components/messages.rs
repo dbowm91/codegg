@@ -460,6 +460,9 @@ impl MessagesWidget {
                 duration_ms: None,
                 exit_code: None,
                 output_lines: None,
+                risk: crate::session::events::ToolRisk::Unknown,
+                summary: None,
+                cwd: None,
             },
         );
         self.flattened_tool_calls_cache.borrow_mut().take();
