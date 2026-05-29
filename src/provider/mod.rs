@@ -108,6 +108,49 @@ impl Provider for Box<dyn Provider> {
     }
 }
 
+/// Provider capabilities for tool deferral and request limits.
+///
+/// Determines which providers support deferred tool loading and tool references,
+/// allowing the agent loop to partition tools into immediate vs deferred arrays.
+#[derive(Debug, Clone)]
+pub struct ProviderCapabilities {
+    pub supports_defer_loading: bool,
+    pub supports_tool_references: bool,
+    pub max_tools_per_request: Option<usize>,
+}
+
+impl Default for ProviderCapabilities {
+    fn default() -> Self {
+        Self {
+            supports_defer_loading: false,
+            supports_tool_references: false,
+            max_tools_per_request: None,
+        }
+    }
+}
+
+impl ProviderCapabilities {
+    /// Get capabilities for a specific provider by ID.
+    ///
+    /// Conservative defaults: providers without explicit support
+    /// default to not supporting deferral.
+    pub fn for_provider(provider_id: &str) -> Self {
+        match provider_id {
+            "anthropic" => Self {
+                supports_defer_loading: true,
+                supports_tool_references: true,
+                max_tools_per_request: None,
+            },
+            "openai" => Self {
+                supports_defer_loading: true,
+                supports_tool_references: true,
+                max_tools_per_request: Some(128),
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub messages: Vec<Message>,

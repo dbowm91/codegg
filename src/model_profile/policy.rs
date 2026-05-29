@@ -39,11 +39,38 @@ fn inject_todo_discipline(messages: &mut Vec<Message>, profile: &ResolvedModelPr
     inject_control_text(messages, profile, text);
 }
 
+fn content_already_present(messages: &[Message], text: &str) -> bool {
+    for msg in messages {
+        match msg {
+            Message::System { content } => {
+                if content.contains(text) {
+                    return true;
+                }
+            }
+            Message::User { content } => {
+                for part in content {
+                    if let ContentPart::Text { text: t } = part {
+                        if t.contains(text) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn inject_control_text(
     messages: &mut Vec<Message>,
     profile: &ResolvedModelProfile,
     text: &str,
 ) {
+    if content_already_present(messages, text) {
+        return;
+    }
+
     if let Some(Message::System { content }) = messages.first_mut() {
         let merged = format!("{content}\n\n{text}");
         *content = merged.into();
@@ -78,6 +105,10 @@ pub fn push_control_instruction(
     profile: &ResolvedModelProfile,
     content: &str,
 ) {
+    if content_already_present(messages, content) {
+        return;
+    }
+
     if should_avoid_late_system_messages(profile) {
         if let Some(Message::System {
             content: system_content,
@@ -222,5 +253,92 @@ mod tests {
             }
             _ => panic!("Expected system message"),
         }
+    }
+
+    #[test]
+    fn test_dedup_push_control_skips_duplicate() {
+        let mut messages = vec![Message::System {
+            content: "Base".to_string().into(),
+        }];
+        let profile = infer_builtin_profile("openai/gpt-5");
+        push_control_instruction(&mut messages, &profile, "unique instruction X");
+        push_control_instruction(&mut messages, &profile, "unique instruction X");
+
+        let count = messages.iter().filter(|m| {
+            matches!(m, Message::System { content } if content.as_ref().contains("unique instruction X"))
+        }).count();
+        assert_eq!(count, 1, "Instruction should appear exactly once");
+    }
+
+    #[test]
+    fn test_dedup_inject_control_skips_duplicate() {
+        let mut messages = vec![Message::System {
+            content: "Base".to_string().into(),
+        }];
+        let profile = infer_builtin_profile("openai/gpt-5");
+        inject_control_text(&mut messages, &profile, "duplicate text Y");
+        inject_control_text(&mut messages, &profile, "duplicate text Y");
+
+        match &messages[0] {
+            Message::System { content } => {
+                let needle = "duplicate text Y";
+                let first_pos = content.find(needle).unwrap();
+                let second_pos = content[first_pos + needle.len()..].find(needle);
+                assert!(second_pos.is_none(), "Text should not appear twice");
+            }
+            _ => panic!("Expected system message"),
+        }
+    }
+
+    #[test]
+    fn test_dedup_different_instructions_not_skipped() {
+        let mut messages = vec![Message::System {
+            content: "Base".to_string().into(),
+        }];
+        let profile = infer_builtin_profile("openai/gpt-5");
+        push_control_instruction(&mut messages, &profile, "instruction A");
+        push_control_instruction(&mut messages, &profile, "instruction B");
+
+        let has_a = messages.iter().any(|m| {
+            matches!(m, Message::System { content } if content.as_ref().contains("instruction A"))
+        });
+        let has_b = messages.iter().any(|m| {
+            matches!(m, Message::System { content } if content.as_ref().contains("instruction B"))
+        });
+        assert!(has_a, "instruction A should be present");
+        assert!(has_b, "instruction B should be present");
+    }
+
+    #[test]
+    fn test_dedup_startup_policy_no_double_injection() {
+        let mut messages = vec![Message::System {
+            content: "Base system prompt".to_string().into(),
+        }];
+        let profile = infer_builtin_profile("minimax/minimax-2.7");
+        apply_startup_profile_policy(&mut messages, &profile);
+        apply_startup_profile_policy(&mut messages, &profile);
+
+        match &messages[0] {
+            Message::System { content } => {
+                let tool_count = content.matches("Tool-use contract").count();
+                assert_eq!(tool_count, 1, "Tool-use contract should appear exactly once");
+                let patch_count = content.matches("Patch discipline").count();
+                assert_eq!(patch_count, 1, "Patch discipline should appear exactly once");
+            }
+            _ => panic!("Expected system message"),
+        }
+    }
+
+    #[test]
+    fn test_dedup_user_message_path() {
+        let profile = infer_builtin_profile("ollama/qwen2.5-coder:32b");
+        let mut messages = vec![];
+        inject_control_text(&mut messages, &profile, "user path text Z");
+        inject_control_text(&mut messages, &profile, "user path text Z");
+
+        let count = messages.iter().filter(|m| {
+            matches!(m, Message::User { content } if content.iter().any(|p| matches!(p, ContentPart::Text { text } if text.as_ref().contains("user path text Z"))))
+        }).count();
+        assert_eq!(count, 1, "User message should appear exactly once");
     }
 }

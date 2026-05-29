@@ -24,6 +24,17 @@ Items marked **FUTURE** are explicitly deferred to later phases.
 | TodoUpdated event | `src/bus/events.rs:49` | `AppEvent::TodoUpdated { session_id: String }` exists |
 | Todo persistence wiring | `src/session/store.rs:1550-1744` | Full `TodoStore` with list/set/add/update/remove/clear; `to_session_input()` and `from_session_model()` exist; load on resume at `src/core/mod.rs:202`; save on write at `src/tool/todo.rs:167-175` |
 | Todo task_state_policy via model_profile | By design | Works through `model_profile` override - no dedicated top-level config needed |
+| Changed files panel | `src/tui/components/dialogs/review.rs` | `ReviewDialog` component with `FileList` and `DiffView` modes, `/review` command, status bar integration at `src/tui/app/mod.rs:1474-1478` |
+| File-level diff navigation | `src/tui/components/dialogs/review.rs` + `src/tui/app/mod.rs:4865-4924` | `/review` opens file list, Enter opens per-file diff via `similar` crate. `/diff <path>` runs `git diff` |
+| Profile-aware tool exposure mode filtering | `src/agent/policy.rs:5` + `src/agent/loop.rs:736-778` | `ToolExposureMode` enum (Full/Curated/MinimalWithDiscovery), per-profile mapping in `default_tool_exposure()`, `apply_tool_exposure_filter()` with allowlists, 5 tests |
+| Prompt assembly dedupe | `src/model_profile/policy.rs:42-72` | `content_already_present()` helper scans messages for duplicate text. Guards in `inject_control_text()` and `push_control_instruction()`. 5 dedup tests |
+| Security-review auto-invocation | `src/agent/loop.rs` + `src/config/schema.rs:832` | `maybe_spawn_security_review()` triggers on high-signal findings or sensitive path edits. Config-gated via `auto_invoke_review_agent: bool`. Non-blocking `tokio::spawn`. Session-end review trigger |
+| Provider capability detection | `src/provider/mod.rs:111-140` | `ProviderCapabilities` struct with `supports_defer_loading`, `supports_tool_references`, `max_tools_per_request`. `for_provider()` method with Anthropic/OpenAI defaults |
+| Tool deferral partitioning | `src/agent/loop.rs` | `build_tool_definitions()` partitions into immediate vs deferred based on provider capabilities, config, and `defer_loading` flag. Deferred tools stored in `deferred_tool_definitions` field |
+| Tool deferral config | `src/config/schema.rs` | `ToolDeferralConfig` struct: `defer_loading`, `always_loaded`, `search_mode`, `max_initial_tools`. Wired into `Config.tool_deferral` |
+| `/research` TUI command | `src/tui/command.rs` + `src/tui/app/mod.rs` | `/research` command registered, `handle_research_command()` parses flags and spawns async research |
+| `/research-runs` and `/research-open` commands | `src/tui/command.rs` + `src/tui/app/mod.rs` | Commands registered, handlers list runs and display run details |
+| ResearchService wrapper | `src/research/service.rs` | `ResearchService` struct with `answer_for_agent()`, `create_report()`, `list_runs()`, `load_run()`. 8 unit tests |
 
 ---
 
@@ -31,60 +42,31 @@ Items marked **FUTURE** are explicitly deferred to later phases.
 
 These are real development tasks, not truly "deferred". They are active work for the current sprint.
 
-### polish.md
-
-| Item | Notes |
-|------|-------|
-| Prompt assembly cleanup verification | Verify no duplicate control paragraphs after compaction or resume. Add dedupe mechanism if needed. |
-
 ### tui.md
 
 | Item | Notes |
 |------|-------|
 | Dedicated plan panel side rendering | No dedicated side panel for goal/plan exists. Context inspector exists at `src/tui/app/mod.rs:3100`. |
-| Changed files panel | `changed_files: Vec<ChangedFileSummary>` exists in TuiSessionState but needs TUI rendering |
-| File-level diff navigation | Partial - `/review` and `/diff` commands exist but could be enhanced |
 | Hunk-level accept/reject | Optional per plan - low priority |
-
-### security.md
-
-| Item | Notes |
-|------|-------|
-| Auto-invocation of security-review agent | Agent exists at `src/agent/mod.rs:285-317` but not automatically invoked. Need to wire trigger heuristics. |
 
 ### deepresearch.md
 
 | Item | Notes |
 |------|-------|
-| `/research` TUI slash command | Need to add to TUI command registry |
-| TUI research browser | Not implemented |
-| `/research-runs`, `/research-open`, `/research-show` commands | Not implemented |
-| ResearchService exposed to agent system | Not implemented |
-| Planner/reviewer `ResearchTool` integration | Not implemented |
-| Trigger heuristics for research invocation | Not implemented |
-| Research runs list view | Not implemented |
-| Run details, sources, claims, report views | Not implemented |
+| TUI research browser | Not implemented - needs dedicated browser view for runs, sources, claims, reports |
+| Planner/reviewer `ResearchTool` integration | Not implemented - agent system needs tool to call ResearchService |
+| Trigger heuristics for research invocation | Not implemented - auto-invoke research when task touches unknown APIs/libs |
+| Run details, sources, claims, report views | Not implemented - detailed views for research artifacts |
+| `/research-show` command | Not implemented - `/research-show report <run_id>`, `/research-show handoff <run_id>`, etc. |
 
 ### tooluse.md
 
 | Item | Notes |
 |------|-------|
-| Provider capability detection | Need `ProviderCapabilities::for_provider()` to detect defer_loading support |
-| Immediate vs deferred tool partitioning in AgentLoop | Need to separate tools into immediate/deferred arrays in ChatRequest |
-| Anthropic `defer_loading` support | Need provider-level support |
+| Anthropic `defer_loading` support | Need provider-level support to send `defer_loading` in API request |
 | OpenAI fallback for non-supporting models | Need fallback for providers without defer_loading |
-| Provider-level deferred_tools array | Need to wire deferred_tools into actual provider requests |
+| Provider-level deferred_tools array | Need to wire deferred_tools into actual provider request structs |
 | MCP tool catalog deferral | MCP tools don't yet set defer_loading based on catalog |
-| `tools.defer_loading` config option | Need config schema for tools.defer_loading |
-| `tools.always_loaded` config option | Need config schema for tools.always_loaded |
-| `tools.search_mode` config option | Need config schema for tools.search_mode |
-| `tools.max_initial_tools` config option | Need config schema for tools.max_initial_tools |
-
-### prompting.md
-
-| Item | Notes |
-|------|-------|
-| Profile-aware tool exposure mode filtering | `apply_tool_exposure_filter()` exists but full Curated/MinimalWithDiscovery/Full modes not fully wired |
 
 ---
 
@@ -111,8 +93,8 @@ These are planned for future work and are explicitly NOT in the current sprint.
 
 | Category | Count | Status |
 |----------|-------|--------|
-| Truly completed (verified in code) | 11 | DONE |
-| Real development tasks | 17 | ACTIVE |
+| Truly completed (verified in code) | 24 | DONE |
+| Real development tasks | 10 | ACTIVE |
 | Explicitly future/deferred | 10 | FUTURE |
 
-**Total**: 38 discrete items across 7 plan files
+**Total**: 44 discrete items across 7 plan files

@@ -3647,6 +3647,34 @@ impl App {
                     self.handle_revert_command(path_arg);
                 }
             }
+            "/research" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.trim_start_matches("/research").trim();
+                self.ui_state.command_mode = false;
+                if args.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /research <question> [--mode <mode>] [--depth <depth>]");
+                } else {
+                    self.handle_research_command(args);
+                }
+            }
+            "/research-runs" => {
+                self.ui_state.command_mode = false;
+                self.handle_research_runs_command();
+            }
+            "/research-open" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let run_id = query.trim_start_matches("/research-open").trim();
+                self.ui_state.command_mode = false;
+                if run_id.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /research-open <run_id>");
+                } else {
+                    self.handle_research_open_command(run_id);
+                }
+            }
             _ => {}
         }
     }
@@ -5202,6 +5230,164 @@ impl App {
                     .warning(&format!("Unknown memory command: /{}", cmd));
             }
         }
+    }
+
+    fn handle_research_command(&mut self, args: &str) {
+        if self.prompt_state.pending_send {
+            self.messages_state
+                .toasts
+                .warning("Still waiting for previous prompt to finish");
+            return;
+        }
+
+        // Parse flags from args
+        let mut question_parts = Vec::new();
+        let mut mode = "narrow-answer".to_string();
+        let mut depth = "medium".to_string();
+
+        let mut iter = args.split_whitespace();
+        while let Some(token) = iter.next() {
+            match token {
+                "--mode" => {
+                    if let Some(val) = iter.next() {
+                        mode = val.to_string();
+                    }
+                }
+                "--depth" => {
+                    if let Some(val) = iter.next() {
+                        depth = val.to_string();
+                    }
+                }
+                _ => question_parts.push(token),
+            }
+        }
+
+        let question = question_parts.join(" ");
+        if question.is_empty() {
+            self.messages_state
+                .toasts
+                .warning("Usage: /research <question> [--mode <mode>] [--depth <depth>]");
+            return;
+        }
+
+        let parsed_mode = match crate::research::service::parse_mode(&mode) {
+            Ok(m) => m,
+            Err(e) => {
+                self.messages_state.toasts.warning(&e.to_string());
+                return;
+            }
+        };
+        let parsed_depth = match crate::research::service::parse_depth(&depth) {
+            Ok(d) => d,
+            Err(e) => {
+                self.messages_state.toasts.warning(&e.to_string());
+                return;
+            }
+        };
+
+        let project_dir = self.session_state.project_dir.clone();
+        self.messages_state
+            .toasts
+            .info(&format!("Starting research: {}", question));
+
+        tokio::spawn(async move {
+            let service =
+                crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+            match service
+                .answer_for_agent(&question, parsed_mode, parsed_depth)
+                .await
+            {
+                Ok(answer) => {
+                    tracing::info!(
+                        "Research complete ({} chars). Artifacts at: {}",
+                        answer.len(),
+                        service.artifact_root().display()
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("Research failed: {}", e);
+                }
+            }
+        });
+    }
+
+    fn handle_research_runs_command(&mut self) {
+        let project_dir = self.session_state.project_dir.clone();
+
+        tokio::spawn(async move {
+            let service =
+                crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+            match service.list_runs().await {
+                Ok(runs) => {
+                    if runs.is_empty() {
+                        tracing::info!("No research runs found");
+                        return;
+                    }
+                    let mut lines = vec![format!("Research Runs ({} total):", runs.len())];
+                    for run in runs.iter().take(10) {
+                        let short_id: String = run.run_id.chars().take(8).collect();
+                        let status_str = match run.status {
+                            crate::research::types::RunStatus::Completed => "done",
+                            crate::research::types::RunStatus::Failed => "FAILED",
+                            _ => "running",
+                        };
+                        lines.push(format!(
+                            "  [{}] {} - {} ({:?}, {:?})",
+                            short_id, status_str, run.question, run.mode, run.depth
+                        ));
+                    }
+                    if runs.len() > 10 {
+                        lines.push(format!("  ... and {} more", runs.len() - 10));
+                    }
+                    tracing::info!("{}", lines.join("\n"));
+                }
+                Err(e) => {
+                    tracing::error!("Failed to list research runs: {}", e);
+                }
+            }
+        });
+    }
+
+    fn handle_research_open_command(&mut self, run_id: &str) {
+        let project_dir = self.session_state.project_dir.clone();
+        let run_id = run_id.to_string();
+
+        tokio::spawn(async move {
+            let service =
+                crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+            match service.load_run(&run_id).await {
+                Ok(bundle) => {
+                    let mut lines = vec![
+                        format!("Research Run: {}", run_id),
+                        format!("Question: {}", bundle.request.question),
+                        format!("Status: {:?}", bundle.status.status),
+                        format!("Mode: {:?}, Depth: {:?}", bundle.request.mode, bundle.request.depth),
+                        format!(
+                            "Counts: {} sources, {} evidence, {} claims, {} contradictions",
+                            bundle.status.counts.sources,
+                            bundle.status.counts.evidence_spans,
+                            bundle.status.counts.claims,
+                            bundle.status.counts.contradictions
+                        ),
+                        format!("Artifacts: {}", bundle.status.artifact_dir.display()),
+                    ];
+                    if let Some(ref plan) = bundle.plan {
+                        lines.push(format!("Plan scope: {}", plan.scope));
+                    }
+                    if !bundle.sources.is_empty() {
+                        lines.push(format!("Sources ({}):", bundle.sources.len()));
+                        for src in bundle.sources.iter().take(5) {
+                            let title = src.title.as_deref().unwrap_or(&src.uri);
+                            lines.push(format!("  - {}", title));
+                        }
+                    }
+                    tracing::info!("{}", lines.join("\n"));
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load research run: {}", e);
+                }
+            }
+        });
     }
 
     fn close_session(&mut self) {

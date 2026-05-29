@@ -2,6 +2,7 @@ pub mod claims;
 pub mod coordinator;
 pub mod error;
 pub mod extract;
+pub mod service;
 pub mod sources;
 pub mod store;
 pub mod synthesis;

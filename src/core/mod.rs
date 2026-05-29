@@ -198,6 +198,9 @@ impl CoreClient for InprocCoreClient {
                     self.pool.clone(),
                 );
                 agent_loop.set_session_id(&session_id);
+                if let Some(ref pool) = self.subagent_pool {
+                    agent_loop.set_subagent_pool(Arc::clone(pool));
+                }
                 agent_loop.set_task_state_policy(task_state_policy);
                 agent_loop.load_persisted_todos().await;
                 let request = ChatRequest {

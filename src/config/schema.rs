@@ -61,6 +61,7 @@ pub struct Config {
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub catalog: Option<CatalogConfig>,
+    pub tool_deferral: Option<ToolDeferralConfig>,
     pub model_profile: Option<HashMap<String, crate::model_profile::ModelProfileConfig>>,
     pub security: Option<SecurityConfig>,
 }
@@ -529,6 +530,20 @@ pub struct CatalogConfig {
     pub search_max_results: Option<usize>,
 }
 
+/// Configuration for tool deferral and partitioning behavior.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ToolDeferralConfig {
+    /// Whether tool deferral is enabled (default: true).
+    pub defer_loading: Option<bool>,
+    /// Tools that are never deferred, always included in initial requests.
+    pub always_loaded: Option<Vec<String>>,
+    /// Search mode for deferred tool discovery: "keyword", "bm25", "embeddings".
+    pub search_mode: Option<String>,
+    /// Maximum number of tools sent in the initial request.
+    pub max_initial_tools: Option<usize>,
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum PluginSpec {
@@ -814,6 +829,7 @@ pub struct SecurityConfig {
     pub sensitive_paths: Vec<SensitivePathConfig>,
     pub allowed_network_domains: Vec<String>,
     pub denied_commands: Vec<String>,
+    pub auto_invoke_review_agent: bool,
 }
 
 impl Default for SecurityConfig {
@@ -828,6 +844,7 @@ impl Default for SecurityConfig {
             sensitive_paths: Vec::new(),
             allowed_network_domains: Vec::new(),
             denied_commands: Vec::new(),
+            auto_invoke_review_agent: true,
         }
     }
 }

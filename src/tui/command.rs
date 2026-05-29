@@ -193,6 +193,12 @@ impl CommandRegistry {
                 .with_description("Show test state (/tests, /tests last, /tests failed)"),
             Command::new("/revert", CommandCategory::Agent, None)
                 .with_description("Revert a file change (/revert <path>)"),
+            Command::new("/research", CommandCategory::Agent, None)
+                .with_description("Run research on a question (/research <question> [--mode <mode>] [--depth <depth>])"),
+            Command::new("/research-runs", CommandCategory::Session, None)
+                .with_description("List recent research runs"),
+            Command::new("/research-open", CommandCategory::Session, None)
+                .with_description("Show artifacts for a research run (/research-open <run_id>)"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

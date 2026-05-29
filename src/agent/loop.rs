@@ -19,6 +19,7 @@ use crate::agent::compaction::{
 };
 use crate::agent::processor::EventProcessor;
 use crate::agent::router::ModelRouter;
+use crate::agent::worker::SubAgentRequest;
 use crate::agent::Agent;
 use crate::bus::events::AppEvent;
 use crate::bus::{PermissionRegistry, QuestionRegistry};
@@ -65,6 +66,7 @@ type ToolDefCache = (
     bool,
     usize,
     u64,
+    Vec<crate::provider::ToolDefinition>,
     Vec<crate::provider::ToolDefinition>,
 );
 
@@ -716,6 +718,7 @@ pub struct AgentLoop {
     session_id: String,
     mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
     tool_def_cache: Option<ToolDefCache>,
+    deferred_tool_definitions: Vec<crate::provider::ToolDefinition>,
     model_router: ModelRouter,
     snapshot_manager: Option<crate::snapshot::SnapshotManager>,
     file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
@@ -730,6 +733,7 @@ pub struct AgentLoop {
     active_tool_timings: HashMap<String, Instant>,
     execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
     original_user_prompt: Option<String>,
+    subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
 }
 
 impl AgentLoop {
@@ -881,6 +885,7 @@ impl AgentLoop {
             session_id: String::new(),
             mcp_service,
             tool_def_cache: None,
+            deferred_tool_definitions: Vec::new(),
             model_router,
             snapshot_manager,
             file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
@@ -895,6 +900,7 @@ impl AgentLoop {
             active_tool_timings: HashMap::new(),
             execution_policy: None,
             original_user_prompt: None,
+            subagent_pool: None,
         }
     }
 
@@ -1021,6 +1027,10 @@ impl AgentLoop {
 
     pub fn set_session_id(&mut self, id: &str) {
         self.session_id = id.to_string();
+    }
+
+    pub fn set_subagent_pool(&mut self, pool: Arc<crate::agent::worker::SubAgentPool>) {
+        self.subagent_pool = Some(pool);
     }
 
     pub fn session_id(&self) -> &str {
@@ -1441,6 +1451,7 @@ impl AgentLoop {
             cache_mcp_count,
             cache_perm_ver,
             ref cached_defs,
+            ref cached_deferred,
         )) = self.tool_def_cache
         {
             if cache_model.as_ref().map(|s| s.as_str()) == model.map(|s| s.as_str())
@@ -1451,6 +1462,7 @@ impl AgentLoop {
             {
                 let mut definitions = cached_defs.clone();
                 definitions.extend(mcp_tools.iter().cloned());
+                self.deferred_tool_definitions = cached_deferred.clone();
 
                 if let Some(ref plugin_svc) = self.plugin_service {
                     let input = serde_json::json!({
@@ -1482,7 +1494,7 @@ impl AgentLoop {
         let flags = compute_model_flags(model);
         let filtered =
             filter_tools_for_model(model, &tools, self.state.plan_mode, lsp_enabled, &flags);
-        let definitions: Vec<_> = filtered
+        let all_definitions: Vec<_> = filtered
             .iter()
             .map(|t| crate::provider::ToolDefinition {
                 name: t.name().to_string(),
@@ -1492,11 +1504,77 @@ impl AgentLoop {
             })
             .collect();
 
-        let definitions = self.apply_tool_exposure_filter(definitions);
+        let all_definitions = self.apply_tool_exposure_filter(all_definitions);
+
+        // Partition tools into immediate vs deferred based on provider capabilities
+        let provider_id = self.provider.id();
+        let caps = crate::provider::ProviderCapabilities::for_provider(provider_id);
+        let deferral_enabled = self
+            .config
+            .tool_deferral
+            .as_ref()
+            .and_then(|td| td.defer_loading)
+            .unwrap_or(true);
+
+        let always_loaded: Vec<String> = self
+            .config
+            .tool_deferral
+            .as_ref()
+            .and_then(|td| td.always_loaded.clone())
+            .unwrap_or_default();
+
+        let max_initial = self
+            .config
+            .tool_deferral
+            .as_ref()
+            .and_then(|td| td.max_initial_tools);
+
+        let (definitions, deferred) = if deferral_enabled && caps.supports_defer_loading {
+            let mut immediate = Vec::new();
+            let mut deferred_tools = Vec::new();
+
+            for def in all_definitions {
+                let is_always_loaded = always_loaded.iter().any(|n| n == &def.name);
+                let should_defer = !is_always_loaded
+                    && def.defer_loading == Some(true);
+
+                if should_defer {
+                    deferred_tools.push(def);
+                } else {
+                    immediate.push(def);
+                }
+            }
+
+            // Apply max_initial_tools cap if configured
+            let immediate = if let Some(max) = max_initial {
+                if immediate.len() > max {
+                    // Move excess tools to deferred
+                    let (kept, excess) = immediate.split_at(max);
+                    let mut deferred_tools = deferred_tools;
+                    deferred_tools.extend(excess.iter().cloned());
+                    self.deferred_tool_definitions = deferred_tools;
+                    kept.to_vec()
+                } else {
+                    self.deferred_tool_definitions = deferred_tools;
+                    immediate
+                }
+            } else {
+                self.deferred_tool_definitions = deferred_tools;
+                immediate
+            };
+
+            (immediate, self.deferred_tool_definitions.clone())
+        } else {
+            // Provider doesn't support defer_loading or deferral is disabled: all tools immediate
+            self.deferred_tool_definitions.clear();
+            (all_definitions, Vec::new())
+        };
 
         // Update tool_search with available tool names so search results
         // only include tools the LLM can actually call
-        let available_names: Vec<String> = definitions.iter().map(|t| t.name.clone()).collect();
+        let mut available_names: Vec<String> = definitions.iter().map(|t| t.name.clone()).collect();
+        // Also include deferred tool names so they can be found via search
+        available_names.extend(deferred.iter().map(|t| t.name.clone()));
         self.tool_registry
             .set_search_tool_available_tools(available_names);
 
@@ -1507,6 +1585,7 @@ impl AgentLoop {
             mcp_tool_count,
             permission_version,
             definitions.clone(),
+            deferred,
         ));
 
         let mut result = definitions;
@@ -1968,6 +2047,41 @@ impl AgentLoop {
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
 
+            // Auto-invoke security-review subagent if triggered by high-risk tools or sensitive paths
+            if just_executed_tools {
+                let high_risk_findings: Vec<_> = self
+                    .recent_findings
+                    .iter()
+                    .filter(|f| f.is_high_signal())
+                    .cloned()
+                    .collect();
+                let edited_paths: Vec<String> = tool_calls
+                    .iter()
+                    .filter(|tc| is_file_modifying_tool(&tc.name))
+                    .filter_map(extract_path_from_tool_call)
+                    .collect();
+                let sensitive_edits: Vec<String> = edited_paths
+                    .iter()
+                    .filter(|p| {
+                        self.config.security.as_ref().is_some_and(|sec| {
+                            crate::security::matches_sensitive_path(
+                                Some(p.as_str()),
+                                &sec.sensitive_paths,
+                            )
+                            .is_some()
+                        })
+                    })
+                    .cloned()
+                    .collect();
+                if !high_risk_findings.is_empty() || !sensitive_edits.is_empty() {
+                    self.maybe_spawn_security_review(
+                        &high_risk_findings,
+                        &sensitive_edits,
+                        false,
+                    );
+                }
+            }
+
             if tool_results
                 .iter()
                 .any(|(_, out)| tool_result_is_success(out))
@@ -2079,6 +2193,17 @@ impl AgentLoop {
             .await;
         self.publish_agent_finished(&all_events);
 
+        // Auto-invoke security-review subagent at session end for comprehensive review
+        {
+            let findings: Vec<_> = self
+                .recent_findings
+                .iter()
+                .filter(|f| f.is_high_signal())
+                .cloned()
+                .collect();
+            self.maybe_spawn_security_review(&findings, &[], true);
+        }
+
         let session_end_ctx = crate::hooks::HookContext {
             event: crate::hooks::HookEvent::SessionEnd,
             session_id: Some(self.session_id.clone()),
@@ -2119,6 +2244,93 @@ impl AgentLoop {
                 }
             }
         }
+    }
+
+    /// Evaluate heuristics and optionally spawn the security-review subagent.
+    ///
+    /// Triggers when:
+    /// - A tool call is classified as high-risk by SecurityService
+    /// - A file edit touches a sensitive path
+    /// - `at_session_end` is true (pre-commit style review)
+    ///
+    /// Spawns as a background task — never blocks the main agent loop.
+    fn maybe_spawn_security_review(
+        &self,
+        triggered_findings: &[crate::security::finding::SecurityFinding],
+        edited_paths: &[String],
+        at_session_end: bool,
+    ) {
+        let Some(ref pool) = self.subagent_pool else {
+            return;
+        };
+
+        let _sec_config = match self.config.security.as_ref() {
+            Some(c) if c.auto_invoke_review_agent && c.enabled => c,
+            _ => return,
+        };
+
+        if !at_session_end && triggered_findings.is_empty() && edited_paths.is_empty() {
+            return;
+        }
+
+        let mut context_parts = Vec::new();
+
+        if at_session_end {
+            context_parts.push("Pre-commit security review requested.".to_string());
+        }
+
+        if !edited_paths.is_empty() {
+            context_parts.push(format!(
+                "Files modified this session:\n{}",
+                edited_paths
+                    .iter()
+                    .map(|p| format!("- {}", p))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        if !triggered_findings.is_empty() {
+            let finding_lines: Vec<String> = triggered_findings
+                .iter()
+                .take(10)
+                .map(|f| format!("- {}", f.compact_summary()))
+                .collect();
+            context_parts.push(format!(
+                "Security findings from tool classification:\n{}",
+                finding_lines.join("\n")
+            ));
+        }
+
+        if let Some(ref prompt) = self.original_user_prompt {
+            context_parts.push(format!("Original user task: {}", prompt));
+        }
+
+        let prompt = format!(
+            "Review the following changes and findings for realistic security regressions.\n\n{}",
+            context_parts.join("\n\n")
+        );
+
+        let spawner = pool.spawner();
+        let task_id = rand::random::<u64>();
+        let session_id = self.session_id.clone();
+
+        let request = SubAgentRequest {
+            task_id,
+            prompt,
+            agent: "security-review".to_string(),
+            parent_id: Some(session_id),
+            denied_tools: Vec::new(),
+            allowed_paths: Vec::new(),
+            description: "Auto-triggered security review".to_string(),
+            depth: 1,
+        };
+
+        tokio::spawn(async move {
+            if let Err(e) = spawner.send(request).await {
+                tracing::warn!("Failed to spawn security-review subagent: {}", e);
+            }
+        });
     }
 
     fn drain_file_change_events(&mut self) -> Vec<(String, Option<String>)> {
