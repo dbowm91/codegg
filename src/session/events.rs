@@ -73,6 +73,7 @@ pub enum PlanItemStatus {
     InProgress,
     Done,
     Skipped,
+    Blocked,
 }
 
 // ---------------------------------------------------------------------------

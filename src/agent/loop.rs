@@ -685,6 +685,36 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
+    /// Apply tool exposure filtering based on execution policy's initial_tool_mode.
+    fn apply_tool_exposure_filter(
+        &self,
+        definitions: Vec<crate::provider::ToolDefinition>,
+    ) -> Vec<crate::provider::ToolDefinition> {
+        let Some(ref policy) = self.execution_policy else {
+            return definitions;
+        };
+        match policy.initial_tool_mode {
+            crate::agent::policy::ToolExposureMode::Full => definitions,
+            crate::agent::policy::ToolExposureMode::Curated => {
+                let core_tools = ["read", "list", "grep", "glob", "codesearch", "edit",
+                    "apply_patch", "bash", "git", "diff", "todoread", "todowrite",
+                    "question", "tool_search", "skill"];
+                definitions
+                    .into_iter()
+                    .filter(|t| core_tools.contains(&t.name.as_str()))
+                    .collect()
+            }
+            crate::agent::policy::ToolExposureMode::MinimalWithDiscovery => {
+                let minimal_tools = ["read", "list", "grep", "codesearch", "edit",
+                    "apply_patch", "bash", "question", "todowrite", "todoread", "tool_search"];
+                definitions
+                    .into_iter()
+                    .filter(|t| minimal_tools.contains(&t.name.as_str()))
+                    .collect()
+            }
+        }
+    }
+
     pub fn new(
         agents: Vec<Agent>,
         provider: Box<dyn crate::provider::Provider>,
@@ -1218,6 +1248,15 @@ impl AgentLoop {
         }
     }
 
+    fn apply_model_profile_defaults(&self, request: &mut ChatRequest, profile: &crate::model_profile::types::ResolvedModelProfile) {
+        if request.reasoning_effort.is_none() {
+            request.reasoning_effort = profile.default_reasoning_effort.clone();
+        }
+        if request.thinking_budget.is_none() {
+            request.thinking_budget = profile.default_thinking_budget;
+        }
+    }
+
     fn apply_auto_routing(&self, request: &mut ChatRequest) {
         if !self.model_router.is_enabled() {
             return;
@@ -1389,9 +1428,11 @@ impl AgentLoop {
             })
             .collect();
 
+        let definitions = self.apply_tool_exposure_filter(definitions);
+
         // Update tool_search with available tool names so search results
         // only include tools the LLM can actually call
-        let available_names: Vec<String> = filtered.iter().map(|t| t.name().to_string()).collect();
+        let available_names: Vec<String> = definitions.iter().map(|t| t.name.clone()).collect();
         self.tool_registry
             .set_search_tool_available_tools(available_names);
 
@@ -1590,6 +1631,7 @@ impl AgentLoop {
 
         let exec_policy = crate::agent::policy::ExecutionPolicy::from_profile(&model_profile, &self.config);
         self.set_execution_policy(exec_policy.clone());
+        self.apply_model_profile_defaults(&mut request, &model_profile);
         tracing::debug!(
             "Execution policy resolved: model={}, context_window={}, threshold={}, tool_mode={:?}, max_parallel={}",
             exec_policy.model,

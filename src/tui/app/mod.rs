@@ -1417,6 +1417,9 @@ impl App {
                         crate::session::events::PlanItemStatus::Skipped => {
                             ("[-]", Style::default().fg(theme.muted))
                         }
+                        crate::session::events::PlanItemStatus::Blocked => {
+                            ("[?]", Style::default().fg(theme.error))
+                        }
                         crate::session::events::PlanItemStatus::Pending => {
                             ("[ ]", Style::default().fg(theme.muted))
                         }
@@ -3494,7 +3497,7 @@ impl App {
                         let status = match subcmd {
                             "done" => crate::session::events::PlanItemStatus::Done,
                             "skip" => crate::session::events::PlanItemStatus::Skipped,
-                            "block" => crate::session::events::PlanItemStatus::Pending,
+                            "block" => crate::session::events::PlanItemStatus::Blocked,
                             _ => crate::session::events::PlanItemStatus::Pending,
                         };
                         let index: Option<usize> = args.parse().ok();
@@ -3542,6 +3545,7 @@ impl App {
                                             crate::session::events::PlanItemStatus::Done => "[x]",
                                             crate::session::events::PlanItemStatus::InProgress => "[>]",
                                             crate::session::events::PlanItemStatus::Skipped => "[-]",
+                                            crate::session::events::PlanItemStatus::Blocked => "[?]",
                                             crate::session::events::PlanItemStatus::Pending => "[ ]",
                                         };
                                         format!("{} {} {}", i, icon, item.text)
@@ -6620,6 +6624,7 @@ impl App {
                     crate::session::events::PlanItemStatus::Done => "[x]",
                     crate::session::events::PlanItemStatus::InProgress => "[~]",
                     crate::session::events::PlanItemStatus::Skipped => "[-]",
+                    crate::session::events::PlanItemStatus::Blocked => "[?]",
                     crate::session::events::PlanItemStatus::Pending => "[ ]",
                 };
                 md.push_str(&format!("- {} {}", check, item.text));
