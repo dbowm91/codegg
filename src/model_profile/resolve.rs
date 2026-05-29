@@ -1,5 +1,7 @@
 use crate::config::schema::Config;
-use crate::model_profile::types::{ModelProfileConfig, PromptProfileKind, ReliabilityTier, ResolvedModelProfile};
+use crate::model_profile::types::{
+    ModelProfileConfig, PromptProfileKind, ReliabilityTier, ResolvedModelProfile, TaskStatePolicy,
+};
 
 pub struct ModelProfileResolver<'a> {
     config: &'a Config,
@@ -94,6 +96,9 @@ pub fn apply_config_override(
     if let Some(ref v) = cfg.disabled_tools {
         base.disabled_tools = Some(v.clone());
     }
+    if let Some(ref v) = cfg.task_state_policy {
+        base.task_state_policy = base.task_state_policy.apply_config(v);
+    }
     base
 }
 
@@ -165,6 +170,7 @@ fn frontier_reasoning(model: &str, family: &str) -> ResolvedModelProfile {
         max_parallel_tools: None,
         preferred_tools: None,
         disabled_tools: None,
+        task_state_policy: TaskStatePolicy::default(),
     }
 }
 
@@ -188,6 +194,7 @@ fn frontier_executor(model: &str, family: &str) -> ResolvedModelProfile {
         max_parallel_tools: None,
         preferred_tools: None,
         disabled_tools: None,
+        task_state_policy: TaskStatePolicy::default(),
     }
 }
 
@@ -211,6 +218,7 @@ fn fast_executor_tool_fragile(model: &str, family: &str) -> ResolvedModelProfile
         max_parallel_tools: None,
         preferred_tools: None,
         disabled_tools: None,
+        task_state_policy: TaskStatePolicy::default(),
     }
 }
 
@@ -234,6 +242,7 @@ fn long_context_planner(model: &str, family: &str) -> ResolvedModelProfile {
         max_parallel_tools: None,
         preferred_tools: None,
         disabled_tools: None,
+        task_state_policy: TaskStatePolicy::default(),
     }
 }
 
@@ -257,6 +266,7 @@ fn local_or_open_executor(model: &str, family: &str) -> ResolvedModelProfile {
         disabled_tools: None,
         default_reasoning_effort: None,
         default_thinking_budget: None,
+        task_state_policy: TaskStatePolicy::default(),
     }
 }
 
@@ -280,6 +290,7 @@ fn local_strict(model: &str, family: &str) -> ResolvedModelProfile {
         disabled_tools: None,
         default_reasoning_effort: None,
         default_thinking_budget: None,
+        task_state_policy: TaskStatePolicy::default(),
     }
 }
 
@@ -303,6 +314,7 @@ pub fn default_profile(model: &str) -> ResolvedModelProfile {
         max_parallel_tools: None,
         preferred_tools: None,
         disabled_tools: None,
+        task_state_policy: TaskStatePolicy::default(),
     }
 }
 

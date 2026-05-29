@@ -47,7 +47,9 @@ impl NotificationManager {
     ) -> Notification {
         #[cfg(target_os = "linux")]
         {
-            return notification.urgency(notification_type.urgency());
+            let mut notification = notification;
+            notification.urgency(notification_type.urgency());
+            return notification;
         }
 
         #[cfg(not(target_os = "linux"))]

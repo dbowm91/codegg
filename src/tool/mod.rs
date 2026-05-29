@@ -183,6 +183,70 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn with_session_defaults(
+        todo_state: std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
+        policy: crate::model_profile::types::TaskStatePolicy,
+        pool: Option<sqlx::SqlitePool>,
+        session_id: Option<String>,
+    ) -> Self {
+        let mut registry = Self::new();
+        registry.register(crate::tool::bash::BashTool::default());
+        registry.register(crate::tool::read::ReadTool::default());
+        registry.register(crate::tool::edit::EditTool::default());
+        registry.register(crate::tool::write::WriteTool::default());
+        registry.register(crate::tool::glob::GlobTool::default());
+        registry.register(crate::tool::grep::GrepTool::default());
+        registry.register(crate::tool::list::ListTool::default());
+        registry.register(crate::tool::task::TaskTool::default());
+        registry.register(crate::tool::webfetch::WebFetchTool::default());
+        registry.register(crate::tool::websearch::WebSearchTool::default());
+        registry.register(crate::tool::image::ImageTool::default());
+        registry.register(crate::tool::codesearch::CodeSearchTool);
+        registry.register(crate::tool::question::QuestionTool);
+        // Register todowrite/todoread based on policy
+        use crate::model_profile::types::TodoMode;
+        if policy.mode != TodoMode::Disabled && policy.allow_model_todo_write {
+            let tool = match (pool.clone(), session_id.clone()) {
+                (Some(p), Some(sid)) => crate::tool::todo::TodoWriteTool::with_persistence(
+                    todo_state.clone(),
+                    policy.clone(),
+                    p,
+                    sid,
+                ),
+                _ => crate::tool::todo::TodoWriteTool::new(
+                    todo_state.clone(),
+                    policy.clone(),
+                ),
+            };
+            registry.register(tool);
+        }
+        if policy.allow_model_todo_read {
+            registry.register(crate::tool::todo::TodoReadTool::new(
+                todo_state.clone(),
+                policy.clone(),
+            ));
+        }
+        registry.register(crate::tool::skill::SkillTool);
+        registry.register(crate::tool::apply_patch::ApplyPatchTool::new());
+        registry.register(crate::tool::diff::DiffTool::default());
+        registry.register(crate::tool::replace::ReplaceTool::default());
+        registry.register(crate::tool::review::ReviewTool::default());
+        registry.register(crate::tool::terminal::TerminalTool::default());
+        registry.register(crate::tool::git::GitTool::default());
+        registry.register(crate::tool::lsp::LspTool::new(Arc::new(
+            crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default()),
+        )));
+        registry.register(crate::tool::commit::CommitTool::new());
+        registry.register(crate::tool::security::SecurityTool);
+        registry.register(crate::tool::plan::PlanEnterTool);
+        registry.register(crate::tool::plan::PlanExitTool);
+        registry.register(crate::tool::invalid::InvalidTool);
+        let search_tool =
+            crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
+        registry.register(search_tool);
+        registry
+    }
+
     pub fn set_search_tool_available_tools(&mut self, available: Vec<String>) {
         if let Some(tool) = self.tools.get_mut("tool_search") {
             tool.set_available_tools(available);

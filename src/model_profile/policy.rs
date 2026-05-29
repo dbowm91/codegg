@@ -12,6 +12,8 @@ pub fn apply_startup_profile_policy(
     if profile.prefers_small_patches {
         inject_small_patch_contract(messages, profile);
     }
+
+    inject_todo_discipline(messages, profile);
 }
 
 fn inject_tool_contract(messages: &mut Vec<Message>, profile: &ResolvedModelProfile) {
@@ -24,6 +26,17 @@ fn inject_small_patch_contract(messages: &mut Vec<Message>, profile: &ResolvedMo
     let contract = "Patch discipline: Prefer small, targeted edits. Do not rewrite unrelated files. Inspect the relevant file region before editing when possible.";
 
     inject_control_text(messages, profile, contract);
+}
+
+fn inject_todo_discipline(messages: &mut Vec<Message>, profile: &ResolvedModelProfile) {
+    use crate::model_profile::types::TodoMode;
+    let text = match profile.task_state_policy.mode {
+        TodoMode::Disabled => return,
+        TodoMode::SparsePlan => "Task planning: Use todos only for non-trivial multi-step work. Keep the list short. Maintain exactly one in-progress item. Update it at meaningful milestones, not after every minor read.",
+        TodoMode::ExplicitTodo => "Task planning: For multi-step coding work, keep a short todo list. Keep exactly one item in_progress. Mark items completed only after verification. Update the list when task direction changes.",
+        TodoMode::GuidedCurrentTask => "Task planning: Follow the active task reminder. Do not create or rewrite the global todo list unless explicitly allowed. Complete the current task, report blockers, then proceed.",
+    };
+    inject_control_text(messages, profile, text);
 }
 
 fn inject_control_text(
@@ -117,7 +130,8 @@ mod tests {
         let profile = infer_builtin_profile("ollama/qwen2.5-coder:32b");
         apply_startup_profile_policy(&mut messages, &profile);
 
-        assert_eq!(messages.len(), 2);
+        // tool contract + small patch + todo discipline = 3 user messages
+        assert_eq!(messages.len(), 3);
         let has_tool_contract = messages.iter().any(|m| {
             matches!(m, Message::User { content } if content.iter().any(|p| matches!(p, ContentPart::Text { text } if text.contains("Tool-use contract"))))
         });
@@ -132,10 +146,12 @@ mod tests {
         let profile = infer_builtin_profile("openai/gpt-5");
         apply_startup_profile_policy(&mut messages, &profile);
 
+        // Frontier models don't get tool contract or small patch, but do get todo discipline
         assert_eq!(messages.len(), 1);
         match &messages[0] {
             Message::System { content } => {
-                assert_eq!(content.as_ref(), "Base system prompt");
+                assert!(content.contains("Base system prompt"));
+                assert!(content.contains("Task planning"));
             }
             _ => panic!("Expected system message"),
         }
@@ -172,6 +188,39 @@ mod tests {
                 assert_eq!(content.as_ref(), "new instruction");
             }
             _ => panic!("Expected new system message"),
+        }
+    }
+
+    #[test]
+    fn test_todo_discipline_sparse_plan() {
+        let mut messages = vec![Message::System {
+            content: "Base".to_string().into(),
+        }];
+        let mut profile = infer_builtin_profile("openai/gpt-5");
+        profile.task_state_policy = crate::model_profile::types::TaskStatePolicy::sparse_plan();
+        apply_startup_profile_policy(&mut messages, &profile);
+        match &messages[0] {
+            Message::System { content } => {
+                assert!(content.contains("Task planning"));
+                assert!(content.contains("meaningful milestones"));
+            }
+            _ => panic!("Expected system message"),
+        }
+    }
+
+    #[test]
+    fn test_todo_discipline_disabled() {
+        let mut messages = vec![Message::System {
+            content: "Base".to_string().into(),
+        }];
+        let mut profile = infer_builtin_profile("openai/gpt-5");
+        profile.task_state_policy = crate::model_profile::types::TaskStatePolicy::disabled();
+        apply_startup_profile_policy(&mut messages, &profile);
+        match &messages[0] {
+            Message::System { content } => {
+                assert!(!content.contains("Task planning"));
+            }
+            _ => panic!("Expected system message"),
         }
     }
 }

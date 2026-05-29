@@ -93,7 +93,19 @@ impl CoreClient for InprocCoreClient {
                     });
                 };
                 let provider = base_provider.clone_box();
-                let mut tool_registry = crate::tool::ToolRegistry::with_defaults();
+                // Resolve model profile early for task state policy
+                let model_profile = crate::model_profile::ModelProfileResolver::new(&config)
+                    .resolve(&model_name);
+                let task_state_policy = model_profile.task_state_policy;
+                let todo_state = std::sync::Arc::new(tokio::sync::Mutex::new(
+                    crate::task_state::TodoState::new(),
+                ));
+                let mut tool_registry = crate::tool::ToolRegistry::with_session_defaults(
+                    todo_state.clone(),
+                    task_state_policy.clone(),
+                    self.pool.clone(),
+                    Some(session_id.clone()),
+                );
                 if let Some(pool) = self.subagent_pool.clone() {
                     let task_tool = crate::tool::task::TaskTool::new(
                         pool.task_store(),
@@ -186,6 +198,8 @@ impl CoreClient for InprocCoreClient {
                     self.pool.clone(),
                 );
                 agent_loop.set_session_id(&session_id);
+                agent_loop.set_task_state_policy(task_state_policy);
+                agent_loop.load_persisted_todos().await;
                 let request = ChatRequest {
                     messages,
                     model: model_name,

@@ -650,6 +650,9 @@ pub struct AgentLoop {
     pricing_service: crate::util::pricing::PricingService,
     security_service: crate::security::service::SecurityService,
     recent_findings: Vec<crate::security::finding::SecurityFinding>,
+    todo_state: std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
+    task_state_policy: crate::model_profile::types::TaskStatePolicy,
+    todo_pool: Option<sqlx::SqlitePool>,
 }
 
 impl AgentLoop {
@@ -716,6 +719,8 @@ impl AgentLoop {
             None
         };
 
+        let todo_pool = pool.clone();
+
         let usage_store = pool.map(|p| Arc::new(crate::session::UsageStore::new(p)));
         let pricing_service = crate::util::pricing::PricingService::new();
         let security_service =
@@ -762,6 +767,9 @@ impl AgentLoop {
             pricing_service,
             security_service,
             recent_findings: Vec::new(),
+            todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new())),
+            task_state_policy: crate::model_profile::types::TaskStatePolicy::explicit_todo(),
+            todo_pool,
         }
     }
 
@@ -889,6 +897,31 @@ impl AgentLoop {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub fn set_task_state_policy(&mut self, policy: crate::model_profile::types::TaskStatePolicy) {
+        self.task_state_policy = policy;
+    }
+
+    pub fn todo_state(&self) -> std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>> {
+        self.todo_state.clone()
+    }
+
+    pub async fn load_persisted_todos(&self) {
+        if let Some(pool) = &self.todo_pool {
+            if !self.session_id.is_empty() {
+                let store = crate::session::store::TodoStore::new(pool.clone());
+                match store.list(&self.session_id).await {
+                    Ok(session_items) => {
+                        let mut todo = self.todo_state.lock().await;
+                        todo.load_from_session(session_items);
+                    }
+                    Err(e) => {
+                        tracing::debug!("No persisted todos for session: {}", e);
+                    }
+                }
+            }
+        }
     }
 
     async fn stream_with_retry(&self, request: &ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
@@ -1552,6 +1585,28 @@ impl AgentLoop {
                 }
             }
 
+            // Inject todo reminder if needed
+            {
+                let mut todo = self.todo_state.lock().await;
+                let should_inject = (self.task_state_policy.inject_on_resume && self.state.turn_count == 1)
+                    || todo.reminder_pending
+                    || (self.task_state_policy.inject_after_tool_calls
+                        .map_or(false, |threshold| {
+                            todo.tool_calls_since_injection >= threshold
+                        }));
+                if should_inject {
+                    if let Some(reminder) = crate::task_state::build_todo_reminder(&todo, &self.task_state_policy) {
+                        push_control_instruction(
+                            &mut request.messages,
+                            &model_profile,
+                            &reminder,
+                        );
+                        todo.reminder_pending = false;
+                        todo.tool_calls_since_injection = 0;
+                    }
+                }
+            }
+
             self.compact_if_needed(&mut request.messages).await;
             harden_history(&mut request.messages);
 
@@ -1743,6 +1798,21 @@ impl AgentLoop {
                 };
                 self.context_tracker.add_message(&msg);
                 request.messages.push(msg);
+            }
+
+            // Track tool calls for todo reminder cadence
+            if !tool_calls.is_empty() {
+                let mut todo = self.todo_state.lock().await;
+                todo.tool_calls_since_injection += tool_calls.len();
+            }
+
+            // Reset todo injection counter if todowrite was called
+            {
+                let has_todowrite = tool_calls.iter().any(|tc| tc.name.as_str() == "todowrite");
+                if has_todowrite {
+                    let mut todo = self.todo_state.lock().await;
+                    todo.tool_calls_since_injection = 0;
+                }
             }
 
             // Compact after tool results to prevent context overflow from large outputs

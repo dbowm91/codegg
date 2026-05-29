@@ -23,6 +23,25 @@
     "max_parallel_tools": 5
   },
   
+  "model_profile": {
+    "openai/gpt-5": {
+      "task_state_policy": {
+        "mode": "explicit_todo",
+        "update_frequency": "milestones_and_task_switches",
+        "max_total_items": 10,
+        "expose_completed_items": "summary_only",
+        "allow_model_todo_read": true,
+        "allow_model_todo_write": true,
+        "require_single_in_progress": true,
+        "require_blocker_reason": false,
+        "inject_after_tool_calls": 5,
+        "inject_on_resume": true,
+        "inject_after_compaction": true,
+        "subagent_todo_access": "none"
+      }
+    }
+  },
+  
   "provider": {
     "anthropic": {
       "api_key": "sk-ant-...",
