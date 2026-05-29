@@ -681,6 +681,7 @@ pub struct AgentLoop {
     event_store: Option<Arc<crate::session::EventStore>>,
     active_tool_timings: HashMap<String, Instant>,
     execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
+    original_user_prompt: Option<String>,
 }
 
 impl AgentLoop {
@@ -801,6 +802,7 @@ impl AgentLoop {
             event_store: pool.map(|p| Arc::new(crate::session::EventStore::new(p))),
             active_tool_timings: HashMap::new(),
             execution_policy: None,
+            original_user_prompt: None,
         }
     }
 
@@ -945,6 +947,45 @@ impl AgentLoop {
 
     pub fn execution_policy(&self) -> Option<&crate::agent::policy::ExecutionPolicy> {
         self.execution_policy.as_ref()
+    }
+
+    pub async fn build_context_frame(&self) -> crate::agent::context_frame::ContextFrame {
+        let todo = self.todo_state.lock().await;
+        let current_task = todo
+            .items
+            .iter()
+            .find(|item| item.status == crate::task_state::TodoStatus::InProgress)
+            .map(|item| item.content.clone());
+        let next_steps: Vec<String> = todo
+            .items
+            .iter()
+            .filter(|item| item.status == crate::task_state::TodoStatus::Pending)
+            .take(3)
+            .map(|item| item.content.clone())
+            .collect();
+        let security_findings: Vec<String> = self
+            .recent_findings
+            .iter()
+            .filter_map(|f| {
+                let cat = format!("{:?}", f.category);
+                Some(format!("[{}] {}", cat, f.evidence))
+            })
+            .take(5)
+            .collect();
+        drop(todo);
+
+        crate::agent::context_frame::ContextFrame {
+            user_goal: self.original_user_prompt.clone(),
+            current_task,
+            constraints: Vec::new(),
+            decisions: Vec::new(),
+            touched_files: Vec::new(),
+            commands_run: Vec::new(),
+            test_results: Vec::new(),
+            unresolved_errors: Vec::new(),
+            security_findings,
+            next_steps,
+        }
     }
 
     pub fn todo_state(&self) -> std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>> {
@@ -1389,7 +1430,7 @@ impl AgentLoop {
         result
     }
 
-    async fn compact_if_needed(&mut self, messages: &mut Vec<Message>) {
+    async fn compact_if_needed(&mut self, messages: &mut Vec<Message>, model_profile: &crate::model_profile::types::ResolvedModelProfile) {
         let auto = self
             .config
             .compaction
@@ -1507,6 +1548,13 @@ impl AgentLoop {
             self.context_tracker.reset();
             self.context_tracker.add_messages(messages);
 
+            let frame = self.build_context_frame().await;
+            if !frame.is_empty() {
+                let frame_text = frame.to_control_text();
+                tracing::debug!("Inserting context frame after compaction: {} chars", frame_text.len());
+                push_control_instruction(messages, &model_profile, &frame_text);
+            }
+
             let _ = crate::bus::global::GlobalEventBus::publish(AppEvent::CompactionTriggered {
                 session_id: self.session_id.clone(),
             });
@@ -1598,6 +1646,10 @@ impl AgentLoop {
             })
             .unwrap_or_default();
 
+        if self.original_user_prompt.is_none() {
+            self.original_user_prompt = Some(original_prompt.clone());
+        }
+
         loop {
             if let Some(reason) = self.check_limits() {
                 tracing::info!("Agent loop stopping: {}", reason);
@@ -1672,7 +1724,7 @@ impl AgentLoop {
                 }
             }
 
-            self.compact_if_needed(&mut request.messages).await;
+            self.compact_if_needed(&mut request.messages, &model_profile).await;
             harden_history(&mut request.messages);
 
             let events = match self.stream_with_retry(&request).await {
@@ -1891,7 +1943,7 @@ impl AgentLoop {
             }
 
             // Compact after tool results to prevent context overflow from large outputs
-            self.compact_if_needed(&mut request.messages).await;
+            self.compact_if_needed(&mut request.messages, &model_profile).await;
 
             processor.reset();
 
@@ -2562,7 +2614,7 @@ impl AgentLoop {
             let mut post_tool_continuation_retry_budget: u8 = 0;
             let mut just_executed_tools = false;
             loop {
-                self.compact_if_needed(&mut request.messages).await;
+                self.compact_if_needed(&mut request.messages, &model_profile).await;
                 harden_history(&mut request.messages);
 
                 let events = match self.stream_with_retry(request).await {
