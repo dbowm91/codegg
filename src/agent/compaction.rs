@@ -115,24 +115,28 @@ impl ContextTracker {
         estimate_tokens_sync(text, None)
     }
 
+    fn estimate_tokens_model(&self, text: &str) -> usize {
+        estimate_tokens_sync(text, self.model.as_deref())
+    }
+
     pub fn add_message(&mut self, msg: &Message) {
         let tokens = match msg {
-            Message::System { content } => Self::estimate_tokens(content),
+            Message::System { content } => self.estimate_tokens_model(content),
             Message::User { content } => content
                 .iter()
                 .map(|p| match p {
-                    ContentPart::Text { text } => Self::estimate_tokens(text),
+                    ContentPart::Text { text } => self.estimate_tokens_model(text),
                     _ => 0,
                 })
                 .sum(),
             Message::Assistant { content, .. } => content
                 .iter()
                 .map(|p| match p {
-                    ContentPart::Text { text } => Self::estimate_tokens(text),
+                    ContentPart::Text { text } => self.estimate_tokens_model(text),
                     _ => 0,
                 })
                 .sum(),
-            Message::Tool { content, .. } => Self::estimate_tokens(content),
+            Message::Tool { content, .. } => self.estimate_tokens_model(content),
         };
         self.message_token_counts.push(tokens);
         self.current_tokens += tokens;
@@ -204,22 +208,22 @@ impl ContextTracker {
         let mut total = 0usize;
         for msg in messages {
             total += match msg {
-                Message::System { content } => Self::estimate_tokens(content),
+                Message::System { content } => self.estimate_tokens_model(content),
                 Message::User { content } => content
                     .iter()
                     .map(|p| match p {
-                        ContentPart::Text { text } => Self::estimate_tokens(text),
+                        ContentPart::Text { text } => self.estimate_tokens_model(text),
                         _ => 0,
                     })
                     .sum(),
                 Message::Assistant { content, .. } => content
                     .iter()
                     .map(|p| match p {
-                        ContentPart::Text { text } => Self::estimate_tokens(text),
+                        ContentPart::Text { text } => self.estimate_tokens_model(text),
                         _ => 0,
                     })
                     .sum(),
-                Message::Tool { content, .. } => Self::estimate_tokens(content),
+                Message::Tool { content, .. } => self.estimate_tokens_model(content),
             };
         }
         total

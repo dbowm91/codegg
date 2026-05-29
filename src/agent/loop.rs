@@ -680,6 +680,7 @@ pub struct AgentLoop {
     todo_pool: Option<sqlx::SqlitePool>,
     event_store: Option<Arc<crate::session::EventStore>>,
     active_tool_timings: HashMap<String, Instant>,
+    execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
 }
 
 impl AgentLoop {
@@ -799,6 +800,7 @@ impl AgentLoop {
             todo_pool: todo_pool.clone(),
             event_store: pool.map(|p| Arc::new(crate::session::EventStore::new(p))),
             active_tool_timings: HashMap::new(),
+            execution_policy: None,
         }
     }
 
@@ -870,6 +872,9 @@ impl AgentLoop {
     }
 
     fn max_parallel_tools(&self) -> usize {
+        if let Some(ref policy) = self.execution_policy {
+            return policy.max_parallel_tools;
+        }
         self.config
             .server
             .as_ref()
@@ -930,6 +935,16 @@ impl AgentLoop {
 
     pub fn set_task_state_policy(&mut self, policy: crate::model_profile::types::TaskStatePolicy) {
         self.task_state_policy = policy;
+    }
+
+    pub fn set_execution_policy(&mut self, policy: crate::agent::policy::ExecutionPolicy) {
+        self.context_tracker.set_limit(policy.context_window);
+        self.context_tracker.set_threshold(policy.compaction_threshold);
+        self.execution_policy = Some(policy);
+    }
+
+    pub fn execution_policy(&self) -> Option<&crate::agent::policy::ExecutionPolicy> {
+        self.execution_policy.as_ref()
     }
 
     pub fn todo_state(&self) -> std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>> {
@@ -1388,15 +1403,17 @@ impl AgentLoop {
             .and_then(|c| c.prune)
             .unwrap_or(false);
         let reserved = self
-            .config
-            .compaction
+            .execution_policy
             .as_ref()
-            .and_then(|c| c.reserved)
-            .unwrap_or(10_000);
+            .map_or(10_000, |p| p.reserved_output_tokens);
 
         if detect_overflow(messages, self.context_tracker.context_limit(), reserved) {
             tracing::warn!("Context overflow detected, applying pruning");
-            *messages = prune_tool_outputs(messages, 10_000);
+            let max_tokens = self
+                .execution_policy
+                .as_ref()
+                .map_or(10_000, |p| p.max_tool_result_tokens);
+            *messages = prune_tool_outputs(messages, max_tokens);
             self.context_tracker.reset();
             self.context_tracker.add_messages(messages);
         }
@@ -1522,6 +1539,17 @@ impl AgentLoop {
         self.apply_agent_config(&mut request);
         let model_profile =
             crate::model_profile::ModelProfileResolver::new(&self.config).resolve(&request.model);
+
+        let exec_policy = crate::agent::policy::ExecutionPolicy::from_profile(&model_profile, &self.config);
+        self.set_execution_policy(exec_policy.clone());
+        tracing::debug!(
+            "Execution policy resolved: model={}, context_window={}, threshold={}, tool_mode={:?}, max_parallel={}",
+            exec_policy.model,
+            exec_policy.context_window,
+            exec_policy.compaction_threshold,
+            exec_policy.initial_tool_mode,
+            exec_policy.max_parallel_tools,
+        );
         if let Some(system) = request.system.take() {
             let mut content = system;
             if let Some(hints) = self
@@ -1676,7 +1704,12 @@ impl AgentLoop {
             }
 
             if tool_calls.is_empty() {
-                if !did_bootstrap_tool
+                let bootstrap_allowed = self
+                    .execution_policy
+                    .as_ref()
+                    .map_or(true, |p| p.allow_bootstrap_tool);
+                if bootstrap_allowed
+                    && !did_bootstrap_tool
                     && self.state.turn_count <= 2
                     && is_soft_stop_reason(processor.stop_reason())
                     && is_repo_task_prompt(&original_prompt)
@@ -1719,7 +1752,12 @@ impl AgentLoop {
                     processor.reset();
                     continue;
                 }
-                if just_executed_tools
+                let nudge_allowed = self
+                    .execution_policy
+                    .as_ref()
+                    .map_or(true, |p| p.allow_post_tool_continue_nudge);
+                if nudge_allowed
+                    && just_executed_tools
                     && post_tool_continuation_retry_budget < 2
                     && is_soft_stop_reason(processor.stop_reason())
                     && (processor.text().trim().len() < 220
@@ -2382,19 +2420,23 @@ impl AgentLoop {
         let all_results = futures::future::join_all(futures).await;
         results.extend(all_results);
 
-        const MAX_TOOL_RESULT_BYTES: usize = 512 * 1024; // 512KB per tool result
+        const MAX_TOOL_RESULT_BYTES_FALLBACK: usize = 512 * 1024; // 512KB per tool result
+        let max_tool_result_bytes = self
+            .execution_policy
+            .as_ref()
+            .map_or(MAX_TOOL_RESULT_BYTES_FALLBACK, |p| p.max_tool_result_tokens * 4);
         for (idx, id, result) in results {
             let output = match result {
                 Ok(output) => output,
                 Err(e) => format!("Error: {}", e),
             };
-            let truncated = if output.len() > MAX_TOOL_RESULT_BYTES {
-                let safe_end = output.floor_char_boundary(MAX_TOOL_RESULT_BYTES);
+            let truncated = if output.len() > max_tool_result_bytes {
+                let safe_end = output.floor_char_boundary(max_tool_result_bytes);
                 let mut truncated = output[..safe_end].to_string();
                 truncated.push_str(&format!(
                     "\n... [truncated: output was {} bytes, limit is {} bytes]",
                     output.len(),
-                    MAX_TOOL_RESULT_BYTES
+                    max_tool_result_bytes
                 ));
                 truncated
             } else {

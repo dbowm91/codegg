@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -14,6 +15,68 @@ use crate::provider::ProviderRegistry;
 use crate::session::SessionStore;
 use crate::tool::task::TaskStore;
 use crate::tool::ToolRegistry;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubAgentFinding {
+    pub severity: Option<String>,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub title: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubAgentReport {
+    pub summary: String,
+    pub files_examined: Vec<String>,
+    pub commands_run: Vec<String>,
+    pub findings: Vec<SubAgentFinding>,
+    pub next_steps: Vec<String>,
+    pub confidence: Option<String>,
+}
+
+impl SubAgentReport {
+    pub fn to_compact_text(&self) -> String {
+        let mut lines = vec![self.summary.clone()];
+        if !self.files_examined.is_empty() {
+            lines.push(format!("Files: {}", self.files_examined.join(", ")));
+        }
+        if !self.commands_run.is_empty() {
+            lines.push(format!("Commands: {}", self.commands_run.join(", ")));
+        }
+        if !self.findings.is_empty() {
+            for f in &self.findings {
+                let loc = f
+                    .file
+                    .as_ref()
+                    .map(|file| {
+                        format!(
+                            " ({}{})",
+                            file,
+                            f.line
+                                .map(|l| format!(":{}", l))
+                                .unwrap_or_default()
+                        )
+                    })
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "[{}] {}{}: {}",
+                    f.severity.as_deref().unwrap_or("info"),
+                    f.title,
+                    loc,
+                    f.rationale
+                ));
+            }
+        }
+        if !self.next_steps.is_empty() {
+            lines.push(format!("Next: {}", self.next_steps.join("; ")));
+        }
+        if let Some(ref conf) = self.confidence {
+            lines.push(format!("Confidence: {}", conf));
+        }
+        lines.join("\n")
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SubAgentRequest {
@@ -32,6 +95,7 @@ pub struct SubAgentResult {
     pub task_id: u64,
     pub success: bool,
     pub result: String,
+    pub report: Option<SubAgentReport>,
 }
 
 impl SubAgentResult {
@@ -40,6 +104,16 @@ impl SubAgentResult {
             task_id,
             success: true,
             result,
+            report: None,
+        }
+    }
+
+    pub fn success_with_report(task_id: u64, result: String, report: SubAgentReport) -> Self {
+        Self {
+            task_id,
+            success: true,
+            result,
+            report: Some(report),
         }
     }
 
@@ -48,6 +122,7 @@ impl SubAgentResult {
             task_id,
             success: false,
             result: error,
+            report: None,
         }
     }
 }
@@ -390,11 +465,16 @@ impl SubAgentSpawner {
     ) {
         match result {
             Ok(result) => {
+                let display_result = if let Some(ref report) = result.report {
+                    report.to_compact_text()
+                } else {
+                    result.result.clone()
+                };
                 if result.success {
                     task_store
                         .lock()
                         .await
-                        .set_result(task_id, result.result.clone())
+                        .set_result(task_id, display_result)
                         .await;
                 } else if result.result == "Task cancelled" {
                     // Cancelled during shutdown - set Interrupted status
@@ -526,7 +606,7 @@ async fn run_subagent_task_with_cancel(
             pool,
         ) => {
             match result {
-                Ok(output) => {
+                Ok((output, report)) => {
                     GlobalEventBus::publish(AppEvent::SubagentCompleted {
                         session_id: session_id.clone(),
                         task_id,
@@ -534,7 +614,11 @@ async fn run_subagent_task_with_cancel(
                         result_summary: output.chars().take(200).collect(),
                     });
                     // Don't update task store here - let handle_response do it
-                    SubAgentResult::success(task_id, output)
+                    if let Some(report) = report {
+                        SubAgentResult::success_with_report(task_id, output, report)
+                    } else {
+                        SubAgentResult::success(task_id, output)
+                    }
                 }
                 Err(ref e) => {
                     let error_msg = format!("Subagent task failed: {}", e);
@@ -565,7 +649,7 @@ async fn execute_agent_task(
     config: Arc<Config>,
     _session_store: Arc<SessionStore>,
     pool: Option<SqlitePool>,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(String, Option<SubAgentReport>), Box<dyn std::error::Error + Send + Sync>> {
     let agent_name = &request.agent;
     let agent = agents
         .iter()
@@ -683,5 +767,7 @@ async fn execute_agent_task(
         );
     }
 
-    Ok(output)
+    let report = serde_json::from_str::<SubAgentReport>(&output).ok();
+
+    Ok((output, report))
 }

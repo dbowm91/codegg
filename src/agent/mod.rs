@@ -6,10 +6,12 @@
 //! Subagent (limited), and All (combines multiple agents).
 
 pub mod compaction;
+pub mod context_frame;
 pub mod r#loop;
 pub mod mention;
 pub mod processor;
 pub mod prompt;
+pub mod policy;
 pub mod router;
 pub mod task;
 pub mod team;
