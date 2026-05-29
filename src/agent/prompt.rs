@@ -1,5 +1,6 @@
 use crate::agent::Agent;
 use crate::config::schema::Config;
+use crate::model_profile::{PromptProfileKind, ResolvedModelProfile};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::path::Path;
@@ -317,4 +318,198 @@ fn base_prompt_parts(agent: &Agent, model_id: &str) -> Vec<String> {
 
 fn builtin_prompts() -> &'static HashMap<&'static str, &'static str> {
     &BUILTIN_PROMPTS
+}
+
+pub struct PromptContext<'a> {
+    pub agent: &'a Agent,
+    pub config: &'a Config,
+    pub model_profile: &'a ResolvedModelProfile,
+    pub tools: &'a [String],
+    pub skills: &'a [String],
+    pub custom_instructions: Option<&'a str>,
+}
+
+pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
+    let mut parts = Vec::new();
+
+    parts.push(base_harness_contract().to_string());
+    parts.push(role_contract(ctx.agent).to_string());
+    parts.push(profile_contract(ctx.model_profile).to_string());
+
+    if let Some(prompt) = &ctx.agent.system_prompt {
+        parts.push(prompt.clone());
+    }
+
+    parts.push(format!(
+        "You are the {} agent. {}",
+        ctx.agent.name, ctx.agent.description
+    ));
+
+    if !ctx.tools.is_empty() {
+        parts.push(format!("Available tools: {}", ctx.tools.join(", ")));
+    }
+
+    if !ctx.skills.is_empty() {
+        parts.push(format!("Available skills: {}", ctx.skills.join(", ")));
+    }
+
+    parts.push(format!("Using model: {}", ctx.model_profile.model));
+
+    if let Some(instructions) = ctx.config.instructions.as_ref() {
+        for instruction in instructions {
+            parts.push(instruction.clone());
+        }
+    }
+
+    if let Some(instructions) = ctx.custom_instructions {
+        parts.push(instructions.to_string());
+    }
+
+    parts
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn base_harness_contract() -> &'static str {
+    "You are operating inside codegg, a coding agent harness. Use tools to inspect the repository before making claims about files, code, or project structure. Do not claim tests passed unless tool output confirms the test result. Prefer minimal, correct changes over broad rewrites."
+}
+
+fn role_contract(agent: &Agent) -> &'static str {
+    match agent.name.as_str() {
+        "plan" => "Role contract: You are a planning agent. Analyze the repository and produce an implementation plan. Do not modify files.",
+        "explore" => "Role contract: You are an exploration agent. Inspect and explain repository structure. Do not modify files.",
+        "summary" => "Role contract: You are a summarization agent. Preserve decisions, state, changed files, remaining risks, and next actions.",
+        "compaction" => "Role contract: You are a context compaction agent. Preserve task state, decisions, file paths, tool results, and unresolved issues.",
+        _ => "Role contract: You are an implementation agent. Inspect relevant files, make targeted changes, and verify them when possible.",
+    }
+}
+
+fn profile_contract(profile: &ResolvedModelProfile) -> &'static str {
+    match profile.prompt_profile {
+        PromptProfileKind::FrontierReasoning => {
+            "Model profile: Strong reasoning model. Use concise planning, then execute. Avoid unnecessary verbosity."
+        }
+        PromptProfileKind::FrontierExecutor => {
+            "Model profile: Strong coding executor. Prefer direct repository inspection, targeted edits, and verification."
+        }
+        PromptProfileKind::FastExecutor => {
+            "Model profile: Fast executor. Keep changes bounded. Use tools explicitly. Avoid speculative broad refactors."
+        }
+        PromptProfileKind::LocalStrict => {
+            "Model profile: Strict local/open model mode. Use one step at a time. Prefer small patches. Do not infer file contents without reading them."
+        }
+        PromptProfileKind::ToolFragile => {
+            "Model profile: Tool-fragile mode. Use structured tool calls exactly. Do not describe tool calls in prose when a tool call is required."
+        }
+        PromptProfileKind::LongContextPlanner => {
+            "Model profile: Long-context planning mode. Synthesize repository context carefully. Separate facts from recommendations."
+        }
+        PromptProfileKind::Reviewer => {
+            "Model profile: Review mode. Look for correctness, safety, regression risk, missing tests, and excessive scope."
+        }
+        PromptProfileKind::Summarizer => {
+            "Model profile: Summarizer mode. Preserve relevant state densely and avoid adding unsupported claims."
+        }
+        PromptProfileKind::Default => {
+            "Model profile: Default coding model. Use tools for repository facts and keep edits targeted."
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model_profile::resolve::infer_builtin_profile;
+
+    fn test_agent(name: &str) -> Agent {
+        Agent {
+            name: name.to_string(),
+            description: format!("Test {name} agent"),
+            mode: crate::agent::AgentMode::All,
+            mode_name: None,
+            model: Some("test-model".to_string()),
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: None,
+            permissions: std::collections::HashMap::new(),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        }
+    }
+
+    fn test_config() -> Config {
+        Config::default()
+    }
+
+    #[test]
+    fn test_profile_contract_local_strict() {
+        let profile = infer_builtin_profile("ollama/qwen2.5-coder:32b");
+        let contract = profile_contract(&profile);
+        assert!(contract.contains("Strict local"));
+        assert!(contract.contains("small patches"));
+        assert!(contract.contains("Do not infer file contents"));
+    }
+
+    #[test]
+    fn test_profile_contract_tool_fragile() {
+        let mut profile = infer_builtin_profile("some-model");
+        profile.prompt_profile = PromptProfileKind::ToolFragile;
+        let contract = profile_contract(&profile);
+        assert!(contract.contains("Tool-fragile"));
+        assert!(contract.contains("structured tool calls exactly"));
+    }
+
+    #[test]
+    fn test_assemble_system_prompt_with_profile_includes_all_parts() {
+        let agent = test_agent("build");
+        let config = test_config();
+        let profile = infer_builtin_profile("openai/gpt-5");
+        let tools = vec!["bash".to_string(), "read".to_string()];
+        let skills = vec!["git".to_string()];
+
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agent,
+            config: &config,
+            model_profile: &profile,
+            tools: &tools,
+            skills: &skills,
+            custom_instructions: Some("Custom instruction here"),
+        });
+
+        assert!(prompt.contains("codegg"));
+        assert!(prompt.contains("Role contract"));
+        assert!(prompt.contains("Model profile"));
+        assert!(prompt.contains("You are the build agent"));
+        assert!(prompt.contains("Available tools: bash, read"));
+        assert!(prompt.contains("Available skills: git"));
+        assert!(prompt.contains("Using model:"));
+        assert!(prompt.contains("Custom instruction here"));
+    }
+
+    #[test]
+    fn test_assemble_system_prompt_with_profile_empty_tools_skills() {
+        let agent = test_agent("explore");
+        let config = test_config();
+        let profile = infer_builtin_profile("minimax/minimax-2.7");
+
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agent,
+            config: &config,
+            model_profile: &profile,
+            tools: &[],
+            skills: &[],
+            custom_instructions: None,
+        });
+
+        assert!(prompt.contains("explore"));
+        assert!(prompt.contains("Fast executor"));
+        assert!(!prompt.contains("Available tools:"));
+        assert!(!prompt.contains("Available skills:"));
+    }
 }

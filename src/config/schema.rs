@@ -61,6 +61,7 @@ pub struct Config {
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub catalog: Option<CatalogConfig>,
+    pub model_profile: Option<HashMap<String, crate::model_profile::ModelProfileConfig>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]

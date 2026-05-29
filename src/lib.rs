@@ -1,6 +1,7 @@
 #![deny(unsafe_code)]
 
 pub mod agent;
+pub mod model_profile;
 pub mod crypto;
 pub mod exec;
 pub mod hooks;

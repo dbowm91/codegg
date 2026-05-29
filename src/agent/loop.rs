@@ -24,6 +24,7 @@ use crate::bus::events::AppEvent;
 use crate::bus::{PermissionRegistry, QuestionRegistry};
 use crate::config::schema::Config;
 use crate::error::{AgentError, AppError, ProviderError, ToolError};
+use crate::model_profile::policy::push_control_instruction;
 use crate::permission::{DoomLoopDetector, PermissionChecker, PermissionChoice, PermissionResult};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
@@ -155,34 +156,6 @@ fn harden_history(messages: &mut Vec<Message>) {
     }
 
     *messages = hardened;
-}
-
-fn should_avoid_late_system_messages(model: &str) -> bool {
-    model.to_lowercase().contains("minimax")
-}
-
-fn push_control_instruction(messages: &mut Vec<Message>, model: &str, content: &str) {
-    if should_avoid_late_system_messages(model) {
-        if let Some(Message::System {
-            content: system_content,
-        }) = messages.first_mut()
-        {
-            let merged = format!("{system_content}\n\n{content}");
-            *system_content = merged.into();
-            return;
-        }
-
-        messages.push(Message::User {
-            content: vec![ContentPart::Text {
-                text: format!("Instruction: {content}").into(),
-            }],
-        });
-        return;
-    }
-
-    messages.push(Message::System {
-        content: content.to_string().into(),
-    });
 }
 
 fn indicates_more_work(text: &str) -> bool {
@@ -1378,6 +1351,8 @@ impl AgentLoop {
 
         self.apply_auto_routing(&mut request);
         self.apply_agent_config(&mut request);
+        let model_profile = crate::model_profile::ModelProfileResolver::new(&self.config)
+            .resolve(&request.model);
         if let Some(system) = request.system.take() {
             request.messages.insert(
                 0,
@@ -1387,16 +1362,10 @@ impl AgentLoop {
             );
         }
         request.tools = Some(self.build_tool_definitions().await);
-        let model_lower = request.model.to_lowercase();
-        if model_lower.contains("minimax") {
-            if let Some(Message::System { content }) = request.messages.first_mut() {
-                let merged = format!(
-                    "{}\n\nTool-use contract: For repository/file/code/doc tasks, emit structured tool calls before giving conclusions. Do not only describe intended tool use in plain text.",
-                    content
-                );
-                *content = merged.into();
-            }
-        }
+        crate::model_profile::policy::apply_startup_profile_policy(
+            &mut request.messages,
+            &model_profile,
+        );
         self.context_tracker.add_messages(&request.messages);
 
         let mut all_events = Vec::with_capacity(128);
@@ -1440,7 +1409,7 @@ impl AgentLoop {
                             "CRITICAL - MAXIMUM STEPS REACHED\n\nYou have reached the maximum number of steps ({}). Provide a summary of your work and exit.",
                             steps
                         );
-                        push_control_instruction(&mut request.messages, &request.model, &system);
+                        push_control_instruction(&mut request.messages, &model_profile, &system);
                         request.messages.push(Message::Assistant {
                             content: vec![ContentPart::Text {
                                 text: "Here is a summary of my work so far:".to_string().into(),
@@ -1568,7 +1537,7 @@ impl AgentLoop {
                 {
                     push_control_instruction(
                         &mut request.messages,
-                        &request.model,
+                        &model_profile,
                         "Continue working and use additional structured tool calls as needed to complete repository analysis before finalizing.",
                     );
                     just_executed_tools = false;
@@ -1580,7 +1549,7 @@ impl AgentLoop {
                 {
                     push_control_instruction(
                         &mut request.messages,
-                        &request.model,
+                        &model_profile,
                         "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
                     );
                     missing_structured_tool_call_retries += 1;
@@ -2158,6 +2127,8 @@ impl AgentLoop {
         all_events: &mut Vec<ChatEvent>,
         processor: &mut EventProcessor,
     ) {
+        let model_profile = crate::model_profile::ModelProfileResolver::new(&self.config)
+            .resolve(&request.model);
         loop {
             // Check if a follow-up is already queued without blocking
             let prompt = match self.follow_up_rx.try_recv() {
@@ -2236,7 +2207,7 @@ impl AgentLoop {
                 if just_executed_tools && is_soft_stop_reason(processor.stop_reason()) {
                     push_control_instruction(
                         &mut request.messages,
-                        &request.model,
+                        &model_profile,
                         "Continue the task and emit structured tool calls as needed before finalizing.",
                     );
                     just_executed_tools = false;
@@ -2248,7 +2219,7 @@ impl AgentLoop {
                 {
                     push_control_instruction(
                         &mut request.messages,
-                        &request.model,
+                        &model_profile,
                         "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
                     );
                     missing_structured_tool_call_retries += 1;
