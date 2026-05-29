@@ -219,8 +219,10 @@ fn test_messages_widget_scroll() {
     widget.scroll_up();
     assert!(!widget.auto_scroll);
 
+    // Scrolling down one line from near the bottom should re-enable auto_scroll
+    // once we reach max_scroll.
     widget.scroll_down();
-    assert!(!widget.auto_scroll);
+    assert!(widget.auto_scroll);
 }
 
 #[test]

@@ -181,7 +181,30 @@ impl MessagesWidget {
         for part in &msg.parts {
             match part {
                 MsgPart::Text { content } => {
-                    lines += content.lines().count().max(1);
+                    let mut text_lines = content.lines().count().max(1);
+                    // Account for ┌─ LANG header lines added by render_markdown
+                    // for code blocks with a language specifier.
+                    let mut in_code = false;
+                    let mut code_lang = String::new();
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("```") {
+                            if in_code {
+                                if !code_lang.is_empty() {
+                                    text_lines += 1; // ┌─ header line
+                                }
+                                code_lang.clear();
+                                in_code = false;
+                            } else {
+                                code_lang = trimmed
+                                    .trim_start_matches("```")
+                                    .trim()
+                                    .to_string();
+                                in_code = true;
+                            }
+                        }
+                    }
+                    lines += text_lines;
                 }
                 MsgPart::Reasoning { content, collapsed } => {
                     lines += 1;
@@ -214,6 +237,14 @@ impl MessagesWidget {
                     lines += 1;
                 }
             }
+        }
+        // Account for streaming tokens rendered as 2 extra lines
+        // (thinking indicator + token text) for the last assistant message.
+        if msg.role == MessageRole::Assistant
+            && !self.streaming_tokens.is_empty()
+            && self.messages.last().is_some_and(|m| std::ptr::eq(m, msg))
+        {
+            lines += 2;
         }
         lines
     }
