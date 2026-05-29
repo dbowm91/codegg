@@ -27,6 +27,7 @@ use crate::permission::{self, PermissionRuleset};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Agent {
     pub name: String,
+    pub role: Option<String>,
     pub description: String,
     pub mode: AgentMode,
     pub mode_name: Option<String>,
@@ -148,6 +149,7 @@ pub fn builtin_agents() -> Vec<Agent> {
     vec![
         Agent {
             name: "build".to_string(),
+            role: Some("executor".to_string()),
             description: "Default agent with full permissions".to_string(),
             mode: AgentMode::Primary,
             mode_name: None,
@@ -165,6 +167,7 @@ pub fn builtin_agents() -> Vec<Agent> {
         },
         Agent {
             name: "plan".to_string(),
+            role: Some("planner".to_string()),
             description: "Read-only agent for planning".to_string(),
             mode: AgentMode::Primary,
             mode_name: None,
@@ -186,6 +189,7 @@ pub fn builtin_agents() -> Vec<Agent> {
         },
         Agent {
             name: "general".to_string(),
+            role: Some("executor".to_string()),
             description: "Subagent without todo management".to_string(),
             mode: AgentMode::Subagent,
             mode_name: None,
@@ -203,6 +207,7 @@ pub fn builtin_agents() -> Vec<Agent> {
         },
         Agent {
             name: "explore".to_string(),
+            role: Some("explorer".to_string()),
             description: "Read-only exploration agent".to_string(),
             mode: AgentMode::All,
             mode_name: None,
@@ -223,6 +228,7 @@ pub fn builtin_agents() -> Vec<Agent> {
         },
         Agent {
             name: "title".to_string(),
+            role: Some("title".to_string()),
             description: "Generates session titles".to_string(),
             mode: AgentMode::Subagent,
             mode_name: None,
@@ -240,6 +246,7 @@ pub fn builtin_agents() -> Vec<Agent> {
         },
         Agent {
             name: "summary".to_string(),
+            role: Some("summarizer".to_string()),
             description: "Generates session summaries".to_string(),
             mode: AgentMode::Subagent,
             mode_name: None,
@@ -257,6 +264,7 @@ pub fn builtin_agents() -> Vec<Agent> {
         },
         Agent {
             name: "compaction".to_string(),
+            role: Some("compactor".to_string()),
             description: "Context compaction agent".to_string(),
             mode: AgentMode::Subagent,
             mode_name: None,
@@ -334,6 +342,7 @@ pub fn resolve_agents(config: &Config) -> Result<Vec<Agent>, AgentError> {
             } else {
                 let mut agent = Agent {
                     name: key.clone(),
+                    role: None,
                     description: mode_cfg.description.clone().unwrap_or_default(),
                     mode: AgentMode::Primary,
                     mode_name: Some(key.clone()),
@@ -365,6 +374,7 @@ pub fn resolve_agents(config: &Config) -> Result<Vec<Agent>, AgentError> {
 fn merge_agent_config(agent: &Agent, cfg: &AgentConfig) -> Result<Agent, AgentError> {
     Ok(Agent {
         name: cfg.name.clone().unwrap_or_else(|| agent.name.clone()),
+        role: cfg.role.clone().or_else(|| agent.role.clone()),
         description: cfg
             .description
             .clone()
@@ -426,6 +436,7 @@ fn agent_from_config(key: &str, cfg: &AgentConfig) -> Result<Agent, AgentError> 
 
     Ok(Agent {
         name,
+        role: cfg.role.clone(),
         description: cfg.description.clone().unwrap_or_default(),
         mode,
         mode_name: None,
@@ -685,6 +696,7 @@ mod tests {
     fn test_find_default_agent_fallback() {
         let agents = vec![Agent {
             name: "custom".to_string(),
+            role: None,
             description: "Custom".to_string(),
             mode: AgentMode::Primary,
             mode_name: None,
@@ -728,6 +740,7 @@ mod tests {
         permissions.insert("paths".to_string(), "/tmp/*".to_string());
         let agent = Agent {
             name: "test".to_string(),
+            role: None,
             description: "Test".to_string(),
             mode: AgentMode::Primary,
             mode_name: None,
@@ -755,6 +768,7 @@ mod tests {
         permissions.insert("bash".to_string(), "allow".to_string());
         let agent = Agent {
             name: "test".to_string(),
+            role: None,
             description: "Test".to_string(),
             mode: AgentMode::Primary,
             mode_name: None,

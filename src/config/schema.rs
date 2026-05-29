@@ -277,6 +277,7 @@ pub struct ModelVariant {
 #[serde(default)]
 pub struct AgentConfig {
     pub name: Option<String>,
+    pub role: Option<String>,
     pub model: Option<String>,
     pub variant: Option<String>,
     pub mode: Option<String>,

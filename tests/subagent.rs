@@ -141,6 +141,7 @@ mod tests {
     fn create_test_agent(name: &str, model: &str, system_prompt: Option<&str>) -> Agent {
         Agent {
             name: name.to_string(),
+            role: None,
             description: format!("Test agent {}", name),
             mode: AgentMode::Primary,
             mode_name: None,

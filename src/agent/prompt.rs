@@ -377,11 +377,13 @@ fn base_harness_contract() -> &'static str {
 }
 
 fn role_contract(agent: &Agent) -> &'static str {
-    match agent.name.as_str() {
-        "plan" => "Role contract: You are a planning agent. Analyze the repository and produce an implementation plan. Do not modify files.",
-        "explore" => "Role contract: You are an exploration agent. Inspect and explain repository structure. Do not modify files.",
-        "summary" => "Role contract: You are a summarization agent. Preserve decisions, state, changed files, remaining risks, and next actions.",
-        "compaction" => "Role contract: You are a context compaction agent. Preserve task state, decisions, file paths, tool results, and unresolved issues.",
+    match agent.role.as_deref().unwrap_or("executor") {
+        "planner" => "Role contract: You are a planning agent. Analyze the repository and produce an implementation plan. Do not modify files.",
+        "explorer" => "Role contract: You are an exploration agent. Inspect and explain repository structure. Do not modify files.",
+        "summarizer" => "Role contract: You are a summarization agent. Preserve decisions, state, changed files, remaining risks, and next actions.",
+        "compactor" => "Role contract: You are a context compaction agent. Preserve task state, decisions, file paths, tool results, and unresolved issues.",
+        "reviewer" => "Role contract: You are a review agent. Look for correctness, safety, regression risk, missing tests, and excessive scope.",
+        "title" => "Role contract: You are a title generation agent. Produce a concise session title.",
         _ => "Role contract: You are an implementation agent. Inspect relevant files, make targeted changes, and verify them when possible.",
     }
 }
@@ -424,8 +426,13 @@ mod tests {
     use crate::model_profile::resolve::infer_builtin_profile;
 
     fn test_agent(name: &str) -> Agent {
+        test_agent_with_role(name, None)
+    }
+
+    fn test_agent_with_role(name: &str, role: Option<&str>) -> Agent {
         Agent {
             name: name.to_string(),
+            role: role.map(|r| r.to_string()),
             description: format!("Test {name} agent"),
             mode: crate::agent::AgentMode::All,
             mode_name: None,
@@ -511,5 +518,70 @@ mod tests {
         assert!(prompt.contains("Fast executor"));
         assert!(!prompt.contains("Available tools:"));
         assert!(!prompt.contains("Available skills:"));
+    }
+
+    #[test]
+    fn test_role_contract_planner() {
+        let agent = test_agent_with_role("myplan", Some("planner"));
+        let contract = role_contract(&agent);
+        assert!(contract.contains("planning agent"));
+        assert!(contract.contains("Do not modify files"));
+    }
+
+    #[test]
+    fn test_role_contract_explorer() {
+        let agent = test_agent_with_role("myexplore", Some("explorer"));
+        let contract = role_contract(&agent);
+        assert!(contract.contains("exploration agent"));
+        assert!(contract.contains("Do not modify files"));
+    }
+
+    #[test]
+    fn test_role_contract_summarizer() {
+        let agent = test_agent_with_role("mysummary", Some("summarizer"));
+        let contract = role_contract(&agent);
+        assert!(contract.contains("summarization agent"));
+    }
+
+    #[test]
+    fn test_role_contract_compactor() {
+        let agent = test_agent_with_role("mycompact", Some("compactor"));
+        let contract = role_contract(&agent);
+        assert!(contract.contains("compaction agent"));
+    }
+
+    #[test]
+    fn test_role_contract_reviewer() {
+        let agent = test_agent_with_role("myreview", Some("reviewer"));
+        let contract = role_contract(&agent);
+        assert!(contract.contains("review agent"));
+    }
+
+    #[test]
+    fn test_role_contract_title() {
+        let agent = test_agent_with_role("mytitle", Some("title"));
+        let contract = role_contract(&agent);
+        assert!(contract.contains("title generation agent"));
+    }
+
+    #[test]
+    fn test_role_contract_executor_default() {
+        let agent = test_agent_with_role("mybuild", Some("executor"));
+        let contract = role_contract(&agent);
+        assert!(contract.contains("implementation agent"));
+    }
+
+    #[test]
+    fn test_role_contract_none_defaults_to_executor() {
+        let agent = test_agent("unknown");
+        let contract = role_contract(&agent);
+        assert!(contract.contains("implementation agent"));
+    }
+
+    #[test]
+    fn test_role_contract_unknown_role_defaults_to_executor() {
+        let agent = test_agent_with_role("custom", Some("custom_role"));
+        let contract = role_contract(&agent);
+        assert!(contract.contains("implementation agent"));
     }
 }

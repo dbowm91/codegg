@@ -65,6 +65,7 @@ mod tests {
     fn make_agent(name: &str, description: &str) -> Agent {
         Agent {
             name: name.to_string(),
+            role: None,
             description: description.to_string(),
             mode: AgentMode::Primary,
             mode_name: None,

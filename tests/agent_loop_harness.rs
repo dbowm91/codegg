@@ -527,6 +527,7 @@ impl Tool for QuestionTool {
 fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistry) -> AgentLoop {
     let agents = vec![Agent {
         name: "build".to_string(),
+        role: None,
         description: "Test agent".to_string(),
         mode: codegg::agent::AgentMode::Primary,
         mode_name: None,
@@ -583,6 +584,7 @@ fn build_test_agent_loop_with_permissions(
 ) -> AgentLoop {
     let agents = vec![Agent {
         name: "build".to_string(),
+        role: None,
         description: "Test agent".to_string(),
         mode: codegg::agent::AgentMode::Primary,
         mode_name: None,
@@ -621,6 +623,7 @@ fn build_test_agent_loop_with_config(
 ) -> AgentLoop {
     let agents = vec![Agent {
         name: "build".to_string(),
+        role: None,
         description: "Test agent".to_string(),
         mode: codegg::agent::AgentMode::Primary,
         mode_name: None,
@@ -2022,6 +2025,7 @@ fn build_agent_loop_with_error_config(
 ) -> AgentLoop {
     let agents = vec![Agent {
         name: "build".to_string(),
+        role: None,
         description: "Test agent".to_string(),
         mode: codegg::agent::AgentMode::Primary,
         mode_name: None,
@@ -3082,6 +3086,7 @@ async fn test_task_tool_integration_with_subagent() {
     let agents = vec![
         Agent {
             name: "build".to_string(),
+            role: None,
             description: "Main agent".to_string(),
             mode: codegg::agent::AgentMode::Primary,
             mode_name: None,
@@ -3099,6 +3104,7 @@ permissions: std::collections::HashMap::new(),
         },
         Agent {
             name: "subagent".to_string(),
+            role: None,
             description: "Subagent".to_string(),
             mode: codegg::agent::AgentMode::Subagent,
             mode_name: None,
@@ -3276,6 +3282,7 @@ async fn test_task_tool_denied_tools_passthrough() {
     let agents = vec![
         Agent {
             name: "main".to_string(),
+            role: None,
             description: "Main agent".to_string(),
             mode: codegg::agent::AgentMode::Primary,
             mode_name: None,
@@ -3293,6 +3300,7 @@ async fn test_task_tool_denied_tools_passthrough() {
         },
         Agent {
             name: "subagent".to_string(),
+            role: None,
             description: "Subagent".to_string(),
             mode: codegg::agent::AgentMode::Subagent,
             mode_name: None,
