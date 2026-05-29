@@ -229,50 +229,73 @@ impl TaskStore {
     }
 
     pub async fn set_result(&self, id: u64, result: String) {
-        if let Some(task) = self.tasks.lock().await.get_mut(&id) {
-            task.result = Some(result.clone());
-            task.status = TaskStatus::Completed;
-            let _ = self
-                .update_status_in_db(id, &TaskStatus::Completed, Some(&result))
-                .await;
+        let db_update = {
+            let mut tasks = self.tasks.lock().await;
+            if let Some(task) = tasks.get_mut(&id) {
+                task.result = Some(result.clone());
+                task.status = TaskStatus::Completed;
+                Some((TaskStatus::Completed, result))
+            } else {
+                None
+            }
+        };
+        if let Some((status, result)) = db_update {
+            let _ = self.update_status_in_db(id, &status, Some(&result)).await;
         }
     }
 
     pub async fn set_failed(&self, id: u64, error: String) {
-        if let Some(task) = self.tasks.lock().await.get_mut(&id) {
-            task.result = Some(error.clone());
-            task.status = TaskStatus::Failed;
-            let _ = self
-                .update_status_in_db(id, &TaskStatus::Failed, Some(&error))
-                .await;
+        let db_update = {
+            let mut tasks = self.tasks.lock().await;
+            if let Some(task) = tasks.get_mut(&id) {
+                task.result = Some(error.clone());
+                task.status = TaskStatus::Failed;
+                Some((TaskStatus::Failed, error))
+            } else {
+                None
+            }
+        };
+        if let Some((status, error)) = db_update {
+            let _ = self.update_status_in_db(id, &status, Some(&error)).await;
         }
     }
 
     /// Set the task as interrupted with a custom message.
     /// This preserves the Interrupted status (unlike set_failed which sets Failed).
     pub async fn set_interrupted(&self, id: u64, msg: String) {
-        if let Some(task) = self.tasks.lock().await.get_mut(&id) {
-            task.result = Some(msg.clone());
-            task.status = TaskStatus::Interrupted;
-            let _ = self
-                .update_status_in_db(id, &TaskStatus::Interrupted, Some(&msg))
-                .await;
+        let db_update = {
+            let mut tasks = self.tasks.lock().await;
+            if let Some(task) = tasks.get_mut(&id) {
+                task.result = Some(msg.clone());
+                task.status = TaskStatus::Interrupted;
+                Some((TaskStatus::Interrupted, msg))
+            } else {
+                None
+            }
+        };
+        if let Some((status, msg)) = db_update {
+            let _ = self.update_status_in_db(id, &status, Some(&msg)).await;
         }
     }
 
     /// Set the task as failed, but only if it's not already Interrupted.
     /// Returns true if the status was changed.
     pub async fn set_failed_if_not_interrupted(&self, id: u64, error: String) -> bool {
-        let mut tasks = self.tasks.lock().await;
-        if let Some(task) = tasks.get_mut(&id) {
-            if task.status == TaskStatus::Interrupted {
-                return false;
+        let db_update = {
+            let mut tasks = self.tasks.lock().await;
+            if let Some(task) = tasks.get_mut(&id) {
+                if task.status == TaskStatus::Interrupted {
+                    return false;
+                }
+                task.result = Some(error.clone());
+                task.status = TaskStatus::Failed;
+                Some((TaskStatus::Failed, error))
+            } else {
+                None
             }
-            task.result = Some(error.clone());
-            task.status = TaskStatus::Failed;
-            let _ = self
-                .update_status_in_db(id, &TaskStatus::Failed, Some(&error))
-                .await;
+        };
+        if let Some((status, error)) = db_update {
+            let _ = self.update_status_in_db(id, &status, Some(&error)).await;
             true
         } else {
             false
@@ -335,22 +358,6 @@ impl TaskTool {
             parent_session_id,
             denied_tools,
             depth: 0,
-        }
-    }
-
-    pub fn new_with_depth(
-        store: Arc<Mutex<TaskStore>>,
-        spawner: Option<SubAgentSpawner>,
-        parent_session_id: Option<String>,
-        denied_tools: Vec<String>,
-        depth: usize,
-    ) -> Self {
-        Self {
-            store,
-            spawner,
-            parent_session_id,
-            denied_tools,
-            depth,
         }
     }
 

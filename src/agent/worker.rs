@@ -1,7 +1,7 @@
 use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex as TokioMutex, Semaphore};
+use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::r#loop::AgentLoop;
@@ -58,7 +58,6 @@ struct WorkerRequest {
 }
 
 pub struct SubAgentPool {
-    shutdown_tx: broadcast::Sender<()>,
     active_count: Arc<AtomicUsize>,
     max_concurrent: usize,
     max_depth: usize,
@@ -93,7 +92,6 @@ impl SubAgentPool {
             .and_then(|s| s.max_depth)
             .unwrap_or(3);
         let (request_tx, request_rx) = mpsc::channel(max_concurrent * 2);
-        let (shutdown_tx, _) = broadcast::channel(1);
         let active_count = Arc::new(AtomicUsize::new(0));
         let task_store = Arc::new(TokioMutex::new(TaskStore::new()));
         if let Some(ref p) = pool {
@@ -104,7 +102,6 @@ impl SubAgentPool {
         let active_handles = Arc::new(TokioMutex::new(Vec::new()));
 
         let pool_inst = Self {
-            shutdown_tx,
             active_count,
             max_concurrent,
             max_depth,
@@ -145,7 +142,6 @@ impl SubAgentPool {
             .and_then(|s| s.max_depth)
             .unwrap_or(3);
         let (request_tx, request_rx) = mpsc::channel(max_concurrent * 2);
-        let (shutdown_tx, _) = broadcast::channel(1);
         let active_count = Arc::new(AtomicUsize::new(0));
         let workers = Arc::new(TokioMutex::new(Vec::new()));
         let cancel_token = CancellationToken::new();
@@ -155,7 +151,6 @@ impl SubAgentPool {
         }
 
         let pool_inst = Self {
-            shutdown_tx,
             active_count,
             max_concurrent,
             max_depth,
@@ -246,15 +241,28 @@ impl SubAgentPool {
 
                             let _guard = ActiveCountGuard::new(active_count);
 
-                            let permit = match sem.acquire().await {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    tracing::error!("Failed to acquire semaphore: {}", e);
+                            // Wait for semaphore permit, but also check for cancellation
+                            let permit = tokio::select! {
+                                biased;
+                                _ = cancel_token.cancelled() => {
                                     let _ = response_tx.send(SubAgentResult::failure(
                                         request.task_id,
-                                        format!("Worker semaphore error: {}", e),
+                                        "pool shutting down".to_string(),
                                     ));
                                     return;
+                                }
+                                result = sem.acquire() => {
+                                    match result {
+                                        Ok(p) => p,
+                                        Err(e) => {
+                                            tracing::error!("Failed to acquire semaphore: {}", e);
+                                            let _ = response_tx.send(SubAgentResult::failure(
+                                                request.task_id,
+                                                format!("Worker semaphore error: {}", e),
+                                            ));
+                                            return;
+                                        }
+                                    }
                                 }
                             };
 
@@ -273,6 +281,7 @@ impl SubAgentPool {
                             drop(permit);
                         });
 
+                        // Push handle immediately after spawn to avoid race with shutdown
                         active_handles.lock().await.push(handle);
                     }
                     else => break,
@@ -325,11 +334,19 @@ impl SubAgentPool {
                 handle.abort();
             }
         }
+        drop(active_handles);
 
         // Wait for worker loop to finish
         let workers = std::mem::take(&mut *self.workers.lock().await);
         for handle in workers {
             let _ = handle.await;
+        }
+
+        // Wait for aborted tasks to complete (active_count to reach 0)
+        let mut attempts = 0;
+        while self.active_count.load(Ordering::SeqCst) > 0 && attempts < 10 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            attempts += 1;
         }
 
         let final_count = self.active_count.load(Ordering::SeqCst);
@@ -343,7 +360,6 @@ impl SubAgentPool {
 impl Clone for SubAgentPool {
     fn clone(&self) -> Self {
         Self {
-            shutdown_tx: self.shutdown_tx.clone(),
             active_count: Arc::clone(&self.active_count),
             max_concurrent: self.max_concurrent,
             max_depth: self.max_depth,
@@ -358,12 +374,6 @@ impl Clone for SubAgentPool {
             active_handles: Arc::clone(&self.active_handles),
             pool: self.pool.clone(),
         }
-    }
-}
-
-impl Drop for SubAgentPool {
-    fn drop(&mut self) {
-        self.cancel_token.cancel();
     }
 }
 
@@ -386,13 +396,19 @@ impl SubAgentSpawner {
                         .await
                         .set_result(task_id, result.result.clone())
                         .await;
-                } else if result.result.contains("cancelled")
-                    || result.result.contains("Task cancelled")
-                {
+                } else if result.result == "Task cancelled" {
+                    // Cancelled during shutdown - set Interrupted status
                     task_store
                         .lock()
                         .await
-                        .set_failed_if_not_interrupted(task_id, result.result.clone())
+                        .set_interrupted(task_id, result.result.clone())
+                        .await;
+                } else if result.result == "pool shutting down" {
+                    // Pool shutting down before task started
+                    task_store
+                        .lock()
+                        .await
+                        .set_interrupted(task_id, result.result.clone())
                         .await;
                 } else {
                     task_store
@@ -498,8 +514,7 @@ async fn run_subagent_task_with_cancel(
                 agent: request.agent.clone(),
                 error: msg.clone(),
             });
-            // Use set_interrupted to properly set Interrupted status with result
-            task_store.lock().await.set_interrupted(task_id, msg).await;
+            // Don't update task store here - let handle_response do it
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
         }
         result = execute_agent_task(
@@ -518,7 +533,7 @@ async fn run_subagent_task_with_cancel(
                         agent: request.agent.clone(),
                         result_summary: output.chars().take(200).collect(),
                     });
-                    task_store.lock().await.set_result(task_id, output.clone()).await;
+                    // Don't update task store here - let handle_response do it
                     SubAgentResult::success(task_id, output)
                 }
                 Err(ref e) => {
@@ -533,7 +548,7 @@ async fn run_subagent_task_with_cancel(
                         agent: agent_name,
                         error: error_for_bus,
                     });
-                    task_store.lock().await.set_failed(task_id, error_msg.clone()).await;
+                    // Don't update task store here - let handle_response do it
                     SubAgentResult::failure(task_id, error_msg)
                 }
             }
@@ -614,7 +629,8 @@ async fn execute_agent_task(
     );
 
     if let Some(parent_id) = &request.parent_id {
-        agent_loop.set_session_id(parent_id);
+        let subagent_session_id = format!("{}-sub-{}", parent_id, request.task_id);
+        agent_loop.set_session_id(&subagent_session_id);
     }
 
     if agent_name == "plan" {
