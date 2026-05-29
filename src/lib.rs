@@ -37,3 +37,4 @@ pub mod tui;
 pub mod upgrade;
 pub mod util;
 pub mod worktree;
+pub mod research;

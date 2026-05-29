@@ -207,6 +207,29 @@ enum Commands {
         #[command(subcommand)]
         command: mcp::cli::McpCommand,
     },
+    /// Run a deep research query
+    Research {
+        /// The research question
+        question: String,
+        /// Research mode
+        #[arg(long, default_value = "narrow-answer")]
+        mode: String,
+        /// Target audience
+        #[arg(long, default_value = "human")]
+        audience: String,
+        /// Research depth
+        #[arg(long, default_value = "medium")]
+        depth: String,
+        /// Output profiles (can be specified multiple times)
+        #[arg(long = "output")]
+        outputs: Vec<String>,
+        /// Sources to include (format: local, file:path, url:https://...)
+        #[arg(long = "source")]
+        sources: Vec<String>,
+        /// Allow network fetching
+        #[arg(long)]
+        allow_network: bool,
+    },
     #[command(hide = true, name = "core-stdio")]
     CoreStdio,
 }
@@ -329,6 +352,26 @@ async fn main() -> Result<(), AppError> {
             }
             Commands::Mcp { command } => {
                 mcp::cli::exec_mcp_command(command.clone())?;
+            }
+            Commands::Research {
+                question,
+                mode,
+                audience,
+                depth,
+                outputs,
+                sources,
+                allow_network,
+            } => {
+                cmd_research(
+                    question,
+                    mode,
+                    audience,
+                    depth,
+                    outputs,
+                    sources,
+                    *allow_network,
+                )
+                .await?;
             }
             Commands::CoreStdio => {
                 run_core_stdio().await?;
@@ -974,6 +1017,168 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     }
 
     tui::run_event_loop(&mut app).await
+}
+
+async fn cmd_research(
+    question: &str,
+    mode: &str,
+    audience: &str,
+    depth: &str,
+    outputs: &[String],
+    source_specs: &[String],
+    allow_network: bool,
+) -> Result<(), AppError> {
+    use codegg::research::coordinator::ResearchCoordinator;
+    use codegg::research::types::*;
+
+    let project_root = std::env::current_dir().map_err(AppError::Io)?;
+
+    let research_mode = match mode {
+        "landscape" => ResearchMode::Landscape,
+        "architecture-decision" => ResearchMode::ArchitectureDecision,
+        "library-evaluation" => ResearchMode::LibraryEvaluation,
+        "api-investigation" => ResearchMode::ApiInvestigation,
+        "debugging-investigation" => ResearchMode::DebuggingInvestigation,
+        "security-review" => ResearchMode::SecurityReview,
+        "spec-digest" => ResearchMode::SpecDigest,
+        "narrow-answer" => ResearchMode::NarrowAnswer,
+        _ => {
+            eprintln!("Unknown mode: {mode}. Use: landscape, architecture-decision, library-evaluation, api-investigation, debugging-investigation, security-review, spec-digest, narrow-answer");
+            std::process::exit(1);
+        }
+    };
+
+    let research_audience = match audience {
+        "human" => ResearchAudience::Human,
+        "agent-planner" => ResearchAudience::AgentPlanner,
+        "agent-coder" => ResearchAudience::AgentCoder,
+        "agent-reviewer" => ResearchAudience::AgentReviewer,
+        "agent-debugger" => ResearchAudience::AgentDebugger,
+        _ => {
+            eprintln!("Unknown audience: {audience}. Use: human, agent-planner, agent-coder, agent-reviewer, agent-debugger");
+            std::process::exit(1);
+        }
+    };
+
+    let research_depth = match depth {
+        "low" => ResearchDepth::Low,
+        "medium" => ResearchDepth::Medium,
+        "high" => ResearchDepth::High,
+        _ => {
+            eprintln!("Unknown depth: {depth}. Use: low, medium, high");
+            std::process::exit(1);
+        }
+    };
+
+    let output_profiles: Vec<ResearchOutputProfile> = if outputs.is_empty() {
+        vec![ResearchOutputProfile::HumanFullReport]
+    } else {
+        outputs
+            .iter()
+            .map(|o| match o.as_str() {
+                "human-full" => ResearchOutputProfile::HumanFullReport,
+                "human-brief" => ResearchOutputProfile::HumanBrief,
+                "agent-answer" => ResearchOutputProfile::AgentAnswer,
+                "agent-handoff" => ResearchOutputProfile::AgentHandoff,
+                "evidence-bundle" => ResearchOutputProfile::EvidenceBundle,
+                other => {
+                    eprintln!("Unknown output profile: {other}. Use: human-full, human-brief, agent-answer, agent-handoff, evidence-bundle");
+                    std::process::exit(1);
+                }
+            })
+            .collect()
+    };
+
+    let sources: Vec<ResearchSourceSpec> = source_specs
+        .iter()
+        .map(|s| {
+            if s == "local" {
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::Local,
+                    value: String::new(),
+                }
+            } else if let Some(path) = s.strip_prefix("file:") {
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::File,
+                    value: path.to_string(),
+                }
+            } else if let Some(url) = s.strip_prefix("url:") {
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::Url,
+                    value: url.to_string(),
+                }
+            } else if let Some(text) = s.strip_prefix("text:") {
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::Text,
+                    value: text.to_string(),
+                }
+            } else {
+                // Default to file
+                ResearchSourceSpec {
+                    spec_type: SourceSpecType::File,
+                    value: s.clone(),
+                }
+            }
+        })
+        .collect();
+
+    let max_sources = match research_depth {
+        ResearchDepth::Low => 8,
+        ResearchDepth::Medium => 30,
+        ResearchDepth::High => 80,
+    };
+
+    let request = ResearchRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        question: question.to_string(),
+        mode: research_mode,
+        audience: research_audience,
+        depth: research_depth,
+        output_profiles,
+        constraints: vec![],
+        sources,
+        existing_context_refs: vec![],
+        budget: ResearchBudget {
+            max_sources,
+            max_chunks_per_source: 20,
+            max_evidence_spans: 200,
+            max_model_calls: 0,
+            max_output_tokens: None,
+            allow_network,
+        },
+        created_at: chrono::Utc::now(),
+    };
+
+    let artifact_root = project_root.join(".codegg").join("research");
+    let coordinator = ResearchCoordinator::new(project_root, artifact_root);
+
+    eprintln!("Starting research run {}...", &request.id[..8]);
+    eprintln!("Question: {}", request.question);
+    eprintln!("Mode: {:?}, Depth: {:?}, Audience: {:?}", request.mode, request.depth, request.audience);
+
+    match coordinator.run(request).await {
+        Ok(result) => {
+            eprintln!("\nResearch completed successfully!");
+            eprintln!("Status: {:?}", result.status);
+            eprintln!("Sources: {}, Evidence: {}, Claims: {}, Contradictions: {}",
+                result.counts.sources,
+                result.counts.evidence_spans,
+                result.counts.claims,
+                result.counts.contradictions,
+            );
+            eprintln!("\nArtifacts:");
+            for output in &result.outputs {
+                eprintln!("  {:?}: {}", output.profile, output.path.display());
+            }
+            eprintln!("\nRun directory: {}", result.artifact_dir.display());
+        }
+        Err(e) => {
+            eprintln!("Research failed: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_core_stdio() -> Result<(), AppError> {
