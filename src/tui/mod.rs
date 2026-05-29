@@ -233,7 +233,10 @@ async fn ensure_local_session(app: &mut app::App) {
             Ok(CoreResponse::Session { session }) => {
                 let session_id = session.id.clone();
                 app.session_state.session = Some(session);
-                debug_log!("Event loop: session created via core with id={}", session_id);
+                debug_log!(
+                    "Event loop: session created via core with id={}",
+                    session_id
+                );
             }
             Ok(CoreResponse::Error { code, message }) => {
                 debug_log!(
@@ -243,7 +246,10 @@ async fn ensure_local_session(app: &mut app::App) {
                 );
             }
             Ok(other) => {
-                debug_log!("Event loop: unexpected session-create response: {:?}", other);
+                debug_log!(
+                    "Event loop: unexpected session-create response: {:?}",
+                    other
+                );
             }
             Err(e) => {
                 debug_log!("Event loop: failed to create session via core: {:?}", e);
@@ -453,7 +459,11 @@ async fn handle_bulk_delete(app: &mut app::App, session_ids: Vec<String>) {
                     );
                 }
                 Err(e) => {
-                    tracing::warn!("failed to permanently delete session {} via core: {}", id, e);
+                    tracing::warn!(
+                        "failed to permanently delete session {} via core: {}",
+                        id,
+                        e
+                    );
                 }
             }
         }
@@ -524,7 +534,12 @@ async fn handle_bulk_export(app: &mut app::App, session_ids: Vec<String>) {
             match core_client.request(request).await {
                 Ok(CoreResponse::Json { .. }) => tracing::info!("exported session {}", id),
                 Ok(CoreResponse::Error { code, message }) => {
-                    tracing::warn!("failed to export session {} via core ({}): {}", id, code, message)
+                    tracing::warn!(
+                        "failed to export session {} via core ({}): {}",
+                        id,
+                        code,
+                        message
+                    )
                 }
                 Ok(other) => tracing::warn!(
                     "unexpected core response for session export {}: {:?}",
@@ -692,13 +707,11 @@ async fn handle_rename_session(app: &mut app::App, session_id: String, new_title
 }
 
 async fn handle_open_tree_dialog(app: &mut app::App) {
-    use std::collections::HashMap;
     use crate::tui::components::dialogs::tree::TreeNode;
+    use std::collections::HashMap;
 
     let Some(core_client) = app.core_client.clone() else {
-        app.messages_state
-            .toasts
-            .error("Core client not available");
+        app.messages_state.toasts.error("Core client not available");
         return;
     };
     let Some(current_session) = app.session_state.session.clone() else {
@@ -777,10 +790,7 @@ async fn handle_open_tree_dialog(app: &mut app::App) {
         children_map: &HashMap<String, Vec<crate::session::Session>>,
         counts: &HashMap<String, usize>,
     ) -> TreeNode {
-        let mut children = children_map
-            .get(&session.id)
-            .cloned()
-            .unwrap_or_default();
+        let mut children = children_map.get(&session.id).cloned().unwrap_or_default();
         children.sort_by_key(|s| s.time_updated);
         let child_nodes = children
             .iter()
@@ -844,7 +854,8 @@ async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
                             import.set_preview(session, msg_count);
                         }
                     }
-                    (Ok(CoreResponse::Error { message, .. }), _) | (_, Ok(CoreResponse::Error { message, .. })) => {
+                    (Ok(CoreResponse::Error { message, .. }), _)
+                    | (_, Ok(CoreResponse::Error { message, .. })) => {
                         if let Some(ref mut import) = app.dialog_state.import_dialog {
                             import.set_error(format!("Failed to load session: {}", message));
                         }
@@ -856,7 +867,8 @@ async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
                     }
                     _ => {
                         if let Some(ref mut import) = app.dialog_state.import_dialog {
-                            import.set_error("Unexpected response while loading session".to_string());
+                            import
+                                .set_error("Unexpected response while loading session".to_string());
                         }
                     }
                 }
@@ -893,7 +905,10 @@ async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
                             }
                             Ok(other) => {
                                 if let Some(ref mut import) = app.dialog_state.import_dialog {
-                                    import.set_error(format!("Unexpected import response: {:?}", other));
+                                    import.set_error(format!(
+                                        "Unexpected import response: {:?}",
+                                        other
+                                    ));
                                 }
                             }
                             Err(e) => {
@@ -1145,9 +1160,7 @@ async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
             None => return,
         }
     } else {
-        app.messages_state
-            .toasts
-            .error("Core client not available");
+        app.messages_state.toasts.error("Core client not available");
         return;
     };
 
@@ -1280,10 +1293,8 @@ async fn handle_list_tasks(app: &mut app::App) {
                                 .get("message")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default();
-                            let interval_secs = t
-                                .get("interval_secs")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
+                            let interval_secs =
+                                t.get("interval_secs").and_then(|v| v.as_u64()).unwrap_or(0);
                             format!(
                                 "{}: {} ({}s)",
                                 id.chars().take(8).collect::<String>(),
@@ -1356,7 +1367,10 @@ async fn handle_memory_summary(app: &mut app::App) {
         app.messages_state.toasts.warning("Core client unavailable");
         return;
     };
-    let project_hash = format!("{:x}", md5::compute(app.session_state.project_dir.as_bytes()));
+    let project_hash = format!(
+        "{:x}",
+        md5::compute(app.session_state.project_dir.as_bytes())
+    );
     let project_namespace = format!("project/{}", project_hash);
     let req_prefs = crate::core::new_request(
         format!("memory-list-{}", uuid::Uuid::new_v4()),
@@ -1433,7 +1447,9 @@ async fn handle_memory_summary(app: &mut app::App) {
 
 async fn handle_memory_search(app: &mut app::App, query: String) {
     if query.is_empty() {
-        app.messages_state.toasts.warning("Usage: /memory-search <query>");
+        app.messages_state
+            .toasts
+            .warning("Usage: /memory-search <query>");
         return;
     }
     let Some(core_client) = app.core_client.clone() else {
@@ -1442,7 +1458,9 @@ async fn handle_memory_search(app: &mut app::App, query: String) {
     };
     let request = crate::core::new_request(
         format!("memory-search-{}", uuid::Uuid::new_v4()),
-        CoreRequest::MemorySearch { query: query.clone() },
+        CoreRequest::MemorySearch {
+            query: query.clone(),
+        },
     );
     match core_client.request(request).await {
         Ok(CoreResponse::Json { data }) => {
@@ -1515,7 +1533,9 @@ async fn handle_memory_remember(app: &mut app::App, text: String) {
         },
     );
     match core_client.request(request).await {
-        Ok(CoreResponse::Json { .. }) | Ok(CoreResponse::Ack) => app.messages_state.toasts.info("Remembered"),
+        Ok(CoreResponse::Json { .. }) | Ok(CoreResponse::Ack) => {
+            app.messages_state.toasts.info("Remembered")
+        }
         Ok(CoreResponse::Error { message, .. }) => app
             .messages_state
             .toasts
@@ -1548,7 +1568,10 @@ async fn handle_memory_forget(app: &mut app::App, id: String) {
     );
     match core_client.request(request).await {
         Ok(CoreResponse::Json { data }) => {
-            let deleted = data.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false);
+            let deleted = data
+                .get("deleted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if deleted {
                 app.messages_state.toasts.info("Memory deleted");
             } else {
@@ -1569,6 +1592,167 @@ async fn handle_memory_forget(app: &mut app::App, id: String) {
             .messages_state
             .toasts
             .warning(&format!("Memory forget failed: {}", e)),
+    }
+}
+
+async fn handle_goal_set(
+    app: &mut app::App,
+    session_id: String,
+    project_id: String,
+    objective: String,
+) {
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    tokio::spawn(async move {
+        let request = crate::core::new_request(
+            format!("goal-set-{}", uuid::Uuid::new_v4()),
+            CoreRequest::GoalSet {
+                session_id,
+                project_id,
+                objective,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data }) => {
+                let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("Goal");
+                let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                tracing::info!("Goal created: {} ({})", title, id);
+            }
+            Ok(CoreResponse::Error { message, .. }) => {
+                tracing::warn!("Goal set failed: {}", message);
+            }
+            Err(e) => {
+                tracing::warn!("Goal set error: {}", e);
+            }
+            _ => {}
+        }
+    });
+}
+
+async fn handle_goal_from_file(
+    app: &mut app::App,
+    session_id: String,
+    project_id: String,
+    path: String,
+) {
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    tokio::spawn(async move {
+        let request = crate::core::new_request(
+            format!("goal-from-file-{}", uuid::Uuid::new_v4()),
+            CoreRequest::GoalFromFile {
+                session_id,
+                project_id,
+                path,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(CoreResponse::Json { data }) => {
+                let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("Goal");
+                let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                tracing::info!("Goal from file: {} ({})", title, id);
+            }
+            Ok(CoreResponse::Error { message, .. }) => {
+                tracing::warn!("Goal from-file failed: {}", message);
+            }
+            Err(e) => {
+                tracing::warn!("Goal from-file error: {}", e);
+            }
+            _ => {}
+        }
+    });
+}
+
+async fn handle_goal_show(app: &mut app::App, session_id: String) {
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    let response = core_client
+        .request(crate::core::new_request(
+            format!("goal-show-{}", uuid::Uuid::new_v4()),
+            CoreRequest::GoalShow { session_id },
+        ))
+        .await;
+    match response {
+        Ok(CoreResponse::Json { data }) => {
+            if data.get("active").and_then(|v| v.as_bool()) == Some(false) {
+                app.messages_state.toasts.info("No active goal");
+            } else if let Some(rendered) = data.get("rendered").and_then(|v| v.as_str()) {
+                app.messages_state.toasts.info(rendered);
+            }
+        }
+        Ok(CoreResponse::Error { message, .. }) => {
+            app.messages_state.toasts.warning(&message);
+        }
+        Err(e) => {
+            app.messages_state
+                .toasts
+                .warning(&format!("Goal show error: {}", e));
+        }
+        _ => {}
+    }
+}
+
+async fn handle_goal_simple(app: &mut app::App, request: CoreRequest, label: &str) {
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    let label = label.to_string();
+    tokio::spawn(async move {
+        let response = core_client
+            .request(crate::core::new_request(
+                format!("goal-{}-{}", label, uuid::Uuid::new_v4()),
+                request,
+            ))
+            .await;
+        match response {
+            Ok(CoreResponse::Json { data }) => {
+                tracing::info!("Goal {} response: {}", label, data);
+            }
+            Ok(CoreResponse::Error { message, .. }) => {
+                tracing::warn!("Goal {} failed: {}", label, message);
+            }
+            Err(e) => {
+                tracing::warn!("Goal {} error: {}", label, e);
+            }
+            _ => {}
+        }
+    });
+}
+
+async fn handle_goal_checkpoint(app: &mut app::App, session_id: String, project_id: String) {
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+    let response = core_client
+        .request(crate::core::new_request(
+            format!("goal-checkpoint-{}", uuid::Uuid::new_v4()),
+            CoreRequest::GoalCheckpoint {
+                session_id,
+                project_id,
+            },
+        ))
+        .await;
+    match response {
+        Ok(CoreResponse::Json { data }) => {
+            if let Some(path) = data.get("checkpoint_path").and_then(|v| v.as_str()) {
+                tracing::info!("Goal checkpoint: {}", path);
+            }
+        }
+        Ok(CoreResponse::Error { message, .. }) => {
+            tracing::warn!("Goal checkpoint failed: {}", message);
+        }
+        Err(e) => {
+            tracing::warn!("Goal checkpoint error: {}", e);
+        }
+        _ => {}
     }
 }
 
@@ -1643,10 +1827,7 @@ async fn handle_worktree_list(app: &mut app::App) {
                     .iter()
                     .map(|t| {
                         let path = t.get("path").and_then(|v| v.as_str()).unwrap_or_default();
-                        let branch = t
-                            .get("branch")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default();
+                        let branch = t.get("branch").and_then(|v| v.as_str()).unwrap_or_default();
                         format!("{} ({})", path, branch)
                     })
                     .collect();
@@ -2148,6 +2329,41 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         body,
                     } => {
                         handle_send_notification(app, notification_type, body).await;
+                    }
+                    TuiCommand::GoalSet {
+                        session_id,
+                        project_id,
+                        objective,
+                    } => {
+                        handle_goal_set(app, session_id, project_id, objective).await;
+                    }
+                    TuiCommand::GoalFromFile {
+                        session_id,
+                        project_id,
+                        path,
+                    } => {
+                        handle_goal_from_file(app, session_id, project_id, path).await;
+                    }
+                    TuiCommand::GoalShow { session_id } => {
+                        handle_goal_show(app, session_id).await;
+                    }
+                    TuiCommand::GoalPause { session_id } => {
+                        handle_goal_simple(app, CoreRequest::GoalPause { session_id }, "pause").await;
+                    }
+                    TuiCommand::GoalResume { session_id } => {
+                        handle_goal_simple(app, CoreRequest::GoalResume { session_id }, "resume").await;
+                    }
+                    TuiCommand::GoalClear { session_id } => {
+                        handle_goal_simple(app, CoreRequest::GoalClear { session_id }, "clear").await;
+                    }
+                    TuiCommand::GoalDone { session_id } => {
+                        handle_goal_simple(app, CoreRequest::GoalDone { session_id }, "done").await;
+                    }
+                    TuiCommand::GoalCheckpoint {
+                        session_id,
+                        project_id,
+                    } => {
+                        handle_goal_checkpoint(app, session_id, project_id).await;
                     }
                 }
             }

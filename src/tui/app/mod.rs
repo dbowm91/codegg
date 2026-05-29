@@ -31,12 +31,12 @@ use super::route::{Route, RouteManager};
 use super::theme::Theme;
 use crate::agent::builtin_agents;
 use crate::agent::Agent;
+use crate::config::schema::SessionTemplate;
 use crate::core::CoreClient;
 use crate::memory::MemoryStore;
+use crate::permission::PermissionRequest;
 use crate::protocol::core::CoreRequest;
 use crate::protocol::tui::TuiMessage as RemoteTuiMessage;
-use crate::config::schema::SessionTemplate;
-use crate::permission::PermissionRequest;
 use crate::provider::ChatEvent;
 use crate::session::message::ToolStatus;
 use crate::session::{MessageStore, Session, SessionStore};
@@ -162,6 +162,35 @@ pub enum TuiCommand {
     SendNotification {
         notification_type: super::components::notification::NotificationType,
         body: String,
+    },
+    GoalSet {
+        session_id: String,
+        project_id: String,
+        objective: String,
+    },
+    GoalFromFile {
+        session_id: String,
+        project_id: String,
+        path: String,
+    },
+    GoalShow {
+        session_id: String,
+    },
+    GoalPause {
+        session_id: String,
+    },
+    GoalResume {
+        session_id: String,
+    },
+    GoalClear {
+        session_id: String,
+    },
+    GoalDone {
+        session_id: String,
+    },
+    GoalCheckpoint {
+        session_id: String,
+        project_id: String,
     },
     UpdateModels(Vec<String>),
 }
@@ -793,7 +822,10 @@ impl App {
                 }
                 MessageRole::Assistant => {
                     if !content.is_empty() || !tool_calls.is_empty() {
-                        out.push(crate::provider::Message::Assistant { content, tool_calls });
+                        out.push(crate::provider::Message::Assistant {
+                            content,
+                            tool_calls,
+                        });
                     }
                     out.extend(tool_results);
                 }
@@ -803,11 +835,18 @@ impl App {
     }
 
     pub fn handle_remote_event(&mut self, event: serde_json::Value) {
-        let _event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+        let _event_type = event
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
         debug_log!("handle_remote_event: type={}", _event_type);
 
         match serde_json::from_value::<RemoteTuiMessage>(event) {
-            Ok(RemoteTuiMessage::EventEnvelope { event_seq: _, payload }) => {
+            Ok(RemoteTuiMessage::EventEnvelope {
+                event_seq: _,
+                payload,
+            }) => {
                 if let Ok(value) = serde_json::to_value(*payload) {
                     self.handle_remote_event(value);
                 }
@@ -815,7 +854,8 @@ impl App {
             Ok(RemoteTuiMessage::TextDelta { delta }) => {
                 self.messages_state.messages.add_assistant_text(delta);
                 if matches!(self.session_state.session_status, SessionStatus::Working) {
-                    self.footer.set_thinking(true, Some("Thinking...".to_string()));
+                    self.footer
+                        .set_thinking(true, Some("Thinking...".to_string()));
                 }
             }
             Ok(RemoteTuiMessage::ToolCallStarted {
@@ -839,9 +879,9 @@ impl App {
                 } else {
                     crate::session::message::ToolStatus::Error
                 };
-                self.messages_state.messages.update_tool_call(
-                    &tool_id, output, status, None, None, None,
-                );
+                self.messages_state
+                    .messages
+                    .update_tool_call(&tool_id, output, status, None, None, None);
             }
             Ok(RemoteTuiMessage::SessionInfo { model, .. }) => {
                 self.agent_state.current_model = model;
@@ -1058,32 +1098,32 @@ impl App {
             Route::Home => Line::from(vec![
                 Span::styled(
                     " codegg ",
-                        Style::default()
-                            .fg(self.ui_state.theme.primary)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    if context_indicator.is_empty() {
-                        Span::raw("")
-                    } else {
-                        Span::styled(
-                            context_indicator.clone(),
-                            Style::default()
-                                .fg(self.ui_state.theme.warning)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                    },
+                    Style::default()
+                        .fg(self.ui_state.theme.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                if context_indicator.is_empty() {
+                    Span::raw("")
+                } else {
                     Span::styled(
-                        format!("{mode_indicator}{sess_title}  "),
+                        context_indicator.clone(),
                         Style::default()
-                            .fg(self.ui_state.theme.foreground)
+                            .fg(self.ui_state.theme.warning)
                             .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("agent:{agent_name}  model:{model_short}"),
-                        Style::default().fg(self.ui_state.theme.muted),
-                    ),
-                ]),
+                    )
+                },
+                Span::styled(
+                    format!("{mode_indicator}{sess_title}  "),
+                    Style::default()
+                        .fg(self.ui_state.theme.foreground)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("agent:{agent_name}  model:{model_short}"),
+                    Style::default().fg(self.ui_state.theme.muted),
+                ),
+            ]),
             Route::Session(_) => Line::from(""),
         };
         let block = Block::default()
@@ -1517,10 +1557,8 @@ impl App {
                         let provider_map = config
                             .provider
                             .get_or_insert_with(std::collections::HashMap::new);
-                        let mut p_config = provider_map
-                            .get(&provider_id)
-                            .cloned()
-                            .unwrap_or_default();
+                        let mut p_config =
+                            provider_map.get(&provider_id).cloned().unwrap_or_default();
                         p_config.api_key = Some(api_key.clone());
                         provider_map.insert(provider_id.clone(), p_config);
 
@@ -1530,10 +1568,9 @@ impl App {
                                 .toasts
                                 .error(&format!("Failed to save API key to config: {}", e));
                         } else {
-                            self.messages_state.toasts.success(&format!(
-                                "API key saved to config for {}",
-                                provider_name
-                            ));
+                            self.messages_state
+                                .toasts
+                                .success(&format!("API key saved to config for {}", provider_name));
                         }
                     }
 
@@ -1617,7 +1654,7 @@ impl App {
                 match action.as_str() {
                     "Configure OAuth" => {
                         self.messages_state.toasts.info(&format!(
-                                                "OAuth for {} - configure in .codegg/mcp.json",
+                            "OAuth for {} - configure in .codegg/mcp.json",
                             server_name
                         ));
                     }
@@ -1656,7 +1693,7 @@ impl App {
                     }
                     "Configure" => {
                         self.messages_state.toasts.info(&format!(
-                                                "Configure {} - edit .codegg/mcp.json",
+                            "Configure {} - edit .codegg/mcp.json",
                             server_name
                         ));
                     }
@@ -2280,7 +2317,7 @@ impl App {
                                     "Configure OAuth" => {
                                         if let Some(server) = mcp.selected_server() {
                                             self.messages_state.toasts.info(&format!(
-                            "OAuth for {} - configure in .codegg/mcp.json",
+                                                "OAuth for {} - configure in .codegg/mcp.json",
                                                 server.name
                                             ));
                                         }
@@ -2325,7 +2362,7 @@ impl App {
                                     "Configure" => {
                                         if let Some(server) = mcp.selected_server() {
                                             self.messages_state.toasts.info(&format!(
-                            "Configure {} - edit .codegg/mcp.json",
+                                                "Configure {} - edit .codegg/mcp.json",
                                                 server.name
                                             ));
                                         }
@@ -2808,11 +2845,7 @@ impl App {
         }
     }
 
-    fn execute_command(
-        &mut self,
-        cmd: &crate::tui::command::Command,
-        raw_input: Option<&str>,
-    ) {
+    fn execute_command(&mut self, cmd: &crate::tui::command::Command, raw_input: Option<&str>) {
         if let Some(dialog) = &cmd.dialog {
             self.ui_state.command_mode = false;
             self.open_dialog(dialog.clone());
@@ -3066,7 +3099,9 @@ impl App {
                             message,
                         });
                     } else {
-                        self.messages_state.toasts.error("Command channel unavailable");
+                        self.messages_state
+                            .toasts
+                            .error("Command channel unavailable");
                     }
                 } else {
                     self.messages_state
@@ -3138,6 +3173,90 @@ impl App {
             "/memory-consolidate" => {
                 self.handle_memory_command(Some(("consolidate", "")));
             }
+            "/goal" => {
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                let parts: Vec<&str> = query.splitn(2, ' ').collect();
+                let subcmd = parts.get(0).copied().unwrap_or("");
+                let args = parts.get(1).copied().unwrap_or("").trim();
+
+                let Some(session) = self.session_state.session.clone() else {
+                    self.messages_state.toasts.warning("No active session");
+                    return;
+                };
+                let session_id = session.id.clone();
+                let project_id = self.session_state.project_dir.clone();
+
+                match subcmd {
+                    "set" => {
+                        if args.is_empty() {
+                            self.messages_state
+                                .toasts
+                                .warning("Usage: /goal set <objective>");
+                            return;
+                        }
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::GoalSet {
+                                session_id,
+                                project_id,
+                                objective: args.to_string(),
+                            });
+                        }
+                    }
+                    "from-file" => {
+                        if args.is_empty() {
+                            self.messages_state
+                                .toasts
+                                .warning("Usage: /goal from-file <path>");
+                            return;
+                        }
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::GoalFromFile {
+                                session_id,
+                                project_id,
+                                path: args.to_string(),
+                            });
+                        }
+                    }
+                    "show" => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::GoalShow { session_id });
+                        }
+                    }
+                    "pause" => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::GoalPause { session_id });
+                        }
+                    }
+                    "resume" => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::GoalResume { session_id });
+                        }
+                    }
+                    "clear" => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::GoalClear { session_id });
+                        }
+                    }
+                    "done" => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::GoalDone { session_id });
+                        }
+                    }
+                    "checkpoint" => {
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::GoalCheckpoint {
+                                session_id,
+                                project_id,
+                            });
+                        }
+                    }
+                    _ => {
+                        self.messages_state.toasts.warning(
+                            "Usage: /goal <set|from-file|show|pause|resume|clear|done|checkpoint> [args]",
+                        );
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -3164,10 +3283,7 @@ impl App {
         self.ui_state.auto_scroll = true;
         if self.ui_state.remote_mode {
             let (w, h) = crossterm::terminal::size().unwrap_or((0, 0));
-            self.send_remote_message(RemoteTuiMessage::Resize {
-                w,
-                h,
-            });
+            self.send_remote_message(RemoteTuiMessage::Resize { w, h });
         }
     }
 
@@ -3726,10 +3842,14 @@ impl App {
         // Navigate to session view when user sends a prompt
         let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
         if let Some(ref sid) = session_id {
-            self.ui_state.routes.navigate_to(Route::Session(sid.clone()));
+            self.ui_state
+                .routes
+                .navigate_to(Route::Session(sid.clone()));
         } else {
             // Navigate to a placeholder session route - will be updated when real session is created
-            self.ui_state.routes.navigate_to(Route::Session("pending".to_string()));
+            self.ui_state
+                .routes
+                .navigate_to(Route::Session("pending".to_string()));
         }
 
         debug_log!("send_prompt: completed - pending_send set to true, status=Working");
@@ -4333,12 +4453,17 @@ impl App {
         let mem_store = match &self.memory_store {
             Some(s) => s,
             None => {
-                self.messages_state.toasts.error("Memory store not available");
+                self.messages_state
+                    .toasts
+                    .error("Memory store not available");
                 return;
             }
         };
 
-        let project_hash = format!("{:x}", md5::compute(self.session_state.project_dir.as_bytes()));
+        let project_hash = format!(
+            "{:x}",
+            md5::compute(self.session_state.project_dir.as_bytes())
+        );
         let project_namespace = format!("project/{}", project_hash);
 
         match action {
@@ -4347,14 +4472,20 @@ impl App {
                 let proj = mem_store.list(&project_namespace);
                 let total = prefs.len() + proj.len();
                 if total == 0 {
-                    self.messages_state.toasts.info("No memories yet. Use /memory-remember <text> to save something.");
+                    self.messages_state
+                        .toasts
+                        .info("No memories yet. Use /memory-remember <text> to save something.");
                 } else {
                     let mut lines = vec![format!("Memory Summary ({} total):", total)];
                     if !prefs.is_empty() {
                         lines.push(format!("  user/preferences ({}):", prefs.len()));
                         for m in prefs.iter().take(5) {
                             let title = m.title.as_deref().unwrap_or("(untitled)");
-                            lines.push(format!("    - [{}] {}", m.id.chars().take(8).collect::<String>(), title));
+                            lines.push(format!(
+                                "    - [{}] {}",
+                                m.id.chars().take(8).collect::<String>(),
+                                title
+                            ));
                         }
                         if prefs.len() > 5 {
                             lines.push(format!("    ... and {} more", prefs.len() - 5));
@@ -4364,7 +4495,11 @@ impl App {
                         lines.push(format!("  {} ({}):", project_namespace, proj.len()));
                         for m in proj.iter().take(5) {
                             let title = m.title.as_deref().unwrap_or("(untitled)");
-                            lines.push(format!("    - [{}] {}", m.id.chars().take(8).collect::<String>(), title));
+                            lines.push(format!(
+                                "    - [{}] {}",
+                                m.id.chars().take(8).collect::<String>(),
+                                title
+                            ));
                         }
                         if proj.len() > 5 {
                             lines.push(format!("    ... and {} more", proj.len() - 5));
@@ -4375,19 +4510,31 @@ impl App {
             }
             Some(("search", query)) => {
                 if query.is_empty() {
-                    self.messages_state.toasts.warning("Usage: /memory-search <query>");
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /memory-search <query>");
                     return;
                 }
                 let results = mem_store.search(query);
                 if results.is_empty() {
-                    self.messages_state.toasts.info(&format!("No memories found matching '{}'", query));
+                    self.messages_state
+                        .toasts
+                        .info(&format!("No memories found matching '{}'", query));
                 } else {
-                    let lines: Vec<String> = results.iter().take(10).map(|m| {
-                        let title = m.title.as_deref().unwrap_or("(untitled)");
-                        format!("- [{}] {}", m.id.chars().take(8).collect::<String>(), title)
-                    }).collect();
+                    let lines: Vec<String> = results
+                        .iter()
+                        .take(10)
+                        .map(|m| {
+                            let title = m.title.as_deref().unwrap_or("(untitled)");
+                            format!("- [{}] {}", m.id.chars().take(8).collect::<String>(), title)
+                        })
+                        .collect();
                     let msg = if results.len() > 10 {
-                        format!("Found {} memories (showing 10):\n{}", results.len(), lines.join("\n"))
+                        format!(
+                            "Found {} memories (showing 10):\n{}",
+                            results.len(),
+                            lines.join("\n")
+                        )
                     } else {
                         format!("Found {} memory:\n{}", results.len(), lines.join("\n"))
                     };
@@ -4396,7 +4543,9 @@ impl App {
             }
             Some(("remember", text)) => {
                 if text.is_empty() {
-                    self.messages_state.toasts.warning("Usage: /memory-remember <text to remember>");
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /memory-remember <text to remember>");
                     return;
                 }
                 let memory = crate::memory::Memory::new("user/preferences", text);
@@ -4405,13 +4554,17 @@ impl App {
             }
             Some(("forget", id)) => {
                 if id.is_empty() {
-                    self.messages_state.toasts.warning("Usage: /memory-forget <id>");
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /memory-forget <id>");
                     return;
                 }
                 if mem_store.delete(id).is_some() {
                     self.messages_state.toasts.info("Memory deleted");
                 } else {
-                    self.messages_state.toasts.warning(&format!("Memory '{}' not found", id));
+                    self.messages_state
+                        .toasts
+                        .warning(&format!("Memory '{}' not found", id));
                 }
             }
             Some(("consolidate", _)) => {
@@ -4420,31 +4573,44 @@ impl App {
                 let core_client = self.core_client.clone();
                 let mem_store_clone = mem_store.clone();
                 let project_hash_clone = project_hash.clone();
-                self.messages_state.toasts.info("Consolidating session memories...");
+                self.messages_state
+                    .toasts
+                    .info("Consolidating session memories...");
                 tokio::spawn(async move {
-                    let messages = if let (Some(client), Some(sid)) = (core_client, session_id.clone()) {
-                        let request = crate::core::new_request(
-                            format!("session-messages-{}", uuid::Uuid::new_v4()),
-                            crate::protocol::core::CoreRequest::SessionMessagesLoad { session_id: sid },
-                        );
-                        match client.request(request).await {
-                            Ok(crate::protocol::core::CoreResponse::SessionMessages { messages, .. }) => messages,
-                            _ => Vec::new(),
-                        }
-                    } else if let (Some(sid), Some(store)) = (session_id.as_ref(), message_store.as_ref()) {
-                        store.list(sid).await.unwrap_or_default()
-                    } else {
-                        Vec::new()
-                    };
+                    let messages =
+                        if let (Some(client), Some(sid)) = (core_client, session_id.clone()) {
+                            let request = crate::core::new_request(
+                                format!("session-messages-{}", uuid::Uuid::new_v4()),
+                                crate::protocol::core::CoreRequest::SessionMessagesLoad {
+                                    session_id: sid,
+                                },
+                            );
+                            match client.request(request).await {
+                                Ok(crate::protocol::core::CoreResponse::SessionMessages {
+                                    messages,
+                                    ..
+                                }) => messages,
+                                _ => Vec::new(),
+                            }
+                        } else if let (Some(sid), Some(store)) =
+                            (session_id.as_ref(), message_store.as_ref())
+                        {
+                            store.list(sid).await.unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
                     if messages.is_empty() {
                         return;
                     }
-                    let new_memories = mem_store_clone.consolidate_session(&messages, &project_hash_clone);
+                    let new_memories =
+                        mem_store_clone.consolidate_session(&messages, &project_hash_clone);
                     tracing::info!("Manual consolidation: {} new memories", new_memories.len());
                 });
             }
             Some((cmd, _)) => {
-                self.messages_state.toasts.warning(&format!("Unknown memory command: /{}", cmd));
+                self.messages_state
+                    .toasts
+                    .warning(&format!("Unknown memory command: /{}", cmd));
             }
         }
     }
@@ -5275,7 +5441,9 @@ impl App {
         ];
 
         if self.session_state.cached_tokens > 0 {
-            let cache_pct = (self.session_state.cached_tokens as f64 / self.session_state.token_in as f64 * 100.0) as u64;
+            let cache_pct = (self.session_state.cached_tokens as f64
+                / self.session_state.token_in as f64
+                * 100.0) as u64;
             lines.push(Line::from(Span::raw(format!(
                 "  Cached: {} tokens ({}%)",
                 self.session_state.cached_tokens, cache_pct

@@ -135,6 +135,47 @@ impl CoreClient for InprocCoreClient {
                     &model_name,
                 );
                 system.push_str(&memory_context);
+
+                // Inject active goal context into system prompt
+                let goal_context = if let Some(pool) = self.pool.clone() {
+                    let goal_store = crate::goal::GoalStore::new(pool.clone());
+                    match goal_store.active_for_session(&session_id).await {
+                        Ok(Some(goal)) if goal.status == crate::goal::GoalStatus::Active => {
+                            let checkpoint_excerpt = if let Some(ref path) = goal.checkpoint_path {
+                                crate::goal::checkpoint::read_checkpoint_excerpt(path, 4000)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                            } else {
+                                None
+                            };
+                            crate::goal::render::render_goal_context(
+                                &goal,
+                                checkpoint_excerpt.as_deref(),
+                            )
+                        }
+                        _ => String::new(),
+                    }
+                } else {
+                    String::new()
+                };
+                system.push_str(&goal_context);
+
+                // Register session-scoped goal tools
+                if let Some(pool) = self.pool.clone() {
+                    tool_registry.register(crate::goal::tool::GoalGetTool::new(
+                        pool.clone(),
+                        session_id.clone(),
+                    ));
+                    tool_registry.register(crate::goal::tool::GoalUpdateProgressTool::new(
+                        pool.clone(),
+                        session_id.clone(),
+                    ));
+                    tool_registry.register(crate::goal::tool::GoalRequestCompletionTool::new(
+                        pool,
+                        session_id.clone(),
+                    ));
+                }
                 let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
                     agents,
                     provider,
@@ -700,6 +741,396 @@ impl CoreClient for InprocCoreClient {
                     data: serde_json::json!({ "deleted": deleted }),
                 })
             }
+            CoreRequest::GoalSet {
+                session_id,
+                project_id,
+                objective,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool.clone());
+                let title = objective
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or(&objective)
+                    .chars()
+                    .take(80)
+                    .collect::<String>();
+                let completion_criteria = vec![
+                    "Implementation satisfies the stated objective.".to_string(),
+                    "Relevant tests or checks have been run, or skipped with justification."
+                        .to_string(),
+                    "Checkpoint/progress state is updated.".to_string(),
+                ];
+                match goal_store
+                    .create_active(
+                        &session_id,
+                        &project_id,
+                        &title,
+                        &objective,
+                        None,
+                        None,
+                        completion_criteria,
+                    )
+                    .await
+                {
+                    Ok(goal) => {
+                        let project_path = std::path::PathBuf::from(&project_id);
+                        let checkpoint_path = match crate::goal::checkpoint::create_checkpoint_file(
+                            &project_path,
+                            &goal,
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(path) => Some(path.to_string_lossy().to_string()),
+                            Err(_) => None,
+                        };
+                        if let Some(ref cp) = checkpoint_path {
+                            let _ = sqlx::query("UPDATE goal SET checkpoint_path = ? WHERE id = ?")
+                                .bind(cp)
+                                .bind(&goal.id)
+                                .execute(&pool)
+                                .await;
+                        }
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({
+                                "status": "active",
+                                "id": goal.id,
+                                "title": title,
+                                "checkpoint_path": checkpoint_path,
+                            }),
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_create_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalFromFile {
+                session_id,
+                project_id,
+                path,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let file_path = if std::path::Path::new(&path).is_absolute() {
+                    std::path::PathBuf::from(&path)
+                } else {
+                    std::path::PathBuf::from(&project_id).join(&path)
+                };
+                let content = match tokio::fs::read_to_string(&file_path).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "file_read_failed".to_string(),
+                            message: format!("Failed to read {}: {}", path, e),
+                        })
+                    }
+                };
+                let title = content
+                    .lines()
+                    .find(|l| l.starts_with('#'))
+                    .map(|l| {
+                        l.trim_start_matches('#')
+                            .trim()
+                            .chars()
+                            .take(80)
+                            .collect::<String>()
+                    })
+                    .unwrap_or_else(|| {
+                        std::path::Path::new(&path)
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "Goal from file".to_string())
+                    });
+                let objective = format!("Follow implementation plan from {}", path);
+                let completion_criteria = vec![
+                    "All phases in the plan file that are in scope are completed.".to_string(),
+                    "Tests/checks specified in the plan have been run.".to_string(),
+                    "Goal checkpoint is updated with completed/remaining work.".to_string(),
+                ];
+                let plan_excerpt = if content.len() > 4000 {
+                    Some(&content[..4000])
+                } else {
+                    Some(content.as_str())
+                };
+                let goal_store = crate::goal::GoalStore::new(pool.clone());
+                match goal_store
+                    .create_active(
+                        &session_id,
+                        &project_id,
+                        &title,
+                        &objective,
+                        Some(path),
+                        None,
+                        completion_criteria,
+                    )
+                    .await
+                {
+                    Ok(goal) => {
+                        let project_path = std::path::PathBuf::from(&project_id);
+                        let checkpoint_path = match crate::goal::checkpoint::create_checkpoint_file(
+                            &project_path,
+                            &goal,
+                            plan_excerpt,
+                        )
+                        .await
+                        {
+                            Ok(path) => Some(path.to_string_lossy().to_string()),
+                            Err(_) => None,
+                        };
+                        if let Some(ref cp) = checkpoint_path {
+                            let _ = sqlx::query("UPDATE goal SET checkpoint_path = ? WHERE id = ?")
+                                .bind(cp)
+                                .bind(&goal.id)
+                                .execute(&pool)
+                                .await;
+                        }
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({
+                                "status": "active",
+                                "id": goal.id,
+                                "title": goal.title,
+                                "checkpoint_path": checkpoint_path,
+                            }),
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_create_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalShow { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        let checkpoint_excerpt = if let Some(ref path) = goal.checkpoint_path {
+                            crate::goal::checkpoint::read_checkpoint_excerpt(path, 4000)
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        };
+                        let rendered = crate::goal::render::render_goal_status(&goal);
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({
+                                "goal": serde_json::to_value(&goal).unwrap_or_default(),
+                                "rendered": rendered,
+                                "checkpoint_excerpt": checkpoint_excerpt,
+                            }),
+                        })
+                    }
+                    Ok(None) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({ "active": false }),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_show_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalPause { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        match goal_store
+                            .update_status(&goal.id, crate::goal::GoalStatus::Paused)
+                            .await
+                        {
+                            Ok(_) => Ok(CoreResponse::Json {
+                                data: serde_json::json!({ "status": "paused", "id": goal.id }),
+                            }),
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "goal_pause_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_active_goal".to_string(),
+                        message: "No active goal to pause".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_pause_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalResume { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.latest_paused_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        match goal_store
+                            .update_status(&goal.id, crate::goal::GoalStatus::Active)
+                            .await
+                        {
+                            Ok(_) => Ok(CoreResponse::Json {
+                                data: serde_json::json!({ "status": "active", "id": goal.id }),
+                            }),
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "goal_resume_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_paused_goal".to_string(),
+                        message: "No paused goal to resume".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_resume_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalClear { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.clear_active_for_session(&session_id).await {
+                    Ok(()) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({ "cleared": true }),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_clear_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalDone { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        match goal_store
+                            .update_status(&goal.id, crate::goal::GoalStatus::Complete)
+                            .await
+                        {
+                            Ok(_) => Ok(CoreResponse::Json {
+                                data: serde_json::json!({ "status": "complete", "id": goal.id }),
+                            }),
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "goal_done_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_active_goal".to_string(),
+                        message: "No active goal to mark done".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_done_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalCheckpoint {
+                session_id,
+                project_id,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        if let Some(ref cp_path) = goal.checkpoint_path {
+                            let update = crate::goal::GoalProgressUpdate {
+                                current_phase: goal.current_phase.clone(),
+                                progress_summary: Some(goal.progress_summary.clone()),
+                                next_action: goal.next_action.clone(),
+                                completed_items: vec![],
+                                remaining_items: vec![],
+                                open_questions: goal.open_questions.clone(),
+                            };
+                            let _ =
+                                crate::goal::checkpoint::append_checkpoint_update(cp_path, &update)
+                                    .await;
+                            Ok(CoreResponse::Json {
+                                data: serde_json::json!({ "checkpoint_path": cp_path, "appended": true }),
+                            })
+                        } else {
+                            let project_path = std::path::PathBuf::from(&project_id);
+                            match crate::goal::checkpoint::create_checkpoint_file(
+                                &project_path,
+                                &goal,
+                                None,
+                            )
+                            .await
+                            {
+                                Ok(path) => {
+                                    let path_str = path.to_string_lossy().to_string();
+                                    let _ = sqlx::query(
+                                        "UPDATE goal SET checkpoint_path = ? WHERE id = ?",
+                                    )
+                                    .bind(&path_str)
+                                    .bind(&goal.id)
+                                    .execute(&goal_store.pool)
+                                    .await;
+                                    Ok(CoreResponse::Json {
+                                        data: serde_json::json!({ "checkpoint_path": path_str, "created": true }),
+                                    })
+                                }
+                                Err(e) => Ok(CoreResponse::Error {
+                                    code: "goal_checkpoint_failed".to_string(),
+                                    message: e.to_string(),
+                                }),
+                            }
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_active_goal".to_string(),
+                        message: "No active goal".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_checkpoint_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
             _ => Ok(CoreResponse::Ack),
         }
     }
@@ -732,20 +1163,20 @@ impl CoreClient for InprocCoreClient {
 
 fn map_app_event_to_core_event(event: crate::bus::events::AppEvent) -> Option<CoreEvent> {
     match event {
-        crate::bus::events::AppEvent::TextDelta { delta, session_id } => Some(
-            CoreEvent::TurnTextDelta {
+        crate::bus::events::AppEvent::TextDelta { delta, session_id } => {
+            Some(CoreEvent::TurnTextDelta {
                 session_id: session_id.to_string(),
                 turn_id: String::new(),
                 delta: delta.to_string(),
-            },
-        ),
-        crate::bus::events::AppEvent::ReasoningDelta { delta, session_id } => Some(
-            CoreEvent::TurnReasoningDelta {
+            })
+        }
+        crate::bus::events::AppEvent::ReasoningDelta { delta, session_id } => {
+            Some(CoreEvent::TurnReasoningDelta {
                 session_id: session_id.to_string(),
                 turn_id: String::new(),
                 delta,
-            },
-        ),
+            })
+        }
         crate::bus::events::AppEvent::ToolCallStarted {
             session_id,
             tool_name,
@@ -772,7 +1203,10 @@ fn map_app_event_to_core_event(event: crate::bus::events::AppEvent) -> Option<Co
             success,
         }),
         crate::bus::events::AppEvent::PermissionPending {
-            perm_id, tool, path, ..
+            perm_id,
+            tool,
+            path,
+            ..
         } => Some(CoreEvent::PermissionPending {
             id: perm_id,
             tool,

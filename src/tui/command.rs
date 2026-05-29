@@ -172,6 +172,8 @@ impl CommandRegistry {
                 .with_description("Consolidate session into memories"),
             Command::new("/checkpoint", CommandCategory::Session, None)
                 .with_description("Create a checkpoint of current session"),
+            Command::new("/goal", CommandCategory::Session, None)
+                .with_description("Manage active long-running goal (/goal set, show, pause, resume, clear, done, checkpoint, from-file)"),
             Command::new("/pr", CommandCategory::Agent, None)
                 .with_description("GitHub pull requests")
                 .with_template("Use GitHub MCP (mcp__github) to {args}"),
@@ -232,7 +234,9 @@ impl CommandRegistry {
                         (normalized, cmd)
                     })
                     .collect::<HashMap<_, _>>()
-            }).join().unwrap_or_default()
+            })
+            .join()
+            .unwrap_or_default()
         });
         for (normalized, cmd) in dynamic_commands {
             if !seen.contains_key(&normalized) {

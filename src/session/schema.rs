@@ -67,6 +67,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 15 {
         migrate_and_record(pool, 15).await?;
     }
+    if current_version < 16 {
+        migrate_and_record(pool, 16).await?;
+    }
 
     Ok(())
 }
@@ -94,7 +97,13 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             13 => migrate_v13(pool).await?,
             14 => migrate_v14(pool).await?,
             15 => migrate_v15(pool).await?,
-            _ => return Err(StorageError::Migration(format!("unknown migration version {}", version))),
+            16 => migrate_v16(pool).await?,
+            _ => {
+                return Err(StorageError::Migration(format!(
+                    "unknown migration version {}",
+                    version
+                )))
+            }
         }
         sqlx::query(
             "INSERT INTO migration_version (id, version) VALUES (1, ?) \
@@ -538,6 +547,55 @@ async fn migrate_v15(pool: &SqlitePool) -> Result<(), StorageError> {
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS usage_session_idx ON usage(session_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v16(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS goal (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            status TEXT NOT NULL,
+
+            plan_path TEXT,
+            checkpoint_path TEXT,
+
+            current_phase TEXT,
+            progress_summary TEXT NOT NULL DEFAULT '',
+            next_action TEXT,
+            completion_criteria TEXT NOT NULL DEFAULT '[]',
+            open_questions TEXT NOT NULL DEFAULT '[]',
+
+            budget TEXT NOT NULL DEFAULT '{}',
+            usage TEXT NOT NULL DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS goal_session_status_idx ON goal(session_id, status)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS goal_project_status_idx ON goal(project_id, status)")
         .execute(pool)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;

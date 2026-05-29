@@ -172,6 +172,35 @@ pub enum CoreRequest {
     WorktreeList {
         project_dir: String,
     },
+    GoalSet {
+        session_id: String,
+        project_id: String,
+        objective: String,
+    },
+    GoalFromFile {
+        session_id: String,
+        project_id: String,
+        path: String,
+    },
+    GoalShow {
+        session_id: String,
+    },
+    GoalPause {
+        session_id: String,
+    },
+    GoalResume {
+        session_id: String,
+    },
+    GoalClear {
+        session_id: String,
+    },
+    GoalDone {
+        session_id: String,
+    },
+    GoalCheckpoint {
+        session_id: String,
+        project_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
