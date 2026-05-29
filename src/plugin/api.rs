@@ -125,6 +125,8 @@ pub mod tools {
         pub name: String,
         pub description: String,
         pub parameters: serde_json::Value,
+        #[serde(default)]
+        pub defer_loading: Option<bool>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]

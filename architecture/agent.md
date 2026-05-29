@@ -693,6 +693,26 @@ Searches from CWD to git root, plus config dir.
 
 Remote URLs in config instructions are fetched asynchronously.
 
+### Subagent Output Contracts
+
+`subagent_output_contract()` in `prompt.rs` returns role-specific output format guidance. These contracts define the expected shape of subagent responses to improve result parsing and quality.
+
+```rust
+pub fn subagent_output_contract(role: &str) -> &'static str {
+    match role {
+        "explore" | "explorer" => "Output contract: Return a compact report with: files examined, key symbols/modules found, relevant relationships, and uncertainties. Do not include raw file contents.",
+        "review" | "reviewer" => "Output contract: Return findings by severity (critical/high/medium/low/info). For each: file path, line number if applicable, title, rationale, and suggested patch scope. Prioritize correctness and security over style.",
+        "debug" => "Output contract: Return: commands/logs that revealed the issue, failure signature, root-cause candidates ranked by likelihood, and next experiment to try.",
+        "test" => "Output contract: Return: tests added or run, pass/fail status per test, coverage gaps identified, and any flaky or skipped tests.",
+        "security" | "security_reviewer" => "Output contract: Return: finding category, exploitability assessment, affected surface/files, and mitigation recommendation. Distinguish confirmed issues from speculative risks.",
+        "planner" => "Output contract: Return: implementation plan with ordered steps, estimated complexity per step, dependencies between steps, files to create/modify, and verification criteria.",
+        "executor" | _ => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
+    }
+}
+```
+
+The output contract is injected into both `assemble_system_prompt_with_profile()` (used with model profiles) and `base_prompt_parts()` (used in `load_agent_prompt()` for production paths). It is appended after the role contract, giving subagents explicit guidance on response format.
+
 ---
 
 ## 10. Background Tasks (`task.rs`)

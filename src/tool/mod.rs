@@ -64,6 +64,12 @@ pub trait Tool: Send + Sync {
     /// Set the list of tool names available for on-demand discovery.
     /// Only relevant for the `tool_search` tool; default is no-op.
     fn set_available_tools(&mut self, _tools: Vec<String>) {}
+
+    /// Whether this tool should be deferred (not sent to LLM on every request).
+    /// Deferred tools are only loaded on-demand via tool_search.
+    fn defer_loading(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +186,7 @@ impl ToolRegistry {
                 name: interner.intern(t.name()).to_string(),
                 description: interner.intern(t.description()).to_string(),
                 parameters: t.parameters(),
+                defer_loading: if t.defer_loading() { Some(true) } else { None },
             })
             .collect()
     }

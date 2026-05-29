@@ -17,6 +17,7 @@ mod tests {
                     },
                     "required": ["value"]
                 }),
+                defer_loading: None,
             }]),
             system: Some("You are a helpful assistant.".to_string()),
             temperature: None,

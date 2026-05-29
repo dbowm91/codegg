@@ -488,6 +488,11 @@ impl AgentLoop {
         if let Some(ref finding) = security_hint.finding {
             self.recent_findings.push(finding.clone());
         }
+        // Check if the path targets a sensitive file, regardless of permission level
+        let sensitive_match = self.config.security.as_ref().and_then(|sec| {
+            crate::security::matches_sensitive_path(path.as_deref(), &sec.sensitive_paths)
+        });
+
         match perm_result {
             PermissionResult::Allow => {
                 if doom_loop {
@@ -497,6 +502,47 @@ impl AgentLoop {
                             "Tool '{}' denied: potential doom loop detected (repeated identical tool calls)",
                             tc.name
                         ),
+                    }
+                } else if let Some(sensitive) = sensitive_match {
+                    // Escalate: sensitive paths always require user confirmation
+                    let reason = sensitive
+                        .reason
+                        .clone()
+                        .unwrap_or_else(|| "sensitive path".to_string());
+                    let perm_id = format!("{}-{}", tc.id, tc.name);
+                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                    PermissionRegistry::register(perm_id.clone(), resp_tx);
+                    let args = serde_json::json!({
+                        "command": bash_command.as_deref().unwrap_or(""),
+                        "security": {
+                            "action": "ask",
+                            "reason": format!("Sensitive path access: {}", reason),
+                            "review_level": sensitive.review_level.as_deref().unwrap_or("standard"),
+                        }
+                    });
+                    crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
+                        session_id: self.session_id.clone(),
+                        perm_id: perm_id.clone(),
+                        tool: (*tc.name).clone(),
+                        path: path.clone(),
+                        args: Some(args),
+                    });
+                    let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await
+                    {
+                        Ok(Ok(choice)) => choice,
+                        _ => PermissionChoice::DenyOnce,
+                    };
+                    PermissionRegistry::unregister(&perm_id);
+                    if choice.allowed() {
+                        ToolPermissionOutcome::Allowed(tc.clone())
+                    } else {
+                        ToolPermissionOutcome::Denied {
+                            tool_id: tc.id.to_string(),
+                            message: format!(
+                                "Tool '{}' denied: access to sensitive path refused",
+                                tc.name
+                            ),
+                        }
                     }
                 } else if matches!(
                     security_hint.action,
@@ -557,9 +603,11 @@ impl AgentLoop {
                 message: format!("Tool '{}' denied by permissions", tc.name),
             },
             PermissionResult::Ask(req) => {
+                // Auto-accept read-only tools only if path is not sensitive
                 if (is_auto_accept_read_only_tool(tc.name.as_str())
                     || is_mcp_tool(tc.name.as_str()))
                     && is_path_within_working_directory(req.path.as_deref())
+                    && sensitive_match.is_none()
                 {
                     if doom_loop {
                         return ToolPermissionOutcome::Denied {
@@ -693,7 +741,9 @@ impl AgentLoop {
         let Some(ref policy) = self.execution_policy else {
             return definitions;
         };
-        match policy.initial_tool_mode {
+
+        // First apply exposure mode filter
+        let filtered = match policy.initial_tool_mode {
             crate::agent::policy::ToolExposureMode::Full => definitions,
             crate::agent::policy::ToolExposureMode::Curated => {
                 let core_tools = ["read", "list", "grep", "glob", "codesearch", "edit",
@@ -712,7 +762,19 @@ impl AgentLoop {
                     .filter(|t| minimal_tools.contains(&t.name.as_str()))
                     .collect()
             }
+        };
+
+        // Then apply model profile disabled_tools filter
+        if let Some(ref disabled) = policy.disabled_tools {
+            if !disabled.is_empty() {
+                return filtered
+                    .into_iter()
+                    .filter(|t| !disabled.contains(&t.name))
+                    .collect();
+            }
         }
+
+        filtered
     }
 
     pub fn new(
@@ -1405,6 +1467,7 @@ impl AgentLoop {
                                     name: t.get("name")?.as_str()?.to_string(),
                                     description: t.get("description")?.as_str()?.to_string(),
                                     parameters: t.get("parameters")?.clone(),
+                                    defer_loading: None,
                                 })
                             })
                             .collect();
@@ -1425,6 +1488,7 @@ impl AgentLoop {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
                 parameters: t.parameters(),
+                defer_loading: if t.defer_loading() { Some(true) } else { None },
             })
             .collect();
 
@@ -1462,6 +1526,7 @@ impl AgentLoop {
                             name: t.get("name")?.as_str()?.to_string(),
                             description: t.get("description")?.as_str()?.to_string(),
                             parameters: t.get("parameters")?.clone(),
+                            defer_loading: None,
                         })
                     })
                     .collect();

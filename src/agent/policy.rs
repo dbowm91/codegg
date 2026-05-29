@@ -23,6 +23,7 @@ pub struct ExecutionPolicy {
     pub allow_post_tool_continue_nudge: bool,
     pub prefer_user_control_messages: bool,
     pub supports_late_system_messages: bool,
+    pub disabled_tools: Option<Vec<String>>,
     pub task_state_policy: TaskStatePolicy,
 }
 
@@ -77,6 +78,7 @@ impl ExecutionPolicy {
             allow_post_tool_continue_nudge,
             prefer_user_control_messages: profile.prefers_user_control_messages,
             supports_late_system_messages: profile.supports_late_system_messages,
+            disabled_tools: profile.disabled_tools.clone(),
             task_state_policy: profile.task_state_policy.clone(),
         }
     }

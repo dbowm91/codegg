@@ -182,6 +182,7 @@ impl LocalClient {
                     name,
                     description,
                     parameters,
+                    defer_loading: None,
                 })
             })
             .collect())

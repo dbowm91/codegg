@@ -313,6 +313,9 @@ fn base_prompt_parts(agent: &Agent, model_id: &str) -> Vec<String> {
             agent.name, agent.description
         ));
     }
+    if let Some(role) = agent.role.as_deref() {
+        parts.push(subagent_output_contract(role).to_string());
+    }
     parts
 }
 
@@ -334,6 +337,9 @@ pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
 
     parts.push(base_harness_contract().to_string());
     parts.push(role_contract(ctx.agent).to_string());
+    if let Some(role) = ctx.agent.role.as_deref() {
+        parts.push(subagent_output_contract(role).to_string());
+    }
     parts.push(profile_contract(ctx.model_profile).to_string());
 
     if let Some(prompt) = &ctx.agent.system_prompt {
@@ -383,8 +389,21 @@ fn role_contract(agent: &Agent) -> &'static str {
         "summarizer" => "Role contract: You are a summarization agent. Preserve decisions, state, changed files, remaining risks, and next actions.",
         "compactor" => "Role contract: You are a context compaction agent. Preserve task state, decisions, file paths, tool results, and unresolved issues.",
         "reviewer" => "Role contract: You are a review agent. Look for correctness, safety, regression risk, missing tests, and excessive scope.",
+        "security_reviewer" => "Role contract: You are a security review agent. Focus on realistic exploit paths, affected surfaces, and mitigations. Distinguish confirmed issues from speculative risks.",
         "title" => "Role contract: You are a title generation agent. Produce a concise session title.",
         _ => "Role contract: You are an implementation agent. Inspect relevant files, make targeted changes, and verify them when possible.",
+    }
+}
+
+pub fn subagent_output_contract(role: &str) -> &'static str {
+    match role {
+        "explore" | "explorer" => "Output contract: Return a compact report with: files examined, key symbols/modules found, relevant relationships, and uncertainties. Do not include raw file contents.",
+        "review" | "reviewer" => "Output contract: Return findings by severity (critical/high/medium/low/info). For each: file path, line number if applicable, title, rationale, and suggested patch scope. Prioritize correctness and security over style.",
+        "debug" => "Output contract: Return: commands/logs that revealed the issue, failure signature, root-cause candidates ranked by likelihood, and next experiment to try.",
+        "test" => "Output contract: Return: tests added or run, pass/fail status per test, coverage gaps identified, and any flaky or skipped tests.",
+        "security" | "security_reviewer" => "Output contract: Return: finding category, exploitability assessment, affected surface/files, and mitigation recommendation. Distinguish confirmed issues from speculative risks.",
+        "planner" => "Output contract: Return: implementation plan with ordered steps, estimated complexity per step, dependencies between steps, files to create/modify, and verification criteria.",
+        "executor" | _ => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
     }
 }
 

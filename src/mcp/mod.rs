@@ -214,6 +214,7 @@ impl McpService {
                     name: format!("mcp__{}__{}", s.name, t.name),
                     description: t.description.clone(),
                     parameters: t.input_schema.clone(),
+                    defer_loading: None,
                 })
             })
             .collect()
@@ -272,6 +273,7 @@ impl McpService {
                 name: format!("mcp__{}__{}", srv.name, t.name),
                 description: t.description.clone(),
                 parameters: t.input_schema.clone(),
+                defer_loading: None,
             })
             .collect())
     }

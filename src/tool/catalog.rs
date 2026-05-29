@@ -24,7 +24,7 @@ impl ToolMetadata {
             name: tool.name().to_string(),
             description: tool.description().to_string(),
             parameters: tool.parameters(),
-            defer_load: false,
+            defer_load: tool.defer_loading(),
         }
     }
 }

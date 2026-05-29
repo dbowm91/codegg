@@ -200,6 +200,8 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    #[serde(default)]
+    pub defer_loading: Option<bool>,
 }
 
 impl ToolDefinition {
@@ -592,6 +594,7 @@ mod tests {
             name: "test_tool".to_string(),
             description: "A test tool".to_string(),
             parameters: serde_json::json!({"type": "object"}),
+            defer_loading: None,
         };
         assert_eq!(def.name, "test_tool");
     }
