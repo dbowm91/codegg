@@ -27,8 +27,8 @@ use crate::error::{AgentError, AppError, ProviderError, ToolError};
 use crate::model_profile::policy::push_control_instruction;
 use crate::permission::{DoomLoopDetector, PermissionChecker, PermissionChoice, PermissionResult};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
-use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
 use crate::provider::text_tool_parser::parse_text_as_tool_calls;
+use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
 use crate::tool::plan::detect_plan_mode_change;
 use crate::tool::question::{format_question_answers, parse_question_questions};
 use crate::tool::ToolRegistry;
@@ -54,8 +54,8 @@ static PATH_REDACTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
         .filter_map(|p| regex::Regex::new(p).ok())
         .collect()
 });
-use tokio::sync::mpsc;
 use tokio::sync::broadcast::error::TryRecvError;
+use tokio::sync::mpsc;
 use tracing::instrument;
 
 type ToolDefCache = (
@@ -100,7 +100,9 @@ fn harden_history(messages: &mut Vec<Message>) {
         for tool_call_id in pending.keys() {
             target.push(Message::Tool {
                 tool_call_id: tool_call_id.clone().into(),
-                content: "[tool result missing due to history repair]".to_string().into(),
+                content: "[tool result missing due to history repair]"
+                    .to_string()
+                    .into(),
             });
         }
         pending.clear();
@@ -108,12 +110,18 @@ fn harden_history(messages: &mut Vec<Message>) {
 
     for msg in messages.drain(..) {
         match msg {
-            Message::Assistant { content, tool_calls } => {
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => {
                 flush_pending(&mut hardened, &mut pending_tool_calls);
                 for tc in &tool_calls {
                     pending_tool_calls.insert(tc.id.to_string(), tc.name.to_string());
                 }
-                hardened.push(Message::Assistant { content, tool_calls });
+                hardened.push(Message::Assistant {
+                    content,
+                    tool_calls,
+                });
             }
             Message::Tool {
                 tool_call_id,
@@ -150,7 +158,9 @@ fn harden_history(messages: &mut Vec<Message>) {
         for tool_call_id in pending_tool_calls.keys() {
             hardened.push(Message::Tool {
                 tool_call_id: tool_call_id.clone().into(),
-                content: "[tool result missing due to history repair]".to_string().into(),
+                content: "[tool result missing due to history repair]"
+                    .to_string()
+                    .into(),
             });
         }
     }
@@ -364,7 +374,11 @@ fn is_path_within_working_directory(path: Option<&str>) -> bool {
 
     let candidate = {
         let p = std::path::PathBuf::from(raw_path);
-        if p.is_absolute() { p } else { cwd.join(p) }
+        if p.is_absolute() {
+            p
+        } else {
+            cwd.join(p)
+        }
     };
 
     let canonical = match candidate.canonicalize() {
@@ -432,6 +446,23 @@ impl AgentLoop {
                 .check(&tc.name, path.as_deref(), Some(&self.session_id))
                 .await
         };
+        let security_hint = if !self.security_service.enabled() {
+            crate::security::policy::SecurityDecisionHint {
+                action: crate::security::policy::SecurityAction::Observe,
+                reason: String::new(),
+                finding: None,
+            }
+        } else if let Some(ref cmd) = bash_command {
+            self.security_service.classify_bash(cmd)
+        } else if let Some(ref subcommand) = git_subcommand {
+            self.security_service.classify_git(subcommand)
+        } else {
+            self.security_service
+                .classify_tool_call(&tc.name, &tc.arguments)
+        };
+        if let Some(ref finding) = security_hint.finding {
+            self.recent_findings.push(finding.clone());
+        }
         match perm_result {
             PermissionResult::Allow => {
                 if doom_loop {
@@ -441,6 +472,56 @@ impl AgentLoop {
                             "Tool '{}' denied: potential doom loop detected (repeated identical tool calls)",
                             tc.name
                         ),
+                    }
+                } else if matches!(
+                    security_hint.action,
+                    crate::security::policy::SecurityAction::Deny
+                ) {
+                    ToolPermissionOutcome::Denied {
+                        tool_id: tc.id.to_string(),
+                        message: format!(
+                            "Tool '{}' denied by security policy: {}",
+                            tc.name, security_hint.reason
+                        ),
+                    }
+                } else if matches!(
+                    security_hint.action,
+                    crate::security::policy::SecurityAction::Ask
+                ) {
+                    let perm_id = format!("{}-{}", tc.id, tc.name);
+                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                    PermissionRegistry::register(perm_id.clone(), resp_tx);
+                    let args = serde_json::json!({
+                        "command": bash_command.as_deref().unwrap_or(""),
+                        "security": {
+                            "action": "ask",
+                            "reason": security_hint.reason,
+                            "category": security_hint.finding.as_ref().map(|f| format!("{:?}", f.category)).unwrap_or_default(),
+                        }
+                    });
+                    crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
+                        session_id: self.session_id.clone(),
+                        perm_id: perm_id.clone(),
+                        tool: (*tc.name).clone(),
+                        path: path.clone(),
+                        args: Some(args),
+                    });
+                    let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await
+                    {
+                        Ok(Ok(choice)) => choice,
+                        _ => PermissionChoice::DenyOnce,
+                    };
+                    PermissionRegistry::unregister(&perm_id);
+                    if choice.allowed() {
+                        ToolPermissionOutcome::Allowed(tc.clone())
+                    } else {
+                        ToolPermissionOutcome::Denied {
+                            tool_id: tc.id.to_string(),
+                            message: format!(
+                                "Tool '{}' denied by user (security escalation)",
+                                tc.name
+                            ),
+                        }
                     }
                 } else {
                     ToolPermissionOutcome::Allowed(tc.clone())
@@ -567,6 +648,8 @@ pub struct AgentLoop {
     file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
     usage_store: Option<Arc<crate::session::UsageStore>>,
     pricing_service: crate::util::pricing::PricingService,
+    security_service: crate::security::service::SecurityService,
+    recent_findings: Vec<crate::security::finding::SecurityFinding>,
 }
 
 impl AgentLoop {
@@ -610,7 +693,8 @@ impl AgentLoop {
 
         let snapshot_manager = if config.snapshot.unwrap_or(false) {
             if let Some(pool) = pool.clone() {
-                let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let project_root =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let options = config
                     .snapshot_config
                     .as_ref()
@@ -620,7 +704,11 @@ impl AgentLoop {
                         max_total_bytes: c.max_total_bytes,
                     })
                     .unwrap_or_default();
-                Some(crate::snapshot::SnapshotManager::new_with_options(pool, project_root, options))
+                Some(crate::snapshot::SnapshotManager::new_with_options(
+                    pool,
+                    project_root,
+                    options,
+                ))
             } else {
                 None
             }
@@ -630,6 +718,8 @@ impl AgentLoop {
 
         let usage_store = pool.map(|p| Arc::new(crate::session::UsageStore::new(p)));
         let pricing_service = crate::util::pricing::PricingService::new();
+        let security_service =
+            crate::security::service::SecurityService::new(config.security.as_ref());
 
         Self {
             agents: map,
@@ -670,6 +760,8 @@ impl AgentLoop {
             file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
             usage_store,
             pricing_service,
+            security_service,
+            recent_findings: Vec::new(),
         }
     }
 
@@ -1101,7 +1193,10 @@ impl AgentLoop {
                 Err(_) => {
                     tracing::debug!("MCP service write-locked during tool def building, retrying");
                     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    mcp_arc.try_read().map(|mcp| mcp.list_tools()).unwrap_or_default()
+                    mcp_arc
+                        .try_read()
+                        .map(|mcp| mcp.list_tools())
+                        .unwrap_or_default()
                 }
             }
         } else {
@@ -1176,7 +1271,8 @@ impl AgentLoop {
         // Update tool_search with available tool names so search results
         // only include tools the LLM can actually call
         let available_names: Vec<String> = filtered.iter().map(|t| t.name().to_string()).collect();
-        self.tool_registry.set_search_tool_available_tools(available_names);
+        self.tool_registry
+            .set_search_tool_available_tools(available_names);
 
         self.tool_def_cache = Some((
             model.map(|s| s.to_string()),
@@ -1344,23 +1440,35 @@ impl AgentLoop {
                 .as_secs() as i64,
         };
         if let Some(ref hr) = self.hook_registry {
-            for err in hr.run_hooks(crate::hooks::HookEvent::SessionStart, &session_start_ctx).await {
+            for err in hr
+                .run_hooks(crate::hooks::HookEvent::SessionStart, &session_start_ctx)
+                .await
+            {
                 tracing::error!("SessionStart hook error: {}", err);
             }
         }
 
         self.apply_auto_routing(&mut request);
         self.apply_agent_config(&mut request);
-        let model_profile = crate::model_profile::ModelProfileResolver::new(&self.config)
-            .resolve(&request.model);
+        let model_profile =
+            crate::model_profile::ModelProfileResolver::new(&self.config).resolve(&request.model);
         if let Some(system) = request.system.take() {
+            let mut content = system;
+            if let Some(hints) = self
+                .security_service
+                .format_prompt_hints(&self.recent_findings)
+            {
+                content.push_str("\n\n");
+                content.push_str(&hints);
+            }
             request.messages.insert(
                 0,
                 Message::System {
-                    content: system.into(),
+                    content: content.into(),
                 },
             );
         }
+        self.recent_findings.clear();
         request.tools = Some(self.build_tool_definitions().await);
         crate::model_profile::policy::apply_startup_profile_policy(
             &mut request.messages,
@@ -1436,7 +1544,10 @@ impl AgentLoop {
                     .as_secs() as i64,
             };
             if let Some(ref hr) = self.hook_registry {
-                for err in hr.run_hooks(crate::hooks::HookEvent::AgentStart, &agent_start_ctx).await {
+                for err in hr
+                    .run_hooks(crate::hooks::HookEvent::AgentStart, &agent_start_ctx)
+                    .await
+                {
                     tracing::error!("AgentStart hook error: {}", err);
                 }
             }
@@ -1568,12 +1679,19 @@ impl AgentLoop {
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
 
-            if tool_results.iter().any(|(_, out)| tool_result_is_success(out)) {
+            if tool_results
+                .iter()
+                .any(|(_, out)| tool_result_is_success(out))
+            {
                 if let Some(doom_tool) = self.doom_detector.current_doom_tool() {
                     let doom_tool_owned = doom_tool.to_string();
-                    let dominated = tool_calls.iter().zip(tool_results.iter()).any(|(tc, (_, out))| {
-                        tc.name.as_str() == doom_tool_owned && tool_result_is_success(out)
-                    });
+                    let dominated =
+                        tool_calls
+                            .iter()
+                            .zip(tool_results.iter())
+                            .any(|(tc, (_, out))| {
+                                tc.name.as_str() == doom_tool_owned && tool_result_is_success(out)
+                            });
                     if dominated {
                         self.doom_detector.reset();
                     }
@@ -1644,7 +1762,10 @@ impl AgentLoop {
                     .as_secs() as i64,
             };
             if let Some(ref hr) = self.hook_registry {
-                for err in hr.run_hooks(crate::hooks::HookEvent::AgentEnd, &agent_end_ctx).await {
+                for err in hr
+                    .run_hooks(crate::hooks::HookEvent::AgentEnd, &agent_end_ctx)
+                    .await
+                {
                     tracing::error!("AgentEnd hook error: {}", err);
                 }
             }
@@ -1666,7 +1787,10 @@ impl AgentLoop {
                 .as_secs() as i64,
         };
         if let Some(ref hr) = self.hook_registry {
-            for err in hr.run_hooks(crate::hooks::HookEvent::SessionEnd, &session_end_ctx).await {
+            for err in hr
+                .run_hooks(crate::hooks::HookEvent::SessionEnd, &session_end_ctx)
+                .await
+            {
                 tracing::error!("SessionEnd hook error: {}", err);
             }
         }
@@ -1697,7 +1821,9 @@ impl AgentLoop {
         let mut changes = Vec::new();
         loop {
             match self.file_change_rx.try_recv() {
-                Ok(AppEvent::FileChanged { path, old_content, .. }) => {
+                Ok(AppEvent::FileChanged {
+                    path, old_content, ..
+                }) => {
                     changes.push((path, old_content));
                 }
                 Ok(_) => {}
@@ -1766,7 +1892,9 @@ impl AgentLoop {
         }
 
         // Capture snapshot before executing file-modifying tools
-        let has_file_modifying = allowed_tools.iter().any(|(_, tc)| is_file_modifying_tool(&tc.name));
+        let has_file_modifying = allowed_tools
+            .iter()
+            .any(|(_, tc)| is_file_modifying_tool(&tc.name));
         if has_file_modifying {
             // Clear stale file-change events so we only checkpoint this batch.
             let _ = self.drain_file_change_events();
@@ -1914,7 +2042,11 @@ impl AgentLoop {
                     if hook_result.blocked {
                         tracing::warn!("Tool execution blocked by plugin hook");
                         drop(permit);
-                        return (idx_for_results, id, Err(ToolError::Execution("blocked by plugin hook".to_string())));
+                        return (
+                            idx_for_results,
+                            id,
+                            Err(ToolError::Execution("blocked by plugin hook".to_string())),
+                        );
                     }
                     if let Some(err) = hook_result.error {
                         tracing::warn!("ToolExecuteBefore hook error: {}", err);
@@ -1945,31 +2077,29 @@ impl AgentLoop {
                                 )
                                 .await
                                 {
-                                    Ok(r) => {
-                                        match &r {
-                                            Ok(_) => {
-                                                last_result = r;
-                                                break;
-                                            }
-                                            Err(e) if e.is_retryable() => {
-                                                tracing::warn!(
-                                                    "Tool '{}' retryable error: {}",
-                                                    tc_inner.name,
-                                                    e
-                                                );
-                                                last_result = r;
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    "Tool '{}' non-retryable error: {}",
-                                                    tc_inner.name,
-                                                    e
-                                                );
-                                                last_result = r;
-                                                break;
-                                            }
+                                    Ok(r) => match &r {
+                                        Ok(_) => {
+                                            last_result = r;
+                                            break;
                                         }
-                                    }
+                                        Err(e) if e.is_retryable() => {
+                                            tracing::warn!(
+                                                "Tool '{}' retryable error: {}",
+                                                tc_inner.name,
+                                                e
+                                            );
+                                            last_result = r;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Tool '{}' non-retryable error: {}",
+                                                tc_inner.name,
+                                                e
+                                            );
+                                            last_result = r;
+                                            break;
+                                        }
+                                    },
                                     Err(_) => {
                                         last_result = Err(ToolError::Execution(format!(
                                             "Tool '{}' timed out after {:?}",
@@ -2084,7 +2214,12 @@ impl AgentLoop {
                             .into_iter()
                             .map(|(idx, id, output)| {
                                 if output == "__QUESTION_PENDING__" {
-                                    (idx, id, "[question timed out waiting for user response]".to_string())
+                                    (
+                                        idx,
+                                        id,
+                                        "[question timed out waiting for user response]"
+                                            .to_string(),
+                                    )
                                 } else {
                                     (idx, id, output)
                                 }
@@ -2127,8 +2262,8 @@ impl AgentLoop {
         all_events: &mut Vec<ChatEvent>,
         processor: &mut EventProcessor,
     ) {
-        let model_profile = crate::model_profile::ModelProfileResolver::new(&self.config)
-            .resolve(&request.model);
+        let model_profile =
+            crate::model_profile::ModelProfileResolver::new(&self.config).resolve(&request.model);
         loop {
             // Check if a follow-up is already queued without blocking
             let prompt = match self.follow_up_rx.try_recv() {
@@ -2161,134 +2296,136 @@ impl AgentLoop {
                 self.compact_if_needed(&mut request.messages).await;
                 harden_history(&mut request.messages);
 
-            let events = match self.stream_with_retry(request).await {
-                Ok(events) => events,
-                Err(e) => {
-                    tracing::error!("Follow-up stream error: {}", e);
-                    return;
-                }
-            };
-
-            for event in &events {
-                processor.process(event.clone());
-            }
-            all_events.extend(events);
-
-            let mut tool_calls = processor.tool_calls().to_vec();
-            if tool_calls.is_empty() && matches!(processor.stop_reason(), Some("tool_calls")) {
-                if let Some(parsed_calls) = parse_text_as_tool_calls(processor.text()) {
-                    for tc in &parsed_calls {
-                        crate::bus::global::GlobalEventBus::publish(AppEvent::ToolCallStarted {
-                            session_id: self.session_id.clone(),
-                            tool_name: tc.name.to_string(),
-                            tool_id: tc.id.to_string(),
-                            arguments: tc.arguments.to_string(),
-                        });
+                let events = match self.stream_with_retry(request).await {
+                    Ok(events) => events,
+                    Err(e) => {
+                        tracing::error!("Follow-up stream error: {}", e);
+                        return;
                     }
-                    tool_calls = parsed_calls;
-                }
-            }
+                };
 
-            if tool_calls.is_empty() {
-                if just_executed_tools
-                    && post_tool_continuation_retry_budget < 2
-                    && is_soft_stop_reason(processor.stop_reason())
-                    && (processor.text().trim().len() < 220
-                        || indicates_more_work(processor.text()))
-                {
-                    if let Some(msg) = processor.to_assistant_message() {
-                        request.messages.push(msg);
-                    }
-                    post_tool_continuation_retry_budget += 1;
-                    just_executed_tools = false;
-                    processor.reset();
-                    continue;
+                for event in &events {
+                    processor.process(event.clone());
                 }
-                if just_executed_tools && is_soft_stop_reason(processor.stop_reason()) {
-                    push_control_instruction(
+                all_events.extend(events);
+
+                let mut tool_calls = processor.tool_calls().to_vec();
+                if tool_calls.is_empty() && matches!(processor.stop_reason(), Some("tool_calls")) {
+                    if let Some(parsed_calls) = parse_text_as_tool_calls(processor.text()) {
+                        for tc in &parsed_calls {
+                            crate::bus::global::GlobalEventBus::publish(
+                                AppEvent::ToolCallStarted {
+                                    session_id: self.session_id.clone(),
+                                    tool_name: tc.name.to_string(),
+                                    tool_id: tc.id.to_string(),
+                                    arguments: tc.arguments.to_string(),
+                                },
+                            );
+                        }
+                        tool_calls = parsed_calls;
+                    }
+                }
+
+                if tool_calls.is_empty() {
+                    if just_executed_tools
+                        && post_tool_continuation_retry_budget < 2
+                        && is_soft_stop_reason(processor.stop_reason())
+                        && (processor.text().trim().len() < 220
+                            || indicates_more_work(processor.text()))
+                    {
+                        if let Some(msg) = processor.to_assistant_message() {
+                            request.messages.push(msg);
+                        }
+                        post_tool_continuation_retry_budget += 1;
+                        just_executed_tools = false;
+                        processor.reset();
+                        continue;
+                    }
+                    if just_executed_tools && is_soft_stop_reason(processor.stop_reason()) {
+                        push_control_instruction(
                         &mut request.messages,
                         &model_profile,
                         "Continue the task and emit structured tool calls as needed before finalizing.",
                     );
-                    just_executed_tools = false;
-                    processor.reset();
-                    continue;
-                }
-                if matches!(processor.stop_reason(), Some("tool_calls"))
-                    && missing_structured_tool_call_retries < 2
-                {
-                    push_control_instruction(
+                        just_executed_tools = false;
+                        processor.reset();
+                        continue;
+                    }
+                    if matches!(processor.stop_reason(), Some("tool_calls"))
+                        && missing_structured_tool_call_retries < 2
+                    {
+                        push_control_instruction(
                         &mut request.messages,
                         &model_profile,
                         "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
                     );
-                    missing_structured_tool_call_retries += 1;
-                    processor.reset();
-                    continue;
-                }
-                if matches!(processor.stop_reason(), Some("tool_calls")) {
-                    crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                        missing_structured_tool_call_retries += 1;
+                        processor.reset();
+                        continue;
+                    }
+                    if matches!(processor.stop_reason(), Some("tool_calls")) {
+                        crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
                         message: "Model returned stop_reason=tool_calls without parseable structured tool calls after retries".to_string(),
                     });
-                }
-                processor.reset();
-                break;
-            }
-            missing_structured_tool_call_retries = 0;
-            post_tool_continuation_retry_budget = 0;
-            let tool_results = match self.execute_tool_calls(&tool_calls).await {
-                Ok(results) => results,
-                Err(e) => {
-                    tracing::error!("Tool execution error: {}", e);
+                    }
                     processor.reset();
-                    return;
+                    break;
                 }
-            };
-            just_executed_tools = !tool_results.is_empty();
+                missing_structured_tool_call_retries = 0;
+                post_tool_continuation_retry_budget = 0;
+                let tool_results = match self.execute_tool_calls(&tool_calls).await {
+                    Ok(results) => results,
+                    Err(e) => {
+                        tracing::error!("Tool execution error: {}", e);
+                        processor.reset();
+                        return;
+                    }
+                };
+                just_executed_tools = !tool_results.is_empty();
 
-            // Push assistant message BEFORE tool results (fix Packet 2)
-            if let Some(msg) = processor.to_assistant_message() {
-                request.messages.push(msg);
-            }
+                // Push assistant message BEFORE tool results (fix Packet 2)
+                if let Some(msg) = processor.to_assistant_message() {
+                    request.messages.push(msg);
+                }
 
-            for (id, content) in &tool_results {
-                let tool_name = tool_calls
-                    .iter()
-                    .find(|tc| *tc.id == id.as_str())
-                    .map(|tc| tc.name.to_string())
-                    .unwrap_or_default();
-                let success = tool_result_is_success(content);
-                let redacted_output = redact_local_paths(content);
-                crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
-                    tool_id: id.clone(),
-                    tool_name,
-                    session_id: self.session_id.clone(),
-                    output: redacted_output,
-                    success,
-                });
-            }
+                for (id, content) in &tool_results {
+                    let tool_name = tool_calls
+                        .iter()
+                        .find(|tc| *tc.id == id.as_str())
+                        .map(|tc| tc.name.to_string())
+                        .unwrap_or_default();
+                    let success = tool_result_is_success(content);
+                    let redacted_output = redact_local_paths(content);
+                    crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
+                        tool_id: id.clone(),
+                        tool_name,
+                        session_id: self.session_id.clone(),
+                        output: redacted_output,
+                        success,
+                    });
+                }
 
-            for (id, content) in &tool_results {
-                if let Some(change) = detect_plan_mode_change(content) {
-                    match change {
-                        crate::tool::plan::PlanModeChange::Enter(topic) => {
-                            self.enter_plan_mode(topic);
-                            tracing::info!("Plan mode entered");
-                        }
-                        crate::tool::plan::PlanModeChange::Exit => {
-                            self.exit_plan_mode();
-                            tracing::info!("Plan mode exited");
+                for (id, content) in &tool_results {
+                    if let Some(change) = detect_plan_mode_change(content) {
+                        match change {
+                            crate::tool::plan::PlanModeChange::Enter(topic) => {
+                                self.enter_plan_mode(topic);
+                                tracing::info!("Plan mode entered");
+                            }
+                            crate::tool::plan::PlanModeChange::Exit => {
+                                self.exit_plan_mode();
+                                tracing::info!("Plan mode exited");
+                            }
                         }
                     }
-                }
 
-                let redacted_content = redact_local_paths(content);
-                let msg = Message::Tool {
-                    tool_call_id: id.clone().into(),
-                    content: redacted_content.into(),
-                };
-                request.messages.push(msg);
-            }
+                    let redacted_content = redact_local_paths(content);
+                    let msg = Message::Tool {
+                        tool_call_id: id.clone().into(),
+                        content: redacted_content.into(),
+                    };
+                    request.messages.push(msg);
+                }
 
                 processor.reset();
             }

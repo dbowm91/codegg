@@ -62,6 +62,7 @@ pub struct Config {
     pub notifications: Option<NotificationConfig>,
     pub catalog: Option<CatalogConfig>,
     pub model_profile: Option<HashMap<String, crate::model_profile::ModelProfileConfig>>,
+    pub security: Option<SecurityConfig>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -155,10 +156,12 @@ impl ServerConfig {
             self.cors_origins.clone_from(&other.cors_origins);
         }
         if other.tool_timeout_seconds.is_some() {
-            self.tool_timeout_seconds.clone_from(&other.tool_timeout_seconds);
+            self.tool_timeout_seconds
+                .clone_from(&other.tool_timeout_seconds);
         }
         if other.max_parallel_tools.is_some() {
-            self.max_parallel_tools.clone_from(&other.max_parallel_tools);
+            self.max_parallel_tools
+                .clone_from(&other.max_parallel_tools);
         }
     }
 }
@@ -797,6 +800,95 @@ impl Config {
             }
         }
     }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct SecurityConfig {
+    pub enabled: bool,
+    pub mode: SecurityMode,
+    pub prompt_hints: bool,
+    pub max_findings_in_prompt: usize,
+    pub gates: SecurityGateConfig,
+    pub profiles: SecurityProfileConfig,
+    pub sensitive_paths: Vec<SensitivePathConfig>,
+    pub allowed_network_domains: Vec<String>,
+    pub denied_commands: Vec<String>,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: SecurityMode::Ambient,
+            prompt_hints: true,
+            max_findings_in_prompt: 5,
+            gates: SecurityGateConfig::default(),
+            profiles: SecurityProfileConfig::default(),
+            sensitive_paths: Vec::new(),
+            allowed_network_domains: Vec::new(),
+            denied_commands: Vec::new(),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityMode {
+    Off,
+    Ambient,
+    Strict,
+    Review,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct SecurityGateConfig {
+    pub ask_on_high_risk_command: bool,
+    pub deny_critical_commands: bool,
+    pub ask_on_network_exfiltration: bool,
+    pub ask_on_secret_exposure: bool,
+    pub ask_on_dependency_risk: bool,
+    pub enforce_in_exec_mode: bool,
+}
+
+impl Default for SecurityGateConfig {
+    fn default() -> Self {
+        Self {
+            ask_on_high_risk_command: true,
+            deny_critical_commands: true,
+            ask_on_network_exfiltration: true,
+            ask_on_secret_exposure: true,
+            ask_on_dependency_risk: false,
+            enforce_in_exec_mode: false,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct SecurityProfileConfig {
+    pub ambient_on_tool_call: bool,
+    pub pre_commit_on_final: bool,
+    pub dependency_delta_on_manifest_change: bool,
+}
+
+impl Default for SecurityProfileConfig {
+    fn default() -> Self {
+        Self {
+            ambient_on_tool_call: true,
+            pre_commit_on_final: false,
+            dependency_delta_on_manifest_change: true,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct SensitivePathConfig {
+    pub glob: String,
+    pub reason: Option<String>,
+    pub review_level: Option<String>,
 }
 
 #[cfg(test)]

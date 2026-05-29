@@ -5,7 +5,6 @@
 //! services. Each tool implements the Tool trait with name, description, parameters,
 //! and execution logic.
 
-pub mod image;
 pub mod apply_patch;
 pub mod bash;
 pub mod batch;
@@ -18,6 +17,7 @@ pub mod formatter;
 pub mod git;
 pub mod glob;
 pub mod grep;
+pub mod image;
 pub mod invalid;
 pub mod list;
 pub mod lsp;
@@ -27,6 +27,7 @@ pub mod question;
 pub mod read;
 pub mod replace;
 pub mod review;
+pub mod security;
 pub mod skill;
 pub mod task;
 pub mod terminal;
@@ -118,11 +119,13 @@ impl ToolRegistry {
             crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default()),
         )));
         registry.register(crate::tool::commit::CommitTool::new());
+        registry.register(crate::tool::security::SecurityTool);
         registry.register(crate::tool::plan::PlanEnterTool);
         registry.register(crate::tool::plan::PlanExitTool);
         registry.register(crate::tool::invalid::InvalidTool);
         // Register tool_search with catalog for on-demand tool discovery
-        let search_tool = crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
+        let search_tool =
+            crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
         registry.register(search_tool);
         registry
     }

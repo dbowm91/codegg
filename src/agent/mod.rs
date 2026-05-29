@@ -280,6 +280,39 @@ pub fn builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
         },
+        Agent {
+            name: "security-review".to_string(),
+            role: Some("security_reviewer".to_string()),
+            description: "Reviews diffs and security findings for realistic security regressions".to_string(),
+            mode: AgentMode::Subagent,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: None,
+            steps: None,
+            system_prompt: Some(
+                "You are codegg's security reviewer. Review only realistic security regressions and exploit paths.\n\
+                 Use deterministic `security` tool findings as evidence. Distinguish confirmed issues from plausible risks and speculative observations.\n\
+                 Do not produce generic best-practice lists. Prefer concrete, patchable recommendations tied to files, functions, commands, or dependency changes."
+                    .to_string(),
+            ),
+            permissions: HashMap::from([
+                ("read".to_string(), "allow".to_string()),
+                ("grep".to_string(), "allow".to_string()),
+                ("glob".to_string(), "allow".to_string()),
+                ("list".to_string(), "allow".to_string()),
+                ("security".to_string(), "allow".to_string()),
+                ("bash".to_string(), "ask".to_string()),
+                ("write".to_string(), "deny".to_string()),
+                ("edit".to_string(), "deny".to_string()),
+                ("apply_patch".to_string(), "deny".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        },
     ]
 }
 
@@ -555,7 +588,7 @@ mod tests {
     #[test]
     fn test_builtin_agents_count() {
         let agents = builtin_agents();
-        assert_eq!(agents.len(), 7);
+        assert_eq!(agents.len(), 8);
     }
 
     #[test]
@@ -587,7 +620,7 @@ mod tests {
     fn test_resolve_agents_empty_config() {
         let config = Config::default();
         let agents = resolve_agents(&config).unwrap();
-        assert_eq!(agents.len(), 7);
+        assert_eq!(agents.len(), 8);
     }
 
     #[test]
@@ -627,7 +660,7 @@ mod tests {
             ..Default::default()
         };
         let agents = resolve_agents(&config).unwrap();
-        assert_eq!(agents.len(), 8);
+        assert_eq!(agents.len(), 9);
         let reviewer = agents.iter().find(|a| a.name == "Reviewer").unwrap();
         assert_eq!(reviewer.mode, AgentMode::Primary);
     }
@@ -728,7 +761,7 @@ mod tests {
     fn test_list_visible_agents() {
         let agents = builtin_agents();
         let visible = list_visible_agents(&agents);
-        assert_eq!(visible.len(), 4);
+        assert_eq!(visible.len(), 5);
         assert!(visible.iter().all(|a| !a.hidden));
     }
 
