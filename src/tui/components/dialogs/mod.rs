@@ -13,6 +13,7 @@ pub mod model;
 pub mod permission;
 pub mod plan;
 pub mod question;
+pub mod research;
 pub mod review;
 pub mod session;
 pub mod share;

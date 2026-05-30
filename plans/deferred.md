@@ -1,6 +1,6 @@
 # Development Status Tracker
 
-**Status**: UPDATED 2026-05-29
+**Status**: UPDATED 2026-05-30
 **Purpose**: Track truly completed items vs. active development items vs. future work.
 
 Items marked **DONE** were implemented and verified.
@@ -35,6 +35,25 @@ Items marked **FUTURE** are explicitly deferred to later phases.
 | `/research` TUI command | `src/tui/command.rs` + `src/tui/app/mod.rs` | `/research` command registered, `handle_research_command()` parses flags and spawns async research |
 | `/research-runs` and `/research-open` commands | `src/tui/command.rs` + `src/tui/app/mod.rs` | Commands registered, handlers list runs and display run details |
 | ResearchService wrapper | `src/research/service.rs` | `ResearchService` struct with `answer_for_agent()`, `create_report()`, `list_runs()`, `load_run()`. 8 unit tests |
+| Anthropic `defer_loading` support | `src/provider/mod.rs:250-282` | `to_anthropic()` serializes `defer_loading` field in tool definitions when present |
+| OpenAI `defer_loading` support | `src/provider/mod.rs:251-268` | `to_openai()` serializes `defer_loading` field in function definitions when present |
+| OpenAI-compatible fallback | `src/provider/openai_compatible.rs:129-131` | `build_body()` uses `t.to_openai()` for consistent serialization; non-supporting providers get all tools in single array |
+| Provider-level deferred_tools in requests | `src/agent/loop.rs:1512,1625` | `deferred_tool_definitions` included in returned definitions for both cache-hit and non-cache paths |
+| MCP tool catalog deferral | `src/agent/loop.rs:1442-1455,1533-1538` | MCP tools get `defer_loading: Some(true)` from `ToolCatalog::is_deferred()`; separated into immediate vs deferred in `build_tool_definitions()` |
+| TUI research browser | `src/tui/components/dialogs/research.rs` | `ResearchBrowserDialog` with RunsList, RunDetail, and ReportView modes; 619 lines; full keyboard navigation |
+| `/research-show` command | `src/tui/command.rs` + `src/tui/app/mod.rs` | `/research-show` registered, opens ResearchBrowserDialog with run details |
+| Research trigger heuristics | `src/research/triggers.rs` | `analyze_trigger()` with 5 heuristic rules (comparison, unknown API, security, architecture, previous failures); 10 unit tests |
+| Research auto-invoke integration | `src/research/service.rs` | `should_auto_invoke()` method runs trigger analysis and returns `Option<ResearchRequest>` |
+| Research trigger config | `src/config/schema.rs` | `ResearchConfig` with `triggers: Option<ResearchTriggerConfig>` (enabled, min_confidence) |
+| Task panel enhanced rendering | `src/tui/app/mod.rs:1480-1517` | Test state and active tool sections added to task panel |
+| TUI sidebar checklist | `src/tui/components/sidebar.rs` | ASCII checkbox indicators ([x], [>], [ ], [!], [-], [?]) with theme-aware colors |
+| CratesIoSource adapter | `src/research/sources/crates_io.rs` | Fetches crate metadata from crates.io API; 3 unit tests |
+| GitHubSource adapter | `src/research/sources/github.rs` | Supports repo/file/issue URL patterns via GitHub REST API; rate limit handling; 8 unit tests |
+| DocsRsSource adapter | `src/research/sources/docs_rs.rs` | Fetches docs.rs pages with html2text conversion; 4 unit tests |
+| AdvisorySource adapter | `src/research/sources/advisory.rs` | Fetches RustSec advisory metadata via crates.io versions API; yanked version detection |
+| SearchProviderSource adapter | `src/research/sources/search_provider.rs` | Tavily, Brave, SerpAPI, Kagi support with provider-specific auth |
+| BM25 ranking for tool search | `src/tool/catalog.rs` | `SearchMode::BM25` with tokenization, IDF computation, BM25 scoring (k1=1.5, b=0.75); 19 unit tests |
+| BM25 config wiring | `src/config/schema.rs` + `src/agent/loop.rs` | `search_mode: "bm25"` in `ToolDeferralConfig` activates BM25 ranking |
 
 ---
 
@@ -46,27 +65,26 @@ These are real development tasks, not truly "deferred". They are active work for
 
 | Item | Notes |
 |------|-------|
-| Dedicated plan panel side rendering | No dedicated side panel for goal/plan exists. Context inspector exists at `src/tui/app/mod.rs:3100`. |
 | Hunk-level accept/reject | Optional per plan - low priority |
 
 ### deepresearch.md
 
 | Item | Notes |
 |------|-------|
-| TUI research browser | Not implemented - needs dedicated browser view for runs, sources, claims, reports |
-| Planner/reviewer `ResearchTool` integration | Not implemented - agent system needs tool to call ResearchService |
-| Trigger heuristics for research invocation | Not implemented - auto-invoke research when task touches unknown APIs/libs |
-| Run details, sources, claims, report views | Not implemented - detailed views for research artifacts |
-| `/research-show` command | Not implemented - `/research-show report <run_id>`, `/research-show handoff <run_id>`, etc. |
+| Model-backed evidence extraction | Templates exist in `src/research/templates.rs` but are unused; pipeline uses deterministic fallbacks |
+| Model-backed claim construction | Currently trivial (1 claim per evidence span); needs LLM integration |
+| Semantic citation verifier | Structural verifier exists; semantic support-by-citation checking not implemented |
+| Research refresh/rerun | Rerun source fetches and diff changed claims - not implemented |
+| Re-synthesis from existing evidence | Generate different output profiles from same evidence - partially supported via templates |
+| SQLite metadata index for research runs | Optional for session search and TUI lists |
 
 ### tooluse.md
 
 | Item | Notes |
 |------|-------|
-| Anthropic `defer_loading` support | Need provider-level support to send `defer_loading` in API request |
-| OpenAI fallback for non-supporting models | Need fallback for providers without defer_loading |
-| Provider-level deferred_tools array | Need to wire deferred_tools into actual provider request structs |
-| MCP tool catalog deferral | MCP tools don't yet set defer_loading based on catalog |
+| eggsact crate integration | External project - separate crate, not in this repo |
+| MathEvalTool, TextInspectTool, ValidateJsonTool | Depends on eggsact crate completion |
+| Semantic embeddings search | v3 upgrade path, requires model integration |
 
 ---
 
@@ -76,16 +94,10 @@ These are planned for future work and are explicitly NOT in the current sprint.
 
 | Item | Plan | Notes |
 |------|------|-------|
-| CratesIoSource adapter | deepresearch.md | Future adapter |
-| GitHubSource adapter | deepresearch.md | Future adapter |
-| DocsRsSource adapter | deepresearch.md | Future adapter |
-| AdvisorySource adapter | deepresearch.md | Future adapter |
-| SearchProviderSource (Tavily/Brave/SerpAPI/Kagi) | deepresearch.md | Future adapter |
 | eggsact crate integration | tooluse.md | Future/separate project |
 | MathEvalTool, TextInspectTool, ValidateJsonTool | tooluse.md | Future - depends on eggsact |
-| BM25 ranking for tool search | tooluse.md | v2 upgrade path |
 | Semantic embeddings search | tooluse.md | v3, requires model |
-| TUI sidebar checklist rendering | todos.md | Nice to have - event exists |
+| Optional server API endpoints for research runs | deepresearch.md | Future follow-up |
 
 ---
 
@@ -93,8 +105,8 @@ These are planned for future work and are explicitly NOT in the current sprint.
 
 | Category | Count | Status |
 |----------|-------|--------|
-| Truly completed (verified in code) | 24 | DONE |
-| Real development tasks | 10 | ACTIVE |
-| Explicitly future/deferred | 10 | FUTURE |
+| Truly completed (verified in code) | 44 | DONE |
+| Real development tasks | 9 | ACTIVE |
+| Explicitly future/deferred | 4 | FUTURE |
 
-**Total**: 44 discrete items across 7 plan files
+**Total**: 57 discrete items across 7 plan files

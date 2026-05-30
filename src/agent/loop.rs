@@ -851,6 +851,20 @@ impl AgentLoop {
         let security_service =
             crate::security::service::SecurityService::new(config.security.as_ref());
 
+        let mut tool_registry = tool_registry;
+        if let Some(ref deferred) = config.catalog.as_ref().and_then(|c| c.deferred_tools.as_ref())
+        {
+            tool_registry.register_deferred_names(deferred);
+        }
+
+        // Set search mode from tool_deferral config
+        if let Some(ref td) = config.tool_deferral {
+            if let Some(ref mode_str) = td.search_mode {
+                let mode = crate::tool::catalog::SearchMode::from_config(mode_str);
+                tool_registry.set_search_mode(mode);
+            }
+        }
+
         Self {
             agents: map,
             state: AgentLoopState {
@@ -1436,6 +1450,18 @@ impl AgentLoop {
         };
         let mcp_tool_count = mcp_tools.len();
 
+        // Set defer_loading on MCP tools based on the catalog
+        let catalog = self.tool_registry.catalog();
+        let mcp_tools: Vec<_> = mcp_tools
+            .into_iter()
+            .map(|mut t| {
+                if catalog.is_deferred(&t.name) {
+                    t.defer_loading = Some(true);
+                }
+                t
+            })
+            .collect();
+
         let permission_version = self.permission_version();
 
         // Note: The tool definition cache uses mcp_tool_count as a proxy for MCP tool changes.
@@ -1461,8 +1487,16 @@ impl AgentLoop {
                 && cache_perm_ver == permission_version
             {
                 let mut definitions = cached_defs.clone();
-                definitions.extend(mcp_tools.iter().cloned());
                 self.deferred_tool_definitions = cached_deferred.clone();
+
+                // Separate MCP tools into immediate vs deferred
+                for mcp_def in mcp_tools {
+                    if mcp_def.defer_loading == Some(true) {
+                        self.deferred_tool_definitions.push(mcp_def);
+                    } else {
+                        definitions.push(mcp_def);
+                    }
+                }
 
                 if let Some(ref plugin_svc) = self.plugin_service {
                     let input = serde_json::json!({
@@ -1486,6 +1520,7 @@ impl AgentLoop {
                     }
                 }
 
+                definitions.extend(self.deferred_tool_definitions.iter().cloned());
                 return definitions;
             }
         }
@@ -1505,6 +1540,10 @@ impl AgentLoop {
             .collect();
 
         let all_definitions = self.apply_tool_exposure_filter(all_definitions);
+
+        // Include MCP tools in the definitions for deferral partitioning
+        let mut all_definitions = all_definitions;
+        all_definitions.extend(mcp_tools);
 
         // Partition tools into immediate vs deferred based on provider capabilities
         let provider_id = self.provider.id();
@@ -1565,7 +1604,10 @@ impl AgentLoop {
 
             (immediate, self.deferred_tool_definitions.clone())
         } else {
-            // Provider doesn't support defer_loading or deferral is disabled: all tools immediate
+            // Provider doesn't support defer_loading or deferral is disabled: all tools immediate.
+            // Providers like deepseek, qwen, cerebras, groq, etc. go through OpenAiCompatibleProvider
+            // with provider_ids not matching "openai" or "anthropic", so they get default capabilities
+            // (supports_defer_loading: false). All tools are sent in the single `tools` array.
             self.deferred_tool_definitions.clear();
             (all_definitions, Vec::new())
         };
@@ -1589,7 +1631,7 @@ impl AgentLoop {
         ));
 
         let mut result = definitions;
-        result.extend(mcp_tools);
+        result.extend(self.deferred_tool_definitions.iter().cloned());
 
         if let Some(ref plugin_svc) = self.plugin_service {
             let input = serde_json::json!({

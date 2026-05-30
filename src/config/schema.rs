@@ -64,6 +64,7 @@ pub struct Config {
     pub tool_deferral: Option<ToolDeferralConfig>,
     pub model_profile: Option<HashMap<String, crate::model_profile::ModelProfileConfig>>,
     pub security: Option<SecurityConfig>,
+    pub research: Option<ResearchConfig>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -906,6 +907,19 @@ pub struct SensitivePathConfig {
     pub glob: String,
     pub reason: Option<String>,
     pub review_level: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ResearchConfig {
+    pub search_provider: Option<SearchProviderConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct SearchProviderConfig {
+    pub provider: Option<String>,
+    pub api_key: Option<String>,
 }
 
 #[cfg(test)]

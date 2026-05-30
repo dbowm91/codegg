@@ -7,5 +7,6 @@ pub mod sources;
 pub mod store;
 pub mod synthesis;
 pub mod templates;
+pub mod triggers;
 pub mod types;
 pub mod verify;

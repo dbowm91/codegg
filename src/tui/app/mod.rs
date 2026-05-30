@@ -193,6 +193,14 @@ pub enum TuiCommand {
         project_id: String,
     },
     UpdateModels(Vec<String>),
+    ResearchListRuns,
+    ResearchLoadRun {
+        run_id: String,
+    },
+    ResearchLoadSection {
+        run_id: String,
+        section: String,
+    },
 }
 
 /// Main application state for the TUI.
@@ -487,6 +495,7 @@ impl App {
                 plan_dialog: None,
                 diff_dialog: None,
                 review_dialog: None,
+                research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
                 pending_delete_session: None,
@@ -676,6 +685,7 @@ impl App {
                 plan_dialog: None,
                 diff_dialog: None,
                 review_dialog: None,
+                research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
                 pending_delete_session: None,
@@ -2087,6 +2097,21 @@ impl App {
             }
             TuiMsg::ReviewOpenDiff { path } => {
                 self.handle_diff_command(Some(&path));
+            }
+            TuiMsg::ResearchOpenRun { run_id } => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ResearchLoadRun { run_id });
+                }
+            }
+            TuiMsg::ResearchRefreshRuns => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ResearchListRuns);
+                }
+            }
+            TuiMsg::ResearchLoadSection { run_id, section } => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ResearchLoadSection { run_id, section });
+                }
             }
             _ => {}
         }
@@ -3675,6 +3700,39 @@ impl App {
                     self.handle_research_open_command(run_id);
                 }
             }
+            "/research-show" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let rest = query.trim_start_matches("/research-show").trim();
+                self.ui_state.command_mode = false;
+                if rest.is_empty() {
+                    self.handle_research_runs_command();
+                } else {
+                    let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                    let section = parts[0];
+                    let run_id = parts.get(1).copied().unwrap_or("").trim();
+                    if run_id.is_empty() {
+                        self.messages_state.toasts.warning(
+                            "Usage: /research-show <section> <run_id> (section: report, brief, claims, handoff)",
+                        );
+                    } else {
+                        self.open_dialog(Dialog::ResearchBrowser);
+                        if let Some(ref mut browser) = self.dialog_state.research_browser {
+                            browser.loading = true;
+                        }
+                        let run_id_owned = run_id.to_string();
+                        let section_owned = section.to_string();
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::ResearchLoadRun {
+                                run_id: run_id_owned.clone(),
+                            });
+                            let _ = tx.try_send(TuiCommand::ResearchLoadSection {
+                                run_id: run_id_owned,
+                                section: section_owned,
+                            });
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -4684,6 +4742,18 @@ impl App {
                     "Are you sure?".to_string(),
                 )));
             }
+            Dialog::ResearchBrowser => {
+                if self.dialog_state.research_browser.is_none() {
+                    self.dialog_state.research_browser =
+                        Some(crate::tui::components::dialogs::research::ResearchBrowserDialog::new(
+                            Arc::clone(&self.ui_state.theme),
+                        ));
+                }
+                if let Some(ref mut browser) = self.dialog_state.research_browser {
+                    browser.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(browser.clone()));
+                }
+            }
             _ => {}
         }
         self.ui_state.dialog = dialog;
@@ -5312,82 +5382,26 @@ impl App {
     }
 
     fn handle_research_runs_command(&mut self) {
-        let project_dir = self.session_state.project_dir.clone();
-
-        tokio::spawn(async move {
-            let service =
-                crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
-            match service.list_runs().await {
-                Ok(runs) => {
-                    if runs.is_empty() {
-                        tracing::info!("No research runs found");
-                        return;
-                    }
-                    let mut lines = vec![format!("Research Runs ({} total):", runs.len())];
-                    for run in runs.iter().take(10) {
-                        let short_id: String = run.run_id.chars().take(8).collect();
-                        let status_str = match run.status {
-                            crate::research::types::RunStatus::Completed => "done",
-                            crate::research::types::RunStatus::Failed => "FAILED",
-                            _ => "running",
-                        };
-                        lines.push(format!(
-                            "  [{}] {} - {} ({:?}, {:?})",
-                            short_id, status_str, run.question, run.mode, run.depth
-                        ));
-                    }
-                    if runs.len() > 10 {
-                        lines.push(format!("  ... and {} more", runs.len() - 10));
-                    }
-                    tracing::info!("{}", lines.join("\n"));
-                }
-                Err(e) => {
-                    tracing::error!("Failed to list research runs: {}", e);
-                }
-            }
-        });
+        self.open_dialog(Dialog::ResearchBrowser);
+        if let Some(ref mut browser) = self.dialog_state.research_browser {
+            browser.loading = true;
+        }
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::ResearchListRuns);
+        }
     }
 
     fn handle_research_open_command(&mut self, run_id: &str) {
-        let project_dir = self.session_state.project_dir.clone();
-        let run_id = run_id.to_string();
-
-        tokio::spawn(async move {
-            let service =
-                crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
-            match service.load_run(&run_id).await {
-                Ok(bundle) => {
-                    let mut lines = vec![
-                        format!("Research Run: {}", run_id),
-                        format!("Question: {}", bundle.request.question),
-                        format!("Status: {:?}", bundle.status.status),
-                        format!("Mode: {:?}, Depth: {:?}", bundle.request.mode, bundle.request.depth),
-                        format!(
-                            "Counts: {} sources, {} evidence, {} claims, {} contradictions",
-                            bundle.status.counts.sources,
-                            bundle.status.counts.evidence_spans,
-                            bundle.status.counts.claims,
-                            bundle.status.counts.contradictions
-                        ),
-                        format!("Artifacts: {}", bundle.status.artifact_dir.display()),
-                    ];
-                    if let Some(ref plan) = bundle.plan {
-                        lines.push(format!("Plan scope: {}", plan.scope));
-                    }
-                    if !bundle.sources.is_empty() {
-                        lines.push(format!("Sources ({}):", bundle.sources.len()));
-                        for src in bundle.sources.iter().take(5) {
-                            let title = src.title.as_deref().unwrap_or(&src.uri);
-                            lines.push(format!("  - {}", title));
-                        }
-                    }
-                    tracing::info!("{}", lines.join("\n"));
-                }
-                Err(e) => {
-                    tracing::error!("Failed to load research run: {}", e);
-                }
-            }
-        });
+        self.open_dialog(Dialog::ResearchBrowser);
+        if let Some(ref mut browser) = self.dialog_state.research_browser {
+            browser.loading = true;
+        }
+        let run_id_owned = run_id.to_string();
+        if let Some(ref tx) = self.tui_cmd_tx {
+            let _ = tx.try_send(TuiCommand::ResearchLoadRun {
+                run_id: run_id_owned,
+            });
+        }
     }
 
     fn close_session(&mut self) {

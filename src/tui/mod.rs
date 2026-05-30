@@ -1886,6 +1886,144 @@ async fn handle_send_notification(
     }
 }
 
+async fn handle_research_list_runs(app: &mut app::App) {
+    let project_dir = app.session_state.project_dir.clone();
+    let service =
+        crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+    match service.list_runs().await {
+        Ok(runs) => {
+            if let Some(ref mut browser) = app.dialog_state.research_browser {
+                browser.loading = false;
+                browser.set_runs(runs);
+            } else {
+                app.messages_state
+                    .toasts
+                    .info("No research browser dialog open");
+            }
+        }
+        Err(e) => {
+            app.messages_state
+                .toasts
+                .error(&format!("Failed to list research runs: {}", e));
+            if let Some(ref mut browser) = app.dialog_state.research_browser {
+                browser.loading = false;
+            }
+        }
+    }
+}
+
+async fn handle_research_load_run(app: &mut app::App, run_id: String) {
+    let project_dir = app.session_state.project_dir.clone();
+    let service =
+        crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+    match service.load_run(&run_id).await {
+        Ok(bundle) => {
+            if let Some(ref mut browser) = app.dialog_state.research_browser {
+                browser.loading = false;
+                browser.set_bundle(bundle);
+            } else {
+                app.messages_state
+                    .toasts
+                    .info("No research browser dialog open");
+            }
+        }
+        Err(e) => {
+            app.messages_state
+                .toasts
+                .error(&format!("Failed to load research run: {}", e));
+            if let Some(ref mut browser) = app.dialog_state.research_browser {
+                browser.loading = false;
+            }
+        }
+    }
+}
+
+async fn handle_research_load_section(app: &mut app::App, run_id: String, section: String) {
+    let project_dir = app.session_state.project_dir.clone();
+    let service =
+        crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+
+    let result = match section.as_str() {
+        "Research Plan" => {
+            if let Ok(bundle) = service.load_run(&run_id).await {
+                if let Some(ref plan) = bundle.plan {
+                    let content = format!(
+                        "Scope: {}\n\nComparison Axes:\n{}\n\nSource Classes:\n{}\n\nExclusion Criteria:\n{}\n\nStopping Conditions:\n{}\n\nExpected Outputs:\n{}",
+                        plan.scope,
+                        plan.comparison_axes.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                        plan.source_classes.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                        plan.exclusion_criteria.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                        plan.stopping_conditions.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                        plan.expected_outputs.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                    );
+                    Some((crate::tui::components::dialogs::research::ReportSection::Report, content))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        "Sources" => {
+            if let Ok(bundle) = service.load_run(&run_id).await {
+                if bundle.sources.is_empty() {
+                    Some((crate::tui::components::dialogs::research::ReportSection::Brief, "No sources collected.".to_string()))
+                } else {
+                    let lines: Vec<String> = bundle.sources.iter().enumerate().map(|(i, src)| {
+                        let title = src.title.as_deref().unwrap_or(&src.uri);
+                        format!("{}. {} [{:?}]\n   URI: {}",
+                            i + 1, title, src.source_type, src.uri)
+                    }).collect();
+                    Some((crate::tui::components::dialogs::research::ReportSection::Brief, lines.join("\n\n")))
+                }
+            } else {
+                None
+            }
+        }
+        "Claims" => {
+            if let Ok(bundle) = service.load_run(&run_id).await {
+                if bundle.claims.is_empty() {
+                    Some((crate::tui::components::dialogs::research::ReportSection::AgentAnswer, "No claims derived.".to_string()))
+                } else {
+                    let lines: Vec<String> = bundle.claims.iter().map(|claim| {
+                        format!("[{}] {} (confidence: {:?})\n   Evidence: {} sources\n   Caveats: {}",
+                            claim.claim_type.as_str(), claim.text, claim.confidence,
+                            claim.evidence_ids.len(),
+                            if claim.caveats.is_empty() { "none".to_string() } else { claim.caveats.join("; ") })
+                    }).collect();
+                    Some((crate::tui::components::dialogs::research::ReportSection::AgentAnswer, lines.join("\n\n")))
+                }
+            } else {
+                None
+            }
+        }
+        "Contradictions" => {
+            if let Ok(bundle) = service.load_run(&run_id).await {
+                if bundle.contradictions.is_empty() {
+                    Some((crate::tui::components::dialogs::research::ReportSection::Handoff, "No contradictions detected.".to_string()))
+                } else {
+                    let lines: Vec<String> = bundle.contradictions.iter().map(|c| {
+                        format!("[{:?}] {}\n   Claims: {}",
+                            c.severity, c.description, c.claim_ids.join(", "))
+                    }).collect();
+                    Some((crate::tui::components::dialogs::research::ReportSection::Handoff, lines.join("\n\n")))
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    if let Some(ref mut browser) = app.dialog_state.research_browser {
+        if let Some((section, content)) = result {
+            browser.set_report_content(section, content);
+        } else {
+            app.messages_state.toasts.warning("Could not load section content");
+        }
+    }
+}
+
 pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
     enter_raw()?;
     let mut terminal = create_terminal()?;
@@ -2384,6 +2522,15 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         project_id,
                     } => {
                         handle_goal_checkpoint(app, session_id, project_id).await;
+                    }
+                    TuiCommand::ResearchListRuns => {
+                        handle_research_list_runs(app).await;
+                    }
+                    TuiCommand::ResearchLoadRun { run_id } => {
+                        handle_research_load_run(app, run_id).await;
+                    }
+                    TuiCommand::ResearchLoadSection { run_id, section } => {
+                        handle_research_load_section(app, run_id, section).await;
                     }
                 }
             }

@@ -24,6 +24,7 @@ pub enum Dialog {
     Diff,
     Confirm,
     Review,
+    ResearchBrowser,
 }
 
 impl Dialog {
@@ -53,6 +54,7 @@ impl Dialog {
             | Self::Diff
             | Self::Confirm
             | Self::Review
+            | Self::ResearchBrowser
         )
     }
 }
@@ -176,6 +178,14 @@ pub enum TuiMsg {
     ConfirmResult(Option<bool>),
     ReviewOpenDiff {
         path: String,
+    },
+    ResearchOpenRun {
+        run_id: String,
+    },
+    ResearchRefreshRuns,
+    ResearchLoadSection {
+        run_id: String,
+        section: String,
     },
 }
 

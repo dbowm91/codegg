@@ -1,4 +1,9 @@
+pub mod advisory;
+pub mod crates_io;
+pub mod docs_rs;
+pub mod github;
 pub mod local_repo;
+pub mod search_provider;
 pub mod url;
 
 use std::future::Future;

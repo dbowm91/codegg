@@ -43,6 +43,7 @@ pub enum DialogType {
     Plan,
     Review,
     Confirm,
+    ResearchBrowser,
     None,
 }
 
@@ -78,6 +79,7 @@ impl From<DialogType> for Dialog {
             DialogType::Plan => Dialog::Plan,
             DialogType::Review => Dialog::Review,
             DialogType::Confirm => Dialog::Confirm,
+            DialogType::ResearchBrowser => Dialog::ResearchBrowser,
             DialogType::None => Dialog::None,
         }
     }

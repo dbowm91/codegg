@@ -5,7 +5,11 @@ use chrono::Utc;
 use crate::research::claims::build_claims;
 use crate::research::error::{ResearchError, Result};
 use crate::research::extract::extract_evidence;
-use crate::research::sources::{local_repo::LocalRepoSource, url::UrlSource, ResearchSourceAdapter};
+use crate::research::sources::{
+    advisory::AdvisorySource, crates_io::CratesIoSource, docs_rs::DocsRsSource,
+    github::GitHubSource, local_repo::LocalRepoSource, search_provider::SearchProviderSource,
+    search_provider::SearchProvider, url::UrlSource, ResearchSourceAdapter,
+};
 use crate::research::store::ResearchStore;
 use crate::research::synthesis;
 use crate::research::types::*;
@@ -22,6 +26,28 @@ impl ResearchCoordinator {
         let source_adapters: Vec<Box<dyn ResearchSourceAdapter>> = vec![
             Box::new(LocalRepoSource::new(project_root.clone())),
             Box::new(UrlSource::new()),
+            Box::new(CratesIoSource::new()),
+            Box::new(GitHubSource::new()),
+            Box::new(DocsRsSource::new()),
+        ];
+        Self {
+            store,
+            source_adapters,
+        }
+    }
+
+    pub fn with_search_provider(
+        project_root: PathBuf,
+        artifact_root: PathBuf,
+        provider: SearchProvider,
+        api_key: Option<String>,
+    ) -> Self {
+        let store = ResearchStore::new(artifact_root);
+        let source_adapters: Vec<Box<dyn ResearchSourceAdapter>> = vec![
+            Box::new(LocalRepoSource::new(project_root.clone())),
+            Box::new(UrlSource::new()),
+            Box::new(AdvisorySource::new()),
+            Box::new(SearchProviderSource::new(provider, api_key)),
         ];
         Self {
             store,

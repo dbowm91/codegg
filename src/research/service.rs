@@ -64,7 +64,12 @@ impl ResearchService {
         mode: ResearchMode,
         depth: ResearchDepth,
     ) -> Result<String> {
-        let request = self.build_request(question, mode, depth, vec![ResearchOutputProfile::AgentAnswer]);
+        let request = self.build_request(
+            question,
+            mode,
+            depth,
+            vec![ResearchOutputProfile::AgentAnswer],
+        );
         let result = self.coordinator.run(request).await?;
 
         // Read the agent answer artifact
@@ -73,7 +78,9 @@ impl ResearchService {
             .iter()
             .find(|o| o.profile == ResearchOutputProfile::AgentAnswer)
             .map(|o| o.path.clone())
-            .ok_or_else(|| ResearchError::RunFailed("No agent answer output produced".to_string()))?;
+            .ok_or_else(|| {
+                ResearchError::RunFailed("No agent answer output produced".to_string())
+            })?;
 
         tokio::fs::read_to_string(&answer_path)
             .await
@@ -229,7 +236,10 @@ mod tests {
 
     #[test]
     fn parse_mode_valid() {
-        assert!(matches!(parse_mode("landscape"), Ok(ResearchMode::Landscape)));
+        assert!(matches!(
+            parse_mode("landscape"),
+            Ok(ResearchMode::Landscape)
+        ));
         assert!(matches!(
             parse_mode("architecture-decision"),
             Ok(ResearchMode::ArchitectureDecision)
@@ -288,7 +298,10 @@ mod tests {
         assert_eq!(request.mode, ResearchMode::Landscape);
         assert_eq!(request.depth, ResearchDepth::Medium);
         assert_eq!(request.budget.max_sources, 30);
-        assert!(request.sources.iter().any(|s| s.spec_type == SourceSpecType::Local));
+        assert!(request
+            .sources
+            .iter()
+            .any(|s| s.spec_type == SourceSpecType::Local));
     }
 
     #[test]

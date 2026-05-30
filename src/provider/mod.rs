@@ -249,22 +249,30 @@ pub struct ToolDefinition {
 
 impl ToolDefinition {
     pub fn to_openai(&self) -> serde_json::Value {
+        let mut func = serde_json::json!({
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+        });
+        if let Some(defer) = self.defer_loading {
+            func["defer_loading"] = serde_json::json!(defer);
+        }
         serde_json::json!({
             "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            }
+            "function": func,
         })
     }
 
     pub fn to_anthropic(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut tool = serde_json::json!({
             "name": self.name,
             "description": self.description,
             "input_schema": self.parameters,
-        })
+        });
+        if let Some(defer) = self.defer_loading {
+            tool["defer_loading"] = serde_json::json!(defer);
+        }
+        tool
     }
 }
 

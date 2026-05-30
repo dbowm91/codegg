@@ -151,6 +151,19 @@ impl ToolRegistry {
         &self.catalog
     }
 
+    pub fn catalog_mut(&mut self) -> &mut catalog::ToolCatalog {
+        &mut self.catalog
+    }
+
+    /// Set the search mode on the catalog.
+    pub fn set_search_mode(&mut self, mode: catalog::SearchMode) {
+        self.catalog.set_search_mode(mode);
+    }
+
+    pub fn register_deferred_names(&mut self, names: &[String]) {
+        self.catalog.register_deferred_names(names);
+    }
+
     pub fn list(&self) -> Vec<&dyn Tool> {
         self.tools.values().map(|t| t.as_ref()).collect()
     }
