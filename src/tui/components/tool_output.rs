@@ -240,24 +240,33 @@ impl Widget for &ToolOutputWidget {
                 // Output
                 if !entry.output.is_empty() {
                     let is_diff = is_diff_output(&entry.output);
-                    let output_limit = 20;
+                    let output_limit = if is_diff { 50 } else { 20 };
                     for l in entry.output.lines().take(output_limit) {
-                        let color = if is_diff {
-                            if l.starts_with('+') {
-                                ratatui::style::Color::Rgb(80, 200, 120)
-                            } else if l.starts_with('-') {
-                                ratatui::style::Color::Rgb(255, 100, 100)
-                            } else if l.starts_with('@') {
-                                ratatui::style::Color::Rgb(100, 150, 255)
+                        let (color, modifier) = if is_diff {
+                            if l.starts_with('+') && !l.starts_with("+++") {
+                                (ratatui::style::Color::Rgb(80, 200, 120), Modifier::empty())
+                            } else if l.starts_with('-') && !l.starts_with("---") {
+                                (ratatui::style::Color::Rgb(255, 100, 100), Modifier::empty())
+                            } else if l.starts_with("@@") {
+                                (
+                                    ratatui::style::Color::Rgb(100, 150, 255),
+                                    Modifier::BOLD,
+                                )
+                            } else if l.starts_with("diff --")
+                                || l.starts_with("index ")
+                                || l.starts_with("---")
+                                || l.starts_with("+++")
+                            {
+                                (ratatui::style::Color::Rgb(130, 130, 140), Modifier::DIM)
                             } else {
-                                ratatui::style::Color::Rgb(140, 140, 150)
+                                (ratatui::style::Color::Rgb(140, 140, 150), Modifier::empty())
                             }
                         } else {
-                            ratatui::style::Color::Rgb(140, 140, 150)
+                            (ratatui::style::Color::Rgb(140, 140, 150), Modifier::empty())
                         };
                         lines.push(Line::from(Span::styled(
                             format!("  {l}"),
-                            Style::default().fg(color),
+                            Style::default().fg(color).add_modifier(modifier),
                         )));
                     }
                     let total_lines = entry.output.lines().count();

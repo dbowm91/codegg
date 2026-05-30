@@ -34,7 +34,7 @@ impl DiffDialog {
             crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k')
                 if key.modifiers.is_empty() =>
             {
-                self.viewer.handle_scroll(1);
+                self.viewer.handle_scroll(-1);
                 true
             }
             crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j')
@@ -48,7 +48,7 @@ impl DiffDialog {
                 true
             }
             crossterm::event::KeyCode::PageUp => {
-                self.viewer.handle_scroll(10);
+                self.viewer.handle_scroll(-10);
                 true
             }
             crossterm::event::KeyCode::PageDown => {
@@ -284,7 +284,7 @@ impl Component for DiffDialog {
 
         match key.code {
             KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
-                self.viewer.handle_scroll(1);
+                self.viewer.handle_scroll(-1);
                 None
             }
             KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
@@ -296,7 +296,7 @@ impl Component for DiffDialog {
                 None
             }
             KeyCode::PageUp => {
-                self.viewer.handle_scroll(10);
+                self.viewer.handle_scroll(-10);
                 None
             }
             KeyCode::PageDown => {

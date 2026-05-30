@@ -265,7 +265,7 @@ impl DiffViewer {
 
     pub fn handle_scroll(&mut self, delta: isize) {
         let current = self.scroll.get() as isize;
-        let new_scroll = (current + delta).max(0) as usize;
+        let new_scroll = current.saturating_add(delta).max(0) as usize;
         self.scroll.set(new_scroll);
     }
 

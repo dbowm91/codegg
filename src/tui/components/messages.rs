@@ -1296,12 +1296,47 @@ impl Widget for &MessagesWidget {
                                             "  ▼ output:",
                                             Style::default().fg(self.theme.muted),
                                         )));
-                                        let formatted = format_json(output);
-                                        for text_line in formatted.lines() {
-                                            lines.push(Line::from(Span::styled(
-                                                format!("    {text_line}"),
-                                                Style::default().fg(self.theme.muted),
-                                            )));
+                                        let is_diff = output.starts_with("diff --")
+                                            || output.contains("+++ ")
+                                            || output.contains("--- ")
+                                            || (output.contains("@@ ")
+                                                && output.contains("+")
+                                                && output.contains("-"));
+                                        if is_diff {
+                                            for text_line in output.lines() {
+                                                let color =
+                                                    if text_line.starts_with('+')
+                                                        && !text_line.starts_with("+++")
+                                                    {
+                                                        ratatui::style::Color::Rgb(80, 200, 120)
+                                                    } else if text_line.starts_with('-')
+                                                        && !text_line.starts_with("---")
+                                                    {
+                                                        ratatui::style::Color::Rgb(255, 100, 100)
+                                                    } else if text_line.starts_with("@@") {
+                                                        ratatui::style::Color::Rgb(100, 150, 255)
+                                                    } else if text_line.starts_with("diff --")
+                                                        || text_line.starts_with("index ")
+                                                        || text_line.starts_with("---")
+                                                        || text_line.starts_with("+++")
+                                                    {
+                                                        ratatui::style::Color::Rgb(130, 130, 140)
+                                                    } else {
+                                                        self.theme.muted
+                                                    };
+                                                lines.push(Line::from(Span::styled(
+                                                    format!("    {text_line}"),
+                                                    Style::default().fg(color),
+                                                )));
+                                            }
+                                        } else {
+                                            let formatted = format_json(output);
+                                            for text_line in formatted.lines() {
+                                                lines.push(Line::from(Span::styled(
+                                                    format!("    {text_line}"),
+                                                    Style::default().fg(self.theme.muted),
+                                                )));
+                                            }
                                         }
                                     }
                                 } else {
@@ -1315,11 +1350,41 @@ impl Widget for &MessagesWidget {
                                         )));
                                     }
                                     if !output.is_empty() {
-                                        lines.push(Line::from(Span::styled(
+                                        let is_diff = output.starts_with("diff --")
+                                            || output.contains("+++ ")
+                                            || output.contains("--- ")
+                                            || (output.contains("@@ ")
+                                                && output.contains("+")
+                                                && output.contains("-"));
+                                        let summary = if is_diff {
+                                            let adds = output
+                                                .lines()
+                                                .filter(|l| {
+                                                    l.starts_with('+') && !l.starts_with("+++")
+                                                })
+                                                .count();
+                                            let dels = output
+                                                .lines()
+                                                .filter(|l| {
+                                                    l.starts_with('-') && !l.starts_with("---")
+                                                })
+                                                .count();
+                                            let hunks = output
+                                                .lines()
+                                                .filter(|l| l.starts_with("@@"))
+                                                .count();
                                             format!(
-                                                "  ▶ output: {}",
-                                                output.lines().next().unwrap_or("")
-                                            ),
+                                                "diff  +{} -{} ({} hunk{})",
+                                                adds,
+                                                dels,
+                                                hunks,
+                                                if hunks != 1 { "s" } else { "" }
+                                            )
+                                        } else {
+                                            output.lines().next().unwrap_or("").to_string()
+                                        };
+                                        lines.push(Line::from(Span::styled(
+                                            format!("  ▶ output: {summary}"),
                                             Style::default().fg(self.theme.muted),
                                         )));
                                     }

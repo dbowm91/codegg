@@ -4972,51 +4972,75 @@ impl App {
             }
         };
 
-        let output = if let Some(path) = path {
-            std::process::Command::new("git")
+        let env_path = std::env::var_os("PATH").unwrap_or_default();
+
+        if let Some(file_path) = path {
+            let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                std::path::PathBuf::from(file_path)
+            } else {
+                project_dir.join(file_path)
+            };
+
+            let old_content = std::process::Command::new("git")
                 .env_clear()
-                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-                .args(["diff", "--", path])
+                .env("PATH", &env_path)
+                .args(["show", &format!("HEAD:{}", file_path)])
                 .current_dir(&git_root)
                 .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default();
+
+            let new_content = std::fs::read_to_string(&abs_path).unwrap_or_default();
+
+            if old_content == new_content {
+                self.messages_state
+                    .toasts
+                    .info("No changes detected");
+                return;
+            }
+
+            let title = format!("Diff: {}", file_path);
+            self.process_msg(TuiMsg::OpenDiffDialog {
+                old_content: old_content.into_boxed_str(),
+                new_content: new_content.into_boxed_str(),
+                title: title.into_boxed_str(),
+            });
         } else {
-            std::process::Command::new("git")
+            let output = std::process::Command::new("git")
                 .env_clear()
-                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("PATH", &env_path)
                 .args(["diff"])
                 .current_dir(&git_root)
-                .output()
-        };
+                .output();
 
-        match output {
-            Ok(o) if o.status.success() => {
-                let diff_text = String::from_utf8_lossy(&o.stdout).to_string();
-                if diff_text.is_empty() {
+            match output {
+                Ok(o) if o.status.success() => {
+                    let diff_text = String::from_utf8_lossy(&o.stdout).to_string();
+                    if diff_text.is_empty() {
+                        self.messages_state
+                            .toasts
+                            .info("No changes detected");
+                        return;
+                    }
+                    self.process_msg(TuiMsg::OpenDiffDialog {
+                        old_content: String::new().into_boxed_str(),
+                        new_content: diff_text.into_boxed_str(),
+                        title: "Repository Diff".to_string().into_boxed_str(),
+                    });
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
                     self.messages_state
                         .toasts
-                        .info("No changes detected");
-                    return;
+                        .error(&format!("git diff failed: {}", stderr));
                 }
-                let title = path
-                    .map(|p| format!("Diff: {}", p))
-                    .unwrap_or_else(|| "Repository Diff".to_string());
-                let empty = "";
-                self.process_msg(TuiMsg::OpenDiffDialog {
-                    old_content: empty.to_string().into_boxed_str(),
-                    new_content: diff_text.into_boxed_str(),
-                    title: title.into_boxed_str(),
-                });
-            }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                self.messages_state
-                    .toasts
-                    .error(&format!("git diff failed: {}", stderr));
-            }
-            Err(e) => {
-                self.messages_state
-                    .toasts
-                    .error(&format!("Failed to run git diff: {}", e));
+                Err(e) => {
+                    self.messages_state
+                        .toasts
+                        .error(&format!("Failed to run git diff: {}", e));
+                }
             }
         }
     }
