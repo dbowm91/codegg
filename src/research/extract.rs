@@ -1,5 +1,9 @@
-use crate::research::types::*;
 use chrono::Utc;
+
+use crate::provider::Provider;
+use crate::research::llm;
+use crate::research::templates;
+use crate::research::types::*;
 
 /// Chunk a source's content into evidence spans deterministically.
 /// For local files: chunk by line windows (100 lines with 10-line overlap).
@@ -233,8 +237,8 @@ pub fn deterministic_evidence(
         .collect()
 }
 
-/// Extract evidence from all sources.
-/// First chunks deterministically, then optionally refines with model.
+/// Extract evidence from all sources (deterministic only).
+/// First chunks deterministically, then creates evidence spans.
 pub fn extract_evidence(
     run_id: &str,
     sources: &[SourceRecord],
@@ -250,6 +254,138 @@ pub fn extract_evidence(
         }
     }
     // Trim to budget
+    all_evidence.truncate(budget.max_evidence_spans);
+    all_evidence
+}
+
+/// Model-backed evidence extraction for a single source chunk.
+///
+/// Calls the LLM with the EVIDENCE_EXTRACTION_PROMPT template to extract
+/// structured evidence from a chunk of source content. Returns parsed
+/// evidence spans, or None if the model returns empty/invalid results.
+async fn model_evidence_for_chunk(
+    provider: &dyn Provider,
+    model: &str,
+    question: &str,
+    source: &SourceRecord,
+    chunk_text: &str,
+    locator: &SourceLocator,
+    max_spans: usize,
+) -> Option<Vec<ModelEvidenceItem>> {
+    let locator_str = match locator {
+        SourceLocator::FileRange {
+            path,
+            start_line,
+            end_line,
+        } => format!("{}:{}-{}", path.display(), start_line, end_line),
+        SourceLocator::Url { url, heading } => {
+            format!("{} ({})", url, heading.as_deref().unwrap_or("no heading"))
+        }
+        SourceLocator::TextSpan { label } => label.clone(),
+    };
+
+    let prompt = templates::EVIDENCE_EXTRACTION_PROMPT
+        .replace("{question}", question)
+        .replace("{source_id}", &source.id)
+        .replace("{locator}", &locator_str);
+
+    // Truncate chunk if very long to fit in context
+    let truncated_chunk = if chunk_text.len() > 8000 {
+        format!("{}...(truncated)", &chunk_text[..8000])
+    } else {
+        chunk_text.to_string()
+    };
+
+    let user_msg = format!(
+        "{}\n\n--- Source Content ---\n{}",
+        prompt, truncated_chunk
+    );
+
+    let json_val = llm::call_llm_json(provider, model, None, &user_msg, Some(2048)).await.ok()?;
+
+    let items: Vec<ModelEvidenceItem> = serde_json::from_value(json_val).ok()?;
+
+    Some(items.into_iter().take(max_spans).collect())
+}
+
+/// Parsed evidence item from model response.
+#[derive(serde::Deserialize)]
+struct ModelEvidenceItem {
+    text: String,
+    summary: Option<String>,
+    #[allow(dead_code)]
+    relevance: Option<String>,
+    #[allow(dead_code)]
+    caveats: Option<Vec<String>>,
+}
+
+/// Extract evidence from all sources with optional model refinement.
+///
+/// When a provider is available, calls the LLM for each source chunk to extract
+/// structured evidence with summaries. Falls back to deterministic extraction
+/// on any LLM error or when provider is None.
+pub async fn extract_evidence_with_model(
+    run_id: &str,
+    sources: &[SourceRecord],
+    source_contents: &[(String, String)],
+    budget: &ResearchBudget,
+    provider: Option<&dyn Provider>,
+    model: Option<&str>,
+    question: &str,
+) -> Vec<EvidenceSpan> {
+    let Some(provider) = provider else {
+        return extract_evidence(run_id, sources, source_contents, budget);
+    };
+    let Some(model) = model else {
+        return extract_evidence(run_id, sources, source_contents, budget);
+    };
+
+    let mut all_evidence = Vec::new();
+    let spans_per_chunk = 5;
+
+    for (source_id, content) in source_contents {
+        let Some(source) = sources.iter().find(|s| &s.id == source_id) else {
+            continue;
+        };
+
+        let chunks = chunk_source_content(source, content, budget.max_chunks_per_source);
+
+        for (chunk_text, locator) in &chunks {
+            // Try model-backed extraction
+            if let Some(items) = model_evidence_for_chunk(
+                provider,
+                model,
+                question,
+                source,
+                chunk_text,
+                locator,
+                spans_per_chunk,
+            )
+            .await
+            {
+                for item in items {
+                    all_evidence.push(EvidenceSpan {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        run_id: run_id.to_string(),
+                        source_id: source.id.clone(),
+                        locator: locator.clone(),
+                        text: item.text,
+                        summary: item.summary,
+                        extracted_at: Utc::now(),
+                    });
+                }
+            } else {
+                // Fallback: deterministic evidence for this chunk
+                let ev = deterministic_evidence(
+                    run_id,
+                    source,
+                    &[(chunk_text.clone(), locator.clone())],
+                );
+                all_evidence.extend(ev);
+            }
+        }
+    }
+
     all_evidence.truncate(budget.max_evidence_spans);
     all_evidence
 }

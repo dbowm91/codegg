@@ -1,10 +1,12 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::Utc;
 
-use crate::research::claims::build_claims;
+use crate::provider::Provider;
+use crate::research::claims::{build_claims, build_claims_with_model};
 use crate::research::error::{ResearchError, Result};
-use crate::research::extract::extract_evidence;
+use crate::research::extract::{extract_evidence, extract_evidence_with_model};
 use crate::research::sources::{
     advisory::AdvisorySource, crates_io::CratesIoSource, docs_rs::DocsRsSource,
     github::GitHubSource, local_repo::LocalRepoSource, search_provider::SearchProviderSource,
@@ -15,9 +17,19 @@ use crate::research::synthesis;
 use crate::research::types::*;
 use crate::research::verify;
 
+/// Diff between old and new research run claims after a rerun.
+#[derive(Debug, Clone)]
+pub struct ClaimDiff {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub unchanged: Vec<String>,
+}
+
 pub struct ResearchCoordinator {
     store: ResearchStore,
     source_adapters: Vec<Box<dyn ResearchSourceAdapter>>,
+    provider: Option<Arc<dyn Provider>>,
+    model: Option<String>,
 }
 
 impl ResearchCoordinator {
@@ -33,6 +45,8 @@ impl ResearchCoordinator {
         Self {
             store,
             source_adapters,
+            provider: None,
+            model: None,
         }
     }
 
@@ -52,11 +66,24 @@ impl ResearchCoordinator {
         Self {
             store,
             source_adapters,
+            provider: None,
+            model: None,
         }
+    }
+
+    /// Set an LLM provider for model-backed evidence extraction and claim construction.
+    pub fn with_provider(mut self, provider: Arc<dyn Provider>, model: String) -> Self {
+        self.provider = Some(provider);
+        self.model = Some(model);
+        self
     }
 
     pub fn store(&self) -> &ResearchStore {
         &self.store
+    }
+
+    pub fn store_mut(&mut self) -> &mut ResearchStore {
+        &mut self.store
     }
 
     pub async fn run(&self, request: ResearchRequest) -> Result<ResearchRunResult> {
@@ -83,14 +110,22 @@ impl ResearchCoordinator {
         status.counts.sources = sources.len();
         self.store.update_run_status(&run_id, status).await?;
 
-        // Phase 3: Evidence extraction (deterministic chunking)
+        // Phase 3: Evidence extraction (model-backed when provider available)
         let source_contents = self.read_source_contents(&sources).await?;
-        let evidence = extract_evidence(
-            &run_id,
-            &sources,
-            &source_contents,
-            &request.budget,
-        );
+        let evidence = if let (Some(provider), Some(model)) = (&self.provider, &self.model) {
+            extract_evidence_with_model(
+                &run_id,
+                &sources,
+                &source_contents,
+                &request.budget,
+                Some(provider.as_ref()),
+                Some(model.as_str()),
+                &request.question,
+            )
+            .await
+        } else {
+            extract_evidence(&run_id, &sources, &source_contents, &request.budget)
+        };
         for ev in &evidence {
             self.store.append_evidence(ev).await?;
         }
@@ -99,8 +134,20 @@ impl ResearchCoordinator {
         status.counts.evidence_spans = evidence.len();
         self.store.update_run_status(&run_id, status).await?;
 
-        // Phase 4: Claim construction (deterministic fallback)
-        let claims = build_claims(&run_id, &evidence, &sources, false);
+        // Phase 4: Claim construction (model-backed when provider available)
+        let claims = if let (Some(provider), Some(model)) = (&self.provider, &self.model) {
+            build_claims_with_model(
+                &run_id,
+                &evidence,
+                &sources,
+                provider.as_ref(),
+                model,
+                &request.question,
+            )
+            .await
+        } else {
+            build_claims(&run_id, &evidence, &sources, false)
+        };
         for claim in &claims {
             self.store.append_claim(claim).await?;
         }
@@ -139,7 +186,7 @@ impl ResearchCoordinator {
             });
         }
 
-        // Phase 7: Verification
+        // Phase 7: Verification (structural + optional semantic)
         let verification = verify::verify_structural(
             &request,
             &sources,
@@ -147,6 +194,49 @@ impl ResearchCoordinator {
             &claims,
             &contradictions,
         );
+
+        // Phase 7b: Semantic verification when model available
+        if let (Some(provider), Some(model)) = (&self.provider, &self.model) {
+            let semantic_results = verify::verify_semantic(
+                provider.as_ref(),
+                model,
+                &request.question,
+                &claims,
+                &evidence,
+                &sources,
+            )
+            .await;
+
+            // Add semantic warnings for unsupported claims
+            for result in &semantic_results {
+                if result.support_status == "unsupported" {
+                    let mut status = self.store.load_run_status(&run_id).await?;
+                    status.status = RunStatus::Verifying;
+                    self.store.update_run_status(&run_id, status).await?;
+
+                    return Err(ResearchError::VerificationFailed(format!(
+                        "Claim {} is unsupported by cited evidence: {}",
+                        result.claim_id, result.explanation
+                    )));
+                }
+                if result.support_status == "partially_supported" {
+                    // Write as warning (non-blocking)
+                    let warn_text = format!(
+                        "Claim {} is only partially supported: {}",
+                        result.claim_id, result.explanation
+                    );
+                    let _ = self
+                        .store
+                        .write_report(
+                            &run_id,
+                            &ResearchOutputProfile::EvidenceBundle,
+                            &warn_text,
+                        )
+                        .await;
+                }
+            }
+        }
+
         if !verification.passed {
             let err_msg = verification.errors.join("; ");
             let mut status = self.store.load_run_status(&run_id).await?;
@@ -439,6 +529,82 @@ impl ResearchCoordinator {
             }
         }
     }
+
+    /// Rerun a research run: re-collect sources, re-extract evidence, re-construct claims,
+    /// and diff the new claims against the old ones.
+    ///
+    /// Returns the new run result and a diff showing what changed.
+    pub async fn rerun(
+        &self,
+        original_run_id: &str,
+    ) -> Result<(ResearchRunResult, ClaimDiff)> {
+        // Load the original run bundle
+        let original = self.store.load_run_bundle(original_run_id).await?;
+
+        // Create a new request based on the original
+        let new_request = ResearchRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            question: original.request.question.clone(),
+            mode: original.request.mode.clone(),
+            audience: original.request.audience.clone(),
+            depth: original.request.depth.clone(),
+            output_profiles: original.request.output_profiles.clone(),
+            constraints: original.request.constraints.clone(),
+            sources: original.request.sources.clone(),
+            existing_context_refs: original.request.existing_context_refs.clone(),
+            budget: original.request.budget.clone(),
+            created_at: Utc::now(),
+        };
+
+        // Run the full pipeline with the new request
+        let new_result = self.run(new_request).await?;
+
+        // Load the new bundle to get claims for diffing
+        let new_bundle = self.store.load_run_bundle(&new_result.run_id).await?;
+
+        // Compute claim diff
+        let diff = compute_claim_diff(&original.claims, &new_bundle.claims);
+
+        Ok((new_result, diff))
+    }
+
+    /// Re-synthesize output profiles from an existing run's evidence and claims.
+    ///
+    /// Does NOT re-collect sources or re-extract evidence. Only re-renders
+    /// the requested output profiles from the existing claim graph.
+    pub async fn resynthesize(
+        &self,
+        run_id: &str,
+        profiles: &[ResearchOutputProfile],
+    ) -> Result<Vec<ResearchArtifactRef>> {
+        let bundle = self.store.load_run_bundle(run_id).await?;
+
+        let plan = bundle.plan.unwrap_or_else(|| self.plan(&bundle.request));
+
+        let mut outputs = Vec::new();
+        for profile in profiles {
+            let text = self.render_profile(
+                &bundle.request,
+                &plan,
+                &bundle.sources,
+                &bundle.evidence,
+                &bundle.claims,
+                &bundle.contradictions,
+                profile,
+            );
+            let path = self
+                .store
+                .write_report(run_id, profile, &text)
+                .await?;
+            outputs.push(ResearchArtifactRef {
+                run_id: run_id.to_string(),
+                profile: profile.clone(),
+                path,
+            });
+        }
+
+        Ok(outputs)
+    }
 }
 
 fn truncate_short(s: &str, max: usize) -> String {
@@ -446,5 +612,37 @@ fn truncate_short(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max])
+    }
+}
+
+/// Compute a diff between old and new claim sets based on claim text.
+fn compute_claim_diff(old_claims: &[ClaimRecord], new_claims: &[ClaimRecord]) -> ClaimDiff {
+    let old_texts: std::collections::HashSet<&str> =
+        old_claims.iter().map(|c| c.text.as_str()).collect();
+    let new_texts: std::collections::HashSet<&str> =
+        new_claims.iter().map(|c| c.text.as_str()).collect();
+
+    let added: Vec<String> = new_claims
+        .iter()
+        .filter(|c| !old_texts.contains(c.text.as_str()))
+        .map(|c| c.text.clone())
+        .collect();
+
+    let removed: Vec<String> = old_claims
+        .iter()
+        .filter(|c| !new_texts.contains(c.text.as_str()))
+        .map(|c| c.text.clone())
+        .collect();
+
+    let unchanged: Vec<String> = new_claims
+        .iter()
+        .filter(|c| old_texts.contains(c.text.as_str()))
+        .map(|c| c.text.clone())
+        .collect();
+
+    ClaimDiff {
+        added,
+        removed,
+        unchanged,
     }
 }

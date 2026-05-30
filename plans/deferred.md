@@ -54,6 +54,12 @@ Items marked **FUTURE** are explicitly deferred to later phases.
 | SearchProviderSource adapter | `src/research/sources/search_provider.rs` | Tavily, Brave, SerpAPI, Kagi support with provider-specific auth |
 | BM25 ranking for tool search | `src/tool/catalog.rs` | `SearchMode::BM25` with tokenization, IDF computation, BM25 scoring (k1=1.5, b=0.75); 19 unit tests |
 | BM25 config wiring | `src/config/schema.rs` + `src/agent/loop.rs` | `search_mode: "bm25"` in `ToolDeferralConfig` activates BM25 ranking |
+| Model-backed evidence extraction | `src/research/extract.rs` + `src/research/llm.rs` | `extract_evidence_with_model()` calls LLM with EVIDENCE_EXTRACTION_PROMPT; falls back to deterministic on error |
+| Model-backed claim construction | `src/research/claims.rs` | `build_claims_with_model()` calls LLM with CLAIM_CONSTRUCTION_PROMPT; parses structured claims with type/confidence/evidence |
+| Semantic citation verifier | `src/research/verify.rs` | `verify_semantic()` uses LLM to check claim support by cited evidence; returns support_status per claim |
+| Research refresh/rerun | `src/research/coordinator.rs` | `rerun()` re-collects sources, re-extracts evidence, re-constructs claims, diffs old vs new claims |
+| Re-synthesis from existing evidence | `src/research/service.rs` | `resynthesize()` re-renders output profiles from existing claim graph without re-collecting sources |
+| SQLite metadata index for research runs | `src/session/schema.rs` (v18) + `src/research/store.rs` | `research_run` table with indexes; `upsert_metadata()`, `load_metadata()`, `list_metadata()`, `delete_metadata()` |
 
 ---
 
@@ -69,14 +75,7 @@ These are real development tasks, not truly "deferred". They are active work for
 
 ### deepresearch.md
 
-| Item | Notes |
-|------|-------|
-| Model-backed evidence extraction | Templates exist in `src/research/templates.rs` but are unused; pipeline uses deterministic fallbacks |
-| Model-backed claim construction | Currently trivial (1 claim per evidence span); needs LLM integration |
-| Semantic citation verifier | Structural verifier exists; semantic support-by-citation checking not implemented |
-| Research refresh/rerun | Rerun source fetches and diff changed claims - not implemented |
-| Re-synthesis from existing evidence | Generate different output profiles from same evidence - partially supported via templates |
-| SQLite metadata index for research runs | Optional for session search and TUI lists |
+All deep research items are now implemented. See DONE section.
 
 ### tooluse.md
 
@@ -105,8 +104,8 @@ These are planned for future work and are explicitly NOT in the current sprint.
 
 | Category | Count | Status |
 |----------|-------|--------|
-| Truly completed (verified in code) | 44 | DONE |
-| Real development tasks | 9 | ACTIVE |
+| Truly completed (verified in code) | 50 | DONE |
+| Real development tasks | 3 | ACTIVE |
 | Explicitly future/deferred | 4 | FUTURE |
 
 **Total**: 57 discrete items across 7 plan files

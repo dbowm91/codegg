@@ -1,5 +1,8 @@
 use std::collections::HashSet;
 
+use crate::provider::Provider;
+use crate::research::llm;
+use crate::research::templates;
 use crate::research::types::*;
 
 #[derive(Debug)]
@@ -7,6 +10,15 @@ pub struct VerificationResult {
     pub passed: bool,
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+/// Result of semantic citation verification for a single claim.
+#[derive(Debug, Clone)]
+pub struct SemanticCheckResult {
+    pub claim_id: String,
+    pub support_status: String, // "supported", "partially_supported", "unsupported", "unverifiable"
+    pub explanation: String,
+    pub suggested_confidence: Option<String>,
 }
 
 /// Verify structural citation support for all outputs.
@@ -91,6 +103,146 @@ pub fn verify_structural(
         passed: errors.is_empty(),
         errors,
         warnings,
+    }
+}
+
+/// Semantic citation verification using the LLM.
+///
+/// For each non-OpenQuestion claim, checks whether the cited evidence actually
+/// supports the claim text. Returns per-claim results with support status and
+/// suggested confidence adjustments.
+pub async fn verify_semantic(
+    provider: &dyn Provider,
+    model: &str,
+    question: &str,
+    claims: &[ClaimRecord],
+    evidence: &[EvidenceSpan],
+    sources: &[SourceRecord],
+) -> Vec<SemanticCheckResult> {
+    if claims.is_empty() {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+
+    // Process claims in batches of 5 to avoid overwhelming the model
+    for chunk in claims.chunks(5) {
+        let batch_results =
+            verify_claim_batch(provider, model, question, chunk, evidence, sources).await;
+        results.extend(batch_results);
+    }
+
+    results
+}
+
+async fn verify_claim_batch(
+    provider: &dyn Provider,
+    model: &str,
+    question: &str,
+    claims: &[ClaimRecord],
+    evidence: &[EvidenceSpan],
+    sources: &[SourceRecord],
+) -> Vec<SemanticCheckResult> {
+    // Build compact context for each claim
+    let claim_entries: Vec<serde_json::Value> = claims
+        .iter()
+        .map(|c| {
+            let cited_evidence: Vec<serde_json::Value> = c
+                .evidence_ids
+                .iter()
+                .filter_map(|eid| {
+                    evidence.iter().find(|e| &e.id == eid).map(|e| {
+                        let source = sources.iter().find(|s| s.id == e.source_id);
+                        let src = source
+                            .and_then(|s| s.title.as_deref())
+                            .unwrap_or("unknown");
+                        serde_json::json!({
+                            "evidence_id": e.id,
+                            "source": src,
+                            "text": truncate_verify(&e.text, 800),
+                        })
+                    })
+                })
+                .collect();
+
+            serde_json::json!({
+                "claim_id": c.id,
+                "claim_text": c.text,
+                "claim_type": c.claim_type.as_str(),
+                "confidence": format!("{:?}", c.confidence).to_lowercase(),
+                "cited_evidence": cited_evidence,
+            })
+        })
+        .collect();
+
+    let claims_json = serde_json::to_string_pretty(&claim_entries).unwrap_or_default();
+
+    let prompt = templates::VERIFICATION_PROMPT;
+    let user_msg = format!(
+        "Research question: {}\n\nClaims to verify:\n{}\n\n{}",
+        question, claims_json, prompt
+    );
+
+    let json_val = match llm::call_llm_json(provider, model, None, &user_msg, Some(4096)).await {
+        Ok(v) => v,
+        Err(_) => {
+            return claims
+                .iter()
+                .map(|c| SemanticCheckResult {
+                    claim_id: c.id.clone(),
+                    support_status: "unverifiable".to_string(),
+                    explanation: "LLM verification call failed".to_string(),
+                    suggested_confidence: None,
+                })
+                .collect();
+        }
+    };
+
+    let items: Vec<serde_json::Value> = serde_json::from_value(json_val).unwrap_or_default();
+
+    let mut results: Vec<SemanticCheckResult> = items
+        .into_iter()
+        .filter_map(|item| {
+            Some(SemanticCheckResult {
+                claim_id: item.get("claim_id")?.as_str()?.to_string(),
+                support_status: item
+                    .get("support_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unverifiable")
+                    .to_string(),
+                explanation: item
+                    .get("explanation")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                suggested_confidence: item
+                    .get("suggested_confidence")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            })
+        })
+        .collect();
+
+    // Add entries for claims not covered by the model response
+    for claim in claims {
+        if !results.iter().any(|r| r.claim_id == claim.id) {
+            results.push(SemanticCheckResult {
+                claim_id: claim.id.clone(),
+                support_status: "unverifiable".to_string(),
+                explanation: "Not covered by model verification".to_string(),
+                suggested_confidence: None,
+            });
+        }
+    }
+
+    results
+}
+
+fn truncate_verify(s: &str, max_chars: usize) -> String {
+    if s.len() <= max_chars {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_chars])
     }
 }
 

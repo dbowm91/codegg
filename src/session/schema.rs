@@ -73,6 +73,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 17 {
         migrate_and_record(pool, 17).await?;
     }
+    if current_version < 18 {
+        migrate_and_record(pool, 18).await?;
+    }
 
     Ok(())
 }
@@ -102,6 +105,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             15 => migrate_v15(pool).await?,
             16 => migrate_v16(pool).await?,
             17 => migrate_v17(pool).await?,
+            18 => migrate_v18(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -626,6 +630,55 @@ async fn migrate_v17(pool: &SqlitePool) -> Result<(), StorageError> {
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_session_events_session_created ON session_events(session_id, created_at)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v18(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS research_run (
+            run_id TEXT PRIMARY KEY,
+            question TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            depth TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            artifact_dir TEXT NOT NULL,
+            error TEXT,
+            sources_count INTEGER NOT NULL DEFAULT 0,
+            evidence_count INTEGER NOT NULL DEFAULT 0,
+            claims_count INTEGER NOT NULL DEFAULT 0,
+            contradictions_count INTEGER NOT NULL DEFAULT 0,
+            project_root TEXT NOT NULL DEFAULT ''
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_research_run_status ON research_run(status)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_research_run_started ON research_run(started_at)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_research_run_project ON research_run(project_root)",
     )
     .execute(pool)
     .await

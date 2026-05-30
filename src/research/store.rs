@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use sqlx::SqlitePool;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -8,15 +9,31 @@ use super::types::*;
 
 pub struct ResearchStore {
     root: PathBuf,
+    db_pool: Option<SqlitePool>,
 }
 
 impl ResearchStore {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            db_pool: None,
+        }
+    }
+
+    pub fn with_db_pool(root: PathBuf, pool: SqlitePool) -> Self {
+        Self {
+            root,
+            db_pool: Some(pool),
+        }
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Set the database pool for metadata indexing.
+    pub fn set_db_pool(&mut self, pool: SqlitePool) {
+        self.db_pool = Some(pool);
     }
 
     async fn run_dir(&self, run_id: &str) -> PathBuf {
@@ -181,6 +198,229 @@ impl ResearchStore {
         let data = fs::read_to_string(&path).await?;
         let status: ResearchRunStatus = serde_json::from_str(&data)?;
         Ok(status)
+    }
+
+    // -- SQLite metadata methods --
+
+    /// Insert or update research run metadata in SQLite.
+    pub async fn upsert_metadata(
+        &self,
+        status: &ResearchRunStatus,
+        request: &ResearchRequest,
+        project_root: &str,
+    ) -> Result<()> {
+        let Some(pool) = &self.db_pool else {
+            return Ok(());
+        };
+
+        sqlx::query(
+            r#"INSERT INTO research_run
+               (run_id, question, mode, depth, status, started_at, finished_at,
+                artifact_dir, error, sources_count, evidence_count, claims_count,
+                contradictions_count, project_root)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(run_id) DO UPDATE SET
+                status = excluded.status,
+                finished_at = excluded.finished_at,
+                error = excluded.error,
+                sources_count = excluded.sources_count,
+                evidence_count = excluded.evidence_count,
+                claims_count = excluded.claims_count,
+                contradictions_count = excluded.contradictions_count"#,
+        )
+        .bind(&status.run_id)
+        .bind(&request.question)
+        .bind(format!("{:?}", request.mode))
+        .bind(format!("{:?}", request.depth))
+        .bind(format!("{:?}", status.status))
+        .bind(status.started_at.to_rfc3339())
+        .bind(status.finished_at.map(|dt| dt.to_rfc3339()))
+        .bind(status.artifact_dir.to_string_lossy().to_string())
+        .bind(&status.error)
+        .bind(status.counts.sources as i64)
+        .bind(status.counts.evidence_spans as i64)
+        .bind(status.counts.claims as i64)
+        .bind(status.counts.contradictions as i64)
+        .bind(project_root)
+        .execute(pool)
+        .await
+        .map_err(ResearchError::from)?;
+
+        Ok(())
+    }
+
+    /// Load research run metadata from SQLite.
+    pub async fn load_metadata(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<ResearchMetadata>> {
+        let Some(pool) = &self.db_pool else {
+            return Ok(None);
+        };
+
+        let row: Option<ResearchMetadataRow> = sqlx::query_as(
+            "SELECT run_id, question, mode, depth, status, started_at, finished_at,
+                    artifact_dir, error, sources_count, evidence_count, claims_count,
+                    contradictions_count, project_root
+             FROM research_run WHERE run_id = ?",
+        )
+        .bind(run_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(ResearchError::from)?;
+
+        Ok(row.map(|r| r.into()))
+    }
+
+    /// List all research run metadata from SQLite, most recent first.
+    pub async fn list_metadata(&self, project_root: Option<&str>) -> Result<Vec<ResearchMetadata>> {
+        let Some(pool) = &self.db_pool else {
+            return Ok(vec![]);
+        };
+
+        let rows: Vec<ResearchMetadataRow> = if let Some(root) = project_root {
+            sqlx::query_as(
+                "SELECT run_id, question, mode, depth, status, started_at, finished_at,
+                        artifact_dir, error, sources_count, evidence_count, claims_count,
+                        contradictions_count, project_root
+                 FROM research_run WHERE project_root = ? ORDER BY started_at DESC LIMIT 50",
+            )
+            .bind(root)
+            .fetch_all(pool)
+            .await
+        } else {
+            sqlx::query_as(
+                "SELECT run_id, question, mode, depth, status, started_at, finished_at,
+                        artifact_dir, error, sources_count, evidence_count, claims_count,
+                        contradictions_count, project_root
+                 FROM research_run ORDER BY started_at DESC LIMIT 50",
+            )
+            .fetch_all(pool)
+            .await
+        }
+        .map_err(ResearchError::from)?;
+
+        Ok(rows.into_iter().map(|r| r.into()).collect())
+    }
+
+    /// Delete research run metadata from SQLite.
+    pub async fn delete_metadata(&self, run_id: &str) -> Result<()> {
+        let Some(pool) = &self.db_pool else {
+            return Ok(());
+        };
+
+        sqlx::query("DELETE FROM research_run WHERE run_id = ?")
+            .bind(run_id)
+            .execute(pool)
+            .await
+            .map_err(ResearchError::from)?;
+
+        Ok(())
+    }
+
+    /// Overwrite all JSONL artifacts for a rerun (clears old data, writes new).
+    pub async fn overwrite_sources(&self, run_id: &str, sources: &[SourceRecord]) -> Result<()> {
+        let dir = self.run_dir(run_id).await;
+        let path = dir.join("sources.jsonl");
+        // Truncate and rewrite
+        fs::write(&path, "").await?;
+        for source in sources {
+            self.append_source(source).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn overwrite_evidence(&self, run_id: &str, evidence: &[EvidenceSpan]) -> Result<()> {
+        let dir = self.run_dir(run_id).await;
+        let path = dir.join("evidence.jsonl");
+        fs::write(&path, "").await?;
+        for ev in evidence {
+            self.append_evidence(ev).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn overwrite_claims(&self, run_id: &str, claims: &[ClaimRecord]) -> Result<()> {
+        let dir = self.run_dir(run_id).await;
+        let path = dir.join("claims.jsonl");
+        fs::write(&path, "").await?;
+        for claim in claims {
+            self.append_claim(claim).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn overwrite_contradictions(
+        &self,
+        run_id: &str,
+        contradictions: &[ContradictionRecord],
+    ) -> Result<()> {
+        let dir = self.run_dir(run_id).await;
+        let path = dir.join("contradictions.jsonl");
+        fs::write(&path, "").await?;
+        for contra in contradictions {
+            self.append_contradiction(contra).await?;
+        }
+        Ok(())
+    }
+}
+
+/// SQLite metadata row for a research run.
+#[derive(sqlx::FromRow)]
+struct ResearchMetadataRow {
+    run_id: String,
+    question: String,
+    mode: String,
+    depth: String,
+    status: String,
+    started_at: String,
+    finished_at: Option<String>,
+    artifact_dir: String,
+    error: Option<String>,
+    sources_count: i64,
+    evidence_count: i64,
+    claims_count: i64,
+    contradictions_count: i64,
+    project_root: String,
+}
+
+/// Research run metadata from the SQLite index.
+#[derive(Debug, Clone)]
+pub struct ResearchMetadata {
+    pub run_id: String,
+    pub question: String,
+    pub mode: String,
+    pub depth: String,
+    pub status: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub artifact_dir: String,
+    pub error: Option<String>,
+    pub sources_count: i64,
+    pub evidence_count: i64,
+    pub claims_count: i64,
+    pub contradictions_count: i64,
+    pub project_root: String,
+}
+
+impl From<ResearchMetadataRow> for ResearchMetadata {
+    fn from(row: ResearchMetadataRow) -> Self {
+        Self {
+            run_id: row.run_id,
+            question: row.question,
+            mode: row.mode,
+            depth: row.depth,
+            status: row.status,
+            started_at: row.started_at,
+            finished_at: row.finished_at,
+            artifact_dir: row.artifact_dir,
+            error: row.error,
+            sources_count: row.sources_count,
+            evidence_count: row.evidence_count,
+            claims_count: row.claims_count,
+            contradictions_count: row.contradictions_count,
+            project_root: row.project_root,
+        }
     }
 }
 

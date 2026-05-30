@@ -1,3 +1,6 @@
+use crate::provider::Provider;
+use crate::research::llm;
+use crate::research::templates;
 use crate::research::types::*;
 
 /// Build claims deterministically from evidence (no model).
@@ -46,6 +49,129 @@ pub fn build_claims(
 ) -> Vec<ClaimRecord> {
     // For MVP, always use deterministic fallback
     deterministic_claims(run_id, evidence, sources)
+}
+
+/// Parsed claim item from model response.
+#[derive(serde::Deserialize)]
+struct ModelClaimItem {
+    text: String,
+    claim_type: Option<String>,
+    confidence: Option<String>,
+    evidence_ids: Option<Vec<String>>,
+    caveats: Option<Vec<String>>,
+    applies_to: Option<Vec<String>>,
+}
+
+/// Build claims using the LLM for intelligent claim construction.
+///
+/// Sends all evidence to the model with the CLAIM_CONSTRUCTION_PROMPT template
+/// and parses structured claim records from the JSON response. Falls back to
+/// deterministic claims on any error.
+pub async fn build_claims_with_model(
+    run_id: &str,
+    evidence: &[EvidenceSpan],
+    sources: &[SourceRecord],
+    provider: &dyn Provider,
+    model: &str,
+    question: &str,
+) -> Vec<ClaimRecord> {
+    if evidence.is_empty() {
+        return Vec::new();
+    }
+
+    // Build a compact evidence summary for the prompt
+    let evidence_brief: Vec<serde_json::Value> = evidence
+        .iter()
+        .map(|e| {
+            let source = sources.iter().find(|s| s.id == e.source_id);
+            let source_desc = source
+                .and_then(|s| s.title.as_deref())
+                .unwrap_or("unknown");
+            serde_json::json!({
+                "id": e.id,
+                "source": source_desc,
+                "text_preview": truncate_for_prompt(&e.text, 500),
+                "summary": e.summary,
+            })
+        })
+        .collect();
+
+    let evidence_json = serde_json::to_string_pretty(&evidence_brief).unwrap_or_default();
+
+    let prompt = templates::CLAIM_CONSTRUCTION_PROMPT
+        .replace("{question}", question)
+        .replace("{evidence_json}", &evidence_json);
+
+    let json_val = match llm::call_llm_json(provider, model, None, &prompt, Some(4096)).await {
+        Ok(v) => v,
+        Err(_) => {
+            return deterministic_claims(run_id, evidence, sources);
+        }
+    };
+
+    let items: Vec<ModelClaimItem> = match serde_json::from_value(json_val) {
+        Ok(v) => v,
+        Err(_) => {
+            return deterministic_claims(run_id, evidence, sources);
+        }
+    };
+
+    if items.is_empty() {
+        return deterministic_claims(run_id, evidence, sources);
+    }
+
+    items
+        .into_iter()
+        .map(|item| {
+            let claim_type = match item.claim_type.as_deref() {
+                Some("fact") => ClaimType::Fact,
+                Some("comparison") => ClaimType::Comparison,
+                Some("recommendation") => ClaimType::Recommendation,
+                Some("risk") => ClaimType::Risk,
+                Some("caveat") => ClaimType::Caveat,
+                Some("open_question") => ClaimType::OpenQuestion,
+                _ => ClaimType::Inference,
+            };
+
+            let confidence = match item.confidence.as_deref() {
+                Some("high") => Confidence::High,
+                Some("medium") => Confidence::Medium,
+                _ => Confidence::Low,
+            };
+
+            // Filter evidence_ids to only those that actually exist
+            let evidence_ids: Vec<String> = item
+                .evidence_ids
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|id| evidence.iter().any(|e| &e.id == id))
+                .collect();
+
+            let mut caveats = item.caveats.unwrap_or_default();
+            if evidence_ids.is_empty() {
+                caveats.push("Model-generated claim with no matched evidence references".to_string());
+            }
+
+            ClaimRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                run_id: run_id.to_string(),
+                text: item.text,
+                claim_type,
+                confidence,
+                evidence_ids,
+                caveats,
+                applies_to: item.applies_to.unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+fn truncate_for_prompt(s: &str, max_chars: usize) -> String {
+    if s.len() <= max_chars {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_chars])
+    }
 }
 
 #[cfg(test)]

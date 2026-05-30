@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::research::coordinator::ResearchCoordinator;
+use crate::provider::Provider;
+use crate::research::coordinator::{ClaimDiff, ResearchCoordinator};
 use crate::research::error::{ResearchError, Result};
+use crate::research::store::ResearchMetadata;
 use crate::research::types::*;
 
 /// Summary of a research run for listing/display purposes.
@@ -16,6 +19,13 @@ pub struct ResearchRunSummary {
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     pub artifact_dir: PathBuf,
     pub counts: ResearchRunCounts,
+}
+
+/// Result of a rerun operation.
+#[derive(Debug, Clone)]
+pub struct RerunResult {
+    pub new_run: ResearchRunResult,
+    pub diff: ClaimDiff,
 }
 
 /// Agent-friendly wrapper around `ResearchCoordinator`.
@@ -43,6 +53,36 @@ impl ResearchService {
     /// Create a new service with explicit artifact root.
     pub fn with_artifact_root(project_root: PathBuf, artifact_root: PathBuf) -> Self {
         let coordinator = ResearchCoordinator::new(project_root, artifact_root.clone());
+        Self {
+            coordinator,
+            artifact_root,
+        }
+    }
+
+    /// Create a service with an LLM provider for model-backed research phases.
+    pub fn with_provider(
+        project_root: PathBuf,
+        provider: Arc<dyn Provider>,
+        model: String,
+    ) -> Self {
+        let artifact_root = project_root.join(".codegg").join("research");
+        let coordinator = ResearchCoordinator::new(project_root, artifact_root.clone())
+            .with_provider(provider, model);
+        Self {
+            coordinator,
+            artifact_root,
+        }
+    }
+
+    /// Create a service with explicit artifact root and LLM provider.
+    pub fn with_artifact_root_and_provider(
+        project_root: PathBuf,
+        artifact_root: PathBuf,
+        provider: Arc<dyn Provider>,
+        model: String,
+    ) -> Self {
+        let coordinator = ResearchCoordinator::new(project_root, artifact_root.clone())
+            .with_provider(provider, model);
         Self {
             coordinator,
             artifact_root,
@@ -141,6 +181,38 @@ impl ResearchService {
     /// Load a run bundle by ID.
     pub async fn load_run(&self, run_id: &str) -> Result<ResearchBundle> {
         self.coordinator.store().load_run_bundle(run_id).await
+    }
+
+    /// Rerun a research run: re-collect sources, re-extract evidence, re-construct claims,
+    /// and diff the new claims against the old ones.
+    pub async fn rerun(&self, original_run_id: &str) -> Result<RerunResult> {
+        let (new_run, diff) = self.coordinator.rerun(original_run_id).await?;
+        Ok(RerunResult {
+            new_run,
+            diff,
+        })
+    }
+
+    /// Re-synthesize output profiles from an existing run's evidence and claims.
+    ///
+    /// Does NOT re-collect sources or re-extract evidence. Only re-renders
+    /// the requested output profiles from the existing claim graph.
+    pub async fn resynthesize(
+        &self,
+        run_id: &str,
+        profiles: Vec<ResearchOutputProfile>,
+    ) -> Result<Vec<ResearchArtifactRef>> {
+        self.coordinator.resynthesize(run_id, &profiles).await
+    }
+
+    /// List research run metadata from the SQLite index.
+    pub async fn list_metadata(&self, project_root: Option<&str>) -> Result<Vec<ResearchMetadata>> {
+        self.coordinator.store().list_metadata(project_root).await
+    }
+
+    /// Load research run metadata from the SQLite index.
+    pub async fn load_metadata(&self, run_id: &str) -> Result<Option<ResearchMetadata>> {
+        self.coordinator.store().load_metadata(run_id).await
     }
 
     /// Get the artifact root directory.
