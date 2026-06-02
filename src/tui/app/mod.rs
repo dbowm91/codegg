@@ -998,11 +998,6 @@ impl App {
             self.sidebar_area = None;
         }
 
-        // Render task panel when terminal is wide enough (>= 120 cols) and sidebar is visible
-        if self.ui_state.sidebar_visible && main_chunks.len() > 2 {
-            self.render_task_panel(frame, main_chunks[2]);
-        }
-
         if self.ui_state.dialog.is_open() {
             let popup_area = centered_rect(60, 50, area);
             self.dialog_area = Some(popup_area);
@@ -1369,124 +1364,9 @@ impl App {
             self.sidebar.set_git_info(None, false, None);
         }
 
-        frame.render_widget(&self.sidebar, area);
-    }
-
-    fn render_task_panel(&self, frame: &mut Frame, area: Rect) {
-        let mut lines: Vec<Line> = Vec::new();
-        let state = &self.session_state_derived;
-        let theme = &self.ui_state.theme;
-
-        // Goal section
-        lines.push(Line::from(Span::styled(
-            " Goal ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        if let Some(ref goal) = state.goal {
-            let display = if goal.len() > (area.width as usize).saturating_sub(4) {
-                format!("{}…", &goal[..(area.width as usize).saturating_sub(5)])
-            } else {
-                goal.clone()
-            };
-            lines.push(Line::from(Span::styled(
-                format!("  {}", display),
-                Style::default().fg(theme.foreground),
-            )));
-        } else {
-            lines.push(Line::from(Span::styled(
-                "  (none)",
-                Style::default().fg(theme.muted),
-            )));
-        }
-        lines.push(Line::from(""));
-
-        // Plan section
-        lines.push(Line::from(Span::styled(
-            " Plan ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        if let Some(ref plan) = state.plan {
-            if plan.items.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "  (empty)",
-                    Style::default().fg(theme.muted),
-                )));
-            } else {
-                for item in &plan.items {
-                    let (icon, style) = match item.status {
-                        crate::session::events::PlanItemStatus::Done => {
-                            ("[x]", Style::default().fg(theme.success))
-                        }
-                        crate::session::events::PlanItemStatus::InProgress => {
-                            ("[>]", Style::default().fg(theme.warning))
-                        }
-                        crate::session::events::PlanItemStatus::Skipped => {
-                            ("[-]", Style::default().fg(theme.muted))
-                        }
-                        crate::session::events::PlanItemStatus::Blocked => {
-                            ("[?]", Style::default().fg(theme.error))
-                        }
-                        crate::session::events::PlanItemStatus::Pending => {
-                            ("[ ]", Style::default().fg(theme.muted))
-                        }
-                    };
-                    let text = if item.text.len() > (area.width as usize).saturating_sub(8) {
-                        format!(
-                            "{}…",
-                            &item.text[..(area.width as usize).saturating_sub(9)]
-                        )
-                    } else {
-                        item.text.clone()
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("  {} ", icon), style),
-                        Span::styled(text, Style::default().fg(theme.foreground)),
-                    ]));
-                }
-            }
-        } else {
-            lines.push(Line::from(Span::styled(
-                "  (no plan)",
-                Style::default().fg(theme.muted),
-            )));
-        }
-        lines.push(Line::from(""));
-
-        // State section
-        lines.push(Line::from(Span::styled(
-            " State ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-
-        let model_short = self
-            .agent_state
-            .current_model
-            .split('/')
-            .next_back()
-            .unwrap_or(&self.agent_state.current_model);
-        lines.push(Line::from(vec![
-            Span::styled("  Model: ", Style::default().fg(theme.muted)),
-            Span::raw(model_short.to_string()),
-        ]));
-
-        let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
-        lines.push(Line::from(vec![
-            Span::styled("  Agent: ", Style::default().fg(theme.muted)),
-            Span::raw(agent_name.clone()),
-        ]));
-
-        let files_changed = state.changed_files.len();
-        lines.push(Line::from(vec![
-            Span::styled("  Files: ", Style::default().fg(theme.muted)),
-            Span::raw(format!("{} changed", files_changed)),
-        ]));
-
+        let derived = &self.session_state_derived;
+        self.sidebar.set_goal(derived.goal.clone());
+        self.sidebar.set_plan(derived.plan.clone());
         let ctx_pct = if self.session_state.context_limit > 0 {
             (self.session_state.context_tokens as f64
                 / self.session_state.context_limit as f64
@@ -1494,28 +1374,9 @@ impl App {
         } else {
             0
         };
-        let ctx_style = if ctx_pct > 80 {
-            Style::default().fg(theme.error)
-        } else if ctx_pct > 60 {
-            Style::default().fg(theme.warning)
-        } else {
-            Style::default().fg(theme.muted)
-        };
-        lines.push(Line::from(vec![
-            Span::styled("  Context: ", Style::default().fg(theme.muted)),
-            Span::styled(format!("{}%", ctx_pct), ctx_style),
-        ]));
+        self.sidebar.set_context_pct(ctx_pct);
 
-        let block = Block::default()
-            .title(" Task ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
-
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+        frame.render_widget(&self.sidebar, area);
     }
 
     fn render_dialog(&mut self, frame: &mut Frame, area: Rect) {

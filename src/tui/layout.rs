@@ -70,22 +70,8 @@ impl TuiLayout {
 
     pub fn split(&self, area: Rect) -> Vec<Rect> {
         let has_sidebar = area.width > self.config.sidebar_width + self.config.min_main_width;
-        let has_task_panel = area.width >= 120;
 
-        if has_sidebar && has_task_panel {
-            let task_panel_width = 28.min(area.width / 4);
-            let remaining = area.width.saturating_sub(task_panel_width);
-            let main_width = remaining.saturating_sub(self.config.sidebar_width);
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(main_width),
-                    Constraint::Length(self.config.sidebar_width),
-                    Constraint::Length(task_panel_width),
-                ])
-                .split(area)
-                .to_vec()
-        } else if has_sidebar {
+        if has_sidebar {
             Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([

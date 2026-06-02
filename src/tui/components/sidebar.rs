@@ -1,22 +1,16 @@
+use crate::session::events::AgentPlan;
 use crate::session::Session;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::super::app::TodoEntry;
 use super::super::theme::Theme;
 
-#[derive(Debug, Clone)]
-struct Section {
-    expanded: bool,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum HoveredElement {
-    Section(String),
     Todo(usize),
     McpServer(usize),
     FileChange(usize),
@@ -37,9 +31,9 @@ pub struct SidebarWidget {
     pub git_branch: Option<String>,
     pub git_dirty: bool,
     pub project_root: Option<String>,
-    sections: HashMap<String, Section>,
-    section_order: Vec<String>,
-    focused_idx: usize,
+    pub goal: Option<String>,
+    pub plan: Option<AgentPlan>,
+    pub context_pct: u64,
     hovered_element: HoveredElement,
     tooltip_text: String,
 }
@@ -56,19 +50,6 @@ fn format_tokens(tokens: u64) -> String {
 
 impl SidebarWidget {
     pub fn new(theme: Arc<Theme>) -> Self {
-        let mut sections = HashMap::new();
-        let section_order = vec![
-            "session".to_string(),
-            "git".to_string(),
-            "config".to_string(),
-            "tokens".to_string(),
-            "todos".to_string(),
-            "mcp".to_string(),
-            "files".to_string(),
-        ];
-        for name in &section_order {
-            sections.insert(name.clone(), Section { expanded: true });
-        }
         Self {
             theme,
             session: None,
@@ -83,9 +64,9 @@ impl SidebarWidget {
             git_branch: None,
             git_dirty: false,
             project_root: None,
-            sections,
-            section_order,
-            focused_idx: 0,
+            goal: None,
+            plan: None,
+            context_pct: 0,
             hovered_element: HoveredElement::None,
             tooltip_text: String::new(),
         }
@@ -134,41 +115,26 @@ impl SidebarWidget {
         self.project_root = root;
     }
 
-    pub fn toggle_section(&mut self, name: &str) {
-        if let Some(section) = self.sections.get_mut(name) {
-            section.expanded = !section.expanded;
-        }
+    pub fn set_goal(&mut self, goal: Option<String>) {
+        self.goal = goal;
     }
 
-    pub fn toggle_focused(&mut self) {
-        let name = self.section_order.get(self.focused_idx).cloned();
-        if let Some(name) = name {
-            self.toggle_section(&name);
-        }
+    pub fn set_plan(&mut self, plan: Option<AgentPlan>) {
+        self.plan = plan;
     }
 
-    pub fn focus_next(&mut self) {
-        if !self.section_order.is_empty() {
-            self.focused_idx = (self.focused_idx + 1) % self.section_order.len();
-        }
+    pub fn set_context_pct(&mut self, pct: u64) {
+        self.context_pct = pct;
     }
 
-    pub fn focus_prev(&mut self) {
-        if !self.section_order.is_empty() {
-            self.focused_idx = if self.focused_idx == 0 {
-                self.section_order.len() - 1
-            } else {
-                self.focused_idx - 1
-            };
-        }
-    }
+    pub fn toggle_focused(&mut self) {}
+
+    pub fn focus_next(&mut self) {}
+
+    pub fn focus_prev(&mut self) {}
 
     pub fn focused_name(&self) -> Option<&str> {
-        self.section_order.get(self.focused_idx).map(|s| s.as_str())
-    }
-
-    fn is_expanded(&self, name: &str) -> bool {
-        self.sections.get(name).map(|s| s.expanded).unwrap_or(true)
+        None
     }
 
     pub fn set_hover_position(&mut self, x: u16, y: u16, area: Option<Rect>) {
@@ -202,104 +168,89 @@ impl SidebarWidget {
     fn element_at(&self, _x: u16, y: u16) -> HoveredElement {
         let mut line_num = 1u16;
 
-        line_num += 1;
+        // Session header + content
+        line_num += 1; // blank
         if self.session.is_some() {
+            line_num += 4; // title, id, shared, blank
+        } else {
+            line_num += 1; // "no session"
+        }
+
+        // Git header + content
+        line_num += 1; // blank
+        if self.git_branch.is_some() {
+            line_num += if self.git_dirty { 2 } else { 1 };
+        } else {
             line_num += 1;
-            if self.is_expanded("session") {
-                line_num += 4;
+        }
+
+        // Config header + content
+        line_num += 1; // blank
+        line_num += 2; // agent, model
+
+        // Goal header + content
+        line_num += 1; // blank
+        line_num += 1; // goal text or "(none)"
+
+        // Plan header + content
+        line_num += 1; // blank
+        if let Some(ref plan) = self.plan {
+            if plan.items.is_empty() {
+                line_num += 1; // "(empty)"
+            } else {
+                for _item in &plan.items {
+                    if y == line_num {
+                        return HoveredElement::None;
+                    }
+                    line_num += 1;
+                }
             }
+        } else {
+            line_num += 1; // "(no plan)"
         }
 
-        line_num += 2;
-        if self.is_expanded("config") {
-            line_num += 2;
-        }
+        // Tokens header + content
+        line_num += 1; // blank
+        line_num += 4; // in, out, total, context
 
-        line_num += 2;
-        if self.is_expanded("tokens") {
-            line_num += 3;
-        }
-
+        // Todos header + items
         if !self.todos.is_empty() {
-            line_num += 2;
-            if self.is_expanded("todos") {
-                line_num += 1;
-                for i in 0..self.todos.len() {
-                    if y == line_num {
-                        return HoveredElement::Todo(i);
-                    }
-                    line_num += 1;
+            line_num += 1; // blank
+            for i in 0..self.todos.len() {
+                if y == line_num {
+                    return HoveredElement::Todo(i);
                 }
+                line_num += 1;
             }
         }
 
+        // MCP Servers header + items
         if !self.mcp_servers.is_empty() {
-            line_num += 2;
-            if self.is_expanded("mcp") {
-                line_num += 1;
-                for i in 0..self.mcp_servers.len() {
-                    if y == line_num {
-                        return HoveredElement::McpServer(i);
-                    }
-                    line_num += 1;
+            line_num += 1; // blank
+            for i in 0..self.mcp_servers.len() {
+                if y == line_num {
+                    return HoveredElement::McpServer(i);
                 }
+                line_num += 1;
             }
         }
 
+        // File Changes header + items
         if !self.file_changes.is_empty() {
-            line_num += 2;
-            if self.is_expanded("files") {
+            line_num += 1; // blank
+            for i in 0..self.file_changes.len() {
+                if y == line_num {
+                    return HoveredElement::FileChange(i);
+                }
                 line_num += 1;
-                for i in 0..self.file_changes.len() {
-                    if y == line_num {
-                        return HoveredElement::FileChange(i);
-                    }
-                    line_num += 1;
-                }
-            }
-        }
-
-        if y <= 3 {
-            for (i, name) in self.section_order.iter().enumerate() {
-                let section_line = if i == 0 {
-                    1
-                } else {
-                    let mut sum = 2u16;
-                    for j in 0..i {
-                        sum += 1;
-                        if self.is_expanded(&self.section_order[j]) {
-                            sum += self.expanded_height(&self.section_order[j]);
-                        }
-                    }
-                    sum
-                };
-                if y == section_line {
-                    return HoveredElement::Section(name.clone());
-                }
             }
         }
 
         HoveredElement::None
     }
 
-    fn expanded_height(&self, section: &str) -> u16 {
-        match section {
-            "session" => 5,
-            "git" => 2,
-            "config" => 3,
-            "tokens" => 4,
-            "todos" => 1 + self.todos.len() as u16,
-            "mcp" => 1 + self.mcp_servers.len() as u16,
-            "files" => 1 + self.file_changes.len() as u16,
-            _ => 0,
-        }
-    }
-
     fn get_tooltip_for_hover(&self) -> String {
         match &self.hovered_element {
-            HoveredElement::Section(name) => {
-                format!("Click: Toggle {} section", name)
-            }
             HoveredElement::Todo(idx) => {
                 if let Some(todo) = self.todos.get(*idx) {
                     format!("Todo: {} [{}]", todo.content, todo.status)
@@ -325,23 +276,11 @@ impl SidebarWidget {
         }
     }
 
-    fn section_header(&self, label: &str, key: &str, focused: bool) -> Line<'_> {
-        let arrow = if self.is_expanded(key) {
-            "▼ "
-        } else {
-            "▶ "
-        };
-        let base_style = if focused {
-            Style::default()
-                .fg(self.theme.primary)
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::UNDERLINED)
-        } else {
-            Style::default()
-                .fg(self.theme.muted)
-                .add_modifier(Modifier::BOLD)
-        };
-        Line::from(Span::styled(format!("{}{label}", arrow), base_style))
+    fn section_header<'a>(&self, label: &'a str) -> Line<'a> {
+        let style = Style::default()
+            .fg(self.theme.muted)
+            .add_modifier(Modifier::BOLD);
+        Line::from(Span::styled(label, style))
     }
 }
 
@@ -355,171 +294,213 @@ impl Widget for &SidebarWidget {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
         let mut lines: Vec<Line> = Vec::new();
 
-        lines.push(self.section_header(
-            " Session ",
-            "session",
-            self.focused_name() == Some("session"),
-        ));
-        if self.is_expanded("session") {
-            lines.push(Line::from(""));
-            if let Some(sess) = &self.session {
+        lines.push(self.section_header(" Session "));
+        lines.push(Line::from(""));
+        if let Some(sess) = &self.session {
+            lines.push(Line::from(vec![
+                Span::styled("title: ", Style::default().fg(self.theme.muted)),
+                Span::raw(&sess.title),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("id: ", Style::default().fg(self.theme.muted)),
+                Span::raw(&sess.id[..8.min(sess.id.len())]),
+            ]));
+            if let Some(ref url) = sess.share_url {
                 lines.push(Line::from(vec![
-                    Span::styled("title: ", Style::default().fg(self.theme.muted)),
-                    Span::raw(&sess.title),
+                    Span::styled("shared: ", Style::default().fg(self.theme.success)),
+                    Span::raw(url),
                 ]));
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                "no session",
+                Style::default().fg(self.theme.muted),
+            )));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(self.section_header(" Git "));
+        lines.push(Line::from(""));
+        if let Some(ref branch) = self.git_branch {
+            lines.push(Line::from(vec![
+                Span::styled("branch: ", Style::default().fg(self.theme.muted)),
+                Span::raw(branch),
+            ]));
+            if self.git_dirty {
                 lines.push(Line::from(vec![
-                    Span::styled("id: ", Style::default().fg(self.theme.muted)),
-                    Span::raw(&sess.id[..8.min(sess.id.len())]),
+                    Span::styled("status: ", Style::default().fg(self.theme.warning)),
+                    Span::raw("✗ dirty"),
                 ]));
-                if let Some(ref url) = sess.share_url {
-                    lines.push(Line::from(vec![
-                        Span::styled("shared: ", Style::default().fg(self.theme.success)),
-                        Span::raw(url),
-                    ]));
-                }
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                "not a git repo",
+                Style::default().fg(self.theme.muted),
+            )));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(self.section_header(" Config "));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("agent: ", Style::default().fg(self.theme.muted)),
+            Span::raw(&self.agent),
+        ]));
+        let model_short = self.model.split('/').next_back().unwrap_or(&self.model);
+        lines.push(Line::from(vec![
+            Span::styled("model: ", Style::default().fg(self.theme.muted)),
+            Span::raw(model_short),
+        ]));
+
+        lines.push(Line::from(""));
+        lines.push(self.section_header(" Goal "));
+        lines.push(Line::from(""));
+        if let Some(ref goal) = self.goal {
+            let display = if goal.len() > (area.width as usize).saturating_sub(4) {
+                format!("{}…", &goal[..(area.width as usize).saturating_sub(5)])
             } else {
+                goal.clone()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  {}", display),
+                Style::default().fg(self.theme.foreground),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  (none)",
+                Style::default().fg(self.theme.muted),
+            )));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(self.section_header(" Plan "));
+        lines.push(Line::from(""));
+        if let Some(ref plan) = self.plan {
+            if plan.items.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "no session",
+                    "  (empty)",
                     Style::default().fg(self.theme.muted),
                 )));
-            }
-        }
-
-        lines.push(Line::from(""));
-        lines.push(self.section_header(" Git ", "git", self.focused_name() == Some("git")));
-        if self.is_expanded("git") {
-            lines.push(Line::from(""));
-            if let Some(ref branch) = self.git_branch {
-                lines.push(Line::from(vec![
-                    Span::styled("branch: ", Style::default().fg(self.theme.muted)),
-                    Span::raw(branch),
-                ]));
-                if self.git_dirty {
+            } else {
+                for item in &plan.items {
+                    let (icon, style) = match item.status {
+                        crate::session::events::PlanItemStatus::Done => {
+                            ("[x]", Style::default().fg(self.theme.success))
+                        }
+                        crate::session::events::PlanItemStatus::InProgress => {
+                            ("[>]", Style::default().fg(self.theme.warning))
+                        }
+                        crate::session::events::PlanItemStatus::Skipped => {
+                            ("[-]", Style::default().fg(self.theme.muted))
+                        }
+                        crate::session::events::PlanItemStatus::Blocked => {
+                            ("[?]", Style::default().fg(self.theme.error))
+                        }
+                        crate::session::events::PlanItemStatus::Pending => {
+                            ("[ ]", Style::default().fg(self.theme.muted))
+                        }
+                    };
+                    let text = if item.text.len() > (area.width as usize).saturating_sub(8) {
+                        format!(
+                            "{}…",
+                            &item.text[..(area.width as usize).saturating_sub(9)]
+                        )
+                    } else {
+                        item.text.clone()
+                    };
                     lines.push(Line::from(vec![
-                        Span::styled("status: ", Style::default().fg(self.theme.warning)),
-                        Span::raw("✗ dirty"),
+                        Span::styled(format!("  {} ", icon), style),
+                        Span::styled(text, Style::default().fg(self.theme.foreground)),
                     ]));
                 }
-            } else {
-                lines.push(Line::from(Span::styled(
-                    "not a git repo",
-                    Style::default().fg(self.theme.muted),
-                )));
             }
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  (no plan)",
+                Style::default().fg(self.theme.muted),
+            )));
         }
 
         lines.push(Line::from(""));
-        lines.push(self.section_header(
-            " Config ",
-            "config",
-            self.focused_name() == Some("config"),
-        ));
-        if self.is_expanded("config") {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("agent: ", Style::default().fg(self.theme.muted)),
-                Span::raw(&self.agent),
-            ]));
-            let model_short = self.model.split('/').next_back().unwrap_or(&self.model);
-            lines.push(Line::from(vec![
-                Span::styled("model: ", Style::default().fg(self.theme.muted)),
-                Span::raw(model_short),
-            ]));
-        }
-
+        lines.push(self.section_header(" Tokens "));
         lines.push(Line::from(""));
-        lines.push(self.section_header(
-            " Tokens ",
-            "tokens",
-            self.focused_name() == Some("tokens"),
-        ));
-        if self.is_expanded("tokens") {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("in:  ", Style::default().fg(self.theme.muted)),
-                Span::raw(format_tokens(self.token_in)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("out: ", Style::default().fg(self.theme.muted)),
-                Span::raw(format_tokens(self.token_out)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("total: ", Style::default().fg(self.theme.muted)),
-                Span::raw(format_tokens(self.token_in + self.token_out)),
-            ]));
-        }
+        lines.push(Line::from(vec![
+            Span::styled("in:  ", Style::default().fg(self.theme.muted)),
+            Span::raw(format_tokens(self.token_in)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("out: ", Style::default().fg(self.theme.muted)),
+            Span::raw(format_tokens(self.token_out)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("total: ", Style::default().fg(self.theme.muted)),
+            Span::raw(format_tokens(self.token_in + self.token_out)),
+        ]));
+        let ctx_style = if self.context_pct > 80 {
+            Style::default().fg(self.theme.error)
+        } else if self.context_pct > 60 {
+            Style::default().fg(self.theme.warning)
+        } else {
+            Style::default().fg(self.theme.muted)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("ctx: ", Style::default().fg(self.theme.muted)),
+            Span::styled(format!("{}%", self.context_pct), ctx_style),
+        ]));
 
         if !self.todos.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.section_header(
-                " Todos ",
-                "todos",
-                self.focused_name() == Some("todos"),
-            ));
-            if self.is_expanded("todos") {
-                lines.push(Line::from(""));
-                for todo in &self.todos {
-                    let status_icon = match todo.status.as_str() {
-                        "completed" => "✓",
-                        "pending" => "○",
-                        _ => "○",
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("{status_icon} "),
-                            Style::default().fg(self.theme.muted),
-                        ),
-                        Span::raw(&todo.content),
-                    ]));
-                }
+            lines.push(self.section_header(" Todos "));
+            lines.push(Line::from(""));
+            for todo in &self.todos {
+                let status_icon = match todo.status.as_str() {
+                    "completed" => "✓",
+                    "pending" => "○",
+                    _ => "○",
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{status_icon} "),
+                        Style::default().fg(self.theme.muted),
+                    ),
+                    Span::raw(&todo.content),
+                ]));
             }
         }
 
         if !self.mcp_servers.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.section_header(
-                " MCP Servers ",
-                "mcp",
-                self.focused_name() == Some("mcp"),
-            ));
-            if self.is_expanded("mcp") {
-                lines.push(Line::from(""));
-                for (name, status) in &self.mcp_servers {
-                    let dot = match status.as_str() {
-                        "connected" => "●",
-                        "connecting" => "◐",
-                        "error" => "✗",
-                        _ => "○",
-                    };
-                    let dot_style = match status.as_str() {
-                        "connected" => Style::default().fg(self.theme.success),
-                        "connecting" => Style::default().fg(self.theme.warning),
-                        "error" => Style::default().fg(self.theme.error),
-                        _ => Style::default().fg(self.theme.muted),
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{dot} "), dot_style),
-                        Span::raw(name),
-                    ]));
-                }
+            lines.push(self.section_header(" MCP Servers "));
+            lines.push(Line::from(""));
+            for (name, status) in &self.mcp_servers {
+                let dot = match status.as_str() {
+                    "connected" => "●",
+                    "connecting" => "◐",
+                    "error" => "✗",
+                    _ => "○",
+                };
+                let dot_style = match status.as_str() {
+                    "connected" => Style::default().fg(self.theme.success),
+                    "connecting" => Style::default().fg(self.theme.warning),
+                    "error" => Style::default().fg(self.theme.error),
+                    _ => Style::default().fg(self.theme.muted),
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{dot} "), dot_style),
+                    Span::raw(name),
+                ]));
             }
         }
 
         if !self.file_changes.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.section_header(
-                " File Changes ",
-                "files",
-                self.focused_name() == Some("files"),
-            ));
-            if self.is_expanded("files") {
-                lines.push(Line::from(""));
-                for path in &self.file_changes {
-                    lines.push(Line::from(vec![
-                        Span::styled("  M ", Style::default().fg(self.theme.warning)),
-                        Span::raw(path),
-                    ]));
-                }
+            lines.push(self.section_header(" File Changes "));
+            lines.push(Line::from(""));
+            for path in &self.file_changes {
+                lines.push(Line::from(vec![
+                    Span::styled("  M ", Style::default().fg(self.theme.warning)),
+                    Span::raw(path),
+                ]));
             }
         }
 
