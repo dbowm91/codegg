@@ -2181,7 +2181,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         };
                         app.messages_state.messages.update_tool_call(&tool_id, output, status, None, None, None);
                     }
-                    AppEvent::AgentFinished { stop_reason, input_tokens, output_tokens, cached_tokens, .. } => {
+                    AppEvent::AgentFinished { stop_reason, input_tokens, output_tokens, cached_tokens, reasoning_tokens, .. } => {
                         debug_log!("Event loop: AgentFinished received stop_reason={}", stop_reason);
                         if stop_reason != "tool_calls" {
                             app.session_state.session_status = SessionStatus::Idle;
@@ -2193,6 +2193,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                 if let Some(ct) = cached_tokens {
                                     app.session_state.cached_tokens = ct as u64;
                                 }
+                            }
+                            if let Some(rt) = reasoning_tokens {
+                                app.session_state.reasoning_tokens += rt;
                             }
 
                             if let Some(ref _mem_store) = app.memory_store {
@@ -2355,6 +2358,11 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                 }
                             });
                         }
+                    }
+                    AppEvent::ContextUpdated { context_tokens, context_limit, .. } => {
+                        debug_log!("Event loop: ContextUpdated tokens={} limit={}", context_tokens, context_limit);
+                        app.session_state.context_tokens = context_tokens;
+                        app.session_state.context_limit = context_limit;
                     }
                     _ => {
                         debug_log!("Event loop: unhandled event");

@@ -231,6 +231,7 @@ impl CoreClient for InprocCoreClient {
                                 input_tokens: None,
                                 output_tokens: None,
                                 cached_tokens: None,
+                                reasoning_tokens: None,
                             },
                         );
                     }
@@ -1243,6 +1244,7 @@ fn map_app_event_to_core_event(event: crate::bus::events::AppEvent) -> Option<Co
             input_tokens: _,
             output_tokens: _,
             cached_tokens: _,
+            reasoning_tokens: _,
         } => Some(CoreEvent::TurnCompleted {
             session_id,
             turn_id: String::new(),

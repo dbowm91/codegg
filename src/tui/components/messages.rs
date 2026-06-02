@@ -1114,16 +1114,23 @@ impl Widget for &MessagesWidget {
                     } else {
                         self.theme.primary
                     };
+                    let user_bg = self.theme.secondary;
                     let bar_style = if let Some(bg) = match_bg {
                         Style::default().fg(bar_color).bg(bg)
                     } else {
-                        Style::default().fg(bar_color)
+                        Style::default().fg(bar_color).bg(user_bg)
                     };
+                    let text_style = if let Some(bg) = match_bg {
+                        Style::default().fg(self.theme.primary).bg(bg)
+                    } else {
+                        Style::default().fg(self.theme.primary).bg(user_bg)
+                    };
+                    let highlight_style = Style::default()
+                        .fg(self.theme.primary)
+                        .bg(self.theme.selection)
+                        .add_modifier(Modifier::REVERSED);
                     for (part_idx, part) in msg.parts.iter().enumerate() {
                         if let MsgPart::Text { content } = part {
-                            let highlight_style = Style::default()
-                                .fg(self.theme.foreground)
-                                .add_modifier(Modifier::REVERSED);
                             for (line_idx, text_line) in content.lines().enumerate() {
                                 let line_prefix = if line_idx == 0 {
                                     Some(Span::styled("│ ", bar_style))
@@ -1145,24 +1152,28 @@ impl Widget for &MessagesWidget {
                                             if let Some(p) = line_prefix {
                                                 spans.push(p);
                                             }
-                                            spans.push(Span::raw(before.to_string()));
+                                            if !before.is_empty() {
+                                                spans.push(Span::styled(before.to_string(), text_style));
+                                            }
                                             spans.push(Span::styled(matched, highlight_style));
-                                            spans.push(Span::raw(after.to_string()));
+                                            if !after.is_empty() {
+                                                spans.push(Span::styled(after.to_string(), text_style));
+                                            }
                                             lines.push(Line::from(spans));
                                         } else if let Some(p) = line_prefix {
-                                            lines.push(Line::from(vec![p, Span::raw(text_line.to_string())]));
+                                            lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
                                         } else {
-                                            lines.push(Line::from(Span::raw(text_line.to_string())));
+                                            lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
                                         }
                                     } else if let Some(p) = line_prefix {
-                                        lines.push(Line::from(vec![p, Span::raw(text_line.to_string())]));
+                                        lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
                                     } else {
-                                        lines.push(Line::from(Span::raw(text_line.to_string())));
+                                        lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
                                     }
                                 } else if let Some(p) = line_prefix {
-                                    lines.push(Line::from(vec![p, Span::raw(text_line.to_string())]));
+                                    lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
                                 } else {
-                                    lines.push(Line::from(Span::raw(text_line.to_string())));
+                                    lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
                                 }
                             }
                         }
@@ -1193,11 +1204,11 @@ impl Widget for &MessagesWidget {
                     };
                     if !self.streaming_tokens.is_empty() {
                         let streaming_style = Style::default()
-                            .fg(self.theme.secondary)
+                            .fg(self.theme.primary)
                             .add_modifier(Modifier::ITALIC);
                         lines.push(Line::from(vec![
                             Span::styled("│ ", bar_style),
-                            Span::styled("thinking...", streaming_style),
+                            Span::styled("Thinking...", streaming_style),
                         ]));
                         lines.push(Line::from(Span::styled(
                             format!("  {}", self.streaming_tokens),
@@ -1214,21 +1225,16 @@ impl Widget for &MessagesWidget {
                             }
                             MsgPart::Reasoning { content, collapsed } => {
                                 if !prev_was_reasoning {
-                                    if !self.show_thinking {
+                                    if *collapsed || !self.show_thinking {
                                         lines.push(Line::from(Span::styled(
-                                            "thinking",
-                                            Style::default().fg(self.theme.muted),
-                                        )));
-                                    } else if *collapsed {
-                                        lines.push(Line::from(Span::styled(
-                                            "thinking",
-                                            Style::default().fg(self.theme.muted),
+                                            "Thinking",
+                                            Style::default().fg(self.theme.primary),
                                         )));
                                     } else {
                                         lines.push(Line::from(Span::styled(
-                                            "thinking",
+                                            "Thinking",
                                             Style::default()
-                                                .fg(self.theme.muted)
+                                                .fg(self.theme.primary)
                                                 .add_modifier(Modifier::BOLD),
                                         )));
                                     }
@@ -1237,7 +1243,7 @@ impl Widget for &MessagesWidget {
                                     let reasoning_style = Style::default().fg(self.theme.muted);
                                     for text_line in content.lines() {
                                         lines.push(Line::from(vec![
-                                            Span::styled("│ ", bar_style),
+                                            Span::raw("  "),
                                             Span::styled(text_line, reasoning_style),
                                         ]));
                                     }

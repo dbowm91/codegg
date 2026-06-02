@@ -4697,6 +4697,8 @@ impl App {
         self.messages_state.messages.clear();
         self.session_state.token_in = 0;
         self.session_state.token_out = 0;
+        self.session_state.reasoning_tokens = 0;
+        self.session_state.context_tokens = 0;
     }
 
     fn new_session(&mut self) {
@@ -5999,8 +6001,8 @@ impl App {
     }
 
     pub fn set_tokens(&mut self, input: u64, output: u64) {
-        self.session_state.token_in = input;
-        self.session_state.token_out = output;
+        self.session_state.token_in += input;
+        self.session_state.token_out += output;
     }
 
     pub fn set_context_info(&mut self, tokens: usize, limit: usize, compactions: usize) {

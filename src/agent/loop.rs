@@ -1286,6 +1286,7 @@ impl AgentLoop {
                 input_tokens: Some(usage.input_tokens),
                 output_tokens: Some(usage.output_tokens),
                 cached_tokens: usage.cached_tokens,
+                reasoning_tokens: if usage.reasoning_tokens > 0 { Some(usage.reasoning_tokens) } else { None },
             });
         } else {
             crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
@@ -1294,6 +1295,7 @@ impl AgentLoop {
                 input_tokens: None,
                 output_tokens: None,
                 cached_tokens: None,
+                reasoning_tokens: None,
             });
         }
     }
@@ -2274,6 +2276,12 @@ impl AgentLoop {
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
             .await;
         self.publish_agent_finished(&all_events);
+
+        crate::bus::global::GlobalEventBus::publish(AppEvent::ContextUpdated {
+            session_id: self.session_id.clone(),
+            context_tokens: self.context_tracker.current_tokens(),
+            context_limit: self.context_tracker.context_limit(),
+        });
 
         // Auto-invoke security-review subagent at session end for comprehensive review
         {

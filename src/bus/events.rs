@@ -116,6 +116,7 @@ pub enum AppEvent {
         input_tokens: Option<usize>,
         output_tokens: Option<usize>,
         cached_tokens: Option<usize>,
+        reasoning_tokens: Option<usize>,
     },
     /// A file was modified externally.
     FileChanged {
@@ -150,6 +151,12 @@ pub enum AppEvent {
         task_id: u64,
         agent: String,
         error: String,
+    },
+    /// Context window usage updated.
+    ContextUpdated {
+        session_id: String,
+        context_tokens: usize,
+        context_limit: usize,
     },
 }
 
@@ -192,6 +199,7 @@ impl AppEvent {
             AppEvent::SubagentProgress { .. } => "subagent:progress",
             AppEvent::SubagentCompleted { .. } => "subagent:completed",
             AppEvent::SubagentFailed { .. } => "subagent:failed",
+            AppEvent::ContextUpdated { .. } => "context:updated",
         }
     }
 }
