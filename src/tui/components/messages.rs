@@ -4,7 +4,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
-use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -152,6 +151,57 @@ pub struct MessagesWidget {
     message_layout_cache: RefCell<Option<MessageLayoutCache>>,
 }
 
+fn extract_tool_target(name: &str, input: &str) -> String {
+    if input.is_empty() {
+        return String::new();
+    }
+    let parsed: Result<serde_json::Value, _> = serde_json::from_str(input);
+    let val = match parsed {
+        Ok(v) => v,
+        Err(_) => return input.lines().next().unwrap_or("").to_string(),
+    };
+    match name {
+        "read" | "write" | "edit" | "multiedit" | "glob" | "grep" => {
+            val.get("path")
+                .or_else(|| val.get("file_path"))
+                .or_else(|| val.get("pattern"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+        "bash" | "exec" => {
+            val.get("command")
+                .or_else(|| val.get("cmd"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+        "task" => {
+            val.get("prompt")
+                .or_else(|| val.get("description"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+        "webfetch" => {
+            val.get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+        _ => {
+            val.as_object()
+                .and_then(|m| m.values().next())
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+    }
+    .chars()
+    .take(60)
+    .collect::<String>()
+}
+
 fn find_any_tag(text: &str, start: bool) -> Option<(usize, usize)> {
     let tags = if start {
         vec!["<think>", "<thought>", "<thinking>"]
@@ -212,26 +262,8 @@ impl MessagesWidget {
                         lines += content.lines().count();
                     }
                 }
-                MsgPart::ToolCall {
-                    id, input, output, ..
-                } => {
+                MsgPart::ToolCall { .. } => {
                     lines += 1;
-                    let expanded = self.tool_call_expanded.get(id).copied().unwrap_or(false);
-                    if expanded {
-                        if !input.is_empty() {
-                            lines += input.lines().count().max(1) + 1;
-                        }
-                        if !output.is_empty() {
-                            lines += output.lines().count().max(1) + 1;
-                        }
-                    } else {
-                        if !input.is_empty() {
-                            lines += 1;
-                        }
-                        if !output.is_empty() {
-                            lines += 1;
-                        }
-                    }
                 }
                 MsgPart::Image { .. } => {
                     lines += 1;
@@ -1069,7 +1101,6 @@ impl Widget for &MessagesWidget {
             };
             match &msg.role {
                 MessageRole::User => {
-                    lines.push(Line::from(""));
                     if self.show_timestamps {
                         if let Some(ts) = msg.timestamp {
                             lines.push(Line::from(Span::styled(
@@ -1138,7 +1169,6 @@ impl Widget for &MessagesWidget {
                     }
                 }
                 MessageRole::Assistant => {
-                    lines.push(Line::from(""));
                     if self.show_timestamps {
                         if let Some(ts) = msg.timestamp {
                             lines.push(Line::from(Span::styled(
@@ -1167,37 +1197,43 @@ impl Widget for &MessagesWidget {
                             .add_modifier(Modifier::ITALIC);
                         lines.push(Line::from(vec![
                             Span::styled("│ ", bar_style),
-                            Span::styled("thinking...▌", streaming_style),
+                            Span::styled("thinking...", streaming_style),
                         ]));
                         lines.push(Line::from(Span::styled(
                             format!("  {}", self.streaming_tokens),
                             streaming_style,
                         )));
                     }
+                    let mut prev_was_reasoning = false;
                     for part in &msg.parts {
                         match part {
                             MsgPart::Text { content } => {
                                 let rendered = render_markdown(content, &self.theme);
                                 lines.extend(rendered);
+                                prev_was_reasoning = false;
                             }
                             MsgPart::Reasoning { content, collapsed } => {
-                                if !self.show_thinking {
-                                    lines.push(Line::from(Span::styled(
-                                        " ▶ thinking… (toggle with /thinking)",
-                                        Style::default().fg(self.theme.muted),
-                                    )));
-                                } else if *collapsed {
-                                    lines.push(Line::from(Span::styled(
-                                        " ▶ thinking… (click to expand)",
-                                        Style::default().fg(self.theme.muted),
-                                    )));
-                                } else {
-                                    lines.push(Line::from(Span::styled(
-                                        " ▼ thinking…",
-                                        Style::default()
-                                            .fg(self.theme.muted)
-                                            .add_modifier(Modifier::BOLD),
-                                    )));
+                                if !prev_was_reasoning {
+                                    if !self.show_thinking {
+                                        lines.push(Line::from(Span::styled(
+                                            "thinking",
+                                            Style::default().fg(self.theme.muted),
+                                        )));
+                                    } else if *collapsed {
+                                        lines.push(Line::from(Span::styled(
+                                            "thinking",
+                                            Style::default().fg(self.theme.muted),
+                                        )));
+                                    } else {
+                                        lines.push(Line::from(Span::styled(
+                                            "thinking",
+                                            Style::default()
+                                                .fg(self.theme.muted)
+                                                .add_modifier(Modifier::BOLD),
+                                        )));
+                                    }
+                                }
+                                if self.show_thinking && !*collapsed {
                                     let reasoning_style = Style::default().fg(self.theme.muted);
                                     for text_line in content.lines() {
                                         lines.push(Line::from(vec![
@@ -1206,41 +1242,41 @@ impl Widget for &MessagesWidget {
                                         ]));
                                     }
                                 }
+                                prev_was_reasoning = true;
                             }
                             MsgPart::ToolCall {
-                                id,
+                                id: _,
                                 name,
                                 input,
                                 status,
-                                output,
+                                output: _,
                                 duration_ms,
-                                exit_code,
-                                output_lines,
+                                exit_code: _,
+                                output_lines: _,
                             } => {
-                                let expanded =
-                                    self.tool_call_expanded.get(id).copied().unwrap_or(false);
+                                let target = extract_tool_target(name, input);
+                                let display_name = if target.is_empty() {
+                                    name.clone()
+                                } else {
+                                    format!("{} {}", name, target)
+                                };
                                 let spinner = match status {
                                     ToolStatus::Running => "⟳",
                                     ToolStatus::Pending => "○",
                                     ToolStatus::Completed => "✓",
                                     ToolStatus::Error => "✗",
                                 };
-                                let status_style = match status {
+                                let mut base_style = match status {
                                     ToolStatus::Pending => Style::default().fg(self.theme.muted),
                                     ToolStatus::Running => Style::default().fg(self.theme.warning),
                                     ToolStatus::Completed => {
                                         Style::default().fg(self.theme.success)
                                     }
-                                    ToolStatus::Error => Style::default().fg(self.theme.error),
+                                    ToolStatus::Error => Style::default().fg(self.theme.muted),
                                 };
-                                let status_label = match status {
-                                    ToolStatus::Pending => "pending",
-                                    ToolStatus::Running => "running",
-                                    ToolStatus::Completed => "done",
-                                    ToolStatus::Error => "error",
-                                };
-                                let expand_indicator = if expanded { " ▼" } else { " ▶" };
-
+                                if matches!(status, ToolStatus::Error) {
+                                    base_style = base_style.add_modifier(Modifier::CROSSED_OUT);
+                                }
                                 let mut summary_parts: Vec<String> = Vec::new();
                                 if let Some(ms) = duration_ms {
                                     if *ms < 1000 {
@@ -1249,146 +1285,17 @@ impl Widget for &MessagesWidget {
                                         summary_parts.push(format!("{:.1}s", *ms as f64 / 1000.0));
                                     }
                                 }
-                                if let Some(lines) = output_lines {
-                                    summary_parts.push(format!("{}l", lines));
-                                }
-                                if let Some(code) = exit_code {
-                                    if *code == 0 {
-                                        summary_parts.push("✓0".to_string());
-                                    } else {
-                                        summary_parts.push(format!("✗{}", code));
-                                    }
-                                }
-
                                 let summary_str = if summary_parts.is_empty() {
                                     String::new()
                                 } else {
-                                    format!(" {}", summary_parts.join(" "))
+                                    format!(" ({})", summary_parts.join(", "))
                                 };
-
                                 lines.push(Line::from(vec![
                                     Span::styled(
-                                        format!(" {spinner} {name}{expand_indicator} "),
-                                        Style::default().fg(self.theme.primary),
-                                    ),
-                                    Span::styled(status_label, status_style),
-                                    Span::styled(
-                                        summary_str,
-                                        Style::default().fg(self.theme.muted),
+                                        format!("{spinner} {display_name}{summary_str}"),
+                                        base_style,
                                     ),
                                 ]));
-                                if expanded {
-                                    if !input.is_empty() {
-                                        lines.push(Line::from(Span::styled(
-                                            "  ▼ input:",
-                                            Style::default().fg(self.theme.muted),
-                                        )));
-                                        let formatted = format_json(input);
-                                        for text_line in formatted.lines() {
-                                            lines.push(Line::from(Span::styled(
-                                                format!("    {text_line}"),
-                                                Style::default().fg(self.theme.muted),
-                                            )));
-                                        }
-                                    }
-                                    if !output.is_empty() {
-                                        lines.push(Line::from(Span::styled(
-                                            "  ▼ output:",
-                                            Style::default().fg(self.theme.muted),
-                                        )));
-                                        let is_diff = output.starts_with("diff --")
-                                            || output.contains("+++ ")
-                                            || output.contains("--- ")
-                                            || (output.contains("@@ ")
-                                                && output.contains("+")
-                                                && output.contains("-"));
-                                        if is_diff {
-                                            for text_line in output.lines() {
-                                                let color =
-                                                    if text_line.starts_with('+')
-                                                        && !text_line.starts_with("+++")
-                                                    {
-                                                        ratatui::style::Color::Rgb(80, 200, 120)
-                                                    } else if text_line.starts_with('-')
-                                                        && !text_line.starts_with("---")
-                                                    {
-                                                        ratatui::style::Color::Rgb(255, 100, 100)
-                                                    } else if text_line.starts_with("@@") {
-                                                        ratatui::style::Color::Rgb(100, 150, 255)
-                                                    } else if text_line.starts_with("diff --")
-                                                        || text_line.starts_with("index ")
-                                                        || text_line.starts_with("---")
-                                                        || text_line.starts_with("+++")
-                                                    {
-                                                        ratatui::style::Color::Rgb(130, 130, 140)
-                                                    } else {
-                                                        self.theme.muted
-                                                    };
-                                                lines.push(Line::from(Span::styled(
-                                                    format!("    {text_line}"),
-                                                    Style::default().fg(color),
-                                                )));
-                                            }
-                                        } else {
-                                            let formatted = format_json(output);
-                                            for text_line in formatted.lines() {
-                                                lines.push(Line::from(Span::styled(
-                                                    format!("    {text_line}"),
-                                                    Style::default().fg(self.theme.muted),
-                                                )));
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    if !input.is_empty() {
-                                        lines.push(Line::from(Span::styled(
-                                            format!(
-                                                "  ▶ input: {}",
-                                                input.lines().next().unwrap_or("")
-                                            ),
-                                            Style::default().fg(self.theme.muted),
-                                        )));
-                                    }
-                                    if !output.is_empty() {
-                                        let is_diff = output.starts_with("diff --")
-                                            || output.contains("+++ ")
-                                            || output.contains("--- ")
-                                            || (output.contains("@@ ")
-                                                && output.contains("+")
-                                                && output.contains("-"));
-                                        let summary = if is_diff {
-                                            let adds = output
-                                                .lines()
-                                                .filter(|l| {
-                                                    l.starts_with('+') && !l.starts_with("+++")
-                                                })
-                                                .count();
-                                            let dels = output
-                                                .lines()
-                                                .filter(|l| {
-                                                    l.starts_with('-') && !l.starts_with("---")
-                                                })
-                                                .count();
-                                            let hunks = output
-                                                .lines()
-                                                .filter(|l| l.starts_with("@@"))
-                                                .count();
-                                            format!(
-                                                "diff  +{} -{} ({} hunk{})",
-                                                adds,
-                                                dels,
-                                                hunks,
-                                                if hunks != 1 { "s" } else { "" }
-                                            )
-                                        } else {
-                                            output.lines().next().unwrap_or("").to_string()
-                                        };
-                                        lines.push(Line::from(Span::styled(
-                                            format!("  ▶ output: {summary}"),
-                                            Style::default().fg(self.theme.muted),
-                                        )));
-                                    }
-                                }
                             }
                             MsgPart::Image { alt_text, width, height, .. } => {
                                 let img_text = format!("📷 Image ({}x{}): {}", width, height, alt_text);
@@ -1734,14 +1641,6 @@ fn render_md_line(line: &str, theme: &Arc<Theme>) -> Vec<Line<'static>> {
         vec![Line::from("")]
     } else {
         vec![Line::from(spans)]
-    }
-}
-
-fn format_json(text: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<Value>(text) {
-        serde_json::to_string_pretty(&v).unwrap_or_else(|_| text.to_string())
-    } else {
-        text.to_string()
     }
 }
 
