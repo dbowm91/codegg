@@ -673,6 +673,7 @@ impl CoreClient for InprocCoreClient {
                                 allowed_paths: Vec::new(),
                                 description: "Background loop task".to_string(),
                                 depth: 1,
+                                max_tool_calls: None,
                             };
                             let _ = pool.spawner().send(request).await;
                         }

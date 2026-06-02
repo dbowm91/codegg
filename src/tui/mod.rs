@@ -1096,6 +1096,7 @@ async fn handle_spawn_subagent(app: &mut app::App, agent_name: String, prompt: S
             prompt.chars().take(100).collect::<String>()
         ),
         depth: 1,
+        max_tool_calls: None,
     };
 
     let spawner = pool.spawner();
@@ -2292,29 +2293,32 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         app.footer.set_thinking(false, None);
                         app.messages_state.toasts.add(Toast::error(&message));
                     }
-                    AppEvent::CompactionTriggered { .. } => {
+                    AppEvent::CompactionTriggered { tokens_before, tokens_after, .. } => {
                         debug_log!("Event loop: CompactionTriggered");
-                        let tokens_before = app.session_state.context_tokens;
-                        let limit = app.session_state.context_limit;
                         let compact_count = app.session_state.compaction_count + 1;
                         app.session_state.compaction_count = compact_count;
                         let before_str = if tokens_before > 0 {
-                            format!("{}k", tokens_before / 1000)
+                            format!("~{}k", tokens_before / 1000)
+                        } else {
+                            "unknown".to_string()
+                        };
+                        let after_str = if tokens_after > 0 {
+                            format!("~{}k", tokens_after / 1000)
                         } else {
                             "unknown".to_string()
                         };
                         let toast = Toast::info(&format!(
-                            "Compaction #{} completed\nBefore: ~{} tokens\nLimit: {}k tokens",
-                            compact_count, before_str, limit / 1000
+                            "Compacted: {} → {} tokens",
+                            before_str, after_str
                         ));
                         app.messages_state.toasts.add(toast);
                     }
-                    AppEvent::ModelChanged { model } => {
-                        debug_log!("Event loop: ModelChanged model={}", model);
+                    AppEvent::ModelChanged { model, complexity } => {
+                        debug_log!("Event loop: ModelChanged model={} complexity={}", model, complexity);
                         let short = model.split('/').next_back().unwrap_or(&model);
                         app.messages_state
                             .toasts
-                            .info(&format!("Model routed: {}", short));
+                            .info(&format!("Routed: {} ({})", short, complexity));
                     }
                     AppEvent::SubagentStarted { agent, description, .. } => {
                         debug_log!("Event loop: SubagentStarted agent={}", agent);

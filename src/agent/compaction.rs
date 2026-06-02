@@ -200,6 +200,10 @@ impl ContextTracker {
         self.context_limit = limit;
     }
 
+    pub fn set_model(&mut self, model: Option<String>) {
+        self.model = model;
+    }
+
     pub fn context_limit(&self) -> usize {
         self.context_limit
     }

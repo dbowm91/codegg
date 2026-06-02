@@ -1,5 +1,23 @@
 # codegg `/goal` Implementation Plan
 
+**Status**: FULLY COMPLETE (verified 2026-06-02)
+
+| Item | Status | Location |
+|------|--------|----------|
+| Data model | **DONE** | `src/goal/model.rs` |
+| SQLite migration (v16) | **DONE** | `src/session/schema.rs` |
+| GoalStore | **DONE** | `src/goal/store.rs` |
+| Checkpoint artifact | **DONE** | `src/goal/checkpoint.rs` |
+| Render helpers | **DONE** | `src/goal/render.rs` |
+| Protocol variants | **DONE** | `src/protocol/core.rs:175-207` |
+| Core request handlers | **DONE** | `src/core/mod.rs:761-1120` |
+| Goal context injection | **DONE** | TurnSubmit handler |
+| Goal tools | **DONE** | `src/goal/tool.rs` |
+| TUI `/goal` command | **DONE** | `src/tui/command.rs:175` |
+| CLI goal support | **DEFERRED** | After TUI path |
+| Subagent propagation | **DEFERRED** | Phase 2 |
+| Autonomous `/goal run` | **DEFERRED** | Out of scope first pass |
+
 ## Purpose
 
 Implement Codex-style long-running goal support in codegg as a durable, session-scoped objective system. This is not a prompt macro. The implementation should persist a structured active goal, inject a compact goal context into model turns, expose a narrow model-facing goal tool, support TUI slash commands, and maintain a small checkpoint artifact that lets smaller models continue long tasks without carrying the full original conversation in context.

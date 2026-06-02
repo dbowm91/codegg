@@ -3,6 +3,8 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::bus::events::AppEvent;
+use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
 use crate::model_profile::types::{TaskStatePolicy, TodoMode};
 use crate::task_state::{TodoItem, TodoPriority, TodoState, TodoStatus};
@@ -172,6 +174,12 @@ impl Tool for TodoWriteTool {
             if let Err(e) = store.set(session_id, items).await {
                 tracing::warn!("Failed to persist todos: {}", e);
             }
+        }
+
+        if let Some(session_id) = &self.session_id {
+            GlobalEventBus::publish(AppEvent::TodoUpdated {
+                session_id: session_id.clone(),
+            });
         }
 
         Ok(projection)

@@ -1,5 +1,23 @@
 # Codegg Harness Architecture Polish Plan
 
+**Status**: ~95% COMPLETE (verified 2026-06-02)
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 1. ExecutionPolicy from profile | **DONE** | `src/agent/policy.rs` with 6 tests |
+| 2. Context tracking improvements | **PARTIAL** | ContextFrame done, tool pruning done, token estimator model wiring not wired |
+| 3. Adaptive tool exposure | **DONE** | Full/Curated/MinimalWithDiscovery with 5 tests |
+| 4. TaskEnvelope router | **DONE** | `src/agent/router.rs` with classifier tests |
+| 5. Subagent delegation contracts | **DONE** | `SubAgentReport` + `to_compact_text()` + compact parent context |
+| 6. Prompt assembly cleanup | **DONE** | `content_already_present()` dedup with 5 tests |
+| 7. Config and documentation | **PARTIAL** | Example config stale, architecture docs not updated |
+
+Remaining items:
+- ~~Wire `ContextTracker::with_model()` from active model~~ DONE (2026-06-02)
+- ~~Fix example config field names~~ DONE (2026-06-02)
+- ~~Update `architecture/agent.md`~~ DONE (2026-06-02)
+- ~~Subagent budget enforcement~~ DONE (2026-06-02)
+
 Audience: smaller implementation model such as Mimo 2.5.
 
 Goal: refine Codegg's coding harness so model-specific behavior, context management, subagent delegation, and tool exposure are governed by a coherent policy layer instead of scattered heuristics. Preserve existing behavior where possible, add tests around every policy change, and keep the work incremental.

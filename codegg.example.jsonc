@@ -121,9 +121,12 @@
   },
   
   "compaction": {
-    "strategy": "auto_compact",
-    "reserved_tokens": 10000,
-    "max_context_operations": 100
+    "enabled": true,
+    "auto": true,
+    "prune": false,
+    "max_tokens": 200000,
+    "threshold": 0.8,
+    "reserved": 10000
   },
   
   "skills": {

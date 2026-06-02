@@ -380,6 +380,7 @@ mod tests {
             allowed_paths: vec![],
             description: "Test task".to_string(),
             depth: 0,
+            max_tool_calls: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -496,6 +497,7 @@ mod tests {
             allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 0,
+            max_tool_calls: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -559,6 +561,7 @@ mod tests {
             allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 0,
+            max_tool_calls: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -625,6 +628,7 @@ mod tests {
             allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 3, // Equal to max_depth
+            max_tool_calls: None,
         };
 
         let result = spawner.send_async(request.clone()).await;
@@ -658,6 +662,7 @@ mod tests {
             allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 4, // Greater than max_depth
+            max_tool_calls: None,
         };
 
         let result2 = spawner.send_async(request2).await;
@@ -773,6 +778,7 @@ mod tests {
             allowed_paths: vec![],
             description: "Test".to_string(),
             depth: 0,
+            max_tool_calls: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -971,6 +977,7 @@ mod tests {
             allowed_paths: vec![],
                 description: format!("Task {}", i),
                 depth: 0,
+            max_tool_calls: None,
             };
             let result = spawner.send_async(request).await;
             assert!(result.is_ok(), "send_async should succeed for task {}", i);
@@ -1041,6 +1048,7 @@ mod tests {
             allowed_paths: vec![],
             description: "Test task".to_string(),
             depth: 0,
+            max_tool_calls: None,
         };
         assert_eq!(request.task_id, 123);
         assert_eq!(request.agent, "test");
@@ -1076,6 +1084,7 @@ mod tests {
             allowed_paths: vec![],
             description: "test".to_string(),
             depth: 0,
+            max_tool_calls: None,
         };
 
         let request_depth_2 = SubAgentRequest {
@@ -1087,6 +1096,7 @@ mod tests {
             allowed_paths: vec![],
             description: "test".to_string(),
             depth: 2,
+            max_tool_calls: None,
         };
 
         assert_eq!(request_depth_0.depth, 0);
@@ -1112,6 +1122,7 @@ mod tests {
             allowed_paths: vec![],
             description: "Test description".to_string(),
             depth: 1,
+            max_tool_calls: None,
         };
         let cloned = request.clone();
         assert_eq!(cloned.task_id, request.task_id);
@@ -1163,6 +1174,7 @@ mod tests {
             allowed_paths: vec![],
             description: "test".to_string(),
             depth: 0,
+            max_tool_calls: None,
         };
 
         let result = spawner.send_async(request).await;
@@ -1218,6 +1230,7 @@ mod tests {
             allowed_paths: vec![],
                     description: "task 1".to_string(),
                     depth: 0,
+            max_tool_calls: None,
                 };
                 let _ = spawner.send_async(req).await;
                 barrier.wait().await;
@@ -1237,6 +1250,7 @@ mod tests {
             allowed_paths: vec![],
                     description: "task 2".to_string(),
                     depth: 0,
+            max_tool_calls: None,
                 };
                 let _ = spawner.send_async(req).await;
                 barrier.wait().await;
@@ -1365,6 +1379,7 @@ mod tests {
             allowed_paths: vec![],
             description: "Blocking task".to_string(),
             depth: 0,
+            max_tool_calls: None,
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request).await;

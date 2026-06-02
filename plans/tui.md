@@ -1,5 +1,19 @@
 # Codegg TUI Refinement Implementation Plan
 
+**Status**: ~95% COMPLETE (verified 2026-06-02)
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 1. Typed session events | **DONE** | All 18 event variants in `src/session/events.rs` |
+| 2. Task spine and plan panel | **DONE** | Sidebar with plan/goal/state, `/goal`, `/plan`, `/state` commands |
+| 3. Structured tool-call cards | **DONE** | ToolOutput component, tool risk classifier |
+| 4. Diff/review and test views | **DONE** | ReviewDialog, `/review`, `/diff`, stale test detection |
+| 5. Context/session observability | **DONE** | `/context` (structured), context pressure display, `/export handoff` |
+| Compaction report | **DONE** | Now shows before/after tokens (2026-06-02) |
+| Model routing trace | **DONE** | Now shows task complexity (2026-06-02) |
+| `/search` command | **DONE** | Session transcript search (2026-06-02) |
+| Command palette | **DONE** | CommandRegistry with 46+ commands, ':' command mode |
+
 ## Purpose
 
 Improve the codegg TUI from a mostly conversational terminal interface into a structured operational console for long-running coding-agent sessions.

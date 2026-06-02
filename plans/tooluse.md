@@ -1,6 +1,14 @@
 # Tool Use Enhancement Plan
 
-**Status**: PLANNED
+**Status**: PARTIALLY COMPLETE (verified 2026-06-02)
+
+| Part | Status | Notes |
+|------|--------|-------|
+| Part 1: Tool Use Optimization (Steps 1-6, Phases 1-3) | **DONE** | `defer_loading`, ToolCatalog, ProviderCapabilities, BM25, MCP integration |
+| Part 2: eggsact Integration (Phase 4) | **DEFERRED** | External crate, separate project |
+| Part 3: Embeddings Search (Phase 5) | **DEFERRED** | Optional v3 upgrade path |
+| Configuration schema | **DONE** | `ToolDeferralConfig` in config |
+
 **Last Updated**: 2026-05-07
 
 ---

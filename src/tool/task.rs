@@ -504,6 +504,7 @@ impl Tool for TaskTool {
                     denied_tools,
                     allowed_paths,
                     depth: self.depth + 1,
+                    max_tool_calls: None,
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))

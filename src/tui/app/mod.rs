@@ -3636,6 +3636,29 @@ impl App {
 
                 self.messages_state.toasts.info(&lines.join(" | "));
             }
+            "/search" => {
+                let query = self.dialog_state.command_palette.query.trim().to_string();
+                if query.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /search <query>");
+                } else {
+                    self.messages_state.messages.search(&query);
+                    let count = self.messages_state.messages.search_matches.len();
+                    if count == 0 {
+                        self.messages_state
+                            .toasts
+                            .info(&format!("No matches for \"{}\"", query));
+                    } else {
+                        self.messages_state.toasts.info(&format!(
+                            "{} match{} for \"{}\"",
+                            count,
+                            if count == 1 { "" } else { "es" },
+                            query
+                        ));
+                    }
+                }
+            }
             "/review" => {
                 self.ui_state.command_mode = false;
                 self.open_dialog(Dialog::Review);

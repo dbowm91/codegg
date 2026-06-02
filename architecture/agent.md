@@ -909,6 +909,231 @@ Also avoids late system messages for MiniMax.
 
 ---
 
+## 15. ExecutionPolicy (`policy.rs`)
+
+### Purpose
+
+`ExecutionPolicy` is a per-turn execution configuration derived from the active model's `ResolvedModelProfile`. It centralizes parameters that control tool exposure, context budgeting, parallelism, and behavioral toggles — ensuring each turn adapts to the model's capabilities.
+
+### Struct
+
+```rust
+pub struct ExecutionPolicy {
+    pub model: String,                          // Model identifier
+    pub prompt_profile: PromptProfileKind,      // Profile classification
+    pub context_window: usize,                  // Max context tokens (default 128k)
+    pub compaction_threshold: f64,              // When to trigger compaction (default 0.85)
+    pub reserved_output_tokens: usize,          // Tokens reserved for output (default 12k)
+    pub max_tool_result_tokens: usize,          // Max tokens per tool result (default 8k)
+    pub max_parallel_tools: usize,              // Max concurrent tool executions (default 10)
+    pub expose_tool_search: bool,               // Always true
+    pub initial_tool_mode: ToolExposureMode,    // Tool exposure filter mode
+    pub allow_bootstrap_tool: bool,             // Whether bootstrap tool is enabled
+    pub allow_post_tool_continue_nudge: bool,   // Whether post-tool nudge is enabled
+    pub prefer_user_control_messages: bool,     // Use user-role for control messages
+    pub supports_late_system_messages: bool,    // Provider supports late system messages
+    pub disabled_tools: Option<Vec<String>>,    // Tools to remove from exposure
+    pub task_state_policy: TaskStatePolicy,     // Todo injection behavior
+}
+```
+
+### Construction
+
+Created via `ExecutionPolicy::from_profile(profile, config)`. Config values override profile defaults when present (e.g., `config.compaction.max_tokens` overrides `profile.context_window`).
+
+### Defaults by Profile
+
+| Profile | Context | Threshold | Reserved | Max Result | Max Parallel | Tool Mode |
+|---------|---------|-----------|----------|------------|--------------|-----------|
+| FrontierReasoning/FrontierExecutor | 128k | 0.85 | 12k | 8k | 10 | Curated |
+| LongContextPlanner | 512k | 0.70 | 16k | 8k | 8 | Curated |
+| FastExecutor/ToolFragile | 128k | 0.70 | 8k | 4k | 2 | MinimalWithDiscovery |
+| LocalStrict | 32k | 0.65 | 4k | 2k | 1 | MinimalWithDiscovery |
+| Reviewer | 128k | 0.80 | 10k | 6k | 4 | Curated |
+| Summarizer | 64k | 0.75 | 4k | 2k | 1 | MinimalWithDiscovery |
+| Default | 128k | 0.85 | 10k | 6k | 6 | Full |
+
+---
+
+## 16. Tool Exposure Modes (`policy.rs`)
+
+### ToolExposureMode Enum
+
+Controls which tools are visible to the LLM for a given turn:
+
+```rust
+pub enum ToolExposureMode {
+    Full,
+    Curated,
+    MinimalWithDiscovery,
+}
+```
+
+### Mode Definitions
+
+| Mode | Tools Included | Use Case |
+|------|---------------|----------|
+| **Full** | All registered tools | Default/unknown models |
+| **Curated** | read, list, grep, glob, codesearch, edit, apply_patch, bash, git, diff, todoread, todowrite, question, tool_search, skill | Frontier reasoning/executor models, long-context planners, reviewers |
+| **MinimalWithDiscovery** | read, list, grep, codesearch, edit, apply_patch, bash, question, todowrite, todoread, tool_search | Fast/fragile models, local strict, summarizers |
+
+### Application
+
+Applied in `AgentLoop::apply_tool_exposure_filter()` during `build_tool_definitions()`:
+
+1. Match `policy.initial_tool_mode` → filter tool definitions to the allowed set
+2. Then apply `policy.disabled_tools` → remove any additional tools the profile disables
+3. Returns filtered definitions before MCP tools are appended
+
+The `allow_bootstrap_tool` flag is `true` for `MinimalWithDiscovery` or when `profile.requires_explicit_tool_contract` is set.
+
+---
+
+## 17. Profile-Aware Tool Filtering (`policy.rs`)
+
+### `filter_tool_definitions_for_profile()`
+
+A standalone function that removes tools listed in `ResolvedModelProfile.disabled_tools` from the tool definition list. Called in subagent execution flows (e.g., `agent_loop.rs:1859`) to apply per-model tool restrictions.
+
+```rust
+pub fn filter_tool_definitions_for_profile(
+    defs: Vec<ToolDefinition>,
+    profile: &ResolvedModelProfile,
+) -> Vec<ToolDefinition>
+```
+
+This is separate from `apply_tool_exposure_filter()` (which handles exposure mode). The two are applied in sequence:
+
+- **`apply_tool_exposure_filter()`**: Mode-based filter (Full/Curated/MinimalWithDiscovery) + disabled_tools
+- **`filter_tool_definitions_for_profile()`**: Standalone disabled_tools filter for subagent/provider request construction
+
+---
+
+## 18. ContextFrame (`context_frame.rs`)
+
+### Purpose
+
+`ContextFrame` is a deterministic context snapshot injected into the conversation after compaction. It preserves the session's essential state across context window resets, ensuring the LLM retains awareness of goals, progress, and open issues.
+
+### Struct
+
+```rust
+pub struct ContextFrame {
+    pub user_goal: Option<String>,          // Original user prompt
+    pub current_task: Option<String>,       // In-progress todo item
+    pub constraints: Vec<String>,           // Known constraints
+    pub decisions: Vec<String>,             // Decisions made so far
+    pub touched_files: Vec<String>,         // Files modified in session
+    pub commands_run: Vec<String>,          // Commands executed
+    pub test_results: Vec<String>,          // Test outcomes
+    pub unresolved_errors: Vec<String>,     // Open issues
+    pub security_findings: Vec<String>,     // Security findings (capped at 5)
+    pub next_steps: Vec<String>,            // Pending todo items (capped at 3)
+}
+```
+
+### Population
+
+Built by `AgentLoop::build_context_frame()` which populates fields from:
+
+- `user_goal` ← `self.original_user_prompt`
+- `current_task` ← First in-progress todo item
+- `next_steps` ← Up to 3 pending todo items
+- `security_findings` ← Up to 5 recent findings from `self.recent_findings`
+- Other fields: Currently empty vectors (populated by future enhancements)
+
+### Injection
+
+After compaction completes (`compact_if_needed()` in `loop.rs:1780`):
+
+1. `build_context_frame()` constructs the frame
+2. If non-empty, `to_control_text()` renders it as a human-readable block
+3. `push_control_instruction()` injects it as a control message into the message history
+4. Optionally followed by a todo reminder if `task_state_policy.inject_after_compaction` is set
+
+### Output Format
+
+`to_control_text()` produces lines like:
+
+```
+Current session context:
+- Goal: Fix the failing test
+- Active task: Investigate test_output
+- Touched files: src/main.rs, src/lib.rs
+- Commands/tests: cargo test
+- Test results: 2 passed, 0 failed
+- Security findings: [SSRF] Internal IP access attempted
+- Next steps: Fix regex; Add integration test
+```
+
+---
+
+## 19. SubAgentReport (`worker.rs`)
+
+### Purpose
+
+`SubAgentReport` is a typed, structured result from subagent execution. It provides a richer alternative to the raw `result: String` in `SubAgentResult`, enabling programmatic consumption of subagent outputs.
+
+### Struct
+
+```rust
+pub struct SubAgentReport {
+    pub summary: String,                     // High-level summary
+    pub files_examined: Vec<String>,         // Files inspected
+    pub commands_run: Vec<String>,           // Commands executed
+    pub findings: Vec<SubAgentFinding>,      // Structured findings
+    pub next_steps: Vec<String>,             // Recommended follow-ups
+    pub confidence: Option<String>,          // Confidence level (e.g., "high", "medium")
+}
+```
+
+### SubAgentFinding
+
+```rust
+pub struct SubAgentFinding {
+    pub severity: Option<String>,   // "critical", "high", "medium", "low", "info"
+    pub file: Option<String>,       // Source file path
+    pub line: Option<u32>,          // Line number
+    pub title: String,              // Finding title
+    pub rationale: String,          // Explanation
+}
+```
+
+### SubAgentResult Integration
+
+`SubAgentResult` wraps the report:
+
+```rust
+pub struct SubAgentResult {
+    pub task_id: u64,
+    pub success: bool,
+    pub result: String,
+    pub report: Option<SubAgentReport>,
+}
+```
+
+Construction methods:
+- `success(task_id, result)` — report is `None`
+- `success_with_report(task_id, result, report)` — report is `Some`
+
+### `to_compact_text()`
+
+Serializes the report to a compact text format:
+
+```
+Summary text
+Files: file1.rs, file2.rs
+Commands: cargo test, cargo build
+[critical] Title (file.rs:42): Rationale
+[medium] Another finding: Rationale
+Next: Add tests; Fix regex
+Confidence: high
+```
+
+Used for including structured subagent output in parent agent context.
+
+---
+
 ## Summary
 
 The `agent` module is the central coordinator for Codegg's AI-powered task execution. It orchestrates:
@@ -919,6 +1144,10 @@ The `agent` module is the central coordinator for Codegg's AI-powered task execu
 4. **Background tasks** via `SubAgentPool` for parallel work
 5. **Multi-agent teams** via `Team` and `TeamManager` with file-based messaging
 6. **Model routing** via `ModelRouter` for automatic model selection
-7. **Hook system** integration for extensibility
+7. **Execution policies** via `ExecutionPolicy` for per-turn model-aware configuration
+8. **Tool exposure filtering** via `ToolExposureMode` and profile-aware disabled tool lists
+9. **Post-compaction context** via `ContextFrame` for deterministic state preservation
+10. **Structured subagent results** via `SubAgentReport` for typed, parseable outputs
+11. **Hook system** integration for extensibility
 
 The module maintains strict boundaries with other components through clear interfaces (Provider trait, Tool trait, PermissionChecker), enabling testability and modularity.

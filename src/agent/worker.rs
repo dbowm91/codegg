@@ -88,6 +88,7 @@ pub struct SubAgentRequest {
     pub allowed_paths: Vec<String>,
     pub description: String,
     pub depth: usize,
+    pub max_tool_calls: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -722,6 +723,7 @@ async fn execute_agent_task(
     }
 
     agent_loop.set_agent(agent_name)?;
+    agent_loop.set_max_tool_calls(request.max_tool_calls);
 
     let mut messages = Vec::new();
     if let Some(ref system_prompt) = agent.system_prompt {

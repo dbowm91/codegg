@@ -1,5 +1,26 @@
 # Codegg Deep Research Agent Implementation Plan
 
+**Status**: FULLY COMPLETE (verified 2026-06-02)
+
+All MVP items implemented. See deferred.md for details.
+
+| Section | Status | Location |
+|---------|--------|----------|
+| 5. Core data model | **DONE** | `src/research/types.rs` |
+| 6. Research store | **DONE** | `src/research/store.rs` + SQLite metadata |
+| 10. ResearchCoordinator | **DONE** | `src/research/coordinator.rs` |
+| 11. Source adapters (3 MVP) | **DONE** | `src/research/sources/` (7 adapters total) |
+| 13. Evidence extraction | **DONE** | `src/research/extract.rs` + `src/research/llm.rs` |
+| 14. Claim construction | **DONE** | `src/research/claims.rs` |
+| 15. Contradiction pass | **DONE** | Integrated in coordinator |
+| 16. Synthesis outputs | **DONE** | `src/research/synthesis.rs` |
+| 17. Citation verifier | **DONE** | `src/research/verify.rs` |
+| 18. Runtime/agent integration | **DONE** | `src/research/service.rs` |
+| TUI research browser | **DONE** | `src/tui/components/dialogs/research.rs` |
+| Trigger heuristics | **DONE** | `src/research/triggers.rs` |
+| Research commands | **DONE** | `/research`, `/research-runs`, `/research-open`, `/research-show` |
+| Server API endpoints | **DEFERRED** | Post-MVP follow-up |
+
 Status: handoff plan for implementation by a smaller coding model.
 Target repo: `dbowm91/codegg`.
 Primary goal: add a durable, source-grounded research subsystem that can produce both detailed human-facing reports and compact agent-facing handoffs.

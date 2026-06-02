@@ -49,10 +49,14 @@ pub enum AppEvent {
     TodoUpdated { session_id: String },
     /// The agent was changed.
     AgentChanged { name: String },
-    /// The model was changed.
-    ModelChanged { model: String },
+    /// The model was changed (e.g. via auto-routing).
+    ModelChanged { model: String, complexity: String },
     /// Session compaction was triggered.
-    CompactionTriggered { session_id: String },
+    CompactionTriggered {
+        session_id: String,
+        tokens_before: usize,
+        tokens_after: usize,
+    },
     /// An error occurred.
     Error { message: String },
     /// An informational message.

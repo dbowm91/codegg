@@ -201,6 +201,8 @@ impl CommandRegistry {
                 .with_description("Show artifacts for a research run (/research-open <run_id>)"),
             Command::new("/research-show", CommandCategory::Session, None)
                 .with_description("Show research runs and details (/research-show report|handoff|claims <run_id>)"),
+            Command::new("/search", CommandCategory::Session, None)
+                .with_description("Search session transcript"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

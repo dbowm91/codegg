@@ -1,5 +1,23 @@
 # Codegg Security Hardening and Security Semantics Implementation Plan
 
+**Status**: FULLY COMPLETE (verified 2026-06-02)
+
+| Section | Status | Location |
+|---------|--------|----------|
+| 3. Data model (finding.rs) | **DONE** | `src/security/finding.rs` |
+| 4. Config schema | **DONE** | `src/config/schema.rs:823-870` |
+| 5. Command classifier | **DONE** | `src/security/command.rs` (50+ tests) |
+| 6. Policy mapping | **DONE** | `src/security/policy.rs` |
+| 7. Security service | **DONE** | `src/security/service.rs` |
+| 8. AgentLoop integration | **DONE** | `src/agent/loop.rs:476-490,851-852` |
+| 9. Scanner | **DONE** | `src/security/scanner.rs` |
+| 10. Dependency inspector | **DONE** | `src/security/dependency.rs` |
+| 11. Profiles | **DONE** | `src/security/profile.rs` |
+| 12. Security tool | **DONE** | `src/tool/security.rs` |
+| 13. Security-review agent | **DONE** | Invokable via security tool |
+| 14. Ambient prompt hints | **DEFERRED** | Optional, after Phases 1-2 stable |
+| 15. Documentation | **NOT STARTED** | `docs/security.md` not created |
+
 Audience: implementation handoff for a smaller coding model such as MiMo v2.5.
 
 Repository: `dbowm91/codegg`.

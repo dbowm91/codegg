@@ -1,5 +1,22 @@
 # Codegg Initiative Plan: Profile-Aware Prompting and Model Behavior Policy
 
+**Status**: 10/10 PHASES COMPLETE (verified 2026-06-02)
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 1. Profile types | **DONE** | `src/model_profile/types.rs` |
+| 2. Config support | **DONE** | `Config.model_profile` field |
+| 3. Built-in resolver | **DONE** | `ModelProfileResolver` with 5 tests |
+| 4. Module wiring | **DONE** | `src/model_profile/mod.rs` |
+| 5. Replace MiniMax late system msg | **DONE** | Profile-based `should_avoid_late_system_messages` |
+| 6. Replace MiniMax tool contract | **DONE** | `apply_startup_profile_policy` with 12 tests |
+| 7. Profile defaults to ChatRequest | **DONE** | `apply_model_profile_defaults` |
+| 8. Prompt fragment composition | **DONE** | `assemble_system_prompt_with_profile` with 13 tests |
+| 9. Agent role field | **DONE** | `Agent.role` + `role_contract()` |
+| 10. Profile-aware tool policy | **DONE** | `filter_tool_definitions_for_profile` implemented (2026-06-02) |
+
+All phases complete.
+
 ## Goal
 
 Implement profile-aware prompting for codegg without creating an unmaintainable set of per-model prompt files.

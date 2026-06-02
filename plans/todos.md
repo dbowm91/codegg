@@ -1,5 +1,22 @@
 # Codegg implementation plan: model-profile-aware todo/task-state policy
 
+**Status**: ~95% COMPLETE (verified 2026-06-02)
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| 1. Task policy types | **DONE** | `src/model_profile/types.rs` + resolver tests |
+| 2. TodoState module | **DONE** | `src/task_state/mod.rs` with 14 tests |
+| 3. todowrite + todoread tools | **DONE** | `src/tool/todo.rs` |
+| 4. Wire into agent loop | **DONE** | `todo_state` + `task_state_policy` fields on AgentLoop |
+| 5. Compact reminder injection | **DONE** | build_todo_reminder done, N-tool-call injection done, compaction injection wired (2026-06-02) |
+| 6. Prompt profile text | **DONE** | `apply_startup_profile_policy` with mode-specific text |
+| 7. Persistence/resume | **DONE** | `TodoStore` in session, load/save wired |
+| 8. TUI/event rendering | **DONE** | `AppEvent::TodoUpdated` now published after todowrite (2026-06-02) |
+| 9. Config surface | **DONE** | Via `model_profile` overrides |
+| 10. Tests | **DONE** | 14 unit tests in `task_state/mod.rs` |
+
+Remaining items: None — all complete (verified 2026-06-02).
+
 Audience: smaller implementation model (MiMo v2.5 or similar). This plan is written to be executed in the current `dbowm91/codegg` Rust codebase.
 
 Goal: replace the current one-size-fits-all `todowrite` behavior with a model-profile-aware task-state policy. Strong/frontier models should get sparse Codex-like planning. Mid-tier models should get explicit OpenCode/Claude-like todo state. Local/tool-fragile models should get compact current-task guidance and fewer chances to corrupt task state. Unknown models should use a conservative default.

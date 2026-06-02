@@ -160,6 +160,19 @@ fn default_tool_exposure(profile: &ResolvedModelProfile) -> ToolExposureMode {
     }
 }
 
+pub fn filter_tool_definitions_for_profile(
+    defs: Vec<crate::provider::ToolDefinition>,
+    profile: &ResolvedModelProfile,
+) -> Vec<crate::provider::ToolDefinition> {
+    let mut defs = defs;
+
+    if let Some(disabled) = &profile.disabled_tools {
+        defs.retain(|d| !disabled.iter().any(|name| name == &d.name));
+    }
+
+    defs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +269,55 @@ mod tests {
 
         assert_eq!(policy.initial_tool_mode, ToolExposureMode::Full);
         assert_eq!(policy.context_window, 128_000);
+    }
+
+    #[test]
+    fn test_filter_tool_definitions_removes_disabled() {
+        use crate::provider::ToolDefinition;
+
+        let defs = vec![
+            ToolDefinition { name: "bash".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+            ToolDefinition { name: "read".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+            ToolDefinition { name: "write".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+        ];
+
+        let mut profile = infer_builtin_profile("claude-sonnet-4-20250514");
+        profile.disabled_tools = Some(vec!["bash".into(), "write".into()]);
+
+        let filtered = filter_tool_definitions_for_profile(defs, &profile);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "read");
+    }
+
+    #[test]
+    fn test_filter_tool_definitions_empty_disabled_keeps_all() {
+        use crate::provider::ToolDefinition;
+
+        let defs = vec![
+            ToolDefinition { name: "bash".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+            ToolDefinition { name: "read".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+        ];
+
+        let mut profile = infer_builtin_profile("claude-sonnet-4-20250514");
+        profile.disabled_tools = Some(vec![]);
+
+        let filtered = filter_tool_definitions_for_profile(defs, &profile);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_tool_definitions_unknown_names_ignored() {
+        use crate::provider::ToolDefinition;
+
+        let defs = vec![
+            ToolDefinition { name: "bash".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+            ToolDefinition { name: "read".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+        ];
+
+        let mut profile = infer_builtin_profile("claude-sonnet-4-20250514");
+        profile.disabled_tools = Some(vec!["nonexistent_tool".into()]);
+
+        let filtered = filter_tool_definitions_for_profile(defs, &profile);
+        assert_eq!(filtered.len(), 2);
     }
 }

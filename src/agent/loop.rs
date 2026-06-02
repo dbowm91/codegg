@@ -680,6 +680,7 @@ pub struct AgentLoopState {
     pub start_time: Instant,
     pub plan_mode: bool,
     pub plan_topic: Option<String>,
+    pub tool_call_count: usize,
 }
 
 pub struct ExecutionLimits {
@@ -734,6 +735,7 @@ pub struct AgentLoop {
     execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
     original_user_prompt: Option<String>,
     subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+    max_tool_calls: Option<usize>,
 }
 
 impl AgentLoop {
@@ -874,6 +876,7 @@ impl AgentLoop {
                 start_time: Instant::now(),
                 plan_mode: false,
                 plan_topic: None,
+                tool_call_count: 0,
             },
             limits: ExecutionLimits::default(),
             provider,
@@ -915,6 +918,7 @@ impl AgentLoop {
             execution_policy: None,
             original_user_prompt: None,
             subagent_pool: None,
+            max_tool_calls: None,
         }
     }
 
@@ -1058,7 +1062,13 @@ impl AgentLoop {
     pub fn set_execution_policy(&mut self, policy: crate::agent::policy::ExecutionPolicy) {
         self.context_tracker.set_limit(policy.context_window);
         self.context_tracker.set_threshold(policy.compaction_threshold);
+        self.context_tracker
+            .set_model(Some(policy.model.clone()));
         self.execution_policy = Some(policy);
+    }
+
+    pub fn set_max_tool_calls(&mut self, max: Option<usize>) {
+        self.max_tool_calls = max;
     }
 
     pub fn execution_policy(&self) -> Option<&crate::agent::policy::ExecutionPolicy> {
@@ -1299,6 +1309,12 @@ impl AgentLoop {
             return Some(format!("max turns ({}) reached", self.limits.max_turns));
         }
 
+        if let Some(max) = self.max_tool_calls {
+            if self.state.tool_call_count >= max {
+                return Some(format!("max tool calls ({}) reached", max));
+            }
+        }
+
         if self.state.total_tokens >= self.limits.max_tokens {
             return Some(format!("max tokens ({}) reached", self.limits.max_tokens));
         }
@@ -1363,6 +1379,7 @@ impl AgentLoop {
             );
             let _ = crate::bus::global::GlobalEventBus::publish(AppEvent::ModelChanged {
                 model: model.clone(),
+                complexity: complexity.as_str().to_string(),
             });
             request.model = model;
         }
@@ -1771,7 +1788,8 @@ impl AgentLoop {
                     compact_messages_sync(messages.clone(), CompactionStrategy::DropMiddleMessages);
             }
 
-            let _tokens_after = self.context_tracker.estimate_tokens_for_messages(messages);
+            let tokens_before = self.context_tracker.current_tokens();
+            let tokens_after = self.context_tracker.estimate_tokens_for_messages(messages);
             self.context_tracker.reset();
             self.context_tracker.add_messages(messages);
 
@@ -1782,8 +1800,21 @@ impl AgentLoop {
                 push_control_instruction(messages, &model_profile, &frame_text);
             }
 
+            if self.task_state_policy.inject_after_compaction {
+                let mut todo = self.todo_state.lock().await;
+                if !todo.is_all_done() {
+                    if let Some(reminder) = crate::task_state::build_todo_reminder(&todo, &self.task_state_policy) {
+                        push_control_instruction(messages, &model_profile, &reminder);
+                        todo.reminder_pending = false;
+                        todo.tool_calls_since_injection = 0;
+                    }
+                }
+            }
+
             let _ = crate::bus::global::GlobalEventBus::publish(AppEvent::CompactionTriggered {
                 session_id: self.session_id.clone(),
+                tokens_before,
+                tokens_after,
             });
         }
     }
@@ -1843,7 +1874,10 @@ impl AgentLoop {
             );
         }
         self.recent_findings.clear();
-        request.tools = Some(self.build_tool_definitions().await);
+        request.tools = Some(crate::agent::policy::filter_tool_definitions_for_profile(
+            self.build_tool_definitions().await,
+            &model_profile,
+        ));
         crate::model_profile::policy::apply_startup_profile_policy(
             &mut request.messages,
             &model_profile,
@@ -2088,6 +2122,10 @@ impl AgentLoop {
             post_tool_continuation_retry_budget = 0;
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
+
+            if !tool_calls.is_empty() {
+                self.state.tool_call_count += tool_calls.len();
+            }
 
             // Auto-invoke security-review subagent if triggered by high-risk tools or sensitive paths
             if just_executed_tools {
@@ -2366,6 +2404,7 @@ impl AgentLoop {
             allowed_paths: Vec::new(),
             description: "Auto-triggered security review".to_string(),
             depth: 1,
+            max_tool_calls: None,
         };
 
         tokio::spawn(async move {
