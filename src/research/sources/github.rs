@@ -29,6 +29,7 @@ struct GitHubLicense {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct GitHubFile {
     name: String,
     path: String,
@@ -39,6 +40,7 @@ struct GitHubFile {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct GitHubIssue {
     number: u64,
     title: String,

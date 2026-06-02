@@ -386,7 +386,7 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                         return Err(e);
                     }
                 }
-                (Some(test_name), Some(test_url)) => {
+                (Some(_test_name), Some(test_url)) => {
                     let result = handle.block_on(async {
                         let mut manager = crate::mcp::remote::McpConnectionManager::new(
                             &test_url,

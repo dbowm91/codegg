@@ -10,7 +10,6 @@ use axum::{
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 use tracing::info;

@@ -702,6 +702,7 @@ impl RemoteClient {
         self.sse_shutdown.notify_one();
     }
 
+    #[allow(dead_code)]
     async fn connect_sse_stream(&self, resp: reqwest::Response) -> Result<(), McpError> {
         let events: Arc<Mutex<Vec<serde_json::Value>>> = Arc::clone(&self.sse_events);
         let sse_shutdown = Arc::clone(&self.sse_shutdown);

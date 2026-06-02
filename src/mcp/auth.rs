@@ -258,6 +258,7 @@ impl OAuthManager {
         })
     }
 
+    #[allow(dead_code)]
     fn is_code_used(&self, code: &str) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -272,6 +273,7 @@ impl OAuthManager {
         false
     }
 
+    #[allow(dead_code)]
     async fn mark_code_used(&mut self, code: String, expires_at: u64) -> Result<(), McpError> {
         self.used_codes.insert(code, UsedCode { expires_at });
         self.save_used_codes_async().await

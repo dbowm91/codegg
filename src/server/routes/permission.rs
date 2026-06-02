@@ -60,7 +60,7 @@ pub async fn get_pending_permissions(
 /// filtering is not possible without extending the registry. Returns empty list when
 /// session_id is provided to indicate filtering is not supported.
 pub fn get_pending_permissions_for_session(session_id: &str) -> serde_json::Value {
-    let pending_ids = crate::bus::PermissionRegistry::pending_permission_ids();
+    let _pending_ids = crate::bus::PermissionRegistry::pending_permission_ids();
 
     // PermissionRegistry keys are in format "{tool_call_id}-{tool_name}" not "{session_id}-..."
     // We cannot properly filter by session without extending the registry.

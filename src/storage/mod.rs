@@ -7,7 +7,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::StorageError;
 
@@ -19,7 +19,14 @@ impl Database {
     pub async fn new(path: &str) -> Result<Self, StorageError> {
         let pool = connect_and_configure(path).await?;
         crate::session::schema::migrate(&pool).await?;
-        Ok(Self { pool })
+
+        let db = Self { pool };
+
+        db.try_checkpoint_wal().await;
+
+        db.spawn_background_integrity_check().await;
+
+        Ok(db)
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -39,7 +46,34 @@ impl Database {
     }
 
     pub async fn close(self) {
+        if let Err(e) = self.checkpoint_wal().await {
+            warn!("WAL checkpoint on close failed: {}", e);
+        }
         self.pool.close().await;
+    }
+
+    async fn checkpoint_wal(&self) -> Result<(), StorageError> {
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(format!("WAL checkpoint failed: {}", e)))?;
+        Ok(())
+    }
+
+    async fn try_checkpoint_wal(&self) {
+        if let Err(e) = self.checkpoint_wal().await {
+            debug!("WAL checkpoint (non-fatal): {}", e);
+        }
+    }
+
+    async fn spawn_background_integrity_check(&self) {
+        let pool = self.pool.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            if let Err(e) = run_quick_integrity_check(&pool).await {
+                warn!("database integrity check warning: {}", e);
+            }
+        });
     }
 }
 
@@ -127,4 +161,19 @@ pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError> {
     );
 
     Ok(pool)
+}
+
+async fn run_quick_integrity_check(pool: &SqlitePool) -> Result<(), StorageError> {
+    let result: (String,) = sqlx::query_as("PRAGMA quick_check")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| StorageError::Database(format!("integrity check failed: {}", e)))?;
+
+    if result.0 != "ok" {
+        return Err(StorageError::Database(format!(
+            "integrity check found issues: {}",
+            result.0
+        )));
+    }
+    Ok(())
 }

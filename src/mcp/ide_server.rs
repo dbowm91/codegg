@@ -8,7 +8,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixStream;
 use tokio::sync::{Mutex, Notify};
 
 use crate::error::McpError;
@@ -49,6 +49,7 @@ type PendingRequests =
 
 pub struct IdeServer {
     tools: HashMap<String, ToolHandler>,
+    #[allow(dead_code)]
     pending: PendingRequests,
     shutdown: Arc<Mutex<bool>>,
     shutdown_notify: Arc<Notify>,
@@ -118,6 +119,7 @@ impl IdeServer {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn clone_for_connection(&self) -> Self {
         Self {
             tools: self.tools.clone(),
@@ -127,6 +129,7 @@ impl IdeServer {
         }
     }
 
+    #[allow(dead_code)]
     async fn handle_connection(&self, mut stream: UnixStream) -> Result<(), McpError> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         use BufReader as SyncBufReader;

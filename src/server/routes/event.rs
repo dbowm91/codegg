@@ -7,10 +7,10 @@ use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
-use crate::bus::events::AppEvent;
+
 
 pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let mut rx = crate::bus::global::GlobalEventBus::subscribe();
+    let rx = crate::bus::global::GlobalEventBus::subscribe();
     let stream = BroadcastStream::new(rx).filter_map(|result| match result {
         Ok(event) => {
             if let Ok(json) = serde_json::to_string(&event) {

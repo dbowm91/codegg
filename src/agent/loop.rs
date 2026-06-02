@@ -724,6 +724,7 @@ pub struct AgentLoop {
     snapshot_manager: Option<crate::snapshot::SnapshotManager>,
     file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
     usage_store: Option<Arc<crate::session::UsageStore>>,
+    #[allow(dead_code)]
     pricing_service: crate::util::pricing::PricingService,
     security_service: crate::security::service::SecurityService,
     recent_findings: Vec<crate::security::finding::SecurityFinding>,
@@ -731,6 +732,7 @@ pub struct AgentLoop {
     task_state_policy: crate::model_profile::types::TaskStatePolicy,
     todo_pool: Option<sqlx::SqlitePool>,
     event_store: Option<Arc<crate::session::EventStore>>,
+    #[allow(dead_code)]
     active_tool_timings: HashMap<String, Instant>,
     execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
     original_user_prompt: Option<String>,

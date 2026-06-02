@@ -1,6 +1,5 @@
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 use super::super::state::ServerState;
 use super::file::sanitize_path;

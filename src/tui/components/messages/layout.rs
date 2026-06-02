@@ -30,7 +30,7 @@ impl MessageLayoutCache {
         if left >= self.message_offsets.len() {
             return None;
         }
-        let (msg_idx, start, count) = self.message_offsets[left];
+        let (msg_idx, start, _count) = self.message_offsets[left];
         Some((msg_idx, target - start))
     }
 
