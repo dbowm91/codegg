@@ -1053,6 +1053,15 @@ impl Default for MessagesWidget {
     }
 }
 
+fn pad_line_to_width(line: &mut Line<'_>, target_width: u16, style: Style) {
+    use unicode_width::UnicodeWidthStr;
+    let current_width: usize = line.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+    let pad = target_width.saturating_sub(current_width as u16) as usize;
+    if pad > 0 {
+        line.spans.push(Span::styled(" ".repeat(pad), style));
+    }
+}
+
 impl Widget for &MessagesWidget {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
         if self.messages.is_empty() {
@@ -1114,7 +1123,7 @@ impl Widget for &MessagesWidget {
                     } else {
                         self.theme.primary
                     };
-                    let user_bg = self.theme.secondary;
+                    let user_bg = self.theme.alternate_bg;
                     let bar_style = if let Some(bg) = match_bg {
                         Style::default().fg(bar_color).bg(bg)
                     } else {
@@ -1129,6 +1138,12 @@ impl Widget for &MessagesWidget {
                         .fg(self.theme.primary)
                         .bg(self.theme.selection)
                         .add_modifier(Modifier::REVERSED);
+                    let pad_style = if let Some(bg) = match_bg {
+                        Style::default().bg(bg)
+                    } else {
+                        Style::default().bg(user_bg)
+                    };
+                    let mut user_lines: Vec<Line> = Vec::new();
                     for (part_idx, part) in msg.parts.iter().enumerate() {
                         if let MsgPart::Text { content } = part {
                             for (line_idx, text_line) in content.lines().enumerate() {
@@ -1159,25 +1174,29 @@ impl Widget for &MessagesWidget {
                                             if !after.is_empty() {
                                                 spans.push(Span::styled(after.to_string(), text_style));
                                             }
-                                            lines.push(Line::from(spans));
+                                            user_lines.push(Line::from(spans));
                                         } else if let Some(p) = line_prefix {
-                                            lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
+                                            user_lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
                                         } else {
-                                            lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
+                                            user_lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
                                         }
                                     } else if let Some(p) = line_prefix {
-                                        lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
+                                        user_lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
                                     } else {
-                                        lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
+                                        user_lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
                                     }
                                 } else if let Some(p) = line_prefix {
-                                    lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
+                                    user_lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
                                 } else {
-                                    lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
+                                    user_lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
                                 }
                             }
                         }
                     }
+                    for line in &mut user_lines {
+                        pad_line_to_width(line, area.width, pad_style);
+                    }
+                    lines.extend(user_lines);
                 }
                 MessageRole::Assistant => {
                     if self.show_timestamps {
