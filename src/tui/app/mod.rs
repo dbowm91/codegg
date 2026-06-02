@@ -2178,24 +2178,14 @@ impl App {
             Some(InputAction::Newline) => self.prompt_state.prompt.insert_newline(),
             Some(InputAction::Cancel) => self.cancel(),
             Some(InputAction::NavigateUp) => {
-                if self.ui_state.input_mode == InputMode::Insert
-                    && key.modifiers == crossterm::event::KeyModifiers::NONE
-                    && key.code == crossterm::event::KeyCode::Char('k')
-                {
-                    self.process_msg(TuiMsg::CharInput('k'));
-                } else if self.ui_state.input_mode == InputMode::Normal {
+                if self.ui_state.input_mode == InputMode::Normal {
                     self.scroll_viewport_up();
                 } else {
                     self.process_msg(TuiMsg::NavigateUp);
                 }
             }
             Some(InputAction::NavigateDown) => {
-                if self.ui_state.input_mode == InputMode::Insert
-                    && key.modifiers == crossterm::event::KeyModifiers::NONE
-                    && key.code == crossterm::event::KeyCode::Char('j')
-                {
-                    self.process_msg(TuiMsg::CharInput('j'));
-                } else if self.ui_state.input_mode == InputMode::Normal {
+                if self.ui_state.input_mode == InputMode::Normal {
                     self.scroll_viewport_down();
                 } else {
                     self.process_msg(TuiMsg::NavigateDown);

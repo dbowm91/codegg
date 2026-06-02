@@ -1755,10 +1755,10 @@ fn test_app_shift_punctuation_inserts_text() {
 }
 
 #[test]
-fn test_app_slash_enters_command_mode() {
+fn test_app_slash_at_position_0_enters_command_mode() {
     let mut app = App::new_for_testing("/tmp/test".to_string());
 
-    // Char('/') at cursor 0 should enter command mode
+    // '/' at cursor 0 should enter command mode via on_char detection
     let key = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
     app.on_key(key);
 

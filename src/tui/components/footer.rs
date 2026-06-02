@@ -46,8 +46,7 @@ impl FooterWidget {
             theme,
             status: "idle".to_string(),
             tokens: String::new(),
-            keybinds: "/:prompt  ?:help  ^L:model  ^N:new  ^T:sidebar  ^W:close  Tab:agent"
-                .to_string(),
+            keybinds: "^L:model  ^N:new  ^T:sidebar  ^W:close  Tab:agent".to_string(),
             context_hint: String::new(),
             subagent_count: 0,
             subagent_names: Vec::new(),
@@ -111,8 +110,6 @@ impl FooterWidget {
 
     pub fn update_keybinds(&mut self, bindings: &HashMap<(KeyModifiers, KeyCode), InputAction>) {
         let important_actions = [
-            (InputAction::FocusPrompt, "/"),
-            (InputAction::Help, "?"),
             (InputAction::SelectModel, "^L"),
             (InputAction::NewSession, "^N"),
             (InputAction::ToggleSidebar, "^T"),

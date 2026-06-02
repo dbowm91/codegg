@@ -16,7 +16,7 @@
 //! | Enter | Send |
 //! | Shift+Enter | Newline |
 //! | Esc, Ctrl+C | Cancel |
-//! | ↑/j, ↓/k | NavigateUp, NavigateDown |
+//! | ↑/↓ | NavigateUp, NavigateDown |
 //! | Tab | SwitchAgent |
 //! | Shift+Tab | TogglePermissionMode |
 //! | Ctrl+L | SelectModel |
@@ -24,13 +24,15 @@
 //! | Ctrl+N | NewSession |
 //! | Ctrl+T | ToggleSidebar |
 //! | Ctrl+W | CloseSession |
-//! | / | FocusPrompt |
-//! | ? | Help |
 //! | Ctrl+S | StashPrompt |
 //! | Ctrl+R | RestorePrompt |
 //! | Ctrl+P / Ctrl+Shift+P | CycleModelForward/Backward |
 //! | PgUp/PgDn | PageUp/PageDown |
 //! | Ctrl+F | Search |
+//!
+//! **Note:** In Insert mode, bare character keys (no modifier) always produce
+//! text input. Only modifier-key combos trigger actions. `/` at position 0
+//! activates command mode via `on_char()` detection, not via keybinding.
 //!
 //! ## Custom Keybindings
 //!
@@ -586,15 +588,28 @@ fn handle_key_with_bindings(
 
     match mode {
         InputMode::Insert => {
-            // Check for exact binding matches first (preserves Ctrl, Alt, custom bindings)
+            // In Insert mode, bare character bindings (NONE + Char) are skipped
+            // so users can type freely. Only modifier-key combos and special keys
+            // trigger actions. Slash detection at position 0 is handled by on_char().
+            let is_bare_char = matches!(key.code, KeyCode::Char(c)
+                if key.modifiers == KeyModifiers::NONE && is_printable_char(c));
+
             if let Some(action) = map.get(&key_tuple) {
-                debug_log!("insert mode: matched binding: {:?}", action);
-                return Some(action.clone());
+                if is_bare_char {
+                    debug_log!("insert mode: skipping bare char binding: {:?}", action);
+                } else {
+                    debug_log!("insert mode: matched binding: {:?}", action);
+                    return Some(action.clone());
+                }
             }
             if let Some(_user_bindings) = bindings {
                 if let Some(action) = DEFAULT_BINDINGS.get(&key_tuple) {
-                    debug_log!("insert mode: fallback to default: {:?}", action);
-                    return Some(action.clone());
+                    if is_bare_char {
+                        debug_log!("insert mode: skipping bare char default: {:?}", action);
+                    } else {
+                        debug_log!("insert mode: fallback to default: {:?}", action);
+                        return Some(action.clone());
+                    }
                 }
             }
             // No binding found - check if this is a printable char with only NONE or SHIFT modifier
@@ -697,6 +712,96 @@ mod tests {
         custom_bindings.insert((KeyModifiers::SHIFT, KeyCode::Char('A')), InputAction::Help);
         let key = make_key(KeyCode::Char('A'), KeyModifiers::SHIFT);
         let result = handle_key_with_bindings(key, Some(&custom_bindings), InputMode::Insert);
+        assert_eq!(result, Some(InputAction::Help));
+    }
+
+    #[test]
+    fn test_bare_slash_inserts_char_in_insert_mode() {
+        // Bare '/' should insert '/' in insert mode (not trigger FocusPrompt)
+        let key = make_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, None, InputMode::Insert);
+        assert_eq!(result, Some(InputAction::Char('/')));
+    }
+
+    #[test]
+    fn test_bare_question_inserts_char_in_insert_mode() {
+        // Bare '?' should insert '?' in insert mode (not trigger Help)
+        let key = make_key(KeyCode::Char('?'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, None, InputMode::Insert);
+        assert_eq!(result, Some(InputAction::Char('?')));
+    }
+
+    #[test]
+    fn test_bare_g_inserts_char_in_insert_mode() {
+        // Bare 'g' should insert 'g' in insert mode (not trigger GoToTop)
+        let key = make_key(KeyCode::Char('g'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, None, InputMode::Insert);
+        assert_eq!(result, Some(InputAction::Char('g')));
+    }
+
+    #[test]
+    fn test_bare_j_inserts_char_in_insert_mode() {
+        // Bare 'j' should insert 'j' in insert mode (not trigger NavigateDown)
+        let key = make_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, None, InputMode::Insert);
+        assert_eq!(result, Some(InputAction::Char('j')));
+    }
+
+    #[test]
+    fn test_bare_k_inserts_char_in_insert_mode() {
+        // Bare 'k' should insert 'k' in insert mode (not trigger NavigateUp)
+        let key = make_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, None, InputMode::Insert);
+        assert_eq!(result, Some(InputAction::Char('k')));
+    }
+
+    #[test]
+    fn test_bare_chars_trigger_in_normal_mode() {
+        // In normal mode, bare chars should trigger their bound actions
+        let key = make_key(KeyCode::Char('g'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, None, InputMode::Normal);
+        assert_eq!(result, Some(InputAction::GoToTop));
+
+        let key = make_key(KeyCode::Char('?'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, None, InputMode::Normal);
+        assert_eq!(result, Some(InputAction::Help));
+
+        let key = make_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, None, InputMode::Normal);
+        assert_eq!(result, Some(InputAction::NavigateDown));
+
+        let key = make_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, None, InputMode::Normal);
+        assert_eq!(result, Some(InputAction::NavigateUp));
+    }
+
+    #[test]
+    fn test_ctrl_combo_still_works_in_insert_mode() {
+        // Ctrl combinations should still trigger actions in insert mode
+        let key = make_key(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        let result = handle_key_with_bindings(key, None, InputMode::Insert);
+        assert_eq!(result, Some(InputAction::SelectModel));
+    }
+
+    #[test]
+    fn test_custom_bare_char_binding_ignored_in_insert_mode() {
+        // Custom bindings for bare chars should be ignored in insert mode
+        use std::collections::HashMap;
+        let mut custom = HashMap::new();
+        custom.insert((KeyModifiers::NONE, KeyCode::Char('x')), InputAction::Help);
+        let key = make_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, Some(&custom), InputMode::Insert);
+        assert_eq!(result, Some(InputAction::Char('x')));
+    }
+
+    #[test]
+    fn test_custom_bare_char_binding_works_in_normal_mode() {
+        // Custom bindings for bare chars should work in normal mode
+        use std::collections::HashMap;
+        let mut custom = HashMap::new();
+        custom.insert((KeyModifiers::NONE, KeyCode::Char('x')), InputAction::Help);
+        let key = make_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        let result = handle_key_with_bindings(key, Some(&custom), InputMode::Normal);
         assert_eq!(result, Some(InputAction::Help));
     }
 }
