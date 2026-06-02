@@ -1123,7 +1123,7 @@ impl Widget for &MessagesWidget {
                     } else {
                         self.theme.primary
                     };
-                    let user_bg = self.theme.alternate_bg;
+                    let user_bg = self.theme.input_bg;
                     let bar_style = if let Some(bg) = match_bg {
                         Style::default().fg(bar_color).bg(bg)
                     } else {

@@ -1234,6 +1234,9 @@ impl App {
     }
 
     fn render_prompt(&mut self, frame: &mut Frame, area: Rect) {
+        let bg_block = Block::default().style(Style::default().bg(self.ui_state.theme.input_bg));
+        frame.render_widget(bg_block, area);
+
         let status = match &self.session_state.session_status {
             SessionStatus::Idle => "idle",
             SessionStatus::Working => "working",
