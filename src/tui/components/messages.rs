@@ -210,13 +210,28 @@ fn find_any_tag(text: &str, start: bool) -> Option<(usize, usize)> {
     };
 
     let mut best_match: Option<(usize, usize)> = None;
+    let mut in_code_block = false;
+    let mut char_pos = 0;
 
-    for tag in tags {
-        if let Some(pos) = text.to_lowercase().find(tag) {
-            if best_match.is_none() || pos < best_match.unwrap().0 {
-                best_match = Some((pos, tag.len()));
+    for line in text.lines() {
+        let line_len = line.len() + 1;
+
+        if line.trim().starts_with("```") {
+            in_code_block = !in_code_block;
+        }
+
+        if !in_code_block {
+            for tag in &tags {
+                if let Some(pos) = line.to_lowercase().find(tag) {
+                    let abs_pos = char_pos + pos;
+                    if best_match.is_none() || abs_pos < best_match.unwrap().0 {
+                        best_match = Some((abs_pos, tag.len()));
+                    }
+                }
             }
         }
+
+        char_pos += line_len;
     }
 
     best_match
@@ -1222,9 +1237,7 @@ impl Widget for &MessagesWidget {
                         }
                     };
                     if !self.streaming_tokens.is_empty() {
-                        let streaming_style = Style::default()
-                            .fg(self.theme.primary)
-                            .add_modifier(Modifier::ITALIC);
+                        let streaming_style = Style::default().fg(self.theme.primary);
                         lines.push(Line::from(vec![
                             Span::styled("│ ", bar_style),
                             Span::styled("Thinking...", streaming_style),
@@ -1285,20 +1298,7 @@ impl Widget for &MessagesWidget {
                                 } else {
                                     format!("{} {}", name, target)
                                 };
-                                let spinner = match status {
-                                    ToolStatus::Running => "⟳",
-                                    ToolStatus::Pending => "○",
-                                    ToolStatus::Completed => "✓",
-                                    ToolStatus::Error => "✗",
-                                };
-                                let mut base_style = match status {
-                                    ToolStatus::Pending => Style::default().fg(self.theme.muted),
-                                    ToolStatus::Running => Style::default().fg(self.theme.warning),
-                                    ToolStatus::Completed => {
-                                        Style::default().fg(self.theme.success)
-                                    }
-                                    ToolStatus::Error => Style::default().fg(self.theme.muted),
-                                };
+                                let mut base_style = Style::default().fg(self.theme.muted);
                                 if matches!(status, ToolStatus::Error) {
                                     base_style = base_style.add_modifier(Modifier::CROSSED_OUT);
                                 }
@@ -1316,8 +1316,9 @@ impl Widget for &MessagesWidget {
                                     format!(" ({})", summary_parts.join(", "))
                                 };
                                 lines.push(Line::from(vec![
+                                    Span::raw("  "),
                                     Span::styled(
-                                        format!("{spinner} {display_name}{summary_str}"),
+                                        format!("{display_name}{summary_str}"),
                                         base_style,
                                     ),
                                 ]));
