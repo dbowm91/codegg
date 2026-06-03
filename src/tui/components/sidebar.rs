@@ -34,15 +34,27 @@ pub struct SidebarWidget {
     pub goal: Option<String>,
     pub plan: Option<AgentPlan>,
     pub context_pct: u64,
+    pub context_tokens: u64,
+    pub context_limit: u64,
     hovered_element: HoveredElement,
     tooltip_text: String,
 }
 
 fn format_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1000 {
-        format!("{}K", tokens / 1000)
+        let m = tokens as f64 / 1_000_000.0;
+        if (m - m.round()).abs() < 0.05 {
+            format!("{:.0}m", m)
+        } else {
+            format!("{:.1}m", m)
+        }
+    } else if tokens >= 1_000 {
+        let k = tokens as f64 / 1_000.0;
+        if (k - k.round()).abs() < 0.05 {
+            format!("{:.0}k", k)
+        } else {
+            format!("{:.1}k", k)
+        }
     } else {
         tokens.to_string()
     }
@@ -67,6 +79,8 @@ impl SidebarWidget {
             goal: None,
             plan: None,
             context_pct: 0,
+            context_tokens: 0,
+            context_limit: 0,
             hovered_element: HoveredElement::None,
             tooltip_text: String::new(),
         }
@@ -124,6 +138,12 @@ impl SidebarWidget {
     }
 
     pub fn set_context_pct(&mut self, pct: u64) {
+        self.context_pct = pct;
+    }
+
+    pub fn set_context_info(&mut self, tokens: u64, limit: u64, pct: u64) {
+        self.context_tokens = tokens;
+        self.context_limit = limit;
         self.context_pct = pct;
     }
 
@@ -443,9 +463,18 @@ impl Widget for &SidebarWidget {
         } else {
             Style::default().fg(self.theme.muted)
         };
+        let ctx_label = if self.context_tokens > 0 {
+            format!(
+                "{} ({:.0}%)",
+                format_tokens(self.context_tokens),
+                self.context_pct
+            )
+        } else {
+            format!("{:.0}%", self.context_pct)
+        };
         lines.push(Line::from(vec![
             Span::styled("ctx: ", Style::default().fg(self.theme.muted)),
-            Span::styled(format!("{}%", self.context_pct), ctx_style),
+            Span::styled(ctx_label, ctx_style),
         ]));
 
         if !self.todos.is_empty() {

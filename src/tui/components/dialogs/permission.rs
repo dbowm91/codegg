@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 use std::sync::Arc;
 
@@ -43,7 +43,7 @@ impl PermissionDialog {
 
     pub fn options(&self) -> Vec<&str> {
         if self.confirm_persistent {
-            vec!["⚠ Confirm & Persist", "← Cancel"]
+            vec!["Confirm & Persist", "Cancel"]
         } else {
             vec!["Allow Once", "Always Allow", "Deny Once", "Always Deny"]
         }
@@ -83,30 +83,43 @@ impl PermissionDialog {
         }
     }
 
-    fn risk_color(&self) -> ratatui::style::Color {
+    fn risk_color(&self, theme: &Theme) -> ratatui::style::Color {
         match self.risk {
-            ToolRisk::Read => ratatui::style::Color::Rgb(100, 180, 255),
-            ToolRisk::Write => ratatui::style::Color::Rgb(255, 200, 60),
-            ToolRisk::GitMutation => ratatui::style::Color::Rgb(255, 150, 50),
-            ToolRisk::DependencyMutation => ratatui::style::Color::Rgb(200, 130, 255),
-            ToolRisk::Network => ratatui::style::Color::Rgb(130, 200, 255),
-            ToolRisk::Destructive => ratatui::style::Color::Rgb(255, 80, 80),
-            ToolRisk::CredentialAdjacent => ratatui::style::Color::Rgb(255, 120, 120),
-            ToolRisk::Unknown => ratatui::style::Color::Rgb(140, 140, 150),
+            ToolRisk::Read => theme.primary,
+            ToolRisk::Write => theme.warning,
+            ToolRisk::GitMutation => theme.warning,
+            ToolRisk::DependencyMutation => theme.secondary,
+            ToolRisk::Network => theme.primary,
+            ToolRisk::Destructive => theme.error,
+            ToolRisk::CredentialAdjacent => theme.warning,
+            ToolRisk::Unknown => theme.muted,
         }
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        // Outer frame: double border in the warning color so the dialog
+        // stands out from the background, with a theme background fill so
+        // the inside reads as a distinct surface (not transparent).
+        let outer_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(theme.warning))
+            .style(Style::default().bg(theme.background));
+        let inner = outer_block.inner(area);
+        // Render an empty paragraph that only exists to paint the outer
+        // border + background. Sub-blocks render inside `inner`.
+        frame.render_widget(Paragraph::new("").block(outer_block), area);
+
         let chunks = Layout::vertical([
             Constraint::Length(5),
             Constraint::Min(4),
             Constraint::Length(5),
         ])
-        .split(area);
+        .split(inner);
 
         let tool_icon = self.tool_icon();
         let risk_label = format!("{}", self.risk);
-        let risk_color = self.risk_color();
+        let risk_color = self.risk_color(theme);
 
         let title = Paragraph::new(Line::from(vec![
             Span::styled(
@@ -126,7 +139,8 @@ impl PermissionDialog {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Permission Request ")
-                .border_style(Style::default().fg(theme.warning)),
+                .border_style(Style::default().fg(theme.warning))
+                .style(Style::default().bg(theme.background)),
         );
         frame.render_widget(title, chunks[0]);
 
@@ -163,7 +177,7 @@ impl PermissionDialog {
                     Span::styled(
                         truncated,
                         Style::default()
-                            .fg(ratatui::style::Color::Rgb(200, 220, 255))
+                            .fg(theme.primary)
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]));
@@ -198,12 +212,12 @@ impl PermissionDialog {
                     Span::styled(
                         "! ",
                         Style::default()
-                            .fg(ratatui::style::Color::Rgb(255, 80, 80))
+                            .fg(theme.error)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         "This command may permanently delete files or modify system state",
-                        Style::default().fg(ratatui::style::Color::Rgb(255, 120, 120)),
+                        Style::default().fg(theme.error),
                     ),
                 ]));
             }
@@ -212,12 +226,12 @@ impl PermissionDialog {
                     Span::styled(
                         "! ",
                         Style::default()
-                            .fg(ratatui::style::Color::Rgb(255, 120, 120))
+                            .fg(theme.warning)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         "This command may access sensitive data (keys, tokens, credentials)",
-                        Style::default().fg(ratatui::style::Color::Rgb(255, 150, 150)),
+                        Style::default().fg(theme.warning),
                     ),
                 ]));
             }
@@ -234,7 +248,8 @@ impl PermissionDialog {
         let detail = Paragraph::new(details).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border)),
+                .border_style(Style::default().fg(theme.border))
+                .style(Style::default().bg(theme.background)),
         );
         frame.render_widget(detail, chunks[1]);
 
@@ -259,7 +274,7 @@ impl PermissionDialog {
                 } else {
                     if i == self.selected_option {
                         Style::default()
-                            .fg(ratatui::style::Color::White)
+                            .fg(theme.background)
                             .bg(theme.primary)
                     } else {
                         Style::default().fg(theme.foreground)
@@ -273,7 +288,8 @@ impl PermissionDialog {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Options (↑↓ select, Enter confirm) ")
-                .border_style(Style::default().fg(theme.border)),
+                .border_style(Style::default().fg(theme.border))
+                .style(Style::default().bg(theme.background)),
         );
         frame.render_widget(options_para, chunks[2]);
     }

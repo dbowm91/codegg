@@ -18,20 +18,20 @@ pub struct OpenAiConfig {
     pub requires_org_header: bool,
     pub organization: Option<String>,
     pub omit_stream_options: bool,
-    pub tool_choice_auto: bool,
+    pub tool_choice: crate::provider::openai_compatible::ToolChoice,
 }
 
 impl Default for OpenAiConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
-            base_url: "https://api.openai.com".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
             provider_id: "openai".to_string(),
             provider_name: "OpenAI".to_string(),
             requires_org_header: false,
             organization: None,
             omit_stream_options: false,
-            tool_choice_auto: true,
+            tool_choice: crate::provider::openai_compatible::ToolChoice::Auto,
         }
     }
 }
@@ -148,9 +148,26 @@ impl OpenAiProvider {
                     content,
                     tool_calls,
                 } => {
+                    let content_value = if tool_calls.is_empty() {
+                        assistant_text_content_value(content)
+                    } else {
+                        let text = content
+                            .iter()
+                            .filter_map(|p| match p {
+                                ContentPart::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
+                        if text.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::Value::String(text)
+                        }
+                    };
                     let mut assistant_msg = json!({
                         "role": "assistant",
-                        "content": assistant_text_content_value(content)
+                        "content": content_value,
                     });
 
                     if !tool_calls.is_empty() {
@@ -194,8 +211,23 @@ impl OpenAiProvider {
         if let Some(ref tools) = req.tools {
             let tool_defs: Vec<serde_json::Value> = tools.iter().map(|t| t.to_openai()).collect();
             body["tools"] = serde_json::json!(tool_defs);
-            if self.cfg.tool_choice_auto {
-                body["tool_choice"] = serde_json::json!("auto");
+            use crate::provider::openai_compatible::ToolChoice;
+            match &self.cfg.tool_choice {
+                ToolChoice::Auto => {
+                    body["tool_choice"] = serde_json::json!("auto");
+                }
+                ToolChoice::Required => {
+                    body["tool_choice"] = serde_json::json!("required");
+                }
+                ToolChoice::None => {
+                    body["tool_choice"] = serde_json::json!("none");
+                }
+                ToolChoice::Specific(name) => {
+                    body["tool_choice"] = serde_json::json!({
+                        "type": "function",
+                        "function": {"name": name}
+                    });
+                }
             }
         }
 

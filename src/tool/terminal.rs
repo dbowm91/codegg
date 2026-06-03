@@ -40,7 +40,7 @@ static BLOCKED_PATTERN: Lazy<Regex> = Lazy::new(|| {
         |\|\|[\s\n\r]*rm[\s\n\r]+-rf       # || rm -rf
         |%\{[^}]*\|\s*&                   # printf injection
         |eval\s*\(                        # eval
-        |exec\s+                          # exec
+        |(?:^|[\s;&|()<>])exec\s+         # exec (as standalone command, not -exec flag)
         |source\s+.*\.sh                  # source shell script
         |\.\s+.*\.sh                      # dot source shell script
         |base64\s+-d                       # base64 decode

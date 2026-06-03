@@ -1391,7 +1391,11 @@ impl App {
         } else {
             0
         };
-        self.sidebar.set_context_pct(ctx_pct);
+        self.sidebar.set_context_info(
+            self.session_state.context_tokens as u64,
+            self.session_state.context_limit as u64,
+            ctx_pct,
+        );
 
         frame.render_widget(&self.sidebar, area);
     }
@@ -5495,11 +5499,11 @@ impl App {
                 base_url_example: Some("https://opencode.ai/zen/v1".to_string()),
             },
             ProviderInfo {
-                id: "codegg_go".to_string(),
-                name: "Codegg Go".to_string(),
-                description: "Enterprise models from Codegg".to_string(),
+                id: "opencode_go".to_string(),
+                name: "OpenCode Go".to_string(),
+                description: "Enterprise models from OpenCode".to_string(),
                 requires_api_key: true,
-                env_var_name: Some("CODEGG_GO_API_KEY".to_string()),
+                env_var_name: Some("OPENCODE_GO_API_KEY".to_string()),
                 base_url_example: Some("https://opencode.ai/go/v1".to_string()),
             },
             ProviderInfo {
@@ -5517,6 +5521,14 @@ impl App {
                 requires_api_key: true,
                 env_var_name: Some("ZAI_API_KEY".to_string()),
                 base_url_example: Some("https://api.z.ai".to_string()),
+            },
+            ProviderInfo {
+                id: "generalcompute".to_string(),
+                name: "GeneralCompute".to_string(),
+                description: "GeneralCompute.com LLM provider".to_string(),
+                requires_api_key: true,
+                env_var_name: Some("GENERALCOMPUTE_API_KEY".to_string()),
+                base_url_example: Some("https://api.generalcompute.com/v1".to_string()),
             },
         ];
 
@@ -6172,7 +6184,7 @@ impl App {
             ("google", "GOOGLE_API_KEY"),
             ("minimax", "MINIMAX_API_KEY"),
             ("codegg_zen", "CODEGG_ZEN_API_KEY"),
-            ("codegg_go", "CODEGG_GO_API_KEY"),
+            ("opencode_go", "OPENCODE_GO_API_KEY"),
         ];
 
         for (id, var) in active_vars {

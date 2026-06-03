@@ -579,9 +579,18 @@ pub fn register_builtin_with_config(
         registry,
         providers,
         disabled,
-        "codegg_go",
-        "CODEGG_GO_API_KEY",
-        |key| Box::new(crate::provider::additional::create_codegg_go(key)),
+        "opencode_go",
+        "OPENCODE_GO_API_KEY",
+        |key| Box::new(crate::provider::additional::create_opencode_go(key)),
+    );
+
+    register_env_fallback_provider(
+        registry,
+        providers,
+        disabled,
+        "generalcompute",
+        "GENERALCOMPUTE_API_KEY",
+        |key| Box::new(crate::provider::additional::create_generalcompute(key)),
     );
 
     if registry.list().is_empty() {

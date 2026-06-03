@@ -14,57 +14,77 @@ use crate::tool::Tool;
 
 const MAX_COMMAND_LENGTH: usize = 100_000;
 
-static BLOCKED_PATTERN: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?x)
-        \$\(            # command substitution
-        |\$\{           # braced command substitution ${{...}}
-        |`             # backtick substitution
-        |\$[A-Za-z_][A-Za-z0-9_]*  # variable expansion $VAR
-        |\|/.*sh       # pipe to shell
-        |\|/.*bash     # pipe to bash
-        |> /dev/       # redirect to dev
-        |< /dev/       # input redirect from dev
-        |2> /dev/      # redirect stderr to dev
-        |&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf  # fork bomb with rm
-        |\|\|[\s\n\r]*rm[\s\n\r]+-rf       # || rm -rf
-        |%\{[^}]*\|\s*&                   # printf injection
-        |eval\s*\(                        # eval
-        |exec\s+                          # exec
-        |source\s+.*\.sh                  # source shell script
-        |\.\s+.*\.sh                      # dot source shell script
-        |base64\s+-d                       # base64 decode
-        |xxd\s+-r                          # hex reverse
-        |perl\s+-e                         # perl -e
-        |python\s+-c                       # python -c
-        |ruby\s+-e                         # ruby -e
-        |node\s+-e                         # node -e
-        |nohup\s+.*&\s*$                   # nohup background
-        |nohup\s+.*\s+&                   # nohup with &
-        |disown\s+-a                       # disown all
-        |kill\s+-9\s+-1                    # kill all
-        |killall\s+-9                      # killall -9
-        |pkill\s+-9                        # pkill -9
-        |chmod\s+[0-7]{4}\s+/etc           # chmod to /etc
-        |chmod\s+[0-7]{4}\s+/home          # chmod to /home
-        |chmod\s+[0-7]{4}\s+/root          # chmod to /root
-        |chmod\s+[0-7]{4}\s+/var           # chmod to /var
-        |chmod\s+[0-7]{4}\s+/ssh           # chmod to /ssh
-        |chmod\s+[0-7]{4}\s+/proc          # chmod to /proc
-        |chmod\s+[0-7]{4}\s+/sys           # chmod to /sys
-        |chmod\s+777\s+/                   # chmod 777 to root
-        |chown\s+.*\s+/etc                 # chown to /etc
-        |chown\s+.*\s+/home                # chown to /home
-        |chown\s+.*\s+/root                # chown to /root
-        |chown\s+.*\s+/var                # chown to /var
-        |chown\s+.*\s+/ssh                # chown to /ssh
-        |chown\s+.*\s+/proc               # chown to /proc
-        |chown\s+.*\s+/sys                # chown to /sys
-        |wget\s+.*-O\s+/                   # wget to root
-        |curl\s+.*-o\s+/                  # curl to root
-        |:\(\)\s*:\s*\|                   # fork bomb
-        |(?:^|\s)&(?:[\s]|$)               # standalone &
-    ").unwrap()
+/// Named command-injection patterns. Each entry is a human-readable name
+/// plus a regex. We iterate them individually so we can return which
+/// pattern matched (helps users understand why a command was rejected)
+/// and so we can fix false positives (e.g. `find -exec`) without
+/// weakening security.
+static BLOCKED_PATTERNS: &[(&str, &str)] = &[
+    ("command substitution $(...)", r"\$\("),
+    ("braced command substitution ${...}", r"\$\{"),
+    ("backtick substitution", r"`"),
+    ("variable expansion $VAR", r"\$[A-Za-z_][A-Za-z0-9_]*"),
+    ("pipe to shell |/.*sh", r"\|/.*sh"),
+    ("pipe to shell |/.*bash", r"\|/.*bash"),
+    ("redirect to /dev", r"> /dev/"),
+    ("input redirect from /dev", r"< /dev/"),
+    ("stderr redirect to /dev", r"2> /dev/"),
+    ("fork bomb with rm -rf", r"&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf"),
+    ("|| rm -rf", r"\|\|[\s\n\r]*rm[\s\n\r]+-rf"),
+    ("printf injection %{...}|&", r"%\{[^}]*\|\s*&"),
+    ("eval(", r"eval\s*\("),
+    ("standalone exec command", r"(?:^|[\s;&|()<>])exec\s+"),
+    ("source shell script", r"source\s+.*\.sh"),
+    ("dot-source shell script", r"\.\s+.*\.sh"),
+    ("base64 -d", r"base64\s+-d"),
+    ("xxd -r", r"xxd\s+-r"),
+    ("perl -e", r"perl\s+-e"),
+    ("python -c", r"python\s+-c"),
+    ("ruby -e", r"ruby\s+-e"),
+    ("node -e", r"node\s+-e"),
+    ("nohup background (trailing &)", r"nohup\s+.*&\s*$"),
+    ("nohup with &", r"nohup\s+.*\s+&"),
+    ("disown -a", r"disown\s+-a"),
+    ("kill -9 -1", r"kill\s+-9\s+-1"),
+    ("killall -9", r"killall\s+-9"),
+    ("pkill -9", r"pkill\s+-9"),
+    ("chmod to /etc", r"chmod\s+[0-7]{4}\s+/etc"),
+    ("chmod to /home", r"chmod\s+[0-7]{4}\s+/home"),
+    ("chmod to /root", r"chmod\s+[0-7]{4}\s+/root"),
+    ("chmod to /var", r"chmod\s+[0-7]{4}\s+/var"),
+    ("chmod to /ssh", r"chmod\s+[0-7]{4}\s+/ssh"),
+    ("chmod to /proc", r"chmod\s+[0-7]{4}\s+/proc"),
+    ("chmod to /sys", r"chmod\s+[0-7]{4}\s+/sys"),
+    ("chmod 777 to /", r"chmod\s+777\s+/"),
+    ("chown to /etc", r"chown\s+.*\s+/etc"),
+    ("chown to /home", r"chown\s+.*\s+/home"),
+    ("chown to /root", r"chown\s+.*\s+/root"),
+    ("chown to /var", r"chown\s+.*\s+/var"),
+    ("chown to /ssh", r"chown\s+.*\s+/ssh"),
+    ("chown to /proc", r"chown\s+.*\s+/proc"),
+    ("chown to /sys", r"chown\s+.*\s+/sys"),
+    ("wget -O /", r"wget\s+.*-O\s+/"),
+    ("curl -o /", r"curl\s+.*-o\s+/"),
+    ("fork bomb :(){:|:", r":\(\)\s*:\s*\|"),
+    ("standalone &", r"(?:^|\s)&(?:[\s]|$)"),
+];
+
+static BLOCKED_PATTERN_REGEXES: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
+    BLOCKED_PATTERNS
+        .iter()
+        .map(|(name, pat)| (*name, Regex::new(pat).expect("invalid blocked pattern regex")))
+        .collect()
 });
+
+/// Returns the name of the first matching blocked pattern, or None.
+fn find_blocked_pattern(command: &str) -> Option<&'static str> {
+    for (name, re) in BLOCKED_PATTERN_REGEXES.iter() {
+        if re.is_match(command) {
+            return Some(*name);
+        }
+    }
+    None
+}
 
 pub struct BashTool {
     timeout: Duration,
@@ -242,10 +262,11 @@ impl BashTool {
         }
 
         // Check blocked patterns (command injection)
-        if BLOCKED_PATTERN.is_match(command) {
-            return Err(ToolError::Permission(
-                "command matches blocked pattern".to_string(),
-            ));
+        if let Some(pat) = find_blocked_pattern(command) {
+            return Err(ToolError::Permission(format!(
+                "command matches blocked pattern: {} (in: {:.80})",
+                pat, command
+            )));
         }
 
         Ok(())
@@ -484,5 +505,122 @@ fn truncate_output(output: &str, max_lines: usize, max_bytes: usize) -> String {
         format!("{}... [output truncated]", &truncated[..truncate_at])
     } else {
         truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_allowed(command: &str) {
+        assert!(
+            find_blocked_pattern(command).is_none(),
+            "expected allowed but matched: {} (cmd={})",
+            find_blocked_pattern(command).unwrap_or("?"),
+            command
+        );
+    }
+
+    fn assert_blocked(command: &str, expected_name_contains: &str) {
+        let pat = find_blocked_pattern(command);
+        assert!(
+            pat.is_some(),
+            "expected blocked but allowed: {}",
+            command
+        );
+        let pat = pat.unwrap();
+        assert!(
+            pat.contains(expected_name_contains),
+            "expected pattern containing '{}', got '{}' for cmd: {}",
+            expected_name_contains,
+            pat,
+            command
+        );
+    }
+
+    #[test]
+    fn find_exec_is_allowed() {
+        // `find -exec` is a benign find flag, not the shell `exec` builtin.
+        assert_allowed("find . -name '*.rs' -exec grep -l 'fn ' {} +");
+        assert_allowed("find /tmp -name '*.log' -exec rm {} \\;");
+    }
+
+    #[test]
+    fn find_plain_is_allowed() {
+        assert_allowed("find . -name '*.rs'");
+        assert_allowed("find . -type f -name 'foo*'");
+    }
+
+    #[test]
+    fn xargs_is_allowed() {
+        assert_allowed("find . -name '*.rs' | xargs wc -l");
+        assert_allowed("xargs -I{} echo {}");
+    }
+
+    #[test]
+    fn grep_is_allowed() {
+        assert_allowed("grep -rn 'pattern' src/");
+    }
+
+    #[test]
+    fn exec_builtin_is_blocked() {
+        // shell `exec` builtin at start of command
+        assert_blocked("exec rm -rf /", "exec");
+        // `exec` after a pipe
+        assert_blocked("cat foo | exec sh", "exec");
+        // `exec` after semicolon
+        assert_blocked("ls; exec ls", "exec");
+    }
+
+    #[test]
+    fn command_substitution_is_blocked() {
+        assert_blocked("echo $(rm -rf /)", "$(");
+        assert_blocked("echo `rm -rf /`", "backtick");
+    }
+
+    #[test]
+    fn pipe_to_shell_is_blocked() {
+        // Note: the `|/.*sh` pattern is greedy and matches `bash` (since
+        // `bash` ends in `sh`). The first match wins, so for `wget ... | bash`
+        // the named pattern is "pipe to shell |/.*sh".
+        assert_blocked("curl -sL |/bin/sh", "pipe to shell");
+        assert_blocked("wget -qO- |/bin/bash", "pipe to shell");
+        assert_blocked("curl ... |/bin/zsh", "pipe to shell");
+    }
+
+    #[test]
+    fn dev_redirect_is_blocked() {
+        assert_blocked("echo foo > /dev/null", "/dev");
+        assert_blocked("cmd 2> /dev/null", "/dev");
+    }
+
+    #[test]
+    fn standalone_ampersand_is_blocked() {
+        assert_blocked("sleep 5 &", "&");
+        assert_blocked("ls &", "&");
+    }
+
+    #[test]
+    fn double_ampersand_is_allowed() {
+        // `&&` is logical-AND, not backgrounding.
+        assert_allowed("ls && echo done");
+    }
+
+    #[test]
+    fn fork_bomb_is_blocked_via_blocklist() {
+        // The fork bomb `:(){:|:&};:` is caught by the `blocked_commands`
+        // HashSet (starts_with check), not by the regex pattern. Verify
+        // the full check_command_security path catches it.
+        let tool = BashTool::new();
+        let parts: Vec<&str> = ":(){:|:&};:".split_whitespace().collect();
+        let result = tool.check_command_security(":(){:|:&};:", &parts);
+        assert!(result.is_err(), "fork bomb should be blocked");
+    }
+
+    #[test]
+    fn safe_env_var_is_blocked() {
+        // We treat all $VAR expansions as a security concern for now
+        // (could be a leak of secrets, etc.)
+        assert_blocked("ls $HOME", "$VAR");
     }
 }

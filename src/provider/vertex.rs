@@ -25,7 +25,7 @@ impl VertexProvider {
                     base_url,
                     auth_header: "Bearer".to_string(),
                     extra_headers: Vec::new(),
-                    tool_choice_auto: false,
+                    tool_choice: crate::provider::openai_compatible::ToolChoice::None,
                     models: vec![
                         ModelInfo {
                             id: "vertex/gemini-2.5-pro".to_string(),

@@ -388,6 +388,191 @@ fn tool_result_is_success(output: &str) -> bool {
     !output.starts_with("Error: ")
 }
 
+/// Returns true if a bash command is a safe, read-only operation that
+/// can be auto-accepted without prompting the user for permission.
+///
+/// The check is intentionally strict:
+///   * No shell operators that can chain side-effects: `|`, `;`, `&&`, `||`,
+///     `>`, `<`, backticks, `$(`, leading `&`.
+///   * No variable expansion (`$VAR`, `${VAR}`) — could leak secrets or
+///     alter behavior unpredictably.
+///   * No path to a clearly sensitive file (e.g. `/etc/passwd`,
+///     `/etc/shadow`, `~/.ssh/`).
+///   * First token must be a known-safe command, and per-command flags
+///     are filtered to reject variants that can write or escalate
+///     (e.g. `find -exec`, `grep -P`).
+///
+/// Bash commands that don't match still go through the normal permission
+/// prompt, where the user can allow/deny/always-allow.
+fn is_safe_readonly_bash_command(command: &str) -> bool {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    // Reject shell operators / expansion that could chain destructive ops.
+    if trimmed.contains('|')
+        || trimmed.contains(';')
+        || trimmed.contains('>')
+        || trimmed.contains('<')
+        || trimmed.contains('`')
+        || trimmed.contains("$(")
+        || trimmed.contains("${")
+        || trimmed.contains("&&")
+        || trimmed.contains("||")
+        || trimmed.contains("&")
+    {
+        return false;
+    }
+    // Any `$X` expansion could be a secret or could be a path override.
+    if trimmed.contains('$') {
+        return false;
+    }
+
+    // Reject obvious sensitive paths anywhere in the command.
+    let lower = trimmed.to_lowercase();
+    const SENSITIVE_PATH_FRAGMENTS: &[&str] = &[
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/sudoers",
+        "/.ssh/",
+        "/.aws/",
+        "/.gnupg/",
+        "/.kube/",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+    ];
+    for frag in SENSITIVE_PATH_FRAGMENTS {
+        if lower.contains(frag) {
+            return false;
+        }
+    }
+
+    // Tokenize: split on whitespace, honoring simple single/double quotes
+    // so we don't get tripped up by paths with spaces. We only care about
+    // flag scanning, so we ignore quoted-content correctly enough.
+    let parts = tokenize_shell_args(trimmed);
+    if parts.is_empty() {
+        return false;
+    }
+
+    // Reject any obvious privilege-escalation prefix.
+    if matches!(parts[0].as_str(), "sudo" | "su" | "doas" | "pkexec") {
+        return false;
+    }
+
+    match parts[0].as_str() {
+        "pwd" | "ls" | "echo" | "cat" | "head" | "tail" | "wc" | "file" | "stat"
+        | "which" | "whereis" | "type" | "printenv" | "date" | "uname" | "whoami"
+        | "id" | "groups" | "hostname" | "realpath" | "dirname" | "basename" | "du"
+        | "df" | "ps" | "free" | "uptime" | "nproc" | "arch" | "tree" | "tput" => true,
+        "env" => {
+            // `env` by itself prints the environment which can leak secrets.
+            // `env FOO=bar cmd` is also a privilege/scope change — disallow.
+            false
+        }
+        "grep" | "rg" | "ag" | "ack" => {
+            // Reject flags that enable scripting/escape behavior.
+            !parts
+                .iter()
+                .any(|p| matches!(p.as_str(), "-P" | "--perl-regexp" | "-e" | "--regexp"))
+        }
+        "find" => {
+            // Reject flags that execute commands or write/delete files.
+            !parts.iter().any(|p| {
+                matches!(
+                    p.as_str(),
+                    "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete" | "-fprintf" | "-fls"
+                )
+            })
+        }
+        "git" => {
+            if parts.len() < 2 {
+                return false;
+            }
+            // Allow only obviously read-only git subcommands, then check
+            // that the args don't introduce a mutating flag.
+            matches!(
+                parts[1].as_str(),
+                "status"
+                    | "log"
+                    | "diff"
+                    | "show"
+                    | "branch"
+                    | "ls-files"
+                    | "ls-tree"
+                    | "cat-file"
+                    | "rev-parse"
+                    | "remote"
+                    | "stash"
+                    | "tag"
+                    | "config"
+            ) && !git_subcommand_is_mutating(&parts[1..])
+        }
+        _ => false,
+    }
+}
+
+/// Returns true if a `git` subcommand args vector contains a write
+/// (e.g. `git stash drop`, `git tag -d`, `git config --add`).
+fn git_subcommand_is_mutating(args: &[String]) -> bool {
+    if args.is_empty() {
+        return false;
+    }
+    match args[0].as_str() {
+        "stash" => {
+            // Only `git stash list`/`show` are read-only.
+            !(args.len() >= 2 && matches!(args[1].as_str(), "list" | "show"))
+        }
+        "tag" => args.iter().any(|a| matches!(a.as_str(), "-d" | "--delete")),
+        "config" => args
+            .iter()
+            .any(|a| matches!(a.as_str(), "--add" | "--replace-all" | "--unset" | "--edit")),
+        "branch" => args
+            .iter()
+            .any(|a| matches!(a.as_str(), "-d" | "-D" | "--delete" | "-m" | "--move")),
+        _ => false,
+    }
+}
+
+/// Very small shell-like tokenizer that splits on whitespace but
+/// preserves single- and double-quoted strings as single tokens.
+/// Good enough for flag-safety checks; not a full POSIX sh parser.
+fn tokenize_shell_args(input: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut had_content = false;
+    for ch in input.chars() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                had_content = true;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                had_content = true;
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if had_content {
+                    out.push(std::mem::take(&mut current));
+                    had_content = false;
+                }
+            }
+            c => {
+                current.push(c);
+                had_content = true;
+            }
+        }
+    }
+    if had_content {
+        out.push(current);
+    }
+    out
+}
+
 fn is_path_within_working_directory(path: Option<&str>) -> bool {
     let cwd = match std::env::current_dir().and_then(|p| p.canonicalize()) {
         Ok(p) => p,
@@ -621,6 +806,29 @@ impl AgentLoop {
                         };
                     }
                     return ToolPermissionOutcome::Allowed(tc.clone());
+                }
+
+                // Auto-accept safe read-only bash commands (pwd, ls, cat,
+                // git status, etc.) so simple inspection doesn't trigger a
+                // prompt. The bash tool's own security check still runs at
+                // execute-time, so this is a UX shortcut, not a security
+                // hole. Anything that could write, mutate, escalate, or
+                // chain commands still goes through the normal prompt.
+                if tc.name.as_str() == "bash" {
+                    if let Some(ref cmd) = bash_command {
+                        if is_safe_readonly_bash_command(cmd) {
+                            if doom_loop {
+                                return ToolPermissionOutcome::Denied {
+                                    tool_id: tc.id.to_string(),
+                                    message: format!(
+                                        "Tool '{}' denied: potential doom loop detected (repeated identical tool calls)",
+                                        tc.name
+                                    ),
+                                };
+                            }
+                            return ToolPermissionOutcome::Allowed(tc.clone());
+                        }
+                    }
                 }
 
                 let perm_id = format!("{}-{}", tc.id, tc.name);
@@ -1894,6 +2102,8 @@ impl AgentLoop {
         let mut post_tool_continuation_retry_budget: u8 = 0;
         let mut just_executed_tools = false;
         let mut did_bootstrap_tool = false;
+        let mut bootstrap_repeat_budget: u8 = 0;
+        let mut narration_retry_budget: u8 = 0;
         let original_prompt = request
             .messages
             .iter()
@@ -2007,7 +2217,16 @@ impl AgentLoop {
             all_events.extend(events);
 
             let mut tool_calls = processor.tool_calls().to_vec();
-            if tool_calls.is_empty() && matches!(processor.stop_reason(), Some("tool_calls")) {
+            if tool_calls.is_empty() {
+                if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
+                    let preview: String = processor.text().chars().take(200).collect();
+                    tracing::info!(
+                        "tool-parse-fallback: tool_calls=0, stop_reason={:?}, text_len={}, text_preview={:?}",
+                        processor.stop_reason(),
+                        processor.text().len(),
+                        preview
+                    );
+                }
                 if let Some(parsed_calls) = parse_text_as_tool_calls(processor.text()) {
                     for tc in &parsed_calls {
                         crate::bus::global::GlobalEventBus::publish(AppEvent::ToolCallStarted {
@@ -2026,14 +2245,19 @@ impl AgentLoop {
                     .execution_policy
                     .as_ref()
                     .map_or(true, |p| p.allow_bootstrap_tool);
+                let stop_is_soft_or_confused = is_soft_stop_reason(processor.stop_reason())
+                    || matches!(processor.stop_reason(), Some("tool_calls"));
+                let model_stuck_narrating = indicates_more_work(processor.text())
+                    && processor.text().trim().len() >= 10;
                 if bootstrap_allowed
-                    && !did_bootstrap_tool
-                    && self.state.turn_count <= 2
-                    && is_soft_stop_reason(processor.stop_reason())
+                    && (!did_bootstrap_tool
+                        || (model_stuck_narrating && bootstrap_repeat_budget < 2))
+                    && self.state.turn_count <= 6
+                    && stop_is_soft_or_confused
                     && is_repo_task_prompt(&original_prompt)
                 {
                     let synthetic = ToolCall {
-                        id: "synthetic_bootstrap_list".to_string().into(),
+                        id: format!("call_bootstrap_{}", uuid::Uuid::new_v4()).into(),
                         name: "list".to_string().into(),
                         arguments: serde_json::json!({"path":"."}),
                     };
@@ -2067,6 +2291,7 @@ impl AgentLoop {
                         request.messages.push(msg);
                     }
                     did_bootstrap_tool = true;
+                    bootstrap_repeat_budget += 1;
                     processor.reset();
                     continue;
                 }
@@ -2103,6 +2328,32 @@ impl AgentLoop {
                     processor.reset();
                     continue;
                 }
+                let stop_is_soft_or_confused = is_soft_stop_reason(processor.stop_reason())
+                    || matches!(processor.stop_reason(), Some("tool_calls"));
+                if stop_is_soft_or_confused
+                    && indicates_more_work(processor.text())
+                    && narration_retry_budget < 2
+                {
+                    if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
+                        tracing::info!(
+                            "narration-retry: stop_reason={:?}, text_preview={:?}",
+                            processor.stop_reason(),
+                            processor.text().chars().take(200).collect::<String>()
+                        );
+                    }
+                    if let Some(msg) = processor.to_assistant_message() {
+                        self.context_tracker.add_message(&msg);
+                        request.messages.push(msg);
+                    }
+                    push_control_instruction(
+                        &mut request.messages,
+                        &model_profile,
+                        "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
+                    );
+                    narration_retry_budget += 1;
+                    processor.reset();
+                    continue;
+                }
                 if matches!(processor.stop_reason(), Some("tool_calls"))
                     && missing_structured_tool_call_retries < 2
                 {
@@ -2116,14 +2367,33 @@ impl AgentLoop {
                     continue;
                 }
                 if matches!(processor.stop_reason(), Some("tool_calls")) {
+                    let raw_text = processor.text().to_string();
+                    let preview = if raw_text.len() > 600 {
+                        format!("{}…", &raw_text[..600])
+                    } else {
+                        raw_text
+                    };
+                    let preview = if preview.is_empty() {
+                        "<empty stream>".to_string()
+                    } else {
+                        preview
+                    };
+                    tracing::warn!(
+                        "Model returned stop_reason=tool_calls without parseable structured tool calls after retries; raw_text={}",
+                        preview
+                    );
                     crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                        message: "Model returned stop_reason=tool_calls without parseable structured tool calls after retries".to_string(),
+                        message: format!(
+                            "Model returned stop_reason=tool_calls without parseable structured tool calls after retries. Raw text: {}",
+                            preview
+                        ),
                     });
                 }
                 break;
             }
             missing_structured_tool_call_retries = 0;
             post_tool_continuation_retry_budget = 0;
+            narration_retry_budget = 0;
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
 
@@ -3023,6 +3293,7 @@ impl AgentLoop {
             let mut missing_structured_tool_call_retries: u8 = 0;
             let mut post_tool_continuation_retry_budget: u8 = 0;
             let mut just_executed_tools = false;
+            let mut narration_retry_budget: u8 = 0;
             loop {
                 self.compact_if_needed(&mut request.messages, &model_profile).await;
                 harden_history(&mut request.messages);
@@ -3041,7 +3312,16 @@ impl AgentLoop {
                 all_events.extend(events);
 
                 let mut tool_calls = processor.tool_calls().to_vec();
-                if tool_calls.is_empty() && matches!(processor.stop_reason(), Some("tool_calls")) {
+                if tool_calls.is_empty() {
+                    if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
+                        let preview: String = processor.text().chars().take(200).collect();
+                        tracing::info!(
+                            "tool-parse-fallback(followup): tool_calls=0, stop_reason={:?}, text_len={}, text_preview={:?}",
+                            processor.stop_reason(),
+                            processor.text().len(),
+                            preview
+                        );
+                    }
                     if let Some(parsed_calls) = parse_text_as_tool_calls(processor.text()) {
                         for tc in &parsed_calls {
                             crate::bus::global::GlobalEventBus::publish(
@@ -3082,6 +3362,31 @@ impl AgentLoop {
                         processor.reset();
                         continue;
                     }
+                    let stop_is_soft_or_confused_fu = is_soft_stop_reason(processor.stop_reason())
+                        || matches!(processor.stop_reason(), Some("tool_calls"));
+                    if stop_is_soft_or_confused_fu
+                        && indicates_more_work(processor.text())
+                        && narration_retry_budget < 2
+                    {
+                        if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
+                            tracing::info!(
+                                "narration-retry(followup): stop_reason={:?}, text_preview={:?}",
+                                processor.stop_reason(),
+                                processor.text().chars().take(200).collect::<String>()
+                            );
+                        }
+                        if let Some(msg) = processor.to_assistant_message() {
+                            request.messages.push(msg);
+                        }
+                        push_control_instruction(
+                            &mut request.messages,
+                            &model_profile,
+                            "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
+                        );
+                        narration_retry_budget += 1;
+                        processor.reset();
+                        continue;
+                    }
                     if matches!(processor.stop_reason(), Some("tool_calls"))
                         && missing_structured_tool_call_retries < 2
                     {
@@ -3095,8 +3400,26 @@ impl AgentLoop {
                         continue;
                     }
                     if matches!(processor.stop_reason(), Some("tool_calls")) {
+                        let raw_text = processor.text().to_string();
+                        let preview = if raw_text.len() > 600 {
+                            format!("{}…", &raw_text[..600])
+                        } else {
+                            raw_text
+                        };
+                        let preview = if preview.is_empty() {
+                            "<empty stream>".to_string()
+                        } else {
+                            preview
+                        };
+                        tracing::warn!(
+                            "Model returned stop_reason=tool_calls without parseable structured tool calls after retries; raw_text={}",
+                            preview
+                        );
                         crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                        message: "Model returned stop_reason=tool_calls without parseable structured tool calls after retries".to_string(),
+                        message: format!(
+                            "Model returned stop_reason=tool_calls without parseable structured tool calls after retries. Raw text: {}",
+                            preview
+                        ),
                     });
                     }
                     processor.reset();
@@ -3278,6 +3601,27 @@ mod tests {
     }
 
     #[test]
+    fn test_narration_retry_triggers_on_soft_stop_with_intent() {
+        assert!(is_soft_stop_reason(Some("stop")));
+        assert!(is_soft_stop_reason(Some("end_turn")));
+        assert!(!is_soft_stop_reason(Some("tool_calls")));
+        assert!(!is_soft_stop_reason(None));
+
+        assert!(indicates_more_work(
+            "I'll review the module. Let me start by exploring the structure and key files."
+        ));
+        assert!(indicates_more_work("Let me read the README first."));
+        assert!(indicates_more_work("I will now check the tests."));
+        assert!(indicates_more_work("Next, I need to verify the API."));
+        assert!(indicates_more_work("Now I will inspect the cache."));
+
+        assert!(!indicates_more_work(
+            "This is a complete answer with no follow-up intent."
+        ));
+        assert!(!indicates_more_work("The function returns 42."));
+    }
+
+    #[test]
     fn test_is_test_command_npm() {
         assert!(is_test_command("npm test"));
         assert!(is_test_command("pnpm test"));
@@ -3315,5 +3659,177 @@ mod tests {
         assert!(!is_test_command("git status"));
         assert!(!is_test_command("echo hello"));
         assert!(!is_test_command(""));
+    }
+
+    fn assert_safe(cmd: &str) {
+        assert!(
+            is_safe_readonly_bash_command(cmd),
+            "expected safe: {}",
+            cmd
+        );
+    }
+
+    fn assert_unsafe(cmd: &str) {
+        assert!(
+            !is_safe_readonly_bash_command(cmd),
+            "expected unsafe (would still prompt): {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn safe_readonly_basic_commands() {
+        assert_safe("pwd");
+        assert_safe("pwd\n");
+        assert_safe("ls");
+        assert_safe("ls -la");
+        assert_safe("ls -la /tmp");
+        assert_safe("ls -R src/");
+        assert_safe("echo hello");
+        assert_safe("echo \"hello world\"");
+        assert_safe("cat file.txt");
+        assert_safe("head -n 5 file.txt");
+        assert_safe("tail -f /var/log/syslog");
+        assert_safe("wc -l src/main.rs");
+        assert_safe("file foo.rs");
+        assert_safe("stat /etc/hostname");
+        assert_safe("which cargo");
+        assert_safe("whoami");
+        assert_safe("id");
+        assert_safe("date");
+        assert_safe("uname -a");
+        assert_safe("realpath ./src");
+        assert_safe("tree -L 2 src");
+        assert_safe("du -sh src");
+        assert_safe("df -h");
+        assert_safe("ps aux");
+        assert_safe("hostname");
+    }
+
+    #[test]
+    fn safe_readonly_grep_variants() {
+        assert_safe("grep -rn foo src/");
+        assert_safe("grep pattern file");
+        assert_safe("rg pattern src/");
+        // -P (perl) and -e (literal expr) are rejected as too powerful.
+        assert_unsafe("grep -P 'foo|bar' file");
+        assert_unsafe("grep -e pattern file");
+    }
+
+    #[test]
+    fn safe_readonly_find_variants() {
+        assert_safe("find . -name '*.rs'");
+        assert_safe("find /tmp -type f");
+        assert_safe("find . -path '*/target/*' -prune");
+        // -exec / -delete / -fprintf are destructive.
+        assert_unsafe("find . -name '*.rs' -exec rm {} \\;");
+        assert_unsafe("find . -name '*.tmp' -delete");
+        assert_unsafe("find . -fprintf out.txt '%p\\n'");
+    }
+
+    #[test]
+    fn safe_readonly_git_variants() {
+        assert_safe("git status");
+        assert_safe("git log --oneline -10");
+        assert_safe("git diff HEAD~1");
+        assert_safe("git show HEAD");
+        assert_safe("git branch");
+        assert_safe("git ls-files");
+        assert_safe("git rev-parse HEAD");
+        assert_safe("git remote -v");
+        assert_safe("git stash list");
+        assert_safe("git stash show stash@{0}");
+        assert_safe("git config --get user.name");
+
+        // Mutating subcommands or flags must still prompt.
+        assert_unsafe("git commit -m 'msg'");
+        assert_unsafe("git push origin main");
+        assert_unsafe("git checkout -b feature");
+        assert_unsafe("git checkout -- file");
+        assert_unsafe("git stash drop");
+        assert_unsafe("git stash pop");
+        assert_unsafe("git branch -d feature");
+        assert_unsafe("git branch -D feature");
+        assert_unsafe("git tag -d v1.0");
+        assert_unsafe("git config --add foo bar");
+        assert_unsafe("git config --unset foo");
+        assert_unsafe("git merge feature");
+        assert_unsafe("git rebase main");
+    }
+
+    #[test]
+    fn unsafe_shell_operators() {
+        // Pipes / redirects / chaining must all require permission.
+        assert_unsafe("ls | grep foo");
+        assert_unsafe("ls; rm -rf /");
+        assert_unsafe("ls && rm -rf /");
+        assert_unsafe("ls || echo failed");
+        assert_unsafe("cat file > /tmp/out");
+        assert_unsafe("cat file >> /tmp/out");
+        assert_unsafe("cat file < /etc/passwd");
+        assert_unsafe("ls > /dev/null");
+        // Backticks and $(...) for command substitution.
+        assert_unsafe("echo `whoami`");
+        assert_unsafe("echo $(whoami)");
+        // Variable expansion could leak secrets / alter scope.
+        assert_unsafe("echo $HOME");
+        assert_unsafe("echo ${HOME}");
+        // Backgrounding.
+        assert_unsafe("sleep 10 &");
+    }
+
+    #[test]
+    fn unsafe_sensitive_paths() {
+        // Auto-accept must NEVER cover these — the bash tool's blocked_commands
+        // would catch them at execution time, but we also reject up-front so
+        // the model can't blast through with a "read-only" framing.
+        assert_unsafe("cat /etc/passwd");
+        assert_unsafe("cat /etc/shadow");
+        assert_unsafe("cat /etc/sudoers");
+        assert_unsafe("cat /home/user/.ssh/id_rsa");
+        assert_unsafe("cat /home/user/.aws/credentials");
+        assert_unsafe("cat /home/user/.gnupg/secring.gpg");
+        assert_unsafe("cat /home/user/.kube/config");
+    }
+
+    #[test]
+    fn unsafe_unknown_commands() {
+        assert_unsafe("");
+        assert_unsafe("   ");
+        assert_unsafe("rm -rf /");
+        assert_unsafe("mv a b");
+        assert_unsafe("cp a b");
+        assert_unsafe("chmod 777 file");
+        assert_unsafe("curl https://example.com");
+        assert_unsafe("wget https://example.com");
+        assert_unsafe("bash -c 'rm -rf /'");
+        assert_unsafe("sh -c 'echo bad'");
+        assert_unsafe("sudo rm -rf /");
+        assert_unsafe("su root");
+        assert_unsafe("env");
+        assert_unsafe("env FOO=bar ls");
+        assert_unsafe("python -c 'print(1)'");
+        assert_unsafe("perl -e 'print 1'");
+    }
+
+    #[test]
+    fn tokenize_basic() {
+        assert_eq!(
+            tokenize_shell_args("ls -la /tmp"),
+            vec!["ls", "-la", "/tmp"]
+        );
+        assert_eq!(
+            tokenize_shell_args("echo \"hello world\""),
+            vec!["echo", "hello world"]
+        );
+        assert_eq!(
+            tokenize_shell_args("echo 'a b' c"),
+            vec!["echo", "a b", "c"]
+        );
+        assert_eq!(
+            tokenize_shell_args("  ls   -la  "),
+            vec!["ls", "-la"]
+        );
+        assert_eq!(tokenize_shell_args(""), Vec::<String>::new());
     }
 }

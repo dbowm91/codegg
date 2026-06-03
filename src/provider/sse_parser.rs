@@ -91,6 +91,12 @@ impl SseParser {
                         .and_then(|c| c.as_str())
                         .or_else(|| error.get("type").and_then(|t| t.as_str()))
                         .unwrap_or("unknown");
+                    tracing::warn!(
+                        "SSE error event: code={}, message={}, raw={}",
+                        code,
+                        message,
+                        data
+                    );
                     return Some(Err(ProviderError::api(code.to_string(), message.to_string())));
                 }
                 return self.parse_openai_chunk(&val);
@@ -107,8 +113,15 @@ impl SseParser {
                         .and_then(|c| c.as_str())
                         .or_else(|| error.get("type").and_then(|t| t.as_str()))
                         .unwrap_or("unknown");
+                    tracing::warn!(
+                        "SSE error event (raw): code={}, message={}, raw={}",
+                        code,
+                        message,
+                        trimmed
+                    );
                     return Some(Err(ProviderError::api(code.to_string(), message.to_string())));
                 }
+                return self.parse_openai_chunk(&val);
             }
         }
         None
@@ -670,6 +683,12 @@ fn parse_anthropic_event_with_state(
                         u.cached_tokens = Some(cached as usize);
                     }
                     u.total_tokens = u.input_tokens + u.output_tokens;
+                    if std::env::var("CODEGG_DIAG_USAGE").is_ok() {
+                        eprintln!(
+                            "[usage-dump] message_delta.usage = {}",
+                            serde_json::to_string(usage).unwrap_or_default()
+                        );
+                    }
                     return Some(Ok(ChatEvent::Finish {
                         stop_reason: "stop".to_string().into(),
                         usage: u,

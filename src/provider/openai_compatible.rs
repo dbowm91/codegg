@@ -12,13 +12,21 @@ use serde_json::json;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
+pub enum ToolChoice {
+    Auto,
+    Required,
+    None,
+    Specific(String),
+}
+
+#[derive(Clone)]
 pub struct OpenAiCompatibleConfig {
     pub api_key: String,
     pub base_url: String,
     pub auth_header: String,
     pub extra_headers: Vec<(String, String)>,
     pub models: Vec<ModelInfo>,
-    pub tool_choice_auto: bool,
+    pub tool_choice: ToolChoice,
 }
 
 #[derive(Clone)]
@@ -49,7 +57,7 @@ impl OpenAiCompatibleProvider {
                 auth_header: "Authorization".to_string(),
                 extra_headers: Vec::new(),
                 models: Vec::new(),
-                tool_choice_auto: true,
+                tool_choice: ToolChoice::Auto,
             },
         )
     }
@@ -89,9 +97,26 @@ impl OpenAiCompatibleProvider {
                     content,
                     tool_calls,
                 } => {
+                    let content_value = if tool_calls.is_empty() {
+                        assistant_text_content_value(content)
+                    } else {
+                        let text = content
+                            .iter()
+                            .filter_map(|p| match p {
+                                ContentPart::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
+                        if text.is_empty() {
+                            serde_json::Value::Null
+                        } else {
+                            serde_json::Value::String(text)
+                        }
+                    };
                     let mut assistant_msg = json!({
                         "role": "assistant",
-                        "content": assistant_text_content_value(content)
+                        "content": content_value,
                     });
 
                     if !tool_calls.is_empty() {
@@ -136,14 +161,29 @@ impl OpenAiCompatibleProvider {
             "stream": true,
             "tools": tools_json,
         });
-        if self.config.tool_choice_auto
-            && request
-                .tools
-                .as_ref()
-                .map(|t| !t.is_empty())
-                .unwrap_or(false)
-        {
-            body["tool_choice"] = json!("auto");
+        let has_tools = request
+            .tools
+            .as_ref()
+            .map(|t| !t.is_empty())
+            .unwrap_or(false);
+        if has_tools {
+            match &self.config.tool_choice {
+                ToolChoice::Auto => {
+                    body["tool_choice"] = json!("auto");
+                }
+                ToolChoice::Required => {
+                    body["tool_choice"] = json!("required");
+                }
+                ToolChoice::None => {
+                    body["tool_choice"] = json!("none");
+                }
+                ToolChoice::Specific(name) => {
+                    body["tool_choice"] = json!({
+                        "type": "function",
+                        "function": {"name": name}
+                    });
+                }
+            }
         }
 
         body
@@ -163,6 +203,18 @@ impl Provider for OpenAiCompatibleProvider {
     async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
         let url = format!("{}/chat/completions", self.config.base_url);
         let body = self.build_body(request);
+
+        if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
+            let body_str = serde_json::to_string_pretty(&body).unwrap_or_default();
+            let preview: String = body_str.chars().take(4000).collect();
+            tracing::info!(
+                "openai_compatible request body: url={}, model={}, body_len={}, body_preview={}",
+                url,
+                request.model,
+                body_str.len(),
+                preview
+            );
+        }
 
         let tool_count = request.tools.as_ref().map(|t| t.len()).unwrap_or(0);
         let tool_preview = request
@@ -263,6 +315,10 @@ impl Provider for OpenAiCompatibleProvider {
                 status,
                 err
             );
+            if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
+                let preview: String = err.chars().take(2000).collect();
+                tracing::info!("openai_compatible error body: {}", preview);
+            }
             return Err(ProviderError::api(
                 "http_error",
                 format!("API error: {err}"),

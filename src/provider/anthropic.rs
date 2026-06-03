@@ -14,6 +14,9 @@ pub struct AnthropicProvider {
     api_key: String,
     base_url: String,
     client: reqwest::Client,
+    id_override: Option<String>,
+    name_override: Option<String>,
+    models_override: Option<Vec<ModelInfo>>,
 }
 
 impl AnthropicProvider {
@@ -22,11 +25,29 @@ impl AnthropicProvider {
             api_key,
             base_url: "https://api.anthropic.com".to_string(),
             client: create_http_client(),
+            id_override: None,
+            name_override: None,
+            models_override: None,
         }
     }
 
     pub fn with_base_url(mut self, url: String) -> Self {
         self.base_url = url;
+        self
+    }
+
+    pub fn with_id(mut self, id: String) -> Self {
+        self.id_override = Some(id);
+        self
+    }
+
+    pub fn with_name(mut self, name: String) -> Self {
+        self.name_override = Some(name);
+        self
+    }
+
+    pub fn with_models(mut self, models: Vec<ModelInfo>) -> Self {
+        self.models_override = Some(models);
         self
     }
 
@@ -160,11 +181,11 @@ fn parse_image_url(url: &str) -> (String, String) {
 #[async_trait]
 impl Provider for AnthropicProvider {
     fn id(&self) -> &str {
-        "anthropic"
+        self.id_override.as_deref().unwrap_or("anthropic")
     }
 
     fn name(&self) -> &str {
-        "Anthropic"
+        self.name_override.as_deref().unwrap_or("Anthropic")
     }
 
     fn clone_box(&self) -> Box<dyn Provider> {
@@ -256,6 +277,9 @@ impl Provider for AnthropicProvider {
     }
 
     async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        if let Some(models) = &self.models_override {
+            return Ok(models.clone());
+        }
         Ok(vec![
             ModelInfo {
                 id: "claude-sonnet-4-20250514".to_string(),

@@ -200,7 +200,7 @@ Registers 15 providers based on environment variables. Each provider is only reg
 
 Registers 16 providers from config file, with fallback to environment variables. This function:
 
-1. Registers 16 providers: the same 15 as `register_builtin()` plus `codegg_go`, each checking config first then env var
+1. Registers 16 providers: the same 15 as `register_builtin()` plus `opencode_go`, each checking config first then env var
 2. **Per-provider independence**: Each provider is checked independently against the config map. Adding one provider (e.g., `anthropic`) via config does NOT suppress or disable other providers that fall back to env vars. This is a per-provider fallback, not a global toggle.
 3. Only calls `register_builtin()` if registry is still empty after config-based registration
 
@@ -236,7 +236,7 @@ Full implementation with `OpenAiConfig` for customization.
 - `requires_org_header` (default: false for generic, true for OpenAI brand)
 - `organization` (optional OpenAI org)
 - `omit_stream_options` (for some providers like Groq)
-- `tool_choice_auto` (enables `"tool_choice": "auto"`)
+- `tool_choice` (`ToolChoice` enum: `Auto`/`Required`/`None`/`Specific(name)`)
 
 **Factory methods:**
 - `OpenAiConfig::default_with_key(api_key)` - Generic OpenAI-compatible
@@ -319,7 +319,7 @@ pub struct OpenAiCompatibleConfig {
     pub auth_header: String,
     pub extra_headers: Vec<(String, String)>,
     pub models: Vec<ModelInfo>,
-    pub tool_choice_auto: bool,
+    pub tool_choice: ToolChoice,
 }
 ```
 
@@ -403,7 +403,7 @@ Factory functions for additional OpenAI-compatible providers:
 | `create_zenmux()` | zenmux | Zenmux | (config-only) |
 | `create_kilo()` | kilo | Kilo | (config-only) |
 | `create_vercel_ai_gateway()` | vercel_ai_gateway | Vercel AI Gateway | (config-only) |
-| `create_codegg_go()` | codegg_go | Codegg Go | https://opencode.ai/go/v1 |
+| `create_opencode_go()` | opencode_go | OpenCode Go | https://opencode.ai/go/v1 |
 
 Note: `create_minimax()` includes embedded model definitions for MiniMax-M2.7 series.
 
@@ -624,7 +624,7 @@ These 15 providers register automatically if their env var is set (no config nee
 - anthropic, openai, google, openrouter, codegg_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax
 
 ### Config + Env Var Fallback (`register_builtin_with_config()`)
-16 providers check config first, then fall back to env vars. Includes all 15 above plus `codegg_go`. Providers are independent - adding one via config does NOT disable others.
+16 providers check config first, then fall back to env vars. Includes all 15 above plus `opencode_go`. Providers are independent - adding one via config does NOT disable others.
 
 ### Config-Only Providers (NOT auto-registered)
 These require explicit config entries and have no env var fallback:

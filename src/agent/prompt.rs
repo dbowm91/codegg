@@ -416,7 +416,7 @@ fn profile_contract(profile: &ResolvedModelProfile) -> &'static str {
             "Model profile: Strong coding executor. Prefer direct repository inspection, targeted edits, and verification."
         }
         PromptProfileKind::FastExecutor => {
-            "Model profile: Fast executor. Keep changes bounded. Use tools explicitly. Avoid speculative broad refactors."
+            "Model profile: Fast executor. Keep changes bounded. Always emit structured tool calls when action is required. Never narrate intent (\"I will use the X tool\") without a corresponding structured tool call. Do not describe steps in prose when a tool call can express the same intent."
         }
         PromptProfileKind::LocalStrict => {
             "Model profile: Strict local/open model mode. Use one step at a time. Prefer small patches. Do not infer file contents without reading them."
