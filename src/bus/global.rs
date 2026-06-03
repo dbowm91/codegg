@@ -10,7 +10,7 @@ pub struct GlobalEventBus {
 
 impl GlobalEventBus {
     pub fn new() -> Self {
-        let (tx, _rx) = broadcast::channel(2048);
+        let (tx, _rx) = broadcast::channel(4096);
         Self { tx }
     }
 

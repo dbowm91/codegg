@@ -2148,8 +2148,10 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                 }
             }
 
-            Ok(event) = bus_rx.recv() => {
-                debug_log!("Event loop: received event: {:?}", std::mem::discriminant(&event));
+            result = bus_rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        debug_log!("Event loop: received event: {:?}", std::mem::discriminant(&event));
                 match event {
                     AppEvent::TextDelta { delta, session_id, .. } => {
                         debug_log!("Event loop: TextDelta received session_id={}, delta_len={}", session_id, delta.len());
@@ -2168,8 +2170,22 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     AppEvent::ToolCallStarted { tool_name, tool_id, arguments, .. } => {
                         debug_log!("Event loop: ToolCallStarted for tool={}", tool_name);
-                        if let Ok(args_val) = serde_json::from_str(&arguments) {
-                            app.messages_state.messages.add_tool_call(tool_id, tool_name, args_val);
+                        app.messages_state.messages.finalize_streaming();
+                        match serde_json::from_str::<serde_json::Value>(&arguments) {
+                            Ok(args_val) => {
+                                app.messages_state.messages.add_tool_call(tool_id, tool_name, args_val);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to parse tool call arguments for {}: {} (raw: {:?})",
+                                    tool_name, e, &arguments[..arguments.len().min(200)]
+                                );
+                                app.messages_state.messages.add_tool_call(
+                                    tool_id,
+                                    tool_name,
+                                    serde_json::Value::Null,
+                                );
+                            }
                         }
                     }
                     AppEvent::ToolResult { tool_id, tool_name: _, output, success, .. } => {
@@ -2366,6 +2382,16 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     _ => {
                         debug_log!("Event loop: unhandled event");
+                    }
+                }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Event bus lagged, {} events dropped", n);
+                        app.messages_state.toasts.warning(&format!("Events dropped ({})", n));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::info!("Event bus closed, exiting event loop");
+                        break;
                     }
                 }
             }

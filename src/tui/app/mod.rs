@@ -878,10 +878,24 @@ impl App {
                 tool_name,
                 arguments,
             }) => {
-                if let Ok(arguments) = serde_json::from_str::<serde_json::Value>(&arguments) {
-                    self.messages_state
-                        .messages
-                        .add_tool_call(tool_id, tool_name, arguments);
+                self.messages_state.messages.finalize_streaming();
+                match serde_json::from_str::<serde_json::Value>(&arguments) {
+                    Ok(args_val) => {
+                        self.messages_state
+                            .messages
+                            .add_tool_call(tool_id, tool_name, args_val);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse remote tool call arguments for {}: {}",
+                            tool_name, e
+                        );
+                        self.messages_state.messages.add_tool_call(
+                            tool_id,
+                            tool_name,
+                            serde_json::Value::Null,
+                        );
+                    }
                 }
             }
             Ok(RemoteTuiMessage::ToolResult {

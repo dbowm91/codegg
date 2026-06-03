@@ -5,7 +5,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
@@ -15,7 +15,6 @@ mod layout;
 use layout::MessageLayoutCache;
 
 use super::super::theme::Theme;
-use super::tool_output::ToolCallEntry;
 
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
 static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
@@ -135,7 +134,6 @@ pub struct MessagesWidget {
     pub theme: Arc<Theme>,
     pub show_thinking: bool,
     pub show_timestamps: bool,
-    tool_calls: HashMap<String, ToolCallEntry>,
     pub sel_msg: Option<usize>,
     pub undo_stack: VecDeque<UIMessage>,
     pub streaming_tokens: String,
@@ -144,10 +142,7 @@ pub struct MessagesWidget {
     pub search_matches: Vec<SearchMatch>,
     pub search_current: usize,
     pub search_visible: bool,
-    pub sel_tool_call: Option<usize>,
-    pub tool_call_expanded: HashMap<String, bool>,
     pub visible_height: usize,
-    flattened_tool_calls_cache: RefCell<Option<Vec<(usize, usize, String)>>>,
     message_layout_cache: RefCell<Option<MessageLayoutCache>>,
 }
 
@@ -221,12 +216,20 @@ fn find_any_tag(text: &str, start: bool) -> Option<(usize, usize)> {
         }
 
         if !in_code_block {
+            let lower = line.to_lowercase();
             for tag in &tags {
-                if let Some(pos) = line.to_lowercase().find(tag) {
-                    let abs_pos = char_pos + pos;
-                    if best_match.is_none() || abs_pos < best_match.unwrap().0 {
+                let mut search_from = 0;
+                while let Some(pos) = lower[search_from..].find(tag) {
+                    let abs_pos = char_pos + search_from + pos;
+                    let after_pos = abs_pos + tag.len();
+                    let valid_boundary = after_pos >= line.len()
+                        || line.as_bytes()[after_pos] == b'>'
+                        || line.as_bytes()[after_pos] == b'\n'
+                        || !line.as_bytes()[after_pos].is_ascii_alphanumeric();
+                    if valid_boundary && (best_match.is_none() || abs_pos < best_match.unwrap().0) {
                         best_match = Some((abs_pos, tag.len()));
                     }
+                    search_from += pos + 1;
                 }
             }
         }
@@ -304,7 +307,6 @@ impl MessagesWidget {
             theme,
             show_thinking: true,
             show_timestamps: false,
-            tool_calls: HashMap::new(),
             sel_msg: None,
             undo_stack: VecDeque::new(),
             streaming_tokens: String::new(),
@@ -313,10 +315,7 @@ impl MessagesWidget {
             search_matches: Vec::new(),
             search_current: 0,
             search_visible: false,
-            sel_tool_call: None,
-            tool_call_expanded: HashMap::new(),
             visible_height: 20,
-            flattened_tool_calls_cache: RefCell::new(None),
             message_layout_cache: RefCell::new(None),
         }
     }
@@ -345,7 +344,6 @@ impl MessagesWidget {
             timestamp: Some(chrono::Local::now().timestamp()),
             is_plan_mode,
         });
-        self.flattened_tool_calls_cache.borrow_mut().take();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -485,7 +483,7 @@ impl MessagesWidget {
         self.messages.push(UIMessage {
             role: MessageRole::Assistant,
             parts: vec![MsgPart::ToolCall {
-                id: id.clone(),
+                id,
                 name,
                 input: input_str,
                 output: String::new(),
@@ -497,22 +495,6 @@ impl MessagesWidget {
             timestamp: Some(chrono::Local::now().timestamp()),
             is_plan_mode: None,
         });
-        self.tool_calls.insert(
-            id,
-            ToolCallEntry {
-                name: String::new(),
-                input: String::new(),
-                output: String::new(),
-                status: ToolStatus::Pending,
-                duration_ms: None,
-                exit_code: None,
-                output_lines: None,
-                risk: crate::session::events::ToolRisk::Unknown,
-                summary: None,
-                cwd: None,
-            },
-        );
-        self.flattened_tool_calls_cache.borrow_mut().take();
         self.invalidate_layout_cache();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
@@ -550,14 +532,6 @@ impl MessagesWidget {
                 }
             }
         }
-        if let Some(entry) = self.tool_calls.get_mut(id) {
-            entry.output = output;
-            entry.status = status;
-            entry.duration_ms = duration_ms;
-            entry.exit_code = exit_code;
-            entry.output_lines = output_lines;
-        }
-        self.flattened_tool_calls_cache.borrow_mut().take();
         self.invalidate_layout_cache();
         if self.auto_scroll {
             self.scroll = usize::MAX;
@@ -577,13 +551,9 @@ impl MessagesWidget {
 
     pub fn clear(&mut self) {
         self.messages.clear();
-        self.tool_calls.clear();
         self.scroll = 0;
         self.sel_msg = None;
         self.undo_stack.clear();
-        self.sel_tool_call = None;
-        self.tool_call_expanded.clear();
-        self.flattened_tool_calls_cache.borrow_mut().take();
         self.invalidate_layout_cache();
     }
 
@@ -603,7 +573,6 @@ impl MessagesWidget {
                 }
             }
         }
-        self.flattened_tool_calls_cache.borrow_mut().take();
         self.invalidate_layout_cache();
         self.scroll = 0;
         true
@@ -622,26 +591,9 @@ impl MessagesWidget {
             }
             self.messages.push(msg);
         }
-        self.flattened_tool_calls_cache.borrow_mut().take();
         self.invalidate_layout_cache();
         self.scroll = usize::MAX;
         true
-    }
-
-    fn flatten_tool_calls(&self) -> Vec<(usize, usize, String)> {
-        if let Some(ref cache) = *self.flattened_tool_calls_cache.borrow() {
-            return cache.clone();
-        }
-        let mut tool_calls = Vec::new();
-        for (msg_idx, msg) in self.messages.iter().enumerate() {
-            for (part_idx, part) in msg.parts.iter().enumerate() {
-                if let MsgPart::ToolCall { id, .. } = part {
-                    tool_calls.push((msg_idx, part_idx, id.clone()));
-                }
-            }
-        }
-        *self.flattened_tool_calls_cache.borrow_mut() = Some(tool_calls.clone());
-        tool_calls
     }
 
     fn get_layout_cache(&self) -> MessageLayoutCache {
@@ -666,68 +618,6 @@ impl MessagesWidget {
             total += count;
         }
         MessageLayoutCache::new(offsets, total)
-    }
-
-    pub fn select_next_tool_call(&mut self) {
-        let tool_calls = self.flatten_tool_calls();
-        if tool_calls.is_empty() {
-            return;
-        }
-        match self.sel_tool_call {
-            Some(idx) if idx + 1 < tool_calls.len() => {
-                self.sel_tool_call = Some(idx + 1);
-            }
-            None if !tool_calls.is_empty() => {
-                self.sel_tool_call = Some(0);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn select_prev_tool_call(&mut self) {
-        let tool_calls = self.flatten_tool_calls();
-        if tool_calls.is_empty() {
-            return;
-        }
-        match self.sel_tool_call {
-            Some(idx) if idx > 0 => {
-                self.sel_tool_call = Some(idx - 1);
-            }
-            Some(_) => {
-                self.sel_tool_call = Some(tool_calls.len() - 1);
-            }
-            None if !tool_calls.is_empty() => {
-                self.sel_tool_call = Some(tool_calls.len() - 1);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn toggle_selected_tool_call_expanded(&mut self) {
-        let tool_calls = self.flatten_tool_calls();
-        if let Some(idx) = self.sel_tool_call {
-            if let Some((_, _, id)) = tool_calls.get(idx) {
-                let expanded = self
-                    .tool_call_expanded
-                    .entry(id.to_string())
-                    .or_insert(false);
-                *expanded = !*expanded;
-            }
-        }
-    }
-
-    pub fn get_selected_tool_call_output(&self) -> Option<String> {
-        let tool_calls = self.flatten_tool_calls();
-        if let Some(idx) = self.sel_tool_call {
-            if let Some((msg_idx, part_idx, _)) = tool_calls.get(idx) {
-                if let Some(msg) = self.messages.get(*msg_idx) {
-                    if let Some(MsgPart::ToolCall { output, .. }) = msg.parts.get(*part_idx) {
-                        return Some(output.clone());
-                    }
-                }
-            }
-        }
-        None
     }
 
     pub fn get_selected_content(&self) -> String {
@@ -1222,36 +1112,28 @@ impl Widget for &MessagesWidget {
                             )));
                         }
                     }
-                    let is_thinking = msg.is_thinking_first();
-                    let bar_style = if is_thinking {
-                        if let Some(bg) = match_bg {
-                            Style::default().fg(self.theme.muted).bg(bg)
+                    let is_last_msg = self.messages.last().is_some_and(|m| std::ptr::eq(m, msg));
+                    if !self.streaming_tokens.is_empty() && is_last_msg {
+                        let streaming_label = if self.assistant_is_thinking {
+                            "Thinking..."
                         } else {
-                            Style::default().fg(self.theme.muted)
-                        }
-                    } else {
-                        if let Some(bg) = match_bg {
-                            Style::default().fg(self.theme.secondary).bg(bg)
-                        } else {
-                            Style::default().fg(self.theme.secondary)
-                        }
-                    };
-                    if !self.streaming_tokens.is_empty() {
-                        let streaming_style = Style::default().fg(self.theme.primary);
+                            "Generating..."
+                        };
+                        let streaming_style = Style::default().fg(self.theme.muted);
                         lines.push(Line::from(vec![
-                            Span::styled("│ ", bar_style),
-                            Span::styled("Thinking...", streaming_style),
+                            Span::styled(streaming_label, streaming_style),
                         ]));
-                        lines.push(Line::from(Span::styled(
-                            format!("  {}", self.streaming_tokens),
-                            streaming_style,
-                        )));
+                        for text_line in self.streaming_tokens.lines() {
+                            lines.push(Line::from(vec![
+                                Span::styled(text_line.to_string(), streaming_style),
+                            ]));
+                        }
                     }
                     let mut prev_was_reasoning = false;
                     for part in &msg.parts {
                         match part {
                             MsgPart::Text { content } => {
-                                let rendered = render_markdown(content, &self.theme);
+                                let rendered = render_markdown(content, &self.theme, self.theme.muted);
                                 lines.extend(rendered);
                                 prev_was_reasoning = false;
                             }
@@ -1275,7 +1157,7 @@ impl Widget for &MessagesWidget {
                                     let reasoning_style = Style::default().fg(self.theme.muted);
                                     for text_line in content.lines() {
                                         lines.push(Line::from(vec![
-                                            Span::raw("  "),
+                                            Span::styled("  ", Style::default()),
                                             Span::styled(text_line, reasoning_style),
                                         ]));
                                     }
@@ -1298,10 +1180,23 @@ impl Widget for &MessagesWidget {
                                 } else {
                                     format!("{} {}", name, target)
                                 };
-                                let mut base_style = Style::default().fg(self.theme.muted);
-                                if matches!(status, ToolStatus::Error) {
-                                    base_style = base_style.add_modifier(Modifier::CROSSED_OUT);
-                                }
+                                let (icon, base_style) = match status {
+                                    ToolStatus::Running => {
+                                        ("⟳", Style::default().fg(self.theme.warning))
+                                    }
+                                    ToolStatus::Pending => {
+                                        ("○", Style::default().fg(self.theme.muted))
+                                    }
+                                    ToolStatus::Completed => {
+                                        ("✓", Style::default().fg(self.theme.success))
+                                    }
+                                    ToolStatus::Error => (
+                                        "✗",
+                                        Style::default()
+                                            .fg(self.theme.error)
+                                            .add_modifier(Modifier::CROSSED_OUT),
+                                    ),
+                                };
                                 let mut summary_parts: Vec<String> = Vec::new();
                                 if let Some(ms) = duration_ms {
                                     if *ms < 1000 {
@@ -1316,19 +1211,17 @@ impl Widget for &MessagesWidget {
                                     format!(" ({})", summary_parts.join(", "))
                                 };
                                 lines.push(Line::from(vec![
-                                    Span::raw("  "),
                                     Span::styled(
-                                        format!("{display_name}{summary_str}"),
+                                        format!("  {} {}{}", icon, display_name, summary_str),
                                         base_style,
                                     ),
                                 ]));
                             }
                             MsgPart::Image { alt_text, width, height, .. } => {
                                 let img_text = format!("📷 Image ({}x{}): {}", width, height, alt_text);
-                                lines.push(Line::from(Span::styled(
-                                    img_text,
-                                    Style::default().fg(self.theme.muted),
-                                )));
+                                lines.push(Line::from(vec![
+                                    Span::styled(img_text, Style::default().fg(self.theme.muted)),
+                                ]));
                             }
                         }
                     }
@@ -1341,7 +1234,7 @@ impl Widget for &MessagesWidget {
         );
         let visible_start = scroll_offset.min(lines.len().saturating_sub(1));
         let visible_end = (visible_start + available).min(lines.len());
-        let visible: Vec<Line<'_>> = lines[visible_start..visible_end].to_vec();
+        let visible: Vec<Line<'_>> = collapse_blank_lines(&lines[visible_start..visible_end]);
 
         if self.search_visible {
             let match_count = self.search_matches.len();
@@ -1374,7 +1267,7 @@ impl Widget for &MessagesWidget {
     }
 }
 
-fn render_markdown(text: &str, theme: &Arc<Theme>) -> Vec<Line<'static>> {
+fn render_markdown(text: &str, theme: &Arc<Theme>, default_color: ratatui::style::Color) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::from("")];
     }
@@ -1436,7 +1329,7 @@ fn render_markdown(text: &str, theme: &Arc<Theme>) -> Vec<Line<'static>> {
                 code_buf.push_str(line);
                 code_buf.push('\n');
             } else {
-                let rendered = render_md_line(trimmed, theme);
+                let rendered = render_md_line(trimmed, theme, default_color);
                 lines.extend(rendered);
             }
         }
@@ -1477,14 +1370,14 @@ fn render_markdown(text: &str, theme: &Arc<Theme>) -> Vec<Line<'static>> {
     } else {
         let mut lines: Vec<Line<'static>> = Vec::new();
         for line in text.lines() {
-            let rendered = render_md_line(line.trim(), theme);
+            let rendered = render_md_line(line.trim(), theme, default_color);
             lines.extend(rendered);
         }
         lines
     }
 }
 
-fn parse_line_with_urls(line: &str, theme: &Arc<Theme>) -> Vec<Span<'static>> {
+fn parse_line_with_urls(line: &str, theme: &Arc<Theme>, default_color: ratatui::style::Color) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut last_end = 0;
 
@@ -1522,7 +1415,7 @@ fn parse_line_with_urls(line: &str, theme: &Arc<Theme>) -> Vec<Span<'static>> {
     for m in matches {
         if m.start > last_end {
             let before = &line[last_end..m.start];
-            spans.extend(parse_plain_text(before, theme));
+            spans.extend(parse_plain_text(before, theme, default_color));
         }
 
         let link_text = if m.is_url {
@@ -1556,13 +1449,13 @@ fn parse_line_with_urls(line: &str, theme: &Arc<Theme>) -> Vec<Span<'static>> {
 
     if last_end < line.len() {
         let after = &line[last_end..];
-        spans.extend(parse_plain_text(after, theme));
+        spans.extend(parse_plain_text(after, theme, default_color));
     }
 
     spans
 }
 
-fn parse_plain_text(text: &str, theme: &Arc<Theme>) -> Vec<Span<'static>> {
+fn parse_plain_text(text: &str, theme: &Arc<Theme>, default_color: ratatui::style::Color) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut remaining = text.to_string();
 
@@ -1570,7 +1463,7 @@ fn parse_plain_text(text: &str, theme: &Arc<Theme>) -> Vec<Span<'static>> {
         if let Some(pos) = remaining.find('`') {
             if pos > 0 {
                 let before = &remaining[..pos];
-                spans.push(Span::raw(before.to_string()));
+                spans.push(Span::styled(before.to_string(), Style::default().fg(default_color)));
             }
             let rest = &remaining[pos + 1..];
             if let Some(end) = rest.find('`') {
@@ -1581,45 +1474,47 @@ fn parse_plain_text(text: &str, theme: &Arc<Theme>) -> Vec<Span<'static>> {
                 ));
                 remaining = rest[end + 1..].to_string();
             } else {
-                spans.push(Span::raw(remaining[pos..].to_string()));
+                spans.push(Span::styled(remaining[pos..].to_string(), Style::default().fg(default_color)));
                 remaining.clear();
             }
         } else if let Some(pos) = remaining.find("**") {
             if pos > 0 {
                 let before = &remaining[..pos];
-                spans.push(Span::raw(before.to_string()));
+                spans.push(Span::styled(before.to_string(), Style::default().fg(default_color)));
             }
             let rest = &remaining[pos + 2..];
             if let Some(end) = rest.find("**") {
                 let bold = &rest[..end];
                 spans.push(Span::styled(
                     bold.to_string(),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    Style::default().fg(default_color).add_modifier(Modifier::BOLD),
                 ));
                 remaining = rest[end + 2..].to_string();
             } else {
-                spans.push(Span::raw(remaining[pos..].to_string()));
+                spans.push(Span::styled(remaining[pos..].to_string(), Style::default().fg(default_color)));
                 remaining.clear();
             }
         } else if let Some(pos) = remaining.find('*') {
-            if pos > 0 {
-                let before = &remaining[..pos];
-                spans.push(Span::raw(before.to_string()));
+            let before = &remaining[..pos];
+            if !before.is_empty() {
+                spans.push(Span::styled(before.to_string(), Style::default().fg(default_color)));
             }
             let rest = &remaining[pos + 1..];
             if let Some(end) = rest.find('*') {
                 let italic = &rest[..end];
-                spans.push(Span::styled(
-                    italic.to_string(),
-                    Style::default().add_modifier(Modifier::ITALIC),
-                ));
+                if !italic.is_empty() {
+                    spans.push(Span::styled(
+                        italic.to_string(),
+                        Style::default().fg(default_color).add_modifier(Modifier::ITALIC),
+                    ));
+                }
                 remaining = rest[end + 1..].to_string();
             } else {
-                spans.push(Span::raw(remaining[pos..].to_string()));
+                spans.push(Span::styled(remaining[pos..].to_string(), Style::default().fg(default_color)));
                 remaining.clear();
             }
         } else {
-            spans.push(Span::raw(remaining.clone()));
+            spans.push(Span::styled(remaining.clone(), Style::default().fg(default_color)));
             remaining.clear();
         }
     }
@@ -1627,7 +1522,7 @@ fn parse_plain_text(text: &str, theme: &Arc<Theme>) -> Vec<Span<'static>> {
     spans
 }
 
-fn render_md_line(line: &str, theme: &Arc<Theme>) -> Vec<Line<'static>> {
+fn render_md_line(line: &str, theme: &Arc<Theme>, default_color: ratatui::style::Color) -> Vec<Line<'static>> {
     if line.is_empty() {
         return vec![Line::from("")];
     }
@@ -1651,18 +1546,18 @@ fn render_md_line(line: &str, theme: &Arc<Theme>) -> Vec<Line<'static>> {
     if line.starts_with("### ") {
         return vec![Line::from(Span::styled(
             line.trim_start_matches("### ").to_string(),
-            Style::default().add_modifier(Modifier::BOLD),
+            Style::default().fg(default_color).add_modifier(Modifier::BOLD),
         ))];
     }
     if line.starts_with("- ") || line.starts_with("* ") {
         let content = line.trim_start_matches("- ").trim_start_matches("* ");
         return vec![Line::from(vec![
             Span::styled("• ", Style::default().fg(theme.primary)),
-            Span::raw(content.to_string()),
+            Span::styled(content.to_string(), Style::default().fg(default_color)),
         ])];
     }
 
-    let spans = parse_line_with_urls(line, theme);
+    let spans = parse_line_with_urls(line, theme, default_color);
     if spans.is_empty() {
         vec![Line::from("")]
     } else {
@@ -1675,6 +1570,24 @@ fn format_time(ts: i64) -> String {
         .map(|dt| dt.format("%H:%M").to_string())
         .unwrap_or_default();
     format!("  {dt}")
+}
+
+fn is_blank_line(line: &Line) -> bool {
+    line.spans.is_empty() || line.spans.iter().all(|s| s.content.is_empty() || s.content.chars().all(|c| c == ' '))
+}
+
+fn collapse_blank_lines<'a>(lines: &'a [Line<'a>]) -> Vec<Line<'a>> {
+    let mut result = Vec::with_capacity(lines.len());
+    let mut prev_blank = false;
+    for line in lines {
+        let blank = is_blank_line(line);
+        if blank && prev_blank {
+            continue;
+        }
+        result.push(line.clone());
+        prev_blank = blank;
+    }
+    result
 }
 
 pub fn highlight_code(code: &str, lang: &str, code_theme: &str) -> Vec<Line<'static>> {

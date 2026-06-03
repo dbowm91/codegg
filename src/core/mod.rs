@@ -1159,18 +1159,28 @@ impl CoreClient for InprocCoreClient {
         tokio::spawn(async move {
             let mut bus_rx = crate::bus::global::GlobalEventBus::subscribe();
             let mut seq: u64 = 1;
-            while let Ok(event) = bus_rx.recv().await {
-                if let Some(core_event) = map_app_event_to_core_event(event) {
-                    let envelope = EventEnvelope {
-                        protocol_version: PROTOCOL_VERSION,
-                        event_seq: seq,
-                        timestamp_ms: chrono::Utc::now().timestamp_millis(),
-                        session_id: None,
-                        turn_id: None,
-                        payload: core_event,
-                    };
-                    seq = seq.saturating_add(1);
-                    if tx.send(envelope).is_err() {
+            loop {
+                match bus_rx.recv().await {
+                    Ok(event) => {
+                        if let Some(core_event) = map_app_event_to_core_event(event) {
+                            let envelope = EventEnvelope {
+                                protocol_version: PROTOCOL_VERSION,
+                                event_seq: seq,
+                                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                                session_id: None,
+                                turn_id: None,
+                                payload: core_event,
+                            };
+                            seq = seq.saturating_add(1);
+                            if tx.send(envelope).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Core event bus lagged, {} events dropped", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         break;
                     }
                 }
