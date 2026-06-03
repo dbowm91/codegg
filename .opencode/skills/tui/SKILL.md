@@ -164,11 +164,14 @@ Each dialog returns its type via `dialog_type()`:
 pub enum DialogType {
     Share, Model, Agent, Session, Help, Tree, Theme, Permission,
     Mcp, Question, Diff, Import, Template, Connect, Keybind,
-    Context, Cost, Usage, Stats, Goto, Plan, Confirm, None,
+    Context, Cost, Usage, Stats, Goto, Plan, Confirm,
+    Review,           // Diff review dialog
+    ResearchBrowser,  // Research browser dialog
+    None,
 }
 ```
 
-**Note**: 23 variants total (includes `Stats` and `None`).
+**Note**: 25 variants total (includes `Review`, `ResearchBrowser`, and `None`).
 
 ### Migrating a Dialog to Component
 

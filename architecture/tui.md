@@ -28,7 +28,7 @@ Local transport selection is handled by `--core-transport` or `CODEGG_CORE_TRANS
 ```
 tui/
 ├── app/                    # Main application state
-│   ├── mod.rs              # App struct (5995 lines), event loop, key handling
+│   ├── mod.rs              # App struct (7071 lines), event loop, key handling
 │   ├── types.rs            # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
 │   └── state/              # State domains
 │       ├── agent.rs        # AgentState (models, agents, selection)
@@ -57,7 +57,9 @@ tui/
 │   │   ├── model.rs        # ModelDialog (model selection)
 │   │   ├── permission.rs   # PermissionDialog
 │   │   ├── plan.rs         # PlanDialog
-│   │   ├── question.rs      # QuestionDialog
+│   │   ├── question.rs     # QuestionDialog
+│   │   ├── research.rs     # ResearchBrowserDialog (research runs browser)
+│   │   ├── review.rs       # ReviewDialog (diff review)
 │   │   ├── session.rs      # SessionDialog
 │   │   ├── share.rs        # ShareDialog (share sessions)
 │   │   ├── template.rs     # TemplateDialog
@@ -79,7 +81,7 @@ tui/
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── route.rs                # Route/RouteManager (Home, Session routes)
-├── theme.rs                # Theme definitions (33 themes)
+├── theme.rs                # Theme definitions (31 themes)
 ├── command.rs              # Slash command registry
 └── mod.rs                  # TUI entry point, event loop, GlobalEventBus
 ```
@@ -166,9 +168,8 @@ pub struct AgentState {
 ### DialogState (`app/state/dialog.rs`)
 
 Contains all dialog instances, including optional dialogs:
-- `model_dialog`, `agent_dialog`, `session_dialog`, `tree_dialog`, `command_palette` - always instantiated
-- `theme_picker`, `question_dialog`, `permission_dialog`, `keybind_dialog`, `mcp_dialog` - created on demand
-- `share_dialog`, `import_dialog`, `template_dialog`, `connect_dialog`, `goto_dialog`, `plan_dialog`, `diff_dialog`, `help_dialog`, `info_dialog` - created on demand
+- Always instantiated: `model_dialog`, `agent_dialog`, `session_dialog`, `tree_dialog`, `command_palette`
+- On-demand (modal dialogs): `theme_picker`, `question_dialog`, `permission_dialog`, `keybind_dialog`, `mcp_dialog`, `share_dialog`, `import_dialog`, `template_dialog`, `connect_dialog`, `goto_dialog`, `plan_dialog`, `diff_dialog`, `help_dialog`, `info_dialog`, `review_dialog`, `research_browser`
 
 **Pending fields** (for tracking pending permission/question responses):
 - `permission_perm_id: Option<String>` - permission ID when permission dialog is pending
@@ -194,6 +195,8 @@ pub enum Dialog {
     Question, Permission, Mcp, Keybind,
     Share, Import, Template, Connect,
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
+    Review,              // Diff review dialog
+    ResearchBrowser,     // Research browser for web research
 }
 ```
 
@@ -234,6 +237,10 @@ pub enum TuiMsg {
     OpenDiffDialog { old_content: Box<str>, new_content: Box<str>, title: Box<str> },
     OpenShareDialog, OpenThemeDialog, ExternalEditor, UndoDelete,
     ConfirmResult(Option<bool>),  // Confirmed=true, Cancelled=false, Dismissed=None
+    ReviewOpenDiff { path: String },  // Open review for file path
+    ResearchOpenRun { run_id: String },  // Open research run
+    ResearchRefreshRuns,  // Refresh research runs list
+    ResearchLoadSection { run_id: String, section: String },  // Load research section
     // ... and many more
 }
 ```
@@ -306,7 +313,10 @@ pub trait Component: Send + Any {
 pub enum DialogType {
     Share, Model, Agent, Session, Help, Tree, Theme, Permission,
     Mcp, Question, Diff, Import, Template, Connect, Keybind,
-    Context, Cost, Usage, Stats, Goto, Plan, Confirm, None,
+    Context, Cost, Usage, Stats, Goto, Plan, Confirm,
+    Review,           // Diff review dialog
+    ResearchBrowser,  // Research browser dialog
+    None,
 }
 ```
 
