@@ -31,7 +31,7 @@ impl Default for OpenAiConfig {
             requires_org_header: false,
             organization: None,
             omit_stream_options: false,
-            tool_choice_auto: false,
+            tool_choice_auto: true,
         }
     }
 }

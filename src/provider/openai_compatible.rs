@@ -49,7 +49,7 @@ impl OpenAiCompatibleProvider {
                 auth_header: "Authorization".to_string(),
                 extra_headers: Vec::new(),
                 models: Vec::new(),
-                tool_choice_auto: false,
+                tool_choice_auto: true,
             },
         )
     }
