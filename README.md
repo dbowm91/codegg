@@ -542,7 +542,7 @@ The tool uses various environment variables for configuration beyond provider AP
 | `VERTEX_LOCATION` | GCP location for Vertex AI |
 | `AZURE_OPENAI_KEY` | Azure OpenAI API key |
 | `OPENROUTER_API_KEY` | OpenRouter API key |
-| `CODEGG_ZEN_API_KEY` | Codegg Zen API key |
+| `OPENCODE_ZEN_API_KEY` | OpenCode Zen API key |
 | `MISTRAL_API_KEY` | Mistral AI API key |
 | `GROQ_API_KEY` | Groq API key |
 | `DEEPINFRA_API_KEY` | DeepInfra API key |

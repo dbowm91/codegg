@@ -151,7 +151,7 @@ impl ModelDialog {
                     self.scroll.clamp(self.selected, flat.len(), visible_models);
                 }
             } else {
-                if let Some(idx) = flat.iter().position(|(p, _)| p == "codegg_zen") {
+                if let Some(idx) = flat.iter().position(|(p, _)| p == "opencode_zen") {
                     self.selected = idx;
                     let visible_models = self.count_visible_models(0);
                     self.scroll.clamp(self.selected, flat.len(), visible_models);
@@ -531,9 +531,9 @@ mod tests {
     fn test_select_down() {
         let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
         dialog.models = vec![
-            "codegg_zen/gpt4".to_string(),
-            "codegg_zen/gpt35".to_string(),
-            "codegg_zen/claude".to_string(),
+            "opencode_zen/gpt4".to_string(),
+            "opencode_zen/gpt35".to_string(),
+            "opencode_zen/claude".to_string(),
         ];
         dialog.visible_height = 10;
         dialog.flat_cache.borrow_mut().take();
@@ -549,9 +549,9 @@ mod tests {
     fn test_select_up() {
         let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
         dialog.models = vec![
-            "codegg_zen/gpt4".to_string(),
-            "codegg_zen/gpt35".to_string(),
-            "codegg_zen/claude".to_string(),
+            "opencode_zen/gpt4".to_string(),
+            "opencode_zen/gpt35".to_string(),
+            "opencode_zen/claude".to_string(),
         ];
         dialog.visible_height = 10;
         dialog.selected = 2;
@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn test_select_up_at_top() {
         let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
-        dialog.models = vec!["codegg_zen/gpt4".to_string()];
+        dialog.models = vec!["opencode_zen/gpt4".to_string()];
         dialog.visible_height = 10;
         dialog.selected = 0;
         dialog.flat_cache.borrow_mut().take();
@@ -580,9 +580,9 @@ mod tests {
     fn test_filter_resets_selection() {
         let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
         dialog.models = vec![
-            "codegg_zen/gpt4".to_string(),
-            "codegg_zen/gpt35".to_string(),
-            "codegg_zen/claude".to_string(),
+            "opencode_zen/gpt4".to_string(),
+            "opencode_zen/gpt35".to_string(),
+            "opencode_zen/claude".to_string(),
         ];
         dialog.visible_height = 10;
         dialog.selected = 2;
@@ -597,8 +597,8 @@ mod tests {
     fn test_backspace_filter() {
         let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
         dialog.models = vec![
-            "codegg_zen/gpt4".to_string(),
-            "codegg_zen/gpt35".to_string(),
+            "opencode_zen/gpt4".to_string(),
+            "opencode_zen/gpt35".to_string(),
         ];
         dialog.visible_height = 10;
         dialog.tab = ModelDialogTab::SelectModel;
@@ -626,9 +626,9 @@ mod tests {
     fn test_flat_filtered_with_filter() {
         let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
         dialog.models = vec![
-            "codegg_zen/gpt4".to_string(),
-            "codegg_zen/gpt35".to_string(),
-            "codegg_zen/claude".to_string(),
+            "opencode_zen/gpt4".to_string(),
+            "opencode_zen/gpt35".to_string(),
+            "opencode_zen/claude".to_string(),
         ];
         dialog.filter = "gpt".to_string();
         dialog.update_cache();

@@ -295,9 +295,9 @@ impl App {
         let agents = builtin_agents();
         let current_agent = agents.iter().position(|a| a.name == "build").unwrap_or(0);
         let models = vec![
-            "codegg_zen/big-pickle".to_string(),
-            "codegg_zen/minimax-m2.5-free".to_string(),
-            "codegg_zen/nemotron-3-super-free".to_string(),
+            "opencode_zen/big-pickle".to_string(),
+            "opencode_zen/minimax-m2.5-free".to_string(),
+            "opencode_zen/nemotron-3-super-free".to_string(),
         ];
         let current_model = models[0].clone();
         use crate::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
@@ -566,9 +566,9 @@ impl App {
         let agents = builtin_agents();
         let current_agent = agents.iter().position(|a| a.name == "build").unwrap_or(0);
         let models = vec![
-            "codegg_zen/big-pickle".to_string(),
-            "codegg_zen/minimax-m2.5-free".to_string(),
-            "codegg_zen/nemotron-3-super-free".to_string(),
+            "opencode_zen/big-pickle".to_string(),
+            "opencode_zen/minimax-m2.5-free".to_string(),
+            "opencode_zen/nemotron-3-super-free".to_string(),
         ];
         let current_model = models[0].clone();
         use crate::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
@@ -5491,11 +5491,11 @@ impl App {
                 base_url_example: Some("https://api.novai.ai/v1".to_string()),
             },
             ProviderInfo {
-                id: "codegg_zen".to_string(),
+                id: "opencode_zen".to_string(),
                 name: "Codegg Zen".to_string(),
                 description: "Free models from Codegg".to_string(),
                 requires_api_key: true,
-                env_var_name: Some("CODEGG_ZEN_API_KEY".to_string()),
+                env_var_name: Some("OPENCODE_ZEN_API_KEY".to_string()),
                 base_url_example: Some("https://opencode.ai/zen/v1".to_string()),
             },
             ProviderInfo {
@@ -6183,7 +6183,7 @@ impl App {
             ("anthropic", "ANTHROPIC_API_KEY"),
             ("google", "GOOGLE_API_KEY"),
             ("minimax", "MINIMAX_API_KEY"),
-            ("codegg_zen", "CODEGG_ZEN_API_KEY"),
+            ("opencode_zen", "OPENCODE_ZEN_API_KEY"),
             ("opencode_go", "OPENCODE_GO_API_KEY"),
         ];
 

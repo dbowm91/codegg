@@ -17,7 +17,7 @@ pub mod bedrock;
 pub mod cache;
 pub mod catalog;
 pub mod cloudflare;
-pub mod codegg_zen;
+pub mod opencode_zen;
 pub mod copilot;
 pub mod discovery;
 pub mod fallback;
@@ -343,8 +343,8 @@ pub fn register_builtin(registry: &mut ProviderRegistry) {
     if let Ok(key) = std::env::var("OPENROUTER_API_KEY") {
         registry.register(crate::provider::openrouter::OpenRouterProvider::new(key));
     }
-    if let Ok(key) = std::env::var("CODEGG_ZEN_API_KEY") {
-        registry.register(crate::provider::codegg_zen::CodeggZenProvider::new(key));
+    if let Ok(key) = std::env::var("OPENCODE_ZEN_API_KEY") {
+        registry.register(crate::provider::opencode_zen::OpencodeZenProvider::new(key));
     }
     if let Ok(key) = std::env::var("MISTRAL_API_KEY") {
         registry.register(crate::provider::additional::create_mistral(key));
@@ -485,9 +485,9 @@ pub fn register_builtin_with_config(
         registry,
         providers,
         disabled,
-        "codegg_zen",
-        "CODEGG_ZEN_API_KEY",
-        |key| Box::new(crate::provider::codegg_zen::CodeggZenProvider::new(key)),
+        "opencode_zen",
+        "OPENCODE_ZEN_API_KEY",
+        |key| Box::new(crate::provider::opencode_zen::OpencodeZenProvider::new(key)),
     );
 
     register_env_fallback_provider(

@@ -245,7 +245,7 @@ These are code fixes that are isolated, low-risk, and can be done in parallel.
 | ID | Item | Location | Type | Fix |
 |----|------|----------|------|-----|
 | B1-16 | Remove auto_compact() wrapper or document why both exist | `src/agent/compaction.rs:550,594` | Code | Remove or document |
-| B3-10 | Verify OV-1: codegg_zen vs codegg_go naming in overview.md | `architecture/overview.md` | Docs | Verify and fix |
+| B3-10 | Verify OV-1: opencode_zen vs opencode_go naming in overview.md | `architecture/overview.md` | Docs | Verify and fix |
 
 ### R1-CODE-6: Command Module Fixes
 

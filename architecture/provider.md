@@ -184,7 +184,7 @@ Registers 15 providers based on environment variables. Each provider is only reg
 | `OPENAI_API_KEY` | OpenAI |
 | `GOOGLE_API_KEY` | Google |
 | `OPENROUTER_API_KEY` | OpenRouter |
-| `CODEGG_ZEN_API_KEY` | Codegg Zen |
+| `OPENCODE_ZEN_API_KEY` | Codegg Zen |
 | `MISTRAL_API_KEY` | Mistral |
 | `GROQ_API_KEY` | Groq |
 | `DEEPINFRA_API_KEY` | DeepInfra |
@@ -369,7 +369,7 @@ GitLab AI gateway. Wraps `OpenAiCompatibleProvider`.
 - `gitlab/claude-sonnet-4` (200K ctx)
 - `gitlab/gpt-4o` (128K ctx)
 
-### 12. Codegg Zen (`src/provider/codegg_zen.rs`)
+### 12. Codegg Zen (`src/provider/opencode_zen.rs`)
 
 Codegg's own Zen service implementation. Not based on OpenAiCompatible.
 
@@ -481,10 +481,10 @@ pub fn embedded_models() -> Vec<ModelInfo>
 ```
 
 Returns free tier models:
-- Big Pickle (Free) - codegg_zen
-- MiniMax M2.5 Free - codegg_zen
-- Nemotron 3 Super Free - codegg_zen
-- Qwen3.6 Plus Free - codegg_zen
+- Big Pickle (Free) - opencode_zen
+- MiniMax M2.5 Free - opencode_zen
+- Nemotron 3 Super Free - opencode_zen
+- Qwen3.6 Plus Free - opencode_zen
 
 ### ModelDiscoveryService (`src/provider/discovery.rs:9-265`)
 
@@ -621,7 +621,7 @@ pub fn create_http_client() -> reqwest::Client {
 
 ### Auto-Registered via Environment Variables (`register_builtin()`)
 These 15 providers register automatically if their env var is set (no config needed):
-- anthropic, openai, google, openrouter, codegg_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax
+- anthropic, openai, google, openrouter, opencode_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax
 
 ### Config + Env Var Fallback (`register_builtin_with_config()`)
 16 providers check config first, then fall back to env vars. Includes all 15 above plus `opencode_go`. Providers are independent - adding one via config does NOT disable others.
@@ -668,7 +668,7 @@ Key methods:
 | `src/provider/copilot.rs` | GitHub Copilot |
 | `src/provider/cloudflare.rs` | Cloudflare Workers AI |
 | `src/provider/gitlab.rs` | GitLab AI |
-| `src/provider/codegg_zen.rs` | Codegg Zen service |
+| `src/provider/opencode_zen.rs` | Codegg Zen service |
 | `src/provider/additional.rs` | Additional provider factories |
 | `src/provider/fallback.rs` | Fallback provider with circuit breaker |
 | `src/provider/catalog.rs` | Model catalog with live fetch |

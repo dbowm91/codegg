@@ -106,7 +106,7 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 ### Provider
 - `Provider` trait with `chat()` streaming method
 - `FallbackProvider` with circuit breaker (backoff: `2^i`)
-- Auto-registered via env vars (16 providers): anthropic, openai, google, openrouter, codegg_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax, codegg_go
+- Auto-registered via env vars (16 providers): anthropic, openai, google, openrouter, opencode_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax, opencode_go
 - Config-only (not auto-registered): SAP AI Core, Zenmux, Kilo, Vercel AI Gateway
 
 ## Verified Counts

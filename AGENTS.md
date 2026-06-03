@@ -177,7 +177,7 @@ These items were verified during review sessions:
 ## Helpful Patterns for Future Agents
 
 ### Provider Auto-Registration
-- `register_builtin_with_config()` at `src/provider/mod.rs:390-536` registers 16 providers via env vars (anthropic, openai, google, openrouter, codegg_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax, codegg_go)
+- `register_builtin_with_config()` at `src/provider/mod.rs:390-536` registers 16 providers via env vars (anthropic, openai, google, openrouter, opencode_zen, mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, minimax, opencode_go)
 - Adding ANY provider via config disables all env-var auto-registration (intentional design)
 - SAP AI Core, Zenmux, Kilo, Vercel AI Gateway are config-only, NOT auto-registered
 - Check `src/provider/mod.rs:register_builtin_with_config()` for details

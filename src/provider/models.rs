@@ -5,7 +5,7 @@ pub fn embedded_models() -> Vec<ModelInfo> {
         ModelInfo {
             id: "big-pickle".to_string(),
             name: "Big Pickle (Free)".to_string(),
-            provider: "codegg_zen".to_string(),
+            provider: "opencode_zen".to_string(),
             context_window: 200_000,
             max_output_tokens: Some(64_000),
             supports_tools: true,
@@ -15,7 +15,7 @@ pub fn embedded_models() -> Vec<ModelInfo> {
         ModelInfo {
             id: "minimax-m2.5-free".to_string(),
             name: "MiniMax M2.5 Free".to_string(),
-            provider: "codegg_zen".to_string(),
+            provider: "opencode_zen".to_string(),
             context_window: 200_000,
             max_output_tokens: Some(64_000),
             supports_tools: true,
@@ -25,7 +25,7 @@ pub fn embedded_models() -> Vec<ModelInfo> {
         ModelInfo {
             id: "nemotron-3-super-free".to_string(),
             name: "Nemotron 3 Super Free".to_string(),
-            provider: "codegg_zen".to_string(),
+            provider: "opencode_zen".to_string(),
             context_window: 128_000,
             max_output_tokens: Some(32_000),
             supports_tools: true,
@@ -35,7 +35,7 @@ pub fn embedded_models() -> Vec<ModelInfo> {
         ModelInfo {
             id: "qwen3.6-plus-free".to_string(),
             name: "Qwen3.6 Plus Free".to_string(),
-            provider: "codegg_zen".to_string(),
+            provider: "opencode_zen".to_string(),
             context_window: 128_000,
             max_output_tokens: Some(32_000),
             supports_tools: true,

@@ -22,7 +22,7 @@
 | AgentLoop has 24 fields | Verified | `src/agent/loop.rs:559-584` |
 | DialogType is in component.rs (not types.rs) | Verified | `src/tui/components/component.rs:22` (23 variants) |
 | FocusManager is in component/focus.rs (not types.rs) | Verified | `src/tui/components/component/focus.rs:14` |
-| register_builtin_with_config() registers 16 providers | Verified | `src/provider/mod.rs:390-537` (includes codegg_go) |
+| register_builtin_with_config() registers 16 providers | Verified | `src/provider/mod.rs:390-537` (includes opencode_go) |
 | OAuthManager load_tokens_sync() now logs warnings | Verified | `src/mcp/auth.rs:118-124` |
 | Config merge: provider/server/watcher = field-by-field | Verified | `src/config/paths.rs:203-235` |
 | Config merge: agents/mcp/commands/modes = key replacement | Verified | `src/config/paths.rs:236-281` |
