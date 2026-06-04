@@ -7,6 +7,7 @@ use ratatui::widgets::{Paragraph, ScrollbarState, Widget};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
@@ -24,6 +25,18 @@ static URL_REGEX: Lazy<regex::Regex> =
 static FILE_PATH_REGEX: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r#"(?:^|[\s])(\/(?:[a-zA-Z0-9._~-]+\/)*[a-zA-Z0-9._~-]+|~\/[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*|\.\.?\/[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*)"#).expect("invalid file path regex")
 });
+const TOOL_OUTPUT_PREVIEW_LINES: usize = 8;
+const TOOL_INPUT_PREVIEW_LINES: usize = 4;
+const TOOL_SPINNER_FRAMES: [&str; 8] = ["░", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
+
+fn tool_spinner_frame() -> &'static str {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let idx = ((millis / 120) as usize) % TOOL_SPINNER_FRAMES.len();
+    TOOL_SPINNER_FRAMES[idx]
+}
 
 fn wrap_osc8(url: &str, text: &str) -> String {
     format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", url, text)
@@ -56,6 +69,7 @@ pub enum MsgPart {
         duration_ms: Option<u64>,
         exit_code: Option<i32>,
         output_lines: Option<usize>,
+        expanded: bool,
     },
     Image {
         data_uri: String,
@@ -582,8 +596,35 @@ impl MessagesWidget {
                         lines += wrap_count(content, (width.saturating_sub(2)) as u16);
                     }
                 }
-                MsgPart::ToolCall { .. } => {
+                MsgPart::ToolCall {
+                    input,
+                    output,
+                    status,
+                    expanded,
+                    ..
+                } => {
                     lines += 1;
+                    if matches!(status, ToolStatus::Pending | ToolStatus::Running)
+                        && output.is_empty()
+                    {
+                        lines += 1;
+                    } else if !output.is_empty() {
+                        let output_line_count = output.lines().count().max(1);
+                        if *expanded {
+                            if !input.is_empty() {
+                                lines += input.lines().count().min(TOOL_INPUT_PREVIEW_LINES);
+                                if input.lines().count() > TOOL_INPUT_PREVIEW_LINES {
+                                    lines += 1;
+                                }
+                            }
+                            lines += output_line_count;
+                        } else {
+                            lines += output_line_count.min(TOOL_OUTPUT_PREVIEW_LINES);
+                            if output_line_count > TOOL_OUTPUT_PREVIEW_LINES {
+                                lines += 1;
+                            }
+                        }
+                    }
                 }
                 MsgPart::Image { .. } => {
                     lines += 1;
@@ -825,6 +866,7 @@ impl MessagesWidget {
                 duration_ms: None,
                 exit_code: None,
                 output_lines: None,
+                expanded: false,
             }],
             timestamp: Some(chrono::Local::now().timestamp()),
             is_plan_mode: None,
@@ -833,6 +875,28 @@ impl MessagesWidget {
         self.invalidate_render_cache();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
+        }
+    }
+
+    pub fn mark_tool_call_running(&mut self, id: &str) {
+        let mut updated = false;
+        for msg in &mut self.messages {
+            for part in &mut msg.parts {
+                if let MsgPart::ToolCall { id: part_id, status, .. } = part {
+                    if part_id == id {
+                        *status = ToolStatus::Running;
+                        updated = true;
+                        break;
+                    }
+                }
+            }
+            if updated {
+                break;
+            }
+        }
+        if updated {
+            self.invalidate_layout_cache();
+            self.invalidate_render_cache();
         }
     }
 
@@ -884,6 +948,31 @@ impl MessagesWidget {
         }
         self.invalidate_layout_cache();
         self.invalidate_render_cache();
+    }
+
+    pub fn toggle_tool_output(&mut self, msg_idx: usize) -> bool {
+        let mut toggled = false;
+        if let Some(msg) = self.messages.get_mut(msg_idx) {
+            for part in &mut msg.parts {
+                if let MsgPart::ToolCall { expanded, .. } = part {
+                    *expanded = !*expanded;
+                    toggled = true;
+                }
+            }
+        }
+        if toggled {
+            self.invalidate_layout_cache();
+            self.invalidate_render_cache();
+        }
+        toggled
+    }
+
+    pub fn message_has_tool_output(&self, msg_idx: usize) -> bool {
+        self.messages.get(msg_idx).is_some_and(|msg| {
+            msg.parts
+                .iter()
+                .any(|part| matches!(part, MsgPart::ToolCall { .. }))
+        })
     }
 
     pub fn clear(&mut self) {
@@ -1034,6 +1123,15 @@ impl MessagesWidget {
                 self.scroll = usize::MAX;
             }
         }
+    }
+
+    pub fn select_at_viewport_line(&mut self, line: usize) -> Option<usize> {
+        let target = self.scroll_position().saturating_add(line);
+        let msg_idx = self
+            .with_layout_cache(|cache| cache.find_message_at_line(target))
+            .map(|(idx, _)| idx)?;
+        self.sel_msg = Some(msg_idx);
+        Some(msg_idx)
     }
 
     /// Public accessor for cached rendered line totals, used by callers that
@@ -1666,8 +1764,12 @@ impl MessagesWidget {
                 MsgPart::ToolCall {
                     name,
                     input,
+                    output,
                     status,
                     duration_ms,
+                    exit_code,
+                    output_lines,
+                    expanded,
                     ..
                 } => {
                     let target = extract_tool_target(name, input);
@@ -1677,7 +1779,9 @@ impl MessagesWidget {
                         format!("{} {}", name, target)
                     };
                     let (icon, base_style) = match status {
-                        ToolStatus::Running => ("⟳", Style::default().fg(self.theme.warning)),
+                        ToolStatus::Running => {
+                            (tool_spinner_frame(), Style::default().fg(self.theme.warning))
+                        }
                         ToolStatus::Pending => ("○", Style::default().fg(self.theme.muted)),
                         ToolStatus::Completed => ("✓", Style::default().fg(self.theme.success)),
                         ToolStatus::Error => (
@@ -1695,17 +1799,102 @@ impl MessagesWidget {
                             summary_parts.push(format!("{:.1}s", *ms as f64 / 1000.0));
                         }
                     }
+                    if let Some(lines) = output_lines {
+                        summary_parts.push(format!("{lines} lines"));
+                    }
+                    if let Some(code) = exit_code {
+                        summary_parts.push(format!("exit {code}"));
+                    }
                     let summary_str = if summary_parts.is_empty() {
                         String::new()
                     } else {
                         format!(" ({})", summary_parts.join(", "))
                     };
+                    let output_line_count = output.lines().count();
+                    let toggle = if output_line_count > TOOL_OUTPUT_PREVIEW_LINES {
+                        if *expanded {
+                            " collapse"
+                        } else {
+                            " expand"
+                        }
+                    } else {
+                        ""
+                    };
                     lines.push(Line::from(vec![
                         Span::styled(
-                            format!("  {} {}{}", icon, display_name, summary_str),
+                            format!("  {} {}{}{}", icon, display_name, summary_str, toggle),
                             base_style,
                         ),
                     ]));
+                    if matches!(status, ToolStatus::Pending | ToolStatus::Running)
+                        && output.is_empty()
+                    {
+                        lines.push(Line::from(vec![
+                            Span::raw("    "),
+                            Span::styled(
+                                "waiting for command/tool output...",
+                                Style::default().fg(self.theme.muted),
+                            ),
+                        ]));
+                    } else if !output.is_empty() {
+                        if *expanded && !input.is_empty() {
+                            for input_line in input.lines().take(TOOL_INPUT_PREVIEW_LINES) {
+                                lines.push(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(
+                                        input_line.to_string(),
+                                        Style::default()
+                                            .fg(self.theme.muted)
+                                            .add_modifier(Modifier::DIM),
+                                    ),
+                                ]));
+                            }
+                            let input_line_count = input.lines().count();
+                            if input_line_count > TOOL_INPUT_PREVIEW_LINES {
+                                lines.push(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(
+                                        format!(
+                                            "... (+{} more input lines)",
+                                            input_line_count - TOOL_INPUT_PREVIEW_LINES
+                                        ),
+                                        Style::default()
+                                            .fg(self.theme.muted)
+                                            .add_modifier(Modifier::DIM),
+                                    ),
+                                ]));
+                            }
+                        }
+
+                        let limit = if *expanded {
+                            usize::MAX
+                        } else {
+                            TOOL_OUTPUT_PREVIEW_LINES
+                        };
+                        for output_line in output.lines().take(limit) {
+                            lines.push(Line::from(vec![
+                                Span::raw("    "),
+                                Span::styled(
+                                    output_line.to_string(),
+                                    Style::default().fg(self.theme.muted),
+                                ),
+                            ]));
+                        }
+                        if !*expanded && output_line_count > TOOL_OUTPUT_PREVIEW_LINES {
+                            lines.push(Line::from(vec![
+                                Span::raw("    "),
+                                Span::styled(
+                                    format!(
+                                        "... (+{} more lines, click or toggle to expand)",
+                                        output_line_count - TOOL_OUTPUT_PREVIEW_LINES
+                                    ),
+                                    Style::default()
+                                        .fg(self.theme.muted)
+                                        .add_modifier(Modifier::DIM),
+                                ),
+                            ]));
+                        }
+                    }
                     // Suppress part_idx warning by referencing it
                     let _ = part_idx;
                 }

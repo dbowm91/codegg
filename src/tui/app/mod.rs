@@ -895,7 +895,10 @@ impl App {
                     Ok(args_val) => {
                         self.messages_state
                             .messages
-                            .add_tool_call(tool_id, tool_name, args_val);
+                            .add_tool_call(tool_id.clone(), tool_name, args_val);
+                        self.messages_state
+                            .messages
+                            .mark_tool_call_running(&tool_id);
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -903,10 +906,13 @@ impl App {
                             tool_name, e
                         );
                         self.messages_state.messages.add_tool_call(
-                            tool_id,
+                            tool_id.clone(),
                             tool_name,
                             serde_json::Value::Null,
                         );
+                        self.messages_state
+                            .messages
+                            .mark_tool_call_running(&tool_id);
                     }
                 }
             }
@@ -3841,7 +3847,18 @@ impl App {
     fn on_click(&mut self, target: &ClickTarget, x: u16, y: u16) {
         match target {
             ClickTarget::Viewport => {
-                self.messages_state.messages.sel_msg = None;
+                if let Some(viewport) = self.viewport_area {
+                    let row = y.saturating_sub(viewport.y) as usize;
+                    if let Some(idx) = self.messages_state.messages.select_at_viewport_line(row) {
+                        if self.messages_state.messages.message_has_tool_output(idx) {
+                            self.messages_state.messages.toggle_tool_output(idx);
+                        }
+                    } else {
+                        self.messages_state.messages.sel_msg = None;
+                    }
+                } else {
+                    self.messages_state.messages.sel_msg = None;
+                }
             }
             ClickTarget::Dialog => {
                 if let Some(ref area) = self.dialog_area {
@@ -4820,7 +4837,9 @@ impl App {
 
     fn toggle_reasoning(&mut self) {
         if let Some(idx) = self.messages_state.messages.sel_msg {
-            self.messages_state.messages.toggle_reasoning(idx);
+            if !self.messages_state.messages.toggle_tool_output(idx) {
+                self.messages_state.messages.toggle_reasoning(idx);
+            }
         }
     }
 
@@ -5979,7 +5998,10 @@ impl App {
     }
 
     pub fn add_tool_call(&mut self, id: String, name: String, input: serde_json::Value) {
-        self.messages_state.messages.add_tool_call(id, name, input);
+        self.messages_state
+            .messages
+            .add_tool_call(id.clone(), name, input);
+        self.messages_state.messages.mark_tool_call_running(&id);
     }
 
     pub fn update_tool_call(

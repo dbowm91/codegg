@@ -1210,6 +1210,7 @@ async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
                             duration_ms: None,
                             exit_code: None,
                             output_lines: None,
+                            expanded: false,
                         },
                         crate::session::message::PartData::Image { url } => MsgPart::Image {
                             data_uri: url.clone(),
@@ -2192,7 +2193,8 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         app.streaming_active = true;
                         match serde_json::from_str::<serde_json::Value>(&arguments) {
                             Ok(args_val) => {
-                                app.messages_state.messages.add_tool_call(tool_id, tool_name, args_val);
+                                app.messages_state.messages.add_tool_call(tool_id.clone(), tool_name, args_val);
+                                app.messages_state.messages.mark_tool_call_running(&tool_id);
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -2200,10 +2202,11 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                     tool_name, e, &arguments[..arguments.len().min(200)]
                                 );
                                 app.messages_state.messages.add_tool_call(
-                                    tool_id,
+                                    tool_id.clone(),
                                     tool_name,
                                     serde_json::Value::Null,
                                 );
+                                app.messages_state.messages.mark_tool_call_running(&tool_id);
                             }
                         }
                     }
