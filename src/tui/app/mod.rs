@@ -441,6 +441,8 @@ impl App {
                 session_status: SessionStatus::Idle,
                 token_in: 0,
                 token_out: 0,
+                live_output_tokens: 0,
+                live_output_text: String::new(),
                 reasoning_tokens: 0,
                 cached_tokens: 0,
                 history: std::collections::VecDeque::new(),
@@ -633,6 +635,8 @@ impl App {
                 session_status: SessionStatus::Idle,
                 token_in: 0,
                 token_out: 0,
+                live_output_tokens: 0,
+                live_output_text: String::new(),
                 reasoning_tokens: 0,
                 cached_tokens: 0,
                 history: std::collections::VecDeque::new(),
@@ -874,6 +878,7 @@ impl App {
                 }
             }
             Ok(RemoteTuiMessage::TextDelta { delta }) => {
+                self.add_live_output_delta(&delta);
                 self.messages_state.messages.add_assistant_text(delta);
                 if matches!(self.session_state.session_status, SessionStatus::Working) {
                     self.status_bar
@@ -1347,6 +1352,7 @@ impl App {
         let token_str = format_token_line(
             self.session_state.token_in,
             self.session_state.token_out,
+            self.session_state.live_output_tokens,
             self.session_state.context_tokens as u64,
             self.session_state.context_limit as u64,
         );
@@ -2941,6 +2947,7 @@ impl App {
                 .add_user_message(rendered.clone(), Some(self.agent_state.plan_mode));
             self.prompt_state.prompt.clear();
             self.prompt_state.show_completions = false;
+            self.reset_live_token_estimate();
             self.session_state.session_status = SessionStatus::Working;
             if self.ui_state.remote_mode {
                 self.send_remote_message(RemoteTuiMessage::Input { text: rendered });
@@ -4264,6 +4271,7 @@ impl App {
             self.prompt_state.pending_send = true;
         }
         self.session_state.session_status = SessionStatus::Working;
+        self.reset_live_token_estimate();
 
         // Navigate to session view when user sends a prompt
         let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
@@ -4773,6 +4781,7 @@ impl App {
         self.messages_state.messages.clear();
         self.session_state.token_in = 0;
         self.session_state.token_out = 0;
+        self.reset_live_token_estimate();
         self.session_state.reasoning_tokens = 0;
         self.session_state.context_tokens = 0;
     }
@@ -4793,6 +4802,7 @@ impl App {
         self.messages_state.messages.clear();
         self.session_state.token_in = 0;
         self.session_state.token_out = 0;
+        self.reset_live_token_estimate();
         self.session_state.session_status = SessionStatus::Idle;
         self.prompt_state.pending_send = false;
         self.ui_state.routes.navigate_to(Route::Home);
@@ -6087,6 +6097,20 @@ impl App {
     pub fn set_tokens(&mut self, input: u64, output: u64) {
         self.session_state.token_in += input;
         self.session_state.token_out += output;
+        self.reset_live_token_estimate();
+    }
+
+    pub fn reset_live_token_estimate(&mut self) {
+        self.session_state.live_output_tokens = 0;
+        self.session_state.live_output_text.clear();
+    }
+
+    pub fn add_live_output_delta(&mut self, delta: &str) {
+        self.session_state.live_output_text.push_str(delta);
+        self.session_state.live_output_tokens =
+            crate::agent::compaction::ContextTracker::estimate_tokens(
+                &self.session_state.live_output_text,
+            ) as u64;
     }
 
     pub fn set_context_info(&mut self, tokens: usize, limit: usize, compactions: usize) {
@@ -7145,19 +7169,50 @@ fn format_token_short(tokens: u64) -> String {
     }
 }
 
-fn format_token_line(token_in: u64, token_out: u64, context_tokens: u64, context_limit: u64) -> String {
-    let total = token_in + token_out;
+fn format_token_line(
+    token_in: u64,
+    token_out: u64,
+    live_output_tokens: u64,
+    context_tokens: u64,
+    context_limit: u64,
+) -> String {
+    let displayed_output = token_out + live_output_tokens;
+    let displayed_context = context_tokens + live_output_tokens;
+    let total = token_in + displayed_output;
     let pct = if context_limit > 0 {
-        ((context_tokens as f64 / context_limit as f64) * 100.0).clamp(0.0, 100.0)
+        ((displayed_context as f64 / context_limit as f64) * 100.0).clamp(0.0, 100.0)
     } else {
         0.0
     };
+    let output_prefix = if live_output_tokens > 0 { "↑~" } else { "↑" };
     format!(
-        "↓{} ↑{} ({}) / {} {:.0}%",
+        "↓{} {}{} ({}) / {} {:.0}%",
         format_token_short(token_in),
-        format_token_short(token_out),
+        output_prefix,
+        format_token_short(displayed_output),
         format_token_short(total),
-        format_token_short(context_tokens),
+        format_token_short(displayed_context),
         pct
     )
+}
+
+#[cfg(test)]
+mod token_line_tests {
+    use super::format_token_line;
+
+    #[test]
+    fn final_token_line_has_no_estimate_marker() {
+        let line = format_token_line(100, 25, 0, 1_000, 10_000);
+
+        assert!(line.contains("↑25"));
+        assert!(!line.contains("↑~"));
+    }
+
+    #[test]
+    fn live_token_line_marks_estimated_output() {
+        let line = format_token_line(100, 25, 10, 1_000, 10_000);
+
+        assert!(line.contains("↑~35"));
+        assert!(line.contains("(135)"));
+    }
 }

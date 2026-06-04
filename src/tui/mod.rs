@@ -2174,6 +2174,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         if delta_str.contains('\n') {
                             app.messages_state.messages.finalize_streaming();
                         }
+                        app.add_live_output_delta(&delta_str);
                         app.messages_state.messages.add_streaming_token(&delta_str);
                         app.streaming_active = true;
                         if matches!(app.session_state.session_status, SessionStatus::Working) {

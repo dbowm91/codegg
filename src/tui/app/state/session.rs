@@ -18,6 +18,8 @@ pub struct SessionState {
     pub session_status: SessionStatus,
     pub token_in: u64,
     pub token_out: u64,
+    pub live_output_tokens: u64,
+    pub live_output_text: String,
     pub reasoning_tokens: usize,
     pub cached_tokens: u64,
     pub history: VecDeque<HistoryEntry>,

@@ -95,10 +95,7 @@ impl Widget for &StatusBarWidget {
         ));
 
         if let Some(ref msg) = self.undo_message {
-            middle_spans.push(Span::styled(
-                "  ",
-                Style::default(),
-            ));
+            middle_spans.push(Span::styled("  ", Style::default()));
             middle_spans.push(Span::styled(
                 format!("{} (press U to undo)", msg),
                 Style::default().fg(self.theme.warning).add_modifier(Modifier::BOLD),
@@ -163,19 +160,66 @@ impl Widget for &StatusBarWidget {
 
         let pad1 = total_width.saturating_sub(left_width + middle_width + right_width);
 
-        let mut all_spans: Vec<Span<'_>> = Vec::with_capacity(left_spans.len() + middle_spans.len() + right_spans.len() + 2);
+        let mut all_spans: Vec<Span<'_>> = Vec::with_capacity(
+            left_spans.len() + middle_spans.len() + right_spans.len() + 2,
+        );
         all_spans.extend(left_spans);
         all_spans.extend(middle_spans);
         all_spans.push(Span::raw(" ".repeat(pad1)));
         all_spans.extend(right_spans);
+
+        let line = Line::from(all_spans);
+        if area.height <= 1 {
+            let paragraph =
+                Paragraph::new(line).style(Style::default().bg(self.theme.background));
+            paragraph.render(area, buf);
+            return;
+        }
 
         let block = Block::default()
             .borders(Borders::TOP)
             .border_style(Style::default().fg(self.theme.border))
             .style(Style::default().bg(self.theme.background));
 
-        let line = Line::from(all_spans);
         let paragraph = Paragraph::new(line).block(block);
         paragraph.render(area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn rendered_line(buf: &Buffer, width: u16) -> String {
+        (0..width)
+            .map(|x| buf[(x, 0)].symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn one_row_footer_renders_status_and_tokens() {
+        let mut widget = StatusBarWidget::default();
+        widget.set_status("working".to_string());
+        widget.set_tokens("↓10 ↑5 (15) / 20 75%".to_string());
+
+        let area = Rect::new(0, 0, 60, 1);
+        let mut buf = Buffer::empty(area);
+        (&widget).render(area, &mut buf);
+
+        let line = rendered_line(&buf, area.width);
+        assert!(line.contains("working"));
+        assert!(line.contains("↓10 ↑5"));
+    }
+
+    #[test]
+    fn taller_footer_keeps_top_border() {
+        let widget = StatusBarWidget::default();
+        let area = Rect::new(0, 0, 20, 2);
+        let mut buf = Buffer::empty(area);
+        (&widget).render(area, &mut buf);
+
+        let line = rendered_line(&buf, area.width);
+        assert!(line.contains("─"));
     }
 }
