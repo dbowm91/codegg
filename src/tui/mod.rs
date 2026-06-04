@@ -2037,9 +2037,12 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
     }
     app.tui_cmd_tx = Some(cmd_tx);
 
-    const RENDER_INTERVAL_FAST: Duration = Duration::from_millis(16); // 60fps during streaming
-    const RENDER_INTERVAL_SLOW: Duration = Duration::from_millis(33); // 30fps when idle
+    const STREAM_RENDER_INTERVAL: Duration = Duration::from_millis(16); // cap streaming redraws
+    const SPINNER_RENDER_INTERVAL: Duration = Duration::from_millis(80);
+    const TOAST_RENDER_INTERVAL: Duration = Duration::from_millis(250);
+    const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
     let mut last_render: Option<Instant> = None;
+    let mut needs_render = true;
 
     if let Some(ref mut watcher) = app.config_watcher {
         if let Err(e) = watcher.start().await {
@@ -2058,17 +2061,22 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             app.reset_state();
         }
 
-        let now = Instant::now();
-        let interval = if app.streaming_active {
-            RENDER_INTERVAL_FAST
+        if app.messages_state.toasts.tick() {
+            needs_render = true;
+        }
+
+        let render_interval = if app.streaming_active {
+            STREAM_RENDER_INTERVAL
         } else {
-            RENDER_INTERVAL_SLOW
+            Duration::ZERO
         };
-        let should_render = last_render
-            .map(|last| now.duration_since(last) >= interval)
-            .unwrap_or(true);
+        let should_render = needs_render
+            && last_render
+                .map(|last| last.elapsed() >= render_interval)
+                .unwrap_or(true);
         if should_render {
-            last_render = Some(now);
+            last_render = Some(Instant::now());
+            needs_render = false;
 
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 render_app(&mut terminal, app)
@@ -2106,8 +2114,6 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             }
         }
 
-        app.messages_state.toasts.tick();
-
         if !app.ui_state.remote_mode && app.prompt_state.pending_send {
             debug_log!("Event loop: pending_send=true, submitting through core facade");
             let Some(_) = app.core_client else {
@@ -2116,13 +2122,50 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                 app.messages_state
                     .toasts
                     .error("Core client not configured; cannot execute prompt");
+                needs_render = true;
                 continue;
             };
             ensure_local_session(app).await;
             app.dispatch_turn_submit_request(latest_user_message_text(app));
             app.prompt_state.pending_send = false;
+            needs_render = true;
             continue;
         }
+
+        let animation_interval = if app.streaming_active
+            || matches!(app.session_state.session_status, SessionStatus::Working)
+        {
+            Some(if app.streaming_active {
+                STREAM_RENDER_INTERVAL
+            } else {
+                SPINNER_RENDER_INTERVAL
+            })
+        } else if !app.messages_state.toasts.is_empty() {
+            Some(TOAST_RENDER_INTERVAL)
+        } else {
+            None
+        };
+        let render_delay = if needs_render {
+            last_render.and_then(|last| {
+                let elapsed = last.elapsed();
+                (elapsed < render_interval).then_some(render_interval - elapsed)
+            })
+        } else {
+            animation_interval
+        };
+        let resize_delay = app.ui_state.resize_debounce.map(|started| {
+            let elapsed = started.elapsed();
+            if elapsed >= RESIZE_DEBOUNCE {
+                Duration::ZERO
+            } else {
+                RESIZE_DEBOUNCE - elapsed
+            }
+        });
+        let next_wake = match (render_delay, resize_delay) {
+            (Some(render), Some(resize)) => Some(render.min(resize)),
+            (Some(delay), None) | (None, Some(delay)) => Some(delay),
+            (None, None) => None,
+        };
 
         tokio::select! {
             biased;
@@ -2135,6 +2178,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         } else {
                             app.on_paste(text.clone());
                         }
+                        needs_render = true;
                         continue;
                     }
                     if let Event::Key(key) = event {
@@ -2144,13 +2188,15 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         );
                         if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
                             app.on_key(key);
+                            needs_render = true;
                         }
                     }
                     if let Event::Resize(_, _) = event {
-                        app.ui_state.resize_debounce = Some(std::time::Instant::now());
+                        app.ui_state.resize_debounce = Some(Instant::now());
                     }
                     if let Event::Mouse(mouse) = event {
                         app.on_mouse(mouse);
+                        needs_render = true;
                     }
                 }
             }
@@ -2178,6 +2224,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         app.add_live_output_delta(&delta_str);
                         app.messages_state.messages.add_streaming_token(&delta_str);
                         app.streaming_active = true;
+                        needs_render = true;
                         if matches!(app.session_state.session_status, SessionStatus::Working) {
                             app.status_bar.set_thinking(true, Some("Thinking...".to_string()));
                         }
@@ -2186,11 +2233,13 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         debug_log!("Event loop: ReasoningDelta received");
                         app.messages_state.messages.add_reasoning(delta);
                         app.streaming_active = true;
+                        needs_render = true;
                     }
                     AppEvent::ToolCallStarted { tool_name, tool_id, arguments, .. } => {
                         debug_log!("Event loop: ToolCallStarted for tool={}", tool_name);
                         app.messages_state.messages.finalize_streaming();
                         app.streaming_active = true;
+                        needs_render = true;
                         match serde_json::from_str::<serde_json::Value>(&arguments) {
                             Ok(args_val) => {
                                 app.messages_state.messages.add_tool_call(tool_id.clone(), tool_name, args_val);
@@ -2218,6 +2267,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             crate::session::message::ToolStatus::Error
                         };
                         app.messages_state.messages.update_tool_call(&tool_id, output, status, None, None, None);
+                        needs_render = true;
                     }
                     AppEvent::AgentFinished { stop_reason, input_tokens, output_tokens, cached_tokens, reasoning_tokens, .. } => {
                         debug_log!("Event loop: AgentFinished received stop_reason={}", stop_reason);
@@ -2289,6 +2339,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             }
 
                             app.messages_state.messages.finalize_streaming();
+                            needs_render = true;
 
                             let tts = app.ui_state.tts.clone();
                             if tts.is_speaking() {
@@ -2300,6 +2351,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             }
                         } else if matches!(app.session_state.session_status, SessionStatus::Working) {
                             app.status_bar.set_thinking(true, Some("Thinking...".to_string()));
+                            needs_render = true;
                         }
                     }
                     AppEvent::PermissionPending { perm_id, tool, path, args, .. } => {
@@ -2309,11 +2361,13 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             path,
                             args,
                         });
+                        needs_render = true;
                     }
                     AppEvent::QuestionPending { session_id, questions } => {
                         debug_log!("Event loop: QuestionPending for session={}", session_id);
                         if let Ok(questions_vec) = serde_json::from_str::<Vec<crate::tui::components::dialogs::question::QuestionSpec>>(&questions) {
                             app.show_question_dialog(questions_vec, session_id);
+                            needs_render = true;
                         }
                     }
                     AppEvent::FileChanged { path, action, old_content } => {
@@ -2327,6 +2381,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             },
                         );
                         app.sidebar.set_file_changes(vec![format!("{} ({})", path, action)]);
+                        needs_render = true;
                     }
                     AppEvent::Error { message } => {
                         debug_log!("Event loop: Error received: {}", message);
@@ -2335,6 +2390,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         app.status_bar.set_thinking(false, None);
                         app.streaming_active = false;
                         app.messages_state.toasts.add(Toast::error(&message));
+                        needs_render = true;
                     }
                     AppEvent::CompactionTriggered { tokens_before, tokens_after, .. } => {
                         debug_log!("Event loop: CompactionTriggered");
@@ -2355,6 +2411,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             before_str, after_str
                         ));
                         app.messages_state.toasts.add(toast);
+                        needs_render = true;
                     }
                     AppEvent::ModelChanged { model, complexity } => {
                         debug_log!("Event loop: ModelChanged model={} complexity={}", model, complexity);
@@ -2362,18 +2419,22 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         app.messages_state
                             .toasts
                             .info(&format!("Routed: {} ({})", short, complexity));
+                        needs_render = true;
                     }
                     AppEvent::SubagentStarted { agent, description, .. } => {
                         debug_log!("Event loop: SubagentStarted agent={}", agent);
                         app.messages_state.toasts.add(Toast::info(&format!("Subagent '{}' started: {}", agent, description)));
+                        needs_render = true;
                     }
                     AppEvent::SubagentProgress { agent, message, .. } => {
                         debug_log!("Event loop: SubagentProgress agent={}", agent);
                         app.messages_state.toasts.add(Toast::info(&format!("[{}] {}", agent, message)));
+                        needs_render = true;
                     }
                     AppEvent::SubagentCompleted { agent, result_summary: _, .. } => {
                         debug_log!("Event loop: SubagentCompleted agent={}", agent);
                         app.messages_state.toasts.add(Toast::success(&format!("Subagent '{}' completed", agent)));
+                        needs_render = true;
                         if let Some(ref notif_mgr) = app.notification_manager {
                             let notif_type = crate::tui::components::notification::NotificationType::Success;
                             let body = format!("Subagent '{}' completed", agent);
@@ -2388,6 +2449,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     AppEvent::SubagentFailed { agent, error, .. } => {
                         debug_log!("Event loop: SubagentFailed agent={}, error={}", agent, error);
                         app.messages_state.toasts.add(Toast::error(&format!("Subagent '{}' failed: {}", agent, error)));
+                        needs_render = true;
                         if let Some(ref notif_mgr) = app.notification_manager {
                             let notif_type = crate::tui::components::notification::NotificationType::Error;
                             let body = format!("Subagent '{}' failed: {}", agent, error);
@@ -2403,6 +2465,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         debug_log!("Event loop: ContextUpdated tokens={} limit={}", context_tokens, context_limit);
                         app.session_state.context_tokens = context_tokens;
                         app.session_state.context_limit = context_limit;
+                        needs_render = true;
                     }
                     _ => {
                         debug_log!("Event loop: unhandled event");
@@ -2413,6 +2476,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("Event bus lagged, {} events dropped", n);
                         app.messages_state.toasts.warning(&format!("Events dropped ({})", n));
+                        needs_render = true;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         tracing::info!("Event bus closed, exiting event loop");
@@ -2433,6 +2497,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         tracing::info!("Configuration changed, reloading...");
                         GlobalEventBus::publish(AppEvent::ConfigChanged);
                         app.messages_state.toasts.add(Toast::info("Configuration reloaded"));
+                        needs_render = true;
                     }
                     Err(e) => {
                         tracing::warn!("Config reload error: {}", e);
@@ -2440,12 +2505,25 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                 }
             }
 
-            _ = tokio::time::sleep(Duration::from_millis(75)) => {
+            _ = async {
+                if let Some(delay) = next_wake {
+                    tokio::time::sleep(delay).await;
+                } else {
+                    futures::future::pending::<()>().await;
+                }
+            } => {
                 if let Some(debounce_start) = app.ui_state.resize_debounce {
-                    if debounce_start.elapsed() >= Duration::from_millis(75) {
+                    if debounce_start.elapsed() >= RESIZE_DEBOUNCE {
                         app.ui_state.resize_debounce = None;
                         app.on_resize();
+                        needs_render = true;
                     }
+                }
+                if app.streaming_active
+                    || matches!(app.session_state.session_status, SessionStatus::Working)
+                    || !app.messages_state.toasts.is_empty()
+                {
+                    needs_render = true;
                 }
             }
 
@@ -2596,6 +2674,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         handle_research_load_section(app, run_id, section).await;
                     }
                 }
+                needs_render = true;
             }
 
             Some(remote_event) = async {
@@ -2607,6 +2686,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             } => {
                 debug_log!("Event loop: processing remote event");
                 app.handle_remote_event(remote_event);
+                needs_render = true;
             }
 
             else => {}

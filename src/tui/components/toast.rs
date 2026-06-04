@@ -101,8 +101,10 @@ impl ToastManager {
         self.add(Toast::error(message));
     }
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) -> bool {
+        let before = self.toasts.len();
         self.toasts.retain(|t| !t.is_expired());
+        self.toasts.len() != before
     }
 
     pub fn is_empty(&self) -> bool {
