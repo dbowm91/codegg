@@ -532,7 +532,14 @@ impl MessagesWidget {
                 MsgPart::Reasoning { content, collapsed } => {
                     lines += 1;
                     if self.show_thinking && !*collapsed {
-                        lines += wrap_count(content, (width.saturating_sub(2)) as u16);
+                        lines += collapse_blank_lines(&render_markdown(
+                            content,
+                            &self.theme,
+                            self.theme.muted,
+                            (width.saturating_sub(2)) as u16,
+                        ))
+                        .len()
+                        .max(1);
                     }
                 }
                 MsgPart::ToolCall {
@@ -575,7 +582,14 @@ impl MessagesWidget {
             && !self.streaming_tokens.is_empty()
             && self.messages.last().is_some_and(|m| std::ptr::eq(m, msg))
         {
-            lines += 1 + wrap_count(&self.streaming_tokens, self.width.saturating_sub(2));
+            lines += 1 + collapse_blank_lines(&render_markdown(
+                &self.streaming_tokens,
+                &self.theme,
+                self.theme.muted,
+                self.width.saturating_sub(2),
+            ))
+            .len()
+            .max(1);
         }
         lines
     }
@@ -1490,12 +1504,16 @@ impl Widget for &MessagesWidget {
                 let streaming_style = Style::default().fg(self.theme.muted);
                 lines.push(Line::from(Span::styled(streaming_label, streaming_style)));
                 let tail_width = self.width.saturating_sub(2);
-                for text_line in self.streaming_tokens.lines() {
-                    let wrapped = wrap_to_strings(text_line, tail_width);
-                    for chunk in wrapped {
-                        lines.push(Line::from(Span::styled(chunk, streaming_style)));
-                    }
-                }
+                lines.extend(prefix_rendered_lines(
+                    render_markdown(
+                        &self.streaming_tokens,
+                        &self.theme,
+                        self.theme.muted,
+                        tail_width,
+                    ),
+                    "",
+                    Style::default(),
+                ));
                 continue;
             }
 
@@ -1725,17 +1743,10 @@ impl MessagesWidget {
                         }
                     }
                     if self.show_thinking && !*collapsed {
-                        let reasoning_style = Style::default().fg(self.theme.muted);
                         let tail_width = self.width.saturating_sub(2);
-                        for text_line in content.lines() {
-                            let chunks = wrap_to_strings(text_line, tail_width);
-                            for chunk in chunks {
-                                lines.push(Line::from(vec![
-                                    Span::styled("  ", Style::default()),
-                                    Span::styled(chunk, reasoning_style),
-                                ]));
-                            }
-                        }
+                        let rendered =
+                            render_markdown(content, &self.theme, self.theme.muted, tail_width);
+                        lines.extend(prefix_rendered_lines(rendered, "  ", Style::default()));
                     }
                     prev_was_reasoning = true;
                 }
@@ -1815,16 +1826,14 @@ impl MessagesWidget {
                         ]));
                     } else if !output.is_empty() {
                         if *expanded && !input.is_empty() {
-                            for input_line in input.lines().take(TOOL_INPUT_PREVIEW_LINES) {
-                                lines.push(Line::from(vec![
-                                    Span::raw("    "),
-                                    Span::styled(
-                                        input_line.to_string(),
-                                        Style::default()
-                                            .fg(self.theme.muted)
-                                            .add_modifier(Modifier::DIM),
-                                    ),
-                                ]));
+                            let highlighted_input =
+                                highlight_code(input, "json", self.theme.code_theme());
+                            for input_line in
+                                highlighted_input.iter().take(TOOL_INPUT_PREVIEW_LINES)
+                            {
+                                let mut spans = vec![Span::raw("    ")];
+                                spans.extend(input_line.spans.clone());
+                                lines.push(Line::from(spans));
                             }
                             let input_line_count = input.lines().count();
                             if input_line_count > TOOL_INPUT_PREVIEW_LINES {
@@ -1848,14 +1857,26 @@ impl MessagesWidget {
                         } else {
                             TOOL_OUTPUT_PREVIEW_LINES
                         };
-                        for output_line in output.lines().take(limit) {
-                            lines.push(Line::from(vec![
-                                Span::raw("    "),
-                                Span::styled(
-                                    output_line.to_string(),
-                                    Style::default().fg(self.theme.muted),
-                                ),
-                            ]));
+                        if let Some(lang) = infer_tool_output_language(name, input) {
+                            for output_line in
+                                render_numbered_code_output(output, &lang, &self.theme)
+                                    .into_iter()
+                                    .take(limit)
+                            {
+                                let mut spans = vec![Span::raw("    ")];
+                                spans.extend(output_line.spans);
+                                lines.push(Line::from(spans));
+                            }
+                        } else {
+                            for output_line in output.lines().take(limit) {
+                                lines.push(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(
+                                        output_line.to_string(),
+                                        Style::default().fg(self.theme.muted),
+                                    ),
+                                ]));
+                            }
                         }
                         if !*expanded && output_line_count > TOOL_OUTPUT_PREVIEW_LINES {
                             lines.push(Line::from(vec![
@@ -2539,6 +2560,87 @@ fn render_code_block(code: &str, lang: &str, theme: &Arc<Theme>, width: u16) -> 
     lines
 }
 
+fn prefix_rendered_lines(
+    lines: Vec<Line<'static>>,
+    prefix: &str,
+    prefix_style: Style,
+) -> Vec<Line<'static>> {
+    if prefix.is_empty() {
+        return lines;
+    }
+    lines
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::styled(prefix.to_string(), prefix_style)];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn infer_tool_output_language(name: &str, input: &str) -> Option<String> {
+    if name != "read" {
+        return None;
+    }
+    let input: serde_json::Value = serde_json::from_str(input).ok()?;
+    let path = input.get("path")?.as_str()?;
+    let ext = std::path::Path::new(path).extension()?.to_str()?;
+    let lang = normalize_code_lang(ext);
+    if lang.is_empty() {
+        None
+    } else {
+        Some(lang)
+    }
+}
+
+fn render_numbered_code_output(output: &str, lang: &str, theme: &Arc<Theme>) -> Vec<Line<'static>> {
+    let code = output
+        .lines()
+        .map(strip_read_line_number)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let highlighted = highlight_code(&code, lang, theme.code_theme());
+    output
+        .lines()
+        .zip(highlighted)
+        .map(|(original, highlighted_line)| {
+            let mut spans = Vec::new();
+            if let Some((prefix, _)) = split_read_line_number(original) {
+                spans.push(Span::styled(
+                    prefix.to_string(),
+                    Style::default().fg(theme.muted),
+                ));
+            }
+            spans.extend(highlighted_line.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn strip_read_line_number(line: &str) -> &str {
+    split_read_line_number(line)
+        .map(|(_, code)| code)
+        .unwrap_or(line)
+}
+
+fn split_read_line_number(line: &str) -> Option<(&str, &str)> {
+    if line.len() < 8 {
+        return None;
+    }
+    let (prefix, rest) = line.split_at(8);
+    let valid_prefix = prefix
+        .chars()
+        .take(6)
+        .all(|c| c == ' ' || c.is_ascii_digit())
+        && prefix.as_bytes().get(6) == Some(&b':')
+        && prefix.as_bytes().get(7) == Some(&b' ');
+    if valid_prefix {
+        Some((prefix, rest))
+    } else {
+        None
+    }
+}
+
 fn normalize_code_lang(info: &str) -> String {
     let lang = info
         .split_whitespace()
@@ -3177,6 +3279,70 @@ mod tests {
         assert!(
             n >= 2,
             "expected at least 2 lines (label + stream), got {n}"
+        );
+    }
+
+    #[test]
+    fn reasoning_uses_markdown_renderer() {
+        let widget = MessagesWidget::default();
+        let msg = UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Reasoning {
+                content: "Thinking **hard**\n\n```rust\nfn main() {}\n```".to_string(),
+                collapsed: false,
+            }],
+            timestamp: None,
+            is_plan_mode: None,
+        };
+
+        let rendered = widget.build_assistant_parts_lines(&msg, None, None);
+
+        assert!(
+            rendered
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.content.contains("hard")
+                    && span.style.add_modifier.contains(Modifier::BOLD)),
+            "reasoning markdown should preserve bold spans"
+        );
+        assert!(
+            rendered
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.content.contains("RUST")),
+            "reasoning markdown should render fenced code blocks"
+        );
+    }
+
+    #[test]
+    fn read_tool_output_language_is_inferred_from_path() {
+        let input = r#"{"path":"/tmp/example.rs"}"#;
+        assert_eq!(
+            infer_tool_output_language("read", input),
+            Some("rust".to_string())
+        );
+        assert_eq!(infer_tool_output_language("bash", input), None);
+    }
+
+    #[test]
+    fn numbered_read_output_highlights_code_without_coloring_line_numbers() {
+        let widget = MessagesWidget::default();
+        let rendered = render_numbered_code_output("     1: fn main() {}\n", "rust", &widget.theme);
+
+        let first = rendered.first().expect("expected highlighted output");
+        assert_eq!(first.spans.first().unwrap().content.as_ref(), "     1: ");
+        assert_eq!(
+            first.spans.first().unwrap().style.fg,
+            Some(widget.theme.muted)
+        );
+
+        let colors: std::collections::HashSet<_> = rendered
+            .iter()
+            .flat_map(|line| line.spans.iter().skip(1).filter_map(|span| span.style.fg))
+            .collect();
+        assert!(
+            colors.len() > 1,
+            "read output code portion should use syntax colors"
         );
     }
 
