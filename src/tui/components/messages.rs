@@ -1,4 +1,7 @@
+use crate::lsp::language::extension_to_language_id;
 use crate::session::message::ToolStatus;
+use comrak::nodes::{AstNode, ListType, NodeValue};
+use comrak::{parse_document, Arena, Options};
 use once_cell::sync::Lazy;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -24,6 +27,15 @@ static URL_REGEX: Lazy<regex::Regex> =
     Lazy::new(|| regex::Regex::new(r#"https?://[^\s<>"'`]+"#).expect("invalid URL regex"));
 static FILE_PATH_REGEX: Lazy<regex::Regex> = Lazy::new(|| {
     regex::Regex::new(r#"(?:^|[\s])(\/(?:[a-zA-Z0-9._~-]+\/)*[a-zA-Z0-9._~-]+|~\/[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*|\.\.?\/[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*)"#).expect("invalid file path regex")
+});
+static MARKDOWN_OPTIONS: Lazy<Options<'static>> = Lazy::new(|| {
+    let mut options = Options::default();
+    options.extension.strikethrough = true;
+    options.extension.table = true;
+    options.extension.autolink = true;
+    options.extension.tasklist = true;
+    options.extension.description_lists = true;
+    options
 });
 const TOOL_OUTPUT_PREVIEW_LINES: usize = 8;
 const TOOL_INPUT_PREVIEW_LINES: usize = 4;
@@ -89,7 +101,10 @@ pub struct UIMessage {
 
 impl UIMessage {
     pub fn is_thinking_first(&self) -> bool {
-        self.parts.first().map(|p| matches!(p, MsgPart::Reasoning { .. })).unwrap_or(false)
+        self.parts
+            .first()
+            .map(|p| matches!(p, MsgPart::Reasoning { .. }))
+            .unwrap_or(false)
     }
 }
 
@@ -190,31 +205,32 @@ fn wrap_count(s: &str, width: u16) -> usize {
     let mut col = 0usize;
     let mut word_w = 0usize;
     let mut word_chars = 0usize;
-    let flush_word = |count: &mut usize, col: &mut usize, word_w: &mut usize, word_chars: &mut usize| {
-        if *word_chars == 0 {
-            return;
-        }
-        // Place the word on the current line if there's room (with leading
-        // space), else start a new line.
-        if *col == 0 {
-            *col = *word_w;
-        } else if *col + 1 + *word_w <= width {
-            *col += 1 + *word_w;
-        } else {
-            *count += 1;
-            *col = *word_w;
-        }
-        // Hard-break: the word is wider than the wrap width. It needs
-        // ceil(word_w / width) visual lines. We've already counted the
-        // first one (col was set to word_w above), so add the extras.
-        if *col > width {
-            let extras = word_w.div_ceil(width) - 1;
-            *count += extras;
-            *col = *word_w - extras * width;
-        }
-        *word_w = 0;
-        *word_chars = 0;
-    };
+    let flush_word =
+        |count: &mut usize, col: &mut usize, word_w: &mut usize, word_chars: &mut usize| {
+            if *word_chars == 0 {
+                return;
+            }
+            // Place the word on the current line if there's room (with leading
+            // space), else start a new line.
+            if *col == 0 {
+                *col = *word_w;
+            } else if *col + 1 + *word_w <= width {
+                *col += 1 + *word_w;
+            } else {
+                *count += 1;
+                *col = *word_w;
+            }
+            // Hard-break: the word is wider than the wrap width. It needs
+            // ceil(word_w / width) visual lines. We've already counted the
+            // first one (col was set to word_w above), so add the extras.
+            if *col > width {
+                let extras = word_w.div_ceil(width) - 1;
+                *count += extras;
+                *col = *word_w - extras * width;
+            }
+            *word_w = 0;
+            *word_chars = 0;
+        };
     for ch in s.chars() {
         if ch == '\n' {
             flush_word(&mut count, &mut col, &mut word_w, &mut word_chars);
@@ -275,8 +291,8 @@ fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
     let place_word = |word: &str,
                       word_w: usize,
                       line: &mut String,
-                          col: &mut usize,
-                          out: &mut Vec<String>|
+                      col: &mut usize,
+                      out: &mut Vec<String>|
      -> Option<String> {
         if word.is_empty() {
             return None;
@@ -330,9 +346,7 @@ fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
     for ch in s.chars() {
         if ch == '\n' {
             if !word.is_empty() {
-                if let Some(leftover) =
-                    place_word(&word, word_w, &mut line, &mut col, &mut out)
-                {
+                if let Some(leftover) = place_word(&word, word_w, &mut line, &mut col, &mut out) {
                     word = leftover;
                     word_w = word.chars().count();
                 } else {
@@ -344,9 +358,7 @@ fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
             col = 0;
         } else if ch.is_whitespace() {
             if !word.is_empty() {
-                if let Some(leftover) =
-                    place_word(&word, word_w, &mut line, &mut col, &mut out)
-                {
+                if let Some(leftover) = place_word(&word, word_w, &mut line, &mut col, &mut out) {
                     word = leftover;
                     word_w = word.chars().count();
                     col = 0;
@@ -375,9 +387,7 @@ fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
             word.push(ch);
             word_w += cw;
             if word_w > width {
-                if let Some(leftover) =
-                    place_word(&word, word_w, &mut line, &mut col, &mut out)
-                {
+                if let Some(leftover) = place_word(&word, word_w, &mut line, &mut col, &mut out) {
                     word = leftover;
                     word_w = word.chars().count();
                     col = 0;
@@ -389,9 +399,7 @@ fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
         }
     }
     if !word.is_empty() {
-        if let Some(leftover) =
-            place_word(&word, word_w, &mut line, &mut col, &mut out)
-        {
+        if let Some(leftover) = place_word(&word, word_w, &mut line, &mut col, &mut out) {
             out.push(leftover);
         }
     }
@@ -426,41 +434,36 @@ fn extract_tool_target(name: &str, input: &str) -> String {
         Err(_) => return input.lines().next().unwrap_or("").to_string(),
     };
     match name {
-        "read" | "write" | "edit" | "multiedit" | "glob" | "grep" => {
-            val.get("path")
-                .or_else(|| val.get("file_path"))
-                .or_else(|| val.get("pattern"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "bash" | "exec" => {
-            val.get("command")
-                .or_else(|| val.get("cmd"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "task" => {
-            val.get("prompt")
-                .or_else(|| val.get("description"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "webfetch" => {
-            val.get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        _ => {
-            val.as_object()
-                .and_then(|m| m.values().next())
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
+        "read" | "write" | "edit" | "multiedit" | "glob" | "grep" => val
+            .get("path")
+            .or_else(|| val.get("file_path"))
+            .or_else(|| val.get("pattern"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "bash" | "exec" => val
+            .get("command")
+            .or_else(|| val.get("cmd"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "task" => val
+            .get("prompt")
+            .or_else(|| val.get("description"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "webfetch" => val
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        _ => val
+            .as_object()
+            .and_then(|m| m.values().next())
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
     }
     .chars()
     .take(60)
@@ -555,10 +558,7 @@ impl MessagesWidget {
                                 code_lang.clear();
                                 in_code = false;
                             } else {
-                                code_lang = trimmed
-                                    .trim_start_matches("```")
-                                    .trim()
-                                    .to_string();
+                                code_lang = trimmed.trim_start_matches("```").trim().to_string();
                                 in_code = true;
                             }
                             prev_was_blank = false;
@@ -791,7 +791,9 @@ impl MessagesWidget {
                         if let Some(MsgPart::Text { content }) = msg.parts.last_mut() {
                             content.push_str(text_chunk);
                         } else {
-                            msg.parts.push(MsgPart::Text { content: text_chunk.to_string() });
+                            msg.parts.push(MsgPart::Text {
+                                content: text_chunk.to_string(),
+                            });
                         }
                     }
                     self.assistant_is_thinking = true;
@@ -802,7 +804,9 @@ impl MessagesWidget {
                     if let Some(MsgPart::Text { content }) = msg.parts.last_mut() {
                         content.push_str(text_chunk);
                     } else {
-                        msg.parts.push(MsgPart::Text { content: text_chunk.to_string() });
+                        msg.parts.push(MsgPart::Text {
+                            content: text_chunk.to_string(),
+                        });
                     }
                     break;
                 }
@@ -882,7 +886,12 @@ impl MessagesWidget {
         let mut updated = false;
         for msg in &mut self.messages {
             for part in &mut msg.parts {
-                if let MsgPart::ToolCall { id: part_id, status, .. } = part {
+                if let MsgPart::ToolCall {
+                    id: part_id,
+                    status,
+                    ..
+                } = part
+                {
                     if part_id == id {
                         *status = ToolStatus::Running;
                         updated = true;
@@ -1369,9 +1378,8 @@ impl MessagesWidget {
         self.auto_scroll = false;
 
         let visible_lines = self.message_viewport_height().max(1);
-        let message_offset = self.with_layout_cache(|cache| {
-            cache.get_offset(current_match.msg_idx).unwrap_or(0)
-        });
+        let message_offset =
+            self.with_layout_cache(|cache| cache.get_offset(current_match.msg_idx).unwrap_or(0));
         let target_line = message_offset.saturating_add(current_match.line_in_msg);
         let max_scroll = self.total_lines().saturating_sub(visible_lines);
         self.scroll = target_line
@@ -1440,7 +1448,11 @@ impl Default for MessagesWidget {
 
 fn pad_line_to_width(line: &mut Line<'_>, target_width: u16, style: Style) {
     use unicode_width::UnicodeWidthStr;
-    let current_width: usize = line.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+    let current_width: usize = line
+        .spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
     let pad = target_width.saturating_sub(current_width as u16) as usize;
     if pad > 0 {
         line.spans.push(Span::styled(" ".repeat(pad), style));
@@ -1454,8 +1466,7 @@ impl Widget for &MessagesWidget {
                 "No messages yet. Type a prompt to begin.",
                 Style::default().fg(self.theme.muted),
             ));
-            let paragraph = Paragraph::new(text)
-                .alignment(ratatui::layout::Alignment::Center);
+            let paragraph = Paragraph::new(text).alignment(ratatui::layout::Alignment::Center);
             paragraph.render(area, buf);
             return;
         }
@@ -1668,17 +1679,26 @@ impl MessagesWidget {
                                     }
                                     user_lines.push(Line::from(spans));
                                 } else if let Some(p) = prefix_for_chunk {
-                                    user_lines.push(Line::from(vec![p, Span::styled(chunk.clone(), text_style)]));
+                                    user_lines.push(Line::from(vec![
+                                        p,
+                                        Span::styled(chunk.clone(), text_style),
+                                    ]));
                                 } else {
-                                    user_lines.push(Line::from(Span::styled(chunk.clone(), text_style)));
+                                    user_lines
+                                        .push(Line::from(Span::styled(chunk.clone(), text_style)));
                                 }
                             } else if let Some(p) = prefix_for_chunk {
-                                user_lines.push(Line::from(vec![p, Span::styled(chunk.clone(), text_style)]));
+                                user_lines.push(Line::from(vec![
+                                    p,
+                                    Span::styled(chunk.clone(), text_style),
+                                ]));
                             } else {
-                                user_lines.push(Line::from(Span::styled(chunk.clone(), text_style)));
+                                user_lines
+                                    .push(Line::from(Span::styled(chunk.clone(), text_style)));
                             }
                         } else if let Some(p) = prefix_for_chunk {
-                            user_lines.push(Line::from(vec![p, Span::styled(chunk.clone(), text_style)]));
+                            user_lines
+                                .push(Line::from(vec![p, Span::styled(chunk.clone(), text_style)]));
                         } else {
                             user_lines.push(Line::from(Span::styled(chunk.clone(), text_style)));
                         }
@@ -1715,7 +1735,8 @@ impl MessagesWidget {
         for (part_idx, part) in msg.parts.iter().enumerate() {
             match part {
                 MsgPart::Text { content } => {
-                    let rendered = render_markdown(content, &self.theme, self.theme.muted, self.width);
+                    let rendered =
+                        render_markdown(content, &self.theme, self.theme.muted, self.width);
                     if let Some(m) = current_match {
                         if m.part_idx == part_idx {
                             lines.extend(highlight_match_in_rendered(
@@ -1779,9 +1800,10 @@ impl MessagesWidget {
                         format!("{} {}", name, target)
                     };
                     let (icon, base_style) = match status {
-                        ToolStatus::Running => {
-                            (tool_spinner_frame(), Style::default().fg(self.theme.warning))
-                        }
+                        ToolStatus::Running => (
+                            tool_spinner_frame(),
+                            Style::default().fg(self.theme.warning),
+                        ),
                         ToolStatus::Pending => ("○", Style::default().fg(self.theme.muted)),
                         ToolStatus::Completed => ("✓", Style::default().fg(self.theme.success)),
                         ToolStatus::Error => (
@@ -1820,12 +1842,10 @@ impl MessagesWidget {
                     } else {
                         ""
                     };
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  {} {}{}{}", icon, display_name, summary_str, toggle),
-                            base_style,
-                        ),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  {} {}{}{}", icon, display_name, summary_str, toggle),
+                        base_style,
+                    )]));
                     if matches!(status, ToolStatus::Pending | ToolStatus::Running)
                         && output.is_empty()
                     {
@@ -1898,11 +1918,17 @@ impl MessagesWidget {
                     // Suppress part_idx warning by referencing it
                     let _ = part_idx;
                 }
-                MsgPart::Image { alt_text, width, height, .. } => {
+                MsgPart::Image {
+                    alt_text,
+                    width,
+                    height,
+                    ..
+                } => {
                     let img_text = format!("📷 Image ({}x{}): {}", width, height, alt_text);
-                    lines.push(Line::from(vec![
-                        Span::styled(img_text, Style::default().fg(self.theme.muted)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        img_text,
+                        Style::default().fg(self.theme.muted),
+                    )]));
                 }
             }
         }
@@ -1982,9 +2008,7 @@ fn highlight_match_in_rendered(
                 let matched: String = chars[local_start..local_end].iter().collect();
                 new_spans.push(Span::styled(
                     matched,
-                    span.style
-                        .bg(selection_bg)
-                        .add_modifier(Modifier::REVERSED),
+                    span.style.bg(selection_bg).add_modifier(Modifier::REVERSED),
                 ));
             }
             if local_end < chars.len() {
@@ -2009,137 +2033,266 @@ fn render_markdown(
     if text.is_empty() {
         return vec![Line::from("")];
     }
-    // Prose wraps to the full content-area width. A previous version
-    // subtracted 2 to leave a "1-col gutter on each side", but only the
-    // right gutter was actually enforced (the left side had no padding),
-    // which made the text look like it had extra trailing space. The wrap
-    // is also robust to long words now (hard-breaks URLs / paths so they
-    // never bleed into the scrollbar gutter).
-    let prose_width = width;
-
-    let has_code_block = text.contains("```");
-
-    if has_code_block {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        let mut in_code = false;
-        let mut code_lang = String::new();
-        let mut code_buf = String::new();
-
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("```") {
-                if in_code {
-                    let lang_upper = code_lang.to_uppercase();
-                    let line_count = code_buf.lines().count();
-                    let needs_line_numbers = line_count > 5;
-                    let highlighted = highlight_code(&code_buf, &code_lang, theme.code_theme());
-                    let _base_idx = lines.len();
-                    if !lang_upper.is_empty() {
-                        lines.push(Line::from(Span::styled(
-                            format!("  ┌─ {lang_upper} "),
-                            Style::default()
-                                .fg(theme.muted)
-                                .add_modifier(Modifier::BOLD),
-                        )));
-                    }
-                    // Each highlighted line is pre-wrapped to (width - 6) cols
-                    // (6 = "  NNNN │ " gutter for the line-number prefix).
-                    let code_inner_width = width.saturating_sub(6);
-                    for (i, highlighted_line) in highlighted.iter().enumerate() {
-                        let raw: String = highlighted_line
-                            .spans
-                            .iter()
-                            .map(|s| s.content.as_ref())
-                            .collect();
-                        let wrapped = wrap_to_strings(&raw, code_inner_width);
-                        for (j, chunk) in wrapped.iter().enumerate() {
-                            let mut spans: Vec<Span<'static>> = Vec::new();
-                            if needs_line_numbers && j == 0 {
-                                spans.push(Span::styled(
-                                    format!("{:4} │ ", i + 1),
-                                    Style::default().fg(theme.muted),
-                                ));
-                            } else if needs_line_numbers {
-                                spans.push(Span::styled(
-                                    "     │ ",
-                                    Style::default().fg(theme.muted),
-                                ));
-                            }
-                            spans.push(Span::raw(chunk.clone()));
-                            lines.push(Line::from(spans));
-                        }
-                    }
-                    code_buf.clear();
-                    code_lang.clear();
-                    in_code = false;
-                } else {
-                    code_lang = trimmed.trim_start_matches("```").trim().to_string();
-                    in_code = true;
-                }
-                continue;
-            }
-            if in_code {
-                code_buf.push_str(line);
-                code_buf.push('\n');
-            } else {
-                let rendered = render_md_line_wrapped(trimmed, theme, default_color, prose_width);
-                lines.extend(rendered);
-            }
-        }
-
-        if in_code && !code_buf.is_empty() {
-            let lang_upper = code_lang.to_uppercase();
-            let line_count = code_buf.lines().count();
-            let needs_line_numbers = line_count > 5;
-            let highlighted = highlight_code(&code_buf, &code_lang, theme.code_theme());
-            let _base_idx = lines.len();
-            if !lang_upper.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    format!("  ┌─ {lang_upper} "),
-                    Style::default()
-                        .fg(theme.muted)
-                        .add_modifier(Modifier::BOLD),
-                )));
-            }
-            let code_inner_width = width.saturating_sub(6);
-            for (i, highlighted_line) in highlighted.iter().enumerate() {
-                let raw: String = highlighted_line
-                    .spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect();
-                let wrapped = wrap_to_strings(&raw, code_inner_width);
-                for (j, chunk) in wrapped.iter().enumerate() {
-                    let mut spans: Vec<Span<'static>> = Vec::new();
-                    if needs_line_numbers && j == 0 {
-                        spans.push(Span::styled(
-                            format!("{:4} │ ", i + 1),
-                            Style::default().fg(theme.muted),
-                        ));
-                    } else if needs_line_numbers {
-                        spans.push(Span::styled(
-                            "     │ ",
-                            Style::default().fg(theme.muted),
-                        ));
-                    }
-                    spans.push(Span::raw(chunk.clone()));
-                    lines.push(Line::from(spans));
-                }
-            }
-        }
-
-        lines
+    let arena = Arena::new();
+    let root = parse_document(&arena, text, &MARKDOWN_OPTIONS);
+    let mut lines = Vec::new();
+    render_markdown_blocks(root, &mut lines, theme, default_color, width);
+    if lines.is_empty() {
+        vec![Line::from("")]
     } else {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for line in text.lines() {
-            let rendered = render_md_line_wrapped(line.trim(), theme, default_color, prose_width);
-            lines.extend(rendered);
-        }
         lines
     }
 }
 
-fn parse_line_with_urls(line: &str, theme: &Arc<Theme>, default_color: ratatui::style::Color) -> Vec<Span<'static>> {
+fn render_markdown_blocks<'a>(
+    node: &'a AstNode<'a>,
+    lines: &mut Vec<Line<'static>>,
+    theme: &Arc<Theme>,
+    default_color: ratatui::style::Color,
+    width: u16,
+) {
+    for child in node.children() {
+        render_markdown_block(child, lines, theme, default_color, width);
+    }
+}
+
+fn render_markdown_block<'a>(
+    node: &'a AstNode<'a>,
+    lines: &mut Vec<Line<'static>>,
+    theme: &Arc<Theme>,
+    default_color: ratatui::style::Color,
+    width: u16,
+) {
+    match &node.data.borrow().value {
+        NodeValue::Document => render_markdown_blocks(node, lines, theme, default_color, width),
+        NodeValue::Paragraph => {
+            let spans = collect_markdown_inlines(node, theme, Style::default().fg(default_color));
+            lines.extend(wrap_markdown_spans(spans, width, default_color));
+        }
+        NodeValue::Heading(heading) => {
+            let style = match heading.level {
+                1 => Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+                2 => Style::default()
+                    .fg(theme.secondary)
+                    .add_modifier(Modifier::BOLD),
+                _ => Style::default()
+                    .fg(default_color)
+                    .add_modifier(Modifier::BOLD),
+            };
+            let spans = collect_markdown_inlines(node, theme, style);
+            lines.extend(wrap_markdown_spans(spans, width, default_color));
+        }
+        NodeValue::CodeBlock(code) => {
+            let lang = normalize_code_lang(&code.info);
+            lines.extend(render_code_block(&code.literal, &lang, theme, width));
+        }
+        NodeValue::BlockQuote => {
+            let mut inner = Vec::new();
+            render_markdown_blocks(
+                node,
+                &mut inner,
+                theme,
+                default_color,
+                width.saturating_sub(2),
+            );
+            for line in inner {
+                let mut spans = vec![Span::styled("│ ", Style::default().fg(theme.muted))];
+                spans.extend(line.spans);
+                lines.push(Line::from(spans));
+            }
+        }
+        NodeValue::List(list) => {
+            render_markdown_list(node, *list, lines, theme, default_color, width)
+        }
+        NodeValue::ThematicBreak => lines.push(Line::from(Span::styled(
+            "─".repeat(width.max(1) as usize),
+            Style::default().fg(theme.muted),
+        ))),
+        NodeValue::HtmlBlock(html) => {
+            for line in html.literal.lines() {
+                lines.extend(render_md_line_wrapped(
+                    line.trim(),
+                    theme,
+                    default_color,
+                    width,
+                ));
+            }
+        }
+        NodeValue::Table(_) | NodeValue::TableRow(_) | NodeValue::TableCell => {
+            let text = collect_markdown_plain_text(node);
+            if !text.trim().is_empty() {
+                lines.extend(render_md_line_wrapped(
+                    text.trim(),
+                    theme,
+                    default_color,
+                    width,
+                ));
+            }
+        }
+        NodeValue::DescriptionList
+        | NodeValue::DescriptionItem(_)
+        | NodeValue::DescriptionTerm
+        | NodeValue::DescriptionDetails
+        | NodeValue::FootnoteDefinition(_)
+        | NodeValue::MultilineBlockQuote(_)
+        | NodeValue::Alert(_) => {
+            render_markdown_blocks(node, lines, theme, default_color, width);
+        }
+        _ => {
+            let spans = collect_markdown_inlines(node, theme, Style::default().fg(default_color));
+            if !spans.is_empty() {
+                lines.extend(wrap_markdown_spans(spans, width, default_color));
+            }
+        }
+    }
+}
+
+fn render_markdown_list<'a>(
+    node: &'a AstNode<'a>,
+    list: comrak::nodes::NodeList,
+    lines: &mut Vec<Line<'static>>,
+    theme: &Arc<Theme>,
+    default_color: ratatui::style::Color,
+    width: u16,
+) {
+    let mut ordinal = list.start.max(1);
+    for item in node.children() {
+        let marker = match list.list_type {
+            ListType::Bullet => "• ".to_string(),
+            ListType::Ordered => {
+                let marker = format!("{ordinal}. ");
+                ordinal += 1;
+                marker
+            }
+        };
+        let marker_width = UnicodeWidthStr::width(marker.as_str());
+        let mut item_lines = Vec::new();
+        render_markdown_blocks(
+            item,
+            &mut item_lines,
+            theme,
+            default_color,
+            width.saturating_sub(marker_width as u16),
+        );
+        if item_lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                marker,
+                Style::default().fg(theme.primary),
+            )));
+            continue;
+        }
+        for (idx, line) in item_lines.into_iter().enumerate() {
+            let prefix = if idx == 0 {
+                marker.clone()
+            } else {
+                " ".repeat(marker_width)
+            };
+            let mut spans = vec![Span::styled(prefix, Style::default().fg(theme.primary))];
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        }
+    }
+}
+
+fn collect_markdown_inlines<'a>(
+    node: &'a AstNode<'a>,
+    theme: &Arc<Theme>,
+    style: Style,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for child in node.children() {
+        collect_markdown_inline(child, theme, style, &mut spans);
+    }
+    spans
+}
+
+fn collect_markdown_inline<'a>(
+    node: &'a AstNode<'a>,
+    theme: &Arc<Theme>,
+    style: Style,
+    spans: &mut Vec<Span<'static>>,
+) {
+    match &node.data.borrow().value {
+        NodeValue::Text(text) => spans.extend(parse_text_links(text, theme, style)),
+        NodeValue::Code(code) => spans.push(Span::styled(
+            code.literal.clone(),
+            Style::default().fg(theme.primary).bg(theme.selection),
+        )),
+        NodeValue::Emph => {
+            for child in node.children() {
+                collect_markdown_inline(child, theme, style.add_modifier(Modifier::ITALIC), spans);
+            }
+        }
+        NodeValue::Strong => {
+            for child in node.children() {
+                collect_markdown_inline(child, theme, style.add_modifier(Modifier::BOLD), spans);
+            }
+        }
+        NodeValue::Strikethrough => {
+            for child in node.children() {
+                collect_markdown_inline(
+                    child,
+                    theme,
+                    style.add_modifier(Modifier::CROSSED_OUT),
+                    spans,
+                );
+            }
+        }
+        NodeValue::Link(link) | NodeValue::Image(link) => {
+            let text = collect_markdown_plain_text(node);
+            let label = if text.is_empty() {
+                link.url.as_str()
+            } else {
+                text.as_str()
+            };
+            spans.push(Span::styled(
+                wrap_osc8(&link.url, label),
+                Style::default()
+                    .fg(theme.link)
+                    .add_modifier(Modifier::UNDERLINED),
+            ));
+        }
+        NodeValue::SoftBreak | NodeValue::LineBreak => spans.push(Span::raw(" ")),
+        NodeValue::HtmlInline(text) | NodeValue::Raw(text) => {
+            spans.extend(parse_text_links(text, theme, style))
+        }
+        _ => {
+            for child in node.children() {
+                collect_markdown_inline(child, theme, style, spans);
+            }
+        }
+    }
+}
+
+fn collect_markdown_plain_text<'a>(node: &'a AstNode<'a>) -> String {
+    let mut out = String::new();
+    collect_markdown_plain_text_into(node, &mut out);
+    out
+}
+
+fn collect_markdown_plain_text_into<'a>(node: &'a AstNode<'a>, out: &mut String) {
+    match &node.data.borrow().value {
+        NodeValue::Text(text) | NodeValue::HtmlInline(text) | NodeValue::Raw(text) => {
+            out.push_str(text)
+        }
+        NodeValue::Code(code) => out.push_str(&code.literal),
+        NodeValue::SoftBreak | NodeValue::LineBreak => out.push(' '),
+        NodeValue::CodeBlock(code) => out.push_str(&code.literal),
+        _ => {
+            for child in node.children() {
+                collect_markdown_plain_text_into(child, out);
+            }
+        }
+    }
+}
+
+fn parse_line_with_urls(
+    line: &str,
+    theme: &Arc<Theme>,
+    default_color: ratatui::style::Color,
+) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut last_end = 0;
 
@@ -2217,7 +2370,193 @@ fn parse_line_with_urls(line: &str, theme: &Arc<Theme>, default_color: ratatui::
     spans
 }
 
-fn parse_plain_text(text: &str, theme: &Arc<Theme>, default_color: ratatui::style::Color) -> Vec<Span<'static>> {
+fn parse_text_links(text: &str, theme: &Arc<Theme>, style: Style) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut last_end = 0;
+
+    #[derive(Debug)]
+    struct Match {
+        start: usize,
+        end: usize,
+        text: String,
+        is_url: bool,
+    }
+
+    let mut matches: Vec<Match> = Vec::new();
+    for mat in URL_REGEX.find_iter(text) {
+        matches.push(Match {
+            start: mat.start(),
+            end: mat.end(),
+            text: mat.as_str().to_string(),
+            is_url: true,
+        });
+    }
+    for mat in FILE_PATH_REGEX.find_iter(text) {
+        let matched = mat.as_str();
+        let path = matched.trim();
+        matches.push(Match {
+            start: mat.start() + (matched.len() - matched.trim_start().len()),
+            end: mat.start() + (matched.len() - matched.trim_end().len()),
+            text: path.to_string(),
+            is_url: false,
+        });
+    }
+
+    matches.sort_by_key(|m| m.start);
+    for m in matches {
+        if m.start < last_end {
+            continue;
+        }
+        if m.start > last_end {
+            spans.push(Span::styled(text[last_end..m.start].to_string(), style));
+        }
+        let link_text = if m.is_url {
+            wrap_osc8(&m.text, &m.text)
+        } else {
+            let abs_path = if m.text.starts_with("~/") {
+                if let Ok(home) = std::env::var("HOME") {
+                    m.text.replacen('~', &home, 1)
+                } else {
+                    m.text.clone()
+                }
+            } else if m.text.starts_with("./") || m.text.starts_with("../") {
+                std::path::Path::new(&m.text)
+                    .canonicalize()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| m.text.clone())
+            } else {
+                m.text.clone()
+            };
+            wrap_osc8(&abs_path, &m.text)
+        };
+        spans.push(Span::styled(
+            link_text,
+            Style::default()
+                .fg(theme.link)
+                .add_modifier(Modifier::UNDERLINED),
+        ));
+        last_end = m.end;
+    }
+
+    if last_end < text.len() {
+        spans.push(Span::styled(text[last_end..].to_string(), style));
+    }
+    spans
+}
+
+fn wrap_markdown_spans(
+    spans: Vec<Span<'static>>,
+    width: u16,
+    default_color: ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    if spans.is_empty() {
+        return vec![Line::from("")];
+    }
+    let total_width: usize = spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    if total_width <= width as usize {
+        return vec![Line::from(spans)];
+    }
+    let plain: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    wrap_to_strings(&plain, width)
+        .into_iter()
+        .map(|chunk| Line::from(Span::styled(chunk, Style::default().fg(default_color))))
+        .collect()
+}
+
+fn wrap_code_spans(spans: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
+    let width = width as usize;
+    if width == 0 {
+        return vec![Line::from(spans.to_vec())];
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut col = 0usize;
+    for span in spans {
+        let style = span.style;
+        for ch in span.content.chars() {
+            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if col > 0 && col + ch_width > width {
+                lines.push(Line::from(std::mem::take(&mut current)));
+                col = 0;
+            }
+            current.push(Span::styled(ch.to_string(), style));
+            col += ch_width;
+        }
+    }
+    lines.push(Line::from(current));
+    lines
+}
+
+fn render_code_block(code: &str, lang: &str, theme: &Arc<Theme>, width: u16) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let line_count = code.lines().count();
+    let needs_line_numbers = line_count > 5;
+    let highlighted = highlight_code(code, lang, theme.code_theme());
+    if !lang.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("  ┌─ {} ", lang.to_uppercase()),
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    let gutter_width = if needs_line_numbers { 7 } else { 0 };
+    let code_inner_width = width.saturating_sub(gutter_width);
+    for (i, highlighted_line) in highlighted.iter().enumerate() {
+        let wrapped = wrap_code_spans(&highlighted_line.spans, code_inner_width);
+        for (j, wrapped_line) in wrapped.into_iter().enumerate() {
+            let mut spans = Vec::new();
+            if needs_line_numbers && j == 0 {
+                spans.push(Span::styled(
+                    format!("{:4} │ ", i + 1),
+                    Style::default().fg(theme.muted),
+                ));
+            } else if needs_line_numbers {
+                spans.push(Span::styled("     │ ", Style::default().fg(theme.muted)));
+            }
+            spans.extend(wrapped_line.spans);
+            lines.push(Line::from(spans));
+        }
+    }
+    lines
+}
+
+fn normalize_code_lang(info: &str) -> String {
+    let lang = info
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|c: char| c == '{' || c == '}' || c == '.' || c == ',')
+        .to_ascii_lowercase();
+    if lang.is_empty() {
+        return String::new();
+    }
+    match lang.as_str() {
+        "js" => "javascript".to_string(),
+        "jsx" => "javascriptreact".to_string(),
+        "ts" => "typescript".to_string(),
+        "tsx" => "typescriptreact".to_string(),
+        "py" | "pyw" => "python".to_string(),
+        "rs" => "rust".to_string(),
+        "sh" | "zsh" | "fish" => "shellscript".to_string(),
+        "bash" => "bash".to_string(),
+        "yml" => "yaml".to_string(),
+        "md" => "markdown".to_string(),
+        "docker" => "dockerfile".to_string(),
+        other => extension_to_language_id(other).unwrap_or(other).to_string(),
+    }
+}
+
+fn parse_plain_text(
+    text: &str,
+    theme: &Arc<Theme>,
+    default_color: ratatui::style::Color,
+) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut remaining = text.to_string();
 
@@ -2225,7 +2564,10 @@ fn parse_plain_text(text: &str, theme: &Arc<Theme>, default_color: ratatui::styl
         if let Some(pos) = remaining.find('`') {
             if pos > 0 {
                 let before = &remaining[..pos];
-                spans.push(Span::styled(before.to_string(), Style::default().fg(default_color)));
+                spans.push(Span::styled(
+                    before.to_string(),
+                    Style::default().fg(default_color),
+                ));
             }
             let rest = &remaining[pos + 1..];
             if let Some(end) = rest.find('`') {
@@ -2236,30 +2578,44 @@ fn parse_plain_text(text: &str, theme: &Arc<Theme>, default_color: ratatui::styl
                 ));
                 remaining = rest[end + 1..].to_string();
             } else {
-                spans.push(Span::styled(remaining[pos..].to_string(), Style::default().fg(default_color)));
+                spans.push(Span::styled(
+                    remaining[pos..].to_string(),
+                    Style::default().fg(default_color),
+                ));
                 remaining.clear();
             }
         } else if let Some(pos) = remaining.find("**") {
             if pos > 0 {
                 let before = &remaining[..pos];
-                spans.push(Span::styled(before.to_string(), Style::default().fg(default_color)));
+                spans.push(Span::styled(
+                    before.to_string(),
+                    Style::default().fg(default_color),
+                ));
             }
             let rest = &remaining[pos + 2..];
             if let Some(end) = rest.find("**") {
                 let bold = &rest[..end];
                 spans.push(Span::styled(
                     bold.to_string(),
-                    Style::default().fg(default_color).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(default_color)
+                        .add_modifier(Modifier::BOLD),
                 ));
                 remaining = rest[end + 2..].to_string();
             } else {
-                spans.push(Span::styled(remaining[pos..].to_string(), Style::default().fg(default_color)));
+                spans.push(Span::styled(
+                    remaining[pos..].to_string(),
+                    Style::default().fg(default_color),
+                ));
                 remaining.clear();
             }
         } else if let Some(pos) = remaining.find('*') {
             let before = &remaining[..pos];
             if !before.is_empty() {
-                spans.push(Span::styled(before.to_string(), Style::default().fg(default_color)));
+                spans.push(Span::styled(
+                    before.to_string(),
+                    Style::default().fg(default_color),
+                ));
             }
             let rest = &remaining[pos + 1..];
             if let Some(end) = rest.find('*') {
@@ -2267,16 +2623,24 @@ fn parse_plain_text(text: &str, theme: &Arc<Theme>, default_color: ratatui::styl
                 if !italic.is_empty() {
                     spans.push(Span::styled(
                         italic.to_string(),
-                        Style::default().fg(default_color).add_modifier(Modifier::ITALIC),
+                        Style::default()
+                            .fg(default_color)
+                            .add_modifier(Modifier::ITALIC),
                     ));
                 }
                 remaining = rest[end + 1..].to_string();
             } else {
-                spans.push(Span::styled(remaining[pos..].to_string(), Style::default().fg(default_color)));
+                spans.push(Span::styled(
+                    remaining[pos..].to_string(),
+                    Style::default().fg(default_color),
+                ));
                 remaining.clear();
             }
         } else {
-            spans.push(Span::styled(remaining.clone(), Style::default().fg(default_color)));
+            spans.push(Span::styled(
+                remaining.clone(),
+                Style::default().fg(default_color),
+            ));
             remaining.clear();
         }
     }
@@ -2317,7 +2681,9 @@ fn render_md_line_wrapped(
     if line.starts_with("### ") {
         return vec![Line::from(Span::styled(
             line.trim_start_matches("### ").to_string(),
-            Style::default().fg(default_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(default_color)
+                .add_modifier(Modifier::BOLD),
         ))];
     }
     if line.starts_with("- ") || line.starts_with("* ") {
@@ -2333,16 +2699,16 @@ fn render_md_line_wrapped(
         return vec![Line::from("")];
     }
     // If the line fits, return as-is
-    let total_width: usize = spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+    let total_width: usize = spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
     if total_width <= width as usize {
         return vec![Line::from(spans)];
     }
     // Overflow: collapse to plain text, wrap, and emit each chunk using
     // the default style.
-    let plain: String = spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect();
+    let plain: String = spans.iter().map(|s| s.content.as_ref()).collect();
     let chunks = wrap_to_strings(&plain, width);
     chunks
         .into_iter()
@@ -2358,7 +2724,11 @@ fn format_time(ts: i64) -> String {
 }
 
 fn is_blank_line(line: &Line) -> bool {
-    line.spans.is_empty() || line.spans.iter().all(|s| s.content.is_empty() || s.content.chars().all(|c| c == ' '))
+    line.spans.is_empty()
+        || line
+            .spans
+            .iter()
+            .all(|s| s.content.is_empty() || s.content.chars().all(|c| c == ' '))
 }
 
 fn collapse_blank_lines<'a>(lines: &'a [Line<'a>]) -> Vec<Line<'a>> {
@@ -2376,8 +2746,19 @@ fn collapse_blank_lines<'a>(lines: &'a [Line<'a>]) -> Vec<Line<'a>> {
 }
 
 pub fn highlight_code(code: &str, lang: &str, code_theme: &str) -> Vec<Line<'static>> {
+    let syntax_token = match lang {
+        "javascriptreact" => "javascript",
+        "typescriptreact" => "typescript",
+        "shellscript" => "bash",
+        "objective-c" => "objc",
+        "objective-cpp" => "cpp",
+        "csharp" => "cs",
+        "dockerfile" => "Dockerfile",
+        other => other,
+    };
     let syntax = SYNTAX_SET
-        .find_syntax_by_token(lang)
+        .find_syntax_by_token(syntax_token)
+        .or_else(|| SYNTAX_SET.find_syntax_by_extension(syntax_token))
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
     let theme = THEME_SET
         .themes
@@ -2474,7 +2855,10 @@ mod tests {
             ("", 80),
             ("a b c d e f g h i j k l m n o p", 10),
             ("one\ntwo\nthree", 80),
-            ("a very long line that should wrap multiple times at narrow widths", 15),
+            (
+                "a very long line that should wrap multiple times at narrow widths",
+                15,
+            ),
             // Long-word cases (hard-break) — these need to count the same
             // in both functions.
             ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb", 10),
@@ -2531,10 +2915,17 @@ mod tests {
         // Words longer than `width` (URLs, paths) must hard-break so they
         // never bleed into the scrollbar gutter.
         let url = "https://example.com/very/long/url";
-        assert!(url.chars().count() > 20, "test url must be longer than 20 chars");
+        assert!(
+            url.chars().count() > 20,
+            "test url must be longer than 20 chars"
+        );
         let lines = wrap_to_strings(url, 20);
         // 33 chars at width 20 → ceil(33/20) = 2 lines.
-        assert_eq!(lines.len(), 2, "expected 2 lines for long URL, got {lines:?}");
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected 2 lines for long URL, got {lines:?}"
+        );
         for line in &lines {
             assert!(
                 line.chars().count() <= 20,
@@ -2546,7 +2937,11 @@ mod tests {
         let huge = "a".repeat(50);
         let lines = wrap_to_strings(&huge, 20);
         // 50 chars at width 20 → ceil(50/20) = 3 lines.
-        assert_eq!(lines.len(), 3, "expected 3 lines for 50-char word, got {lines:?}");
+        assert_eq!(
+            lines.len(),
+            3,
+            "expected 3 lines for 50-char word, got {lines:?}"
+        );
         for line in &lines {
             assert!(
                 line.chars().count() <= 20,
@@ -2591,13 +2986,18 @@ mod tests {
         let long = "x".repeat(50);
         let msg = UIMessage {
             role: MessageRole::Assistant,
-            parts: vec![MsgPart::Text { content: long.clone() }],
+            parts: vec![MsgPart::Text {
+                content: long.clone(),
+            }],
             timestamp: None,
             is_plan_mode: None,
         };
         let n = widget.estimate_msg_lines(&msg);
         // width=20 minus 2 = 18 cols; 50 chars / 18 = 3 lines
-        assert!(n >= 2, "expected at least 2 lines for 50 chars at width 20, got {n}");
+        assert!(
+            n >= 2,
+            "expected at least 2 lines for 50 chars at width 20, got {n}"
+        );
     }
 
     #[test]
@@ -2624,16 +3024,18 @@ mod tests {
         let mut widget = MessagesWidget::default();
         widget.set_width(80);
         let cases = [
-            ("a\n\nb", 3usize),         // 1 blank between a and b
-            ("a\n\n\nb", 3),            // 2 blanks collapse to 1
-            ("a\n\n\n\nb", 3),          // 3 blanks collapse to 1
-            ("a\nb\n\nc", 4),           // 1 blank between b and c
-            ("a\n\nb\n\n\nc", 5),       // 1 blank between a and b, 1 between b and c
+            ("a\n\nb", 3usize),   // 1 blank between a and b
+            ("a\n\n\nb", 3),      // 2 blanks collapse to 1
+            ("a\n\n\n\nb", 3),    // 3 blanks collapse to 1
+            ("a\nb\n\nc", 4),     // 1 blank between b and c
+            ("a\n\nb\n\n\nc", 5), // 1 blank between a and b, 1 between b and c
         ];
         for (content, expected) in cases {
             let msg = UIMessage {
                 role: MessageRole::Assistant,
-                parts: vec![MsgPart::Text { content: content.to_string() }],
+                parts: vec![MsgPart::Text {
+                    content: content.to_string(),
+                }],
                 timestamp: None,
                 is_plan_mode: None,
             };
@@ -2674,7 +3076,10 @@ mod tests {
         // the vector (the ptr::eq check requires identity).
         let n = widget.estimate_msg_lines(widget.messages.last().unwrap());
         // 0 (empty parts) + 1 (label) + 1 (streaming line) = 2 minimum
-        assert!(n >= 2, "expected at least 2 lines (label + stream), got {n}");
+        assert!(
+            n >= 2,
+            "expected at least 2 lines (label + stream), got {n}"
+        );
     }
 
     #[test]
@@ -2720,6 +3125,9 @@ mod tests {
         widget.set_width(40);
         let cached2: Option<Vec<Line<'static>>> =
             widget.get_cached_last_assistant_parts(&widget.messages[last_idx]);
-        assert!(cached2.is_none(), "cache should be invalidated after width change");
+        assert!(
+            cached2.is_none(),
+            "cache should be invalidated after width change"
+        );
     }
 }
