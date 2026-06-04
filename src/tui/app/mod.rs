@@ -18,10 +18,10 @@ use super::components::dialogs::question::{QuestionDialog, QuestionSpec};
 use super::components::dialogs::session::SessionDialog;
 use super::components::dialogs::theme::ThemePickerDialog;
 use super::components::dialogs::tree::TreeDialog;
-use super::components::footer::FooterWidget;
 use super::components::messages::{MessageRole, MessagesWidget, MsgPart};
 use super::components::prompt::PromptWidget;
 use super::components::sidebar::SidebarWidget;
+use super::components::status_bar::StatusBarWidget;
 use super::components::toast::ToastManager;
 use super::input::{
     handle_event, handle_event_with_bindings_moded, InputAction, InputMode, KeybindConfig,
@@ -215,7 +215,7 @@ pub enum TuiCommand {
 /// - `agent_state`: Agent and model configuration
 ///
 /// Additionally:
-/// - `sidebar` and `footer`: UI widgets
+/// - `sidebar` and `status_bar`: UI widgets
 /// - `session_store` and `message_store`: Database access
 /// - Areas for mouse event handling
 ///
@@ -256,7 +256,7 @@ pub struct App {
     pub dialog_state: DialogState,
     pub agent_state: AgentState,
     pub sidebar: SidebarWidget,
-    pub footer: FooterWidget,
+    pub status_bar: StatusBarWidget,
     pub session_store: Option<Arc<SessionStore>>,
     pub message_store: Option<Arc<MessageStore>>,
     pub memory_store: Option<Arc<MemoryStore>>,
@@ -518,7 +518,7 @@ impl App {
                 plan_topic: None,
             },
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
-            footer: FooterWidget::new(Arc::clone(&theme)),
+            status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             session_store: None,
             message_store: None,
             memory_store: None,
@@ -710,7 +710,7 @@ impl App {
                 plan_topic: None,
             },
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
-            footer: FooterWidget::new(Arc::clone(&theme)),
+            status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             session_store: None,
             message_store: None,
             memory_store: None,
@@ -876,7 +876,7 @@ impl App {
             Ok(RemoteTuiMessage::TextDelta { delta }) => {
                 self.messages_state.messages.add_assistant_text(delta);
                 if matches!(self.session_state.session_status, SessionStatus::Working) {
-                    self.footer
+                    self.status_bar
                         .set_thinking(true, Some("Thinking...".to_string()));
                 }
             }
@@ -924,7 +924,7 @@ impl App {
             }
             Ok(RemoteTuiMessage::SessionEnded { .. }) => {
                 self.session_state.session_status = SessionStatus::Idle;
-                self.footer.set_thinking(false, None);
+                self.status_bar.set_thinking(false, None);
             }
             Ok(RemoteTuiMessage::PermissionPending { id, tool, path }) => {
                 self.show_permission_dialog(
@@ -949,7 +949,7 @@ impl App {
             }
             Ok(RemoteTuiMessage::Error { message }) => {
                 self.session_state.session_status = SessionStatus::Error;
-                self.footer.set_thinking(false, None);
+                self.status_bar.set_thinking(false, None);
                 self.messages_state.toasts.add(Toast::error(&message));
             }
             Ok(RemoteTuiMessage::RenderFrame { content }) => {
@@ -1285,11 +1285,6 @@ impl App {
         let bg_block = Block::default().style(Style::default().bg(self.ui_state.theme.input_bg));
         frame.render_widget(bg_block, area);
 
-        let status = match &self.session_state.session_status {
-            SessionStatus::Idle => "idle",
-            SessionStatus::Working => "working",
-            SessionStatus::Error => "error",
-        };
         let mode_indicator = match self.ui_state.input_mode {
             InputMode::Insert => Span::styled(
                 "[INS] ",
@@ -1329,7 +1324,7 @@ impl App {
         self.prompt_state.prompt.set_prefix(session_prefix);
         self.prompt_state
             .prompt
-            .set_placeholder(format!("Ask anything… ({status})"));
+            .set_placeholder("Ask anything…".to_string());
         let visible_lines = area.height.saturating_sub(2) as usize;
         self.prompt_state
             .prompt
@@ -1344,53 +1339,23 @@ impl App {
     }
 
     fn render_footer(&mut self, frame: &mut Frame, area: Rect) {
-        let token_str = format!(
-            "tokens: {}↑ {}↓ ({}r)",
-            self.session_state.token_in,
-            self.session_state.token_out,
-            self.session_state.reasoning_tokens
-        );
         let status_str = match &self.session_state.session_status {
             SessionStatus::Idle => "idle",
             SessionStatus::Working => "working",
             SessionStatus::Error => "error",
         };
-        self.footer.set_status(status_str.to_string());
-        self.footer.set_tokens(token_str);
-        self.footer.set_theme(&self.ui_state.theme);
-        self.footer
-            .set_tts(self.ui_state.tts_enabled, self.ui_state.tts.is_speaking());
-        self.footer.update_keybinds(&self.ui_state.bindings);
-        let ctx_hint = if self.session_state.context_limit > 0 {
-            let pct = (self.session_state.context_tokens as f64
-                / self.session_state.context_limit as f64
-                * 100.0)
-                .min(100.0);
-            if self.context_hint.is_empty() {
-                format!("ctx: {:.0}%", pct)
-            } else {
-                format!("ctx: {:.0}% | {}", pct, self.context_hint)
-            }
-        } else {
-            self.context_hint.clone()
-        };
-        self.footer.set_context_hint(ctx_hint);
-        let scroll_label = if !self.messages_state.messages.is_at_bottom()
-            && self.messages_state.messages.needs_scrollbar()
-        {
-            let max_scroll = self.messages_state.messages.max_scroll();
-            let pos = self.messages_state.messages.scroll_position();
-            if max_scroll > 0 {
-                let pct = (pos as f64 / max_scroll as f64 * 100.0).round() as u32;
-                format!("{pct}%")
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-        self.footer.set_scroll_indicator(scroll_label);
-        frame.render_widget(&self.footer, area);
+        let token_str = format_token_line(
+            self.session_state.token_in,
+            self.session_state.token_out,
+            self.session_state.context_tokens as u64,
+            self.session_state.context_limit as u64,
+        );
+        self.status_bar.set_status(status_str.to_string());
+        self.status_bar.set_tokens(token_str);
+        self.status_bar.set_theme(&self.ui_state.theme);
+        self.status_bar
+            .set_subagent_count(self.session_state.subagent_count);
+        frame.render_widget(&self.status_bar, area);
     }
 
     fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
@@ -1401,14 +1366,14 @@ impl App {
         self.sidebar
             .set_agent(&self.agent_state.agents[self.agent_state.current_agent].name);
         self.sidebar.set_model(&self.agent_state.current_model);
-        self.sidebar
-            .set_tokens(self.session_state.token_in, self.session_state.token_out);
-        self.sidebar
-            .set_status(match self.session_state.session_status {
-                SessionStatus::Idle => "idle".to_string(),
-                SessionStatus::Working => "working".to_string(),
-                SessionStatus::Error => "error".to_string(),
-            });
+        let provider = self
+            .agent_state
+            .current_model
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        self.sidebar.set_provider(&provider);
         self.sidebar
             .set_mcp_servers(self.session_state.mcp_servers.clone());
 
@@ -1433,18 +1398,6 @@ impl App {
         let derived = &self.session_state_derived;
         self.sidebar.set_goal(derived.goal.clone());
         self.sidebar.set_plan(derived.plan.clone());
-        let ctx_pct = if self.session_state.context_limit > 0 {
-            (self.session_state.context_tokens as f64
-                / self.session_state.context_limit as f64
-                * 100.0) as u64
-        } else {
-            0
-        };
-        self.sidebar.set_context_info(
-            self.session_state.context_tokens as u64,
-            self.session_state.context_limit as u64,
-            ctx_pct,
-        );
 
         frame.render_widget(&self.sidebar, area);
     }
@@ -1711,7 +1664,7 @@ impl App {
                         }
                         self.undo_session_id = Some(undo_id);
                         self.undo_until = Some(Instant::now() + std::time::Duration::from_secs(30));
-                        self.footer
+                        self.status_bar
                             .set_undo_message("Session deleted — press U to undo");
                     } else if let Some((session_id, unarchive)) =
                         self.dialog_state.pending_archive_session.take()
@@ -2218,7 +2171,7 @@ impl App {
             } else {
                 self.undo_session_id = None;
                 self.undo_until = None;
-                self.footer.clear_undo_message();
+                self.status_bar.clear_undo_message();
             }
         }
     }
@@ -4777,7 +4730,7 @@ impl App {
         }
         self.undo_session_id = Some(session_id);
         self.undo_until = Some(Instant::now() + std::time::Duration::from_secs(30));
-        self.footer
+        self.status_bar
             .set_undo_message("Session deleted — press U to undo");
     }
 
@@ -7170,4 +7123,41 @@ fn check_git_dirty(git_root: &std::path::Path) -> bool {
         .output()
         .ok();
     output.is_some_and(|o| !o.stdout.is_empty())
+}
+
+fn format_token_short(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        let m = tokens as f64 / 1_000_000.0;
+        if (m - m.round()).abs() < 0.05 {
+            format!("{:.0}m", m)
+        } else {
+            format!("{:.1}m", m)
+        }
+    } else if tokens >= 1_000 {
+        let k = tokens as f64 / 1_000.0;
+        if (k - k.round()).abs() < 0.05 {
+            format!("{:.0}k", k)
+        } else {
+            format!("{:.1}k", k)
+        }
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn format_token_line(token_in: u64, token_out: u64, context_tokens: u64, context_limit: u64) -> String {
+    let total = token_in + token_out;
+    let pct = if context_limit > 0 {
+        ((context_tokens as f64 / context_limit as f64) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    format!(
+        "↓{} ↑{} ({}) / {} {:.0}%",
+        format_token_short(token_in),
+        format_token_short(token_out),
+        format_token_short(total),
+        format_token_short(context_tokens),
+        pct
+    )
 }

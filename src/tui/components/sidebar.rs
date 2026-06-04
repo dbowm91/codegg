@@ -21,10 +21,8 @@ pub struct SidebarWidget {
     pub theme: Arc<Theme>,
     pub session: Option<Session>,
     pub agent: String,
+    pub provider: String,
     pub model: String,
-    pub token_in: u64,
-    pub token_out: u64,
-    pub status: String,
     pub todos: Vec<TodoEntry>,
     pub mcp_servers: Vec<(String, String)>,
     pub file_changes: Vec<String>,
@@ -33,31 +31,8 @@ pub struct SidebarWidget {
     pub project_root: Option<String>,
     pub goal: Option<String>,
     pub plan: Option<AgentPlan>,
-    pub context_pct: u64,
-    pub context_tokens: u64,
-    pub context_limit: u64,
     hovered_element: HoveredElement,
     tooltip_text: String,
-}
-
-fn format_tokens(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        let m = tokens as f64 / 1_000_000.0;
-        if (m - m.round()).abs() < 0.05 {
-            format!("{:.0}m", m)
-        } else {
-            format!("{:.1}m", m)
-        }
-    } else if tokens >= 1_000 {
-        let k = tokens as f64 / 1_000.0;
-        if (k - k.round()).abs() < 0.05 {
-            format!("{:.0}k", k)
-        } else {
-            format!("{:.1}k", k)
-        }
-    } else {
-        tokens.to_string()
-    }
 }
 
 impl SidebarWidget {
@@ -66,10 +41,8 @@ impl SidebarWidget {
             theme,
             session: None,
             agent: String::new(),
+            provider: String::new(),
             model: String::new(),
-            token_in: 0,
-            token_out: 0,
-            status: "idle".to_string(),
             todos: Vec::new(),
             mcp_servers: Vec::new(),
             file_changes: Vec::new(),
@@ -78,9 +51,6 @@ impl SidebarWidget {
             project_root: None,
             goal: None,
             plan: None,
-            context_pct: 0,
-            context_tokens: 0,
-            context_limit: 0,
             hovered_element: HoveredElement::None,
             tooltip_text: String::new(),
         }
@@ -102,13 +72,8 @@ impl SidebarWidget {
         self.model = model.to_string();
     }
 
-    pub fn set_tokens(&mut self, input: u64, output: u64) {
-        self.token_in = input;
-        self.token_out = output;
-    }
-
-    pub fn set_status(&mut self, status: String) {
-        self.status = status;
+    pub fn set_provider(&mut self, provider: &str) {
+        self.provider = provider.to_string();
     }
 
     pub fn set_todos(&mut self, todos: Vec<TodoEntry>) {
@@ -135,16 +100,6 @@ impl SidebarWidget {
 
     pub fn set_plan(&mut self, plan: Option<AgentPlan>) {
         self.plan = plan;
-    }
-
-    pub fn set_context_pct(&mut self, pct: u64) {
-        self.context_pct = pct;
-    }
-
-    pub fn set_context_info(&mut self, tokens: u64, limit: u64, pct: u64) {
-        self.context_tokens = tokens;
-        self.context_limit = limit;
-        self.context_pct = pct;
     }
 
     pub fn toggle_focused(&mut self) {}
@@ -188,16 +143,17 @@ impl SidebarWidget {
     fn element_at(&self, _x: u16, y: u16) -> HoveredElement {
         let mut line_num = 1u16;
 
-        // Session header + content
-        line_num += 1; // blank
+        // Session header
+        line_num += 1;
         if self.session.is_some() {
-            line_num += 4; // title, id, shared, blank
+            line_num += 3; // title, id, shared
         } else {
             line_num += 1; // "no session"
         }
 
-        // Git header + content
-        line_num += 1; // blank
+        // Git header + content (blank before, no blank after)
+        line_num += 1; // blank before
+        line_num += 1; // header
         if self.git_branch.is_some() {
             line_num += if self.git_dirty { 2 } else { 1 };
         } else {
@@ -205,19 +161,25 @@ impl SidebarWidget {
         }
 
         // Config header + content
-        line_num += 1; // blank
+        line_num += 1; // blank before
+        line_num += 1; // header
         line_num += 2; // agent, model
+        if !self.provider.is_empty() {
+            line_num += 1; // provider
+        }
 
-        // Goal header + content
-        line_num += 1; // blank
-        line_num += 1; // goal text or "(none)"
+        // Goal section (conditional)
+        if self.goal.is_some() {
+            line_num += 1; // blank before
+            line_num += 1; // header
+            line_num += 1; // goal text
+        }
 
-        // Plan header + content
-        line_num += 1; // blank
+        // Plan section (conditional)
         if let Some(ref plan) = self.plan {
-            if plan.items.is_empty() {
-                line_num += 1; // "(empty)"
-            } else {
+            if !plan.items.is_empty() {
+                line_num += 1; // blank before
+                line_num += 1; // header
                 for _item in &plan.items {
                     if y == line_num {
                         return HoveredElement::None;
@@ -225,17 +187,14 @@ impl SidebarWidget {
                     line_num += 1;
                 }
             }
-        } else {
-            line_num += 1; // "(no plan)"
         }
 
-        // Tokens header + content
-        line_num += 1; // blank
-        line_num += 4; // in, out, total, context
+        // Tokens section removed
 
         // Todos header + items
         if !self.todos.is_empty() {
-            line_num += 1; // blank
+            line_num += 1; // blank before
+            line_num += 1; // header
             for i in 0..self.todos.len() {
                 if y == line_num {
                     return HoveredElement::Todo(i);
@@ -246,7 +205,8 @@ impl SidebarWidget {
 
         // MCP Servers header + items
         if !self.mcp_servers.is_empty() {
-            line_num += 1; // blank
+            line_num += 1; // blank before
+            line_num += 1; // header
             for i in 0..self.mcp_servers.len() {
                 if y == line_num {
                     return HoveredElement::McpServer(i);
@@ -257,7 +217,8 @@ impl SidebarWidget {
 
         // File Changes header + items
         if !self.file_changes.is_empty() {
-            line_num += 1; // blank
+            line_num += 1; // blank before
+            line_num += 1; // header
             for i in 0..self.file_changes.len() {
                 if y == line_num {
                     return HoveredElement::FileChange(i);
@@ -298,7 +259,7 @@ impl SidebarWidget {
 
     fn section_header<'a>(&self, label: &'a str) -> Line<'a> {
         let style = Style::default()
-            .fg(self.theme.muted)
+            .fg(self.theme.primary)
             .add_modifier(Modifier::BOLD);
         Line::from(Span::styled(label, style))
     }
@@ -315,7 +276,6 @@ impl Widget for &SidebarWidget {
         let mut lines: Vec<Line> = Vec::new();
 
         lines.push(self.section_header(" Session "));
-        lines.push(Line::from(""));
         if let Some(sess) = &self.session {
             lines.push(Line::from(vec![
                 Span::styled("title: ", Style::default().fg(self.theme.muted)),
@@ -340,7 +300,6 @@ impl Widget for &SidebarWidget {
 
         lines.push(Line::from(""));
         lines.push(self.section_header(" Git "));
-        lines.push(Line::from(""));
         if let Some(ref branch) = self.git_branch {
             lines.push(Line::from(vec![
                 Span::styled("branch: ", Style::default().fg(self.theme.muted)),
@@ -361,47 +320,42 @@ impl Widget for &SidebarWidget {
 
         lines.push(Line::from(""));
         lines.push(self.section_header(" Config "));
-        lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("agent: ", Style::default().fg(self.theme.muted)),
             Span::raw(&self.agent),
         ]));
+        if !self.provider.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("provider: ", Style::default().fg(self.theme.muted)),
+                Span::raw(&self.provider),
+            ]));
+        }
         let model_short = self.model.split('/').next_back().unwrap_or(&self.model);
         lines.push(Line::from(vec![
             Span::styled("model: ", Style::default().fg(self.theme.muted)),
             Span::raw(model_short),
         ]));
 
-        lines.push(Line::from(""));
-        lines.push(self.section_header(" Goal "));
-        lines.push(Line::from(""));
-        if let Some(ref goal) = self.goal {
-            let display = if goal.len() > (area.width as usize).saturating_sub(4) {
-                format!("{}…", &goal[..(area.width as usize).saturating_sub(5)])
-            } else {
-                goal.clone()
-            };
-            lines.push(Line::from(Span::styled(
-                format!("  {}", display),
-                Style::default().fg(self.theme.foreground),
-            )));
-        } else {
-            lines.push(Line::from(Span::styled(
-                "  (none)",
-                Style::default().fg(self.theme.muted),
-            )));
+        if self.goal.is_some() {
+            lines.push(Line::from(""));
+            lines.push(self.section_header(" Goal "));
+            if let Some(ref goal) = self.goal {
+                let display = if goal.len() > (area.width as usize).saturating_sub(4) {
+                    format!("{}…", &goal[..(area.width as usize).saturating_sub(5)])
+                } else {
+                    goal.clone()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", display),
+                    Style::default().fg(self.theme.foreground),
+                )));
+            }
         }
 
-        lines.push(Line::from(""));
-        lines.push(self.section_header(" Plan "));
-        lines.push(Line::from(""));
         if let Some(ref plan) = self.plan {
-            if plan.items.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "  (empty)",
-                    Style::default().fg(self.theme.muted),
-                )));
-            } else {
+            if !plan.items.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(self.section_header(" Plan "));
                 for item in &plan.items {
                     let (icon, style) = match item.status {
                         crate::session::events::PlanItemStatus::Done => {
@@ -434,53 +388,11 @@ impl Widget for &SidebarWidget {
                     ]));
                 }
             }
-        } else {
-            lines.push(Line::from(Span::styled(
-                "  (no plan)",
-                Style::default().fg(self.theme.muted),
-            )));
         }
-
-        lines.push(Line::from(""));
-        lines.push(self.section_header(" Tokens "));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("in:  ", Style::default().fg(self.theme.muted)),
-            Span::raw(format_tokens(self.token_in)),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("out: ", Style::default().fg(self.theme.muted)),
-            Span::raw(format_tokens(self.token_out)),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("total: ", Style::default().fg(self.theme.muted)),
-            Span::raw(format_tokens(self.token_in + self.token_out)),
-        ]));
-        let ctx_style = if self.context_pct > 80 {
-            Style::default().fg(self.theme.error)
-        } else if self.context_pct > 60 {
-            Style::default().fg(self.theme.warning)
-        } else {
-            Style::default().fg(self.theme.muted)
-        };
-        let ctx_label = if self.context_tokens > 0 {
-            format!(
-                "{} ({:.0}%)",
-                format_tokens(self.context_tokens),
-                self.context_pct
-            )
-        } else {
-            format!("{:.0}%", self.context_pct)
-        };
-        lines.push(Line::from(vec![
-            Span::styled("ctx: ", Style::default().fg(self.theme.muted)),
-            Span::styled(ctx_label, ctx_style),
-        ]));
 
         if !self.todos.is_empty() {
             lines.push(Line::from(""));
             lines.push(self.section_header(" Todos "));
-            lines.push(Line::from(""));
             for todo in &self.todos {
                 let status_icon = match todo.status.as_str() {
                     "completed" => "✓",
@@ -500,7 +412,6 @@ impl Widget for &SidebarWidget {
         if !self.mcp_servers.is_empty() {
             lines.push(Line::from(""));
             lines.push(self.section_header(" MCP Servers "));
-            lines.push(Line::from(""));
             for (name, status) in &self.mcp_servers {
                 let dot = match status.as_str() {
                     "connected" => "●",
@@ -524,7 +435,6 @@ impl Widget for &SidebarWidget {
         if !self.file_changes.is_empty() {
             lines.push(Line::from(""));
             lines.push(self.section_header(" File Changes "));
-            lines.push(Line::from(""));
             for path in &self.file_changes {
                 lines.push(Line::from(vec![
                     Span::styled("  M ", Style::default().fg(self.theme.warning)),

@@ -67,7 +67,6 @@ tui/
 │   │   └── tree.rs         # TreeDialog (session hierarchy)
 │   ├── completion_overlay.rs # Slash/file/agent completion popups
 │   ├── diff.rs             # DiffViewer (diff visualization)
-│   ├── footer.rs           # FooterWidget (status bar)
 │   ├── help_overlay.rs     # HelpOverlay (keyboard shortcuts overlay)
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
@@ -76,6 +75,7 @@ tui/
 │   ├── scroll.rs           # CenteredScroll (reusable scrolling)
 │   ├── sidebar.rs          # SidebarWidget (side panel, git info)
 │   ├── spinner.rs          # SpinnerWidget (busy indicator)
+│   ├── status_bar.rs       # StatusBarWidget (bottom status: status + tokens)
 │   ├── toast.rs            # ToastManager (notifications)
 │   └── tool_output.rs      # ToolOutput (tool execution output display)
 ├── input.rs                # Key event handling, keybindings, InputMode

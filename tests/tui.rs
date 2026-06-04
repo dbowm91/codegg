@@ -1357,20 +1357,20 @@ fn test_theme_each_has_code_theme() {
 }
 
 #[test]
-fn test_footer_widget_new() {
-    let widget = codegg::tui::components::footer::FooterWidget::new(Arc::new(Theme::dark()));
+fn test_status_bar_widget_new() {
+    let widget = codegg::tui::components::status_bar::StatusBarWidget::new(Arc::new(Theme::dark()));
     assert_eq!(widget.status, "idle");
-    assert!(widget.tokens.is_empty());
+    assert!(widget.token_str.is_empty());
     assert_eq!(widget.subagent_count, 0);
     assert!(!widget.loading);
     assert!(!widget.thinking);
-    assert!(!widget.tts_enabled);
+    assert!(widget.undo_message.is_none());
 }
 
 #[test]
-fn test_footer_widget_set_status() {
+fn test_status_bar_widget_set_status() {
     let mut widget =
-        codegg::tui::components::footer::FooterWidget::new(Arc::new(Theme::dark()));
+        codegg::tui::components::status_bar::StatusBarWidget::new(Arc::new(Theme::dark()));
     widget.set_status("working".to_string());
     assert_eq!(widget.status, "working");
 
@@ -1379,17 +1379,17 @@ fn test_footer_widget_set_status() {
 }
 
 #[test]
-fn test_footer_widget_set_tokens() {
+fn test_status_bar_widget_set_tokens() {
     let mut widget =
-        codegg::tui::components::footer::FooterWidget::new(Arc::new(Theme::dark()));
-    widget.set_tokens("tokens: 100↑ 200↓".to_string());
-    assert_eq!(widget.tokens, "tokens: 100↑ 200↓");
+        codegg::tui::components::status_bar::StatusBarWidget::new(Arc::new(Theme::dark()));
+    widget.set_tokens("↓100 ↑200 (300) / 1.0k 50%".to_string());
+    assert_eq!(widget.token_str, "↓100 ↑200 (300) / 1.0k 50%");
 }
 
 #[test]
-fn test_footer_widget_set_loading() {
+fn test_status_bar_widget_set_loading() {
     let mut widget =
-        codegg::tui::components::footer::FooterWidget::new(Arc::new(Theme::dark()));
+        codegg::tui::components::status_bar::StatusBarWidget::new(Arc::new(Theme::dark()));
     assert!(!widget.loading);
 
     widget.set_loading(true, Some("Saving...".to_string()));
@@ -1398,9 +1398,9 @@ fn test_footer_widget_set_loading() {
 }
 
 #[test]
-fn test_footer_widget_set_thinking() {
+fn test_status_bar_widget_set_thinking() {
     let mut widget =
-        codegg::tui::components::footer::FooterWidget::new(Arc::new(Theme::dark()));
+        codegg::tui::components::status_bar::StatusBarWidget::new(Arc::new(Theme::dark()));
     assert!(!widget.thinking);
 
     widget.set_thinking(true, Some("Reasoning...".to_string()));
@@ -1409,49 +1409,33 @@ fn test_footer_widget_set_thinking() {
 }
 
 #[test]
-fn test_footer_widget_set_subagents() {
+fn test_status_bar_widget_set_subagent_count() {
     let mut widget =
-        codegg::tui::components::footer::FooterWidget::new(Arc::new(Theme::dark()));
-    widget.set_subagents(2, vec!["agent1".to_string(), "agent2".to_string()]);
-    assert_eq!(widget.subagent_count, 2);
-    assert_eq!(widget.subagent_names.len(), 2);
+        codegg::tui::components::status_bar::StatusBarWidget::new(Arc::new(Theme::dark()));
+    widget.set_subagent_count(3);
+    assert_eq!(widget.subagent_count, 3);
 }
 
 #[test]
-fn test_footer_widget_set_tts() {
+fn test_status_bar_widget_set_undo_message() {
     let mut widget =
-        codegg::tui::components::footer::FooterWidget::new(Arc::new(Theme::dark()));
-    assert!(!widget.tts_enabled);
-    assert!(!widget.tts_speaking);
-
-    widget.set_tts(true, true);
-    assert!(widget.tts_enabled);
-    assert!(widget.tts_speaking);
-}
-
-#[test]
-fn test_footer_widget_context_hint() {
-    let mut widget =
-        codegg::tui::components::footer::FooterWidget::new(Arc::new(Theme::dark()));
-    assert!(widget.context_hint.is_empty());
-
-    widget.set_context_hint("Enter: Send".to_string());
-    assert_eq!(widget.context_hint, "Enter: Send");
+        codegg::tui::components::status_bar::StatusBarWidget::new(Arc::new(Theme::dark()));
+    assert!(widget.undo_message.is_none());
 
     widget.set_undo_message("Session deleted");
-    assert!(widget.context_hint.contains("Session deleted"));
-    assert!(widget.context_hint.contains("U to undo"));
+    assert!(widget.undo_message.is_some());
+    assert!(widget.undo_message.as_ref().unwrap().contains("Session deleted"));
 }
 
 #[test]
-fn test_footer_widget_clear_undo() {
+fn test_status_bar_widget_clear_undo() {
     let mut widget =
-        codegg::tui::components::footer::FooterWidget::new(Arc::new(Theme::dark()));
+        codegg::tui::components::status_bar::StatusBarWidget::new(Arc::new(Theme::dark()));
     widget.set_undo_message("Session deleted");
-    assert!(!widget.context_hint.is_empty());
+    assert!(widget.undo_message.is_some());
 
     widget.clear_undo_message();
-    assert!(widget.context_hint.is_empty());
+    assert!(widget.undo_message.is_none());
 }
 
 #[test]

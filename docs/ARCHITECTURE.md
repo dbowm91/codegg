@@ -125,7 +125,7 @@ src/
 │   │   ├── messages.rs    # Message display widget (47KB)
 │   │   ├── sidebar.rs     # Sidebar widget with tooltips
 │   │   ├── prompt.rs      # Prompt input widget
-│   │   ├── footer.rs      # Footer with context hints, TTS speaker icon
+│   │   ├── status_bar.rs   # Bottom status bar (status, transient indicators, token usage)
 │   │   ├── dialogs/       # Dialog implementations
 │   │   │   ├── mod.rs     # Dialog exports
 │   │   │   ├── session.rs # SessionDialog with bulk mode (b key), sort/filter

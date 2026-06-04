@@ -2177,7 +2177,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         app.messages_state.messages.add_streaming_token(&delta_str);
                         app.streaming_active = true;
                         if matches!(app.session_state.session_status, SessionStatus::Working) {
-                            app.footer.set_thinking(true, Some("Thinking...".to_string()));
+                            app.status_bar.set_thinking(true, Some("Thinking...".to_string()));
                         }
                     }
                     AppEvent::ReasoningDelta { delta, .. } => {
@@ -2220,7 +2220,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         if stop_reason != "tool_calls" {
                             app.session_state.session_status = SessionStatus::Idle;
                             app.prompt_state.pending_send = false;
-                            app.footer.set_thinking(false, None);
+                            app.status_bar.set_thinking(false, None);
                             app.streaming_active = false;
 
                             if let (Some(in_tok), Some(out_tok)) = (input_tokens, output_tokens) {
@@ -2295,7 +2295,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                 });
                             }
                         } else if matches!(app.session_state.session_status, SessionStatus::Working) {
-                            app.footer.set_thinking(true, Some("Thinking...".to_string()));
+                            app.status_bar.set_thinking(true, Some("Thinking...".to_string()));
                         }
                     }
                     AppEvent::PermissionPending { perm_id, tool, path, args, .. } => {
@@ -2328,7 +2328,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         debug_log!("Event loop: Error received: {}", message);
                         tracing::error!("Agent error: {}", message);
                         app.session_state.session_status = SessionStatus::Error;
-                        app.footer.set_thinking(false, None);
+                        app.status_bar.set_thinking(false, None);
                         app.streaming_active = false;
                         app.messages_state.toasts.add(Toast::error(&message));
                     }

@@ -11,7 +11,7 @@
 //! - [`messages`]: Message display widget with streaming, search, and tool call rendering
 //! - [`prompt`]: Input prompt widget with cursor management and history
 //! - [`sidebar`]: Side panel showing session info, agents, and MCP servers
-//! - [`footer`]: Bottom status bar with agent status and shortcuts
+//! - [`status_bar`]: Bottom status bar with status, transient indicators, and token usage
 //!
 //! ### Overlay Components (conditionally visible)
 //!
@@ -57,7 +57,6 @@ pub mod completion_overlay;
 pub mod component;
 pub mod dialogs;
 pub mod diff;
-pub mod footer;
 pub mod image;
 pub mod messages;
 pub mod notification;
@@ -65,5 +64,6 @@ pub mod prompt;
 pub mod scroll;
 pub mod sidebar;
 pub mod spinner;
+pub mod status_bar;
 pub mod toast;
 pub mod tool_output;

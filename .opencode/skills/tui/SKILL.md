@@ -57,7 +57,6 @@ src/tui/
 │   │   ├── tree.rs        # TreeDialog (session hierarchy)
 │   │   └── mod.rs
 │   ├── diff.rs             # DiffViewer (diff visualization)
-│   ├── footer.rs           # FooterWidget (status bar)
 │   ├── help_overlay.rs     # Help overlay widget
 │   ├── image.rs            # ImageViewer (image rendering)
 │   ├── messages.rs         # MessagesWidget (message display)
@@ -66,6 +65,7 @@ src/tui/
 │   ├── scroll.rs            # CenteredScroll (reusable scrolling)
 │   ├── sidebar.rs          # SidebarWidget (side panel)
 │   ├── spinner.rs           # SpinnerWidget (loading indicator)
+│   ├── status_bar.rs       # StatusBarWidget (bottom status: status + tokens)
 │   ├── toast.rs             # ToastManager (notifications)
 │   ├── tool_output.rs       # Tool call result display
 │   └── mod.rs
