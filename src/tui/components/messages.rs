@@ -527,68 +527,7 @@ impl MessagesWidget {
         for part in &msg.parts {
             match part {
                 MsgPart::Text { content } => {
-                    // Count lines for code-block-aware markdown. Code lines
-                    // wrap to (width - gutter) cols and blank lines inside
-                    // code blocks are NOT collapsed (they're meaningful).
-                    // Prose wraps to the full content-area width (no -2
-                    // gutter) and consecutive blank lines in prose are
-                    // collapsed to a single blank line — matching the
-                    // behavior of `collapse_blank_lines` in the render path.
-                    let mut text_lines = 0usize;
-                    let mut in_code = false;
-                    let mut code_lang = String::new();
-                    let mut prose_buf = String::new();
-                    let mut prev_was_blank = false;
-                    let prose_width = width;
-                    let flush_prose = |prose_buf: &mut String, text_lines: &mut usize| {
-                        if prose_buf.is_empty() {
-                            return;
-                        }
-                        *text_lines += wrap_count(prose_buf, prose_width as u16);
-                        prose_buf.clear();
-                    };
-                    for line in content.lines() {
-                        let trimmed = line.trim();
-                        if trimmed.starts_with("```") {
-                            flush_prose(&mut prose_buf, &mut text_lines);
-                            if in_code {
-                                if !code_lang.is_empty() {
-                                    text_lines += 1; // ┌─ LANG header
-                                }
-                                code_lang.clear();
-                                in_code = false;
-                            } else {
-                                code_lang = trimmed.trim_start_matches("```").trim().to_string();
-                                in_code = true;
-                            }
-                            prev_was_blank = false;
-                        } else if in_code {
-                            // Code lines are pre-wrapped to width - 6
-                            // (gutter + space). Blank lines inside a code
-                            // block stay as separate visual lines.
-                            text_lines += wrap_count(line, (width.saturating_sub(6)) as u16);
-                            prev_was_blank = trimmed.is_empty();
-                        } else {
-                            let is_blank = trimmed.is_empty();
-                            if is_blank {
-                                if !prev_was_blank {
-                                    flush_prose(&mut prose_buf, &mut text_lines);
-                                    text_lines += 1; // 1 blank for the group (post-collapse)
-                                }
-                            } else {
-                                if !prose_buf.is_empty() {
-                                    prose_buf.push('\n');
-                                }
-                                prose_buf.push_str(line);
-                            }
-                            prev_was_blank = is_blank;
-                        }
-                    }
-                    flush_prose(&mut prose_buf, &mut text_lines);
-                    if in_code && !code_lang.is_empty() {
-                        text_lines += 1; // trailing ┌─ LANG if unterminated
-                    }
-                    lines += text_lines.max(1);
+                    lines += self.estimate_text_part_lines(msg, content, width as u16);
                 }
                 MsgPart::Reasoning { content, collapsed } => {
                     lines += 1;
@@ -639,6 +578,24 @@ impl MessagesWidget {
             lines += 1 + wrap_count(&self.streaming_tokens, self.width.saturating_sub(2));
         }
         lines
+    }
+
+    fn estimate_text_part_lines(&self, msg: &UIMessage, content: &str, width: u16) -> usize {
+        match msg.role {
+            MessageRole::User => content
+                .lines()
+                .map(|line| wrap_count(line, width.saturating_sub(2)))
+                .sum::<usize>()
+                .max(1),
+            MessageRole::Assistant => collapse_blank_lines(&render_markdown(
+                content,
+                &self.theme,
+                self.theme.muted,
+                width,
+            ))
+            .len()
+            .max(1),
+        }
     }
 
     pub fn new(theme: Arc<Theme>) -> Self {
@@ -2052,7 +2009,14 @@ fn render_markdown_blocks<'a>(
     width: u16,
 ) {
     for child in node.children() {
+        let before_len = lines.len();
+        if before_len > 0 && !is_blank_line(&lines[before_len - 1]) {
+            lines.push(Line::from(""));
+        }
         render_markdown_block(child, lines, theme, default_color, width);
+        if lines.len() == before_len + 1 && is_blank_line(&lines[before_len]) {
+            lines.pop();
+        }
     }
 }
 
@@ -2459,11 +2423,60 @@ fn wrap_markdown_spans(
     if total_width <= width as usize {
         return vec![Line::from(spans)];
     }
-    let plain: String = spans.iter().map(|s| s.content.as_ref()).collect();
-    wrap_to_strings(&plain, width)
-        .into_iter()
-        .map(|chunk| Line::from(Span::styled(chunk, Style::default().fg(default_color))))
-        .collect()
+    wrap_styled_spans(spans, width, Style::default().fg(default_color))
+}
+
+fn wrap_styled_spans(
+    spans: Vec<Span<'static>>,
+    width: u16,
+    fallback_style: Style,
+) -> Vec<Line<'static>> {
+    let width = width.max(1) as usize;
+    let mut lines = Vec::new();
+    let mut current = Vec::new();
+    let mut col = 0usize;
+
+    for span in spans {
+        let style = if span.style == Style::default() {
+            fallback_style
+        } else {
+            span.style
+        };
+        for ch in span.content.chars() {
+            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if ch == '\n' {
+                trim_trailing_space_spans(&mut current);
+                lines.push(Line::from(std::mem::take(&mut current)));
+                col = 0;
+                continue;
+            }
+            if col > 0 && col + ch_width > width {
+                trim_trailing_space_spans(&mut current);
+                lines.push(Line::from(std::mem::take(&mut current)));
+                col = 0;
+            }
+            if col == 0 && ch.is_whitespace() {
+                continue;
+            }
+            current.push(Span::styled(ch.to_string(), style));
+            col += ch_width;
+        }
+    }
+
+    trim_trailing_space_spans(&mut current);
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(Line::from(current));
+    }
+    lines
+}
+
+fn trim_trailing_space_spans(spans: &mut Vec<Span<'static>>) {
+    while spans
+        .last()
+        .is_some_and(|span| span.content.chars().all(char::is_whitespace))
+    {
+        spans.pop();
+    }
 }
 
 fn wrap_code_spans(spans: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
@@ -2747,18 +2760,35 @@ fn collapse_blank_lines<'a>(lines: &'a [Line<'a>]) -> Vec<Line<'a>> {
 
 pub fn highlight_code(code: &str, lang: &str, code_theme: &str) -> Vec<Line<'static>> {
     let syntax_token = match lang {
-        "javascriptreact" => "javascript",
-        "typescriptreact" => "typescript",
-        "shellscript" => "bash",
+        "bash" | "shellscript" => "sh",
+        "c++" | "cpp" => "cpp",
+        "c" => "c",
+        "csharp" => "cs",
+        "css" => "css",
+        "dockerfile" => "Dockerfile",
+        "go" => "go",
+        "html" => "html",
+        "java" => "java",
+        "javascript" | "javascriptreact" => "js",
+        "json" => "json",
+        "lua" => "lua",
+        "markdown" => "md",
         "objective-c" => "objc",
         "objective-cpp" => "cpp",
-        "csharp" => "cs",
-        "dockerfile" => "Dockerfile",
+        "python" => "py",
+        "ruby" => "rb",
+        "rust" => "rs",
+        "toml" => "toml",
+        "typescript" | "typescriptreact" => "ts",
+        "xml" => "xml",
+        "yaml" => "yml",
         other => other,
     };
     let syntax = SYNTAX_SET
         .find_syntax_by_token(syntax_token)
         .or_else(|| SYNTAX_SET.find_syntax_by_extension(syntax_token))
+        .or_else(|| SYNTAX_SET.find_syntax_by_name(lang))
+        .or_else(|| SYNTAX_SET.find_syntax_by_name(syntax_token))
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
     let theme = THEME_SET
         .themes
@@ -3016,21 +3046,81 @@ mod tests {
     }
 
     #[test]
+    fn estimate_msg_lines_matches_rendered_markdown_code_width() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(20);
+        let code = "```rust\nlet value = 1234567890;\n```".to_string();
+        let msg = UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Text {
+                content: code.clone(),
+            }],
+            timestamp: None,
+            is_plan_mode: None,
+        };
+        let rendered_lines =
+            render_markdown(&code, &widget.theme, widget.theme.muted, widget.width);
+        let rendered = collapse_blank_lines(&rendered_lines);
+        assert_eq!(widget.estimate_msg_lines(&msg), rendered.len());
+    }
+
+    #[test]
+    fn wrapped_markdown_preserves_inline_styles() {
+        let widget = MessagesWidget::default();
+        let rendered = render_markdown(
+            "prefix **bold text that wraps** and `code span` suffix",
+            &widget.theme,
+            widget.theme.muted,
+            14,
+        );
+        assert!(
+            rendered
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.style.add_modifier.contains(Modifier::BOLD)),
+            "wrapped markdown should preserve bold spans"
+        );
+        assert!(
+            rendered
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.style.bg == Some(widget.theme.selection)),
+            "wrapped markdown should preserve inline-code background"
+        );
+    }
+
+    #[test]
+    fn rust_code_highlighting_uses_non_plain_syntax() {
+        let highlighted = highlight_code(
+            "fn main() {\n    let value = 1;\n}",
+            "rust",
+            "base16-ocean.dark",
+        );
+        let colors: std::collections::HashSet<_> = highlighted
+            .iter()
+            .flat_map(|line| line.spans.iter().filter_map(|span| span.style.fg))
+            .collect();
+        assert!(
+            colors.len() > 1,
+            "rust highlighting should produce multiple syntax colors"
+        );
+    }
+
+    #[test]
     fn estimate_msg_lines_collapses_consecutive_blanks_in_prose() {
-        // Post-collapse counts: groups of consecutive blank lines in prose
-        // are counted as 1 blank line each. This matches the render path
-        // (which runs `collapse_blank_lines` on the full message range) so
-        // the layout cache and the render stay in sync.
+        // Markdown paragraph breaks render as one separator line, while
+        // single newlines inside a paragraph are soft breaks. The estimator
+        // must match that rendered output so scroll math stays accurate.
         let mut widget = MessagesWidget::default();
         widget.set_width(80);
         let cases = [
-            ("a\n\nb", 3usize),   // 1 blank between a and b
-            ("a\n\n\nb", 3),      // 2 blanks collapse to 1
-            ("a\n\n\n\nb", 3),    // 3 blanks collapse to 1
-            ("a\nb\n\nc", 4),     // 1 blank between b and c
-            ("a\n\nb\n\n\nc", 5), // 1 blank between a and b, 1 between b and c
+            "a\n\nb",
+            "a\n\n\nb",
+            "a\n\n\n\nb",
+            "a\nb\n\nc",
+            "a\n\nb\n\n\nc",
         ];
-        for (content, expected) in cases {
+        for content in cases {
             let msg = UIMessage {
                 role: MessageRole::Assistant,
                 parts: vec![MsgPart::Text {
@@ -3040,11 +3130,19 @@ mod tests {
                 is_plan_mode: None,
             };
             let n = widget.estimate_msg_lines(&msg);
-            assert_eq!(
-                n, expected,
-                "content={content:?} expected {expected} got {n}"
-            );
+            let rendered_lines =
+                render_markdown(content, &widget.theme, widget.theme.muted, widget.width);
+            let expected = collapse_blank_lines(&rendered_lines).len();
+            assert_eq!(n, expected, "content={content:?}");
         }
+
+        let paragraph_lines =
+            render_markdown("a\n\nb", &widget.theme, widget.theme.muted, widget.width);
+        assert_eq!(
+            collapse_blank_lines(&paragraph_lines).len(),
+            3,
+            "paragraph break should keep a blank separator"
+        );
     }
 
     #[test]
