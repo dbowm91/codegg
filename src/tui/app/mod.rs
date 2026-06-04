@@ -1241,8 +1241,9 @@ impl App {
 
     fn render_session(&mut self, frame: &mut Frame, area: Rect) {
         self.messages_state.messages.set_theme(&self.ui_state.theme);
-        self.messages_state.messages.show_thinking = self.ui_state.show_thinking;
-        self.messages_state.messages.show_timestamps = self.ui_state.show_timestamps;
+        self.messages_state
+            .messages
+            .set_display_options(self.ui_state.show_thinking, self.ui_state.show_timestamps);
 
         let (content_area, scrollbar_area) = self.ui_state.layout.viewport_with_scrollbar(area);
         self.messages_state
@@ -1376,14 +1377,8 @@ impl App {
         let scroll_label = if !self.messages_state.messages.is_at_bottom()
             && self.messages_state.messages.needs_scrollbar()
         {
-            let total = self.messages_state.messages.total_lines();
-            let visible = self.messages_state.messages.visible_height;
-            let max_scroll = total.saturating_sub(visible);
-            let pos = if self.messages_state.messages.scroll == usize::MAX {
-                max_scroll
-            } else {
-                self.messages_state.messages.scroll.min(max_scroll)
-            };
+            let max_scroll = self.messages_state.messages.max_scroll();
+            let pos = self.messages_state.messages.scroll_position();
             if max_scroll > 0 {
                 let pct = (pos as f64 / max_scroll as f64 * 100.0).round() as u32;
                 format!("{pct}%")
@@ -3937,9 +3932,7 @@ impl App {
                 if let Some(viewport) = self.viewport_area {
                     let rel_y = y.saturating_sub(viewport.y).saturating_sub(*track_y);
                     if *track_height > 0 {
-                        let total = self.messages_state.messages.total_lines();
-                        let max_scroll = total
-                            .saturating_sub(self.messages_state.messages.visible_height);
+                        let max_scroll = self.messages_state.messages.max_scroll();
                         let new_scroll = (rel_y as usize) * max_scroll / (*track_height as usize);
                         self.messages_state.messages.scroll = new_scroll;
                         self.messages_state.messages.auto_scroll = false;

@@ -627,6 +627,14 @@ impl MessagesWidget {
         self.theme = Arc::clone(theme);
     }
 
+    pub fn set_display_options(&mut self, show_thinking: bool, show_timestamps: bool) {
+        if self.show_thinking != show_thinking || self.show_timestamps != show_timestamps {
+            self.show_thinking = show_thinking;
+            self.show_timestamps = show_timestamps;
+            self.invalidate_layout_cache();
+        }
+    }
+
     pub fn set_visible_height(&mut self, height: usize) {
         self.visible_height = height;
     }
@@ -645,6 +653,14 @@ impl MessagesWidget {
 
     pub fn set_auto_scroll(&mut self, val: bool) {
         self.auto_scroll = val;
+    }
+
+    fn message_viewport_height(&self) -> usize {
+        if self.search_visible {
+            self.visible_height.saturating_sub(2)
+        } else {
+            self.visible_height
+        }
     }
 
     pub fn get_message(&self, idx: usize) -> Option<&UIMessage> {
@@ -920,13 +936,13 @@ impl MessagesWidget {
         true
     }
 
-    fn get_layout_cache(&self) -> MessageLayoutCache {
-        if let Some(ref cache) = *self.message_layout_cache.borrow() {
-            return cache.clone();
+    fn with_layout_cache<R>(&self, f: impl FnOnce(&MessageLayoutCache) -> R) -> R {
+        if self.message_layout_cache.borrow().is_none() {
+            let cache = self.build_layout_cache();
+            *self.message_layout_cache.borrow_mut() = Some(cache);
         }
-        let cache = self.build_layout_cache();
-        *self.message_layout_cache.borrow_mut() = Some(cache.clone());
-        cache
+        let cache = self.message_layout_cache.borrow();
+        f(cache.as_ref().expect("layout cache must be initialized"))
     }
 
     fn invalidate_layout_cache(&self) {
@@ -1020,39 +1036,40 @@ impl MessagesWidget {
         }
     }
 
-    fn total_rendered_lines(&self) -> usize {
-        if self.messages.is_empty() {
-            return 0;
-        }
-        let mut total = 0;
-        for msg in &self.messages {
-            total += self.estimate_msg_lines(msg);
-        }
-        total
+    /// Public accessor for cached rendered line totals, used by callers that
+    /// map click positions on the scrollbar gutter into scroll offsets.
+    pub fn total_lines(&self) -> usize {
+        self.with_layout_cache(MessageLayoutCache::total_lines)
     }
 
-    /// Public accessor for `total_rendered_lines`, used by callers that need
-    /// to map click positions on the scrollbar gutter into scroll offsets.
-    pub fn total_lines(&self) -> usize {
-        self.total_rendered_lines()
+    pub fn max_scroll(&self) -> usize {
+        self.total_lines()
+            .saturating_sub(self.message_viewport_height())
+    }
+
+    pub fn scroll_position(&self) -> usize {
+        let max_scroll = self.max_scroll();
+        if self.scroll == usize::MAX {
+            max_scroll
+        } else {
+            self.scroll.min(max_scroll)
+        }
     }
 
     pub fn is_at_bottom(&self) -> bool {
         if self.scroll == usize::MAX {
             return true;
         }
-        let total = self.total_rendered_lines();
-        if total == 0 {
+        if self.total_lines() == 0 {
             return true;
         }
-        let max_scroll = total.saturating_sub(self.visible_height);
-        self.scroll >= max_scroll
+        self.scroll >= self.max_scroll()
     }
 
     fn normalize_scroll(&mut self) {
         if self.scroll == usize::MAX {
-            let total = self.total_rendered_lines();
-            let max_scroll = total.saturating_sub(self.visible_height);
+            let total = self.total_lines();
+            let max_scroll = total.saturating_sub(self.message_viewport_height());
             self.scroll = max_scroll;
         }
     }
@@ -1062,21 +1079,18 @@ impl MessagesWidget {
     /// height, not the total window height). When the content fits, returns
     /// an empty state (no thumb).
     pub fn scrollbar_state(&self, viewport_height: usize) -> ScrollbarState {
-        let total = self.total_rendered_lines();
-        let max_scroll = total.saturating_sub(viewport_height);
-        let pos = if self.scroll == usize::MAX {
-            max_scroll
-        } else {
-            self.scroll.min(max_scroll)
-        };
+        let total = self.total_lines();
+        let message_viewport_height = self.message_viewport_height().min(viewport_height);
+        let max_scroll = total.saturating_sub(message_viewport_height);
+        let pos = self.scroll_position().min(max_scroll);
         ScrollbarState::new(max_scroll)
             .position(pos)
-            .viewport_content_length(viewport_height)
+            .viewport_content_length(message_viewport_height)
     }
 
     /// True when content overflows the viewport (i.e. a scrollbar is useful).
     pub fn needs_scrollbar(&self) -> bool {
-        self.total_rendered_lines() > self.visible_height
+        self.total_lines() > self.message_viewport_height()
     }
 
     pub fn scroll_up(&mut self) {
@@ -1089,8 +1103,8 @@ impl MessagesWidget {
 
     pub fn scroll_down(&mut self) {
         self.normalize_scroll();
-        let total_lines = self.total_rendered_lines();
-        let available = self.visible_height;
+        let total_lines = self.total_lines();
+        let available = self.message_viewport_height();
         let max_scroll = total_lines.saturating_sub(available);
         if self.scroll < max_scroll {
             self.scroll += 1;
@@ -1100,18 +1114,20 @@ impl MessagesWidget {
 
     pub fn scroll_page_up(&mut self) {
         self.normalize_scroll();
-        let total_lines = self.total_rendered_lines();
-        let max_scroll = total_lines.saturating_sub(self.visible_height);
-        let page = self.visible_height.saturating_sub(2).max(1);
+        let total_lines = self.total_lines();
+        let available = self.message_viewport_height();
+        let max_scroll = total_lines.saturating_sub(available);
+        let page = available.saturating_sub(2).max(1);
         self.scroll = self.scroll.saturating_sub(page).min(max_scroll);
         self.auto_scroll = false;
     }
 
     pub fn scroll_page_down(&mut self) {
         self.normalize_scroll();
-        let total_lines = self.total_rendered_lines();
-        let max_scroll = total_lines.saturating_sub(self.visible_height);
-        let page = self.visible_height.saturating_sub(2).max(1);
+        let total_lines = self.total_lines();
+        let available = self.message_viewport_height();
+        let max_scroll = total_lines.saturating_sub(available);
+        let page = available.saturating_sub(2).max(1);
         self.scroll = (self.scroll + page).min(max_scroll);
         self.auto_scroll = self.scroll >= max_scroll;
     }
@@ -1155,7 +1171,7 @@ impl MessagesWidget {
                 .truncate(MAX_STREAMING_TOKENS_SIZE / 2);
         }
         self.streaming_tokens.push_str(token);
-        self.invalidate_render_cache();
+        self.invalidate_layout_cache();
 
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
@@ -1166,11 +1182,13 @@ impl MessagesWidget {
         if !self.streaming_tokens.is_empty() {
             self.add_assistant_text(self.streaming_tokens.clone());
             self.streaming_tokens.clear();
+            self.invalidate_layout_cache();
         }
     }
 
     pub fn clear_streaming(&mut self) {
         self.streaming_tokens.clear();
+        self.invalidate_layout_cache();
     }
 
     pub fn search(&mut self, query: &str) {
@@ -1230,11 +1248,7 @@ impl MessagesWidget {
             return;
         }
         self.search_current = (self.search_current + 1) % self.search_matches.len();
-        let current_match = &self.search_matches[self.search_current];
-        self.sel_msg = Some(current_match.msg_idx);
-        self.auto_scroll = true;
-        let visible_lines = self.visible_height.saturating_sub(4);
-        self.scroll = current_match.line_in_msg.saturating_sub(visible_lines / 2);
+        self.scroll_to_current_search_match();
     }
 
     pub fn search_prev(&mut self) {
@@ -1246,11 +1260,25 @@ impl MessagesWidget {
         } else {
             self.search_current = self.search_current.saturating_sub(1);
         }
-        let current_match = &self.search_matches[self.search_current];
+        self.scroll_to_current_search_match();
+    }
+
+    fn scroll_to_current_search_match(&mut self) {
+        let Some(current_match) = self.search_matches.get(self.search_current).cloned() else {
+            return;
+        };
         self.sel_msg = Some(current_match.msg_idx);
-        self.auto_scroll = true;
-        let visible_lines = self.visible_height.saturating_sub(4);
-        self.scroll = current_match.line_in_msg.saturating_sub(visible_lines / 2);
+        self.auto_scroll = false;
+
+        let visible_lines = self.message_viewport_height().max(1);
+        let message_offset = self.with_layout_cache(|cache| {
+            cache.get_offset(current_match.msg_idx).unwrap_or(0)
+        });
+        let target_line = message_offset.saturating_add(current_match.line_in_msg);
+        let max_scroll = self.total_lines().saturating_sub(visible_lines);
+        self.scroll = target_line
+            .saturating_sub(visible_lines / 2)
+            .min(max_scroll);
     }
 
     pub fn clear_search(&mut self) {
@@ -1335,20 +1363,25 @@ impl Widget for &MessagesWidget {
         }
 
         let available = area.height as usize;
+        let search_chrome_height = if self.search_visible { 2 } else { 0 };
+        let message_available = available.saturating_sub(search_chrome_height);
 
-        let cache = self.get_layout_cache();
-        let total_lines = cache.total_lines();
-        let max_scroll = total_lines.saturating_sub(available);
-        let scroll = if self.scroll == usize::MAX {
-            max_scroll
-        } else {
-            self.scroll.min(max_scroll)
-        };
-
-        let visible_msg_range = {
-            let (start, end) = cache.find_visible_range(scroll, available);
-            start..end
-        };
+        let (scroll, visible_msg_range, range_start_offset) = self.with_layout_cache(|cache| {
+            let total_lines = cache.total_lines();
+            let max_scroll = total_lines.saturating_sub(message_available);
+            let scroll = if self.scroll == usize::MAX {
+                max_scroll
+            } else {
+                self.scroll.min(max_scroll)
+            };
+            let (start, end) = if message_available == 0 {
+                (0, 0)
+            } else {
+                cache.find_visible_range(scroll, message_available)
+            };
+            let range_start_offset = cache.get_offset(start).unwrap_or(0);
+            (scroll, start..end, range_start_offset)
+        });
 
         let mut lines: Vec<Line<'_>> = Vec::new();
         for (idx, msg) in self.messages.iter().enumerate() {
@@ -1416,11 +1449,9 @@ impl Widget for &MessagesWidget {
         // consistent regardless of where the scroll position lands.
         let lines = collapse_blank_lines(&lines);
 
-        let scroll_offset = scroll.saturating_sub(
-            cache.get_offset(visible_msg_range.start).unwrap_or(0),
-        );
+        let scroll_offset = scroll.saturating_sub(range_start_offset);
         let visible_start = scroll_offset.min(lines.len().saturating_sub(1));
-        let visible_end = (visible_start + available).min(lines.len());
+        let visible_end = (visible_start + message_available).min(lines.len());
         let visible: Vec<Line<'_>> = lines[visible_start..visible_end].to_vec();
 
         if self.search_visible {

@@ -56,8 +56,8 @@ impl MessageLayoutCache {
 
     pub fn get_offset(&self, msg_idx: usize) -> Option<usize> {
         self.message_offsets
-            .iter()
-            .find(|(idx, _, _)| *idx == msg_idx)
+            .get(msg_idx)
+            .filter(|(idx, _, _)| *idx == msg_idx)
             .map(|(_, start, _)| *start)
     }
 }
