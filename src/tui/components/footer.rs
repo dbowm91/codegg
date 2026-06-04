@@ -408,7 +408,8 @@ impl Widget for &FooterWidget {
 
         let block = Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(self.theme.border));
+            .border_style(Style::default().fg(self.theme.border))
+            .style(Style::default().bg(self.theme.background));
 
         let line = Line::from(all_spans);
         let paragraph = Paragraph::new(line).block(block);

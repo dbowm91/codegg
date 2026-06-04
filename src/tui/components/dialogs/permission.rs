@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use std::sync::Arc;
 
@@ -97,13 +97,13 @@ impl PermissionDialog {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        // Outer frame: double border in the warning color so the dialog
-        // stands out from the background, with a theme background fill so
-        // the inside reads as a distinct surface (not transparent).
+        // Outer frame: single border in the theme primary color so the
+        // dialog matches the styling of the other dialogs (e.g. /models),
+        // with a theme background fill so the inside reads as a distinct
+        // surface (not transparent).
         let outer_block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Double)
-            .border_style(Style::default().fg(theme.warning))
+            .border_style(Style::default().fg(theme.primary))
             .style(Style::default().bg(theme.background));
         let inner = outer_block.inner(area);
         // Render an empty paragraph that only exists to paint the outer

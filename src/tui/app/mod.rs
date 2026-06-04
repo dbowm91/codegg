@@ -1164,7 +1164,8 @@ impl App {
         };
         let block = Block::default()
             .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(self.ui_state.theme.border));
+            .border_style(Style::default().fg(self.ui_state.theme.border))
+            .style(Style::default().bg(self.ui_state.theme.background));
         let paragraph = Paragraph::new(title).block(block);
         frame.render_widget(paragraph, area);
     }
