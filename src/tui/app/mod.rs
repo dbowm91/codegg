@@ -3705,6 +3705,13 @@ impl App {
 
     pub fn on_resize(&mut self) {
         self.ui_state.auto_scroll = true;
+        // Snap to bottom on resize — after a width/height change, the
+        // layout cache, scroll offsets, and visible range all change.
+        // Following the bottom avoids leaving the user stuck on a stale
+        // scroll offset that no longer maps to a valid line once the
+        // content has been re-wrapped. `set_width` already invalidates
+        // the layout cache, so this scroll reset is independent of that.
+        self.messages_state.messages.scroll_to_bottom();
         if self.ui_state.remote_mode {
             let (w, h) = crossterm::terminal::size().unwrap_or((0, 0));
             self.send_remote_message(RemoteTuiMessage::Resize { w, h });

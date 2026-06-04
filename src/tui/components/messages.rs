@@ -159,8 +159,11 @@ struct LastRenderCache {
 
 /// Greedy word-wrap counter. Returns the number of visual lines a string of
 /// the given (Unicode-aware) display width occupies when wrapped at `width`.
-/// `width` is treated as the maximum number of columns; words that exceed it
-/// are broken mid-word. Empty input returns 1 line (matches a blank paragraph).
+/// Word-wrap is greedy: words that fit on the current line stay there; a
+/// word that would overflow starts a new line. Words longer than `width`
+/// (URLs, long paths) are hard-broken mid-character to match
+/// [`wrap_to_strings`]. Empty input returns 1 line (matches a blank
+/// paragraph).
 fn wrap_count(s: &str, width: u16) -> usize {
     let width = width as usize;
     if width == 0 {
@@ -177,13 +180,23 @@ fn wrap_count(s: &str, width: u16) -> usize {
         if *word_chars == 0 {
             return;
         }
+        // Place the word on the current line if there's room (with leading
+        // space), else start a new line.
         if *col == 0 {
             *col = *word_w;
-        } else if *col + *word_w <= width {
-            *col += *word_w;
+        } else if *col + 1 + *word_w <= width {
+            *col += 1 + *word_w;
         } else {
             *count += 1;
             *col = *word_w;
+        }
+        // Hard-break: the word is wider than the wrap width. It needs
+        // ceil(word_w / width) visual lines. We've already counted the
+        // first one (col was set to word_w above), so add the extras.
+        if *col > width {
+            let extras = word_w.div_ceil(width) - 1;
+            *count += extras;
+            *col = *word_w - extras * width;
         }
         *word_w = 0;
         *word_chars = 0;
@@ -203,7 +216,9 @@ fn wrap_count(s: &str, width: u16) -> usize {
             }
         } else {
             let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            // if a single char can't fit on the current line, break the line
+            // If the next char wouldn't fit on the current line and we're
+            // mid-word, wait until the word ends to break (so we don't
+            // break in the middle of a word we could fit on the next line).
             if col > 0 && col + cw > width && word_chars == 0 {
                 count += 1;
                 col = 0;
@@ -211,22 +226,6 @@ fn wrap_count(s: &str, width: u16) -> usize {
             if cw > 0 {
                 word_w += cw;
                 word_chars += 1;
-            }
-            // if the word is now wider than the whole width, break it
-            if word_w > width {
-                // emit everything but the last char (which becomes start of next line)
-                while word_w > width {
-                    let ch_to_emit = word_w - cw;
-                    // pop one char from word (we don't track it; just adjust width)
-                    if col == 0 && ch_to_emit == 0 {
-                        // first char of new line
-                        word_w = cw;
-                        break;
-                    }
-                    count += 1;
-                    word_w = cw;
-                    col = 0;
-                }
             }
         }
     }
@@ -242,6 +241,13 @@ fn wrap_count(s: &str, width: u16) -> usize {
 /// Split a string into wrapped lines of at most `width` display columns each.
 /// Returns one entry per visual line (preserves explicit newlines as line
 /// breaks). Matches the line-counting semantics of [`wrap_count`].
+///
+/// Word-wrap is greedy: words that fit on the current line stay there; a
+/// word that would overflow the current line starts a new line. Words
+/// longer than `width` (URLs, long paths) are hard-broken at character
+/// boundaries to avoid overflowing the render area. Trailing whitespace is
+/// trimmed from each output line so the wrap doesn't double-space between
+/// words or leave stray spaces at line ends.
 fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
     let width = width as usize;
     if width == 0 || s.is_empty() {
@@ -252,37 +258,88 @@ fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
     let mut col = 0usize;
     let mut word = String::new();
     let mut word_w = 0usize;
-    let push_word = |line: &mut String, col: &mut usize, out: &mut Vec<String>, word: &str, word_w: usize, width: usize| {
+    let place_word = |word: &str,
+                      word_w: usize,
+                      line: &mut String,
+                          col: &mut usize,
+                          out: &mut Vec<String>|
+     -> Option<String> {
         if word.is_empty() {
-            return;
+            return None;
         }
         if *col == 0 {
-            line.push_str(word);
+            *line += word;
             *col = word_w;
-        } else if *col + word_w <= width {
-            line.push(' ');
-            line.push_str(word);
-            *col += word_w + 1;
         } else {
-            out.push(std::mem::take(line));
-            line.push_str(word);
-            *col = word_w;
+            // Strip any trailing whitespace the previous whitespace-pass
+            // added, so we don't end up with "hello  world" (double
+            // space) when the line was already at "hello " from a literal
+            // space in the input.
+            while line.ends_with(' ') || line.ends_with('\t') {
+                line.pop();
+            }
+            *col = line.chars().count();
+            if *col + 1 + word_w <= width {
+                *line += " ";
+                *line += word;
+                *col += 1 + word_w;
+            } else {
+                out.push(std::mem::take(line));
+                *line += word;
+                *col = word_w;
+            }
+        }
+        // Hard-break: if the line is wider than `width` cols (a single
+        // word overflowed), chop it into `width`-col chunks. The leftover
+        // chars on the line are returned to the caller so they can be
+        // combined with the next chars of the word (otherwise a 50-char
+        // word would fragment into many 1-char lines).
+        let mut did_hard_break = false;
+        while *col > width && !line.is_empty() {
+            let take_bytes = line
+                .char_indices()
+                .nth(width)
+                .map(|(i, _)| i)
+                .unwrap_or(line.len());
+            let chunk: String = line.drain(..take_bytes).collect();
+            let chunk_chars = chunk.chars().count();
+            out.push(chunk);
+            *col -= chunk_chars;
+            did_hard_break = true;
+        }
+        if did_hard_break && !line.is_empty() {
+            Some(std::mem::take(line))
+        } else {
+            None
         }
     };
     for ch in s.chars() {
         if ch == '\n' {
             if !word.is_empty() {
-                push_word(&mut line, &mut col, &mut out, &word, word_w, width);
-                word.clear();
-                word_w = 0;
+                if let Some(leftover) =
+                    place_word(&word, word_w, &mut line, &mut col, &mut out)
+                {
+                    word = leftover;
+                    word_w = word.chars().count();
+                } else {
+                    word.clear();
+                    word_w = 0;
+                }
             }
             out.push(std::mem::take(&mut line));
             col = 0;
         } else if ch.is_whitespace() {
             if !word.is_empty() {
-                push_word(&mut line, &mut col, &mut out, &word, word_w, width);
-                word.clear();
-                word_w = 0;
+                if let Some(leftover) =
+                    place_word(&word, word_w, &mut line, &mut col, &mut out)
+                {
+                    word = leftover;
+                    word_w = word.chars().count();
+                    col = 0;
+                } else {
+                    word.clear();
+                    word_w = 0;
+                }
             }
             if col < width {
                 line.push(ch);
@@ -298,32 +355,41 @@ fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
                 continue;
             }
             if col + cw > width && col > 0 {
-                // break the line, but keep the word starting on the new line
                 out.push(std::mem::take(&mut line));
                 col = 0;
             }
             word.push(ch);
             word_w += cw;
             if word_w > width {
-                // hard-break the word
-                if !word.is_empty() && col == 0 {
-                    line.push_str(&word);
-                    col = word_w;
+                if let Some(leftover) =
+                    place_word(&word, word_w, &mut line, &mut col, &mut out)
+                {
+                    word = leftover;
+                    word_w = word.chars().count();
+                    col = 0;
                 } else {
-                    out.push(std::mem::take(&mut line));
-                    line.push_str(&word);
-                    col = word_w;
+                    word.clear();
+                    word_w = 0;
                 }
-                word.clear();
-                word_w = 0;
             }
         }
     }
     if !word.is_empty() {
-        push_word(&mut line, &mut col, &mut out, &word, word_w, width);
+        if let Some(leftover) =
+            place_word(&word, word_w, &mut line, &mut col, &mut out)
+        {
+            out.push(leftover);
+        }
     }
     if !line.is_empty() || out.is_empty() {
         out.push(line);
+    }
+    // Trim trailing whitespace from every output line (so a wrap doesn't
+    // double-space between words or leave a trailing space at line-end).
+    for line in &mut out {
+        while line.ends_with(' ') || line.ends_with('\t') {
+            line.pop();
+        }
     }
     // Trim trailing blank line caused by a terminal '\n'
     if s.ends_with('\n') {
@@ -447,16 +513,16 @@ impl MessagesWidget {
                     // Count lines for code-block-aware markdown. Code lines
                     // wrap to (width - gutter) cols and blank lines inside
                     // code blocks are NOT collapsed (they're meaningful).
-                    // Prose wraps to (width - 2) cols and consecutive blank
-                    // lines in prose are collapsed to a single blank line —
-                    // matching the behavior of `collapse_blank_lines` in the
-                    // render path.
+                    // Prose wraps to the full content-area width (no -2
+                    // gutter) and consecutive blank lines in prose are
+                    // collapsed to a single blank line — matching the
+                    // behavior of `collapse_blank_lines` in the render path.
                     let mut text_lines = 0usize;
                     let mut in_code = false;
                     let mut code_lang = String::new();
                     let mut prose_buf = String::new();
                     let mut prev_was_blank = false;
-                    let prose_width = width.saturating_sub(2);
+                    let prose_width = width;
                     let flush_prose = |prose_buf: &mut String, text_lines: &mut usize| {
                         if prose_buf.is_empty() {
                             return;
@@ -1723,8 +1789,13 @@ fn render_markdown(
     if text.is_empty() {
         return vec![Line::from("")];
     }
-    // Prose wraps to width - 2 to leave a 1-col gutter on each side.
-    let prose_width = width.saturating_sub(2);
+    // Prose wraps to the full content-area width. A previous version
+    // subtracted 2 to leave a "1-col gutter on each side", but only the
+    // right gutter was actually enforced (the left side had no padding),
+    // which made the text look like it had extra trailing space. The wrap
+    // is also robust to long words now (hard-breaks URLs / paths so they
+    // never bleed into the scrollbar gutter).
+    let prose_width = width;
 
     let has_code_block = text.contains("```");
 
@@ -2184,6 +2255,10 @@ mod tests {
             ("a b c d e f g h i j k l m n o p", 10),
             ("one\ntwo\nthree", 80),
             ("a very long line that should wrap multiple times at narrow widths", 15),
+            // Long-word cases (hard-break) — these need to count the same
+            // in both functions.
+            ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb", 10),
+            ("https://example.com/very/long/url bbb", 20),
         ];
         for (s, w) in cases {
             let lines = wrap_to_strings(s, *w);
@@ -2196,6 +2271,81 @@ mod tests {
                 count
             );
         }
+    }
+
+    #[test]
+    fn wrap_to_strings_no_trailing_space() {
+        // The wrap must not leave a trailing space on a wrapped line, and
+        // must not insert a double space at the wrap point (which made
+        // text look "extra wide" between words).
+        let cases: &[(&str, u16, Vec<&str>)] = &[
+            ("hello world", 10, vec!["hello", "world"]),
+            // width 11: "hello world" is exactly 11 chars and fits on one
+            // line (the previous buggy version double-spaced the join to
+            // squeeze it in — no longer needed).
+            ("hello world", 11, vec!["hello world"]),
+            ("hello world", 12, vec!["hello world"]),
+            ("a b c d e", 5, vec!["a b c", "d e"]),
+            ("a b c d e", 6, vec!["a b c", "d e"]),
+        ];
+        for (s, w, expected) in cases {
+            let lines = wrap_to_strings(s, *w);
+            let got: Vec<&str> = lines.iter().map(String::as_str).collect();
+            assert_eq!(got, *expected, "input={s:?} width={w}");
+            // And no line should have a trailing space.
+            for line in &lines {
+                assert!(
+                    !line.ends_with(' '),
+                    "line {line:?} ends with a space (input={s:?} width={w})"
+                );
+                assert!(
+                    !line.contains("  "),
+                    "line {line:?} contains a double space (input={s:?} width={w})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wrap_to_strings_hard_breaks_long_words() {
+        // Words longer than `width` (URLs, paths) must hard-break so they
+        // never bleed into the scrollbar gutter.
+        let url = "https://example.com/very/long/url";
+        assert!(url.chars().count() > 20, "test url must be longer than 20 chars");
+        let lines = wrap_to_strings(url, 20);
+        // 33 chars at width 20 → ceil(33/20) = 2 lines.
+        assert_eq!(lines.len(), 2, "expected 2 lines for long URL, got {lines:?}");
+        for line in &lines {
+            assert!(
+                line.chars().count() <= 20,
+                "line {line:?} is longer than wrap width 20"
+            );
+        }
+
+        // Single huge word (no whitespace).
+        let huge = "a".repeat(50);
+        let lines = wrap_to_strings(&huge, 20);
+        // 50 chars at width 20 → ceil(50/20) = 3 lines.
+        assert_eq!(lines.len(), 3, "expected 3 lines for 50-char word, got {lines:?}");
+        for line in &lines {
+            assert!(
+                line.chars().count() <= 20,
+                "line {line:?} is longer than wrap width 20"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_count_hard_breaks_long_words() {
+        // The estimate must agree with the render for long words.
+        let url = "https://example.com/very/long/url";
+        assert_eq!(wrap_count(url, 20), 2);
+        let huge = "a".repeat(50);
+        assert_eq!(wrap_count(&huge, 20), 3);
+        // Long word that fits on its own line — no extra line for the
+        // hard-break, just one visual line.
+        assert_eq!(wrap_count(&"a".repeat(20), 20), 1);
+        assert_eq!(wrap_count(&"a".repeat(21), 20), 2);
     }
 
     #[test]
