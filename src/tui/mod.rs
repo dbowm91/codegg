@@ -2036,7 +2036,8 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
     }
     app.tui_cmd_tx = Some(cmd_tx);
 
-    const RENDER_INTERVAL: Duration = Duration::from_millis(16);
+    const RENDER_INTERVAL_FAST: Duration = Duration::from_millis(16); // 60fps during streaming
+    const RENDER_INTERVAL_SLOW: Duration = Duration::from_millis(33); // 30fps when idle
     let mut last_render: Option<Instant> = None;
 
     if let Some(ref mut watcher) = app.config_watcher {
@@ -2057,8 +2058,13 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
         }
 
         let now = Instant::now();
+        let interval = if app.streaming_active {
+            RENDER_INTERVAL_FAST
+        } else {
+            RENDER_INTERVAL_SLOW
+        };
         let should_render = last_render
-            .map(|last| now.duration_since(last) >= RENDER_INTERVAL)
+            .map(|last| now.duration_since(last) >= interval)
             .unwrap_or(true);
         if should_render {
             last_render = Some(now);
@@ -2150,8 +2156,17 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
 
             result = bus_rx.recv() => {
                 match result {
-                    Ok(event) => {
-                        debug_log!("Event loop: received event: {:?}", std::mem::discriminant(&event));
+                    Ok(first_event) => {
+                        debug_log!("Event loop: received event: {:?}", std::mem::discriminant(&first_event));
+                        // Coalesce: drain any additional events already in the
+                        // bus buffer (non-blocking) so we don't pay parse cost
+                        // N times for N small deltas in the same frame.
+                        let mut events: Vec<AppEvent> = Vec::new();
+                        events.push(first_event);
+                        while let Ok(more) = bus_rx.try_recv() {
+                            events.push(more);
+                        }
+                        for event in events {
                 match event {
                     AppEvent::TextDelta { delta, session_id, .. } => {
                         debug_log!("Event loop: TextDelta received session_id={}, delta_len={}", session_id, delta.len());
@@ -2160,6 +2175,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             app.messages_state.messages.finalize_streaming();
                         }
                         app.messages_state.messages.add_streaming_token(&delta_str);
+                        app.streaming_active = true;
                         if matches!(app.session_state.session_status, SessionStatus::Working) {
                             app.footer.set_thinking(true, Some("Thinking...".to_string()));
                         }
@@ -2167,10 +2183,12 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     AppEvent::ReasoningDelta { delta, .. } => {
                         debug_log!("Event loop: ReasoningDelta received");
                         app.messages_state.messages.add_reasoning(delta);
+                        app.streaming_active = true;
                     }
                     AppEvent::ToolCallStarted { tool_name, tool_id, arguments, .. } => {
                         debug_log!("Event loop: ToolCallStarted for tool={}", tool_name);
                         app.messages_state.messages.finalize_streaming();
+                        app.streaming_active = true;
                         match serde_json::from_str::<serde_json::Value>(&arguments) {
                             Ok(args_val) => {
                                 app.messages_state.messages.add_tool_call(tool_id, tool_name, args_val);
@@ -2203,6 +2221,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             app.session_state.session_status = SessionStatus::Idle;
                             app.prompt_state.pending_send = false;
                             app.footer.set_thinking(false, None);
+                            app.streaming_active = false;
 
                             if let (Some(in_tok), Some(out_tok)) = (input_tokens, output_tokens) {
                                 app.set_tokens(in_tok as u64, out_tok as u64);
@@ -2310,6 +2329,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         tracing::error!("Agent error: {}", message);
                         app.session_state.session_status = SessionStatus::Error;
                         app.footer.set_thinking(false, None);
+                        app.streaming_active = false;
                         app.messages_state.toasts.add(Toast::error(&message));
                     }
                     AppEvent::CompactionTriggered { tokens_before, tokens_after, .. } => {
@@ -2384,6 +2404,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         debug_log!("Event loop: unhandled event");
                     }
                 }
+                        } // end for event in events
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("Event bus lagged, {} events dropped", n);

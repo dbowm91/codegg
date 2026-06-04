@@ -380,19 +380,19 @@ mod tests {
 
     #[test]
     fn test_provider_id() {
-        let provider = CodeggZenProvider::new("test-key".to_string());
+        let provider = OpencodeZenProvider::new("test-key".to_string());
         assert_eq!(provider.id(), "opencode_zen");
     }
 
     #[test]
     fn test_provider_name() {
-        let provider = CodeggZenProvider::new("test-key".to_string());
+        let provider = OpencodeZenProvider::new("test-key".to_string());
         assert_eq!(provider.name(), "Codegg Zen");
     }
 
     #[test]
     fn test_with_base_url() {
-        let provider = CodeggZenProvider::new("test-key".to_string())
+        let provider = OpencodeZenProvider::new("test-key".to_string())
             .with_base_url("https://custom.api.com/v1".to_string());
         assert_eq!(provider.base_url, "https://custom.api.com/v1");
     }

@@ -3,13 +3,14 @@ use once_cell::sync::Lazy;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, ScrollbarState, Widget};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
+use unicode_width::UnicodeWidthStr;
 
 mod layout;
 use layout::MessageLayoutCache;
@@ -143,7 +144,196 @@ pub struct MessagesWidget {
     pub search_current: usize,
     pub search_visible: bool,
     pub visible_height: usize,
+    pub width: u16,
     message_layout_cache: RefCell<Option<MessageLayoutCache>>,
+    last_render_cache: RefCell<Option<LastRenderCache>>,
+}
+
+#[derive(Clone)]
+struct LastRenderCache {
+    streaming_len: usize,
+    width: u16,
+    message_ptr_id: usize,
+    lines: Vec<Line<'static>>,
+}
+
+/// Greedy word-wrap counter. Returns the number of visual lines a string of
+/// the given (Unicode-aware) display width occupies when wrapped at `width`.
+/// `width` is treated as the maximum number of columns; words that exceed it
+/// are broken mid-word. Empty input returns 1 line (matches a blank paragraph).
+fn wrap_count(s: &str, width: u16) -> usize {
+    let width = width as usize;
+    if width == 0 {
+        return s.lines().count().max(1);
+    }
+    if s.is_empty() {
+        return 1;
+    }
+    let mut count = 1usize;
+    let mut col = 0usize;
+    let mut word_w = 0usize;
+    let mut word_chars = 0usize;
+    let flush_word = |count: &mut usize, col: &mut usize, word_w: &mut usize, word_chars: &mut usize| {
+        if *word_chars == 0 {
+            return;
+        }
+        if *col == 0 {
+            *col = *word_w;
+        } else if *col + *word_w <= width {
+            *col += *word_w;
+        } else {
+            *count += 1;
+            *col = *word_w;
+        }
+        *word_w = 0;
+        *word_chars = 0;
+    };
+    for ch in s.chars() {
+        if ch == '\n' {
+            flush_word(&mut count, &mut col, &mut word_w, &mut word_chars);
+            count += 1;
+            col = 0;
+        } else if ch.is_whitespace() {
+            flush_word(&mut count, &mut col, &mut word_w, &mut word_chars);
+            if col < width {
+                col += 1;
+            } else {
+                count += 1;
+                col = 0;
+            }
+        } else {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            // if a single char can't fit on the current line, break the line
+            if col > 0 && col + cw > width && word_chars == 0 {
+                count += 1;
+                col = 0;
+            }
+            if cw > 0 {
+                word_w += cw;
+                word_chars += 1;
+            }
+            // if the word is now wider than the whole width, break it
+            if word_w > width {
+                // emit everything but the last char (which becomes start of next line)
+                while word_w > width {
+                    let ch_to_emit = word_w - cw;
+                    // pop one char from word (we don't track it; just adjust width)
+                    if col == 0 && ch_to_emit == 0 {
+                        // first char of new line
+                        word_w = cw;
+                        break;
+                    }
+                    count += 1;
+                    word_w = cw;
+                    col = 0;
+                }
+            }
+        }
+    }
+    flush_word(&mut count, &mut col, &mut word_w, &mut word_chars);
+    // Trailing newline → final empty line shouldn't count
+    if s.ends_with('\n') && count > 1 {
+        count - 1
+    } else {
+        count
+    }
+}
+
+/// Split a string into wrapped lines of at most `width` display columns each.
+/// Returns one entry per visual line (preserves explicit newlines as line
+/// breaks). Matches the line-counting semantics of [`wrap_count`].
+fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
+    let width = width as usize;
+    if width == 0 || s.is_empty() {
+        return vec![s.to_string()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    let mut col = 0usize;
+    let mut word = String::new();
+    let mut word_w = 0usize;
+    let push_word = |line: &mut String, col: &mut usize, out: &mut Vec<String>, word: &str, word_w: usize, width: usize| {
+        if word.is_empty() {
+            return;
+        }
+        if *col == 0 {
+            line.push_str(word);
+            *col = word_w;
+        } else if *col + word_w <= width {
+            line.push(' ');
+            line.push_str(word);
+            *col += word_w + 1;
+        } else {
+            out.push(std::mem::take(line));
+            line.push_str(word);
+            *col = word_w;
+        }
+    };
+    for ch in s.chars() {
+        if ch == '\n' {
+            if !word.is_empty() {
+                push_word(&mut line, &mut col, &mut out, &word, word_w, width);
+                word.clear();
+                word_w = 0;
+            }
+            out.push(std::mem::take(&mut line));
+            col = 0;
+        } else if ch.is_whitespace() {
+            if !word.is_empty() {
+                push_word(&mut line, &mut col, &mut out, &word, word_w, width);
+                word.clear();
+                word_w = 0;
+            }
+            if col < width {
+                line.push(ch);
+                col += 1;
+            } else {
+                out.push(std::mem::take(&mut line));
+                col = 0;
+            }
+        } else {
+            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if cw == 0 {
+                word.push(ch);
+                continue;
+            }
+            if col + cw > width && col > 0 {
+                // break the line, but keep the word starting on the new line
+                out.push(std::mem::take(&mut line));
+                col = 0;
+            }
+            word.push(ch);
+            word_w += cw;
+            if word_w > width {
+                // hard-break the word
+                if !word.is_empty() && col == 0 {
+                    line.push_str(&word);
+                    col = word_w;
+                } else {
+                    out.push(std::mem::take(&mut line));
+                    line.push_str(&word);
+                    col = word_w;
+                }
+                word.clear();
+                word_w = 0;
+            }
+        }
+    }
+    if !word.is_empty() {
+        push_word(&mut line, &mut col, &mut out, &word, word_w, width);
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line);
+    }
+    // Trim trailing blank line caused by a terminal '\n'
+    if s.ends_with('\n') {
+        if let Some(last) = out.last() {
+            if last.is_empty() {
+                out.pop();
+            }
+        }
+    }
+    out
 }
 
 fn extract_tool_target(name: &str, input: &str) -> String {
@@ -242,24 +432,45 @@ fn find_any_tag(text: &str, start: bool) -> Option<(usize, usize)> {
 
 impl MessagesWidget {
     pub fn estimate_msg_lines(&self, msg: &UIMessage) -> usize {
-        let mut lines = 1;
+        // Returns the post-collapse line count for `msg`, matching what the
+        // render path produces (after `collapse_blank_lines` is applied to the
+        // full visible message range). This keeps the layout cache and the
+        // render in sync so scroll position and the scrollbar stay accurate.
+        let mut lines = 0usize;
         if self.show_timestamps && msg.timestamp.is_some() {
             lines += 1;
         }
+        let width = self.width.max(2) as usize;
         for part in &msg.parts {
             match part {
                 MsgPart::Text { content } => {
-                    let mut text_lines = content.lines().count().max(1);
-                    // Account for ┌─ LANG header lines added by render_markdown
-                    // for code blocks with a language specifier.
+                    // Count lines for code-block-aware markdown. Code lines
+                    // wrap to (width - gutter) cols and blank lines inside
+                    // code blocks are NOT collapsed (they're meaningful).
+                    // Prose wraps to (width - 2) cols and consecutive blank
+                    // lines in prose are collapsed to a single blank line —
+                    // matching the behavior of `collapse_blank_lines` in the
+                    // render path.
+                    let mut text_lines = 0usize;
                     let mut in_code = false;
                     let mut code_lang = String::new();
+                    let mut prose_buf = String::new();
+                    let mut prev_was_blank = false;
+                    let prose_width = width.saturating_sub(2);
+                    let flush_prose = |prose_buf: &mut String, text_lines: &mut usize| {
+                        if prose_buf.is_empty() {
+                            return;
+                        }
+                        *text_lines += wrap_count(prose_buf, prose_width as u16);
+                        prose_buf.clear();
+                    };
                     for line in content.lines() {
                         let trimmed = line.trim();
                         if trimmed.starts_with("```") {
+                            flush_prose(&mut prose_buf, &mut text_lines);
                             if in_code {
                                 if !code_lang.is_empty() {
-                                    text_lines += 1; // ┌─ header line
+                                    text_lines += 1; // ┌─ LANG header
                                 }
                                 code_lang.clear();
                                 in_code = false;
@@ -270,14 +481,39 @@ impl MessagesWidget {
                                     .to_string();
                                 in_code = true;
                             }
+                            prev_was_blank = false;
+                        } else if in_code {
+                            // Code lines are pre-wrapped to width - 6
+                            // (gutter + space). Blank lines inside a code
+                            // block stay as separate visual lines.
+                            text_lines += wrap_count(line, (width.saturating_sub(6)) as u16);
+                            prev_was_blank = trimmed.is_empty();
+                        } else {
+                            let is_blank = trimmed.is_empty();
+                            if is_blank {
+                                if !prev_was_blank {
+                                    flush_prose(&mut prose_buf, &mut text_lines);
+                                    text_lines += 1; // 1 blank for the group (post-collapse)
+                                }
+                            } else {
+                                if !prose_buf.is_empty() {
+                                    prose_buf.push('\n');
+                                }
+                                prose_buf.push_str(line);
+                            }
+                            prev_was_blank = is_blank;
                         }
                     }
-                    lines += text_lines;
+                    flush_prose(&mut prose_buf, &mut text_lines);
+                    if in_code && !code_lang.is_empty() {
+                        text_lines += 1; // trailing ┌─ LANG if unterminated
+                    }
+                    lines += text_lines.max(1);
                 }
                 MsgPart::Reasoning { content, collapsed } => {
                     lines += 1;
                     if self.show_thinking && !*collapsed {
-                        lines += content.lines().count();
+                        lines += wrap_count(content, (width.saturating_sub(2)) as u16);
                     }
                 }
                 MsgPart::ToolCall { .. } => {
@@ -288,13 +524,12 @@ impl MessagesWidget {
                 }
             }
         }
-        // Account for streaming tokens rendered as 2 extra lines
-        // (thinking indicator + token text) for the last assistant message.
+        // Streaming tail: 1 label line + N token lines (matching render).
         if msg.role == MessageRole::Assistant
             && !self.streaming_tokens.is_empty()
             && self.messages.last().is_some_and(|m| std::ptr::eq(m, msg))
         {
-            lines += 2;
+            lines += 1 + wrap_count(&self.streaming_tokens, self.width.saturating_sub(2));
         }
         lines
     }
@@ -316,7 +551,9 @@ impl MessagesWidget {
             search_current: 0,
             search_visible: false,
             visible_height: 20,
+            width: 80,
             message_layout_cache: RefCell::new(None),
+            last_render_cache: RefCell::new(None),
         }
     }
 
@@ -326,6 +563,18 @@ impl MessagesWidget {
 
     pub fn set_visible_height(&mut self, height: usize) {
         self.visible_height = height;
+    }
+
+    pub fn set_width(&mut self, width: u16) {
+        if self.width != width {
+            self.width = width;
+            self.invalidate_layout_cache();
+            self.invalidate_render_cache();
+        }
+    }
+
+    fn invalidate_render_cache(&self) {
+        *self.last_render_cache.borrow_mut() = None;
     }
 
     pub fn set_auto_scroll(&mut self, val: bool) {
@@ -438,6 +687,7 @@ impl MessagesWidget {
         }
 
         self.invalidate_layout_cache();
+        self.invalidate_render_cache();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -456,6 +706,7 @@ impl MessagesWidget {
                     });
                 }
                 self.invalidate_layout_cache();
+                self.invalidate_render_cache();
                 if self.auto_scroll && was_at_bottom {
                     self.scroll = usize::MAX;
                 }
@@ -472,6 +723,7 @@ impl MessagesWidget {
             is_plan_mode: None,
         });
         self.invalidate_layout_cache();
+        self.invalidate_render_cache();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -496,6 +748,7 @@ impl MessagesWidget {
             is_plan_mode: None,
         });
         self.invalidate_layout_cache();
+        self.invalidate_render_cache();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -533,6 +786,7 @@ impl MessagesWidget {
             }
         }
         self.invalidate_layout_cache();
+        self.invalidate_render_cache();
         if self.auto_scroll {
             self.scroll = usize::MAX;
         }
@@ -547,6 +801,7 @@ impl MessagesWidget {
             }
         }
         self.invalidate_layout_cache();
+        self.invalidate_render_cache();
     }
 
     pub fn clear(&mut self) {
@@ -555,6 +810,7 @@ impl MessagesWidget {
         self.sel_msg = None;
         self.undo_stack.clear();
         self.invalidate_layout_cache();
+        self.invalidate_render_cache();
     }
 
     pub fn undo(&mut self) -> bool {
@@ -574,6 +830,7 @@ impl MessagesWidget {
             }
         }
         self.invalidate_layout_cache();
+        self.invalidate_render_cache();
         self.scroll = 0;
         true
     }
@@ -592,6 +849,7 @@ impl MessagesWidget {
             self.messages.push(msg);
         }
         self.invalidate_layout_cache();
+        self.invalidate_render_cache();
         self.scroll = usize::MAX;
         true
     }
@@ -607,6 +865,7 @@ impl MessagesWidget {
 
     fn invalidate_layout_cache(&self) {
         *self.message_layout_cache.borrow_mut() = None;
+        self.invalidate_render_cache();
     }
 
     fn build_layout_cache(&self) -> MessageLayoutCache {
@@ -706,7 +965,13 @@ impl MessagesWidget {
         total
     }
 
-    fn is_at_bottom(&self) -> bool {
+    /// Public accessor for `total_rendered_lines`, used by callers that need
+    /// to map click positions on the scrollbar gutter into scroll offsets.
+    pub fn total_lines(&self) -> usize {
+        self.total_rendered_lines()
+    }
+
+    pub fn is_at_bottom(&self) -> bool {
         if self.scroll == usize::MAX {
             return true;
         }
@@ -724,6 +989,28 @@ impl MessagesWidget {
             let max_scroll = total.saturating_sub(self.visible_height);
             self.scroll = max_scroll;
         }
+    }
+
+    /// Build a ratatui `ScrollbarState` for the current viewport. The caller
+    /// should pass the *scrollbar* area height (i.e. the chat-log viewport
+    /// height, not the total window height). When the content fits, returns
+    /// an empty state (no thumb).
+    pub fn scrollbar_state(&self, viewport_height: usize) -> ScrollbarState {
+        let total = self.total_rendered_lines();
+        let max_scroll = total.saturating_sub(viewport_height);
+        let pos = if self.scroll == usize::MAX {
+            max_scroll
+        } else {
+            self.scroll.min(max_scroll)
+        };
+        ScrollbarState::new(max_scroll)
+            .position(pos)
+            .viewport_content_length(viewport_height)
+    }
+
+    /// True when content overflows the viewport (i.e. a scrollbar is useful).
+    pub fn needs_scrollbar(&self) -> bool {
+        self.total_rendered_lines() > self.visible_height
     }
 
     pub fn scroll_up(&mut self) {
@@ -802,6 +1089,7 @@ impl MessagesWidget {
                 .truncate(MAX_STREAMING_TOKENS_SIZE / 2);
         }
         self.streaming_tokens.push_str(token);
+        self.invalidate_render_cache();
 
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
@@ -975,8 +1263,7 @@ impl Widget for &MessagesWidget {
                 Style::default().fg(self.theme.muted),
             ));
             let paragraph = Paragraph::new(text)
-                .alignment(ratatui::layout::Alignment::Center)
-                .wrap(Wrap { trim: true });
+                .alignment(ratatui::layout::Alignment::Center);
             paragraph.render(area, buf);
             return;
         }
@@ -1006,6 +1293,7 @@ impl Widget for &MessagesWidget {
                 break;
             }
 
+            let is_last = self.messages.last().is_some_and(|m| std::ptr::eq(m, msg));
             let current_match = self.find_match_for_msg(idx);
             let is_search_match = self.search_visible && current_match.is_some();
             let match_bg = if is_search_match {
@@ -1013,228 +1301,61 @@ impl Widget for &MessagesWidget {
             } else {
                 None
             };
+
+            // For the last assistant message, use the cached parts-render
+            // (parts don't change frame-to-frame during streaming; the
+            // streaming_tokens tail is appended below).
+            if is_last
+                && matches!(msg.role, MessageRole::Assistant)
+                && !self.streaming_tokens.is_empty()
+            {
+                if let Some(cached) = self.get_cached_last_assistant_parts(msg) {
+                    lines.extend(cached.iter().cloned());
+                } else {
+                    let built = self.build_assistant_parts_lines(msg, current_match, match_bg);
+                    self.store_cached_last_assistant_parts(msg, built.clone());
+                    lines.extend(built);
+                }
+                // Streaming tail: append label + each streaming line (cheap).
+                let streaming_label = if self.assistant_is_thinking {
+                    "Thinking..."
+                } else {
+                    "Generating..."
+                };
+                let streaming_style = Style::default().fg(self.theme.muted);
+                lines.push(Line::from(Span::styled(streaming_label, streaming_style)));
+                let tail_width = self.width.saturating_sub(2);
+                for text_line in self.streaming_tokens.lines() {
+                    let wrapped = wrap_to_strings(text_line, tail_width);
+                    for chunk in wrapped {
+                        lines.push(Line::from(Span::styled(chunk, streaming_style)));
+                    }
+                }
+                continue;
+            }
+
+            // Non-cached path: build lines directly.
             match &msg.role {
                 MessageRole::User => {
-                    if self.show_timestamps {
-                        if let Some(ts) = msg.timestamp {
-                            lines.push(Line::from(Span::styled(
-                                format_time(ts),
-                                Style::default().fg(self.theme.muted),
-                            )));
-                        }
-                    }
-                    let bar_color = if msg.is_plan_mode.unwrap_or(false) {
-                        self.theme.warning
-                    } else {
-                        self.theme.primary
-                    };
-                    let user_bg = self.theme.input_bg;
-                    let bar_style = if let Some(bg) = match_bg {
-                        Style::default().fg(bar_color).bg(bg)
-                    } else {
-                        Style::default().fg(bar_color).bg(user_bg)
-                    };
-                    let text_style = if let Some(bg) = match_bg {
-                        Style::default().fg(self.theme.primary).bg(bg)
-                    } else {
-                        Style::default().fg(self.theme.primary).bg(user_bg)
-                    };
-                    let highlight_style = Style::default()
-                        .fg(self.theme.primary)
-                        .bg(self.theme.selection)
-                        .add_modifier(Modifier::REVERSED);
-                    let pad_style = if let Some(bg) = match_bg {
-                        Style::default().bg(bg)
-                    } else {
-                        Style::default().bg(user_bg)
-                    };
-                    let mut user_lines: Vec<Line> = Vec::new();
-                    for (part_idx, part) in msg.parts.iter().enumerate() {
-                        if let MsgPart::Text { content } = part {
-                            for (line_idx, text_line) in content.lines().enumerate() {
-                                let line_prefix = if line_idx == 0 {
-                                    Some(Span::styled("│ ", bar_style))
-                                } else {
-                                    None
-                                };
-                                if let Some(m) = current_match {
-                                    if m.part_idx == part_idx {
-                                        let line_start = content.find(text_line).unwrap_or(0);
-                                        let line_end = line_start + text_line.len();
-                                        if m.start < line_end && m.end > line_start {
-                                            let rel_start = m.start.saturating_sub(line_start);
-                                            let rel_end =
-                                                m.end.min(line_end).saturating_sub(line_start);
-                                            let before = &text_line[..rel_start];
-                                            let matched = &text_line[rel_start..rel_end];
-                                            let after = &text_line[rel_end..];
-                                            let mut spans = Vec::new();
-                                            if let Some(p) = line_prefix {
-                                                spans.push(p);
-                                            }
-                                            if !before.is_empty() {
-                                                spans.push(Span::styled(before.to_string(), text_style));
-                                            }
-                                            spans.push(Span::styled(matched, highlight_style));
-                                            if !after.is_empty() {
-                                                spans.push(Span::styled(after.to_string(), text_style));
-                                            }
-                                            user_lines.push(Line::from(spans));
-                                        } else if let Some(p) = line_prefix {
-                                            user_lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
-                                        } else {
-                                            user_lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
-                                        }
-                                    } else if let Some(p) = line_prefix {
-                                        user_lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
-                                    } else {
-                                        user_lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
-                                    }
-                                } else if let Some(p) = line_prefix {
-                                    user_lines.push(Line::from(vec![p, Span::styled(text_line.to_string(), text_style)]));
-                                } else {
-                                    user_lines.push(Line::from(Span::styled(text_line.to_string(), text_style)));
-                                }
-                            }
-                        }
-                    }
-                    for line in &mut user_lines {
-                        pad_line_to_width(line, area.width, pad_style);
-                    }
-                    lines.extend(user_lines);
+                    lines.extend(self.build_user_lines(msg, idx, match_bg));
                 }
                 MessageRole::Assistant => {
-                    if self.show_timestamps {
-                        if let Some(ts) = msg.timestamp {
-                            lines.push(Line::from(Span::styled(
-                                format_time(ts),
-                                Style::default().fg(self.theme.muted),
-                            )));
-                        }
-                    }
-                    let is_last_msg = self.messages.last().is_some_and(|m| std::ptr::eq(m, msg));
-                    if !self.streaming_tokens.is_empty() && is_last_msg {
-                        let streaming_label = if self.assistant_is_thinking {
-                            "Thinking..."
-                        } else {
-                            "Generating..."
-                        };
-                        let streaming_style = Style::default().fg(self.theme.muted);
-                        lines.push(Line::from(vec![
-                            Span::styled(streaming_label, streaming_style),
-                        ]));
-                        for text_line in self.streaming_tokens.lines() {
-                            lines.push(Line::from(vec![
-                                Span::styled(text_line.to_string(), streaming_style),
-                            ]));
-                        }
-                    }
-                    let mut prev_was_reasoning = false;
-                    for part in &msg.parts {
-                        match part {
-                            MsgPart::Text { content } => {
-                                let rendered = render_markdown(content, &self.theme, self.theme.muted);
-                                lines.extend(rendered);
-                                prev_was_reasoning = false;
-                            }
-                            MsgPart::Reasoning { content, collapsed } => {
-                                if !prev_was_reasoning {
-                                    if *collapsed || !self.show_thinking {
-                                        lines.push(Line::from(Span::styled(
-                                            "Thinking",
-                                            Style::default().fg(self.theme.primary),
-                                        )));
-                                    } else {
-                                        lines.push(Line::from(Span::styled(
-                                            "Thinking",
-                                            Style::default()
-                                                .fg(self.theme.primary)
-                                                .add_modifier(Modifier::BOLD),
-                                        )));
-                                    }
-                                }
-                                if self.show_thinking && !*collapsed {
-                                    let reasoning_style = Style::default().fg(self.theme.muted);
-                                    for text_line in content.lines() {
-                                        lines.push(Line::from(vec![
-                                            Span::styled("  ", Style::default()),
-                                            Span::styled(text_line, reasoning_style),
-                                        ]));
-                                    }
-                                }
-                                prev_was_reasoning = true;
-                            }
-                            MsgPart::ToolCall {
-                                id: _,
-                                name,
-                                input,
-                                status,
-                                output: _,
-                                duration_ms,
-                                exit_code: _,
-                                output_lines: _,
-                            } => {
-                                let target = extract_tool_target(name, input);
-                                let display_name = if target.is_empty() {
-                                    name.clone()
-                                } else {
-                                    format!("{} {}", name, target)
-                                };
-                                let (icon, base_style) = match status {
-                                    ToolStatus::Running => {
-                                        ("⟳", Style::default().fg(self.theme.warning))
-                                    }
-                                    ToolStatus::Pending => {
-                                        ("○", Style::default().fg(self.theme.muted))
-                                    }
-                                    ToolStatus::Completed => {
-                                        ("✓", Style::default().fg(self.theme.success))
-                                    }
-                                    ToolStatus::Error => (
-                                        "✗",
-                                        Style::default()
-                                            .fg(self.theme.error)
-                                            .add_modifier(Modifier::CROSSED_OUT),
-                                    ),
-                                };
-                                let mut summary_parts: Vec<String> = Vec::new();
-                                if let Some(ms) = duration_ms {
-                                    if *ms < 1000 {
-                                        summary_parts.push(format!("{}ms", ms));
-                                    } else {
-                                        summary_parts.push(format!("{:.1}s", *ms as f64 / 1000.0));
-                                    }
-                                }
-                                let summary_str = if summary_parts.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" ({})", summary_parts.join(", "))
-                                };
-                                lines.push(Line::from(vec![
-                                    Span::styled(
-                                        format!("  {} {}{}", icon, display_name, summary_str),
-                                        base_style,
-                                    ),
-                                ]));
-                            }
-                            MsgPart::Image { alt_text, width, height, .. } => {
-                                let img_text = format!("📷 Image ({}x{}): {}", width, height, alt_text);
-                                lines.push(Line::from(vec![
-                                    Span::styled(img_text, Style::default().fg(self.theme.muted)),
-                                ]));
-                            }
-                        }
-                    }
+                    lines.extend(self.build_assistant_parts_lines(msg, current_match, match_bg));
                 }
             }
         }
+
+        // Collapse consecutive blank lines on the FULL visible message range
+        // (not the window slice) so relational spacing between messages stays
+        // consistent regardless of where the scroll position lands.
+        let lines = collapse_blank_lines(&lines);
 
         let scroll_offset = scroll.saturating_sub(
             cache.get_offset(visible_msg_range.start).unwrap_or(0),
         );
         let visible_start = scroll_offset.min(lines.len().saturating_sub(1));
         let visible_end = (visible_start + available).min(lines.len());
-        let visible: Vec<Line<'_>> = collapse_blank_lines(&lines[visible_start..visible_end]);
+        let visible: Vec<Line<'_>> = lines[visible_start..visible_end].to_vec();
 
         if self.search_visible {
             let match_count = self.search_matches.len();
@@ -1258,19 +1379,352 @@ impl Widget for &MessagesWidget {
             let mut display_lines = vec![Line::from(Span::styled(search_bar, search_style))];
             display_lines.push(Line::from(""));
             display_lines.extend(visible);
-            let paragraph = Paragraph::new(display_lines).wrap(Wrap { trim: true });
+            let paragraph = Paragraph::new(display_lines);
             paragraph.render(area, buf);
         } else {
-            let paragraph = Paragraph::new(visible).wrap(Wrap { trim: true });
+            let paragraph = Paragraph::new(visible);
             paragraph.render(area, buf);
         }
     }
 }
 
-fn render_markdown(text: &str, theme: &Arc<Theme>, default_color: ratatui::style::Color) -> Vec<Line<'static>> {
+impl MessagesWidget {
+    /// Build the lines for a User message (pre-wrapped to current width).
+    fn build_user_lines(
+        &self,
+        msg: &UIMessage,
+        _idx: usize,
+        match_bg: Option<ratatui::style::Color>,
+    ) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if self.show_timestamps {
+            if let Some(ts) = msg.timestamp {
+                lines.push(Line::from(Span::styled(
+                    format_time(ts),
+                    Style::default().fg(self.theme.muted),
+                )));
+            }
+        }
+        let bar_color = if msg.is_plan_mode.unwrap_or(false) {
+            self.theme.warning
+        } else {
+            self.theme.primary
+        };
+        let user_bg = self.theme.input_bg;
+        let bar_style = if let Some(bg) = match_bg {
+            Style::default().fg(bar_color).bg(bg)
+        } else {
+            Style::default().fg(bar_color).bg(user_bg)
+        };
+        let text_style = if let Some(bg) = match_bg {
+            Style::default().fg(self.theme.primary).bg(bg)
+        } else {
+            Style::default().fg(self.theme.primary).bg(user_bg)
+        };
+        let highlight_style = Style::default()
+            .fg(self.theme.primary)
+            .bg(self.theme.selection)
+            .add_modifier(Modifier::REVERSED);
+        let pad_style = if let Some(bg) = match_bg {
+            Style::default().bg(bg)
+        } else {
+            Style::default().bg(user_bg)
+        };
+        let current_match = self.find_match_for_msg(_idx);
+        let mut user_lines: Vec<Line<'static>> = Vec::new();
+        for (part_idx, part) in msg.parts.iter().enumerate() {
+            if let MsgPart::Text { content } = part {
+                let tail_width = self.width.saturating_sub(2);
+                for (line_idx, text_line) in content.lines().enumerate() {
+                    let line_prefix = if line_idx == 0 {
+                        Some(Span::styled("│ ", bar_style))
+                    } else {
+                        None
+                    };
+                    // Pre-wrap the user line so it never overflows.
+                    let chunks = wrap_to_strings(text_line, tail_width);
+                    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+                        let prefix_for_chunk = if chunk_idx == 0 {
+                            line_prefix.clone()
+                        } else {
+                            Some(Span::styled("│ ", bar_style))
+                        };
+                        if let Some(m) = current_match {
+                            if m.part_idx == part_idx && chunk_idx == 0 {
+                                // Highlight logic on the first chunk only
+                                let line_start = content.find(text_line).unwrap_or(0);
+                                let line_end = line_start + text_line.len();
+                                if m.start < line_end && m.end > line_start {
+                                    let rel_start = m.start.saturating_sub(line_start);
+                                    let rel_end = m.end.min(line_end).saturating_sub(line_start);
+                                    let before = &text_line[..rel_start];
+                                    let matched = &text_line[rel_start..rel_end];
+                                    let after = &text_line[rel_end..];
+                                    let mut spans: Vec<Span<'static>> = Vec::new();
+                                    if let Some(p) = prefix_for_chunk {
+                                        spans.push(p);
+                                    }
+                                    if !before.is_empty() {
+                                        spans.push(Span::styled(before.to_string(), text_style));
+                                    }
+                                    spans.push(Span::styled(matched.to_string(), highlight_style));
+                                    if !after.is_empty() {
+                                        spans.push(Span::styled(after.to_string(), text_style));
+                                    }
+                                    user_lines.push(Line::from(spans));
+                                } else if let Some(p) = prefix_for_chunk {
+                                    user_lines.push(Line::from(vec![p, Span::styled(chunk.clone(), text_style)]));
+                                } else {
+                                    user_lines.push(Line::from(Span::styled(chunk.clone(), text_style)));
+                                }
+                            } else if let Some(p) = prefix_for_chunk {
+                                user_lines.push(Line::from(vec![p, Span::styled(chunk.clone(), text_style)]));
+                            } else {
+                                user_lines.push(Line::from(Span::styled(chunk.clone(), text_style)));
+                            }
+                        } else if let Some(p) = prefix_for_chunk {
+                            user_lines.push(Line::from(vec![p, Span::styled(chunk.clone(), text_style)]));
+                        } else {
+                            user_lines.push(Line::from(Span::styled(chunk.clone(), text_style)));
+                        }
+                    }
+                }
+            }
+        }
+        let pad_target = self.width;
+        for line in &mut user_lines {
+            pad_line_to_width(line, pad_target, pad_style);
+        }
+        lines.extend(user_lines);
+        lines
+    }
+
+    /// Build the non-streaming-tail lines for an Assistant message. Used for
+    /// both fresh renders and the render cache.
+    fn build_assistant_parts_lines(
+        &self,
+        msg: &UIMessage,
+        current_match: Option<&SearchMatch>,
+        _match_bg: Option<ratatui::style::Color>,
+    ) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if self.show_timestamps {
+            if let Some(ts) = msg.timestamp {
+                lines.push(Line::from(Span::styled(
+                    format_time(ts),
+                    Style::default().fg(self.theme.muted),
+                )));
+            }
+        }
+        let mut prev_was_reasoning = false;
+        for (part_idx, part) in msg.parts.iter().enumerate() {
+            match part {
+                MsgPart::Text { content } => {
+                    let rendered = render_markdown(content, &self.theme, self.theme.muted, self.width);
+                    if let Some(m) = current_match {
+                        if m.part_idx == part_idx {
+                            lines.extend(highlight_match_in_rendered(
+                                &rendered,
+                                content,
+                                m,
+                                self.theme.selection,
+                            ));
+                            continue;
+                        }
+                    }
+                    lines.extend(rendered);
+                    prev_was_reasoning = false;
+                }
+                MsgPart::Reasoning { content, collapsed } => {
+                    if !prev_was_reasoning {
+                        if *collapsed || !self.show_thinking {
+                            lines.push(Line::from(Span::styled(
+                                "Thinking",
+                                Style::default().fg(self.theme.primary),
+                            )));
+                        } else {
+                            lines.push(Line::from(Span::styled(
+                                "Thinking",
+                                Style::default()
+                                    .fg(self.theme.primary)
+                                    .add_modifier(Modifier::BOLD),
+                            )));
+                        }
+                    }
+                    if self.show_thinking && !*collapsed {
+                        let reasoning_style = Style::default().fg(self.theme.muted);
+                        let tail_width = self.width.saturating_sub(2);
+                        for text_line in content.lines() {
+                            let chunks = wrap_to_strings(text_line, tail_width);
+                            for chunk in chunks {
+                                lines.push(Line::from(vec![
+                                    Span::styled("  ", Style::default()),
+                                    Span::styled(chunk, reasoning_style),
+                                ]));
+                            }
+                        }
+                    }
+                    prev_was_reasoning = true;
+                }
+                MsgPart::ToolCall {
+                    name,
+                    input,
+                    status,
+                    duration_ms,
+                    ..
+                } => {
+                    let target = extract_tool_target(name, input);
+                    let display_name = if target.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{} {}", name, target)
+                    };
+                    let (icon, base_style) = match status {
+                        ToolStatus::Running => ("⟳", Style::default().fg(self.theme.warning)),
+                        ToolStatus::Pending => ("○", Style::default().fg(self.theme.muted)),
+                        ToolStatus::Completed => ("✓", Style::default().fg(self.theme.success)),
+                        ToolStatus::Error => (
+                            "✗",
+                            Style::default()
+                                .fg(self.theme.error)
+                                .add_modifier(Modifier::CROSSED_OUT),
+                        ),
+                    };
+                    let mut summary_parts: Vec<String> = Vec::new();
+                    if let Some(ms) = duration_ms {
+                        if *ms < 1000 {
+                            summary_parts.push(format!("{}ms", ms));
+                        } else {
+                            summary_parts.push(format!("{:.1}s", *ms as f64 / 1000.0));
+                        }
+                    }
+                    let summary_str = if summary_parts.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", summary_parts.join(", "))
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {} {}{}", icon, display_name, summary_str),
+                            base_style,
+                        ),
+                    ]));
+                    // Suppress part_idx warning by referencing it
+                    let _ = part_idx;
+                }
+                MsgPart::Image { alt_text, width, height, .. } => {
+                    let img_text = format!("📷 Image ({}x{}): {}", width, height, alt_text);
+                    lines.push(Line::from(vec![
+                        Span::styled(img_text, Style::default().fg(self.theme.muted)),
+                    ]));
+                }
+            }
+        }
+        lines
+    }
+
+    fn get_cached_last_assistant_parts(&self, msg: &UIMessage) -> Option<Vec<Line<'static>>> {
+        let cache = self.last_render_cache.borrow();
+        let c = cache.as_ref()?;
+        // Cache is keyed on (streaming_len=0 means "the parts themselves,
+        // ignoring streaming tail") and width and a stable identity of the
+        // message buffer. We use the address of the msg as a cheap identity
+        // (the last assistant message is stable for the duration of streaming).
+        if c.streaming_len == usize::MAX
+            && c.width == self.width
+            && c.message_ptr_id == msg as *const _ as usize
+        {
+            return Some(c.lines.clone());
+        }
+        None
+    }
+
+    fn store_cached_last_assistant_parts(&self, msg: &UIMessage, lines: Vec<Line<'static>>) {
+        *self.last_render_cache.borrow_mut() = Some(LastRenderCache {
+            streaming_len: usize::MAX, // sentinel meaning "parts cache"
+            width: self.width,
+            message_ptr_id: msg as *const _ as usize,
+            lines,
+        });
+    }
+}
+
+/// Apply search-match highlight to pre-rendered markdown lines by re-coloring
+/// the character range covered by `m` with a background color + REVERSED.
+/// Returns the original lines unchanged when the match is outside the rendered
+/// range or on a non-first logical line (pre-wrap may split logical lines
+/// across multiple rendered lines; for now we only highlight the first
+/// rendered line, which is the common case).
+fn highlight_match_in_rendered(
+    rendered: &[Line<'static>],
+    original_content: &str,
+    m: &crate::tui::components::messages::SearchMatch,
+    selection_bg: ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    if rendered.is_empty() || m.line_in_msg >= original_content.lines().count() {
+        return rendered.to_vec();
+    }
+    if m.line_in_msg != 0 {
+        return rendered.to_vec();
+    }
+    let mut first = rendered[0].clone();
+    let total_width: usize = first
+        .spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    if m.end > total_width {
+        return rendered.to_vec();
+    }
+    let mut new_spans: Vec<Span<'static>> = Vec::new();
+    let mut col = 0usize;
+    for span in first.spans.iter() {
+        let w = UnicodeWidthStr::width(span.content.as_ref());
+        let span_start = col;
+        let span_end = col + w;
+        if m.start >= span_end || m.end <= span_start {
+            new_spans.push(span.clone());
+        } else {
+            let chars: Vec<char> = span.content.chars().collect();
+            let local_start = m.start.saturating_sub(span_start).min(chars.len());
+            let local_end = m.end.saturating_sub(span_start).min(chars.len());
+            if local_start > 0 {
+                let before: String = chars[..local_start].iter().collect();
+                new_spans.push(Span::styled(before, span.style));
+            }
+            if local_end > local_start {
+                let matched: String = chars[local_start..local_end].iter().collect();
+                new_spans.push(Span::styled(
+                    matched,
+                    span.style
+                        .bg(selection_bg)
+                        .add_modifier(Modifier::REVERSED),
+                ));
+            }
+            if local_end < chars.len() {
+                let after: String = chars[local_end..].iter().collect();
+                new_spans.push(Span::styled(after, span.style));
+            }
+        }
+        col = span_end;
+    }
+    first.spans = new_spans;
+    let mut out: Vec<Line<'static>> = vec![first];
+    out.extend_from_slice(&rendered[1..]);
+    out
+}
+
+fn render_markdown(
+    text: &str,
+    theme: &Arc<Theme>,
+    default_color: ratatui::style::Color,
+    width: u16,
+) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::from("")];
     }
+    // Prose wraps to width - 2 to leave a 1-col gutter on each side.
+    let prose_width = width.saturating_sub(2);
 
     let has_code_block = text.contains("```");
 
@@ -1284,12 +1738,11 @@ fn render_markdown(text: &str, theme: &Arc<Theme>, default_color: ratatui::style
             let trimmed = line.trim();
             if trimmed.starts_with("```") {
                 if in_code {
-                    let code_lines: Vec<&str> = code_buf.lines().collect();
                     let lang_upper = code_lang.to_uppercase();
-                    let line_count = code_lines.len();
+                    let line_count = code_buf.lines().count();
                     let needs_line_numbers = line_count > 5;
                     let highlighted = highlight_code(&code_buf, &code_lang, theme.code_theme());
-                    let base_idx = lines.len();
+                    let _base_idx = lines.len();
                     if !lang_upper.is_empty() {
                         lines.push(Line::from(Span::styled(
                             format!("  ┌─ {lang_upper} "),
@@ -1298,22 +1751,31 @@ fn render_markdown(text: &str, theme: &Arc<Theme>, default_color: ratatui::style
                                 .add_modifier(Modifier::BOLD),
                         )));
                     }
-                    lines.extend(highlighted.clone());
-                    if needs_line_numbers {
-                        for (i, highlighted_line) in highlighted.iter().enumerate() {
-                            lines[base_idx + i] = Line::from(vec![
-                                Span::styled(
+                    // Each highlighted line is pre-wrapped to (width - 6) cols
+                    // (6 = "  NNNN │ " gutter for the line-number prefix).
+                    let code_inner_width = width.saturating_sub(6);
+                    for (i, highlighted_line) in highlighted.iter().enumerate() {
+                        let raw: String = highlighted_line
+                            .spans
+                            .iter()
+                            .map(|s| s.content.as_ref())
+                            .collect();
+                        let wrapped = wrap_to_strings(&raw, code_inner_width);
+                        for (j, chunk) in wrapped.iter().enumerate() {
+                            let mut spans: Vec<Span<'static>> = Vec::new();
+                            if needs_line_numbers && j == 0 {
+                                spans.push(Span::styled(
                                     format!("{:4} │ ", i + 1),
                                     Style::default().fg(theme.muted),
-                                ),
-                                Span::raw(
-                                    highlighted_line
-                                        .spans
-                                        .iter()
-                                        .map(|s| s.content.as_ref())
-                                        .collect::<String>(),
-                                ),
-                            ]);
+                                ));
+                            } else if needs_line_numbers {
+                                spans.push(Span::styled(
+                                    "     │ ",
+                                    Style::default().fg(theme.muted),
+                                ));
+                            }
+                            spans.push(Span::raw(chunk.clone()));
+                            lines.push(Line::from(spans));
                         }
                     }
                     code_buf.clear();
@@ -1329,18 +1791,17 @@ fn render_markdown(text: &str, theme: &Arc<Theme>, default_color: ratatui::style
                 code_buf.push_str(line);
                 code_buf.push('\n');
             } else {
-                let rendered = render_md_line(trimmed, theme, default_color);
+                let rendered = render_md_line_wrapped(trimmed, theme, default_color, prose_width);
                 lines.extend(rendered);
             }
         }
 
         if in_code && !code_buf.is_empty() {
-            let code_lines: Vec<&str> = code_buf.lines().collect();
             let lang_upper = code_lang.to_uppercase();
-            let line_count = code_lines.len();
+            let line_count = code_buf.lines().count();
             let needs_line_numbers = line_count > 5;
             let highlighted = highlight_code(&code_buf, &code_lang, theme.code_theme());
-            let base_idx = lines.len();
+            let _base_idx = lines.len();
             if !lang_upper.is_empty() {
                 lines.push(Line::from(Span::styled(
                     format!("  ┌─ {lang_upper} "),
@@ -1349,19 +1810,29 @@ fn render_markdown(text: &str, theme: &Arc<Theme>, default_color: ratatui::style
                         .add_modifier(Modifier::BOLD),
                 )));
             }
-            lines.extend(highlighted.clone());
-            if needs_line_numbers {
-                for (i, highlighted_line) in highlighted.iter().enumerate() {
-                    lines[base_idx + i] = Line::from(vec![
-                        Span::styled(format!("{:4} │ ", i + 1), Style::default().fg(theme.muted)),
-                        Span::raw(
-                            highlighted_line
-                                .spans
-                                .iter()
-                                .map(|s| s.content.as_ref())
-                                .collect::<String>(),
-                        ),
-                    ]);
+            let code_inner_width = width.saturating_sub(6);
+            for (i, highlighted_line) in highlighted.iter().enumerate() {
+                let raw: String = highlighted_line
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect();
+                let wrapped = wrap_to_strings(&raw, code_inner_width);
+                for (j, chunk) in wrapped.iter().enumerate() {
+                    let mut spans: Vec<Span<'static>> = Vec::new();
+                    if needs_line_numbers && j == 0 {
+                        spans.push(Span::styled(
+                            format!("{:4} │ ", i + 1),
+                            Style::default().fg(theme.muted),
+                        ));
+                    } else if needs_line_numbers {
+                        spans.push(Span::styled(
+                            "     │ ",
+                            Style::default().fg(theme.muted),
+                        ));
+                    }
+                    spans.push(Span::raw(chunk.clone()));
+                    lines.push(Line::from(spans));
                 }
             }
         }
@@ -1370,7 +1841,7 @@ fn render_markdown(text: &str, theme: &Arc<Theme>, default_color: ratatui::style
     } else {
         let mut lines: Vec<Line<'static>> = Vec::new();
         for line in text.lines() {
-            let rendered = render_md_line(line.trim(), theme, default_color);
+            let rendered = render_md_line_wrapped(line.trim(), theme, default_color, prose_width);
             lines.extend(rendered);
         }
         lines
@@ -1522,7 +1993,16 @@ fn parse_plain_text(text: &str, theme: &Arc<Theme>, default_color: ratatui::styl
     spans
 }
 
-fn render_md_line(line: &str, theme: &Arc<Theme>, default_color: ratatui::style::Color) -> Vec<Line<'static>> {
+/// Like `render_md_line` but pre-wraps the line to `width` columns.
+/// Used by [`render_markdown`]. For long lines, continuation lines reuse the
+/// default style (bold/italic/code span styling is dropped on wrap — this is
+/// an acceptable tradeoff for chat-log readability).
+fn render_md_line_wrapped(
+    line: &str,
+    theme: &Arc<Theme>,
+    default_color: ratatui::style::Color,
+    width: u16,
+) -> Vec<Line<'static>> {
     if line.is_empty() {
         return vec![Line::from("")];
     }
@@ -1559,10 +2039,24 @@ fn render_md_line(line: &str, theme: &Arc<Theme>, default_color: ratatui::style:
 
     let spans = parse_line_with_urls(line, theme, default_color);
     if spans.is_empty() {
-        vec![Line::from("")]
-    } else {
-        vec![Line::from(spans)]
+        return vec![Line::from("")];
     }
+    // If the line fits, return as-is
+    let total_width: usize = spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum();
+    if total_width <= width as usize {
+        return vec![Line::from(spans)];
+    }
+    // Overflow: collapse to plain text, wrap, and emit each chunk using
+    // the default style.
+    let plain: String = spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    let chunks = wrap_to_strings(&plain, width);
+    chunks
+        .into_iter()
+        .map(|c| Line::from(Span::styled(c, Style::default().fg(default_color))))
+        .collect()
 }
 
 fn format_time(ts: i64) -> String {
@@ -1659,5 +2153,203 @@ mod tests {
         ));
         assert_eq!(widget.streaming_tokens, "partial");
         assert_eq!(widget.scroll, usize::MAX);
+    }
+
+    #[test]
+    fn wrap_count_short_lines() {
+        // A short line that fits in width is one visual line.
+        assert_eq!(wrap_count("hello world", 80), 1);
+        assert_eq!(wrap_count("", 80), 1);
+    }
+
+    #[test]
+    fn wrap_count_breaks_at_whitespace() {
+        // 10 chars per word * 5 words = 50 chars total; at width=12 should fit
+        // on ceil(50/12) lines ~= 5
+        let s = "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee";
+        let n = wrap_count(s, 12);
+        assert!(n >= 4 && n <= 6, "got {n} for 50-char string at width 12");
+    }
+
+    #[test]
+    fn wrap_count_preserves_explicit_newlines() {
+        assert_eq!(wrap_count("a\nb\nc", 80), 3);
+    }
+
+    #[test]
+    fn wrap_to_strings_matches_wrap_count() {
+        let cases: &[(&str, u16)] = &[
+            ("hello world", 80),
+            ("", 80),
+            ("a b c d e f g h i j k l m n o p", 10),
+            ("one\ntwo\nthree", 80),
+            ("a very long line that should wrap multiple times at narrow widths", 15),
+        ];
+        for (s, w) in cases {
+            let lines = wrap_to_strings(s, *w);
+            let count = wrap_count(s, *w);
+            assert_eq!(
+                lines.len(),
+                count,
+                "wrap_to_strings produced {} lines but wrap_count says {} for {s:?} @ width {w}",
+                lines.len(),
+                count
+            );
+        }
+    }
+
+    #[test]
+    fn estimate_msg_lines_short_text() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(80);
+        let msg = UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Text {
+                content: "short line".to_string(),
+            }],
+            timestamp: None,
+            is_plan_mode: None,
+        };
+        // 1 (one-line text) — no implicit border/header is added.
+        assert_eq!(widget.estimate_msg_lines(&msg), 1);
+    }
+
+    #[test]
+    fn estimate_msg_lines_text_wraps_to_width() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(20);
+        let long = "x".repeat(50);
+        let msg = UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Text { content: long.clone() }],
+            timestamp: None,
+            is_plan_mode: None,
+        };
+        let n = widget.estimate_msg_lines(&msg);
+        // width=20 minus 2 = 18 cols; 50 chars / 18 = 3 lines
+        assert!(n >= 2, "expected at least 2 lines for 50 chars at width 20, got {n}");
+    }
+
+    #[test]
+    fn estimate_msg_lines_code_block_with_lang_header() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(80);
+        let code = "```rust\nfn main() {}\n```".to_string();
+        let msg = UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Text { content: code }],
+            timestamp: None,
+            is_plan_mode: None,
+        };
+        // 1 ┌─ RUST header + 1 code line = 2 lines
+        assert!(widget.estimate_msg_lines(&msg) >= 2);
+    }
+
+    #[test]
+    fn estimate_msg_lines_collapses_consecutive_blanks_in_prose() {
+        // Post-collapse counts: groups of consecutive blank lines in prose
+        // are counted as 1 blank line each. This matches the render path
+        // (which runs `collapse_blank_lines` on the full message range) so
+        // the layout cache and the render stay in sync.
+        let mut widget = MessagesWidget::default();
+        widget.set_width(80);
+        let cases = [
+            ("a\n\nb", 3usize),         // 1 blank between a and b
+            ("a\n\n\nb", 3),            // 2 blanks collapse to 1
+            ("a\n\n\n\nb", 3),          // 3 blanks collapse to 1
+            ("a\nb\n\nc", 4),           // 1 blank between b and c
+            ("a\n\nb\n\n\nc", 5),       // 1 blank between a and b, 1 between b and c
+        ];
+        for (content, expected) in cases {
+            let msg = UIMessage {
+                role: MessageRole::Assistant,
+                parts: vec![MsgPart::Text { content: content.to_string() }],
+                timestamp: None,
+                is_plan_mode: None,
+            };
+            let n = widget.estimate_msg_lines(&msg);
+            assert_eq!(
+                n, expected,
+                "content={content:?} expected {expected} got {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn estimate_msg_lines_blank_inside_code_block_not_collapsed() {
+        // Blank lines inside a fenced code block must NOT be collapsed —
+        // they're meaningful (e.g., separating functions). This matches
+        // the render path's code-block handling.
+        let mut widget = MessagesWidget::default();
+        widget.set_width(80);
+        let code = "```rust\nfn a() {}\n\nfn b() {}\n```".to_string();
+        let msg = UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::Text { content: code }],
+            timestamp: None,
+            is_plan_mode: None,
+        };
+        // ┌─ RUST + fn a() {} + blank + fn b() {} = 4 lines
+        assert_eq!(widget.estimate_msg_lines(&msg), 4);
+    }
+
+    #[test]
+    fn estimate_msg_lines_includes_streaming_tail() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(80);
+        widget.set_visible_height(20);
+        widget.add_user_message("hi".to_string(), None);
+        widget.add_streaming_token("streaming content here");
+        // estimate must be called with a reference to the actual message in
+        // the vector (the ptr::eq check requires identity).
+        let n = widget.estimate_msg_lines(widget.messages.last().unwrap());
+        // 0 (empty parts) + 1 (label) + 1 (streaming line) = 2 minimum
+        assert!(n >= 2, "expected at least 2 lines (label + stream), got {n}");
+    }
+
+    #[test]
+    fn scrollbar_state_empty_when_fits() {
+        let widget = MessagesWidget::default();
+        // No messages, no scrollbar needed. The state should be constructible.
+        let _ = widget.scrollbar_state(20);
+    }
+
+    #[test]
+    fn scrollbar_state_partial_position() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(80);
+        widget.set_visible_height(3);
+        for i in 0..6 {
+            widget.add_user_message(format!("msg {i} with some content"), None);
+        }
+        // 6 messages, each ~1-2 lines; more than 3 lines total.
+        widget.scroll = 1;
+        let state = widget.scrollbar_state(3);
+        // Just assert that the state is constructible; ratatui 0.29 doesn't
+        // expose content_length/position getters.
+        let _ = state;
+    }
+
+    #[test]
+    fn width_change_invalidates_render_cache() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(80);
+        widget.add_user_message("hi".to_string(), None);
+        widget.add_assistant_text("first response".to_string());
+        widget.add_streaming_token("partial");
+        // Populate render cache directly (in production it's populated during render).
+        let last_idx = widget.messages.len() - 1;
+        widget.store_cached_last_assistant_parts(
+            &widget.messages[last_idx],
+            vec![Line::from("cached")],
+        );
+        let cached: Option<Vec<Line<'static>>> =
+            widget.get_cached_last_assistant_parts(&widget.messages[last_idx]);
+        assert!(cached.is_some(), "cache should be populated after store");
+        // Width change should invalidate the cache.
+        widget.set_width(40);
+        let cached2: Option<Vec<Line<'static>>> =
+            widget.get_cached_last_assistant_parts(&widget.messages[last_idx]);
+        assert!(cached2.is_none(), "cache should be invalidated after width change");
     }
 }

@@ -38,6 +38,8 @@ pub struct FooterWidget {
     pub thinking_label: Option<String>,
     pub tts_enabled: bool,
     pub tts_speaking: bool,
+    pub scroll_indicator: String,
+    pub show_scroll_indicator: bool,
 }
 
 impl FooterWidget {
@@ -57,6 +59,8 @@ impl FooterWidget {
             thinking_label: None,
             tts_enabled: false,
             tts_speaking: false,
+            scroll_indicator: String::new(),
+            show_scroll_indicator: true,
         }
     }
 
@@ -94,6 +98,10 @@ impl FooterWidget {
     pub fn set_tts(&mut self, enabled: bool, speaking: bool) {
         self.tts_enabled = enabled;
         self.tts_speaking = speaking;
+    }
+
+    pub fn set_scroll_indicator(&mut self, label: String) {
+        self.scroll_indicator = label;
     }
 
     pub fn set_context_hint(&mut self, hint: String) {
@@ -208,6 +216,16 @@ impl Widget for &FooterWidget {
             )],
             priority: FooterPriority::Low,
         });
+
+        if !self.scroll_indicator.is_empty() {
+            items.push(FooterItem {
+                spans: vec![Span::styled(
+                    format!("scroll: {}", self.scroll_indicator),
+                    Style::default().fg(self.theme.muted),
+                )],
+                priority: FooterPriority::Low,
+            });
+        }
 
         if self.loading {
             let label_str = self.loading_label.as_deref().unwrap_or("loading");

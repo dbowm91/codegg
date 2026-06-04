@@ -40,6 +40,8 @@ pub struct LayoutConfig {
     pub header_height: u16,
     /// Height of the footer in lines
     pub footer_height: u16,
+    /// Width of the scrollbar gutter reserved inside the viewport
+    pub scrollbar_width: u16,
 }
 
 impl Default for LayoutConfig {
@@ -50,6 +52,7 @@ impl Default for LayoutConfig {
             prompt_height: 3,
             header_height: 1,
             footer_height: 1,
+            scrollbar_width: 1,
         }
     }
 }
@@ -97,6 +100,33 @@ impl TuiLayout {
             ])
             .split(area)
             .to_vec()
+    }
+
+    /// Split a viewport area into content + scrollbar gutter columns.
+    ///
+    /// Returns `(content, scrollbar)`. `content` has width `area.width - 1`
+    /// and `scrollbar` has width `1`; both share the same `y` and `height`
+    /// as the input. If `area.width < 2`, the area is too narrow to reserve
+    /// a gutter and the method returns `(area, Rect::default())` so callers
+    /// can still render content into the full rectangle.
+    pub fn viewport_with_scrollbar(&self, area: Rect) -> (Rect, Rect) {
+        let gutter = self.config.scrollbar_width.max(1);
+        if area.width <= gutter {
+            return (area, Rect::default());
+        }
+        let content = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width - gutter,
+            height: area.height,
+        };
+        let scrollbar = Rect {
+            x: area.x + content.width,
+            y: area.y,
+            width: gutter,
+            height: area.height,
+        };
+        (content, scrollbar)
     }
 }
 

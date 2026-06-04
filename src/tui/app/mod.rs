@@ -47,7 +47,7 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, Wrap};
 use ratatui::Frame;
 use std::collections::HashMap;
 #[allow(unused_imports)]
@@ -244,6 +244,7 @@ pub enum ClickTarget {
     Dialog,
     Completion,
     Sidebar,
+    Scrollbar { track_y: u16, track_height: u16 },
     None,
 }
 
@@ -260,6 +261,7 @@ pub struct App {
     pub message_store: Option<Arc<MessageStore>>,
     pub memory_store: Option<Arc<MemoryStore>>,
     pub viewport_area: Option<Rect>,
+    pub scrollbar_area: Option<Rect>,
     pub prompt_area: Option<Rect>,
     pub dialog_area: Option<Rect>,
     pub completion_area: Option<Rect>,
@@ -278,6 +280,7 @@ pub struct App {
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
     pub undo_session_id: Option<String>,
+    pub streaming_active: bool,
     pub undo_until: Option<Instant>,
     pub notification_manager: Option<crate::tui::components::notification::NotificationManager>,
     pub focus_manager: crate::tui::components::component::FocusManager,
@@ -520,6 +523,7 @@ impl App {
             message_store: None,
             memory_store: None,
             viewport_area: None,
+            scrollbar_area: None,
             prompt_area: None,
             dialog_area: None,
             completion_area: None,
@@ -546,6 +550,7 @@ impl App {
             notification_manager: None,
             focus_manager,
             busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
+            streaming_active: false,
             session_state_derived: crate::session::state::TuiSessionState::default(),
         }
     }
@@ -710,6 +715,7 @@ impl App {
             message_store: None,
             memory_store: None,
             viewport_area: None,
+            scrollbar_area: None,
             prompt_area: None,
             dialog_area: None,
             completion_area: None,
@@ -732,6 +738,7 @@ impl App {
             notification_manager: None,
             focus_manager,
             busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
+            streaming_active: false,
             session_state_derived: crate::session::state::TuiSessionState::default(),
         }
     }
@@ -1236,15 +1243,40 @@ impl App {
         self.messages_state.messages.set_theme(&self.ui_state.theme);
         self.messages_state.messages.show_thinking = self.ui_state.show_thinking;
         self.messages_state.messages.show_timestamps = self.ui_state.show_timestamps;
+
+        let (content_area, scrollbar_area) = self.ui_state.layout.viewport_with_scrollbar(area);
         self.messages_state
             .messages
-            .set_visible_height(area.height as usize);
+            .set_visible_height(content_area.height as usize);
+        self.messages_state.messages.set_width(content_area.width);
+        self.scrollbar_area = if scrollbar_area.width == 0 {
+            None
+        } else {
+            Some(scrollbar_area)
+        };
 
         // Render a background block first to ensure the viewport isn't transparent
         let block = Block::default().style(Style::default().bg(self.ui_state.theme.background));
         frame.render_widget(block, area);
 
-        frame.render_widget(&self.messages_state.messages, area);
+        frame.render_widget(&self.messages_state.messages, content_area);
+
+        if self.scrollbar_area.is_some() {
+            let mut state =
+                self.messages_state
+                    .messages
+                    .scrollbar_state(scrollbar_area.height as usize);
+            frame.render_stateful_widget(
+                Scrollbar::default()
+                    .orientation(ScrollbarOrientation::VerticalRight)
+                    .thumb_style(Style::default().fg(self.ui_state.theme.foreground))
+                    .track_style(Style::default().fg(self.ui_state.theme.border))
+                    .begin_symbol(None)
+                    .end_symbol(None),
+                scrollbar_area,
+                &mut state,
+            );
+        }
     }
 
     fn render_prompt(&mut self, frame: &mut Frame, area: Rect) {
@@ -1341,6 +1373,27 @@ impl App {
             self.context_hint.clone()
         };
         self.footer.set_context_hint(ctx_hint);
+        let scroll_label = if !self.messages_state.messages.is_at_bottom()
+            && self.messages_state.messages.needs_scrollbar()
+        {
+            let total = self.messages_state.messages.total_lines();
+            let visible = self.messages_state.messages.visible_height;
+            let max_scroll = total.saturating_sub(visible);
+            let pos = if self.messages_state.messages.scroll == usize::MAX {
+                max_scroll
+            } else {
+                self.messages_state.messages.scroll.min(max_scroll)
+            };
+            if max_scroll > 0 {
+                let pct = (pos as f64 / max_scroll as f64 * 100.0).round() as u32;
+                format!("{pct}%")
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        self.footer.set_scroll_indicator(scroll_label);
         frame.render_widget(&self.footer, area);
     }
 
@@ -3673,6 +3726,9 @@ impl App {
             ClickTarget::Dialog => "Enter: Select | Esc: Close".to_string(),
             ClickTarget::Completion => "Tab/Enter: Complete | Esc: Close".to_string(),
             ClickTarget::Sidebar => "Click: Toggle section | j/k: Navigate".to_string(),
+            ClickTarget::Scrollbar { .. } => {
+                "Click/drag: Jump | Scroll: Page up/down".to_string()
+            }
             ClickTarget::None => String::new(),
         };
     }
@@ -3743,6 +3799,17 @@ impl App {
                         // Handle text selection or drag operations in prompt/viewport
                         if target == ClickTarget::Prompt {
                             // Could start/extend text selection
+                        } else if let Some(ClickTarget::Scrollbar {
+                            track_y,
+                            track_height,
+                        }) = self.last_click_target.clone()
+                        {
+                            // Continue a scrollbar drag with the original track dims.
+                            let drag_target = ClickTarget::Scrollbar {
+                                track_y,
+                                track_height,
+                            };
+                            self.on_click(&drag_target, event.column, event.row);
                         }
                     }
                     MouseButton::Right => {
@@ -3785,6 +3852,15 @@ impl App {
         if let Some(ref area) = self.viewport_area {
             if Self::in_rect(x, y, *area) {
                 return ClickTarget::Viewport;
+            }
+        }
+        if let Some(ref area) = self.scrollbar_area {
+            if Self::in_rect(x, y, *area) {
+                let track_y = area.y.saturating_sub(self.viewport_area.map(|v| v.y).unwrap_or(0));
+                return ClickTarget::Scrollbar {
+                    track_y,
+                    track_height: area.height,
+                };
             }
         }
         if let Some(ref area) = self.sidebar_area {
@@ -3847,6 +3923,22 @@ impl App {
                     self.sidebar.toggle_focused();
                 }
             }
+            ClickTarget::Scrollbar {
+                track_y,
+                track_height,
+            } => {
+                if let Some(viewport) = self.viewport_area {
+                    let rel_y = y.saturating_sub(viewport.y).saturating_sub(*track_y);
+                    if *track_height > 0 {
+                        let total = self.messages_state.messages.total_lines();
+                        let max_scroll = total
+                            .saturating_sub(self.messages_state.messages.visible_height);
+                        let new_scroll = (rel_y as usize) * max_scroll / (*track_height as usize);
+                        self.messages_state.messages.scroll = new_scroll;
+                        self.messages_state.messages.auto_scroll = false;
+                    }
+                }
+            }
             ClickTarget::None => {}
         }
     }
@@ -3860,6 +3952,9 @@ impl App {
             }
             ClickTarget::Completion => {
                 self.accept_completion();
+            }
+            ClickTarget::Scrollbar { .. } => {
+                self.messages_state.messages.scroll_to_bottom();
             }
             _ => {}
         }
@@ -3886,6 +3981,9 @@ impl App {
                 if self.prompt_state.completion_sel > 0 {
                     self.prompt_state.completion_sel -= 1;
                 }
+            }
+            ClickTarget::Scrollbar { .. } => {
+                self.messages_state.messages.scroll_page_up();
             }
         }
     }
@@ -3922,6 +4020,9 @@ impl App {
                 if self.prompt_state.completion_sel < max_sel {
                     self.prompt_state.completion_sel += 1;
                 }
+            }
+            ClickTarget::Scrollbar { .. } => {
+                self.messages_state.messages.scroll_page_down();
             }
         }
     }

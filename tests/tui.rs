@@ -1241,6 +1241,7 @@ fn test_layout_config_custom() {
         prompt_height: 5,
         header_height: 2,
         footer_height: 2,
+        scrollbar_width: 1,
     };
     assert_eq!(config.sidebar_width, 50);
     assert_eq!(config.min_main_width, 80);
