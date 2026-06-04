@@ -16,6 +16,7 @@
 use crate::agent::compaction::{
     auto_compact_async, compact_messages_sync, detect_overflow, prune_tool_outputs,
     CompactionStrategy, ContextTracker,
+    compact_with_policy, CompactionInput, ResolvedCompactionConfig,
 };
 use crate::agent::processor::EventProcessor;
 use crate::agent::router::ModelRouter;
@@ -1977,27 +1978,73 @@ impl AgentLoop {
                 _ => {}
             }
 
-            if auto {
-                let limit = self.context_tracker.context_limit();
-                let threshold = self.context_tracker.threshold();
-                let model = self
-                    .config
-                    .compaction
+            // Check if new hybrid engine should be used
+            let has_new_config = self.config.compaction
+                .as_ref()
+                .map(|c| c.mode.is_some())
+                .unwrap_or(false);
+
+            if has_new_config && auto {
+                // Use new hybrid engine
+                let active_model = Some(model_profile.model.as_str());
+                let resolved_config = self.config.compaction
                     .as_ref()
-                    .and_then(|c| c.summarize_model.as_deref());
-                let compacted = auto_compact_async(
+                    .map(|c| ResolvedCompactionConfig::from_config(
+                        c,
+                        self.context_tracker.context_limit(),
+                        active_model,
+                    ))
+                    .unwrap_or_default();
+
+                let input = CompactionInput {
                     messages,
-                    limit,
-                    threshold,
-                    prune,
-                    Some(self.provider.as_ref()),
-                    model,
-                )
-                .await;
-                *messages = compacted;
+                    config: resolved_config,
+                    active_model,
+                };
+
+                match compact_with_policy(input, Some(self.provider.as_ref())).await {
+                    Ok(output) => {
+                        *messages = output.messages;
+                        tracing::info!(
+                            "Hybrid compaction: {} -> {} tokens",
+                            output.tokens_before,
+                            output.tokens_after,
+                        );
+                    }
+                    Err(err) => {
+                        tracing::error!("Hybrid compaction failed: {}, using legacy", err);
+                        let limit = self.context_tracker.context_limit();
+                        let threshold = self.context_tracker.threshold();
+                        let model = self.config.compaction.as_ref()
+                            .and_then(|c| c.summarize_model.as_deref());
+                        let compacted = auto_compact_async(messages, limit, threshold, prune, Some(self.provider.as_ref()), model).await;
+                        *messages = compacted;
+                    }
+                }
             } else {
-                *messages =
-                    compact_messages_sync(messages.clone(), CompactionStrategy::DropMiddleMessages);
+                // Legacy path
+                if auto {
+                    let limit = self.context_tracker.context_limit();
+                    let threshold = self.context_tracker.threshold();
+                    let model = self
+                        .config
+                        .compaction
+                        .as_ref()
+                        .and_then(|c| c.summarize_model.as_deref());
+                    let compacted = auto_compact_async(
+                        messages,
+                        limit,
+                        threshold,
+                        prune,
+                        Some(self.provider.as_ref()),
+                        model,
+                    )
+                    .await;
+                    *messages = compacted;
+                } else {
+                    *messages =
+                        compact_messages_sync(messages.clone(), CompactionStrategy::DropMiddleMessages);
+                }
             }
 
             let tokens_before = self.context_tracker.current_tokens();
@@ -2005,11 +2052,18 @@ impl AgentLoop {
             self.context_tracker.reset();
             self.context_tracker.add_messages(messages);
 
-            let frame = self.build_context_frame().await;
-            if !frame.is_empty() {
-                let frame_text = frame.to_control_text();
-                tracing::debug!("Inserting context frame after compaction: {} chars", frame_text.len());
-                push_control_instruction(messages, &model_profile, &frame_text);
+            // Skip context frame injection if already injected by compaction
+            let already_has_frame = messages.iter().any(|m| {
+                matches!(m, Message::System { content } if content.contains("[codegg compacted session state]"))
+            });
+
+            if !already_has_frame {
+                let frame = self.build_context_frame().await;
+                if !frame.is_empty() {
+                    let frame_text = frame.to_control_text();
+                    tracing::debug!("Inserting context frame after compaction: {} chars", frame_text.len());
+                    push_control_instruction(messages, &model_profile, &frame_text);
+                }
             }
 
             if self.task_state_policy.inject_after_compaction {

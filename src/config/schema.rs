@@ -377,16 +377,56 @@ pub struct PermissionConfig {
     pub sandbox_mode: Option<String>,
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionModeConfig {
+    Programmatic,
+    Agent,
+    Hybrid,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionPolicyConfig {
+    Conservative,
+    Balanced,
+    Cheap,
+    Emergency,
+    LosslessDebug,
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct CompactionConfig {
     pub enabled: Option<bool>,
     pub auto: Option<bool>,
+
+    // New high-level controls
+    pub mode: Option<CompactionModeConfig>,
+    pub policy: Option<CompactionPolicyConfig>,
+
+    // Existing controls
     pub prune: Option<bool>,
     pub max_tokens: Option<usize>,
     pub threshold: Option<f64>,
     pub reserved: Option<usize>,
+
+    // Existing field retained as compatibility alias
     pub summarize_model: Option<String>,
+
+    // Preferred new field. If unset, fall back to summarize_model, then active model
+    pub model: Option<String>,
+
+    // New budgets
+    pub max_tool_output_tokens: Option<usize>,
+    pub max_summary_tokens: Option<usize>,
+    pub max_events: Option<usize>,
+    pub keep_recent_messages: Option<usize>,
+
+    // New safety/quality controls
+    pub validate: Option<bool>,
+    pub preserve_evidence: Option<bool>,
+    pub inject_context_frame: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

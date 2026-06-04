@@ -64,6 +64,55 @@ impl ContextFrame {
         lines.join("\n")
     }
 
+    pub fn to_compaction_control_text(&self) -> String {
+        let mut lines = vec!["[codegg compacted session state]".to_string()];
+
+        if let Some(ref goal) = self.user_goal {
+            lines.push(format!("- Goal: {}", goal));
+        }
+        if let Some(ref task) = self.current_task {
+            lines.push(format!("- Active task: {}", task));
+        }
+        if !self.constraints.is_empty() {
+            lines.push(format!("- Constraints: {}", self.constraints.join("; ")));
+        }
+        if !self.decisions.is_empty() {
+            lines.push(format!("- Decisions: {}", self.decisions.join("; ")));
+        }
+        if !self.touched_files.is_empty() {
+            lines.push(format!(
+                "- Touched files: {}",
+                self.touched_files.join(", ")
+            ));
+        }
+        if !self.commands_run.is_empty() {
+            lines.push(format!(
+                "- Commands/tests: {}",
+                self.commands_run.join(", ")
+            ));
+        }
+        if !self.test_results.is_empty() {
+            lines.push(format!("- Test results: {}", self.test_results.join("; ")));
+        }
+        if !self.unresolved_errors.is_empty() {
+            lines.push(format!(
+                "- Open issues: {}",
+                self.unresolved_errors.join("; ")
+            ));
+        }
+        if !self.security_findings.is_empty() {
+            lines.push(format!(
+                "- Security findings: {}",
+                self.security_findings.join("; ")
+            ));
+        }
+        if !self.next_steps.is_empty() {
+            lines.push(format!("- Next steps: {}", self.next_steps.join("; ")));
+        }
+
+        lines.join("\n")
+    }
+
     pub fn is_empty(&self) -> bool {
         self.user_goal.is_none()
             && self.current_task.is_none()
