@@ -5,6 +5,57 @@ use crate::error::StorageError;
 
 use super::{Goal, GoalBudget, GoalProgressUpdate, GoalStatus, GoalUsage};
 
+/// Result of advancing a goal's usage counters. Carries the new usage
+/// and the original budget so callers can render a live status without
+/// re-reading the database.
+#[derive(Debug, Clone)]
+pub struct GoalUsageUpdate {
+    pub usage: GoalUsage,
+    pub budget: GoalBudget,
+    pub budget_limited: bool,
+    pub reason: Option<String>,
+}
+
+/// Check whether `usage` has exceeded any axis of `budget`. Returns the
+/// first breach as a human-readable string, or `None` if the goal is
+/// still within budget.
+pub fn first_budget_breach(budget: &GoalBudget, usage: &GoalUsage) -> Option<String> {
+    if let Some(max) = budget.max_model_tokens {
+        let total = usage.input_tokens.saturating_add(usage.output_tokens);
+        if total >= max {
+            return Some(format!(
+                "token budget exceeded: {} used of {}",
+                total, max
+            ));
+        }
+    }
+    if let Some(max) = budget.max_tool_calls {
+        if usage.tool_calls >= max {
+            return Some(format!(
+                "tool-call budget exceeded: {} used of {}",
+                usage.tool_calls, max
+            ));
+        }
+    }
+    if let Some(max) = budget.max_turns {
+        if usage.turns_used >= max {
+            return Some(format!(
+                "turn budget exceeded: {} used of {}",
+                usage.turns_used, max
+            ));
+        }
+    }
+    if let Some(max) = budget.max_wallclock_secs {
+        if usage.wallclock_secs >= max {
+            return Some(format!(
+                "wall-clock budget exceeded: {}s used of {}s",
+                usage.wallclock_secs, max
+            ));
+        }
+    }
+    None
+}
+
 #[derive(Clone)]
 pub struct GoalStore {
     pub pool: SqlitePool,
@@ -291,27 +342,45 @@ impl GoalStore {
         self.get(goal_id).await
     }
 
+    /// Atomically advance the goal's usage counters and check the budget.
+    ///
+    /// `turns_delta` is the number of agent turns to add (typically 1).
+    /// `wallclock_delta_secs` is the wall-clock time spent on the goal
+    /// during the in-flight turn or batch of work. `input_tokens` and
+    /// `output_tokens` are the prompt/completion tokens used.
+    ///
+    /// Returns a `GoalUsageUpdate` describing the new usage and whether
+    /// the goal was transitioned to `BudgetLimited`. If the goal is not
+    /// `Active`, the deltas are not applied and `Ok(None)` is returned.
     pub async fn increment_usage(
         &self,
         goal_id: &str,
         input_tokens: i64,
         output_tokens: i64,
         tool_calls: i64,
-    ) -> Result<(), StorageError> {
+        turns_delta: i64,
+        wallclock_delta_secs: i64,
+    ) -> Result<Option<GoalUsageUpdate>, StorageError> {
         let goal = self.get(goal_id).await?;
-        let mut usage = match goal {
-            Some(g) => g.usage,
-            None => return Ok(()),
+        let goal = match goal {
+            Some(g) => g,
+            None => return Ok(None),
         };
+        if !goal.is_active() {
+            return Ok(None);
+        }
 
-        usage.input_tokens += input_tokens;
-        usage.output_tokens += output_tokens;
-        usage.tool_calls += tool_calls;
+        let mut usage = goal.usage.clone();
+        usage.input_tokens = usage.input_tokens.saturating_add(input_tokens.max(0));
+        usage.output_tokens = usage.output_tokens.saturating_add(output_tokens.max(0));
+        usage.tool_calls = usage.tool_calls.saturating_add(tool_calls.max(0));
+        usage.turns_used = usage.turns_used.saturating_add(turns_delta.max(0));
+        usage.wallclock_secs = usage.wallclock_secs.saturating_add(wallclock_delta_secs.max(0));
 
-        let now = datetime_to_millis(&Utc::now());
         let usage_json = serde_json::to_string(&usage)
             .map_err(|e| StorageError::Database(format!("serialize usage: {}", e)))?;
 
+        let now = datetime_to_millis(&Utc::now());
         sqlx::query("UPDATE goal SET usage = ?1, updated_at = ?2 WHERE id = ?3")
             .bind(&usage_json)
             .bind(now)
@@ -319,7 +388,75 @@ impl GoalStore {
             .execute(&self.pool)
             .await?;
 
-        Ok(())
+        // Check whether the new usage exceeds any budget axis.
+        let breach = first_budget_breach(&goal.budget, &usage);
+        if let Some(reason) = breach {
+            self.update_status(goal_id, GoalStatus::BudgetLimited)
+                .await?;
+            return Ok(Some(GoalUsageUpdate {
+                usage,
+                budget: goal.budget,
+                budget_limited: true,
+                reason: Some(reason),
+            }));
+        }
+
+        Ok(Some(GoalUsageUpdate {
+            usage,
+            budget: goal.budget,
+            budget_limited: false,
+            reason: None,
+        }))
+    }
+
+    /// Convenience: enforce the budget on a goal without advancing the
+    /// counters. Returns the new status if a transition occurred.
+    pub async fn enforce_budget(
+        &self,
+        goal_id: &str,
+    ) -> Result<Option<Goal>, StorageError> {
+        let goal = self.get(goal_id).await?;
+        let Some(goal) = goal else {
+            return Ok(None);
+        };
+        if !goal.is_active() {
+            return Ok(Some(goal));
+        }
+        if first_budget_breach(&goal.budget, &goal.usage).is_some() {
+            return self.update_status(goal_id, GoalStatus::BudgetLimited).await;
+        }
+        Ok(Some(goal))
+    }
+
+    /// Set or replace the budget on an active goal. Used by the
+    /// `/goal budget raise …` slash command.
+    pub async fn set_budget(
+        &self,
+        goal_id: &str,
+        budget: GoalBudget,
+    ) -> Result<Option<Goal>, StorageError> {
+        let budget_json = serde_json::to_string(&budget)
+            .map_err(|e| StorageError::Database(format!("serialize budget: {}", e)))?;
+        let now = datetime_to_millis(&Utc::now());
+        // If the goal is currently BudgetLimited because the old
+        // budget was hit, transition it back to Active when the user
+        // raises the cap.
+        sqlx::query(
+            r#"UPDATE goal
+               SET budget = ?1,
+                   updated_at = ?2,
+                   status = CASE
+                       WHEN status = 'budget_limited' THEN 'active'
+                       ELSE status
+                   END
+               WHERE id = ?3"#,
+        )
+        .bind(&budget_json)
+        .bind(now)
+        .bind(goal_id)
+        .execute(&self.pool)
+        .await?;
+        self.get(goal_id).await
     }
 
     pub async fn latest_paused_for_session(
@@ -548,13 +685,79 @@ mod tests {
         assert_eq!(goal.usage.output_tokens, 0);
         assert_eq!(goal.usage.tool_calls, 0);
 
-        store.increment_usage(&goal.id, 100, 50, 5).await.unwrap();
-        store.increment_usage(&goal.id, 200, 75, 10).await.unwrap();
+        let r1 = store
+            .increment_usage(&goal.id, 100, 50, 5, 1, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!r1.budget_limited);
+        let r2 = store
+            .increment_usage(&goal.id, 200, 75, 10, 1, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!r2.budget_limited);
 
         let updated = store.get(&goal.id).await.unwrap().unwrap();
         assert_eq!(updated.usage.input_tokens, 300);
         assert_eq!(updated.usage.output_tokens, 125);
         assert_eq!(updated.usage.tool_calls, 15);
+        assert_eq!(updated.usage.turns_used, 2);
+    }
+
+    #[tokio::test]
+    async fn test_increment_usage_budget_limited() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "sess1", "proj1").await;
+        let store = GoalStore::new(pool);
+
+        let goal = store
+            .create_active("sess1", "proj1", "Goal", "Obj", None, None, vec![])
+            .await
+            .unwrap();
+        // Set a tight tool-call budget and watch it trip.
+        let budget = GoalBudget {
+            max_tool_calls: Some(3),
+            ..GoalBudget::default()
+        };
+        store.set_budget(&goal.id, budget.clone()).await.unwrap();
+        let r = store
+            .increment_usage(&goal.id, 10, 5, 3, 1, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(r.budget_limited);
+        assert!(r.reason.is_some());
+        let updated = store.get(&goal.id).await.unwrap().unwrap();
+        assert_eq!(updated.status, GoalStatus::BudgetLimited);
+    }
+
+    #[tokio::test]
+    async fn test_set_budget_revives_budget_limited() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "sess1", "proj1").await;
+        let store = GoalStore::new(pool);
+
+        let goal = store
+            .create_active("sess1", "proj1", "Goal", "Obj", None, None, vec![])
+            .await
+            .unwrap();
+        store
+            .increment_usage(&goal.id, 0, 0, 0, 0, 999_999)
+            .await
+            .unwrap();
+        let limited = store
+            .set_budget(
+                &goal.id,
+                GoalBudget {
+                    max_wallclock_secs: Some(1_000_000),
+                    ..GoalBudget::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(limited.status, GoalStatus::Active);
     }
 
     #[tokio::test]

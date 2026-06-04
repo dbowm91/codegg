@@ -281,6 +281,16 @@ pub enum TuiCommand {
     CompactSession,
     OpenDiffDialog { old_content: Box<str>, new_content: Box<str>, title: Box<str> },
     SendNotification { notification_type: NotificationType, body: String },
+    GoalSet { session_id, project_id, objective },
+    GoalFromFile { session_id, project_id, path },
+    GoalShow { session_id },
+    GoalPause { session_id },
+    GoalResume { session_id },
+    GoalClear { session_id },
+    GoalDone { session_id },
+    GoalCheckpoint { session_id, project_id },
+    GoalBudget { session_id, subcommand },  // "show" or "raise <axis> <n>"
+    RefreshSessionState { session_id },
     UpdateModels(Vec<String>),
 }
 ```
@@ -371,7 +381,7 @@ Key methods:
 2. **Timeline**: Optional timeline panel (when `timeline_visible` is true)
 3. **Viewport**: Messages (Home or Session view)
 4. **Prompt**: Input area with status indicator, mode indicator
-5. **Footer**: Token counts, session status, keybinds, TTS indicator
+5. **Footer**: Status bar with: session status, goal indicator (`[status] title budget`), subagent count, token counts, keybinds
 6. **Sidebar**: Optional session/agent info panel (if visible)
 7. **Dialog**: Modal overlay via FocusManager (if open)
 8. **Completions**: Slash/file/agent completion popup (if active)
@@ -393,6 +403,11 @@ TUI subscribes to `GlobalEventBus` for:
 | `FileChanged` | Track changed files |
 | `SubagentStarted/Progress/Completed/Failed` | Show toasts |
 | `CompactionTriggered` | Show toast |
+| `TodoUpdated` | Update sidebar todo list |
+| `GoalUpdated` | Update `app.active_goal`, refresh status bar |
+| `GoalUsageUpdated` | Update usage on `app.active_goal` |
+| `GoalBudgetLimited` | Show budget-limited toast |
+| `GoalCompleted` | Clear active goal, show completion toast |
 
 ## Keyboard Shortcuts
 
@@ -471,6 +486,7 @@ pub struct App {
     pub bg_scheduler: Option<Arc<BackgroundScheduler>>,
     pub config_watcher: Option<ConfigWatcher>,
     pub core_client: Option<Arc<dyn CoreClient>>,
+    pub active_goal: Option<GoalSnapshot>,  // Active goal for status bar
     // ... other fields ...
 }
 ```

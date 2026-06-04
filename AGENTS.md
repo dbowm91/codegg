@@ -10,7 +10,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - **Axum** for HTTP server (feature-gated)
 - **Wasmtime** for WASM plugins (feature-gated)
 
-## Module Reference (33 Modules)
+## Module Reference (34 Modules)
 
 | Module | Purpose |
 |--------|---------|
@@ -23,6 +23,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
 | `git/` | Git session management, git info injection into prompts, worktree per session |
+| `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
 | `lsp/` | Language Server Protocol support (diagnostics, code operations) |
@@ -56,6 +57,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
 - `architecture/git.md`: Git session management, git info injection, worktree per session
+- `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 
 ## Critical Implementation Notes
 
@@ -102,6 +104,12 @@ These items are important for future agents to know when working with the codeba
 - **AgentLoop has 24 fields**: The struct at `src/agent/loop.rs:559-584` has 24 fields; many docs list only 15.
 
 - **Exec mode question behavior**: `setup_question_channel_for_exec()` at `src/exec.rs:121` DOES set `question_rx`, meaning exec mode waits up to 300s before timing out. The "[question not supported]" string is in the `else` branch (non-exec path when `question_rx` is None).
+
+- **Goal and todo are two separate surfaces**: Goals are long-horizon, multi-session, durable, autonomous. Todos are in-flight, per-turn, ephemeral. They form a hierarchy: a goal spans many sessions; each session may have todos as steps toward the goal. The system prompt steers models toward todos for in-flight planning and `goal_request_completion` for long-horizon work.
+
+- **Goal budget accounting is atomic**: `GoalStore::increment_usage()` checks all four budget axes in a single transaction. If any axis is exceeded, the goal transitions to `BudgetLimited` atomically. The agent loop then queues a wrap-up prompt on the next turn.
+
+- **Goal wall-clock is durable**: `wallclock_secs` is persisted in SQLite, so time spent on the goal across session restarts is accurately tracked. `GoalWallClock` in the agent loop tracks wall-clock deltas between accounting ticks.
 
 ### Known Issues (Lower Priority)
 
@@ -162,6 +170,14 @@ These items were verified during review sessions:
 | Auto-compact wrapper | Both `auto_compact()` and `auto_compact_sync()` exist | `src/agent/compaction.rs:550,594` |
 | ImageTool | IS registered in ToolRegistry::with_defaults() | `src/tool/mod.rs:102` |
 | Dialog::Stats | EXISTS in Dialog enum | `src/tui/app/types.rs:21` |
+| Goal module | Goal, GoalStatus, GoalBudget, GoalUsage, GoalStore, runtime | `src/goal/` |
+| Goal budget axes | 4 axes: max_turns, max_model_tokens, max_tool_calls, max_wallclock_secs | `src/goal/model.rs` |
+| Goal wall-clock durability | wallclock_secs persisted in SQLite, survives session restarts | `src/goal/model.rs`, `src/goal/store.rs` |
+| AgentLoop goal fields | goal_store, goal_wall_clock | `src/agent/loop.rs` |
+| Per-turn token tracking | last_turn_input_tokens, last_turn_output_tokens | `src/agent/loop.rs` |
+| TUI goal status bar | format_goal_status_line, set_goal on StatusBarWidget | `src/tui/app/mod.rs`, `src/tui/components/status_bar.rs` |
+| Goal budget slash cmd | /goal budget [show\|raise <axis> <n>] | `src/tui/app/mod.rs` |
+| Goal+todo prompt contract | goal_and_todos_contract() in assemble_system_prompt_with_profile | `src/agent/prompt.rs` |
 
 ### Security Notes
 
@@ -201,6 +217,7 @@ These items were verified during review sessions:
 ├── event-bus/          # GlobalEventBus, PermissionRegistry, QuestionRegistry
 ├── exec/               # Exec mode for CI/CD
 ├── git/                # Git session, git info in prompts, worktree management
+├── goal/               # Long-horizon goal runtime, budget enforcement, auto-continuation
 ├── hooks/              # Hooks system for agent lifecycle
 ├── ide/                # IDE integration (VS Code, JetBrains)
 ├── lsp/                # LSP client, diagnostics, code operations

@@ -151,6 +151,9 @@ impl Tool for TodoWriteTool {
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         let projection = state.full_projection_for_user();
+        let revision = state.revision;
+        let snapshot_items: Vec<crate::bus::events::TodoItemSnapshot> =
+            state.items.iter().map(|item| item.to_snapshot()).collect();
         let session_items: Option<Vec<crate::session::models::TodoItemInput>> =
             if self.pool.is_some() {
                 Some(
@@ -179,6 +182,8 @@ impl Tool for TodoWriteTool {
         if let Some(session_id) = &self.session_id {
             GlobalEventBus::publish(AppEvent::TodoUpdated {
                 session_id: session_id.clone(),
+                revision,
+                items: snapshot_items,
             });
         }
 

@@ -890,6 +890,12 @@ pub struct AgentLoopState {
     pub plan_mode: bool,
     pub plan_topic: Option<String>,
     pub tool_call_count: usize,
+    /// Last turn's input tokens (cumulative per-call reported by the
+    /// provider). Used to compute per-turn deltas for goal accounting.
+    pub last_turn_input_tokens: i64,
+    /// Last turn's output tokens (cumulative per-call reported by the
+    /// provider).
+    pub last_turn_output_tokens: i64,
 }
 
 pub struct ExecutionLimits {
@@ -947,6 +953,8 @@ pub struct AgentLoop {
     original_user_prompt: Option<String>,
     subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     max_tool_calls: Option<usize>,
+    goal_store: Option<Arc<crate::goal::GoalStore>>,
+    goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
 }
 
 impl AgentLoop {
@@ -1088,6 +1096,8 @@ impl AgentLoop {
                 plan_mode: false,
                 plan_topic: None,
                 tool_call_count: 0,
+                last_turn_input_tokens: 0,
+                last_turn_output_tokens: 0,
             },
             limits: ExecutionLimits::default(),
             provider,
@@ -1124,12 +1134,18 @@ impl AgentLoop {
             todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new())),
             task_state_policy: crate::model_profile::types::TaskStatePolicy::explicit_todo(),
             todo_pool: todo_pool.clone(),
-            event_store: pool.map(|p| Arc::new(crate::session::EventStore::new(p))),
+            event_store: pool
+                .as_ref()
+                .map(|p| Arc::new(crate::session::EventStore::new(p.clone()))),
             active_tool_timings: HashMap::new(),
             execution_policy: None,
             original_user_prompt: None,
             subagent_pool: None,
             max_tool_calls: None,
+            goal_store: pool
+                .as_ref()
+                .map(|p| Arc::new(crate::goal::GoalStore::new(p.clone()))),
+            goal_wall_clock: std::sync::Mutex::new(crate::goal::runtime::GoalWallClock::default()),
         }
     }
 
@@ -1346,7 +1362,7 @@ impl AgentLoop {
         }
     }
 
-    async fn stream_with_retry(&self, request: &ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
+    async fn stream_with_retry(&mut self, request: &ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
         const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
         let max_retries = 3;
         let mut delay = Duration::from_secs(1);
@@ -1379,7 +1395,7 @@ impl AgentLoop {
         Err(last_retryable_err.unwrap_or_else(|| AppError::Provider(ProviderError::RateLimit)))
     }
 
-    async fn stream_once(&self, request: &ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
+    async fn stream_once(&mut self, request: &ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
         let stream = tokio::time::timeout(Duration::from_secs(120), self.provider.stream(request))
             .await
             .map_err(|_| {
@@ -1467,6 +1483,11 @@ impl AgentLoop {
                                     }
                                 });
                             }
+                            // Record per-turn token usage on the loop
+                            // state so `account_goal_for_turn` can pass
+                            // it to the active goal's budget.
+                            self.state.last_turn_input_tokens = usage.input_tokens as i64;
+                            self.state.last_turn_output_tokens = usage.output_tokens as i64;
                         }
                         _ => {}
                     }
@@ -1488,25 +1509,148 @@ impl AgentLoop {
             }
         });
 
-        if let Some((stop_reason, usage)) = last_finish {
-            crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
-                session_id: self.session_id.clone(),
-                stop_reason: stop_reason.to_string(),
-                input_tokens: Some(usage.input_tokens),
-                output_tokens: Some(usage.output_tokens),
-                cached_tokens: usage.cached_tokens,
-                reasoning_tokens: if usage.reasoning_tokens > 0 { Some(usage.reasoning_tokens) } else { None },
-            });
-        } else {
-            crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
-                session_id: self.session_id.clone(),
-                stop_reason: "completed".to_string(),
-                input_tokens: None,
-                output_tokens: None,
-                cached_tokens: None,
-                reasoning_tokens: None,
-            });
+        let (stop_reason_str, input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
+            if let Some((stop_reason, usage)) = last_finish {
+                (
+                    stop_reason.to_string(),
+                    Some(usage.input_tokens),
+                    Some(usage.output_tokens),
+                    usage.cached_tokens,
+                    if usage.reasoning_tokens > 0 { Some(usage.reasoning_tokens) } else { None },
+                )
+            } else {
+                (
+                    "completed".to_string(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+
+        crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
+            session_id: self.session_id.clone(),
+            stop_reason: stop_reason_str,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
+        });
+    }
+
+    /// Account a finished turn against the active goal. Called from
+    /// `run()` after the loop body so the budget is updated even on
+    /// the user's last turn.
+    async fn account_goal_for_turn(&self) {
+        let Some(goal_store) = self.goal_store.clone() else {
+            return;
+        };
+        if self.session_id.is_empty() {
+            return;
         }
+        // Compute wall-clock delta since the last accounting tick.
+        let wallclock_delta = {
+            let mut wc = self
+                .goal_wall_clock
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let delta = wc.elapsed_secs_since_last();
+            // Always reset the clock so the next tick measures fresh
+            // wall-clock, even when the goal store is unavailable.
+            wc.last_accounted_at = Some(std::time::Instant::now());
+            delta
+        };
+        let tool_calls = self.state.tool_call_count as i64;
+        let input_tokens = self.state.last_turn_input_tokens;
+        let output_tokens = self.state.last_turn_output_tokens;
+        let _ = crate::goal::runtime::account_for_turn(
+            &goal_store,
+            &self.session_id,
+            input_tokens,
+            output_tokens,
+            tool_calls,
+            1,
+            wallclock_delta,
+        )
+        .await;
+    }
+
+    /// Decide whether to autonomously continue the active goal.
+    ///
+    /// Called from `run()` after `account_goal_for_turn()`. If the goal
+    /// runtime returns `Continue`, we queue a continuation prompt and
+    /// recurse through `drain_follow_up`. If it returns `BudgetLimited`,
+    /// we queue a wrap-up prompt and let the loop drain that single
+    /// follow-up without scheduling another continuation. This mirrors
+    /// codex's `maybe_start_goal_continuation_turn` pattern.
+    async fn maybe_continue_goal(
+        &mut self,
+        request: &mut ChatRequest,
+        all_events: &mut Vec<ChatEvent>,
+        processor: &mut EventProcessor,
+    ) {
+        let Some(goal_store) = self.goal_store.clone() else {
+            return;
+        };
+        if self.session_id.is_empty() {
+            return;
+        }
+
+        // Bounded safety: don't run the continuation loop forever even
+        // if the runtime returns Continue on every tick. We rely on
+        // the budget/terminal-status checks inside `should_continue`
+        // to break out, but cap the outer iterations as a guard.
+        const MAX_CONTINUATIONS: usize = 32;
+        for _ in 0..MAX_CONTINUATIONS {
+            let decision = match crate::goal::runtime::should_continue_for_session(
+                &goal_store,
+                &self.session_id,
+            )
+            .await
+            {
+                Ok(Some(d)) => d,
+                Ok(None) => return,
+                Err(e) => {
+                    tracing::warn!("goal runtime decision failed: {e}");
+                    return;
+                }
+            };
+            if !decision.should_continue {
+                if let Some(prompt) = decision.prompt {
+                    // Final wrap-up prompt (e.g. budget-limited).
+                    let _ = self.follow_up_tx.send(prompt);
+                    self.drain_follow_up(request, all_events, processor)
+                        .await;
+                }
+                return;
+            }
+            let Some(prompt) = decision.prompt else {
+                return;
+            };
+            tracing::info!(
+                "goal continuation queued (session={}): {}",
+                self.session_id,
+                decision.reason
+            );
+            // Reset per-turn token/tool counters so the next
+            // accounting tick measures the *continuation* turn, not
+            // a stale carry-over from the user's turn.
+            self.state.last_turn_input_tokens = 0;
+            self.state.last_turn_output_tokens = 0;
+            let _ = self.follow_up_tx.send(prompt);
+            self.drain_follow_up(request, all_events, processor)
+                .await;
+            // After the continuation turn finishes, account for it
+            // before deciding whether to continue again.
+            // We can't call `account_goal_for_turn` here directly
+            // because it borrows self immutably and we already have
+            // &mut self via the request parameter. Inline the
+            // accounting using a clone of the wall-clock state.
+            self.account_goal_for_turn().await;
+        }
+        tracing::warn!(
+            "goal continuation hit MAX_CONTINUATIONS={MAX_CONTINUATIONS}, halting"
+        );
     }
 
     fn check_limits(&self) -> Option<String> {
@@ -2600,6 +2744,13 @@ impl AgentLoop {
         self.drain_follow_up(&mut request, &mut all_events, &mut processor)
             .await;
         self.publish_agent_finished(&all_events);
+        self.account_goal_for_turn().await;
+        // After draining queued follow-ups and accounting, decide
+        // whether to autonomously continue the active goal (long-
+        // horizon continuation loop). Mirrors codex's
+        // `maybe_start_goal_continuation_turn`.
+        self.maybe_continue_goal(&mut request, &mut all_events, &mut processor)
+            .await;
 
         crate::bus::global::GlobalEventBus::publish(AppEvent::ContextUpdated {
             session_id: self.session_id.clone(),

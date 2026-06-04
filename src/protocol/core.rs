@@ -201,6 +201,21 @@ pub enum CoreRequest {
         session_id: String,
         project_id: String,
     },
+    /// Load the persisted todo list for a session so the TUI can render
+    /// it without keeping a separate `Arc<Mutex<TodoState>>` in sync.
+    TodoList { session_id: String },
+    /// Load the active goal snapshot (and progress) for a session.
+    ActiveGoalLoad { session_id: String },
+    /// Set or replace the goal budget. The store revives a
+    /// `BudgetLimited` goal to `Active` if the new budget is high
+    /// enough to satisfy the existing usage.
+    GoalSetBudget {
+        session_id: String,
+        max_turns: Option<i64>,
+        max_model_tokens: Option<i64>,
+        max_tool_calls: Option<i64>,
+        max_wallclock_secs: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

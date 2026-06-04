@@ -16,6 +16,9 @@ pub struct StatusBarWidget {
     pub loading_label: Option<String>,
     pub subagent_count: usize,
     pub undo_message: Option<String>,
+    /// Active goal indicator, if any. Cached string so we don't pay
+    /// snapshot formatting cost on every render.
+    pub goal_str: Option<String>,
 }
 
 impl StatusBarWidget {
@@ -30,6 +33,7 @@ impl StatusBarWidget {
             loading_label: None,
             subagent_count: 0,
             undo_message: None,
+            goal_str: None,
         }
     }
 
@@ -57,6 +61,14 @@ impl StatusBarWidget {
 
     pub fn set_subagent_count(&mut self, count: usize) {
         self.subagent_count = count;
+    }
+
+    /// Set the active goal indicator. `None` clears the indicator.
+    /// The string should be pre-formatted (status, title, budget
+    /// summary) by the caller so the widget doesn't depend on
+    /// `GoalSnapshot`.
+    pub fn set_goal(&mut self, goal_str: Option<String>) {
+        self.goal_str = goal_str;
     }
 
     pub fn set_undo_message(&mut self, msg: &str) {
@@ -130,6 +142,16 @@ impl Widget for &StatusBarWidget {
             middle_spans.push(Span::styled(
                 format!("{} {}", self.subagent_count, label),
                 Style::default().fg(self.theme.secondary),
+            ));
+        }
+
+        if let Some(ref g) = self.goal_str {
+            middle_spans.push(Span::styled("  ", Style::default()));
+            middle_spans.push(Span::styled(
+                g.clone(),
+                Style::default()
+                    .fg(self.theme.primary)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
 

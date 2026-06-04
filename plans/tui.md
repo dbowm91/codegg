@@ -13,6 +13,8 @@
 | Model routing trace | **DONE** | Now shows task complexity (2026-06-02) |
 | `/search` command | **DONE** | Session transcript search (2026-06-02) |
 | Command palette | **DONE** | CommandRegistry with 46+ commands, ':' command mode |
+| Goal status bar | **DONE** | Live `[status] title budget` in StatusBarWidget; `/goal budget` slash command |
+| Goal+todo prompt steering | **DONE** | `goal_and_todos_contract()` in system prompt; two-surface model |
 
 ## Purpose
 

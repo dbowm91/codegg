@@ -1,6 +1,62 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+/// Snapshot of a single todo item suitable for TUI display.
+///
+/// Mirrors the fields that the TUI sidebar needs to render and check off
+/// a todo entry. Kept deliberately small so the bus event stays cheap to
+/// fan out to subscribers (TUI, remote clients, loggers).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TodoItemSnapshot {
+    pub id: String,
+    pub content: String,
+    pub status: String,
+    pub priority: String,
+}
+
+/// Snapshot of a goal for TUI display and remote clients.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GoalSnapshot {
+    pub id: String,
+    pub session_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub objective: String,
+    pub status: String,
+    pub current_phase: Option<String>,
+    pub progress_summary: String,
+    pub next_action: Option<String>,
+    pub completion_criteria: Vec<String>,
+    pub open_questions: Vec<String>,
+    pub budget: GoalBudgetSnapshot,
+    pub usage: GoalUsageSnapshot,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub started_at_ms: Option<i64>,
+    pub completed_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GoalBudgetSnapshot {
+    pub max_turns: Option<i64>,
+    pub max_model_tokens: Option<i64>,
+    pub max_tool_calls: Option<i64>,
+    /// Wall-clock budget in seconds. Mirrors `max_model_tokens` /
+    /// `max_tool_calls` as a third enforcement axis.
+    pub max_wallclock_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GoalUsageSnapshot {
+    pub turns_used: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub tool_calls: i64,
+    /// Wall-clock seconds spent on the active goal. Reset when the goal
+    /// transitions to a non-active state.
+    pub wallclock_secs: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AppEvent {
     /// A new session was created.
@@ -45,8 +101,44 @@ pub enum AppEvent {
     McpToolListChanged { name: String },
     /// Application configuration changed.
     ConfigChanged,
-    /// Todo list was updated.
-    TodoUpdated { session_id: String },
+    /// Todo list was updated. Carries the full snapshot so the TUI can
+    /// render without re-reading from the agent loop.
+    TodoUpdated {
+        session_id: String,
+        revision: u64,
+        items: Vec<TodoItemSnapshot>,
+    },
+    /// The active goal was created, modified, or transitioned.
+    ///
+    /// Published by the goal create/clear/done/pause/resume handlers. A
+    /// `None` snapshot signals that there is no active goal for the
+    /// session (e.g. after `GoalClear`).
+    GoalUpdated {
+        session_id: String,
+        goal: Option<GoalSnapshot>,
+    },
+    /// A goal's usage counters were advanced (turn finished, tool calls
+    /// executed, etc). The TUI uses this to keep the budget meter live
+    /// without re-reading the database.
+    GoalUsageUpdated {
+        session_id: String,
+        goal_id: String,
+        usage: GoalUsageSnapshot,
+        budget: GoalBudgetSnapshot,
+    },
+    /// A goal was transitioned to `BudgetLimited` because one of the
+    /// budget axes was exceeded. The agent should wrap up immediately.
+    GoalBudgetLimited {
+        session_id: String,
+        goal_id: String,
+        reason: String,
+    },
+    /// A goal was marked `Complete` by the model.
+    GoalCompleted {
+        session_id: String,
+        goal_id: String,
+        evidence: String,
+    },
     /// The agent was changed.
     AgentChanged { name: String },
     /// The model was changed (e.g. via auto-routing).
@@ -179,6 +271,10 @@ impl AppEvent {
             AppEvent::McpToolListChanged { .. } => "mcp:tool_list_changed",
             AppEvent::ConfigChanged => "config:changed",
             AppEvent::TodoUpdated { .. } => "todo:updated",
+            AppEvent::GoalUpdated { .. } => "goal:updated",
+            AppEvent::GoalUsageUpdated { .. } => "goal:usage_updated",
+            AppEvent::GoalBudgetLimited { .. } => "goal:budget_limited",
+            AppEvent::GoalCompleted { .. } => "goal:completed",
             AppEvent::AgentChanged { .. } => "agent:changed",
             AppEvent::ModelChanged { .. } => "model:changed",
             AppEvent::CompactionTriggered { .. } => "compaction:triggered",

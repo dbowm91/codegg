@@ -54,6 +54,37 @@ pub enum TodoStateError {
 }
 
 impl TodoItem {
+    /// String form of status, used for snapshot payloads.
+    pub fn status_str(&self) -> &'static str {
+        match self.status {
+            TodoStatus::Pending => "pending",
+            TodoStatus::InProgress => "in_progress",
+            TodoStatus::Completed => "completed",
+            TodoStatus::Blocked => "blocked",
+            TodoStatus::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn priority_str(&self) -> &'static str {
+        match self.priority {
+            TodoPriority::Low => "low",
+            TodoPriority::Medium => "medium",
+            TodoPriority::High => "high",
+        }
+    }
+
+    /// Snapshot the todo item for inclusion in an `AppEvent::TodoUpdated`
+    /// event so the TUI can render without re-reading the in-memory
+    /// state.
+    pub fn to_snapshot(&self) -> crate::bus::events::TodoItemSnapshot {
+        crate::bus::events::TodoItemSnapshot {
+            id: self.id.clone(),
+            content: self.content.clone(),
+            status: self.status_str().to_string(),
+            priority: self.priority_str().to_string(),
+        }
+    }
+
     pub fn to_session_input(&self, _position: i64) -> crate::session::models::TodoItemInput {
         let status = match self.status {
             TodoStatus::Pending => "pending".to_string(),

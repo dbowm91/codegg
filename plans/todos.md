@@ -17,6 +17,18 @@
 
 Remaining items: None — all complete (verified 2026-06-02).
 
+### Goal Runtime (Separate Surface)
+
+Goal runtime (`src/goal/`) is a **separate surface** from todos, not a replacement. Goals are long-horizon, multi-session, durable, and autonomous. Todos are in-flight, per-turn, and ephemeral. They form a hierarchy: a goal spans many sessions; each session may have todos as steps toward the goal.
+
+Key components (verified 2026-06-04):
+- `GoalStore` — SQLite persistence with atomic budget accounting
+- `runtime.rs` — `account_for_turn()`, `should_continue()`, continuation/wrap-up prompts
+- `tool.rs` — `goal_set`, `goal_update_progress`, `goal_request_completion` tools
+- `AgentLoop` integration — `goal_store`, `goal_wall_clock` fields; `maybe_continue_goal()` auto-continuation loop
+- TUI status bar — live `[status] title budget` line; `/goal budget show|raise` slash command
+- System prompt — `goal_and_todos_contract()` steers model toward todos for in-flight, goals for long-horizon
+
 Audience: smaller implementation model (MiMo v2.5 or similar). This plan is written to be executed in the current `dbowm91/codegg` Rust codebase.
 
 Goal: replace the current one-size-fits-all `todowrite` behavior with a model-profile-aware task-state policy. Strong/frontier models should get sparse Codex-like planning. Mid-tier models should get explicit OpenCode/Claude-like todo state. Local/tool-fragile models should get compact current-task guidance and fewer chances to corrupt task state. Unknown models should use a conservative default.

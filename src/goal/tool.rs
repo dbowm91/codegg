@@ -163,6 +163,13 @@ impl Tool for GoalUpdateProgressTool {
             let _ = crate::goal::checkpoint::append_checkpoint_update(cp_path, &update).await;
         }
 
+        crate::bus::global::GlobalEventBus::publish(
+            crate::bus::events::AppEvent::GoalUpdated {
+                session_id: self.session_id.clone(),
+                goal: Some(updated_goal.to_snapshot()),
+            },
+        );
+
         Ok(serde_json::json!({
             "id": updated_goal.id,
             "title": updated_goal.title,
@@ -263,7 +270,7 @@ impl Tool for GoalRequestCompletionTool {
         }
 
         match store.update_status(&goal.id, GoalStatus::Complete).await {
-            Ok(_) => {
+            Ok(Some(updated_goal)) => {
                 if let Some(ref cp_path) = goal.checkpoint_path {
                     let update = GoalProgressUpdate {
                         current_phase: Some("Complete".to_string()),
@@ -279,6 +286,33 @@ impl Tool for GoalRequestCompletionTool {
                     let _ =
                         crate::goal::checkpoint::append_checkpoint_update(cp_path, &update).await;
                 }
+                crate::bus::global::GlobalEventBus::publish(
+                    crate::bus::events::AppEvent::GoalUpdated {
+                        session_id: self.session_id.clone(),
+                        goal: Some(updated_goal.to_snapshot()),
+                    },
+                );
+                crate::bus::global::GlobalEventBus::publish(
+                    crate::bus::events::AppEvent::GoalCompleted {
+                        session_id: self.session_id.clone(),
+                        goal_id: goal.id.clone(),
+                        evidence: evidence.chars().take(500).collect::<String>(),
+                    },
+                );
+                Ok(serde_json::json!({
+                    "accepted": true,
+                    "goal_id": goal.id,
+                    "status": "complete"
+                })
+                .to_string())
+            }
+            Ok(None) => {
+                crate::bus::global::GlobalEventBus::publish(
+                    crate::bus::events::AppEvent::GoalUpdated {
+                        session_id: self.session_id.clone(),
+                        goal: None,
+                    },
+                );
                 Ok(serde_json::json!({
                     "accepted": true,
                     "goal_id": goal.id,

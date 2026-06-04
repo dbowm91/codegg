@@ -83,21 +83,6 @@ pub fn render_goal_status(goal: &Goal) -> String {
     out
 }
 
-/// Helper method on GoalStatus for string conversion.
-impl Goal {
-    pub fn status_as_str(&self) -> &'static str {
-        match self.status {
-            crate::goal::model::GoalStatus::Active => "active",
-            crate::goal::model::GoalStatus::Paused => "paused",
-            crate::goal::model::GoalStatus::AwaitingUser => "awaiting_user",
-            crate::goal::model::GoalStatus::BudgetLimited => "budget_limited",
-            crate::goal::model::GoalStatus::Complete => "complete",
-            crate::goal::model::GoalStatus::Failed => "failed",
-            crate::goal::model::GoalStatus::Cancelled => "cancelled",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,6 +110,7 @@ mod tests {
                 input_tokens: 10000,
                 output_tokens: 3000,
                 tool_calls: 12,
+                wallclock_secs: 600,
             },
             created_at: Utc::now(),
             updated_at: Utc::now(),

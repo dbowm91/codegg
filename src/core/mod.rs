@@ -43,6 +43,19 @@ impl InprocCoreClient {
     }
 }
 
+/// Publish a `GoalUpdated` bus event so the TUI (and any remote
+/// subscribers) can reflect the latest goal state. Always pair with a
+/// successful goal store write.
+fn publish_goal_updated(session_id: &str, goal: Option<crate::goal::model::Goal>) {
+    let snap = goal.map(|g| g.to_snapshot());
+    crate::bus::global::GlobalEventBus::publish(
+        crate::bus::events::AppEvent::GoalUpdated {
+            session_id: session_id.to_string(),
+            goal: snap,
+        },
+    );
+}
+
 #[async_trait]
 impl CoreClient for InprocCoreClient {
     async fn request(
@@ -816,6 +829,8 @@ impl CoreClient for InprocCoreClient {
                                 .execute(&pool)
                                 .await;
                         }
+                        let updated = goal_store.get(&goal.id).await.ok().flatten();
+                        publish_goal_updated(&session_id, updated);
                         Ok(CoreResponse::Json {
                             data: serde_json::json!({
                                 "status": "active",
@@ -915,6 +930,8 @@ impl CoreClient for InprocCoreClient {
                                 .execute(&pool)
                                 .await;
                         }
+                        let updated = goal_store.get(&goal.id).await.ok().flatten();
+                        publish_goal_updated(&session_id, updated);
                         Ok(CoreResponse::Json {
                             data: serde_json::json!({
                                 "status": "active",
@@ -980,9 +997,18 @@ impl CoreClient for InprocCoreClient {
                             .update_status(&goal.id, crate::goal::GoalStatus::Paused)
                             .await
                         {
-                            Ok(_) => Ok(CoreResponse::Json {
-                                data: serde_json::json!({ "status": "paused", "id": goal.id }),
-                            }),
+                            Ok(Some(updated)) => {
+                                publish_goal_updated(&session_id, Some(updated));
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "paused", "id": goal.id }),
+                                })
+                            }
+                            Ok(None) => {
+                                publish_goal_updated(&session_id, None);
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "paused", "id": goal.id }),
+                                })
+                            }
                             Err(e) => Ok(CoreResponse::Error {
                                 code: "goal_pause_failed".to_string(),
                                 message: e.to_string(),
@@ -1013,9 +1039,18 @@ impl CoreClient for InprocCoreClient {
                             .update_status(&goal.id, crate::goal::GoalStatus::Active)
                             .await
                         {
-                            Ok(_) => Ok(CoreResponse::Json {
-                                data: serde_json::json!({ "status": "active", "id": goal.id }),
-                            }),
+                            Ok(Some(updated)) => {
+                                publish_goal_updated(&session_id, Some(updated));
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "active", "id": goal.id }),
+                                })
+                            }
+                            Ok(None) => {
+                                publish_goal_updated(&session_id, None);
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "active", "id": goal.id }),
+                                })
+                            }
                             Err(e) => Ok(CoreResponse::Error {
                                 code: "goal_resume_failed".to_string(),
                                 message: e.to_string(),
@@ -1041,9 +1076,12 @@ impl CoreClient for InprocCoreClient {
                 };
                 let goal_store = crate::goal::GoalStore::new(pool);
                 match goal_store.clear_active_for_session(&session_id).await {
-                    Ok(()) => Ok(CoreResponse::Json {
-                        data: serde_json::json!({ "cleared": true }),
-                    }),
+                    Ok(()) => {
+                        publish_goal_updated(&session_id, None);
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({ "cleared": true }),
+                        })
+                    }
                     Err(e) => Ok(CoreResponse::Error {
                         code: "goal_clear_failed".to_string(),
                         message: e.to_string(),
@@ -1064,9 +1102,25 @@ impl CoreClient for InprocCoreClient {
                             .update_status(&goal.id, crate::goal::GoalStatus::Complete)
                             .await
                         {
-                            Ok(_) => Ok(CoreResponse::Json {
-                                data: serde_json::json!({ "status": "complete", "id": goal.id }),
-                            }),
+                            Ok(Some(updated)) => {
+                                publish_goal_updated(&session_id, Some(updated.clone()));
+                                crate::bus::global::GlobalEventBus::publish(
+                                    crate::bus::events::AppEvent::GoalCompleted {
+                                        session_id: session_id.clone(),
+                                        goal_id: goal.id.clone(),
+                                        evidence: "marked complete via /goal done".to_string(),
+                                    },
+                                );
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "complete", "id": goal.id }),
+                                })
+                            }
+                            Ok(None) => {
+                                publish_goal_updated(&session_id, None);
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "complete", "id": goal.id }),
+                                })
+                            }
                             Err(e) => Ok(CoreResponse::Error {
                                 code: "goal_done_failed".to_string(),
                                 message: e.to_string(),
@@ -1146,6 +1200,115 @@ impl CoreClient for InprocCoreClient {
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "goal_checkpoint_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::TodoList { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::store::TodoStore::new(pool);
+                match store.list(&session_id).await {
+                    Ok(items) => {
+                        let snapshots: Vec<crate::bus::events::TodoItemSnapshot> = items
+                            .iter()
+                            .enumerate()
+                            .map(|(i, item)| {
+                                use crate::bus::events::TodoItemSnapshot;
+                                TodoItemSnapshot {
+                                    id: format!("pos-{}", i),
+                                    content: item.content.clone(),
+                                    status: item.status.clone(),
+                                    priority: item.priority.clone(),
+                                }
+                            })
+                            .collect();
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({
+                                "items": serde_json::to_value(&snapshots)
+                                    .unwrap_or(serde_json::Value::Array(vec![])),
+                            }),
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "todo_list_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ActiveGoalLoad { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({
+                            "active": true,
+                            "goal": serde_json::to_value(&goal.to_snapshot())
+                                .unwrap_or(serde_json::Value::Null),
+                        }),
+                    }),
+                    Ok(None) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({ "active": false }),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "active_goal_load_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalSetBudget {
+                session_id,
+                max_turns,
+                max_model_tokens,
+                max_tool_calls,
+                max_wallclock_secs,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        let new_budget = crate::goal::model::GoalBudget {
+                            max_turns,
+                            max_model_tokens,
+                            max_tool_calls,
+                            max_wallclock_secs,
+                        };
+                        match goal_store.set_budget(&goal.id, new_budget).await {
+                            Ok(Some(updated)) => {
+                                publish_goal_updated(&session_id, Some(updated));
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "ok", "id": goal.id }),
+                                })
+                            }
+                            Ok(None) => Ok(CoreResponse::Json {
+                                data: serde_json::json!({ "status": "ok", "id": goal.id }),
+                            }),
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "goal_set_budget_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_active_goal".to_string(),
+                        message: "No active goal to update budget".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_set_budget_failed".to_string(),
                         message: e.to_string(),
                     }),
                 }

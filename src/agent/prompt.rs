@@ -336,6 +336,7 @@ pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
     let mut parts = Vec::new();
 
     parts.push(base_harness_contract().to_string());
+    parts.push(goal_and_todos_contract().to_string());
     parts.push(role_contract(ctx.agent).to_string());
     if let Some(role) = ctx.agent.role.as_deref() {
         parts.push(subagent_output_contract(role).to_string());
@@ -380,6 +381,29 @@ pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
 
 fn base_harness_contract() -> &'static str {
     "You are operating inside codegg, a coding agent harness. Use tools to inspect the repository before making claims about files, code, or project structure. Do not claim tests passed unless tool output confirms the test result. Prefer minimal, correct changes over broad rewrites."
+}
+
+/// Steering contract for long-horizon planning. Two surfaces:
+///
+/// * **In-flight planning** — use the `todo` tool. A todo is a single
+///   step the user can check off within the current turn. Update
+///   todos as you complete steps so the user can see progress.
+///
+/// * **Long-horizon planning** — when work spans many turns, many
+///   sessions, or exceeds the budget of a single in-flight todo,
+///   call `goal_set` (or the `/goal` slash command) to set a
+///   long-running goal with an objective, success criteria, and
+///   optional budget. As work progresses, call `goal_update_progress`
+///   with phase/next-action updates. When the objective is met,
+///   call `goal_request_completion` with concrete evidence (commands
+///   run, files changed, tests passing) and `remaining_risks`.
+///
+/// Do not mark a goal complete from a todo check-off alone. A
+/// successful todo is one of many steps toward the goal, not
+/// the goal itself. The runtime will validate evidence before
+/// transitioning the goal to `Complete`.
+fn goal_and_todos_contract() -> &'static str {
+    "Planning surfaces: use the `todo` tool for in-flight steps the user can check off within this turn. When work spans many turns or sessions, set a long-horizon goal with `goal_set` (or `/goal set <objective>`), then track phase/next-action with `goal_update_progress`. Mark completion with `goal_request_completion` carrying concrete evidence (commands run, files changed, tests passing) and an explicit `remaining_risks` list. A finished todo is a step toward a goal, not the goal itself — the runtime validates goal completion against evidence."
 }
 
 fn role_contract(agent: &Agent) -> &'static str {
@@ -516,6 +540,35 @@ mod tests {
         assert!(prompt.contains("Available skills: git"));
         assert!(prompt.contains("Using model:"));
         assert!(prompt.contains("Custom instruction here"));
+        // Planning contract is always included so the model knows
+        // about todos vs. long-horizon goals.
+        assert!(prompt.contains("Planning surfaces"));
+        assert!(prompt.contains("todo"));
+        assert!(prompt.contains("goal_request_completion"));
+    }
+
+    #[test]
+    fn test_planning_contract_mentions_both_surfaces() {
+        let agent = test_agent("build");
+        let config = test_config();
+        let profile = infer_builtin_profile("anthropic/claude-sonnet");
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agent,
+            config: &config,
+            model_profile: &profile,
+            tools: &[],
+            skills: &[],
+            custom_instructions: None,
+        });
+        // In-flight planning goes through todos.
+        assert!(prompt.contains("in-flight"));
+        // Long-horizon planning goes through goal_set / goal_update_progress.
+        assert!(prompt.contains("long-horizon"));
+        assert!(prompt.contains("goal_set"));
+        assert!(prompt.contains("goal_update_progress"));
+        // Completion requires concrete evidence and remaining_risks.
+        assert!(prompt.contains("evidence"));
+        assert!(prompt.contains("remaining_risks"));
     }
 
     #[test]

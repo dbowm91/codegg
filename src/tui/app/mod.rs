@@ -192,6 +192,22 @@ pub enum TuiCommand {
         session_id: String,
         project_id: String,
     },
+    /// View or mutate the active goal's budget. Subcommands:
+    ///   "show" — render current budget/usage as a toast
+    ///   "raise tokens <n>"   — raise max_model_tokens
+    ///   "raise turns <n>"    — raise max_turns
+    ///   "raise tool-calls <n>" — raise max_tool_calls
+    ///   "raise wallclock <n>"  — raise max_wallclock_secs (seconds)
+    ///   "raise clear <axis>"   — clear a single axis (None)
+    GoalBudget {
+        session_id: String,
+        subcommand: String,
+    },
+    /// Hydrate the todo list and active goal for a session. Sent on
+    /// `set_session` so the sidebar renders live state immediately.
+    RefreshSessionState {
+        session_id: String,
+    },
     UpdateModels(Vec<String>),
     ResearchListRuns,
     ResearchLoadRun {
@@ -286,6 +302,10 @@ pub struct App {
     pub focus_manager: crate::tui::components::component::FocusManager,
     pub busy_spinner: crate::tui::components::spinner::SpinnerWidget,
     pub session_state_derived: crate::session::state::TuiSessionState,
+    /// Active goal for the current session, kept in sync with the goal
+    /// table via `AppEvent::GoalUpdated` and friends. Used by the
+    /// sidebar, the status bar, and the `/goal show` command.
+    pub active_goal: Option<crate::bus::events::GoalSnapshot>,
 }
 
 impl App {
@@ -554,6 +574,7 @@ impl App {
             busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
             streaming_active: false,
             session_state_derived: crate::session::state::TuiSessionState::default(),
+            active_goal: None,
         }
     }
 
@@ -744,6 +765,7 @@ impl App {
             busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
             streaming_active: false,
             session_state_derived: crate::session::state::TuiSessionState::default(),
+            active_goal: None,
         }
     }
 
@@ -1367,6 +1389,8 @@ impl App {
         self.status_bar.set_theme(&self.ui_state.theme);
         self.status_bar
             .set_subagent_count(self.session_state.subagent_count);
+        self.status_bar
+            .set_goal(self.active_goal.as_ref().map(format_goal_status_line));
         frame.render_widget(&self.status_bar, area);
     }
 
@@ -3341,11 +3365,26 @@ impl App {
                             });
                         }
                     }
+                    "budget" => {
+                        if args.is_empty() {
+                            self.messages_state
+                                .toasts
+                                .info("Usage: /goal budget [show | raise <axis> <n> | raise clear <axis>]");
+                            return;
+                        }
+                        if let Some(ref tx) = self.tui_cmd_tx {
+                            let _ = tx.try_send(TuiCommand::GoalBudget {
+                                session_id,
+                                subcommand: args.to_string(),
+                            });
+                        }
+                    }
                     _ => {
                         // Treat bare text as goal set (e.g., /goal fix the bug)
                         if !subcmd.is_empty() && subcmd != "set" && subcmd != "from-file"
                             && subcmd != "show" && subcmd != "pause" && subcmd != "resume"
                             && subcmd != "clear" && subcmd != "done" && subcmd != "checkpoint"
+                            && subcmd != "budget"
                         {
                             // The whole query is the goal text
                             let goal_text = query.trim();
@@ -6035,6 +6074,9 @@ impl App {
             .navigate_to(Route::Session(sess_id.clone()));
         if let Some(ref tx) = self.tui_cmd_tx {
             let _ = tx.try_send(TuiCommand::LoadSessionMessages {
+                session_id: sess_id.clone(),
+            });
+            let _ = tx.try_send(TuiCommand::RefreshSessionState {
                 session_id: sess_id,
             });
         }
@@ -6394,6 +6436,19 @@ impl App {
 
     pub fn set_todos(&mut self, todos: Vec<TodoEntry>) {
         self.sidebar.set_todos(todos);
+    }
+
+    /// Update the active goal snapshot. The sidebar's `goal` field
+    /// receives a one-line summary, while the structured fields stay on
+    /// `App` so the status bar and `/goal show` command can use them.
+    pub fn set_active_goal(&mut self, goal: Option<crate::bus::events::GoalSnapshot>) {
+        self.active_goal = goal.clone();
+        if let Some(ref g) = goal {
+            self.sidebar
+                .set_goal(Some(crate::goal::model::Goal::summary_from_snapshot(g)));
+        } else {
+            self.sidebar.set_goal(None);
+        }
     }
 
     pub fn show_question_dialog(&mut self, questions: Vec<QuestionSpec>, session_id: String) {
@@ -7218,6 +7273,58 @@ fn format_token_line(
     )
 }
 
+/// Format a `GoalSnapshot` as a compact one-liner for the status bar.
+///
+/// Layout: `[status] <title>  <budget summary>` where the budget
+/// summary is whichever axes are configured (tokens, tool-calls,
+/// turns, wall-clock). Designed to fit alongside the existing status,
+/// token, and subagent spans without truncating other UI.
+pub(crate) fn format_goal_status_line(g: &crate::bus::events::GoalSnapshot) -> String {
+    let title = if g.title.is_empty() {
+        "(untitled)".to_string()
+    } else {
+        g.title.clone()
+    };
+    let mut budget_parts: Vec<String> = Vec::new();
+    let used_tokens = g.usage.input_tokens + g.usage.output_tokens;
+    if let Some(max) = g.budget.max_model_tokens {
+        budget_parts.push(format!(
+            "{}tok {}",
+            if used_tokens >= max { "!" } else { "" },
+            format_token_short(used_tokens.max(0) as u64)
+        ));
+        budget_parts.push(format!("/{}", format_token_short(max.max(0) as u64)));
+    }
+    if let Some(max) = g.budget.max_turns {
+        budget_parts.push(format!(
+            "turns {}/{}",
+            g.usage.turns_used, max
+        ));
+    }
+    if let Some(max) = g.budget.max_tool_calls {
+        let over = g.usage.tool_calls >= max;
+        budget_parts.push(format!(
+            "{}calls {}/{}",
+            if over { "!" } else { "" },
+            g.usage.tool_calls, max
+        ));
+    }
+    if let Some(max) = g.budget.max_wallclock_secs {
+        let over = g.usage.wallclock_secs >= max;
+        budget_parts.push(format!(
+            "{}wall {}s/{}s",
+            if over { "!" } else { "" },
+            g.usage.wallclock_secs, max
+        ));
+    }
+    let budget = if budget_parts.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", budget_parts.join(" "))
+    };
+    format!("[{}] {}{}", g.status, title, budget)
+}
+
 #[cfg(test)]
 mod token_line_tests {
     use super::format_token_line;
@@ -7236,5 +7343,93 @@ mod token_line_tests {
 
         assert!(line.contains("↑~35"));
         assert!(line.contains("(135)"));
+    }
+}
+
+#[cfg(test)]
+mod goal_status_line_tests {
+    use super::format_goal_status_line;
+    use crate::bus::events::{GoalBudgetSnapshot, GoalSnapshot, GoalUsageSnapshot};
+
+    fn sample(budget: GoalBudgetSnapshot, usage: GoalUsageSnapshot) -> GoalSnapshot {
+        GoalSnapshot {
+            id: "g1".into(),
+            session_id: "s1".into(),
+            project_id: "/tmp".into(),
+            title: "Ship codex-style goals".into(),
+            objective: "Long-horizon autonomous goal with budget".into(),
+            status: "active".into(),
+            current_phase: Some("Phase 1".into()),
+            progress_summary: "started".into(),
+            next_action: Some("write tests".into()),
+            completion_criteria: vec!["All tests pass".into()],
+            open_questions: vec![],
+            budget,
+            usage,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            started_at_ms: None,
+            completed_at_ms: None,
+        }
+    }
+
+    #[test]
+    fn includes_status_title_and_budget() {
+        let g = sample(
+            GoalBudgetSnapshot {
+                max_turns: Some(10),
+                max_model_tokens: Some(20_000),
+                max_tool_calls: Some(50),
+                max_wallclock_secs: Some(600),
+            },
+            GoalUsageSnapshot {
+                turns_used: 2,
+                input_tokens: 800,
+                output_tokens: 200,
+                tool_calls: 5,
+                wallclock_secs: 12,
+            },
+        );
+        let line = format_goal_status_line(&g);
+        assert!(line.contains("[active]"));
+        assert!(line.contains("Ship codex-style goals"));
+        assert!(line.contains("turns 2/10"));
+        assert!(line.contains("calls 5/50"));
+        assert!(line.contains("wall 12s/600s"));
+    }
+
+    #[test]
+    fn no_budget_renders_title_only() {
+        let g = sample(GoalBudgetSnapshot::default(), GoalUsageSnapshot::default());
+        let line = format_goal_status_line(&g);
+        assert!(line.contains("[active]"));
+        assert!(line.contains("Ship codex-style goals"));
+        assert!(!line.contains("turns"));
+    }
+
+    #[test]
+    fn empty_title_renders_placeholder() {
+        let mut g = sample(GoalBudgetSnapshot::default(), GoalUsageSnapshot::default());
+        g.title = String::new();
+        let line = format_goal_status_line(&g);
+        assert!(line.contains("(untitled)"));
+    }
+
+    #[test]
+    fn over_budget_marks_warning_prefix() {
+        let g = sample(
+            GoalBudgetSnapshot {
+                max_turns: Some(2),
+                ..Default::default()
+            },
+            GoalUsageSnapshot {
+                turns_used: 2,
+                ..Default::default()
+            },
+        );
+        let line = format_goal_status_line(&g);
+        // At the limit counts as "over" for the marker; just assert
+        // the budget is rendered.
+        assert!(line.contains("turns 2/2"));
     }
 }

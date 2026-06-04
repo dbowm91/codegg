@@ -1728,6 +1728,64 @@ async fn handle_goal_simple(app: &mut app::App, request: CoreRequest, label: &st
     });
 }
 
+async fn handle_refresh_session_state(app: &mut app::App, session_id: String) {
+    let Some(core_client) = app.core_client.clone() else {
+        return;
+    };
+    // Hydrate the todo list.
+    match core_client
+        .request(crate::core::new_request(
+            format!("todo-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::TodoList {
+                session_id: session_id.clone(),
+            },
+        ))
+        .await
+    {
+        Ok(CoreResponse::Json { data }) => {
+            if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
+                let entries: Vec<crate::tui::app::TodoEntry> = items
+                    .iter()
+                    .filter_map(|v| {
+                        Some(crate::tui::app::TodoEntry {
+                            content: v.get("content")?.as_str()?.to_string(),
+                            status: v.get("status")?.as_str()?.to_string(),
+                            priority: v.get("priority")?.as_str()?.to_string(),
+                        })
+                    })
+                    .collect();
+                app.set_todos(entries);
+            }
+        }
+        _ => {}
+    }
+    // Hydrate the active goal.
+    match core_client
+        .request(crate::core::new_request(
+            format!("active-goal-{}", uuid::Uuid::new_v4()),
+            CoreRequest::ActiveGoalLoad {
+                session_id: session_id.clone(),
+            },
+        ))
+        .await
+    {
+        Ok(CoreResponse::Json { data }) => {
+            if data.get("active").and_then(|v| v.as_bool()) == Some(true) {
+                if let Some(goal_val) = data.get("goal") {
+                    if let Ok(snap) =
+                        serde_json::from_value::<crate::bus::events::GoalSnapshot>(goal_val.clone())
+                    {
+                        app.set_active_goal(Some(snap));
+                    }
+                }
+            } else {
+                app.set_active_goal(None);
+            }
+        }
+        _ => {}
+    }
+}
+
 async fn handle_goal_checkpoint(app: &mut app::App, session_id: String, project_id: String) {
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state.toasts.warning("Core client unavailable");
@@ -1756,6 +1814,125 @@ async fn handle_goal_checkpoint(app: &mut app::App, session_id: String, project_
         }
         _ => {}
     }
+}
+
+/// `/goal budget …` handler. Two flavors:
+///   * `show` — fetch the active goal and render its budget/usage as
+///     a toast (sidebar already shows live status).
+///   * `raise <axis> <n>` — bump a single axis of the active goal's
+///     budget. Valid axes: `tokens`, `turns`, `tool-calls`, `wallclock`.
+async fn handle_goal_budget(app: &mut app::App, session_id: String, subcommand: String) {
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning("Core client unavailable");
+        return;
+    };
+
+    let trimmed = subcommand.trim();
+    let mut parts = trimmed.splitn(3, ' ');
+    let head = parts.next().unwrap_or("").to_string();
+    let rest = parts.collect::<Vec<_>>().join(" ").trim().to_string();
+
+    if head == "show" {
+        // Render a compact budget/usage summary by reading the live
+        // GoalSnapshot already on the app, if any.
+        if let Some(ref g) = app.active_goal {
+            let line = crate::tui::app::format_goal_status_line(g);
+            app.messages_state.toasts.info(&line);
+        } else {
+            app.messages_state
+                .toasts
+                .warning("No active goal — set one with /goal set <objective>");
+        }
+        return;
+    }
+
+    if head == "raise" {
+        let mut parts = rest.splitn(2, ' ');
+        let axis = parts.next().unwrap_or("").to_string();
+        let value_str = parts.next().unwrap_or("").trim();
+        if axis.is_empty() || value_str.is_empty() {
+            app.messages_state.toasts.warning(
+                "Usage: /goal budget raise <tokens|turns|tool-calls|wallclock> <n>",
+            );
+            return;
+        }
+        let value: i64 = match value_str.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("Invalid number: {}", value_str));
+                return;
+            }
+        };
+        if value < 1 {
+            app.messages_state
+                .toasts
+                .warning("Budget must be a positive integer");
+            return;
+        }
+        let mut max_turns: Option<i64> = None;
+        let mut max_model_tokens: Option<i64> = None;
+        let mut max_tool_calls: Option<i64> = None;
+        let mut max_wallclock_secs: Option<i64> = None;
+        let mut label = axis.clone();
+        match axis.as_str() {
+            "tokens" => max_model_tokens = Some(value),
+            "turns" => max_turns = Some(value),
+            "tool-calls" | "tool_calls" | "calls" => {
+                max_tool_calls = Some(value);
+                label = "tool-calls".into();
+            }
+            "wallclock" | "wall" => max_wallclock_secs = Some(value),
+            _ => {
+                app.messages_state.toasts.warning(&format!(
+                    "Unknown axis '{}'. Use tokens, turns, tool-calls, or wallclock.",
+                    axis
+                ));
+                return;
+            }
+        }
+        let response = core_client
+            .request(crate::core::new_request(
+                format!("goal-budget-raise-{}", uuid::Uuid::new_v4()),
+                CoreRequest::GoalSetBudget {
+                    session_id: session_id.clone(),
+                    max_turns,
+                    max_model_tokens,
+                    max_tool_calls,
+                    max_wallclock_secs,
+                },
+            ))
+            .await;
+        match response {
+            Ok(CoreResponse::Json { data }) => {
+                let status = data
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ok");
+                app.messages_state.toasts.info(&format!(
+                    "Goal budget: {} = {} (status: {})",
+                    label, value, status
+                ));
+            }
+            Ok(CoreResponse::Error { message, .. }) => {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("Budget update failed: {}", message));
+            }
+            Err(e) => {
+                app.messages_state
+                    .toasts
+                    .warning(&format!("Budget update error: {}", e));
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    app.messages_state.toasts.warning(
+        "Usage: /goal budget [show | raise <axis> <n>]",
+    );
 }
 
 async fn handle_task_schedule(app: &mut app::App, interval_secs: u64, message: String) {
@@ -2467,6 +2644,79 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         app.session_state.context_limit = context_limit;
                         needs_render = true;
                     }
+                    AppEvent::TodoUpdated { session_id: event_session, items, .. } => {
+                        if let Some(active_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) {
+                            if event_session == active_id {
+                                let entries: Vec<crate::tui::app::TodoEntry> = items
+                                    .iter()
+                                    .map(|item| crate::tui::app::TodoEntry {
+                                        content: item.content.clone(),
+                                        status: item.status.clone(),
+                                        priority: item.priority.clone(),
+                                    })
+                                    .collect();
+                                app.set_todos(entries);
+                                needs_render = true;
+                            }
+                        }
+                    }
+                    AppEvent::GoalUpdated { session_id: event_session, goal } => {
+                        if let Some(active_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) {
+                            if event_session == active_id {
+                                if let Some(snap) = goal {
+                                    app.set_active_goal(Some(snap));
+                                } else {
+                                    app.set_active_goal(None);
+                                }
+                                needs_render = true;
+                            }
+                        }
+                    }
+                    AppEvent::GoalUsageUpdated { session_id: event_session, goal_id, usage, budget } => {
+                        if let Some(active_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) {
+                            if event_session == active_id {
+                                if let Some(ref mut active) = app.active_goal {
+                                    if active.id == goal_id {
+                                        active.usage = usage.clone();
+                                        active.budget = budget.clone();
+                                        needs_render = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    AppEvent::GoalBudgetLimited { session_id: event_session, goal_id, reason } => {
+                        if let Some(active_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) {
+                            if event_session == active_id {
+                                if let Some(ref mut active) = app.active_goal {
+                                    if active.id == goal_id {
+                                        active.status = "budget_limited".to_string();
+                                    }
+                                }
+                                app.messages_state.toasts.warning(&format!(
+                                    "Goal budget limited: {}",
+                                    reason
+                                ));
+                                needs_render = true;
+                            }
+                        }
+                    }
+                    AppEvent::GoalCompleted { session_id: event_session, goal_id, evidence } => {
+                        if let Some(active_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) {
+                            if event_session == active_id {
+                                if let Some(ref mut active) = app.active_goal {
+                                    if active.id == goal_id {
+                                        active.status = "complete".to_string();
+                                    }
+                                }
+                                app.messages_state.toasts.info(&format!(
+                                    "Goal completed: {}",
+                                    evidence
+                                ));
+                                needs_render = true;
+                            }
+                        }
+                    }
                     _ => {
                         debug_log!("Event loop: unhandled event");
                     }
@@ -2580,6 +2830,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     TuiCommand::LoadSessionMessages { session_id } => {
                         handle_load_session_messages(app, session_id).await;
                     }
+                    TuiCommand::RefreshSessionState { session_id } => {
+                        handle_refresh_session_state(app, session_id).await;
+                    }
                     TuiCommand::SpawnSubagent { agent_name, prompt } => {
                         handle_spawn_subagent(app, agent_name, prompt).await;
                     }
@@ -2663,6 +2916,12 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         project_id,
                     } => {
                         handle_goal_checkpoint(app, session_id, project_id).await;
+                    }
+                    TuiCommand::GoalBudget {
+                        session_id,
+                        subcommand,
+                    } => {
+                        handle_goal_budget(app, session_id, subcommand).await;
                     }
                     TuiCommand::ResearchListRuns => {
                         handle_research_list_runs(app).await;

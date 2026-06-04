@@ -173,7 +173,7 @@ impl CommandRegistry {
             Command::new("/checkpoint", CommandCategory::Session, None)
                 .with_description("Create a checkpoint of current session"),
             Command::new("/goal", CommandCategory::Session, None)
-                .with_description("Manage active long-running goal (/goal set, show, pause, resume, clear, done, checkpoint, from-file)"),
+                .with_description("Manage active long-running goal (/goal set, show, pause, resume, clear, done, checkpoint, from-file, budget [show|raise <axis> <n>])"),
             Command::new("/plan", CommandCategory::Session, None)
                 .with_description("Manage task plan (/plan, /plan add, done, skip, block, clear)"),
             Command::new("/state", CommandCategory::Session, None)

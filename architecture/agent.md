@@ -81,6 +81,9 @@ pub struct AgentLoopState {
     pub start_time: Instant,      // Session start time
     pub plan_mode: bool,          // Plan mode flag
     pub plan_topic: Option<String>, // Plan mode topic
+    pub tool_call_count: usize,   // Tool calls this session
+    pub last_turn_input_tokens: i64,  // Per-turn tokens for goal accounting
+    pub last_turn_output_tokens: i64,
 }
 ```
 
@@ -647,7 +650,51 @@ Tool execution hooks:
 
 ---
 
-## 9. Prompt Assembly (`prompt.rs`)
+## 9. Goal Runtime Integration (`goal/runtime.rs`)
+
+### Purpose
+
+The goal runtime provides autonomous long-horizon work. When a user sets a goal via `/goal set <objective>`, the agent loop can continue working across multiple turns and sessions, with budget enforcement and automatic continuation.
+
+### AgentLoop Goal Fields
+
+```rust
+pub goal_store: Option<Arc<GoalStore>>,   // SQLite goal persistence
+pub goal_wall_clock: Mutex<GoalWallClock>, // Wall-clock tracking for budget
+```
+
+### Turn Lifecycle with Goals
+
+```
+Turn ends
+  → ChatEvent::Finish captures input_tokens/output_tokens
+  → publish_agent_finished() emits AgentFinished
+  → account_goal_for_turn() advances usage counters
+  → maybe_continue_goal() decides:
+      Continue → queue build_continuation_prompt(), drain follow_up
+      BudgetLimited → queue build_budget_wrap_up_prompt(), stop
+      Terminal/NoGoal → exit
+```
+
+### Per-Turn Token Tracking
+
+`AgentLoopState` tracks `last_turn_input_tokens` and `last_turn_output_tokens`, written on each `ChatEvent::Finish` inside `stream_once(&mut self, ...)`. These are reset to 0 before each continuation turn so deltas are per-turn, not cumulative.
+
+### Continuation Loop Safety
+
+`maybe_continue_goal()` caps at `MAX_CONTINUATIONS = 32` per `run()` invocation to prevent infinite loops.
+
+### Prompt Steering
+
+`goal_and_todos_contract()` in `agent/prompt.rs` instructs the model about two planning surfaces:
+- **Todos** (`todo` tool): in-flight steps the user can check off
+- **Goals** (`goal_set`/`goal_update_progress`/`goal_request_completion`): long-horizon work spanning sessions
+
+See [goal.md](goal.md) for full architecture.
+
+---
+
+## 10. Prompt Assembly (`prompt.rs`)
 
 ### Provider Prompt Selection
 
