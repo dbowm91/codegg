@@ -1980,6 +1980,7 @@ pub async fn compact_with_policy(
     let messages_ref = input.messages;
     let active_model = input.active_model;
 
+    let mut output_frame = programmatic.frame.clone();
     let mut messages = match mode {
         CompactionMode::Programmatic => {
             compile_programmatic_messages(messages_ref, &programmatic, &input.config)
@@ -1997,6 +1998,7 @@ pub async fn compact_with_policy(
                     }
                 }
             }
+            output_frame = frame.clone();
             compile_hybrid_messages(messages_ref, &programmatic, frame, &input.config)
         }
     };
@@ -2031,7 +2033,7 @@ pub async fn compact_with_policy(
 
     Ok(CompactionOutput {
         messages,
-        frame: Some(programmatic.frame),
+        frame: Some(output_frame),
         diagnostics,
         tokens_before,
         tokens_after,
