@@ -141,6 +141,37 @@ use rand;
 use std::fs::OpenOptions;
 use tokio::sync::mpsc;
 
+fn sidebar_diff_preview(project_dir: &str, path: &str, old_content: Option<&str>) -> Vec<String> {
+    const MAX_DIFF_LINES: usize = 80;
+
+    let abs_path = if std::path::Path::new(path).is_absolute() {
+        std::path::PathBuf::from(path)
+    } else {
+        std::path::Path::new(project_dir).join(path)
+    };
+    let new_content = std::fs::read_to_string(abs_path).unwrap_or_default();
+    let old_content = old_content.unwrap_or_default();
+
+    let diff = similar::TextDiff::from_lines(old_content, &new_content);
+    let mut preview = Vec::new();
+    for change in diff.iter_all_changes() {
+        let marker = match change.tag() {
+            similar::ChangeTag::Delete => "-",
+            similar::ChangeTag::Insert => "+",
+            similar::ChangeTag::Equal => continue,
+        };
+        preview.push(format!("{marker}{}", change.value().trim_end()));
+        if preview.len() >= MAX_DIFF_LINES {
+            break;
+        }
+    }
+
+    if preview.len() == MAX_DIFF_LINES {
+        preview.push("...".to_string());
+    }
+    preview
+}
+
 macro_rules! debug_log {
     ($($arg:tt)*) => {
         let _ = OpenOptions::new()
@@ -2549,15 +2580,40 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     AppEvent::FileChanged { path, action, old_content } => {
                         debug_log!("Event loop: FileChanged for path={}, action={}", path, action);
-                        // Note: old_content is available for snapshot checkpointing
-                        let _ = old_content; // Suppress unused warning
-                        app.session_state.changed_files.push(
-                            crate::tui::app::state::session::ChangedFile {
-                                path: std::path::PathBuf::from(&path),
-                                action: action.clone(),
-                            },
+                        let diff_preview = sidebar_diff_preview(
+                            &app.session_state.project_dir,
+                            &path,
+                            old_content.as_deref(),
                         );
-                        app.sidebar.set_file_changes(vec![format!("{} ({})", path, action)]);
+                        let path_buf = std::path::PathBuf::from(&path);
+                        if let Some(existing) = app
+                            .session_state
+                            .changed_files
+                            .iter_mut()
+                            .find(|file| file.path == path_buf)
+                        {
+                            existing.action = action.clone();
+                            existing.diff_preview = diff_preview;
+                        } else {
+                            app.session_state.changed_files.push(
+                                crate::tui::app::state::session::ChangedFile {
+                                    path: path_buf,
+                                    action: action.clone(),
+                                    diff_preview,
+                                },
+                            );
+                        }
+                        let changes = app
+                            .session_state
+                            .changed_files
+                            .iter()
+                            .map(|file| crate::tui::components::sidebar::SidebarFileChange {
+                                path: file.path.to_string_lossy().into_owned(),
+                                action: file.action.clone(),
+                                diff_preview: file.diff_preview.clone(),
+                            })
+                            .collect();
+                        app.sidebar.set_file_changes(changes);
                         needs_render = true;
                     }
                     AppEvent::Error { message } => {

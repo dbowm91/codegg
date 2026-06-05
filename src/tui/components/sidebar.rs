@@ -3,18 +3,37 @@ use crate::session::Session;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget,
+    Widget,
+};
 use std::sync::Arc;
 
 use super::super::app::TodoEntry;
 use super::super::theme::Theme;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarSection {
+    Goal,
+    Plan,
+    Todos,
+    FileChanges,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HoveredElement {
+    Section(SidebarSection),
     Todo(usize),
     McpServer(usize),
     FileChange(usize),
     None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarFileChange {
+    pub path: String,
+    pub action: String,
+    pub diff_preview: Vec<String>,
 }
 
 pub struct SidebarWidget {
@@ -25,12 +44,17 @@ pub struct SidebarWidget {
     pub model: String,
     pub todos: Vec<TodoEntry>,
     pub mcp_servers: Vec<(String, String)>,
-    pub file_changes: Vec<String>,
+    pub file_changes: Vec<SidebarFileChange>,
     pub git_branch: Option<String>,
     pub git_dirty: bool,
     pub project_root: Option<String>,
     pub goal: Option<String>,
     pub plan: Option<AgentPlan>,
+    scroll_offset: usize,
+    goal_collapsed: bool,
+    plan_collapsed: bool,
+    todos_collapsed: bool,
+    file_changes_collapsed: bool,
     hovered_element: HoveredElement,
     tooltip_text: String,
 }
@@ -51,6 +75,11 @@ impl SidebarWidget {
             project_root: None,
             goal: None,
             plan: None,
+            scroll_offset: 0,
+            goal_collapsed: false,
+            plan_collapsed: false,
+            todos_collapsed: false,
+            file_changes_collapsed: false,
             hovered_element: HoveredElement::None,
             tooltip_text: String::new(),
         }
@@ -84,8 +113,8 @@ impl SidebarWidget {
         self.mcp_servers = servers;
     }
 
-    pub fn set_file_changes(&mut self, paths: Vec<String>) {
-        self.file_changes = paths;
+    pub fn set_file_changes(&mut self, changes: Vec<SidebarFileChange>) {
+        self.file_changes = changes;
     }
 
     pub fn set_git_info(&mut self, branch: Option<String>, dirty: bool, root: Option<String>) {
@@ -110,6 +139,37 @@ impl SidebarWidget {
 
     pub fn focused_name(&self) -> Option<&str> {
         None
+    }
+
+    pub fn scroll_up(&mut self, area: Rect) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(scroll_step(area));
+    }
+
+    pub fn scroll_down(&mut self, area: Rect) {
+        self.scroll_offset = (self.scroll_offset + scroll_step(area)).min(self.max_scroll(area));
+    }
+
+    pub fn toggle_hovered_section(&mut self) -> bool {
+        let HoveredElement::Section(section) = self.hovered_element else {
+            return false;
+        };
+
+        match section {
+            SidebarSection::Goal => self.goal_collapsed = !self.goal_collapsed,
+            SidebarSection::Plan => self.plan_collapsed = !self.plan_collapsed,
+            SidebarSection::Todos => self.todos_collapsed = !self.todos_collapsed,
+            SidebarSection::FileChanges => {
+                self.file_changes_collapsed = !self.file_changes_collapsed;
+            }
+        }
+        true
+    }
+
+    pub fn max_scroll(&self, area: Rect) -> usize {
+        let viewport_height = sidebar_content_height(area) as usize;
+        self.content_lines(area.width)
+            .len()
+            .saturating_sub(viewport_height)
     }
 
     pub fn set_hover_position(&mut self, x: u16, y: u16, area: Option<Rect>) {
@@ -141,154 +201,119 @@ impl SidebarWidget {
     }
 
     fn element_at(&self, _x: u16, y: u16) -> HoveredElement {
-        let mut line_num = 1u16;
+        let visible_y = y.saturating_sub(1) as usize;
+        self.line_targets()
+            .get(self.scroll_offset + visible_y)
+            .cloned()
+            .unwrap_or(HoveredElement::None)
+    }
 
-        // Session header
-        line_num += 1;
+    fn line_targets(&self) -> Vec<HoveredElement> {
+        let mut targets = Vec::new();
+
+        targets.push(HoveredElement::None);
         if self.session.is_some() {
-            line_num += 3; // title, id, shared
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::None);
+            if self
+                .session
+                .as_ref()
+                .and_then(|s| s.share_url.as_ref())
+                .is_some()
+            {
+                targets.push(HoveredElement::None);
+            }
         } else {
-            line_num += 1; // "no session"
+            targets.push(HoveredElement::None);
         }
 
-        // Git header + content (blank before, no blank after)
-        line_num += 1; // blank before
-        line_num += 1; // header
-        if self.git_branch.is_some() {
-            line_num += if self.git_dirty { 2 } else { 1 };
-        } else {
-            line_num += 1;
+        targets.push(HoveredElement::None);
+        targets.push(HoveredElement::None);
+        targets.push(HoveredElement::None);
+        if self.git_branch.is_some() && self.git_dirty {
+            targets.push(HoveredElement::None);
         }
 
-        // Config header + content
-        line_num += 1; // blank before
-        line_num += 1; // header
-        line_num += 2; // agent, model
+        targets.push(HoveredElement::None);
+        targets.push(HoveredElement::None);
+        targets.push(HoveredElement::None);
         if !self.provider.is_empty() {
-            line_num += 1; // provider
+            targets.push(HoveredElement::None);
         }
+        targets.push(HoveredElement::None);
 
-        // Goal section (conditional)
         if self.goal.is_some() {
-            line_num += 1; // blank before
-            line_num += 1; // header
-            line_num += 1; // goal text
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::Section(SidebarSection::Goal));
+            if !self.goal_collapsed {
+                targets.push(HoveredElement::None);
+            }
         }
 
-        // Plan section (conditional)
         if let Some(ref plan) = self.plan {
             if !plan.items.is_empty() {
-                line_num += 1; // blank before
-                line_num += 1; // header
-                for _item in &plan.items {
-                    if y == line_num {
-                        return HoveredElement::None;
+                targets.push(HoveredElement::None);
+                targets.push(HoveredElement::Section(SidebarSection::Plan));
+                if !self.plan_collapsed {
+                    for _ in &plan.items {
+                        targets.push(HoveredElement::None);
                     }
-                    line_num += 1;
                 }
             }
         }
 
-        // Tokens section removed
-
-        // Todos header + items
         if !self.todos.is_empty() {
-            line_num += 1; // blank before
-            line_num += 1; // header
-            for i in 0..self.todos.len() {
-                if y == line_num {
-                    return HoveredElement::Todo(i);
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::Section(SidebarSection::Todos));
+            if !self.todos_collapsed {
+                for i in 0..self.todos.len() {
+                    targets.push(HoveredElement::Todo(i));
                 }
-                line_num += 1;
             }
         }
 
-        // MCP Servers header + items
         if !self.mcp_servers.is_empty() {
-            line_num += 1; // blank before
-            line_num += 1; // header
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::None);
             for i in 0..self.mcp_servers.len() {
-                if y == line_num {
-                    return HoveredElement::McpServer(i);
-                }
-                line_num += 1;
+                targets.push(HoveredElement::McpServer(i));
             }
         }
 
-        // File Changes header + items
         if !self.file_changes.is_empty() {
-            line_num += 1; // blank before
-            line_num += 1; // header
-            for i in 0..self.file_changes.len() {
-                if y == line_num {
-                    return HoveredElement::FileChange(i);
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::Section(SidebarSection::FileChanges));
+            if !self.file_changes_collapsed {
+                for (i, change) in self.file_changes.iter().enumerate() {
+                    targets.push(HoveredElement::FileChange(i));
+                    for _ in &change.diff_preview {
+                        targets.push(HoveredElement::FileChange(i));
+                    }
                 }
-                line_num += 1;
             }
         }
 
-        HoveredElement::None
+        targets
     }
 
-    fn get_tooltip_for_hover(&self) -> String {
-        match &self.hovered_element {
-            HoveredElement::Todo(idx) => {
-                if let Some(todo) = self.todos.get(*idx) {
-                    format!("Todo: {} [{}]", todo.content, todo.status)
-                } else {
-                    String::new()
-                }
-            }
-            HoveredElement::McpServer(idx) => {
-                if let Some((name, status)) = self.mcp_servers.get(*idx) {
-                    format!("MCP Server: {} ({})", name, status)
-                } else {
-                    String::new()
-                }
-            }
-            HoveredElement::FileChange(idx) => {
-                if let Some(path) = self.file_changes.get(*idx) {
-                    format!("Modified: {}", path)
-                } else {
-                    String::new()
-                }
-            }
-            HoveredElement::None => String::new(),
-        }
-    }
-
-    fn section_header<'a>(&self, label: &'a str) -> Line<'a> {
-        let style = Style::default()
-            .fg(self.theme.primary)
-            .add_modifier(Modifier::BOLD);
-        Line::from(Span::styled(label, style))
-    }
-}
-
-impl Default for SidebarWidget {
-    fn default() -> Self {
-        Self::new(Arc::new(Theme::dark()))
-    }
-}
-
-impl Widget for &SidebarWidget {
-    fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
-        let mut lines: Vec<Line> = Vec::new();
+    fn content_lines(&self, area_width: u16) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        let width = area_width as usize;
 
         lines.push(self.section_header(" Session "));
         if let Some(sess) = &self.session {
             lines.push(Line::from(vec![
                 Span::styled("title: ", Style::default().fg(self.theme.muted)),
-                Span::raw(&sess.title),
+                Span::raw(clean_inline_text(&sess.title, width.saturating_sub(9))),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("id: ", Style::default().fg(self.theme.muted)),
-                Span::raw(&sess.id[..8.min(sess.id.len())]),
+                Span::raw(sess.id[..8.min(sess.id.len())].to_string()),
             ]));
             if let Some(ref url) = sess.share_url {
                 lines.push(Line::from(vec![
                     Span::styled("shared: ", Style::default().fg(self.theme.success)),
-                    Span::raw(url),
+                    Span::raw(clean_inline_text(url, width.saturating_sub(10))),
                 ]));
             }
         } else {
@@ -303,12 +328,12 @@ impl Widget for &SidebarWidget {
         if let Some(ref branch) = self.git_branch {
             lines.push(Line::from(vec![
                 Span::styled("branch: ", Style::default().fg(self.theme.muted)),
-                Span::raw(branch),
+                Span::raw(clean_inline_text(branch, width.saturating_sub(10))),
             ]));
             if self.git_dirty {
                 lines.push(Line::from(vec![
                     Span::styled("status: ", Style::default().fg(self.theme.warning)),
-                    Span::raw("✗ dirty"),
+                    Span::raw("dirty"),
                 ]));
             }
         } else {
@@ -322,90 +347,92 @@ impl Widget for &SidebarWidget {
         lines.push(self.section_header(" Config "));
         lines.push(Line::from(vec![
             Span::styled("agent: ", Style::default().fg(self.theme.muted)),
-            Span::raw(&self.agent),
+            Span::raw(clean_inline_text(&self.agent, width.saturating_sub(9))),
         ]));
         if !self.provider.is_empty() {
             lines.push(Line::from(vec![
                 Span::styled("provider: ", Style::default().fg(self.theme.muted)),
-                Span::raw(&self.provider),
+                Span::raw(clean_inline_text(&self.provider, width.saturating_sub(12))),
             ]));
         }
         let model_short = self.model.split('/').next_back().unwrap_or(&self.model);
         lines.push(Line::from(vec![
             Span::styled("model: ", Style::default().fg(self.theme.muted)),
-            Span::raw(model_short),
+            Span::raw(clean_inline_text(model_short, width.saturating_sub(9))),
         ]));
 
         if self.goal.is_some() {
             lines.push(Line::from(""));
-            lines.push(self.section_header(" Goal "));
+            lines.push(self.collapsible_header(" Goal ", self.goal_collapsed));
             if let Some(ref goal) = self.goal {
-                let display = if goal.len() > (area.width as usize).saturating_sub(4) {
-                    format!("{}…", &goal[..(area.width as usize).saturating_sub(5)])
-                } else {
-                    goal.clone()
-                };
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", display),
-                    Style::default().fg(self.theme.foreground),
-                )));
+                if !self.goal_collapsed {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {}", clean_inline_text(goal, width.saturating_sub(4))),
+                        Style::default().fg(self.theme.foreground),
+                    )));
+                }
             }
         }
 
         if let Some(ref plan) = self.plan {
             if !plan.items.is_empty() {
                 lines.push(Line::from(""));
-                lines.push(self.section_header(" Plan "));
-                for item in &plan.items {
-                    let (icon, style) = match item.status {
-                        crate::session::events::PlanItemStatus::Done => {
-                            ("[x]", Style::default().fg(self.theme.success))
-                        }
-                        crate::session::events::PlanItemStatus::InProgress => {
-                            ("[>]", Style::default().fg(self.theme.warning))
-                        }
-                        crate::session::events::PlanItemStatus::Skipped => {
-                            ("[-]", Style::default().fg(self.theme.muted))
-                        }
-                        crate::session::events::PlanItemStatus::Blocked => {
-                            ("[?]", Style::default().fg(self.theme.error))
-                        }
-                        crate::session::events::PlanItemStatus::Pending => {
-                            ("[ ]", Style::default().fg(self.theme.muted))
-                        }
-                    };
-                    let text = if item.text.len() > (area.width as usize).saturating_sub(8) {
-                        format!(
-                            "{}…",
-                            &item.text[..(area.width as usize).saturating_sub(9)]
-                        )
-                    } else {
-                        item.text.clone()
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("  {} ", icon), style),
-                        Span::styled(text, Style::default().fg(self.theme.foreground)),
-                    ]));
+                lines.push(self.collapsible_header(
+                    &format!(" Plan ({}) ", plan.items.len()),
+                    self.plan_collapsed,
+                ));
+                if !self.plan_collapsed {
+                    for item in &plan.items {
+                        let (icon, style) = match item.status {
+                            crate::session::events::PlanItemStatus::Done => {
+                                ("[x]", Style::default().fg(self.theme.success))
+                            }
+                            crate::session::events::PlanItemStatus::InProgress => {
+                                ("[>]", Style::default().fg(self.theme.warning))
+                            }
+                            crate::session::events::PlanItemStatus::Skipped => {
+                                ("[-]", Style::default().fg(self.theme.muted))
+                            }
+                            crate::session::events::PlanItemStatus::Blocked => {
+                                ("[?]", Style::default().fg(self.theme.error))
+                            }
+                            crate::session::events::PlanItemStatus::Pending => {
+                                ("[ ]", Style::default().fg(self.theme.muted))
+                            }
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("  {} ", icon), style),
+                            Span::styled(
+                                clean_inline_text(&item.text, width.saturating_sub(8)),
+                                Style::default().fg(self.theme.foreground),
+                            ),
+                        ]));
+                    }
                 }
             }
         }
 
         if !self.todos.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.section_header(" Todos "));
-            for todo in &self.todos {
-                let status_icon = match todo.status.as_str() {
-                    "completed" => "✓",
-                    "pending" => "○",
-                    _ => "○",
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{status_icon} "),
-                        Style::default().fg(self.theme.muted),
-                    ),
-                    Span::raw(&todo.content),
-                ]));
+            lines.push(self.collapsible_header(
+                &format!(" Todos ({}) ", self.todos.len()),
+                self.todos_collapsed,
+            ));
+            if !self.todos_collapsed {
+                for todo in &self.todos {
+                    let status_icon = match todo.status.as_str() {
+                        "completed" => "[x]",
+                        "in_progress" => "[>]",
+                        _ => "[ ]",
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{status_icon} "),
+                            Style::default().fg(self.theme.muted),
+                        ),
+                        Span::raw(clean_inline_text(&todo.content, width.saturating_sub(6))),
+                    ]));
+                }
             }
         }
 
@@ -414,10 +441,10 @@ impl Widget for &SidebarWidget {
             lines.push(self.section_header(" MCP Servers "));
             for (name, status) in &self.mcp_servers {
                 let dot = match status.as_str() {
-                    "connected" => "●",
-                    "connecting" => "◐",
-                    "error" => "✗",
-                    _ => "○",
+                    "connected" => "*",
+                    "connecting" => "~",
+                    "error" => "!",
+                    _ => "-",
                 };
                 let dot_style = match status.as_str() {
                     "connected" => Style::default().fg(self.theme.success),
@@ -427,21 +454,109 @@ impl Widget for &SidebarWidget {
                 };
                 lines.push(Line::from(vec![
                     Span::styled(format!("{dot} "), dot_style),
-                    Span::raw(name),
+                    Span::raw(clean_inline_text(name, width.saturating_sub(4))),
                 ]));
             }
         }
 
         if !self.file_changes.is_empty() {
             lines.push(Line::from(""));
-            lines.push(self.section_header(" File Changes "));
-            for path in &self.file_changes {
-                lines.push(Line::from(vec![
-                    Span::styled("  M ", Style::default().fg(self.theme.warning)),
-                    Span::raw(path),
-                ]));
+            lines.push(self.collapsible_header(
+                &format!(" Modified Files ({}) ", self.file_changes.len()),
+                self.file_changes_collapsed,
+            ));
+            if !self.file_changes_collapsed {
+                for change in &self.file_changes {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {} ", clean_inline_text(&change.action, 1)),
+                            Style::default().fg(self.theme.warning),
+                        ),
+                        Span::raw(clean_inline_text(&change.path, width.saturating_sub(6))),
+                    ]));
+                    for preview in &change.diff_preview {
+                        let style = if preview.starts_with('+') {
+                            Style::default().fg(self.theme.success)
+                        } else if preview.starts_with('-') {
+                            Style::default().fg(self.theme.error)
+                        } else if preview.starts_with("@@") {
+                            Style::default().fg(self.theme.primary)
+                        } else {
+                            Style::default().fg(self.theme.muted)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "    {}",
+                                clean_inline_text(preview, width.saturating_sub(6))
+                            ),
+                            style,
+                        )));
+                    }
+                }
             }
         }
+
+        lines
+    }
+
+    fn get_tooltip_for_hover(&self) -> String {
+        match &self.hovered_element {
+            HoveredElement::Section(section) => match section {
+                SidebarSection::Goal => "Click to collapse/expand goal".to_string(),
+                SidebarSection::Plan => "Click to collapse/expand plan".to_string(),
+                SidebarSection::Todos => "Click to collapse/expand todos".to_string(),
+                SidebarSection::FileChanges => {
+                    "Click to collapse/expand modified files".to_string()
+                }
+            },
+            HoveredElement::Todo(idx) => self
+                .todos
+                .get(*idx)
+                .map(|todo| format!("Todo: {} [{}]", todo.content, todo.status))
+                .unwrap_or_default(),
+            HoveredElement::McpServer(idx) => self
+                .mcp_servers
+                .get(*idx)
+                .map(|(name, status)| format!("MCP Server: {} ({})", name, status))
+                .unwrap_or_default(),
+            HoveredElement::FileChange(idx) => self
+                .file_changes
+                .get(*idx)
+                .map(|change| format!("Modified: {} ({})", change.path, change.action))
+                .unwrap_or_default(),
+            HoveredElement::None => String::new(),
+        }
+    }
+
+    fn section_header(&self, label: &str) -> Line<'static> {
+        let style = Style::default()
+            .fg(self.theme.primary)
+            .add_modifier(Modifier::BOLD);
+        Line::from(Span::styled(label.to_string(), style))
+    }
+
+    fn collapsible_header(&self, label: &str, collapsed: bool) -> Line<'static> {
+        let marker = if collapsed { "[+]" } else { "[-]" };
+        let style = Style::default()
+            .fg(self.theme.primary)
+            .add_modifier(Modifier::BOLD);
+        Line::from(vec![
+            Span::styled(format!("{marker} "), Style::default().fg(self.theme.muted)),
+            Span::styled(label.to_string(), style),
+        ])
+    }
+}
+
+impl Default for SidebarWidget {
+    fn default() -> Self {
+        Self::new(Arc::new(Theme::dark()))
+    }
+}
+
+impl Widget for &SidebarWidget {
+    fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
+        let lines = self.content_lines(area.width);
+        let scroll_offset = self.scroll_offset.min(self.max_scroll(area));
 
         let block = Block::default()
             .title(" Sidebar ")
@@ -449,8 +564,22 @@ impl Widget for &SidebarWidget {
             .border_style(Style::default().fg(self.theme.border))
             .style(Style::default().bg(self.theme.background));
 
-        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .scroll((scroll_offset as u16, 0));
         paragraph.render(area, buf);
+
+        if self.max_scroll(area) > 0 {
+            let mut state =
+                ScrollbarState::new(self.content_lines(area.width).len()).position(scroll_offset);
+            Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .thumb_style(Style::default().fg(self.theme.foreground))
+                .track_style(Style::default().fg(self.theme.border))
+                .begin_symbol(None)
+                .end_symbol(None)
+                .render(area, buf, &mut state);
+        }
 
         if let Some(tooltip) = self.get_tooltip() {
             let tooltip_width = (tooltip.len() as u16 + 4).min(area.width.saturating_sub(3));
@@ -480,4 +609,41 @@ impl Widget for &SidebarWidget {
             }
         }
     }
+}
+
+fn scroll_step(area: Rect) -> usize {
+    ((sidebar_content_height(area) as usize) / 3).max(1)
+}
+
+fn sidebar_content_height(area: Rect) -> u16 {
+    area.height.saturating_sub(2)
+}
+
+pub fn clean_inline_text(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for ch in value.trim().chars() {
+        if ch == '\n' || ch == '\r' || ch.is_control() {
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let count = out.chars().count();
+    if count <= max_chars {
+        return out;
+    }
+
+    if max_chars <= 1 {
+        return "...".chars().take(max_chars).collect();
+    }
+
+    let keep = max_chars.saturating_sub(1);
+    format!("{}…", out.chars().take(keep).collect::<String>())
 }

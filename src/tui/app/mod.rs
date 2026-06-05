@@ -20,7 +20,7 @@ use super::components::dialogs::theme::ThemePickerDialog;
 use super::components::dialogs::tree::TreeDialog;
 use super::components::messages::{MessageRole, MessagesWidget, MsgPart};
 use super::components::prompt::PromptWidget;
-use super::components::sidebar::SidebarWidget;
+use super::components::sidebar::{clean_inline_text, SidebarWidget};
 use super::components::status_bar::StatusBarWidget;
 use super::components::toast::ToastManager;
 use super::input::{
@@ -1159,7 +1159,7 @@ impl App {
         };
         let context_indicator = self.active_context_indicator();
         let sess_title = if let Some(ref session) = self.session_state.session {
-            format!("[{}]  ", session.title)
+            format!("[{}]  ", clean_inline_text(&session.title, 48))
         } else {
             String::new()
         };
@@ -1412,6 +1412,17 @@ impl App {
         self.sidebar.set_provider(&provider);
         self.sidebar
             .set_mcp_servers(self.session_state.mcp_servers.clone());
+        self.sidebar.set_file_changes(
+            self.session_state
+                .changed_files
+                .iter()
+                .map(|file| super::components::sidebar::SidebarFileChange {
+                    path: file.path.to_string_lossy().into_owned(),
+                    action: file.action.clone(),
+                    diff_preview: file.diff_preview.clone(),
+                })
+                .collect(),
+        );
 
         if let Some(ref sess) = self.session_state.session {
             let project_dir = std::path::Path::new(&sess.project_id);
@@ -3733,7 +3744,7 @@ impl App {
             }
             ClickTarget::Dialog => "Enter: Select | Esc: Close".to_string(),
             ClickTarget::Completion => "Tab/Enter: Complete | Esc: Close".to_string(),
-            ClickTarget::Sidebar => "Click: Toggle section | j/k: Navigate".to_string(),
+            ClickTarget::Sidebar => "Click: Collapse section | Wheel: Scroll sidebar".to_string(),
             ClickTarget::Scrollbar { .. } => {
                 "Click/drag: Jump | Scroll: Page up/down".to_string()
             }
@@ -3938,9 +3949,7 @@ impl App {
                 }
             }
             ClickTarget::Sidebar => {
-                if self.ui_state.sidebar_visible {
-                    self.sidebar.toggle_focused();
-                }
+                self.sidebar.toggle_hovered_section();
             }
             ClickTarget::Scrollbar {
                 track_y,
@@ -3979,11 +3988,13 @@ impl App {
 
     fn on_scroll_up(&mut self, target: &ClickTarget) {
         match target {
-            ClickTarget::Viewport
-            | ClickTarget::Prompt
-            | ClickTarget::Sidebar
-            | ClickTarget::None => {
+            ClickTarget::Viewport | ClickTarget::Prompt | ClickTarget::None => {
                 self.messages_state.messages.scroll_up();
+            }
+            ClickTarget::Sidebar => {
+                if let Some(area) = self.sidebar_area {
+                    self.sidebar.scroll_up(area);
+                }
             }
             ClickTarget::Dialog => {
                 let up_key = crossterm::event::KeyEvent::new(
@@ -4007,11 +4018,13 @@ impl App {
 
     fn on_scroll_down(&mut self, target: &ClickTarget) {
         match target {
-            ClickTarget::Viewport
-            | ClickTarget::Prompt
-            | ClickTarget::Sidebar
-            | ClickTarget::None => {
+            ClickTarget::Viewport | ClickTarget::Prompt | ClickTarget::None => {
                 self.messages_state.messages.scroll_down();
+            }
+            ClickTarget::Sidebar => {
+                if let Some(area) = self.sidebar_area {
+                    self.sidebar.scroll_down(area);
+                }
             }
             ClickTarget::Dialog => {
                 let down_key = crossterm::event::KeyEvent::new(

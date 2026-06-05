@@ -11,6 +11,7 @@ use crate::tui::app::types::{HistoryEntry, SessionStatus};
 pub struct ChangedFile {
     pub path: PathBuf,
     pub action: String,
+    pub diff_preview: Vec<String>,
 }
 
 pub struct SessionState {
