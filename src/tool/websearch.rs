@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::error::ToolError;
 use crate::security::ssrf::{revalidate_dns, validate_host_ip};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -153,6 +153,10 @@ impl Tool for WebSearchTool {
             },
             "required": ["query"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

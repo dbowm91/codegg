@@ -69,6 +69,7 @@ impl CoreClient for InprocCoreClient {
                 agents,
                 current_agent_idx,
                 messages,
+                plan_mode,
                 ..
             } => {
                 if current_agent_idx >= agents.len() {
@@ -129,7 +130,8 @@ impl CoreClient for InprocCoreClient {
                     tool_registry.register(task_tool);
                 }
                 let permission_checker =
-                    crate::permission::PermissionChecker::new(Some(&config), None);
+                    crate::permission::PermissionChecker::new(Some(&config), None)
+                        .with_active_mode(&config);
                 let memory_context = self
                     .memory_store
                     .as_ref()
@@ -185,6 +187,16 @@ impl CoreClient for InprocCoreClient {
                     String::new()
                 };
                 system.push_str(&goal_context);
+
+                // Inject plan mode contract if the user submitted this turn
+                // with plan_mode enabled. The agent loop's `filter_tools_for_model`
+                // also hides mutating tools, but the model needs explicit text
+                // awareness so it doesn't try to use shell commands or
+                // write tools that don't exist in its schema.
+                if plan_mode {
+                    system.push_str("\n\n");
+                    system.push_str(crate::agent::prompt::plan_mode_contract());
+                }
 
                 // Register session-scoped goal tools
                 if let Some(pool) = self.pool.clone() {

@@ -7,7 +7,7 @@ use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
 use crate::tool::util::{canonicalize_path, validate_path};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 const MAX_INPUT_SIZE: usize = 100_000;
 
@@ -71,6 +71,10 @@ impl Tool for EditTool {
             },
             "required": ["path", "old_string", "new_string"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

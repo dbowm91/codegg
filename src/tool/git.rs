@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use crate::error::ToolError;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 pub struct GitTool {
     timeout: Duration,
@@ -71,6 +71,10 @@ impl Tool for GitTool {
             },
             "required": ["subcommand"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

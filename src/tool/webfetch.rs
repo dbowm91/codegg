@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::error::ToolError;
 use crate::security::ssrf::{revalidate_dns, validate_host_ip, validate_url_host};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024; // 5MB
 const IMAGE_CONTENT_TYPES: &[&str] = &[
@@ -76,6 +76,10 @@ impl Tool for WebFetchTool {
             },
             "required": ["url"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

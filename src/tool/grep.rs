@@ -10,7 +10,7 @@ use tokio::sync::Semaphore;
 
 use crate::error::ToolError;
 use crate::tool::util::{canonicalize_path, validate_path};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 const MAX_GLOBAL_RESULTS: usize = 10_000;
 const MAX_PER_FILE_RESULTS: usize = 1_000;
@@ -74,6 +74,10 @@ impl Tool for GrepTool {
             },
             "required": ["pattern"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

@@ -30,6 +30,35 @@ pub trait Tool: Send + Sync {
 **Important Notes**:
 - Tools receive only `serde_json::Value` as input (no `ToolContext` struct)
 - `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`) - a common oversight
+- Every `Tool` reports a `ToolCategory` via `fn category(&self) -> ToolCategory { ReadOnly }` (with a default of `ReadOnly`)
+
+### ToolCategory
+
+Defined in `src/tool/mod.rs`, the category drives permission gating and
+which tools survive `filter_tools_for_model()` (plan mode):
+
+```rust
+pub enum ToolCategory {
+    ReadOnly,       // never prompts (read, glob, grep, list, webfetch, lsp, diff, plan_*, ...)
+    SafeMutating,   // never prompts (todowrite, todoread, question, invalid)
+    Mutating,       // normal Ask/Allow path (edit, write, apply_patch, replace, image, terminal, git, commit, review, task, ...)
+    ShellExec,      // routed to destructive-pattern fallback (bash, ...)
+}
+
+impl ToolCategory {
+    pub fn is_permission_free(&self) -> bool {
+        matches!(self, Self::ReadOnly | Self::SafeMutating)
+    }
+}
+```
+
+The lookup helper `tool_category_for_name()` in `src/permission/mod.rs`
+maps a tool name to a category for the permission checker, falling back
+to `Mutating` for unknown tools. This means the permission flow
+short-circuits to `Allow` for read-only / safe-mutating tools before
+any store / rule / glob check (a persistent `Deny` still wins), and
+shell-exec tools get the destructive-pattern fallback described in
+[permission.md](permission.md#toolcategory--permission-free-tools).
 
 ### ToolResult
 
@@ -88,7 +117,7 @@ pub struct ToolResult {
 
 | Tool | File | Description |
 |------|------|-------------|
-| **plan_enter** | `plan.rs` | Enter plan mode (experimental). Denies edit tools, only allows plan file editing. |
+| **plan_enter** | `plan.rs` | Enter plan mode. Toolset is reduced to read-only + `todowrite` + `bash`; bash is auto-rejected unless it matches the destructive-pattern allowlist (only safe commands). |
 | **plan_exit** | `plan.rs` | Exit plan mode and switch to build agent. Optionally specify plan file. |
 
 ### User Interaction

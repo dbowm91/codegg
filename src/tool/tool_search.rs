@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::error::ToolError;
 use crate::tool::catalog::ToolCatalog;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 /// Tool for searching available tools by query.
 ///
@@ -66,6 +66,10 @@ impl Tool for ToolSearchTool {
             },
             "required": ["query"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

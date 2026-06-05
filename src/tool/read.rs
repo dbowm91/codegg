@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::ToolError;
 use crate::tool::util::{canonicalize_path, validate_path};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 const IMAGE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "tiff",
@@ -194,6 +194,10 @@ impl Tool for ReadTool {
             },
             "required": ["path"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

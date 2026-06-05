@@ -1,6 +1,6 @@
 use crate::error::ToolError;
 use crate::tool::util::{canonicalize_path, check_path_for_symlinks, validate_path};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -74,6 +74,10 @@ impl Tool for ApplyPatchTool {
             },
             "required": ["path", "patch"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

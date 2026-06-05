@@ -1,5 +1,5 @@
 use crate::error::ToolError;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -18,7 +18,7 @@ impl Tool for PlanEnterTool {
     }
 
     fn description(&self) -> &str {
-        "Experimental: Enter plan mode. Denies all edit tools and only allows editing plan files. Use this to switch from build to planning."
+        "Enter plan mode. While in plan mode, mutating tools (edit, write, etc.) are hidden; you have access to read-only inspection tools, todowrite/todoread (recommended planning surface), and read-only bash. Use plan_exit to switch back to build mode."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -33,6 +33,10 @@ impl Tool for PlanEnterTool {
         })
     }
 
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let parsed: PlanEnterInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Execution(format!("invalid plan_enter input: {e}")))?;
@@ -42,13 +46,14 @@ impl Tool for PlanEnterTool {
         Ok(format!(
             "__PLAN_MODE_ENTER__:{topic}\n\n\
             In plan mode you can:\n\
-            - Read files and analyze code\n\
-            - Create and edit plan files (.md files in the project)\n\
-            - Use glob, grep, and read tools\n\n\
+            - Read files and analyze code (read, glob, grep, list, codesearch, webfetch, lsp, skill)\n\
+            - Use todowrite to record plan steps (this is the recommended planning surface)\n\
+            - Use todoread to inspect existing todos\n\
+            - Run read-only bash commands (ls, cat, grep, git status, cargo check, etc.)\n\n\
             You CANNOT:\n\
-            - Edit source files\n\
-            - Execute commands\n\
-            - Write to non-plan files\n\n\
+            - Edit, write, or modify source files\n\
+            - Run mutating shell commands (rm, mv, install scripts, etc.)\n\
+            - Spawn subagents that modify state\n\n\
             Use plan_exit when ready to switch back to build mode."
         ))
     }
@@ -82,6 +87,10 @@ impl Tool for PlanExitTool {
                 }
             }
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

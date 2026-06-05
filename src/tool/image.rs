@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::error::ToolError;
 use crate::security::ssrf::{revalidate_dns, validate_host_ip};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageData {
@@ -88,6 +88,10 @@ impl Tool for ImageTool {
             },
             "required": ["prompt"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

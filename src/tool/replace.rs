@@ -2,7 +2,7 @@ use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
 use crate::tool::util::{canonicalize_path, validate_path};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use regex::Regex;
 use std::path::{Path, PathBuf};
@@ -79,6 +79,10 @@ impl Tool for ReplaceTool {
             },
             "required": ["path", "pattern", "replacement"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

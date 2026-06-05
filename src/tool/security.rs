@@ -7,7 +7,7 @@ use crate::security::command::classify_bash_command;
 use crate::security::finding::SecurityReport;
 use crate::security::profile::{ProfileRunner, SecurityProfile};
 use crate::security::scanner::{inspect_file, inspect_text};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 pub struct SecurityTool;
 
@@ -61,6 +61,10 @@ impl Tool for SecurityTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

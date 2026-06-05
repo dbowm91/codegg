@@ -10,7 +10,7 @@ use tokio::process::Command;
 
 use crate::error::ToolError;
 use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 const MAX_COMMAND_LENGTH: usize = 100_000;
 
@@ -308,6 +308,10 @@ impl Tool for BashTool {
             },
             "required": ["command"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ShellExec
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

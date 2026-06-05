@@ -22,25 +22,13 @@ fn test_parse_level_invalid_defaults_to_ask() {
 
 #[test]
 fn test_default_ruleset_read_only_allowed() {
+    // Read-only and safe-mutating tools no longer need rules: they
+    // short-circuit to Allow in `PermissionChecker::check()` based on
+    // their `ToolCategory`. The default ruleset is for mutating tools.
     let ruleset = default_ruleset();
     assert!(matches!(ruleset.default, PermissionLevel::Ask));
 
-    let read_tools: Vec<_> = ruleset
-        .tool_rules
-        .iter()
-        .filter(|r| matches!(r.level, PermissionLevel::Allow))
-        .map(|r| r.tool.as_str())
-        .collect();
-
-    assert!(read_tools.contains(&"read"));
-    assert!(read_tools.contains(&"glob"));
-    assert!(read_tools.contains(&"grep"));
-}
-
-#[test]
-fn test_default_ruleset_destructive_tools_ask() {
-    let ruleset = default_ruleset();
-
+    // Mutating tools default to Ask.
     let ask_tools: Vec<_> = ruleset
         .tool_rules
         .iter()
@@ -49,8 +37,40 @@ fn test_default_ruleset_destructive_tools_ask() {
         .collect();
 
     assert!(ask_tools.contains(&"edit"));
-    assert!(ask_tools.contains(&"bash"));
-    assert!(ask_tools.contains(&"task"));
+
+    // Bash is NOT in the default ruleset anymore — it's handled by the
+    // destructive-pattern short-circuit in `check_with_args()`.
+    // Verify the read-only short-circuit via the checker directly:
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let checker = codegg::permission::PermissionChecker::new(None, None);
+        let result = checker.check_legacy("read", None).await;
+        assert!(matches!(result, PermissionResult::Allow));
+        let result = checker.check_legacy("glob", None).await;
+        assert!(matches!(result, PermissionResult::Allow));
+        let result = checker.check_legacy("grep", None).await;
+        assert!(matches!(result, PermissionResult::Allow));
+    });
+}
+
+#[test]
+fn test_default_ruleset_destructive_tools_ask() {
+    let ruleset = default_ruleset();
+
+    // Mutating tools are listed as Ask in the default ruleset.
+    let ask_tools: Vec<_> = ruleset
+        .tool_rules
+        .iter()
+        .filter(|r| matches!(r.level, PermissionLevel::Ask))
+        .map(|r| r.tool.as_str())
+        .collect();
+
+    assert!(ask_tools.contains(&"edit"));
+    // Note: bash is no longer in default_ruleset (handled by destructive check)
+    // Note: todowrite is no longer in default_ruleset (short-circuited to Allow)
 }
 
 #[tokio::test]
@@ -271,8 +291,8 @@ fn test_merge_rulesets_path_rules_extend() {
     assert_eq!(merged.path_rules.len(), 2);
 }
 
-#[test]
-fn test_permission_store_add_and_get() {
+#[tokio::test]
+async fn test_permission_store_add_and_get() {
     let dir = TempDir::new().unwrap();
     let store_path = dir.path().join("permissions.json");
     let mut store = PermissionStore::new(Some(store_path.clone()));
@@ -282,8 +302,8 @@ fn test_permission_store_add_and_get() {
     assert!(matches!(decision, Some(PermissionLevel::Allow)));
 }
 
-#[test]
-fn test_permission_store_persists() {
+#[tokio::test]
+async fn test_permission_store_persists() {
     let dir = TempDir::new().unwrap();
     let store_path = dir.path().join("permissions.json");
 
@@ -297,8 +317,8 @@ fn test_permission_store_persists() {
     assert!(matches!(decision, Some(PermissionLevel::Allow)));
 }
 
-#[test]
-fn test_permission_store_clear() {
+#[tokio::test]
+async fn test_permission_store_clear() {
     let dir = TempDir::new().unwrap();
     let store_path = dir.path().join("permissions.json");
     let mut store = PermissionStore::new(Some(store_path));
@@ -308,8 +328,8 @@ fn test_permission_store_clear() {
     assert!(store.get_decision("bash", None, None).is_none());
 }
 
-#[test]
-fn test_permission_store_overrides_existing() {
+#[tokio::test]
+async fn test_permission_store_overrides_existing() {
     let dir = TempDir::new().unwrap();
     let store_path = dir.path().join("permissions.json");
     let mut store = PermissionStore::new(Some(store_path));
@@ -619,11 +639,13 @@ async fn test_permission_checker_with_stored_decision() {
 
 #[tokio::test]
 async fn test_permission_checker_stored_decision_requires_path_match() {
+    // For a non-read-only tool, a path-specific allow does NOT match a
+    // different path, so the result falls through to the default (Ask).
     let checker = PermissionChecker::new(None, None);
     checker
-        .always_allow_legacy("read", Some("/tmp/test.txt"))
+        .always_allow_legacy("edit", Some("/tmp/test.txt"))
         .await;
-    let result = checker.check_legacy("read", Some("/tmp/other.txt")).await;
+    let result = checker.check_legacy("edit", Some("/tmp/other.txt")).await;
     assert!(matches!(result, PermissionResult::Ask(_)));
 }
 

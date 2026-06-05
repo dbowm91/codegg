@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::worker::{SubAgentRequest, SubAgentSpawner};
 use crate::error::ToolError;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentTask {
@@ -438,6 +438,10 @@ impl Tool for TaskTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

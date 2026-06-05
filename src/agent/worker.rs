@@ -670,6 +670,19 @@ async fn execute_agent_task(
         .clone_box();
 
     let mut tool_registry = ToolRegistry::with_defaults();
+    // Subagents must NEVER have access to in-flight planning tools
+    // (todowrite/todoread), long-horizon goal tools (goal_get,
+    // goal_update_progress, goal_request_completion — not in
+    // `with_defaults()` so already absent), or plan-mode control
+    // (plan_enter, plan_exit). The parent's planning is the source of
+    // truth; the subagent does the work.
+    let subagent_blocked_tools: Vec<String> = vec![
+        "todowrite".to_string(),
+        "todoread".to_string(),
+        "plan_enter".to_string(),
+        "plan_exit".to_string(),
+    ];
+    tool_registry.filter_out(&subagent_blocked_tools);
     if !request.denied_tools.is_empty() {
         tool_registry.filter_out(&request.denied_tools);
     }
@@ -724,6 +737,17 @@ async fn execute_agent_task(
 
     agent_loop.set_agent(agent_name)?;
     agent_loop.set_max_tool_calls(request.max_tool_calls);
+
+    // Defense in depth: even if a todo/goal tool somehow gets registered,
+    // the task state policy rejects writes. Subagents do not manage
+    // in-flight todos or long-horizon goals — that's the parent's job.
+    use crate::model_profile::types::{TaskStatePolicy, TodoMode};
+    agent_loop.set_task_state_policy(TaskStatePolicy {
+        mode: TodoMode::Disabled,
+        allow_model_todo_read: false,
+        allow_model_todo_write: false,
+        ..Default::default()
+    });
 
     let mut messages = Vec::new();
     if let Some(ref system_prompt) = agent.system_prompt {

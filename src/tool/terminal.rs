@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use crate::error::ToolError;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 const DANGEROUS_ENV_VARS: &[&str] = &[
     "LD_PRELOAD",
@@ -247,6 +247,10 @@ impl Tool for TerminalTool {
             },
             "required": ["command"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

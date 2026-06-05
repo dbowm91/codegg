@@ -1,5 +1,5 @@
 use crate::error::ToolError;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::Deserialize;
 use similar::{ChangeTag, TextDiff};
@@ -84,6 +84,10 @@ impl Tool for DiffTool {
             },
             "required": ["path"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

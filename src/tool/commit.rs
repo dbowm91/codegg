@@ -8,7 +8,7 @@ use crate::error::ToolError;
 use crate::provider::{
     register_builtin_with_config, ChatEvent, ChatRequest, ContentPart, Message, ProviderRegistry,
 };
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 pub struct CommitTool {
     workdir: std::path::PathBuf,
@@ -240,6 +240,10 @@ impl Tool for CommitTool {
             },
             "required": []
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

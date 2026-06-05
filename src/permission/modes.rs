@@ -104,10 +104,13 @@ impl ModeDefinition {
 
 pub struct BuiltinModes;
 impl BuiltinModes {
+    /// Read-only review mode. No file mutation, no shell. The model can
+    /// use read tools, todo tools (for tracking review notes), web tools,
+    /// and lsp for code analysis.
     pub fn review() -> ModeDefinition {
         ModeDefinition {
             name: "review".to_string(),
-            description: "Code review mode - read-heavy, limited write access".to_string(),
+            description: "Code review mode - read-heavy, no write access".to_string(),
             default: PermissionLevel::Ask,
             allowed_tools: vec![
                 "read".to_string(),
@@ -119,21 +122,37 @@ impl BuiltinModes {
                 "websearch".to_string(),
                 "codesearch".to_string(),
                 "lsp".to_string(),
+                "diff".to_string(),
+                "security".to_string(),
+                "skill".to_string(),
+                "todoread".to_string(),
+                "todowrite".to_string(),
+                "review".to_string(),
             ],
             restricted_tools: vec![
                 "edit".to_string(),
+                "apply_patch".to_string(),
+                "replace".to_string(),
+                "multiedit".to_string(),
+                "write".to_string(),
                 "bash".to_string(),
+                "terminal".to_string(),
+                "git".to_string(),
+                "commit".to_string(),
+                "image".to_string(),
                 "task".to_string(),
-                "todowrite".to_string(),
             ],
             tool_overrides: vec![],
         }
     }
 
+    /// Debug mode: bash is allowed, edits are allowed, but destructive
+    /// shell commands still require approval. Todo tools are available
+    /// for in-flight planning. Subagents are restricted.
     pub fn debug() -> ModeDefinition {
         ModeDefinition {
             name: "debug".to_string(),
-            description: "Debug mode - bash allowed, limited edit".to_string(),
+            description: "Debug mode - bash and edit allowed, destructive shell requires approval".to_string(),
             default: PermissionLevel::Allow,
             allowed_tools: vec![
                 "read".to_string(),
@@ -141,22 +160,39 @@ impl BuiltinModes {
                 "grep".to_string(),
                 "list".to_string(),
                 "bash".to_string(),
+                "terminal".to_string(),
                 "question".to_string(),
                 "webfetch".to_string(),
                 "websearch".to_string(),
                 "codesearch".to_string(),
                 "edit".to_string(),
+                "apply_patch".to_string(),
+                "replace".to_string(),
+                "multiedit".to_string(),
+                "write".to_string(),
                 "lsp".to_string(),
+                "diff".to_string(),
+                "security".to_string(),
+                "skill".to_string(),
+                "git".to_string(),
+                "todoread".to_string(),
+                "todowrite".to_string(),
+                "review".to_string(),
             ],
-            restricted_tools: vec!["task".to_string(), "todowrite".to_string()],
+            restricted_tools: vec![
+                "task".to_string(),
+                "image".to_string(),
+                "commit".to_string(),
+            ],
             tool_overrides: vec![],
         }
     }
 
+    /// Docs mode: write/edit allowed, bash disabled, todo tools available.
     pub fn docs() -> ModeDefinition {
         ModeDefinition {
             name: "docs".to_string(),
-            description: "Documentation mode - edit/read allowed, no bash".to_string(),
+            description: "Documentation mode - edit/read allowed, no shell".to_string(),
             default: PermissionLevel::Ask,
             allowed_tools: vec![
                 "read".to_string(),
@@ -168,13 +204,25 @@ impl BuiltinModes {
                 "websearch".to_string(),
                 "codesearch".to_string(),
                 "edit".to_string(),
+                "apply_patch".to_string(),
+                "replace".to_string(),
+                "multiedit".to_string(),
                 "write".to_string(),
                 "lsp".to_string(),
+                "diff".to_string(),
+                "security".to_string(),
+                "skill".to_string(),
+                "todoread".to_string(),
+                "todowrite".to_string(),
+                "review".to_string(),
             ],
             restricted_tools: vec![
                 "bash".to_string(),
+                "terminal".to_string(),
+                "git".to_string(),
+                "commit".to_string(),
                 "task".to_string(),
-                "todowrite".to_string(),
+                "image".to_string(),
             ],
             tool_overrides: vec![],
         }

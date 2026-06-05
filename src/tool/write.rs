@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 pub struct WriteTool {
     allowed_root: PathBuf,
@@ -52,6 +52,10 @@ impl Tool for WriteTool {
             },
             "required": ["path", "content"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

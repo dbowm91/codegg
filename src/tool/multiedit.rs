@@ -1,6 +1,6 @@
 use crate::error::ToolError;
 use crate::tool::util::{canonicalize_path, validate_path};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -88,6 +88,10 @@ impl Tool for MultiEditTool {
             },
             "required": ["path", "edits"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

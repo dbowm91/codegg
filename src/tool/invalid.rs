@@ -1,5 +1,5 @@
 use crate::error::ToolError;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -36,6 +36,10 @@ impl Tool for InvalidTool {
             },
             "required": ["tool_name", "error"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::SafeMutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

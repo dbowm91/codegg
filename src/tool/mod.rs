@@ -11,6 +11,7 @@ pub mod batch;
 pub mod catalog;
 pub mod codesearch;
 pub mod commit;
+pub mod destructive;
 pub mod diff;
 pub mod edit;
 pub mod formatter;
@@ -54,12 +55,45 @@ pub fn default_registry() -> &'static ToolRegistry {
     &DEFAULT_REGISTRY
 }
 
+/// Classification of a tool's safety properties.
+///
+/// Used by the permission system to short-circuit read-only and safe-mutating
+/// tools so they never produce a permission prompt. Bash is treated specially
+/// (see `is_destructive_bash_command`) because command-level safety depends
+/// on the actual command, not just the tool name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCategory {
+    /// No side effects; never requires permission (read, glob, grep, list, webfetch, etc.).
+    ReadOnly,
+    /// Mutates application state but considered safe (todowrite, question, invalid).
+    SafeMutating,
+    /// Mutates filesystem or has external side effects (edit, write, git, commit, etc.).
+    Mutating,
+    /// Executes shell commands. Permission is determined by command-level inspection.
+    ShellExec,
+}
+
+impl ToolCategory {
+    /// Returns true if this category should never produce a permission prompt
+    /// (other than sensitive-path and security-policy escalation).
+    pub fn is_permission_free(self) -> bool {
+        matches!(self, ToolCategory::ReadOnly | ToolCategory::SafeMutating)
+    }
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError>;
+
+    /// Tool's safety category. The default is `Mutating` (conservative).
+    /// Override in tools that have no side effects (`ReadOnly`) or only
+    /// mutate internal app state (`SafeMutating`).
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
+    }
 
     /// Set the list of tool names available for on-demand discovery.
     /// Only relevant for the `tool_search` tool; default is no-op.

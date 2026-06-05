@@ -1,6 +1,6 @@
 use crate::error::ToolError;
 use crate::tool::util::validate_path;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use ignore::WalkBuilder;
 use serde::Deserialize;
@@ -68,6 +68,10 @@ impl Tool for ListTool {
                 }
             }
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

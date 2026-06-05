@@ -8,7 +8,7 @@ use crate::error::ToolError;
 use crate::provider::{
     register_builtin_with_config, ChatEvent, ChatRequest, ContentPart, Message, ProviderRegistry,
 };
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 pub struct ReviewTool {
     workdir: std::path::PathBuf,
@@ -152,6 +152,10 @@ impl Tool for ReviewTool {
             },
             "required": []
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::Mutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

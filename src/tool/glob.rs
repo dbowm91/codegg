@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::ToolError;
 use crate::tool::util::{canonicalize_path, validate_path};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 const MAX_PATTERN_SIZE: usize = 4096;
 const MAX_WALK_ENTRIES: usize = 100_000;
@@ -62,6 +62,10 @@ impl Tool for GlobTool {
             },
             "required": ["pattern"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

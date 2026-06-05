@@ -195,11 +195,37 @@ pub struct ModeDefinition {
 
 **Built-in Modes**:
 
-| Mode | Default | Allowed Tools | Restricted Tools |
-|------|---------|---------------|------------------|
-| `review` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, lsp, skill | edit, bash, task, todowrite |
-| `debug` | Allow | read, glob, grep, list, bash, question, webfetch, websearch, codesearch, edit, lsp, skill | task, todowrite |
-| `docs` | Ask | read, glob, grep, list, question, webfetch, websearch, codesearch, edit, lsp, skill | bash, task, todowrite |
+| Mode | Default | Restricted Tools (prompt) |
+|------|---------|---------------------------|
+| `review` | Ask | edit, bash, task |
+| `debug` | Allow | task |
+| `docs` | Ask | bash, task |
+
+> The `Allowed Tools` column is gone: tools are now allowed/denied implicitly by
+> their [`ToolCategory`](tool.md#toolcategory). The built-in mode rules
+> only `tool_overrides` to escalate specific tools (like `edit` in `review`).
+> `bash` is auto-approved in write modes (default) and prompts only when the
+> destructive-pattern check fires (`src/tool/destructive.rs`).
+
+## ToolCategory & Permission-Free Tools
+
+Every `Tool` reports its [`ToolCategory`](tool.md#toolcategory)
+(`ReadOnly | SafeMutating | Mutating | ShellExec`). Categories with
+`is_permission_free() == true` (`ReadOnly`, `SafeMutating`) short-circuit
+`PermissionChecker::check()` to `Allow` before any store / rule / glob
+lookup, unless a persistent `Deny` is in the store. The agent loop relies
+on this for `todowrite` (todo list planning) and the entire read-only
+family (`read`, `glob`, `grep`, `list`, `webfetch`, `websearch`,
+`codesearch`, `lsp`, `diff`, `security`, `skill`, `tool_search`,
+`plan_enter`, `plan_exit`).
+
+Shell-exec tools (`bash`, `git` when invoked as a shell) go through
+`check_with_args()` instead. If the user's ruleset hasn't decided, the
+destructive-pattern fallback in `src/tool/destructive.rs` returns
+`Ask` for any of ~10 catastrophic patterns (`rm -rf /`, `mkfs`,
+`dd of=...`, `:(){:|:&};:`, `shutdown`, etc.) and `Allow` otherwise.
+This means a `rm -rf build/` still asks; `ls`, `cat`, `cargo build`,
+`git status` auto-approve even in a strict `default = "ask"` config.
 
 ## Permission Flow
 
@@ -207,14 +233,19 @@ pub struct ModeDefinition {
 ToolCallRequested
     │
     ▼
-PermissionChecker::check()
+PermissionChecker::check()  (or check_with_args() for shell)
+    │
+    ├──► Tool category short-circuit (ReadOnly / SafeMutating)
+    │         │
+    │         ├── Persistent Deny in store → Deny
+    │         └── otherwise                → Allow
     │
     ├──► Check PermissionStore (cached)
     │         │
     │         ├── Allow → Return Allow
     │         └── Deny  → Return Deny
     │
-    ├──► Check tool rules (agent > session > config)
+    ├──► Check tool rules (agent > session > config > mode)
     │         │
     │         ├── Allow → Return Allow
     │         ├── Deny  → Return Deny
@@ -224,6 +255,11 @@ PermissionChecker::check()
     │         │
     │         ├── Allow → Continue
     │         └── Deny  → Return Deny
+    │
+    ├──► (shell tools only) Destructive-pattern fallback
+    │         │
+    │         ├── Matches DESTRUCTIVE_BASH_PATTERNS → Ask
+    │         └── Non-destructive                   → Allow
     │
     └──► Return default (Ask/Allow/Deny)
 

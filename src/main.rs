@@ -773,7 +773,8 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         .cloned()
         .ok_or_else(|| AppError::Other(anyhow::anyhow!("Agent not found: {}", target_agent)))?;
 
-    let permission_checker = codegg::permission::PermissionChecker::new(Some(&config), None);
+    let permission_checker = codegg::permission::PermissionChecker::new(Some(&config), None)
+        .with_active_mode(&config);
     let tool_registry = codegg::tool::ToolRegistry::with_defaults();
     let mut agent_loop = codegg::agent::r#loop::AgentLoop::new(
         agents,

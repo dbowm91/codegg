@@ -1,5 +1,5 @@
 use crate::error::ToolError;
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +65,10 @@ impl Tool for QuestionTool {
             },
             "required": ["questions"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::SafeMutating
     }
 
     /// Execute the question tool.

@@ -330,6 +330,10 @@ pub struct PromptContext<'a> {
     pub tools: &'a [String],
     pub skills: &'a [String],
     pub custom_instructions: Option<&'a str>,
+    /// Whether the agent is in plan mode. When true, a plan-mode contract
+    /// is appended that tells the model what tools are available and what
+    /// the planning surface looks like.
+    pub is_plan_mode: bool,
 }
 
 pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
@@ -342,6 +346,10 @@ pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
         parts.push(subagent_output_contract(role).to_string());
     }
     parts.push(profile_contract(ctx.model_profile).to_string());
+
+    if ctx.is_plan_mode {
+        parts.push(plan_mode_contract().to_string());
+    }
 
     if let Some(prompt) = &ctx.agent.system_prompt {
         parts.push(prompt.clone());
@@ -404,6 +412,18 @@ fn base_harness_contract() -> &'static str {
 /// transitioning the goal to `Complete`.
 fn goal_and_todos_contract() -> &'static str {
     "Planning surfaces: use the `todo` tool for in-flight steps the user can check off within this turn. When work spans many turns or sessions, set a long-horizon goal with `goal_set` (or `/goal set <objective>`), then track phase/next-action with `goal_update_progress`. Mark completion with `goal_request_completion` carrying concrete evidence (commands run, files changed, tests passing) and an explicit `remaining_risks` list. A finished todo is a step toward a goal, not the goal itself — the runtime validates goal completion against evidence."
+}
+
+/// Contract injected into the system prompt when the agent is in plan mode.
+///
+/// Plan mode hides mutating tools from the model and exposes a planning
+/// surface (todowrite/todoread) plus read-only inspection tools (read, glob,
+/// grep, list, codesearch, webfetch, lsp, skill) and read-only bash. The
+/// model is told explicitly so it doesn't try to use tools that don't
+/// exist in its schema and doesn't attempt workarounds like writing a
+/// plan file via bash heredoc when todowrite is the intended surface.
+pub fn plan_mode_contract() -> &'static str {
+    "PLAN MODE ACTIVE. You are in a read-only planning environment. Available tools: read, glob, grep, list, codesearch, webfetch, lsp, skill (information gathering), todowrite, todoread (use todowrite to record plan steps — this is the recommended way to communicate the plan to the user), bash for read-only commands only (ls, cat, grep, git status, cargo check, etc.; destructive shell is rejected automatically), and plan_enter/plan_exit (toggle plan mode). You MUST NOT: edit, write, or modify source files; run mutating shell commands (rm, mv, install scripts, etc.); or spawn subagents that modify state. To switch back to build mode, call plan_exit (typically after the user has approved the plan)."
 }
 
 fn role_contract(agent: &Agent) -> &'static str {
@@ -530,6 +550,7 @@ mod tests {
             tools: &tools,
             skills: &skills,
             custom_instructions: Some("Custom instruction here"),
+            is_plan_mode: false,
         });
 
         assert!(prompt.contains("codegg"));
@@ -559,6 +580,7 @@ mod tests {
             tools: &[],
             skills: &[],
             custom_instructions: None,
+            is_plan_mode: false,
         });
         // In-flight planning goes through todos.
         assert!(prompt.contains("in-flight"));
@@ -584,6 +606,7 @@ mod tests {
             tools: &[],
             skills: &[],
             custom_instructions: None,
+            is_plan_mode: false,
         });
 
         assert!(prompt.contains("explore"));
@@ -648,6 +671,46 @@ mod tests {
         let agent = test_agent("unknown");
         let contract = role_contract(&agent);
         assert!(contract.contains("implementation agent"));
+    }
+
+    #[test]
+    fn test_plan_mode_contract_is_included_when_active() {
+        let agent = test_agent("build");
+        let config = test_config();
+        let profile = infer_builtin_profile("anthropic/claude-sonnet");
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agent,
+            config: &config,
+            model_profile: &profile,
+            tools: &["read".to_string(), "todowrite".to_string()],
+            skills: &[],
+            custom_instructions: None,
+            is_plan_mode: true,
+        });
+        // The plan mode contract is appended.
+        assert!(prompt.contains("PLAN MODE ACTIVE"));
+        // Mentions the planning surface.
+        assert!(prompt.contains("todowrite"));
+        // Tells the model about read-only bash.
+        assert!(prompt.contains("read-only"));
+    }
+
+    #[test]
+    fn test_plan_mode_contract_is_omitted_when_inactive() {
+        let agent = test_agent("build");
+        let config = test_config();
+        let profile = infer_builtin_profile("anthropic/claude-sonnet");
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agent,
+            config: &config,
+            model_profile: &profile,
+            tools: &["read".to_string()],
+            skills: &[],
+            custom_instructions: None,
+            is_plan_mode: false,
+        });
+        // The plan mode contract is NOT included.
+        assert!(!prompt.contains("PLAN MODE ACTIVE"));
     }
 
     #[test]

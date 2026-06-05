@@ -8,7 +8,7 @@ use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
 use crate::model_profile::types::{TaskStatePolicy, TodoMode};
 use crate::task_state::{TodoItem, TodoPriority, TodoState, TodoStatus};
-use crate::tool::Tool;
+use crate::tool::{Tool, ToolCategory};
 
 pub struct TodoWriteTool {
     state: Arc<Mutex<TodoState>>,
@@ -74,6 +74,10 @@ impl Tool for TodoWriteTool {
             },
             "required": ["todos"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::SafeMutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
@@ -220,6 +224,10 @@ impl Tool for TodoReadTool {
         })
     }
 
+    fn category(&self) -> ToolCategory {
+        ToolCategory::SafeMutating
+    }
+
     async fn execute(&self, _input: serde_json::Value) -> Result<String, ToolError> {
         if !self.policy.allow_model_todo_read {
             return Err(ToolError::Execution(
@@ -297,6 +305,10 @@ impl Tool for TodoTool {
             },
             "required": ["todos"]
         })
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::SafeMutating
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
