@@ -953,6 +953,31 @@ pub struct SensitivePathConfig {
 #[serde(default)]
 pub struct ResearchConfig {
     pub search_provider: Option<SearchProviderConfig>,
+    /// Trigger heuristic configuration. When enabled, the agent loop
+    /// injects a hint at the start of a turn if the user's input
+    /// matches a research-style pattern (comparison, library eval,
+    /// API investigation, security review, architecture decision).
+    /// The hint steers the model toward spawning a `research` subagent
+    /// via the `task` tool. It does NOT auto-invoke the research
+    /// pipeline.
+    pub auto_trigger: Option<ResearchAutoTriggerConfig>,
+}
+
+impl Default for ResearchAutoTriggerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_confidence: 0.7,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ResearchAutoTriggerConfig {
+    pub enabled: bool,
+    /// Minimum confidence (0.0–1.0) at which to inject the hint.
+    pub min_confidence: f32,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

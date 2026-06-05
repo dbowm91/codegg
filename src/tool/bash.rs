@@ -286,7 +286,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command and return its output"
+        "Execute a shell command and return its output. For web search and URL fetching, prefer the `websearch` and `webfetch` tools — they handle rate limits, SSRF protection, and bot detection. `curl`/`wget` to arbitrary URLs is permitted but discouraged; use them only when a tool is genuinely unsuitable."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -384,7 +384,7 @@ impl Tool for BashTool {
         if let Some(ref sandbox_config) = self.landlock_sandbox {
             if sandbox_config.enabled {
                 let sandbox_config = sandbox_config.clone();
-                tokio::task::spawn_blocking(move || {
+                tokio::task::spawn_blocking(move || -> Result<(), ToolError> {
                     sandbox_config.enforce()?;
                     Ok(())
                 })

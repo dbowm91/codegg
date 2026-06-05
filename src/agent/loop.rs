@@ -206,7 +206,9 @@ fn is_repo_task_prompt(prompt: &str) -> bool {
 struct ModelFlags {
     is_gpt: bool,
     is_non_oss: bool,
-    exa_available: bool,
+    /// True if at least one search provider (key-based or no-key) is
+    /// configured. Used as the gate for `websearch` (and `codesearch`).
+    search_provider_available: bool,
 }
 
 pub struct ToolTimeoutConfig {
@@ -762,7 +764,7 @@ impl AgentLoop {
             crate::agent::policy::ToolExposureMode::Curated => {
                 let core_tools = ["read", "list", "grep", "glob", "codesearch", "edit",
                     "apply_patch", "bash", "git", "diff", "todoread", "todowrite",
-                    "question", "tool_search", "skill"];
+                    "question", "tool_search", "skill", "websearch"];
                 definitions
                     .into_iter()
                     .filter(|t| core_tools.contains(&t.name.as_str()))
@@ -770,7 +772,8 @@ impl AgentLoop {
             }
             crate::agent::policy::ToolExposureMode::MinimalWithDiscovery => {
                 let minimal_tools = ["read", "list", "grep", "codesearch", "edit",
-                    "apply_patch", "bash", "question", "todowrite", "todoread", "tool_search"];
+                    "apply_patch", "bash", "question", "todowrite", "todoread",
+                    "tool_search", "websearch"];
                 definitions
                     .into_iter()
                     .filter(|t| minimal_tools.contains(&t.name.as_str()))
@@ -1085,6 +1088,57 @@ impl AgentLoop {
 
     pub fn set_max_tool_calls(&mut self, max: Option<usize>) {
         self.max_tool_calls = max;
+    }
+
+    /// Evaluate the research trigger heuristic against a user prompt
+    /// and, if it fires, prepend a hint to the next user message that
+    /// tells the model about the `research` subagent. Returns
+    /// `Some(hint)` when the hint was generated (caller can prepend
+    /// it to the user-visible message), `None` otherwise.
+    ///
+    /// The trigger config lives at `config.research.auto_trigger`.
+    /// When `enabled` is `false` or the confidence is below
+    /// `min_confidence`, the hint is suppressed. Plan mode always
+    /// suppresses the hint (research is not part of the plan-mode
+    /// surface).
+    pub fn maybe_inject_research_hint(&self, user_prompt: &str) -> Option<String> {
+        if self.state.plan_mode {
+            return None;
+        }
+        let trigger_cfg = self
+            .config
+            .research
+            .as_ref()
+            .and_then(|r| r.auto_trigger.clone())
+            .unwrap_or_default();
+        if !trigger_cfg.enabled {
+            return None;
+        }
+        // Build a fresh TriggerConfig from the resolved profile (the
+        // keyword lists live in the research module and are not part
+        // of the user-facing schema).
+        let trigger = crate::research::triggers::TriggerConfig {
+            enabled: true,
+            min_confidence: f64::from(trigger_cfg.min_confidence),
+            ..Default::default()
+        };
+        let analysis = crate::research::triggers::analyze_trigger(
+            user_prompt,
+            &[],
+            &[],
+            &trigger,
+        );
+        if !analysis.should_invoke {
+            return None;
+        }
+        Some(format!(
+            "[Hint: this task looks like a `{:?}` question (confidence: {:.2}). \
+             Consider spawning a `research` subagent via \
+             `task({{action: 'spawn', agent: 'research', prompt: '…'}})` for a structured, \
+             multi-source answer with citations. You can also just use `websearch` for a quick lookup.]",
+            analysis.suggested_mode,
+            analysis.confidence,
+        ))
     }
 
     pub fn execution_policy(&self) -> Option<&crate::agent::policy::ExecutionPolicy> {
@@ -2111,6 +2165,32 @@ impl AgentLoop {
 
         if self.original_user_prompt.is_none() {
             self.original_user_prompt = Some(original_prompt.clone());
+        }
+
+        // Phase 3: research trigger hint. If the user's prompt looks
+        // like a research task (comparison, library eval, API, security,
+        // architecture), prepend a hint to the first user message so
+        // the model is steered toward spawning a `research` subagent.
+        if !original_prompt.is_empty() {
+            if let Some(hint) = self.maybe_inject_research_hint(&original_prompt) {
+                if let Some(Message::User { content }) = request
+                    .messages
+                    .iter_mut()
+                    .find(|m| matches!(m, Message::User { .. }))
+                {
+                    // Prepend a text part to the existing user content.
+                    let mut new_parts: Vec<ContentPart> = vec![ContentPart::Text {
+                        text: hint.clone().into(),
+                    }];
+                    let old = std::mem::replace(content, Vec::new());
+                    new_parts.extend(old);
+                    *content = new_parts;
+                    tracing::debug!(
+                        "Injected research trigger hint for mode: {}",
+                        hint
+                    );
+                }
+            }
         }
 
         loop {
@@ -3529,7 +3609,9 @@ impl AgentLoop {
 /// For regular mode:
 /// - apply_patch is restricted to models matching the current `is_gpt && is_non_oss` gate
 /// - edit and write are allowed
-/// - codesearch and websearch require EXA_API_KEY or EXA_CODE_API_KEY
+/// - codesearch and websearch require a configured search provider
+///   (any of `EXA_API_KEY`/`TAVILY_API_KEY`/`BRAVE_API_KEY`/`KAGI_API_KEY`/`SERPAPI_API_KEY`,
+///    or the no-key DuckDuckGo/Mojeek fallbacks which are always present)
 /// - lsp requires lsp_enabled flag
 /// - batch is always disabled
 fn filter_tools_for_model<'a>(
@@ -3565,7 +3647,7 @@ fn filter_tools_for_model<'a>(
             match t.name() {
                 "apply_patch" => flags.is_gpt && flags.is_non_oss,
                 "edit" | "write" => true,
-                "codesearch" | "websearch" => flags.exa_available,
+                "codesearch" | "websearch" => flags.search_provider_available,
                 "lsp" => lsp_enabled,
                 "batch" => false,
                 _ => true,
@@ -3580,18 +3662,71 @@ fn compute_model_flags(model: Option<&String>) -> ModelFlags {
     let is_gpt = model_id.contains("gpt");
     let is_non_oss =
         model_id.contains("gpt") || model_id.contains("claude") || model_id.contains("gemini");
-    let exa_available =
-        std::env::var("EXA_API_KEY").is_ok() || std::env::var("EXA_CODE_API_KEY").is_ok();
+    // The new no-key websearch tool always has DuckDuckGo + Mojeek as
+    // fallbacks, so `search_provider_available` is true unless the
+    // operator has explicitly disabled the registry by removing both
+    // fallbacks. We treat the registry's "has_any" check as the
+    // source of truth: as long as the process has network access and
+    // the registry can resolve at least one provider, we let the
+    // tool through. The registry itself reports Empty / NotConfigured
+    // errors at execution time.
+    let search_provider_available = crate::search::SearchProviderRegistry::from_env().has_any();
     ModelFlags {
         is_gpt,
         is_non_oss,
-        exa_available,
+        search_provider_available,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::schema::{ResearchAutoTriggerConfig, ResearchConfig};
+
+    fn config_with_trigger(enabled: bool, min_confidence: f32) -> Config {
+        let mut cfg = Config::default();
+        cfg.research = Some(ResearchConfig {
+            search_provider: None,
+            auto_trigger: Some(ResearchAutoTriggerConfig {
+                enabled,
+                min_confidence,
+            }),
+        });
+        cfg
+    }
+
+    #[test]
+    fn research_trigger_fires_on_comparison_query() {
+        let trigger = crate::research::triggers::TriggerConfig {
+            enabled: true,
+            min_confidence: 0.5,
+            ..Default::default()
+        };
+        let analysis = crate::research::triggers::analyze_trigger(
+            "Compare React and Vue for our frontend",
+            &[],
+            &[],
+            &trigger,
+        );
+        assert!(analysis.should_invoke);
+        assert_eq!(
+            analysis.suggested_mode,
+            crate::research::types::ResearchMode::LibraryEvaluation
+        );
+    }
+
+    #[test]
+    fn research_trigger_config_resolves_enabled_flag() {
+        let cfg = config_with_trigger(false, 0.5);
+        let resolved = cfg
+            .research
+            .as_ref()
+            .and_then(|r| r.auto_trigger.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        assert!(!resolved.enabled);
+        assert!((resolved.min_confidence - 0.5).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn test_is_test_command_cargo() {
@@ -3777,7 +3912,7 @@ mod tests {
         let flags = ModelFlags {
             is_gpt: false,
             is_non_oss: false,
-            exa_available: true,
+            search_provider_available: true,
         };
 
         // Plan mode: should include todo tools and bash.
@@ -3806,7 +3941,7 @@ mod tests {
         let flags = ModelFlags {
             is_gpt: true,
             is_non_oss: true,
-            exa_available: true,
+            search_provider_available: true,
         };
 
         // Normal mode: should include the full tool set.

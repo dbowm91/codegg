@@ -27,8 +27,9 @@ pub mod plan;
 pub mod question;
 pub mod read;
 pub mod replace;
-pub mod risk;
+pub mod research;
 pub mod review;
+pub mod risk;
 pub mod security;
 pub mod skill;
 pub mod task;
@@ -145,6 +146,7 @@ impl ToolRegistry {
         registry.register(crate::tool::task::TaskTool::default());
         registry.register(crate::tool::webfetch::WebFetchTool::default());
         registry.register(crate::tool::websearch::WebSearchTool::default());
+        registry.register(crate::tool::research::ResearchTool::with_default_service());
         registry.register(crate::tool::image::ImageTool::default());
         registry.register(crate::tool::codesearch::CodeSearchTool);
         registry.register(crate::tool::question::QuestionTool);
@@ -255,6 +257,7 @@ impl ToolRegistry {
         registry.register(crate::tool::task::TaskTool::default());
         registry.register(crate::tool::webfetch::WebFetchTool::default());
         registry.register(crate::tool::websearch::WebSearchTool::default());
+        registry.register(crate::tool::research::ResearchTool::with_default_service());
         registry.register(crate::tool::image::ImageTool::default());
         registry.register(crate::tool::codesearch::CodeSearchTool);
         registry.register(crate::tool::question::QuestionTool);

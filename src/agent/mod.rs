@@ -355,6 +355,55 @@ pub fn builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
         },
+        Agent {
+            name: "research".to_string(),
+            role: Some("researcher".to_string()),
+            description: "Long-horizon research agent. Uses the `research` tool for structured multi-source answers and the `websearch` tool for quick lookups.".to_string(),
+            mode: AgentMode::All,
+            mode_name: None,
+            model: None,
+            variant: None,
+            temperature: None,
+            top_p: None,
+            color: Some("magenta".to_string()),
+            steps: None,
+            system_prompt: Some(
+                "You are codegg's research agent. You produce long-horizon, multi-source answers.\n\
+                 For in-depth, comparative, or multi-hop questions, prefer the `research` tool — it runs the full pipeline (source collection, evidence extraction, claim construction, citation verification, synthesis).\n\
+                 For a quick lookup, use the `websearch` tool directly (defaults to DuckDuckGo, no key required; falls back to Mojeek; uses key-based providers if their env vars are set).\n\
+                 Always cite sources in your final output. When the `research` tool is available, prefer it for synthesis; `websearch` is for lookups.\n\
+                 Avoid `curl`/`wget` for web search — use the `websearch` tool."
+                    .to_string(),
+            ),
+            permissions: HashMap::from([
+                ("read".to_string(), "allow".to_string()),
+                ("glob".to_string(), "allow".to_string()),
+                ("grep".to_string(), "allow".to_string()),
+                ("list".to_string(), "allow".to_string()),
+                ("websearch".to_string(), "allow".to_string()),
+                ("webfetch".to_string(), "allow".to_string()),
+                ("research".to_string(), "allow".to_string()),
+                ("skill".to_string(), "allow".to_string()),
+                ("question".to_string(), "allow".to_string()),
+                ("task".to_string(), "allow".to_string()),
+                ("codesearch".to_string(), "allow".to_string()),
+                ("todowrite".to_string(), "allow".to_string()),
+                ("todoread".to_string(), "allow".to_string()),
+                ("bash".to_string(), "ask".to_string()),
+                ("apply_patch".to_string(), "ask".to_string()),
+                ("edit".to_string(), "ask".to_string()),
+                ("write".to_string(), "ask".to_string()),
+                ("multiedit".to_string(), "ask".to_string()),
+                ("terminal".to_string(), "ask".to_string()),
+                ("commit".to_string(), "ask".to_string()),
+                ("image".to_string(), "deny".to_string()),
+                ("plan_enter".to_string(), "deny".to_string()),
+                ("plan_exit".to_string(), "deny".to_string()),
+            ]),
+            hidden: false,
+            thinking_budget: None,
+            reasoning_effort: None,
+        },
     ]
 }
 
@@ -630,7 +679,7 @@ mod tests {
     #[test]
     fn test_builtin_agents_count() {
         let agents = builtin_agents();
-        assert_eq!(agents.len(), 8);
+        assert_eq!(agents.len(), 9);
     }
 
     #[test]
@@ -662,7 +711,7 @@ mod tests {
     fn test_resolve_agents_empty_config() {
         let config = Config::default();
         let agents = resolve_agents(&config).unwrap();
-        assert_eq!(agents.len(), 8);
+        assert_eq!(agents.len(), 9);
     }
 
     #[test]
@@ -702,7 +751,7 @@ mod tests {
             ..Default::default()
         };
         let agents = resolve_agents(&config).unwrap();
-        assert_eq!(agents.len(), 9);
+        assert_eq!(agents.len(), 10);
         let reviewer = agents.iter().find(|a| a.name == "Reviewer").unwrap();
         assert_eq!(reviewer.mode, AgentMode::Primary);
     }
@@ -803,8 +852,43 @@ mod tests {
     fn test_list_visible_agents() {
         let agents = builtin_agents();
         let visible = list_visible_agents(&agents);
-        assert_eq!(visible.len(), 5);
+        assert_eq!(visible.len(), 6);
         assert!(visible.iter().all(|a| !a.hidden));
+    }
+
+    #[test]
+    fn test_builtin_research_agent_registered() {
+        let agents = builtin_agents();
+        let research = agents.iter().find(|a| a.name == "research").unwrap();
+        // Both Primary (user-selectable) and Subagent (spawnable via `task`).
+        assert_eq!(research.mode, AgentMode::All);
+        assert!(!research.hidden);
+        assert_eq!(research.role.as_deref(), Some("researcher"));
+        // Network + research tools allowed; mutating tools ask; image denied.
+        assert_eq!(research.permissions.get("websearch"), Some(&"allow".to_string()));
+        assert_eq!(research.permissions.get("webfetch"), Some(&"allow".to_string()));
+        assert_eq!(research.permissions.get("research"), Some(&"allow".to_string()));
+        assert_eq!(research.permissions.get("edit"), Some(&"ask".to_string()));
+        assert_eq!(research.permissions.get("image"), Some(&"deny".to_string()));
+    }
+
+    #[test]
+    fn test_research_subagent_registry_includes_websearch_and_research() {
+        // The subagent's tool registry is `ToolRegistry::with_defaults()`
+        // with todo/plan tools stripped. Verify that websearch and
+        // research survive that filter.
+        use crate::tool::ToolRegistry;
+        let mut registry = ToolRegistry::with_defaults();
+        let blocked = vec![
+            "todowrite".to_string(),
+            "todoread".to_string(),
+            "plan_enter".to_string(),
+            "plan_exit".to_string(),
+        ];
+        registry.filter_out(&blocked);
+        assert!(registry.get("websearch").is_some(), "subagent must have websearch");
+        assert!(registry.get("research").is_some(), "subagent must have research tool");
+        assert!(registry.get("webfetch").is_some(), "subagent must have webfetch");
     }
 
     #[test]

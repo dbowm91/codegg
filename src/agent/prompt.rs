@@ -20,11 +20,17 @@ static BUILTIN_PROMPTS: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
     let mut map = HashMap::new();
     map.insert(
         "build",
-        "You are a build agent. Execute commands, edit files, and perform tasks to build and test the project.",
+        "You are a build agent. Execute commands, edit files, and perform tasks to build and test the project. \
+         For in-depth, comparative, or multi-hop research questions, spawn a `research` subagent via \
+         `task({action: 'spawn', agent: 'research', prompt: '…'})` — the subagent runs the full research \
+         pipeline and returns a synthesized answer with citations. For quick lookups, use the `websearch` \
+         tool directly (default: DuckDuckGo, no key required).",
     );
     map.insert(
         "plan",
-        "You are a planning agent. Analyze the codebase and create detailed implementation plans. Do not modify files or execute commands.",
+        "You are a planning agent. Analyze the codebase and create detailed implementation plans. Do not modify files or execute commands. \
+         For in-depth research, spawn a `research` subagent via `task({action: 'spawn', agent: 'research', prompt: '…'})`. \
+         For quick lookups, use `websearch` (default: DuckDuckGo, no key required).",
     );
     map.insert(
         "general",
@@ -334,6 +340,9 @@ pub struct PromptContext<'a> {
     /// is appended that tells the model what tools are available and what
     /// the planning surface looks like.
     pub is_plan_mode: bool,
+    /// All known agent kinds. Used to inject the research-subagent
+    /// addendum when a `research` subagent is spawnable.
+    pub agents: &'a [Agent],
 }
 
 pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
@@ -349,6 +358,22 @@ pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
 
     if ctx.is_plan_mode {
         parts.push(plan_mode_contract().to_string());
+    }
+
+    // Inject the websearch contract whenever the model has access to
+    // the `websearch` tool. This steers the model away from `curl` /
+    // `wget` for web search and page retrieval.
+    if ctx.tools.iter().any(|t| t == "websearch") {
+        parts.push(websearch_contract().to_string());
+    }
+
+    // Inject the research-subagent addendum whenever the model can
+    // spawn a `research` subagent via the `task` tool. The `task` tool
+    // is always present for non-minimal agents, so the only gating
+    // condition is "is `research` a known subagent kind".
+    let research_spawnable = !ctx.is_plan_mode && ctx.agents.iter().any(|a| a.name == "research");
+    if research_spawnable && ctx.tools.iter().any(|t| t == "task") {
+        parts.push(research_subagent_contract().to_string());
     }
 
     if let Some(prompt) = &ctx.agent.system_prompt {
@@ -418,12 +443,34 @@ fn goal_and_todos_contract() -> &'static str {
 ///
 /// Plan mode hides mutating tools from the model and exposes a planning
 /// surface (todowrite/todoread) plus read-only inspection tools (read, glob,
-/// grep, list, codesearch, webfetch, lsp, skill) and read-only bash. The
-/// model is told explicitly so it doesn't try to use tools that don't
-/// exist in its schema and doesn't attempt workarounds like writing a
-/// plan file via bash heredoc when todowrite is the intended surface.
+/// grep, list, codesearch, websearch, webfetch, lsp, skill) and read-only
+/// bash. The model is told explicitly so it doesn't try to use tools that
+/// don't exist in its schema and doesn't attempt workarounds like writing
+/// a plan file via bash heredoc when todowrite is the intended surface.
 pub fn plan_mode_contract() -> &'static str {
-    "PLAN MODE ACTIVE. You are in a read-only planning environment. Available tools: read, glob, grep, list, codesearch, webfetch, lsp, skill (information gathering), todowrite, todoread (use todowrite to record plan steps — this is the recommended way to communicate the plan to the user), bash for read-only commands only (ls, cat, grep, git status, cargo check, etc.; destructive shell is rejected automatically), and plan_enter/plan_exit (toggle plan mode). You MUST NOT: edit, write, or modify source files; run mutating shell commands (rm, mv, install scripts, etc.); or spawn subagents that modify state. To switch back to build mode, call plan_exit (typically after the user has approved the plan)."
+    "PLAN MODE ACTIVE. You are in a read-only planning environment. Available tools: read, glob, grep, list, codesearch, websearch, webfetch, lsp, skill (information gathering), todowrite, todoread (use todowrite to record plan steps — this is the recommended way to communicate the plan to the user), bash for read-only commands only (ls, cat, grep, git status, cargo check, etc.; destructive shell is rejected automatically), and plan_enter/plan_exit (toggle plan mode). You MUST NOT: edit, write, or modify source files; run mutating shell commands (rm, mv, install scripts, etc.); or spawn subagents that modify state. To switch back to build mode, call plan_exit (typically after the user has approved the plan)."
+}
+
+/// Contract injected when the agent has access to the `websearch` tool.
+///
+/// The `websearch` tool defaults to DuckDuckGo (no API key required) with
+/// Mojeek as a last-resort fallback. If `EXA_API_KEY` / `TAVILY_API_KEY` /
+/// `BRAVE_API_KEY` / `KAGI_API_KEY` / `SERPAPI_API_KEY` is set in the
+/// environment, that backend is used first. The tool can also route to
+/// Wikipedia, arXiv, OpenAlex, PubMed, Hacker News, Google News, and
+/// GitHub for domain-specific queries. Use `webfetch` only for a specific
+/// known URL. **Do not use `curl` / `wget` for web search or page
+/// retrieval** — they are rate-limited, blocked, or unsafe.
+pub fn websearch_contract() -> &'static str {
+    "**Web access contract**: For web information needs, prefer the `websearch` tool. It defaults to DuckDuckGo (no API key required) with Mojeek as a last-resort fallback. If `EXA_API_KEY` / `TAVILY_API_KEY` / `BRAVE_API_KEY` / `KAGI_API_KEY` / `SERPAPI_API_KEY` is set, that backend is used first. The tool can also route to Wikipedia, arXiv, OpenAlex, PubMed, Hacker News, Google News, and GitHub for domain-specific queries (the `provider` parameter selects explicitly: e.g. `provider: 'arxiv'`). Use `webfetch` only for a specific known URL. **Do not use `curl` / `wget` for web search or page retrieval** — they are rate-limited, blocked, or unsafe."
+}
+
+/// Optional addendum injected when the `research` subagent is available.
+/// The main `build` / `plan` agent can spawn a `research` subagent via
+/// `task({action: 'spawn', agent: 'research', prompt: '…'})` for in-depth,
+/// multi-source research with synthesis and citations.
+pub fn research_subagent_contract() -> &'static str {
+    "**Long-horizon research**: You can spawn a `research` subagent via `task({action: 'spawn', agent: 'research', prompt: '<question>'})` for in-depth, multi-source research. The subagent runs the full research pipeline (source collection, evidence extraction, claim construction, synthesis) and returns a structured answer with citations. Use it when the question is open-ended, comparative, or requires more than a quick web lookup. For a single quick lookup, use the `websearch` tool directly."
 }
 
 fn role_contract(agent: &Agent) -> &'static str {
@@ -435,6 +482,7 @@ fn role_contract(agent: &Agent) -> &'static str {
         "reviewer" => "Role contract: You are a review agent. Look for correctness, safety, regression risk, missing tests, and excessive scope.",
         "security_reviewer" => "Role contract: You are a security review agent. Focus on realistic exploit paths, affected surfaces, and mitigations. Distinguish confirmed issues from speculative risks.",
         "title" => "Role contract: You are a title generation agent. Produce a concise session title.",
+        "researcher" => "Role contract: You are a research agent. Produce long-horizon, multi-source answers with citations. Use the `research` tool for in-depth synthesis; use `websearch` for quick lookups. Avoid `curl`/`wget` for web search.",
         _ => "Role contract: You are an implementation agent. Inspect relevant files, make targeted changes, and verify them when possible.",
     }
 }
@@ -447,6 +495,7 @@ pub fn subagent_output_contract(role: &str) -> &'static str {
         "test" => "Output contract: Return: tests added or run, pass/fail status per test, coverage gaps identified, and any flaky or skipped tests.",
         "security" | "security_reviewer" => "Output contract: Return: finding category, exploitability assessment, affected surface/files, and mitigation recommendation. Distinguish confirmed issues from speculative risks.",
         "planner" => "Output contract: Return: implementation plan with ordered steps, estimated complexity per step, dependencies between steps, files to create/modify, and verification criteria.",
+        "researcher" => "Output contract: Return a synthesized answer with: question, evidence, conclusion, and citations. Distinguish confirmed claims from speculative ones. Prefer concrete, citable sources.",
         "executor" | _ => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
     }
 }
@@ -551,6 +600,7 @@ mod tests {
             skills: &skills,
             custom_instructions: Some("Custom instruction here"),
             is_plan_mode: false,
+            agents: &[],
         });
 
         assert!(prompt.contains("codegg"));
@@ -581,6 +631,7 @@ mod tests {
             skills: &[],
             custom_instructions: None,
             is_plan_mode: false,
+            agents: &[],
         });
         // In-flight planning goes through todos.
         assert!(prompt.contains("in-flight"));
@@ -607,6 +658,7 @@ mod tests {
             skills: &[],
             custom_instructions: None,
             is_plan_mode: false,
+            agents: &[],
         });
 
         assert!(prompt.contains("explore"));
@@ -686,6 +738,7 @@ mod tests {
             skills: &[],
             custom_instructions: None,
             is_plan_mode: true,
+            agents: &[],
         });
         // The plan mode contract is appended.
         assert!(prompt.contains("PLAN MODE ACTIVE"));
@@ -708,9 +761,92 @@ mod tests {
             skills: &[],
             custom_instructions: None,
             is_plan_mode: false,
+            agents: &[],
         });
         // The plan mode contract is NOT included.
         assert!(!prompt.contains("PLAN MODE ACTIVE"));
+    }
+
+    #[test]
+    fn test_websearch_contract_included_when_websearch_tool_present() {
+        let agent = test_agent("build");
+        let config = test_config();
+        let profile = infer_builtin_profile("openai/gpt-5");
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agent,
+            config: &config,
+            model_profile: &profile,
+            tools: &["websearch".to_string(), "read".to_string()],
+            skills: &[],
+            custom_instructions: None,
+            is_plan_mode: false,
+            agents: &[],
+        });
+        assert!(prompt.contains("Web access contract"));
+        assert!(prompt.contains("DuckDuckGo"));
+        assert!(prompt.contains("curl"));
+    }
+
+    #[test]
+    fn test_websearch_contract_omitted_when_websearch_tool_absent() {
+        let agent = test_agent("build");
+        let config = test_config();
+        let profile = infer_builtin_profile("openai/gpt-5");
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agent,
+            config: &config,
+            model_profile: &profile,
+            tools: &["read".to_string()],
+            skills: &[],
+            custom_instructions: None,
+            is_plan_mode: false,
+            agents: &[],
+        });
+        assert!(!prompt.contains("Web access contract"));
+    }
+
+    #[test]
+    fn test_research_subagent_contract_included_when_research_kind_known() {
+        let mut research_agent = test_agent("research");
+        research_agent.mode = crate::agent::AgentMode::All;
+        let build_agent = test_agent("build");
+        let agents = vec![build_agent, research_agent];
+        let config = test_config();
+        let profile = infer_builtin_profile("openai/gpt-5");
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agents[1],
+            config: &config,
+            model_profile: &profile,
+            tools: &["task".to_string(), "websearch".to_string()],
+            skills: &[],
+            custom_instructions: None,
+            is_plan_mode: false,
+            agents: &agents,
+        });
+        assert!(prompt.contains("Long-horizon research"));
+        assert!(prompt.contains("research pipeline"));
+    }
+
+    #[test]
+    fn test_research_subagent_contract_omitted_in_plan_mode() {
+        let mut research_agent = test_agent("research");
+        research_agent.mode = crate::agent::AgentMode::All;
+        let build_agent = test_agent("build");
+        let agents = vec![build_agent, research_agent];
+        let config = test_config();
+        let profile = infer_builtin_profile("openai/gpt-5");
+        let prompt = assemble_system_prompt_with_profile(PromptContext {
+            agent: &agents[1],
+            config: &config,
+            model_profile: &profile,
+            tools: &["task".to_string()],
+            skills: &[],
+            custom_instructions: None,
+            is_plan_mode: true,
+            agents: &agents,
+        });
+        // Plan mode → research subagent hint is suppressed.
+        assert!(!prompt.contains("Long-horizon research"));
     }
 
     #[test]
