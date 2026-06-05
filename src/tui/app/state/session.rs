@@ -12,6 +12,8 @@ pub struct ChangedFile {
     pub path: PathBuf,
     pub action: String,
     pub diff_preview: Vec<String>,
+    pub additions: usize,
+    pub deletions: usize,
 }
 
 pub struct SessionState {

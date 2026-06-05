@@ -1420,6 +1420,8 @@ impl App {
                     path: file.path.to_string_lossy().into_owned(),
                     action: file.action.clone(),
                     diff_preview: file.diff_preview.clone(),
+                    additions: file.additions,
+                    deletions: file.deletions,
                 })
                 .collect(),
         );

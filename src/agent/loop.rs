@@ -380,6 +380,10 @@ fn is_mcp_tool(tool_name: &str) -> bool {
     tool_name.starts_with("mcp__")
 }
 
+fn is_workspace_file_mutation(tool_name: &str, path: Option<&str>) -> bool {
+    path.is_some() && is_file_modifying_tool(tool_name) && is_path_within_working_directory(path)
+}
+
 fn tool_result_is_success(output: &str) -> bool {
     !output.starts_with("Error: ")
 }
@@ -406,7 +410,15 @@ fn is_path_within_working_directory(path: Option<&str>) -> bool {
 
     let canonical = match candidate.canonicalize() {
         Ok(p) => p,
-        Err(_) => return false,
+        Err(_) => {
+            let Some(parent) = candidate.parent() else {
+                return false;
+            };
+            match parent.canonicalize() {
+                Ok(parent) => parent,
+                Err(_) => return false,
+            }
+        }
     };
 
     canonical.starts_with(&cwd)
@@ -601,13 +613,12 @@ impl AgentLoop {
                 message: format!("Tool '{}' denied by permissions", tc.name),
             },
             PermissionResult::Ask(req) => {
-                // Auto-accept MCP tools (mcp__*) when path is within the
-                // working directory and not sensitive. Read-only and
-                // safe-mutating tools are now handled by
-                // `PermissionChecker::check()` short-circuiting to Allow,
-                // so they never reach this branch. Bash uses the
-                // destructive-pattern short-circuit in `check_with_args()`.
-                if is_mcp_tool(tc.name.as_str())
+                // Auto-accept MCP tools (mcp__*) and local file mutations
+                // when the target is within the working directory and not
+                // sensitive. Read-only and safe-mutating tools are handled by
+                // `PermissionChecker::check()` short-circuiting to Allow.
+                if (is_mcp_tool(tc.name.as_str())
+                    || is_workspace_file_mutation(tc.name.as_str(), req.path.as_deref()))
                     && is_path_within_working_directory(req.path.as_deref())
                     && sensitive_match.is_none()
                 {
@@ -3890,6 +3901,14 @@ mod tests {
         assert_destructive("fdisk /dev/sda");
         assert_destructive("parted /dev/nvme0n1");
         assert_destructive("sfdisk /dev/sda");
+    }
+
+    #[test]
+    fn workspace_file_mutation_allows_new_file_under_cwd() {
+        assert!(is_workspace_file_mutation(
+            "write",
+            Some("definitely_missing_file_for_permission_test.md")
+        ));
     }
 
     #[test]

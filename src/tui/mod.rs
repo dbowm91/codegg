@@ -141,9 +141,13 @@ use rand;
 use std::fs::OpenOptions;
 use tokio::sync::mpsc;
 
-fn sidebar_diff_preview(project_dir: &str, path: &str, old_content: Option<&str>) -> Vec<String> {
-    const MAX_DIFF_LINES: usize = 80;
+#[derive(Debug, Clone, Copy, Default)]
+struct SidebarDiffStats {
+    additions: usize,
+    deletions: usize,
+}
 
+fn sidebar_diff_stats(project_dir: &str, path: &str, old_content: Option<&str>) -> SidebarDiffStats {
     let abs_path = if std::path::Path::new(path).is_absolute() {
         std::path::PathBuf::from(path)
     } else {
@@ -153,23 +157,15 @@ fn sidebar_diff_preview(project_dir: &str, path: &str, old_content: Option<&str>
     let old_content = old_content.unwrap_or_default();
 
     let diff = similar::TextDiff::from_lines(old_content, &new_content);
-    let mut preview = Vec::new();
+    let mut stats = SidebarDiffStats::default();
     for change in diff.iter_all_changes() {
-        let marker = match change.tag() {
-            similar::ChangeTag::Delete => "-",
-            similar::ChangeTag::Insert => "+",
-            similar::ChangeTag::Equal => continue,
+        match change.tag() {
+            similar::ChangeTag::Delete => stats.deletions += 1,
+            similar::ChangeTag::Insert => stats.additions += 1,
+            similar::ChangeTag::Equal => {}
         };
-        preview.push(format!("{marker}{}", change.value().trim_end()));
-        if preview.len() >= MAX_DIFF_LINES {
-            break;
-        }
     }
-
-    if preview.len() == MAX_DIFF_LINES {
-        preview.push("...".to_string());
-    }
-    preview
+    stats
 }
 
 macro_rules! debug_log {
@@ -2580,7 +2576,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     AppEvent::FileChanged { path, action, old_content } => {
                         debug_log!("Event loop: FileChanged for path={}, action={}", path, action);
-                        let diff_preview = sidebar_diff_preview(
+                        let diff_stats = sidebar_diff_stats(
                             &app.session_state.project_dir,
                             &path,
                             old_content.as_deref(),
@@ -2593,13 +2589,17 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             .find(|file| file.path == path_buf)
                         {
                             existing.action = action.clone();
-                            existing.diff_preview = diff_preview;
+                            existing.diff_preview = Vec::new();
+                            existing.additions = diff_stats.additions;
+                            existing.deletions = diff_stats.deletions;
                         } else {
                             app.session_state.changed_files.push(
                                 crate::tui::app::state::session::ChangedFile {
                                     path: path_buf,
                                     action: action.clone(),
-                                    diff_preview,
+                                    diff_preview: Vec::new(),
+                                    additions: diff_stats.additions,
+                                    deletions: diff_stats.deletions,
                                 },
                             );
                         }
@@ -2611,6 +2611,8 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                 path: file.path.to_string_lossy().into_owned(),
                                 action: file.action.clone(),
                                 diff_preview: file.diff_preview.clone(),
+                                additions: file.additions,
+                                deletions: file.deletions,
                             })
                             .collect();
                         app.sidebar.set_file_changes(changes);

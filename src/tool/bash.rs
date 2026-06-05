@@ -29,7 +29,10 @@ static BLOCKED_PATTERNS: &[(&str, &str)] = &[
     ("redirect to /dev", r"> /dev/"),
     ("input redirect from /dev", r"< /dev/"),
     ("stderr redirect to /dev", r"2> /dev/"),
-    ("fork bomb with rm -rf", r"&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf"),
+    (
+        "fork bomb with rm -rf",
+        r"&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf",
+    ),
     ("|| rm -rf", r"\|\|[\s\n\r]*rm[\s\n\r]+-rf"),
     ("printf injection %{...}|&", r"%\{[^}]*\|\s*&"),
     ("eval(", r"eval\s*\("),
@@ -72,18 +75,72 @@ static BLOCKED_PATTERNS: &[(&str, &str)] = &[
 static BLOCKED_PATTERN_REGEXES: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
     BLOCKED_PATTERNS
         .iter()
-        .map(|(name, pat)| (*name, Regex::new(pat).expect("invalid blocked pattern regex")))
+        .map(|(name, pat)| {
+            (
+                *name,
+                Regex::new(pat).expect("invalid blocked pattern regex"),
+            )
+        })
         .collect()
 });
 
 /// Returns the name of the first matching blocked pattern, or None.
 fn find_blocked_pattern(command: &str) -> Option<&'static str> {
+    let sanitized = strip_quoted_heredoc_bodies(command);
     for (name, re) in BLOCKED_PATTERN_REGEXES.iter() {
-        if re.is_match(command) {
+        if re.is_match(&sanitized) {
             return Some(*name);
         }
     }
     None
+}
+
+fn strip_quoted_heredoc_bodies(command: &str) -> String {
+    let mut output = String::with_capacity(command.len());
+    let mut lines = command.lines();
+
+    while let Some(line) = lines.next() {
+        output.push_str(line);
+        output.push('\n');
+
+        let Some(delimiter) = quoted_heredoc_delimiter(line) else {
+            continue;
+        };
+
+        for body_line in lines.by_ref() {
+            if body_line.trim() == delimiter {
+                output.push_str(body_line);
+                output.push('\n');
+                break;
+            }
+        }
+    }
+
+    if !command.ends_with('\n') {
+        output.pop();
+    }
+    output
+}
+
+fn quoted_heredoc_delimiter(line: &str) -> Option<String> {
+    let marker = line.find("<<")?;
+    let mut rest = line[marker + 2..].trim_start();
+    if let Some(stripped) = rest.strip_prefix('-') {
+        rest = stripped.trim_start();
+    }
+
+    let quote = rest.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+
+    let end = rest[quote.len_utf8()..].find(quote)?;
+    let delimiter = &rest[quote.len_utf8()..quote.len_utf8() + end];
+    if delimiter.is_empty() {
+        None
+    } else {
+        Some(delimiter.to_string())
+    }
 }
 
 pub struct BashTool {
@@ -240,7 +297,9 @@ impl BashTool {
                     )));
                 }
 
-                let full_match = allowlist.iter().any(|allowed| normalized.starts_with(allowed));
+                let full_match = allowlist
+                    .iter()
+                    .any(|allowed| normalized.starts_with(allowed));
                 if !full_match {
                     return Err(ToolError::Permission(format!(
                         "command '{}' not in allowlist",
@@ -251,7 +310,9 @@ impl BashTool {
             }
 
             if !allowlist.contains(&cmd) {
-                let full_match = allowlist.iter().any(|allowed| normalized.starts_with(allowed));
+                let full_match = allowlist
+                    .iter()
+                    .any(|allowed| normalized.starts_with(allowed));
                 if !full_match {
                     return Err(ToolError::Permission(format!(
                         "command '{}' not in allowlist",
@@ -527,11 +588,7 @@ mod tests {
 
     fn assert_blocked(command: &str, expected_name_contains: &str) {
         let pat = find_blocked_pattern(command);
-        assert!(
-            pat.is_some(),
-            "expected blocked but allowed: {}",
-            command
-        );
+        assert!(pat.is_some(), "expected blocked but allowed: {}", command);
         let pat = pat.unwrap();
         assert!(
             pat.contains(expected_name_contains),
@@ -564,6 +621,19 @@ mod tests {
     #[test]
     fn grep_is_allowed() {
         assert_allowed("grep -rn 'pattern' src/");
+    }
+
+    #[test]
+    fn quoted_heredoc_body_is_not_scanned_for_expansions() {
+        assert_allowed(
+            "cat > file.md << 'EOF'\n# Notes\nLiteral ${VALUE} and $(not executed)\nEOF",
+        );
+        assert_allowed("cat > file.md << \"EOF\"\n`literal backticks`\nEOF");
+    }
+
+    #[test]
+    fn unquoted_heredoc_body_is_still_scanned() {
+        assert_blocked("cat > file.md << EOF\n$(rm -rf /)\nEOF", "$(");
     }
 
     #[test]

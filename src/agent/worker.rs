@@ -53,9 +53,7 @@ impl SubAgentReport {
                         format!(
                             " ({}{})",
                             file,
-                            f.line
-                                .map(|l| format!(":{}", l))
-                                .unwrap_or_default()
+                            f.line.map(|l| format!(":{}", l)).unwrap_or_default()
                         )
                     })
                     .unwrap_or_default();
@@ -683,6 +681,9 @@ async fn execute_agent_task(
         "plan_exit".to_string(),
     ];
     tool_registry.filter_out(&subagent_blocked_tools);
+    if is_read_only_agent(agent) {
+        tool_registry.filter_out(&read_only_blocked_tools());
+    }
     if !request.denied_tools.is_empty() {
         tool_registry.filter_out(&request.denied_tools);
     }
@@ -714,7 +715,8 @@ async fn execute_agent_task(
         });
     }
 
-    let permission_checker = PermissionChecker::new(Some(&config), None).with_agent_rules(agent_rules);
+    let permission_checker =
+        PermissionChecker::new(Some(&config), None).with_agent_rules(agent_rules);
 
     let mut agent_loop = AgentLoop::new(
         agents.iter().cloned().collect(),
@@ -796,4 +798,41 @@ async fn execute_agent_task(
     let report = serde_json::from_str::<SubAgentReport>(&output).ok();
 
     Ok((output, report))
+}
+
+fn is_read_only_agent(agent: &Agent) -> bool {
+    let role = agent.role.as_deref().unwrap_or_default();
+    let name = agent.name.as_str();
+    matches!(
+        role,
+        "planner" | "explorer" | "reviewer" | "security_reviewer" | "summarizer" | "title"
+    ) || matches!(
+        name,
+        "plan" | "explore" | "security-review" | "summary" | "title"
+    ) || ["write", "edit", "apply_patch", "replace", "multiedit"]
+        .iter()
+        .all(|tool| {
+            agent
+                .permissions
+                .get(*tool)
+                .is_some_and(|level| level == "deny")
+        })
+}
+
+fn read_only_blocked_tools() -> Vec<String> {
+    [
+        "write",
+        "edit",
+        "apply_patch",
+        "replace",
+        "multiedit",
+        "terminal",
+        "git",
+        "commit",
+        "image",
+        "task",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }

@@ -3,7 +3,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::sync::Arc;
 
 use crate::tui::app::TuiMsg;
@@ -13,8 +13,43 @@ use crate::tui::theme::Theme;
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuestionSpec {
     pub question: String,
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_options")]
     pub options: Option<Vec<String>>,
+    #[serde(default)]
     pub initial: Option<String>,
+}
+
+fn deserialize_options<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Debug, Deserialize)]
+    #[serde(untagged)]
+    enum OptionCompat {
+        Text(String),
+        Object {
+            label: Option<String>,
+            value: Option<String>,
+            description: Option<String>,
+        },
+    }
+
+    let raw = Option::<Vec<OptionCompat>>::deserialize(deserializer)?;
+    Ok(raw.map(|items| {
+        items
+            .into_iter()
+            .map(|item| match item {
+                OptionCompat::Text(text) => text,
+                OptionCompat::Object {
+                    label,
+                    value,
+                    description,
+                } => label.or(value).or(description).unwrap_or_default(),
+            })
+            .filter(|s| !s.is_empty())
+            .collect()
+    }))
 }
 
 #[derive(Clone)]
@@ -29,7 +64,11 @@ pub struct QuestionDialog {
 impl QuestionDialog {
     fn prev_char_boundary(s: &str, idx: usize) -> usize {
         let i = idx.min(s.len());
-        s[..i].char_indices().next_back().map(|(pos, _)| pos).unwrap_or(0)
+        s[..i]
+            .char_indices()
+            .next_back()
+            .map(|(pos, _)| pos)
+            .unwrap_or(0)
     }
 
     fn next_char_boundary(s: &str, idx: usize) -> usize {
@@ -46,16 +85,18 @@ impl QuestionDialog {
     }
 
     pub fn new(questions: Vec<QuestionSpec>) -> Self {
-        let answers = questions
+        let answers: Vec<String> = questions
             .iter()
             .map(|q| q.initial.clone().unwrap_or_default())
             .collect();
+        let current_input = answers.first().cloned().unwrap_or_default();
+        let cursor_pos = current_input.len();
         Self {
             questions,
             answers,
             selected_question: 0,
-            current_input: String::new(),
-            cursor_pos: 0,
+            current_input,
+            cursor_pos,
         }
     }
 

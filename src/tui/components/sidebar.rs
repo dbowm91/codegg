@@ -34,6 +34,8 @@ pub struct SidebarFileChange {
     pub path: String,
     pub action: String,
     pub diff_preview: Vec<String>,
+    pub additions: usize,
+    pub deletions: usize,
 }
 
 pub struct SidebarWidget {
@@ -284,11 +286,8 @@ impl SidebarWidget {
             targets.push(HoveredElement::None);
             targets.push(HoveredElement::Section(SidebarSection::FileChanges));
             if !self.file_changes_collapsed {
-                for (i, change) in self.file_changes.iter().enumerate() {
+                for i in 0..self.file_changes.len() {
                     targets.push(HoveredElement::FileChange(i));
-                    for _ in &change.diff_preview {
-                        targets.push(HoveredElement::FileChange(i));
-                    }
                 }
             }
         }
@@ -467,31 +466,28 @@ impl SidebarWidget {
             ));
             if !self.file_changes_collapsed {
                 for change in &self.file_changes {
+                    let stats = format!("+{} -{}", change.additions, change.deletions);
+                    let stats_width = stats.len() + 1;
                     lines.push(Line::from(vec![
                         Span::styled(
                             format!("  {} ", clean_inline_text(&change.action, 1)),
                             Style::default().fg(self.theme.warning),
                         ),
-                        Span::raw(clean_inline_text(&change.path, width.saturating_sub(6))),
+                        Span::raw(clean_inline_text(
+                            &change.path,
+                            width.saturating_sub(6 + stats_width),
+                        )),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("+{}", change.additions),
+                            Style::default().fg(self.theme.success),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("-{}", change.deletions),
+                            Style::default().fg(self.theme.error),
+                        ),
                     ]));
-                    for preview in &change.diff_preview {
-                        let style = if preview.starts_with('+') {
-                            Style::default().fg(self.theme.success)
-                        } else if preview.starts_with('-') {
-                            Style::default().fg(self.theme.error)
-                        } else if preview.starts_with("@@") {
-                            Style::default().fg(self.theme.primary)
-                        } else {
-                            Style::default().fg(self.theme.muted)
-                        };
-                        lines.push(Line::from(Span::styled(
-                            format!(
-                                "    {}",
-                                clean_inline_text(preview, width.saturating_sub(6))
-                            ),
-                            style,
-                        )));
-                    }
                 }
             }
         }
@@ -522,7 +518,12 @@ impl SidebarWidget {
             HoveredElement::FileChange(idx) => self
                 .file_changes
                 .get(*idx)
-                .map(|change| format!("Modified: {} ({})", change.path, change.action))
+                .map(|change| {
+                    format!(
+                        "Modified: {} ({}, +{} -{})",
+                        change.path, change.action, change.additions, change.deletions
+                    )
+                })
                 .unwrap_or_default(),
             HoveredElement::None => String::new(),
         }
