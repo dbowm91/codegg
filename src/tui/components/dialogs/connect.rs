@@ -151,7 +151,7 @@ impl Widget for &ConnectDialog {
                 let block = Block::default()
                     .title(title)
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.primary))
+                    .border_style(Style::default().fg(self.theme.border))
                     .style(Style::default().bg(self.theme.background));
 
                 let inner_area = block.inner(area);
@@ -236,7 +236,7 @@ impl Widget for &ConnectDialog {
                 let block = Block::default()
                     .title(title)
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.primary))
+                    .border_style(Style::default().fg(self.theme.border))
                     .style(Style::default().bg(self.theme.background));
 
                 let inner_area = block.inner(area);
@@ -416,7 +416,7 @@ impl Component for ConnectDialog {
                 let block = Block::default()
                     .title(title)
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.primary))
+                    .border_style(Style::default().fg(theme.border))
                     .style(Style::default().bg(theme.background));
 
                 let inner_area = block.inner(chunks[0]);
@@ -500,7 +500,7 @@ impl Component for ConnectDialog {
                 let block = Block::default()
                     .title(title)
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.primary))
+                    .border_style(Style::default().fg(theme.border))
                     .style(Style::default().bg(theme.background));
 
                 let inner_area = block.inner(area);

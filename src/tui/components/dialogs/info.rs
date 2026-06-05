@@ -97,7 +97,7 @@ impl Component for InfoDialog {
         let title_block = Block::default()
             .borders(Borders::ALL)
             .title(self.title())
-            .border_style(Style::default().fg(theme.primary));
+            .border_style(Style::default().fg(theme.border));
 
         let visible_lines = (area.height as usize).saturating_sub(5);
         let total_lines = self.lines.len();

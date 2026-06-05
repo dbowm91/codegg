@@ -180,7 +180,7 @@ impl HelpOverlay {
             .title(" Keyboard Shortcuts ")
             .title_style(Style::default().bold().fg(self.theme.primary))
             .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-            .border_style(Style::default().fg(self.theme.primary));
+            .border_style(Style::default().fg(self.theme.border));
 
         let visible_bindings: Vec<Line> = self
             .bindings
@@ -203,7 +203,7 @@ impl HelpOverlay {
 
         let content_block = Block::default()
             .borders(Borders::LEFT | Borders::RIGHT)
-            .border_style(Style::default().fg(self.theme.primary));
+            .border_style(Style::default().fg(self.theme.border));
 
         let footer_text = if self.bindings.len() > self.visible_height as usize {
             format!(
@@ -217,7 +217,7 @@ impl HelpOverlay {
         };
         let footer_block = Block::default()
             .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
-            .border_style(Style::default().fg(self.theme.primary));
+            .border_style(Style::default().fg(self.theme.border));
 
         let chunks = Layout::vertical([
             Constraint::Length(1),

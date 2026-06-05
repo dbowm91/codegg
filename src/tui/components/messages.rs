@@ -1597,10 +1597,15 @@ impl MessagesWidget {
         } else {
             Style::default().fg(bar_color).bg(user_bg)
         };
+        // User message text uses `theme.muted` (same color as the prompt
+        // placeholder) so chat reads with a single, readable text color
+        // instead of `theme.primary`, which on many Halloy themes resolves
+        // to a near-background accent (e.g. Cyber Red's #230202) and
+        // becomes effectively invisible.
         let text_style = if let Some(bg) = match_bg {
-            Style::default().fg(self.theme.primary).bg(bg)
+            Style::default().fg(self.theme.muted).bg(bg)
         } else {
-            Style::default().fg(self.theme.primary).bg(user_bg)
+            Style::default().fg(self.theme.muted).bg(user_bg)
         };
         let highlight_style = Style::default()
             .fg(self.theme.primary)

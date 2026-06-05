@@ -268,7 +268,7 @@ impl ResearchBrowserDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.primary))
+            .border_style(Style::default().fg(self.theme.border))
             .title(title);
 
         let inner = block.inner(area);
@@ -357,7 +357,7 @@ impl ResearchBrowserDialog {
     fn render_run_detail(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.primary))
+            .border_style(Style::default().fg(self.theme.border))
             .title(" Research Run Detail ");
 
         let inner = block.inner(area);
@@ -573,7 +573,7 @@ impl ResearchBrowserDialog {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.primary))
+            .border_style(Style::default().fg(self.theme.border))
             .title(title);
 
         let inner = block.inner(area);

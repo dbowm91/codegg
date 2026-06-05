@@ -285,7 +285,7 @@ impl Component for AgentDialog {
         let block = Block::default()
             .title(" Agents ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.primary))
+            .border_style(Style::default().fg(theme.border))
             .style(Style::default().bg(theme.background));
 
         let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });

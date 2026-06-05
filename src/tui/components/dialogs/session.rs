@@ -695,7 +695,7 @@ impl Component for SessionDialog {
         let block = Block::default()
             .title(" Sessions ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.primary))
+            .border_style(Style::default().fg(theme.border))
             .style(Style::default().bg(theme.background));
 
         let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });

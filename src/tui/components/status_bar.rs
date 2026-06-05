@@ -99,7 +99,12 @@ impl Widget for &StatusBarWidget {
         let (status_label, status_color) = match self.status.as_str() {
             "working" => ("● working", self.theme.warning),
             "error" => ("✗ error", self.theme.error),
-            _ => ("❯ idle", self.theme.primary),
+            // `idle` uses `theme.muted` (same color as the prompt
+            // placeholder and the sidebar section titles) so the footer
+            // shares one readable text color. `theme.primary` often
+            // resolves to a near-background accent (e.g. Cyber Red's
+            // #230202) which makes the status line disappear.
+            _ => ("❯ idle", self.theme.muted),
         };
         left_spans.push(Span::styled(
             format!(" {} ", status_label),
@@ -199,7 +204,7 @@ impl Widget for &StatusBarWidget {
         }
 
         let block = Block::default()
-            .borders(Borders::TOP)
+            .borders(Borders::TOP | Borders::BOTTOM)
             .border_style(Style::default().fg(self.theme.border))
             .style(Style::default().bg(self.theme.background));
 

@@ -103,7 +103,7 @@ impl PermissionDialog {
         // surface (not transparent).
         let outer_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.primary))
+            .border_style(Style::default().fg(theme.border))
             .style(Style::default().bg(theme.background));
         let inner = outer_block.inner(area);
         // Render an empty paragraph that only exists to paint the outer

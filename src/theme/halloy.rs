@@ -176,38 +176,40 @@ pub fn parse_halloy_theme(
         "text.primary",
     ) {
         theme.base.foreground = fg;
+        // `text.primary` is the canonical "default text" color. Use it for
+        // user / assistant / system message text so chat reads consistently
+        // across all Halloy themes regardless of how the theme author
+        // named their nickname / topic slots.
+        theme.conversation.user = fg;
+        theme.conversation.assistant = fg;
+        theme.conversation.system = fg;
     }
+    // `text.tertiary` is a softer muted tier and is the canonical Halloy
+    // slot for "muted / secondary text". `text.secondary` would be
+    // redundant — its value is usually a darker shade of the theme's
+    // accent and clashing when used as a muted foreground.
     if let Some(muted) = parse_text_color(
-        &file.text.secondary,
+        &file.text.tertiary,
         &mut diagnostics,
         &id,
-        "text.secondary",
+        "text.tertiary",
     ) {
         theme.text.muted = muted;
     }
-    if let Some(c) = parse_color(&file.general.border, &mut diagnostics, &id, "general.border") {
+    // Uniform border: pick one source and use it for both `ui.border` and
+    // `ui.border_focused`. The TUI's border usage is dominated by neutral
+    // chrome (panels, dialogs, list tracks) which shouldn't shift color
+    // when an element gains focus. The fallback chain prefers the most
+    // "prominent" border the theme author provided.
+    let border_source = file
+        .buffer
+        .border_selected
+        .clone()
+        .or_else(|| file.buffer.border.clone())
+        .or_else(|| file.general.border.clone())
+        .or_else(|| file.general.horizontal_rule.clone());
+    if let Some(c) = parse_color(&border_source, &mut diagnostics, &id, "border") {
         theme.ui.border = c;
-    }
-    // horizontal_rule is roughly equivalent to a border; only used if the
-    // theme didn't specify a more specific border.
-    if let Some(c) = parse_color(
-        &file.general.horizontal_rule,
-        &mut diagnostics,
-        &id,
-        "general.horizontal_rule",
-    ) {
-        // Don't override a real border; the `border` mapping above wins.
-        // We attach to `muted` only as a soft fallback in case border was absent.
-        if file.general.border.is_none() {
-            theme.ui.border = c;
-        }
-    }
-    if let Some(c) = parse_color(
-        &file.buffer.border_selected,
-        &mut diagnostics,
-        &id,
-        "buffer.border_selected",
-    ) {
         theme.ui.border_focused = c;
     }
     if let Some(c) = parse_text_color(
@@ -311,25 +313,9 @@ pub fn parse_halloy_theme(
     if let Some(c) = parse_text_color(&file.text.debug, &mut diagnostics, &id, "text.debug") {
         theme.status.debug = c;
     }
-    if let Some(c) = parse_text_color(
-        &file.text.secondary,
-        &mut diagnostics,
-        &id,
-        "text.secondary",
-    ) {
-        theme.text.muted = c;
-    }
-    // Tertiary text is a softer muted tier (Catppuccin uses it for purple
-    // accents). We don't have a dedicated slot; map it to the buffer-topic
-    // semantic via conversation.assistant so the value still drives UI.
-    if let Some(c) = parse_text_color(
-        &file.text.tertiary,
-        &mut diagnostics,
-        &id,
-        "text.tertiary",
-    ) {
-        theme.conversation.assistant = c;
-    }
+    // `text.tertiary` is mapped to `text.muted` earlier in this function,
+    // near the other `text.*` block, so it stays adjacent to the text
+    // palette it belongs to.
 
     if let Some(c) = parse_text_color(&file.buffer.code, &mut diagnostics, &id, "buffer.code") {
         theme.code.foreground = c;
@@ -348,19 +334,12 @@ pub fn parse_halloy_theme(
     if let Some(c) = parse_text_color(&file.buffer.action, &mut diagnostics, &id, "buffer.action") {
         theme.conversation.tool_call = c;
     }
-    if let Some(c) = parse_text_color(&file.buffer.topic, &mut diagnostics, &id, "buffer.topic") {
-        // Topic text usually wants a softer tint; reuse the assistant color
-        // slot which already drives secondary message chrome.
-        theme.conversation.assistant = c;
-    }
-    if let Some(c) = parse_text_color(
-        &file.buffer.nickname,
-        &mut diagnostics,
-        &id,
-        "buffer.nickname",
-    ) {
-        theme.conversation.user = c;
-    }
+    // `buffer.nickname` and `buffer.topic` are intentionally NOT mapped
+    // onto `conversation.user` / `conversation.assistant`. Both are
+    // already driven by `text.primary` (set near the top of this
+    // function) so user and agent messages read consistently across
+    // Halloy themes. The Halloy nickname/topic slots are scoped to
+    // highlights within an IRC client that we don't reproduce here.
     if let Some(c) = parse_text_color(
         &file.buffer.highlight,
         &mut diagnostics,
@@ -677,8 +656,20 @@ mod tests {
         assert_eq!(theme.ui.selection, Rgb::new(0x73, 0x00, 0x00));
         // Server-messages.default → status.info.
         assert_eq!(theme.status.info, Rgb::new(0x5B, 0xA4, 0xDB));
-        // Nickname → conversation.user.
-        assert_eq!(theme.conversation.user, Rgb::new(0x76, 0xAB, 0xEC));
+        // text.primary drives user / assistant / system so the chat surface
+        // reads with a single text color. (buffer.nickname is now ignored
+        // for conversation.user.)
+        assert_eq!(theme.conversation.user, Rgb::new(0xE4, 0x19, 0x51));
+        assert_eq!(theme.conversation.assistant, Rgb::new(0xE4, 0x19, 0x51));
+        assert_eq!(theme.conversation.system, Rgb::new(0xE4, 0x19, 0x51));
+        // text.tertiary drives text.muted (replaces the old text.secondary
+        // mapping so we don't end up with a near-clone of the accent hue).
+        assert_eq!(theme.text.muted, Rgb::new(0x7D, 0x3F, 0x50));
+        // Uniform border: buffer.border_selected is the primary source and
+        // feeds both ui.border and ui.border_focused. The transparent
+        // buffer.border is ignored because buffer.border_selected wins.
+        assert_eq!(theme.ui.border, Rgb::new(0xE4, 0x19, 0x51));
+        assert_eq!(theme.ui.border_focused, Rgb::new(0xE4, 0x19, 0x51));
         // buffer.action → conversation.tool_call.
         assert_eq!(theme.conversation.tool_call, Rgb::new(0x5B, 0xA4, 0xDB));
         // text.error → status.error.
@@ -695,5 +686,62 @@ mod tests {
                 d
             );
         }
+    }
+
+    #[test]
+    fn border_uniform_when_only_general_border_present() {
+        // If only `general.border` is set, both `ui.border` and
+        // `ui.border_focused` should resolve to it.
+        let input = r###"
+            [general]
+            background = "#101010"
+            border = "#445566"
+
+            [text]
+            primary = "#ffeedd"
+        "###;
+        let (theme, _diags) = parse_halloy_theme(input, None, &fallback()).unwrap();
+        assert_eq!(theme.ui.border, Rgb::new(0x44, 0x55, 0x66));
+        assert_eq!(theme.ui.border_focused, Rgb::new(0x44, 0x55, 0x66));
+    }
+
+    #[test]
+    fn border_falls_back_through_chain() {
+        // The fallback chain is buffer.border_selected → buffer.border →
+        // general.border → horizontal_rule. Themes missing the prominent
+        // slots should still get a border color.
+        let input = r###"
+            [general]
+            background = "#101010"
+            horizontal_rule = "#abcdef"
+
+            [text]
+            primary = "#ffeedd"
+        "###;
+        let (theme, _diags) = parse_halloy_theme(input, None, &fallback()).unwrap();
+        assert_eq!(theme.ui.border, Rgb::new(0xab, 0xcd, 0xef));
+        assert_eq!(theme.ui.border_focused, Rgb::new(0xab, 0xcd, 0xef));
+    }
+
+    #[test]
+    fn text_primary_drives_user_assistant_system() {
+        // text.primary is the canonical default for user / agent text.
+        // Halloy-specific slots like buffer.nickname and buffer.topic
+        // must not override it.
+        let input = r###"
+            [general]
+            background = "#101010"
+
+            [text]
+            primary = "#abcdef"
+
+            [buffer]
+            nickname = "#ff00ff"
+            topic = "#00ff00"
+        "###;
+        let (theme, _diags) = parse_halloy_theme(input, None, &fallback()).unwrap();
+        assert_eq!(theme.conversation.user, Rgb::new(0xab, 0xcd, 0xef));
+        assert_eq!(theme.conversation.assistant, Rgb::new(0xab, 0xcd, 0xef));
+        assert_eq!(theme.conversation.system, Rgb::new(0xab, 0xcd, 0xef));
     }
 }

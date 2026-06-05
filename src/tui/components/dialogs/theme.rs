@@ -109,6 +109,14 @@ impl ThemePickerDialog {
     }
 
     fn count_visible_themes(&self, start_idx: usize) -> usize {
+        self.count_visible_themes_in(start_idx, self.visible_height)
+    }
+
+    /// Same as [`count_visible_themes`](Self::count_visible_themes) but
+    /// accepts an explicit line budget. The render methods use the
+    /// actual rendered area's inner height so the picker fills the box
+    /// instead of being capped at the default [`visible_height`](Self::visible_height).
+    fn count_visible_themes_in(&self, start_idx: usize, max_lines: usize) -> usize {
         let mut lines_used = 0;
         let mut themes_shown = 0;
 
@@ -118,7 +126,7 @@ impl ThemePickerDialog {
             }
 
             let theme_lines = 2 + if i == self.selected { 1 } else { 0 };
-            if lines_used + theme_lines > self.visible_height {
+            if lines_used + theme_lines > max_lines {
                 break;
             }
 
@@ -246,8 +254,14 @@ impl Widget for &ThemePickerDialog {
         )));
         lines.push(Line::from(""));
 
+        // Reserve 2 lines for the top + bottom of the surrounding
+        // `Block` border and 4 lines for the dialog's own header (title
+        // + spacer) and footer (spacer + hint). The remaining height
+        // drives how many theme entries the picker shows so it fills
+        // the box regardless of the default `visible_height` value.
+        let max_lines = (area.height as usize).saturating_sub(6);
         let scroll = self.scroll.get();
-        let visible_themes = self.count_visible_themes(scroll);
+        let visible_themes = self.count_visible_themes_in(scroll, max_lines);
         for (i, theme) in self.themes.iter().enumerate() {
             if i < scroll {
                 continue;
@@ -287,106 +301,6 @@ impl Widget for &ThemePickerDialog {
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " Preview ",
-            Style::default()
-                .fg(self.theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
-
-        let preview = &self.preview_theme;
-        let preview_lines = vec![
-            Line::from(vec![
-                Span::styled("┌─", Style::default().fg(preview.border)),
-                Span::styled("▌", Style::default().fg(preview.primary)),
-                Span::styled(
-                    " build ",
-                    Style::default().fg(preview.foreground).bg(preview.primary),
-                ),
-                Span::raw("─────────────────────────────"),
-                Span::styled("┐", Style::default().fg(preview.border)),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(
-                    " > ",
-                    Style::default().fg(preview.muted).bg(preview.background),
-                ),
-                Span::styled(
-                    "How do I exit vim?",
-                    Style::default()
-                        .fg(preview.foreground)
-                        .bg(preview.background),
-                ),
-                Span::raw("          │"),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(
-                    " To exit vim: ",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-                Span::raw("              │"),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(
-                    "   ",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-                Span::styled(":q", Style::default().fg(preview.success)),
-                Span::styled(
-                    "to quit                      │",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(
-                    "   ",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-                Span::styled(":wq", Style::default().fg(preview.success)),
-                Span::styled(
-                    "to save and quit             │",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::raw("                            │"),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(" ⟳ ", Style::default().fg(preview.primary)),
-                Span::styled(
-                    " Bash running ",
-                    Style::default().fg(preview.foreground).bg(preview.primary),
-                ),
-                Span::raw("                            │"),
-            ]),
-            Line::from(vec![
-                Span::styled("└", Style::default().fg(preview.border)),
-                Span::raw("─────────────────────────────"),
-                Span::styled("┘", Style::default().fg(preview.border)),
-            ]),
-        ];
-        for line in preview_lines {
-            lines.push(line);
-        }
-
-        lines.push(Line::from(""));
         let footer = if self.is_previewing() {
             "↑/↓ preview  Enter commit  Esc revert"
         } else {
@@ -400,7 +314,7 @@ impl Widget for &ThemePickerDialog {
         let block = Block::default()
             .title(" Themes ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.primary))
+            .border_style(Style::default().fg(self.theme.border))
             .style(Style::default().bg(self.theme.background));
 
         let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
@@ -458,8 +372,12 @@ impl Component for ThemePickerDialog {
         )));
         lines.push(Line::from(""));
 
+        // See Widget::render for the line budget rationale. Using the
+        // actual area height here makes the picker fill the dialog box
+        // even after the inline preview block was removed.
+        let max_lines = (area.height as usize).saturating_sub(6);
         let scroll = self.scroll.get();
-        let visible_themes = self.count_visible_themes(scroll);
+        let visible_themes = self.count_visible_themes_in(scroll, max_lines);
         for (i, thm) in self.themes.iter().enumerate() {
             if i < scroll {
                 continue;
@@ -499,106 +417,6 @@ impl Component for ThemePickerDialog {
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " Preview ",
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
-
-        let preview = &self.preview_theme;
-        let preview_lines = vec![
-            Line::from(vec![
-                Span::styled("┌─", Style::default().fg(preview.border)),
-                Span::styled("▌", Style::default().fg(preview.primary)),
-                Span::styled(
-                    " build ",
-                    Style::default().fg(preview.foreground).bg(preview.primary),
-                ),
-                Span::raw("─────────────────────────────"),
-                Span::styled("┐", Style::default().fg(preview.border)),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(
-                    " > ",
-                    Style::default().fg(preview.muted).bg(preview.background),
-                ),
-                Span::styled(
-                    "How do I exit vim?",
-                    Style::default()
-                        .fg(preview.foreground)
-                        .bg(preview.background),
-                ),
-                Span::raw("                │"),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(
-                    " To exit vim:  ",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-                Span::raw("                      │"),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(
-                    "   ",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-                Span::styled(":q", Style::default().fg(preview.success)),
-                Span::styled(
-                    " to quit                       │",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(
-                    "   ",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-                Span::styled(":wq", Style::default().fg(preview.success)),
-                Span::styled(
-                    " to save and quit             │",
-                    Style::default()
-                        .fg(preview.secondary)
-                        .bg(preview.background),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::raw("                              │"),
-            ]),
-            Line::from(vec![
-                Span::styled("│", Style::default().fg(preview.border)),
-                Span::styled(" ⟳ ", Style::default().fg(preview.primary)),
-                Span::styled(
-                    " Bash running ",
-                    Style::default().fg(preview.foreground).bg(preview.primary),
-                ),
-                Span::raw("                  │"),
-            ]),
-            Line::from(vec![
-                Span::styled("└", Style::default().fg(preview.border)),
-                Span::raw("─────────────────────────────"),
-                Span::styled("┘", Style::default().fg(preview.border)),
-            ]),
-        ];
-        for line in preview_lines {
-            lines.push(line);
-        }
-
-        lines.push(Line::from(""));
         let footer = if self.is_previewing() {
             "↑/↓ preview  Enter commit  Esc revert"
         } else {
@@ -612,7 +430,7 @@ impl Component for ThemePickerDialog {
         let block = Block::default()
             .title(" Themes ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.primary))
+            .border_style(Style::default().fg(theme.border))
             .style(Style::default().bg(theme.background));
 
         let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });

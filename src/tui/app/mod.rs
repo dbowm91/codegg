@@ -287,6 +287,11 @@ pub struct App {
     pub dialog_area: Option<Rect>,
     pub completion_area: Option<Rect>,
     pub sidebar_area: Option<Rect>,
+    /// 1-column strip reserved for the TUI's outer left border.
+    pub left_border_area: Option<Rect>,
+    /// 1-row strip reserved for the TUI's outer bottom border (under
+    /// the footer).
+    pub bottom_border_area: Option<Rect>,
     pub last_click_time: Option<Instant>,
     pub last_click_target: Option<ClickTarget>,
     pub hover_target: Option<ClickTarget>,
@@ -572,6 +577,8 @@ impl App {
             dialog_area: None,
             completion_area: None,
             sidebar_area: None,
+            left_border_area: None,
+            bottom_border_area: None,
             last_click_time: None,
             last_click_target: None,
             hover_target: None,
@@ -769,6 +776,8 @@ impl App {
             dialog_area: None,
             completion_area: None,
             sidebar_area: None,
+            left_border_area: None,
+            bottom_border_area: None,
             last_click_time: None,
             last_click_target: None,
             hover_target: None,
@@ -1188,15 +1197,44 @@ impl App {
         let area = frame.area();
         let main_chunks = self.ui_state.layout.split(area);
         let main_area = main_chunks[0];
+
+        // Reserve a 1-column strip on the left of the main area for the
+        // outer left border. Reserving the strip (rather than painting
+        // the border on top of the content) keeps the line continuous —
+        // the header / viewport / prompt / footer widgets no longer
+        // overwrite the leftmost column with their own text.
+        let bordered = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(main_area);
+        let main_area_inner = bordered[1];
+        self.left_border_area = Some(bordered[0]);
+
         let max_prompt_height = (area.height * 40 / 100).max(3);
         let prompt_height = self.prompt_state.prompt.needed_height(max_prompt_height);
         let session_chunks = self
             .ui_state
             .layout
-            .session_layout(main_area, Some(prompt_height));
+            .session_layout(main_area_inner, Some(prompt_height));
 
         self.viewport_area = Some(session_chunks[1]);
         self.prompt_area = Some(session_chunks[2]);
+
+        // Outer TUI frame: paint the left border on the reserved strip
+        // and the four corner cells that connect it with the header's
+        // bottom border (top) and the footer's bottom border (bottom).
+        // The header and footer widgets supply the horizontal lines via
+        // their own `Borders::BOTTOM` / `Borders::TOP | Borders::BOTTOM`.
+        self.render_outer_borders(
+            frame,
+            bordered[0],
+            main_area_inner,
+            session_chunks[0],
+            session_chunks[3],
+        );
 
         self.render_header(frame, session_chunks[0]);
         self.render_viewport(frame, session_chunks[1]);
@@ -1359,6 +1397,60 @@ impl App {
             .style(Style::default().bg(self.ui_state.theme.background));
         let paragraph = Paragraph::new(title).block(block);
         frame.render_widget(paragraph, area);
+    }
+
+    /// Draw the left border on the reserved 1-column strip and the
+    /// four corner cells that connect it with the header's bottom
+    /// border (top edge) and the footer's bottom border (bottom edge).
+    /// The header and footer widgets supply the horizontal lines via
+    /// their own `Borders::BOTTOM` / `Borders::TOP | Borders::BOTTOM`
+    /// — the corners here are what make the three sides look like a
+    /// single connected frame instead of three disjoint segments.
+    fn render_outer_borders(
+        &mut self,
+        frame: &mut Frame,
+        left_area: Rect,
+        content_area: Rect,
+        header_area: Rect,
+        footer_area: Rect,
+    ) {
+        // Left border: paint a `Borders::LEFT` block on the reserved
+        // strip. Drawing on a dedicated strip keeps the line continuous
+        // since the content widgets never write into column 0.
+        let border_style = Style::default().fg(self.ui_state.theme.border);
+        let bg_style = Style::default().bg(self.ui_state.theme.background);
+        let left_block = Block::default()
+            .borders(Borders::LEFT)
+            .border_style(border_style)
+            .style(bg_style);
+        frame.render_widget(left_block, left_area);
+
+        if footer_area.height > 0 {
+            let footer_bottom_y = footer_area.y + footer_area.height - 1;
+            self.bottom_border_area =
+                Some(Rect::new(footer_area.x, footer_bottom_y, footer_area.width, 1));
+        }
+        if header_area.height > 0 {
+            // Corner cells: top-left, top-right, bottom-left, bottom-right.
+            // Drawn after the header and footer widgets (which supply the
+            // horizontal lines) so the corner glyphs overwrite the line
+            // glyphs at the intersections and visually connect them.
+            let header_bottom_y = header_area.y + header_area.height - 1;
+            let footer_bottom_y = footer_area.y + footer_area.height - 1;
+            let right_x = content_area.x + content_area.width - 1;
+            self.render_corner(frame, left_area.x, header_bottom_y, '┌', border_style);
+            self.render_corner(frame, right_x, header_bottom_y, '┐', border_style);
+            self.render_corner(frame, left_area.x, footer_bottom_y, '└', border_style);
+            self.render_corner(frame, right_x, footer_bottom_y, '┘', border_style);
+        }
+    }
+
+    /// Paint a single corner glyph at `(x, y)` in the given style.
+    /// Uses a 1x1 [`Paragraph`] so the glyph goes through ratatui's
+    /// normal styling pipeline and respects the active background.
+    fn render_corner(&self, frame: &mut Frame, x: u16, y: u16, glyph: char, style: Style) {
+        let cell = Paragraph::new(glyph.to_string()).style(style);
+        frame.render_widget(cell, Rect::new(x, y, 1, 1));
     }
 
     fn active_context_indicator(&self) -> String {
@@ -7002,7 +7094,7 @@ impl App {
         let block = Block::default()
             .title(" Timeline ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.ui_state.theme.primary))
+            .border_style(Style::default().fg(self.ui_state.theme.border))
             .style(
                 Style::default()
                     .bg(self.ui_state.theme.background)

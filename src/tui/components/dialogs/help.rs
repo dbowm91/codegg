@@ -93,7 +93,7 @@ impl Component for HelpDialog {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Help ")
-                .border_style(Style::default().fg(theme.primary)),
+                .border_style(Style::default().fg(theme.border)),
         );
         frame.render_widget(title, chunks[0]);
 

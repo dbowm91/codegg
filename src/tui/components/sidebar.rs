@@ -299,12 +299,14 @@ impl SidebarWidget {
         let mut lines = Vec::new();
         let width = area_width as usize;
 
-        lines.push(self.section_header(" Session "));
         if let Some(sess) = &self.session {
-            lines.push(Line::from(vec![
-                Span::styled("title: ", Style::default().fg(self.theme.muted)),
-                Span::raw(clean_inline_text(&sess.title, width.saturating_sub(9))),
-            ]));
+            let title = clean_inline_text(&sess.title, width);
+            lines.push(Line::from(Span::styled(
+                title,
+                Style::default()
+                    .fg(self.theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            )));
             lines.push(Line::from(vec![
                 Span::styled("id: ", Style::default().fg(self.theme.muted)),
                 Span::raw(sess.id[..8.min(sess.id.len())].to_string()),
@@ -316,6 +318,7 @@ impl SidebarWidget {
                 ]));
             }
         } else {
+            lines.push(self.section_header(" Session "));
             lines.push(Line::from(Span::styled(
                 "no session",
                 Style::default().fg(self.theme.muted),
@@ -530,8 +533,12 @@ impl SidebarWidget {
     }
 
     fn section_header(&self, label: &str) -> Line<'static> {
+        // Section titles share the muted (placeholder) text color so the
+        // sidebar reads with a single text hue. `theme.primary` is often
+        // a near-background accent in Halloy themes (e.g. Cyber Red's
+        // #230202) which renders the title invisible.
         let style = Style::default()
-            .fg(self.theme.primary)
+            .fg(self.theme.muted)
             .add_modifier(Modifier::BOLD);
         Line::from(Span::styled(label.to_string(), style))
     }
@@ -539,7 +546,7 @@ impl SidebarWidget {
     fn collapsible_header(&self, label: &str, collapsed: bool) -> Line<'static> {
         let marker = if collapsed { "[+]" } else { "[-]" };
         let style = Style::default()
-            .fg(self.theme.primary)
+            .fg(self.theme.muted)
             .add_modifier(Modifier::BOLD);
         Line::from(vec![
             Span::styled(format!("{marker} "), Style::default().fg(self.theme.muted)),
@@ -590,7 +597,7 @@ impl Widget for &SidebarWidget {
             if tooltip_y > area.y {
                 let tooltip_area = Rect::new(tooltip_x, tooltip_y, tooltip_width, 2);
                 let tooltip_block = Block::default()
-                    .border_style(Style::default().fg(self.theme.primary))
+                    .border_style(Style::default().fg(self.theme.border))
                     .borders(Borders::ALL)
                     .style(Style::default().bg(self.theme.background));
 
