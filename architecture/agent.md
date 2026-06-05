@@ -42,30 +42,44 @@ src/agent/
 
 ```rust
 pub struct AgentLoop {
-    agents: HashMap<String, Agent>,           // Available agents
-    state: AgentLoopState,                    // Turn count, tokens, plan mode
-    limits: ExecutionLimits,                  // Max turns, tokens, timeout
-    provider: Box<dyn Provider>,              // LLM provider
-    permission_checker: PermissionChecker,    // Permission enforcement
-    tool_registry: ToolRegistry,              // Tool execution
-    hook_registry: Option<Arc<HookRegistry>>,  // Hook system
-    context_tracker: ContextTracker,           // Token usage monitoring
-    doom_detector: DoomLoopDetector,          // Repetitive tool call detection
-    steering: AtomicBool,                     // User interruption signal
-    follow_up_tx: mpsc::UnboundedSender<String>,  // Follow-up prompt sender
-    follow_up_rx: mpsc::UnboundedReceiver<String>, // Follow-up prompt receiver
-    config: Config,                           // App configuration
-    question_tx: Option<oneshot::Sender<String>>,  // Question response sender
-    question_rx: Option<oneshot::Receiver<String>>, // Question response receiver
-    plugin_service: Option<Arc<PluginService>>, // WASM plugin hooks
-    session_id: String,                       // Current session ID
-    mcp_service: Option<Arc<RwLock<McpService>>>, // MCP client service
-    tool_def_cache: Option<ToolDefCache>,     // Cached tool definitions
-    model_router: ModelRouter,                // Auto-routing
-    snapshot_manager: Option<SnapshotManager>, // File state snapshots
-    file_change_rx: broadcast::Receiver<AppEvent>, // File change events
-    usage_store: Option<Arc<UsageStore>>,     // Token usage tracking
-    pricing_service: PricingService,          // Cost calculation
+    agents: HashMap<String, Agent>,                    // Available agents
+    state: AgentLoopState,                             // Turn count, tokens, plan mode
+    limits: ExecutionLimits,                           // Max turns, tokens, timeout
+    provider: Box<dyn Provider>,                       // LLM provider
+    permission_checker: PermissionChecker,             // Permission enforcement
+    tool_registry: ToolRegistry,                       // Tool execution
+    hook_registry: Option<Arc<HookRegistry>>,          // Hook system
+    context_tracker: ContextTracker,                   // Token usage monitoring
+    doom_detector: DoomLoopDetector,                   // Repetitive tool call detection
+    steering: AtomicBool,                              // User interruption signal
+    follow_up_tx: mpsc::UnboundedSender<String>,       // Follow-up prompt sender
+    follow_up_rx: mpsc::UnboundedReceiver<String>,     // Follow-up prompt receiver
+    config: Config,                                    // App configuration
+    question_tx: Option<oneshot::Sender<String>>,      // Question response sender
+    question_rx: Option<oneshot::Receiver<String>>,    // Question response receiver
+    plugin_service: Option<Arc<PluginService>>,        // WASM plugin hooks
+    session_id: String,                                // Current session ID
+    mcp_service: Option<Arc<RwLock<McpService>>>,     // MCP client service
+    tool_def_cache: Option<ToolDefCache>,              // Cached tool definitions
+    deferred_tool_definitions: Vec<ToolDefinition>,    // Deferred tool definitions
+    model_router: ModelRouter,                         // Auto-routing
+    snapshot_manager: Option<SnapshotManager>,         // File state snapshots
+    file_change_rx: broadcast::Receiver<AppEvent>,     // File change events
+    usage_store: Option<Arc<UsageStore>>,              // Token usage tracking
+    pricing_service: PricingService,                   // Cost calculation
+    security_service: SecurityService,                 // Security service
+    recent_findings: Vec<SecurityFinding>,             // Recent security findings
+    todo_state: Arc<Mutex<TodoState>>,                 // Todo state
+    task_state_policy: TaskStatePolicy,                // Task state policy
+    todo_pool: Option<SqlitePool>,                     // Todo database pool
+    event_store: Option<Arc<EventStore>>,              // Event store for replay
+    active_tool_timings: HashMap<String, Instant>,     // Tool execution timings
+    execution_policy: Option<ExecutionPolicy>,         // Execution policy
+    original_user_prompt: Option<String>,              // Original user prompt
+    subagent_pool: Option<Arc<SubAgentPool>>,          // Subagent pool
+    max_tool_calls: Option<usize>,                     // Max tool calls limit
+    goal_store: Option<Arc<GoalStore>>,                // Goal store
+    goal_wall_clock: Mutex<GoalWallClock>,             // Goal wall clock
 }
 ```
 
@@ -151,7 +165,7 @@ Post-loop:
 4. **Parallel Execution**:
    - Semaphore-controlled concurrency (default max 100)
    - Per-tool timeout via `get_tool_timeout()`
-   - Hook dispatch: PreToolExecute → plugin hook → ToolExecuteBefore → tool execution → ToolExecuteAfter → PostToolExecute
+   - Hook dispatch: plugin hook → ToolExecuteBefore → tool execution → ToolExecuteAfter
 
 5. **Question Handling**:
    - Wait for question_rx (300s timeout)
@@ -629,15 +643,15 @@ pub struct EventProcessor {
 
 ### Hook Types Dispatched
 
-| Hook Event | Location | Purpose |
-|------------|----------|---------|
-| `SessionStart` | `run_session_start_hooks()` in `loop.rs` | Before main loop |
-| `AgentStart` | `run_agent_start_hooks()` in `loop.rs` | Before each turn |
-| `PreToolExecute` | `run_pre_tool_hooks()` in `loop.rs` | Before each tool |
-| `PostToolExecute` | `run_post_tool_hooks()` in `loop.rs` | After each tool |
-| `AgentEnd` | `run_agent_end_hooks()` in `loop.rs` | After each turn |
-| `SessionEnd` | `run_session_end_hooks()` in `loop.rs` | After main loop |
-| `SessionCompacting` | `dispatch_hook()` in `loop.rs` | Before compaction |
+| Hook Event | Plugin Service Method | Purpose |
+|------------|----------------------|---------|
+| `SessionStart` | `dispatch_session_start()` | Before main loop |
+| `AgentStart` | `dispatch_agent_start()` | Before each turn |
+| `ToolExecuteBefore` | `dispatch_tool_execute_before()` | Before each tool |
+| `ToolExecuteAfter` | `dispatch_tool_execute_after()` | After each tool |
+| `AgentEnd` | `dispatch_agent_end()` | After each turn |
+| `SessionEnd` | `dispatch_session_end()` | After main loop |
+| `SessionCompacting` | `dispatch_session_compacting()` | Before compaction |
 
 ### Plugin Service Hooks
 

@@ -72,7 +72,7 @@ pub struct ToolResult {
 }
 ```
 
-## Built-in Tools (27 total in default registry)
+## Built-in Tools (29 total in default registry)
 
 ### File Operations
 
@@ -104,6 +104,7 @@ pub struct ToolResult {
 | **webfetch** | `webfetch.rs` | Fetch URLs and return as markdown. Handles Cloudflare challenges, images as base64, 5MB size limit. SSRF protection via `validate_host_ip` and `revalidate_dns`. |
 | **websearch** | `websearch.rs` | Search web using Exa AI API. Returns titled results with URLs and snippets. Uses EXA_API_KEY environment variable. |
 | **codesearch** | `codesearch.rs` | Search for code examples, library docs, SDK patterns using Exa Code API. Uses EXA_API_KEY or EXA_CODE_API_KEY. |
+| **research** | `research.rs` | Deep research tool using Exa for comprehensive web research with citation extraction. |
 | **image** | `image.rs` | Generate images using OpenAI's DALL-E model. Supports dall-e-3, size, quality parameters. Requires OPENAI_API_KEY. |
 
 ### Task Management
@@ -132,7 +133,13 @@ pub struct ToolResult {
 | Tool | File | Description |
 |------|------|-------------|
 | **review** | `review.rs` | Analyze git diff and provide structured code review feedback using LLM. Uses emojis for categorization (bug, performance, style, suggestion). |
-| **lsp** | `lsp.rs` | Query LSP server for code intelligence (defined in `src/tool/lsp.rs`, registered in `with_defaults()` at lines 113-115) |
+| **lsp** | `lsp.rs` | Query LSP server for code intelligence (defined in `src/tool/lsp.rs`, registered in `with_defaults()` at lines 161-163) |
+
+### Security Operations
+
+| Tool | File | Description |
+|------|------|-------------|
+| **security** | `security.rs` | Analyze code for security vulnerabilities. Checks for SQL injection, XSS, command injection, path traversal, and other common security issues. |
 
 ### Meta Operations
 
