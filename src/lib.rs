@@ -41,3 +41,4 @@ pub mod util;
 pub mod worktree;
 pub mod research;
 pub mod task_state;
+pub mod theme;

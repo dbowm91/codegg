@@ -3,6 +3,9 @@
 //! This module provides the Database wrapper around SQLite for persistent storage
 //! of sessions, messages, and analytics. It uses sqlx for async database operations.
 
+pub mod preferences;
+pub use preferences::{UserPreferences, KEY_THEME_ACTIVE, KEY_MODEL_LAST_USED};
+
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::path::PathBuf;

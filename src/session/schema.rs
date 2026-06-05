@@ -76,6 +76,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 18 {
         migrate_and_record(pool, 18).await?;
     }
+    if current_version < 19 {
+        migrate_and_record(pool, 19).await?;
+    }
 
     Ok(())
 }
@@ -106,6 +109,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             16 => migrate_v16(pool).await?,
             17 => migrate_v17(pool).await?,
             18 => migrate_v18(pool).await?,
+            19 => migrate_v19(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -679,6 +683,26 @@ async fn migrate_v18(pool: &SqlitePool) -> Result<(), StorageError> {
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_research_run_project ON research_run(project_root)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v19(pool: &SqlitePool) -> Result<(), StorageError> {
+    // Generic key/value preferences for things that must outlive config
+    // changes and survive a config file reset. Currently used for the
+    // active theme id and the last-used model id.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS user_preferences (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        "#,
     )
     .execute(pool)
     .await

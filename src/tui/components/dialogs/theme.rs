@@ -12,6 +12,16 @@ use super::super::component::{Component, DialogType};
 use super::super::scroll::CenteredScroll;
 use crate::tui::app::TuiMsg;
 
+/// State machine for the live-preview flow. The dialog starts `Inactive`
+/// and the previewed theme equals the last committed theme. The first
+/// navigation key flips it to `Previewing` and remembers the original so
+/// we can revert on Esc or dialog close.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreviewState {
+    Inactive,
+    Previewing { original_id: String },
+}
+
 #[derive(Clone)]
 pub struct ThemePickerDialog {
     pub theme: Arc<Theme>,
@@ -20,12 +30,19 @@ pub struct ThemePickerDialog {
     pub preview_theme: Theme,
     pub scroll: CenteredScroll,
     visible_height: usize,
+    pub preview_state: PreviewState,
 }
 
 impl ThemePickerDialog {
+    /// Construct a picker. The `themes` list is the snapshot the picker
+    /// operates on; if `None`, the picker falls back to the registry's
+    /// current built-ins.
     pub fn new(theme: Arc<Theme>) -> Self {
         let themes = super::super::super::theme::all_themes();
-        let default_idx = themes.iter().position(|t| t.name == "dark").unwrap_or(0);
+        let default_idx = themes
+            .iter()
+            .position(|t| t.name == crate::theme::registry::DEFAULT_THEME_ID)
+            .unwrap_or(0);
         Self {
             theme,
             themes,
@@ -33,6 +50,35 @@ impl ThemePickerDialog {
             preview_theme: Theme::dark(),
             scroll: CenteredScroll::new(),
             visible_height: 10,
+            preview_state: PreviewState::Inactive,
+        }
+    }
+
+    /// Construct a picker from a caller-supplied list of themes. The
+    /// currently-active theme is captured as the preview state, so we
+    /// can revert on Esc or dialog close.
+    pub fn with_themes(theme: Arc<Theme>, themes: Vec<Theme>) -> Self {
+        let default_idx = themes
+            .iter()
+            .position(|t| t.name == theme.name)
+            .or_else(|| {
+                themes
+                    .iter()
+                    .position(|t| t.name == crate::theme::registry::DEFAULT_THEME_ID)
+            })
+            .unwrap_or(0);
+        let preview = themes
+            .get(default_idx)
+            .cloned()
+            .unwrap_or_else(Theme::dark);
+        Self {
+            theme: Arc::clone(&theme),
+            themes,
+            selected: default_idx,
+            preview_theme: preview,
+            scroll: CenteredScroll::new(),
+            visible_height: 10,
+            preview_state: PreviewState::Inactive,
         }
     }
 
@@ -83,7 +129,7 @@ impl ThemePickerDialog {
         themes_shown
     }
 
-    pub fn select_up(&mut self) {
+    pub fn select_up(&mut self) -> Option<String> {
         if self.selected > 0 {
             self.selected -= 1;
             self.preview_theme = self.themes[self.selected].clone();
@@ -94,9 +140,10 @@ impl ThemePickerDialog {
             self.scroll
                 .clamp(self.selected, self.themes.len(), visible_themes);
         }
+        self.transition_to_previewing()
     }
 
-    pub fn select_down(&mut self) {
+    pub fn select_down(&mut self) -> Option<String> {
         if self.selected + 1 < self.themes.len() {
             self.selected += 1;
             self.preview_theme = self.themes[self.selected].clone();
@@ -107,6 +154,38 @@ impl ThemePickerDialog {
             self.scroll
                 .clamp(self.selected, self.themes.len(), visible_themes);
         }
+        self.transition_to_previewing()
+    }
+
+    /// Called by App immediately after `select_up`/`select_down`. Returns
+    /// the id that should be live-previewed. The first navigation also
+    /// flips the preview state from `Inactive` to `Previewing` and
+    /// captures the original theme id so we can revert.
+    pub fn transition_to_previewing(&mut self) -> Option<String> {
+        if self.themes.is_empty() {
+            return None;
+        }
+        let new_id = self.themes[self.selected].name.clone();
+        if matches!(self.preview_state, PreviewState::Inactive) {
+            self.preview_state = PreviewState::Previewing {
+                original_id: self.theme.name.clone(),
+            };
+        }
+        Some(new_id)
+    }
+
+    /// The id of the theme that was active when the dialog opened, or
+    /// `None` if no preview is in progress.
+    pub fn preview_original_id(&self) -> Option<String> {
+        match &self.preview_state {
+            PreviewState::Inactive => None,
+            PreviewState::Previewing { original_id } => Some(original_id.clone()),
+        }
+    }
+
+    /// True iff the user has navigated since the dialog opened.
+    pub fn is_previewing(&self) -> bool {
+        matches!(self.preview_state, PreviewState::Previewing { .. })
     }
 
     pub fn selected_theme(&self) -> Option<&Theme> {
@@ -308,8 +387,13 @@ impl Widget for &ThemePickerDialog {
         }
 
         lines.push(Line::from(""));
+        let footer = if self.is_previewing() {
+            "↑/↓ preview  Enter commit  Esc revert"
+        } else {
+            "↑/↓ navigate  Enter apply  Esc cancel"
+        };
         lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  Enter apply  Esc cancel",
+            footer,
             Style::default().fg(self.theme.muted),
         )));
 
@@ -327,19 +411,26 @@ impl Widget for &ThemePickerDialog {
 impl Component for ThemePickerDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         match key.code {
-            crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),
+            crossterm::event::KeyCode::Esc => {
+                // Revert any live preview, then close.
+                if self.is_previewing() {
+                    Some(TuiMsg::ThemeRevert)
+                } else {
+                    Some(TuiMsg::CloseDialog)
+                }
+            }
             crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                self.select_up();
-                None
+                let new_id = self.select_up();
+                new_id.map(|id| TuiMsg::ThemePreviewChanged { theme_id: id })
             }
             crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                self.select_down();
-                None
+                let new_id = self.select_down();
+                new_id.map(|id| TuiMsg::ThemePreviewChanged { theme_id: id })
             }
             crossterm::event::KeyCode::Enter => {
                 if let Some(theme) = self.selected_theme() {
-                    Some(TuiMsg::SelectTheme {
-                        theme_name: theme.name.clone(),
+                    Some(TuiMsg::ThemeCommit {
+                        theme_id: theme.name.clone(),
                     })
                 } else {
                     Some(TuiMsg::CloseDialog)
@@ -508,8 +599,13 @@ impl Component for ThemePickerDialog {
         }
 
         lines.push(Line::from(""));
+        let footer = if self.is_previewing() {
+            "↑/↓ preview  Enter commit  Esc revert"
+        } else {
+            "↑/↓ navigate  Enter apply  Esc cancel"
+        };
         lines.push(Line::from(Span::styled(
-            "↑/↓ navigate  Enter apply  Esc cancel",
+            footer,
             Style::default().fg(theme.muted),
         )));
 
@@ -525,5 +621,130 @@ impl Component for ThemePickerDialog {
 
     fn dialog_type(&self) -> DialogType {
         DialogType::Theme
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn make_themes(names: &[&str]) -> Vec<Theme> {
+        names
+            .iter()
+            .map(|n| Theme {
+                name: (*n).to_string(),
+                ..Theme::dark()
+            })
+            .collect()
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn starts_in_inactive_preview_state() {
+        let picker = ThemePickerDialog::with_themes(
+            Arc::new(Theme::dark()),
+            make_themes(&["a", "b", "c"]),
+        );
+        assert!(!picker.is_previewing());
+        assert_eq!(picker.preview_original_id(), None);
+    }
+
+    #[test]
+    fn first_navigation_captures_original_and_moves_to_previewing() {
+        let mut picker = ThemePickerDialog::with_themes(
+            Arc::new(Theme::dark()), // "dark" is the active theme
+            make_themes(&["dark", "b", "c"]),
+        );
+        // The picker opens with the active theme highlighted (idx 0).
+        // Move down — should preview `b` and remember `dark` as original.
+        let new_id = picker.select_down();
+        assert_eq!(new_id.as_deref(), Some("b"));
+        assert!(picker.is_previewing());
+        assert_eq!(picker.preview_original_id().as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn subsequent_navigation_keeps_original() {
+        let mut picker = ThemePickerDialog::with_themes(
+            Arc::new(Theme::dark()),
+            make_themes(&["dark", "b", "c", "d"]),
+        );
+        let _ = picker.select_down();
+        let _ = picker.select_down();
+        let _ = picker.select_up();
+        // The original id stays the same across many navigations.
+        assert!(picker.is_previewing());
+        assert_eq!(picker.preview_original_id().as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn esc_after_navigation_emits_revert() {
+        let mut picker = ThemePickerDialog::with_themes(
+            Arc::new(Theme::dark()),
+            make_themes(&["dark", "b", "c"]),
+        );
+        let _ = picker.select_down();
+        let msg = picker.handle_key(key(KeyCode::Esc));
+        assert!(matches!(msg, Some(TuiMsg::ThemeRevert)));
+    }
+
+    #[test]
+    fn esc_without_navigation_emits_close_dialog() {
+        let picker = ThemePickerDialog::with_themes(
+            Arc::new(Theme::dark()),
+            make_themes(&["dark", "b", "c"]),
+        );
+        // No navigation yet — Esc closes the dialog normally.
+        let mut picker = picker;
+        let msg = picker.handle_key(key(KeyCode::Esc));
+        assert!(matches!(msg, Some(TuiMsg::CloseDialog)));
+    }
+
+    #[test]
+    fn enter_emits_commit() {
+        let mut picker = ThemePickerDialog::with_themes(
+            Arc::new(Theme::dark()),
+            make_themes(&["dark", "b", "c"]),
+        );
+        let _ = picker.select_down(); // highlight "b"
+        let msg = picker.handle_key(key(KeyCode::Enter));
+        assert!(matches!(msg, Some(TuiMsg::ThemeCommit { ref theme_id }) if theme_id == "b"));
+    }
+
+    #[test]
+    fn up_and_down_navigation_emit_preview_changed() {
+        let mut picker = ThemePickerDialog::with_themes(
+            Arc::new(Theme::dark()),
+            make_themes(&["dark", "b", "c"]),
+        );
+        let msg = picker.handle_key(key(KeyCode::Down));
+        assert!(matches!(msg, Some(TuiMsg::ThemePreviewChanged { ref theme_id }) if theme_id == "b"));
+        let msg = picker.handle_key(key(KeyCode::Up));
+        assert!(matches!(msg, Some(TuiMsg::ThemePreviewChanged { ref theme_id }) if theme_id == "dark"));
+    }
+
+    #[test]
+    fn default_highlight_is_active_theme() {
+        // The picker should open with the active theme highlighted, not
+        // the default theme id. This way the first Down-key previews
+        // the *next* theme rather than jumping to "Cyber Red".
+        let picker = ThemePickerDialog::with_themes(
+            Arc::new(Theme {
+                name: "dracula".into(),
+                ..Theme::dark()
+            }),
+            make_themes(&["dark", "dracula", "midnight", "cyber-red"]),
+        );
+        let names: Vec<&str> = picker
+            .themes
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        let highlighted = &names[picker.selected];
+        assert_eq!(*highlighted, "dracula");
     }
 }

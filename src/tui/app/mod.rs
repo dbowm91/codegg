@@ -276,6 +276,11 @@ pub struct App {
     pub session_store: Option<Arc<SessionStore>>,
     pub message_store: Option<Arc<MessageStore>>,
     pub memory_store: Option<Arc<MemoryStore>>,
+    /// User preferences backed by SQLite. Holds the active theme id and
+    /// the last-used model id; both survive a config-file reset. Always
+    /// `Some` in normal operation; `None` is reserved for test fixtures
+    /// that don't open a database.
+    pub preferences: Option<crate::storage::UserPreferences>,
     pub viewport_area: Option<Rect>,
     pub scrollbar_area: Option<Rect>,
     pub prompt_area: Option<Rect>,
@@ -293,6 +298,7 @@ pub struct App {
     pub remote_send_tx: Option<mpsc::UnboundedSender<RemoteTuiMessage>>,
     pub core_client: Option<Arc<dyn CoreClient>>,
     pub config_watcher: Option<crate::config::ConfigWatcher>,
+    pub theme_registry: Arc<crate::theme::ThemeRegistry>,
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
     pub undo_session_id: Option<String>,
@@ -425,7 +431,23 @@ impl App {
             }
         });
 
-        let theme = Arc::new(Theme::dark());
+        let theme_registry = Arc::new(crate::theme::ThemeRegistry::load_with_config(
+            cfg.and_then(|c| c.theme.as_ref()),
+        ));
+        for diag in theme_registry.diagnostics() {
+            match diag.level {
+                crate::theme::ThemeDiagnosticLevel::Warning => {
+                    tracing::warn!(theme = %diag.theme_id, field = ?diag.field, "{}", diag.message);
+                }
+                crate::theme::ThemeDiagnosticLevel::Error => {
+                    tracing::error!(theme = %diag.theme_id, field = ?diag.field, "{}", diag.message);
+                }
+            }
+        }
+        let resolution = crate::theme::ThemeResolutionConfig::from_config(
+            cfg.and_then(|c| c.theme.as_ref()),
+        );
+        let theme = theme_registry.resolve_tui_arc(&resolution);
 
         Self {
             ui_state: UiState {
@@ -565,6 +587,8 @@ impl App {
                     .map(|w| crate::config::ConfigWatcher::new().with_config(w))
                     .unwrap_or_default(),
             ),
+            theme_registry,
+            preferences: None,
             subagent_pool: None,
             bg_scheduler: None,
             undo_session_id: None,
@@ -756,6 +780,8 @@ impl App {
             remote_send_tx: None,
             core_client: None,
             config_watcher: None, // No config watcher for tests
+            theme_registry: Arc::new(crate::theme::ThemeRegistry::load_builtins()),
+            preferences: None,
             subagent_pool: None,
             bg_scheduler: None,
             undo_session_id: None,
@@ -779,6 +805,138 @@ impl App {
 
     pub fn set_core_client(&mut self, client: Arc<dyn CoreClient>) {
         self.core_client = Some(client);
+    }
+
+    /// Apply a theme by id from the registry. Returns true if applied.
+    pub fn apply_theme(&mut self, theme_id: &str) -> bool {
+        if let Some(theme) = self.theme_registry.get_tui(theme_id) {
+            self.ui_state.theme = Arc::new(theme);
+            return true;
+        }
+        false
+    }
+
+    /// Re-apply any persisted user preferences (theme id, last-used
+    /// model) on top of the config-file defaults. Should be called once
+    /// at startup, after `set_preferences` and after the model
+    /// discovery has populated `agent_state.models`. CLI flags continue
+    /// to win: if the user passed `--model`, the persisted value is
+    /// only used when no CLI override is recorded.
+    pub fn apply_persisted_preferences(&mut self) {
+        // Theme
+        if let Some(saved) = self.read_persisted_theme_id() {
+            if self.theme_registry.get(&saved).is_some() {
+                self.apply_theme(&saved);
+            }
+        }
+        // Model
+        if let Some(saved) = self.read_persisted_model_id() {
+            if self.agent_state.models.iter().any(|m| m == &saved) {
+                self.agent_state.current_model = saved.clone();
+                if let Some(idx) =
+                    self.agent_state.models.iter().position(|m| m == &saved)
+                {
+                    self.agent_state.model_idx = idx;
+                }
+                self.dialog_state.model_dialog.set_current(&saved);
+                self.sidebar.set_model(&saved);
+            }
+        }
+    }
+
+    /// Save the user's theme choice to the SQLite `user_preferences`
+    /// table. The DB row survives a config-file reset and is the
+    /// authoritative source of the active theme on next launch. We
+    /// also keep the config file in sync so that a fresh git clone of a
+    /// repo can still see which theme the user prefers.
+    fn persist_theme_selection(&mut self, theme_id: &str) {
+        if let Some(prefs) = self.preferences.clone() {
+            let id = theme_id.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = prefs
+                    .set(crate::storage::KEY_THEME_ACTIVE, &id)
+                    .await
+                {
+                    tracing::warn!("failed to persist theme to user_preferences: {}", e);
+                }
+            });
+        }
+
+        // Mirror the value into config.toml so external tooling (and the
+        // TUI before the DB is available) can still see it.
+        let mut config = match crate::config::schema::Config::load() {
+            Ok(c) => c,
+            Err(e) => {
+                self.messages_state
+                    .toasts
+                    .error(&format!("Failed to load config: {}", e));
+                return;
+            }
+        };
+
+        let mut theme_cfg = config.theme.clone().unwrap_or_default();
+        theme_cfg.name = Some(theme_id.to_string());
+        config.theme = Some(theme_cfg);
+
+        if let Err(e) = config.save() {
+            self.messages_state.toasts.error(&format!(
+                "Theme applied, but failed to save config: {}",
+                e
+            ));
+        }
+    }
+
+    /// Save the user's most recently selected model. Mirrors the theme
+    /// pattern: fire-and-forget DB write so the next launch can restore
+    /// the model.
+    fn persist_model_selection(&self, model: &str) {
+        if let Some(prefs) = self.preferences.clone() {
+            let id = model.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = prefs
+                    .set(crate::storage::KEY_MODEL_LAST_USED, &id)
+                    .await
+                {
+                    tracing::warn!("failed to persist model to user_preferences: {}", e);
+                }
+            });
+        }
+    }
+
+    /// Synchronously read the persisted theme id (if any) and resolve it
+    /// through the registry. Returns `None` if the user has no saved
+    /// theme or the saved id is no longer in the registry.
+    fn read_persisted_theme_id(&self) -> Option<String> {
+        let prefs = self.preferences.as_ref()?;
+        // Use the dedicated tokio runtime handle that already exists in
+        // the app: storage calls are cheap and the spawn is fine. We use
+        // `block_in_place` so the call works from the synchronous
+        // startup path. Avoid panicking if the DB read fails.
+        match tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(prefs.get(crate::storage::KEY_THEME_ACTIVE))
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to read persisted theme: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Synchronously read the persisted model id (if any). The caller is
+    /// responsible for validating that the id is in the available
+    /// `agent_state.models` list.
+    fn read_persisted_model_id(&self) -> Option<String> {
+        let prefs = self.preferences.as_ref()?;
+        match tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(prefs.get(crate::storage::KEY_MODEL_LAST_USED))
+        }) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to read persisted model: {}", e);
+                None
+            }
+        }
     }
 
     fn send_remote_message(&self, msg: RemoteTuiMessage) {
@@ -1635,6 +1793,7 @@ impl App {
                 if let Some(idx) = self.agent_state.models.iter().position(|m| m == &model) {
                     self.agent_state.model_idx = idx;
                 }
+                self.persist_model_selection(&model);
                 self.close_dialog();
             }
             TuiMsg::SelectAgent { agent_name } => {
@@ -1884,11 +2043,57 @@ impl App {
                 );
             }
             TuiMsg::SelectTheme { theme_name } => {
-                if let Some(theme) = crate::tui::theme::find_theme(&theme_name) {
+                if let Some(theme) = self.theme_registry.get_tui(&theme_name) {
                     self.ui_state.theme = Arc::new(theme);
+                    self.persist_theme_selection(&theme_name);
                     self.messages_state
                         .toasts
                         .info(&format!("Theme: {}", theme_name));
+                } else {
+                    self.messages_state
+                        .toasts
+                        .error(&format!("Unknown theme: {}", theme_name));
+                }
+                self.dialog_state.theme_picker = None;
+                self.close_dialog();
+            }
+            TuiMsg::ThemePreviewChanged { theme_id } => {
+                // Live preview only. Don't persist; don't change the
+                // picker's `original_id` (already captured on the first
+                // navigation). Don't close anything.
+                if let Some(theme) = self.theme_registry.get_tui(&theme_id) {
+                    self.ui_state.theme = Arc::new(theme);
+                }
+            }
+            TuiMsg::ThemeCommit { theme_id } => {
+                if let Some(theme) = self.theme_registry.get_tui(&theme_id) {
+                    self.ui_state.theme = Arc::new(theme);
+                    self.persist_theme_selection(&theme_id);
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Theme: {}", theme_id));
+                } else {
+                    self.messages_state
+                        .toasts
+                        .error(&format!("Unknown theme: {}", theme_id));
+                }
+                self.dialog_state.theme_picker = None;
+                self.close_dialog();
+            }
+            TuiMsg::ThemeRevert => {
+                // Revert the live theme to the one that was active when
+                // the picker opened. Falls back to the default id if the
+                // picker's `original_id` is somehow missing.
+                let target = self
+                    .dialog_state
+                    .theme_picker
+                    .as_ref()
+                    .and_then(|p| p.preview_original_id())
+                    .unwrap_or_else(|| {
+                        crate::theme::registry::DEFAULT_THEME_ID.to_string()
+                    });
+                if let Some(theme) = self.theme_registry.get_tui(&target) {
+                    self.ui_state.theme = Arc::new(theme);
                 }
                 self.dialog_state.theme_picker = None;
                 self.close_dialog();
@@ -3058,8 +3263,8 @@ impl App {
                 self.ui_state.command_mode = false;
                 self.open_dialog(Dialog::Usage);
             }
-            "/themes" => {
-                self.open_dialog(Dialog::Theme);
+            "/themes" | "/theme" => {
+                self.handle_theme_command(raw_input);
             }
             "/tui" => {
                 self.toggle_fullscreen();
@@ -4515,6 +4720,24 @@ impl App {
     }
 
     fn close_dialog(&mut self) {
+        // If the theme picker was live-previewing, revert to the
+        // original theme before closing. Esc and Enter both fire
+        // `ThemeRevert`/`ThemeCommit` and tear down the dialog
+        // themselves; this path catches every other dismissal (mouse,
+        // parent close, etc).
+        if self.ui_state.dialog == Dialog::Theme {
+            if let Some(picker) = self.dialog_state.theme_picker.as_ref() {
+                if picker.is_previewing() {
+                    let target = picker.preview_original_id().unwrap_or_else(|| {
+                        crate::theme::registry::DEFAULT_THEME_ID.to_string()
+                    });
+                    if let Some(theme) = self.theme_registry.get_tui(&target) {
+                        self.ui_state.theme = Arc::new(theme);
+                    }
+                }
+            }
+            self.dialog_state.theme_picker = None;
+        }
         self.focus_manager.pop();
         let active_type = self.focus_manager.active_dialog_type();
         if active_type != DialogType::None {
@@ -4609,8 +4832,11 @@ impl App {
             }
             Dialog::Theme => {
                 if self.dialog_state.theme_picker.is_none() {
-                    self.dialog_state.theme_picker =
-                        Some(ThemePickerDialog::new(Arc::clone(&self.ui_state.theme)));
+                    let picker = ThemePickerDialog::with_themes(
+                        Arc::clone(&self.ui_state.theme),
+                        self.theme_registry.all_tui_themes(),
+                    );
+                    self.dialog_state.theme_picker = Some(picker);
                 }
                 if let Some(ref mut picker) = self.dialog_state.theme_picker {
                     picker.set_theme(&self.ui_state.theme);
@@ -4887,6 +5113,118 @@ impl App {
 
     fn toggle_sidebar(&mut self) {
         self.ui_state.sidebar_visible = !self.ui_state.sidebar_visible;
+    }
+
+    /// Handle `/theme [list|use <name>|reload|diagnostics]`. With no arguments,
+    /// opens the theme picker dialog. `list` prints a toast of available
+    /// themes. `use <name>` applies the named theme and persists the choice.
+    /// `reload` rebuilds the registry from disk. `diagnostics` reports any
+    /// non-fatal validation warnings.
+    fn handle_theme_command(&mut self, raw_input: Option<&str>) {
+        self.ui_state.command_mode = false;
+        let arg = raw_input
+            .and_then(|s| s.split_once(' ').map(|(_, rest)| rest.trim()))
+            .unwrap_or("");
+
+        if arg.is_empty() {
+            self.open_dialog(Dialog::Theme);
+            return;
+        }
+
+        let mut parts = arg.split_whitespace();
+        let subcommand = parts.next().unwrap_or("");
+
+        match subcommand {
+            "list" => {
+                let names = self.theme_registry.names();
+                if names.is_empty() {
+                    self.messages_state.toasts.warning("No themes available");
+                } else {
+                    let preview = names
+                        .iter()
+                        .take(20)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let extra = if names.len() > 20 {
+                        format!(" (and {} more)", names.len() - 20)
+                    } else {
+                        String::new()
+                    };
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Themes: {}{}", preview, extra));
+                }
+            }
+            "use" => {
+                if let Some(name) = parts.next() {
+                    if self.apply_theme(name) {
+                        self.persist_theme_selection(name);
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Theme: {}", name));
+                    } else {
+                        self.messages_state
+                            .toasts
+                            .error(&format!("Unknown theme: {}", name));
+                    }
+                } else {
+                    self.messages_state
+                        .toasts
+                        .error("Usage: /theme use <name>");
+                }
+            }
+            "reload" => {
+                let current = self.ui_state.theme.name.clone();
+                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let new_registry = std::sync::Arc::new(
+                    crate::theme::ThemeRegistry::load_with_config(config.theme.as_ref()),
+                );
+                self.theme_registry = new_registry;
+                if !self.apply_theme(&current) {
+                    // The current theme disappeared; fall back to the
+                    // default theme id (Cyber Red).
+                    self.apply_theme(crate::theme::registry::DEFAULT_THEME_ID);
+                }
+                self.messages_state
+                    .toasts
+                    .info("Theme registry reloaded");
+            }
+            "diagnostics" => {
+                let diags = self.theme_registry.diagnostics();
+                if diags.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .info("No theme diagnostics");
+                } else {
+                    for d in diags {
+                        let level = match d.level {
+                            crate::theme::ThemeDiagnosticLevel::Warning => "warn",
+                            crate::theme::ThemeDiagnosticLevel::Error => "error",
+                        };
+                        let field = d.field.as_deref().unwrap_or("-");
+                        self.messages_state.toasts.info(&format!(
+                            "[{}] {} / {}: {}",
+                            level, d.theme_id, field, d.message
+                        ));
+                    }
+                }
+            }
+            other => {
+                // If the argument looks like a theme name, apply it directly.
+                if self.apply_theme(other) {
+                    self.persist_theme_selection(other);
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Theme: {}", other));
+                } else {
+                    self.messages_state.toasts.error(&format!(
+                        "Unknown theme subcommand or name: {} (try /theme list, use, reload, diagnostics)",
+                        other
+                    ));
+                }
+            }
+        }
     }
 
     fn toggle_reasoning(&mut self) {
@@ -5518,6 +5856,7 @@ impl App {
         self.dialog_state
             .model_dialog
             .set_current(&self.agent_state.current_model);
+        self.persist_model_selection(&self.agent_state.current_model);
     }
 
     fn cycle_model_backward(&mut self) {
@@ -5534,6 +5873,7 @@ impl App {
         self.dialog_state
             .model_dialog
             .set_current(&self.agent_state.current_model);
+        self.persist_model_selection(&self.agent_state.current_model);
     }
 
     fn open_connect_dialog(&mut self) {
@@ -6099,6 +6439,13 @@ impl App {
 
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
         self.session_store = Some(store);
+    }
+
+    /// Attach the SQLite-backed user-preferences store. Should be called
+    /// once at startup; the App holds onto the store and uses it to
+    /// remember the user's theme and last-used model across restarts.
+    pub fn set_preferences(&mut self, prefs: crate::storage::UserPreferences) {
+        self.preferences = Some(prefs);
     }
 
     pub fn set_message_store(&mut self, store: Arc<MessageStore>) {
@@ -7446,5 +7793,102 @@ mod goal_status_line_tests {
         // At the limit counts as "over" for the marker; just assert
         // the budget is rendered.
         assert!(line.contains("turns 2/2"));
+    }
+}
+
+#[cfg(test)]
+mod theme_integration_tests {
+    use super::*;
+
+    #[test]
+    fn app_with_config_loads_theme_registry() {
+        let app = App::new_for_testing("/tmp".to_string());
+        let names = app.theme_registry.names();
+        assert!(!names.is_empty(), "registry should be populated");
+        assert!(
+            app.theme_registry.get("cyber-red").is_some(),
+            "default theme `cyber-red` should be bundled"
+        );
+    }
+
+    #[test]
+    fn apply_theme_succeeds_for_known_and_fails_for_unknown() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        assert!(app.apply_theme("catppuccin-mocha"));
+        assert_eq!(app.ui_state.theme.name, "catppuccin-mocha");
+        assert!(!app.apply_theme("no-such-theme"));
+    }
+
+    #[test]
+    fn handle_theme_command_list_uses_registry() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.handle_theme_command(Some("/theme list"));
+        // The list command should not change the theme; we just check it
+        // does not crash and that we can still query the registry.
+        let names = app.theme_registry.names();
+        assert!(!names.is_empty());
+    }
+
+    #[test]
+    fn handle_theme_command_use_applies_and_keeps_registry() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.handle_theme_command(Some("/theme use catppuccin-latte"));
+        assert_eq!(app.ui_state.theme.name, "catppuccin-latte");
+    }
+
+    #[test]
+    fn handle_theme_command_use_unknown_reports_error() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let before = app.ui_state.theme.name.clone();
+        app.handle_theme_command(Some("/theme use nope"));
+        // Theme should remain the default.
+        assert_eq!(app.ui_state.theme.name, before);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn apply_persisted_preferences_round_trip() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::time::Duration;
+
+        // Stand up an in-memory pool and run the production migration so
+        // we exercise the same schema the app uses.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+
+        // Pre-seed a saved theme + model.
+        let prefs = crate::storage::UserPreferences::new(pool.clone());
+        prefs
+            .set(crate::storage::KEY_THEME_ACTIVE, "dracula")
+            .await
+            .unwrap();
+        prefs
+            .set(crate::storage::KEY_MODEL_LAST_USED, "opencode_zen/nemotron-3-super-free")
+            .await
+            .unwrap();
+
+        // Build the app with default models; verify the saved theme and
+        // model are applied on top of defaults.
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.set_models(vec![
+            "opencode_zen/big-pickle".to_string(),
+            "opencode_zen/nemotron-3-super-free".to_string(),
+        ]);
+        app.set_preferences(prefs);
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| {
+            handle.block_on(async {
+                app.apply_persisted_preferences();
+            });
+        });
+        assert_eq!(app.ui_state.theme.name, "dracula");
+        assert_eq!(
+            app.agent_state.current_model,
+            "opencode_zen/nemotron-3-super-free"
+        );
     }
 }

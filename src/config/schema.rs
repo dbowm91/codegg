@@ -65,6 +65,7 @@ pub struct Config {
     pub model_profile: Option<HashMap<String, crate::model_profile::ModelProfileConfig>>,
     pub security: Option<SecurityConfig>,
     pub research: Option<ResearchConfig>,
+    pub theme: Option<ThemeConfig>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -961,6 +962,32 @@ pub struct ResearchConfig {
     /// via the `task` tool. It does NOT auto-invoke the research
     /// pipeline.
     pub auto_trigger: Option<ResearchAutoTriggerConfig>,
+}
+
+/// User-facing theme configuration.
+///
+/// `name` selects the active theme. `source` overrides the format detection
+/// for a single `path`. `directories` adds additional user directories to
+/// scan for `.toml` theme files. `fallback` is consulted when `name` cannot
+/// be resolved. `validate_contrast` enables contrast diagnostics on load.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ThemeConfig {
+    pub name: Option<String>,
+    pub source: Option<ThemeSourceConfig>,
+    pub path: Option<String>,
+    pub directories: Option<Vec<String>>,
+    pub validate_contrast: Option<bool>,
+    pub fallback: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeSourceConfig {
+    Auto,
+    Builtin,
+    Native,
+    Halloy,
 }
 
 impl Default for ResearchAutoTriggerConfig {

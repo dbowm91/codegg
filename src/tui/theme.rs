@@ -48,7 +48,7 @@ pub struct Theme {
     pub selection_dim: Color,
     pub alternate_bg: Color,
     pub input_bg: Color,
-    pub code_theme: &'static str,
+    pub code_theme: String,
     pub link: Color,
 }
 
@@ -100,7 +100,7 @@ impl ThemeData {
                 self.input_bg.1,
                 self.input_bg.2,
             ),
-            code_theme: self.code_theme,
+            code_theme: self.code_theme.to_string(),
             link: Color::Rgb(self.link.0, self.link.1, self.link.2),
         }
     }
@@ -824,8 +824,8 @@ impl Theme {
         Style::default().bg(self.alternate_bg)
     }
 
-    pub fn code_theme(&self) -> &'static str {
-        self.code_theme
+    pub fn code_theme(&self) -> &str {
+        &self.code_theme
     }
 }
 

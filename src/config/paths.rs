@@ -279,6 +279,9 @@ pub fn merge_configs(configs: &[Config]) -> Config {
                 None => merged.mode = Some(modes.clone()),
             }
         }
+        if let Some(ref theme) = config.theme {
+            merged.theme = Some(theme.clone());
+        }
     }
     merged
 }

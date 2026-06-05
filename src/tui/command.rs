@@ -87,7 +87,9 @@ impl CommandRegistry {
                 .with_aliases(&["quit", "q"])
                 .with_description("Exit the app"),
             Command::new("/status", CommandCategory::System, None).with_description("View status"),
-            Command::new("/themes", CommandCategory::System, None).with_description("Switch theme"),
+            Command::new("/themes", CommandCategory::System, None)
+                .with_aliases(&["/theme"])
+                .with_description("Switch theme (/theme, /theme list, /theme use <name>, /theme reload, /theme diagnostics)"),
             Command::new("/help", CommandCategory::System, None).with_description("Help"),
             Command::new("/sessions", CommandCategory::Session, None)
                 .with_aliases(&["resume", "continue"])

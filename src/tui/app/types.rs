@@ -123,9 +123,28 @@ pub enum TuiMsg {
     Quit,
     ExternalEditor,
     UndoDelete,
+    /// Legacy alias for `ThemeCommit`. Kept so any in-tree call sites
+    /// that still send `SelectTheme` continue to work; new code should
+    /// prefer the `ThemePreviewChanged` / `ThemeCommit` / `ThemeRevert`
+    /// trio.
     SelectTheme {
         theme_name: String,
     },
+    /// Live-preview a theme in the running UI without persisting it. The
+    /// app updates its current `Theme` to match; nothing is written to
+    /// the database. Used while the user navigates the theme picker.
+    ThemePreviewChanged {
+        theme_id: String,
+    },
+    /// Persist a theme (DB row + config mirror) and close the picker.
+    /// Distinct from `SelectTheme` so live preview can keep emitting
+    /// previews until the user explicitly commits.
+    ThemeCommit {
+        theme_id: String,
+    },
+    /// Revert the running UI to the last committed theme. Used by Esc
+    /// and by the dialog-close revert path.
+    ThemeRevert,
     SubmitPermission {
         choice_index: usize,
     },

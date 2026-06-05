@@ -10,7 +10,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - **Axum** for HTTP server (feature-gated)
 - **Wasmtime** for WASM plugins (feature-gated)
 
-## Module Reference (34 Modules)
+## Module Reference (35 Modules)
 
 | Module | Purpose |
 |--------|---------|
@@ -42,6 +42,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `skills/` | Skill system for specialized capabilities (git, research, etc.) |
 | `snapshot/` | Snapshot support for file state capture and restore |
 | `storage/` | SQLite database storage layer and initialization |
+| `theme/` | Frontend-neutral theme system, registry, Halloy compat, validation, projections |
 | `tool/` | Built-in tools (bash, read, edit, task, webfetch, image, etc.) |
 | `tts/` | Text-to-speech module with provider support |
 | `tui/` | Terminal user interface (widgets, handlers, input processing, diff viewer, notifications, image support, CoreClient-backed flows) |
@@ -178,6 +179,14 @@ These items were verified during review sessions:
 | TUI goal status bar | format_goal_status_line, set_goal on StatusBarWidget | `src/tui/app/mod.rs`, `src/tui/components/status_bar.rs` |
 | Goal budget slash cmd | /goal budget [show\|raise <axis> <n>] | `src/tui/app/mod.rs` |
 | Goal+todo prompt contract | goal_and_todos_contract() in assemble_system_prompt_with_profile | `src/agent/prompt.rs` |
+| Theme module | SemanticTheme, ThemeRegistry, native/Halloy parsers, ratatui projection | `src/theme/` |
+| Built-in theme count | **50** Halloy-format themes from `themes.halloy.chat`, bundled as TOML via `include_str!`. Default = `cyber-red` (`DEFAULT_THEME_ID`) | `src/theme/registry.rs:BUILTIN_THEME_FILES` |
+| Halloy field coverage | `general.{background,border,horizontal_rule,highlight_indicator,unread_indicator}`; `text.{primary,secondary,tertiary,success,warning,error,info,debug,trace}`; `buffer.{action,topic,nickname,highlight,code,url,timestamp,selection,border,border_selected,background*,server_messages.default}`; 6/8-digit hex accepted (alpha stripped) | `src/theme/halloy.rs` |
+| `Theme.code_theme` type | `String` (was `&'static str`) | `src/tui/theme.rs` |
+| Theme persistence | **SQLite** `user_preferences.theme.active` (authoritative) + config mirror. Writes via `tokio::spawn` so the UI doesn't block. Read on startup via `App::apply_persisted_preferences`. | `src/storage/preferences.rs`, `src/tui/app/mod.rs` |
+| Theme live preview | `ThemePickerDialog::PreviewState` machine: Up/Down → `TuiMsg::ThemePreviewChanged` (live apply, no persist); Enter → `TuiMsg::ThemeCommit` (persist + close); Esc / close → `TuiMsg::ThemeRevert` (restore original + close) | `src/tui/components/dialogs/theme.rs`, `src/tui/app/mod.rs` |
+| Last-used model persistence | `KEY_MODEL_LAST_USED` in `user_preferences`. Updated on every `SelectModel` / `cycle_model_forward` / `cycle_model_backward`. Read on startup and applied to `agent_state.current_model` if present in the model list. | `src/tui/app/mod.rs` |
+| `/theme` slash command | list, use, reload, diagnostics subcommands | `src/tui/app/mod.rs:handle_theme_command` |
 
 ### Security Notes
 
@@ -240,6 +249,7 @@ These items were verified during review sessions:
 ├── skills/             # Skill loading, activation, SkillIndex
 ├── snapshot/           # File state capture and restore
 ├── storage/            # SQLite initialization, pragmas
+├── theme/              # Theme registry, semantic schema, Halloy compat, projections
 ├── subagent/           # SubAgentPool, SubAgentSpawner
 ├── team/               # Multi-agent team coordination
 ├── testing/            # Testing guide (unit, integration, E2E)
@@ -302,6 +312,7 @@ When adding guidance for a new module:
 | Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
 | Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` |
 | Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` |
+| Theme (registry, semantic schema, Halloy compat, projections) | `.opencode/skills/theme/SKILL.md` |
 | Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` |
 | Worktree (git worktrees, find_git_root) | `.opencode/skills/worktree/SKILL.md` |
 | Subagent (SubAgentPool, SubAgentSpawner, worker) | `.opencode/skills/subagent/SKILL.md` |
