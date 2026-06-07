@@ -220,9 +220,10 @@ impl EventLog {
             .collect()
     }
 
-    /// Get the current latest sequence number.
+    /// Get the latest assigned sequence number. Returns 0 if no events
+    /// have been published yet.
     pub fn current_seq(&self) -> u64 {
-        self.next_seq.load(Ordering::SeqCst)
+        self.next_seq.load(Ordering::SeqCst).saturating_sub(1)
     }
 
     /// Check if events exist from the requested sequence (ring buffer or DB).

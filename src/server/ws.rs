@@ -1,7 +1,4 @@
-use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex as StdMutex;
 use tokio::sync::Mutex;
 
 use axum::{
@@ -13,50 +10,12 @@ use futures::{SinkExt, StreamExt};
 use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 use tracing::info;
-use once_cell::sync::Lazy;
 
 use crate::error::ServerRuntimeError;
 use crate::protocol::core::CoreRequest;
 use crate::protocol::frames::CoreFrame;
-use crate::protocol::tui::{QuestionSpec, TuiMessage};
+use crate::protocol::tui::TuiMessage;
 use crate::server::rpc::{RpcError, RpcRequest, RpcResponse};
-
-static TUI_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
-/// Legacy event replay buffer for /tui endpoint.
-/// DEPRECATED: Use EventLog in CoreDaemon for replay/resume.
-/// This buffer is independent of the core EventLog and will be
-/// removed when /tui is migrated to CoreFrame protocol.
-static TUI_EVENT_BUFFER: Lazy<StdMutex<VecDeque<(u64, TuiMessage)>>> =
-    Lazy::new(|| StdMutex::new(VecDeque::with_capacity(1024)));
-const TUI_EVENT_BUFFER_MAX: usize = 1024;
-
-fn next_tui_event_seq() -> u64 {
-    TUI_EVENT_SEQ.fetch_add(1, Ordering::Relaxed)
-}
-
-fn record_tui_event(event_seq: u64, msg: TuiMessage) {
-    if let Ok(mut guard) = TUI_EVENT_BUFFER.lock() {
-        guard.push_back((event_seq, msg));
-        while guard.len() > TUI_EVENT_BUFFER_MAX {
-            let _ = guard.pop_front();
-        }
-    }
-}
-
-/// Replay buffered TUI events from a given sequence number.
-/// DEPRECATED: Part of the legacy /tui event buffer system.
-/// Use EventLog in CoreDaemon for replay/resume instead.
-fn replay_tui_events(from_event_seq: u64) -> Vec<(u64, TuiMessage)> {
-    if let Ok(guard) = TUI_EVENT_BUFFER.lock() {
-        guard
-            .iter()
-            .filter(|(seq, _)| *seq > from_event_seq)
-            .cloned()
-            .collect()
-    } else {
-        Vec::new()
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct WebSocketAuth {
@@ -597,57 +556,31 @@ async fn upgrade_tui(
     });
 
     let event_task = tokio::spawn(async move {
-        let mut event_bus_rx = GlobalEventBus::subscribe();
+        let Some(daemon) = daemon_clone else {
+            tracing::warn!("No CoreDaemon available for /tui event task; live events disabled");
+            return;
+        };
+        let mut event_rx = daemon.subscribe();
         loop {
-            match event_bus_rx.recv().await {
-                Ok(event) => {
-                    // Publish to CoreDaemon EventLog when available (dual-write during transition)
-                    if let Some(ref daemon) = daemon_clone {
-                        if let Some(core_event) = crate::core::map_app_event_to_core_event(event.clone()) {
-                            let session_id = match &event {
-                                AppEvent::TextDelta { .. }
-                                | AppEvent::ToolCallStarted { .. }
-                                | AppEvent::ToolResult { .. }
-                                | AppEvent::AgentFinished { .. } => None,
-                                AppEvent::PermissionPending { session_id, .. }
-                                | AppEvent::QuestionPending { session_id, .. } => {
-                                    Some(session_id.clone())
-                                }
-                                _ => None,
-                            };
-                            daemon.event_log.publish(session_id, None, core_event).await;
-                        }
-                    }
-                    // Legacy path: record to TUI buffer and send TuiMessage envelope
-                    if let Some(tui_msg) = convert_app_event(event.clone()) {
-                        let event_seq = next_tui_event_seq();
-                        record_tui_event(event_seq, tui_msg.clone());
-                        let envelope = TuiMessage::EventEnvelope {
-                            event_seq,
+            match event_rx.recv().await {
+                Ok(envelope) => {
+                    if let Some(tui_msg) = convert_core_event_to_tui(envelope.payload) {
+                        let wire = TuiMessage::EventEnvelope {
+                            event_seq: envelope.event_seq,
                             payload: Box::new(tui_msg),
                         };
-                        if let Ok(json) = serde_json::to_string(&envelope) {
-                            let ws_msg = axum::extract::ws::Message::Text(json.into());
-                            if bus_tx_clone3.send(ws_msg).is_err() {
-                                tracing::warn!("WebSocket send failed, client may have lagged");
-                                if matches!(event, AppEvent::PermissionPending { .. })
-                                    || matches!(event, AppEvent::QuestionPending { .. })
-                                {
-                                    let resync_msg = TuiMessage::ResyncRequired {
-                                        reason: None,
-                                        pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(),
-                                        pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
-                                    };
-                                    if let Ok(json) = serde_json::to_string(&resync_msg) {
-                                        let _ = bus_tx_clone3.send(axum::extract::ws::Message::Text(json.into()));
-                                    }
-                                }
+                        if let Ok(json) = serde_json::to_string(&wire) {
+                            if bus_tx_clone3
+                                .send(axum::extract::ws::Message::Text(json.into()))
+                                .is_err()
+                            {
+                                break;
                             }
                         }
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    tracing::warn!("Event bus receiver lagged, sending resync");
+                    tracing::warn!("Event log receiver lagged, sending resync");
                     let resync_msg = TuiMessage::ResyncRequired {
                         reason: Some("lagged".to_string()),
                         pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(),
@@ -733,8 +666,6 @@ async fn handle_tui_message(
         }
         TuiMessage::Resume { from_event_seq } => {
             tracing::debug!("TUI resume requested from event seq {}", from_event_seq);
-            // If a CoreDaemon is available, replay from its EventLog
-            let daemon_available = _server_state.daemon.is_some();
             if let Some(ref daemon) = _server_state.daemon {
                 let filter = crate::core::event_log::EventFilter {
                     session_id: None,
@@ -743,7 +674,6 @@ async fn handle_tui_message(
                 };
                 let events = daemon.replay_from(from_event_seq, &filter).await;
                 for event in events {
-                    // Convert CoreEvent back to TuiMessage for legacy clients
                     if let Some(tui_msg) = convert_core_event_to_tui(event.payload) {
                         let envelope = TuiMessage::EventEnvelope {
                             event_seq: event.event_seq,
@@ -754,18 +684,16 @@ async fn handle_tui_message(
                         }
                     }
                 }
-            }
-            // Fallback: legacy TUI buffer (when no daemon available)
-            if !daemon_available {
-                for (event_seq, msg) in replay_tui_events(from_event_seq) {
-                    let envelope = TuiMessage::EventEnvelope {
-                        event_seq,
-                        payload: Box::new(msg),
-                    };
-                    if let Ok(json) = serde_json::to_string(&envelope) {
-                        let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
-                    }
+            } else {
+                let resync_msg = TuiMessage::ResyncRequired {
+                    reason: Some("no_daemon".to_string()),
+                    pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(),
+                    pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
+                };
+                if let Ok(json) = serde_json::to_string(&resync_msg) {
+                    let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
                 }
+                return;
             }
             let resync_msg = TuiMessage::ResyncRequired {
                 reason: Some("resume_requested".to_string()),
@@ -858,74 +786,6 @@ fn convert_core_event_to_tui(event: crate::protocol::core::CoreEvent) -> Option<
             Some(TuiMessage::SessionEnded { stop_reason })
         }
         CoreEvent::TurnFailed { message, .. } => Some(TuiMessage::Error { message }),
-        _ => None,
-    }
-}
-
-fn convert_app_event(event: AppEvent) -> Option<TuiMessage> {
-    match event {
-        AppEvent::TextDelta { delta, .. } => Some(TuiMessage::TextDelta {
-            delta: delta.to_string(),
-        }),
-        AppEvent::ReasoningDelta { delta: _, .. } => None,
-        AppEvent::ToolCallStarted {
-            tool_name,
-            tool_id,
-            arguments,
-            ..
-        } => Some(TuiMessage::ToolCallStarted {
-            tool_name,
-            tool_id,
-            arguments,
-        }),
-        AppEvent::ToolResult {
-            tool_id,
-            output,
-            success,
-            ..
-        } => Some(TuiMessage::ToolResult {
-            tool_id,
-            output,
-            success,
-        }),
-        AppEvent::PermissionPending {
-            perm_id,
-            session_id,
-            turn_id,
-            tool,
-            path,
-            ..
-        } => Some(TuiMessage::PermissionPending {
-            id: format!(
-                "perm:{}:{}:{}",
-                session_id,
-                turn_id.as_deref().unwrap_or(""),
-                perm_id
-            ),
-            tool,
-            path,
-        }),
-        AppEvent::QuestionPending {
-            session_id,
-            question_id,
-            turn_id,
-            questions,
-            ..
-        } => {
-            let questions_vec: Vec<QuestionSpec> = serde_json::from_str(&questions).ok()?;
-            Some(TuiMessage::QuestionPending {
-                id: format!(
-                    "question:{}:{}:{}",
-                    session_id,
-                    turn_id.as_deref().unwrap_or(""),
-                    question_id
-                ),
-                questions: questions_vec,
-            })
-        }
-        AppEvent::AgentFinished { stop_reason, .. } => {
-            Some(TuiMessage::SessionEnded { stop_reason })
-        }
         _ => None,
     }
 }
@@ -1089,6 +949,4 @@ async fn handle_core_frame(
     responses
 }
 
-use crate::bus::events::AppEvent;
-use crate::bus::global::GlobalEventBus;
 use crate::permission::PermissionChoice;

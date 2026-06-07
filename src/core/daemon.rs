@@ -1708,25 +1708,16 @@ impl CoreDaemon {
                 };
 
                 if !self.event_log.has_events_from(from_event_seq).await {
-                    return Ok(CoreResponse::Error {
-                        code: "resync_required".to_string(),
-                        message: format!(
-                            "Events from seq {} not available. Latest seq: {}",
-                            from_event_seq,
-                            self.event_log.current_seq()
-                        ),
+                    return Ok(CoreResponse::ResyncRequired {
+                        from_event_seq,
+                        current_seq: self.event_log.current_seq(),
+                        session_id,
                     });
                 }
 
                 let events = self.event_log.replay_from(from_event_seq, &filter).await;
                 let current_seq = self.event_log.current_seq();
-                Ok(CoreResponse::Json {
-                    data: serde_json::json!({
-                        "events": events,
-                        "current_seq": current_seq,
-                        "session_id": session_id,
-                    }),
-                })
+                Ok(CoreResponse::Events { events, current_seq })
             }
             CoreRequest::TurnCancel {
                 session_id,
@@ -2149,5 +2140,64 @@ mod tests {
             std::path::PathBuf::new(),
         );
         assert!(runtime.active_turn.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn resume_returns_typed_resync_when_seq_too_old() {
+        let daemon = test_daemon().await;
+
+        let req = crate::core::new_request(
+            "req-resume-old".into(),
+            CoreRequest::Resume {
+                session_id: Some("s1".into()),
+                from_event_seq: 999_999,
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::ResyncRequired {
+                from_event_seq,
+                current_seq,
+                session_id,
+            } => {
+                assert_eq!(from_event_seq, 999_999);
+                assert_eq!(current_seq, 0);
+                assert_eq!(session_id.as_deref(), Some("s1"));
+            }
+            other => panic!("expected ResyncRequired, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_returns_typed_events_on_success() {
+        let daemon = test_daemon().await;
+
+        daemon
+            .event_log
+            .publish(
+                Some("s1".into()),
+                None,
+                crate::protocol::core::CoreEvent::SessionUpdated {
+                    session_id: "s1".into(),
+                },
+            )
+            .await;
+
+        let req = crate::core::new_request(
+            "req-resume-ok".into(),
+            CoreRequest::Resume {
+                session_id: Some("s1".into()),
+                from_event_seq: 1,
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::Events { events, current_seq } => {
+                assert_eq!(current_seq, 1);
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].event_seq, 1);
+            }
+            other => panic!("expected Events, got {:?}", other),
+        }
     }
 }

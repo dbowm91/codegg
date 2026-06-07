@@ -1261,6 +1261,11 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     };
     app.set_core_client(core_client);
 
+    if is_socket_mode {
+        let n = app.init_remote_core().await;
+        tracing::debug!("RemoteCore init: loaded {} models", n);
+    }
+
     if let Some(agent_name) = &cli.agent {
         if let Some(idx) = app
             .agent_state

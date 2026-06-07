@@ -6615,6 +6615,10 @@ impl App {
     }
 
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+            tracing::warn!("set_session_store ignored: AppMode::RemoteCore (daemon owns storage)");
+            return;
+        }
         self.session_store = Some(store);
     }
 
@@ -6682,18 +6686,102 @@ impl App {
         }
     }
 
+    pub async fn load_models_via_core(&mut self) -> Result<Vec<String>, AppError> {
+        let core_client = self.core_client.clone().ok_or_else(|| {
+            AppError::Tui("core client unavailable for model snapshot".to_string())
+        })?;
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::SnapshotModels,
+        );
+        match core_client.request(request).await {
+            Ok(crate::protocol::core::CoreResponse::ModelsSnapshot { models, .. }) => {
+                self.set_models(models.clone());
+                Ok(models)
+            }
+            Ok(crate::protocol::core::CoreResponse::Error { code, message }) => Err(AppError::Tui(
+                format!("core model snapshot failed ({}): {}", code, message),
+            )),
+            Ok(other) => Err(AppError::Tui(format!(
+                "unexpected core response for model snapshot: {:?}",
+                other
+            ))),
+            Err(e) => Err(AppError::Tui(format!(
+                "core model snapshot request failed: {}",
+                e
+            ))),
+        }
+    }
+
+    pub async fn load_tasks_via_core(&mut self) -> Result<Vec<serde_json::Value>, AppError> {
+        let core_client = self.core_client.clone().ok_or_else(|| {
+            AppError::Tui("core client unavailable for task list".to_string())
+        })?;
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::TaskList,
+        );
+        match core_client.request(request).await {
+            Ok(crate::protocol::core::CoreResponse::Json { data }) => {
+                let tasks = data
+                    .get("tasks")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(tasks)
+            }
+            Ok(crate::protocol::core::CoreResponse::Error { code, message }) => Err(AppError::Tui(
+                format!("core task list failed ({}): {}", code, message),
+            )),
+            Ok(other) => Err(AppError::Tui(format!(
+                "unexpected core response for task list: {:?}",
+                other
+            ))),
+            Err(e) => Err(AppError::Tui(format!(
+                "core task list request failed: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Initialize App state for `AppMode::RemoteCore` by pulling snapshots
+    /// from the connected daemon. Best-effort: any individual load failure
+    /// is logged and swallowed so a transient daemon error doesn't block
+    /// the TUI from rendering. Returns the number of models loaded.
+    pub async fn init_remote_core(&mut self) -> usize {
+        match self.load_models_via_core().await {
+            Ok(models) => models.len(),
+            Err(e) => {
+                tracing::warn!("init_remote_core: model snapshot failed: {}", e);
+                0
+            }
+        }
+    }
+
     /// Attach the SQLite-backed user-preferences store. Should be called
     /// once at startup; the App holds onto the store and uses it to
     /// remember the user's theme and last-used model across restarts.
     pub fn set_preferences(&mut self, prefs: crate::storage::UserPreferences) {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+            tracing::warn!("set_preferences ignored: AppMode::RemoteCore (daemon owns storage)");
+            return;
+        }
         self.preferences = Some(prefs);
     }
 
     pub fn set_message_store(&mut self, store: Arc<MessageStore>) {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+            tracing::warn!("set_message_store ignored: AppMode::RemoteCore (daemon owns storage)");
+            return;
+        }
         self.message_store = Some(store);
     }
 
     pub fn set_memory_store(&mut self, store: Arc<MemoryStore>) {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+            tracing::warn!("set_memory_store ignored: AppMode::RemoteCore (daemon owns storage)");
+            return;
+        }
         self.memory_store = Some(store);
     }
 
@@ -8131,5 +8219,93 @@ mod theme_integration_tests {
             app.agent_state.current_model,
             "opencode_zen/nemotron-3-super-free"
         );
+    }
+}
+
+#[cfg(test)]
+mod remote_core_loader_tests {
+    use super::*;
+    use crate::core::InprocCoreClient;
+    use crate::core::new_request;
+    use crate::protocol::core::{CoreRequest, CoreResponse};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_models_via_core_populates_state() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::time::Duration;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+
+        let client: Arc<dyn CoreClient> = Arc::new(InprocCoreClient::new(
+            None,
+            None,
+            None,
+            Some(pool),
+            crate::config::schema::Config::default(),
+        ));
+
+        let req = new_request("snap".into(), CoreRequest::SnapshotModels);
+        let resp = client.request(req).await.unwrap();
+        assert!(matches!(resp, CoreResponse::ModelsSnapshot { .. }));
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.set_core_client(client);
+
+        let models = app.load_models_via_core().await.unwrap();
+
+        assert_eq!(app.agent_state.models, models);
+
+        if let CoreResponse::ModelsSnapshot { models: expected, .. } =
+            Arc::clone(&app.core_client.unwrap())
+                .request(new_request("snap2".into(), CoreRequest::SnapshotModels))
+                .await
+                .unwrap()
+        {
+            assert_eq!(models, expected);
+        } else {
+            panic!("expected ModelsSnapshot");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_tasks_via_core_returns_tasks_array() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::sync::Arc as StdArc;
+        use std::time::Duration;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+
+        let scheduler = StdArc::new(crate::agent::task::BackgroundScheduler::new());
+        let client: Arc<dyn CoreClient> = Arc::new(InprocCoreClient::new(
+            None,
+            None,
+            Some(scheduler),
+            Some(pool),
+            crate::config::schema::Config::default(),
+        ));
+
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.set_core_client(client);
+
+        let tasks = app.load_tasks_via_core().await.unwrap();
+
+        assert!(tasks.is_empty(), "fresh daemon should have no tasks");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_models_via_core_fails_without_core_client() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let err = app.load_models_via_core().await.unwrap_err();
+        assert!(err.to_string().contains("core client unavailable"));
     }
 }

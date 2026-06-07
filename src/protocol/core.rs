@@ -67,6 +67,15 @@ pub enum CoreResponse {
         current_model: Option<String>,
         models: Vec<String>,
     },
+    Events {
+        events: Vec<EventEnvelope<CoreEvent>>,
+        current_seq: u64,
+    },
+    ResyncRequired {
+        from_event_seq: u64,
+        current_seq: u64,
+        session_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -435,6 +444,64 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("test_error"));
+    }
+
+    #[test]
+    fn response_serializes_events() {
+        let env = EventEnvelope {
+            protocol_version: 1,
+            event_seq: 7,
+            timestamp_ms: 100,
+            session_id: Some("s1".to_string()),
+            turn_id: None,
+            payload: CoreEvent::Error {
+                code: "e".to_string(),
+                message: "m".to_string(),
+            },
+        };
+        let resp = CoreResponse::Events {
+            events: vec![env],
+            current_seq: 7,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"type\":\"events\""));
+        assert!(json.contains("\"current_seq\":7"));
+        assert!(json.contains("\"event_seq\":7"));
+        let back: CoreResponse = serde_json::from_str(&json).unwrap();
+        match back {
+            CoreResponse::Events { events, current_seq } => {
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].event_seq, 7);
+                assert_eq!(current_seq, 7);
+            }
+            other => panic!("expected Events, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn response_serializes_resync_required() {
+        let resp = CoreResponse::ResyncRequired {
+            from_event_seq: 5,
+            current_seq: 100,
+            session_id: Some("s1".to_string()),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"type\":\"resync_required\""));
+        assert!(json.contains("\"from_event_seq\":5"));
+        assert!(json.contains("\"current_seq\":100"));
+        let back: CoreResponse = serde_json::from_str(&json).unwrap();
+        match back {
+            CoreResponse::ResyncRequired {
+                from_event_seq,
+                current_seq,
+                session_id,
+            } => {
+                assert_eq!(from_event_seq, 5);
+                assert_eq!(current_seq, 100);
+                assert_eq!(session_id.as_deref(), Some("s1"));
+            }
+            other => panic!("expected ResyncRequired, got {:?}", other),
+        }
     }
 
     #[test]

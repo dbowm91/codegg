@@ -1174,7 +1174,9 @@ async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
             | Ok(CoreResponse::Json { .. })
             | Ok(CoreResponse::SnapshotSession { .. })
             | Ok(CoreResponse::SnapshotDaemon { .. })
-            | Ok(CoreResponse::ModelsSnapshot { .. }) => None,
+            | Ok(CoreResponse::ModelsSnapshot { .. })
+            | Ok(CoreResponse::Events { .. })
+            | Ok(CoreResponse::ResyncRequired { .. }) => None,
             Err(e) => {
                 app.messages_state
                     .toasts
