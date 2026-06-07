@@ -16,6 +16,19 @@ use crate::tui::layout::TuiLayout;
 use crate::tui::route::RouteManager;
 use crate::tui::theme::Theme;
 
+/// Determines how the TUI operates with respect to resource ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppMode {
+    /// In-process mode: TUI owns DB, providers, scheduler, etc.
+    Embedded,
+    /// Socket/daemon mode: TUI connects to an external daemon via CoreClient.
+    /// Does NOT own local resources — gets everything from the daemon.
+    RemoteCore {
+        /// The daemon endpoint URL
+        endpoint: String,
+    },
+}
+
 /// UI state including theme, layout, routes, and dialog management.
 ///
 /// This state manages things that are purely UI-related:
@@ -53,8 +66,8 @@ pub struct UiState {
     pub bindings: HashMap<(crossterm::event::KeyModifiers, crossterm::event::KeyCode), InputAction>,
     /// Raw keybind config (for editing)
     pub keybinds: Option<KeybindConfig>,
-    /// Remote mode (Cline compatibility)
-    pub remote_mode: bool,
+    /// Operating mode (Embedded vs RemoteCore)
+    pub mode: AppMode,
     pub remote_status: Option<String>,
     /// Event loop running flag
     pub running: bool,
@@ -73,6 +86,9 @@ pub struct UiState {
     pub dirty_regions: Vec<Rect>,
     /// Resize debounce timer
     pub resize_debounce: Option<std::time::Instant>,
+    /// When true, TTS requests route through the daemon's NotificationRouter
+    /// instead of speaking locally. Set in RemoteCore mode.
+    pub tts_via_daemon: bool,
 }
 
 impl UiState {

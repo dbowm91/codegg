@@ -16,10 +16,16 @@ use tracing::info;
 use once_cell::sync::Lazy;
 
 use crate::error::ServerRuntimeError;
+use crate::protocol::core::CoreRequest;
+use crate::protocol::frames::CoreFrame;
 use crate::protocol::tui::{QuestionSpec, TuiMessage};
 use crate::server::rpc::{RpcError, RpcRequest, RpcResponse};
 
 static TUI_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+/// Legacy event replay buffer for /tui endpoint.
+/// DEPRECATED: Use EventLog in CoreDaemon for replay/resume.
+/// This buffer is independent of the core EventLog and will be
+/// removed when /tui is migrated to CoreFrame protocol.
 static TUI_EVENT_BUFFER: Lazy<StdMutex<VecDeque<(u64, TuiMessage)>>> =
     Lazy::new(|| StdMutex::new(VecDeque::with_capacity(1024)));
 const TUI_EVENT_BUFFER_MAX: usize = 1024;
@@ -37,6 +43,9 @@ fn record_tui_event(event_seq: u64, msg: TuiMessage) {
     }
 }
 
+/// Replay buffered TUI events from a given sequence number.
+/// DEPRECATED: Part of the legacy /tui event buffer system.
+/// Use EventLog in CoreDaemon for replay/resume instead.
 fn replay_tui_events(from_event_seq: u64) -> Vec<(u64, TuiMessage)> {
     if let Ok(guard) = TUI_EVENT_BUFFER.lock() {
         guard
@@ -182,7 +191,166 @@ let mut send_task = tokio::spawn(async move {
     info!("WebSocket connection closed");
 }
 
+/// Legacy JSON-RPC handler for /ws endpoint.
+/// Delegates to CoreDaemon when available, falls back to direct DB access.
 async fn handle_rpc_request(
+    req: &RpcRequest,
+    state: &crate::server::state::ServerState,
+) -> RpcResponse {
+    tracing::warn!("Legacy /ws RPC endpoint used - consider migrating to /core CoreFrame protocol");
+
+    // Delegate to CoreDaemon when available
+    if let Some(ref daemon) = state.daemon {
+        let core_request = match req.method.as_str() {
+            "sessions.list" => {
+                let params = if let serde_json::Value::Object(ref p) = req.params {
+                    p
+                } else {
+                    return RpcResponse {
+                        jsonrpc: "2.0".to_string(),
+                        id: req.id.clone(),
+                        result: None,
+                        error: Some(RpcError {
+                            code: -32602,
+                            message: "Invalid params".to_string(),
+                        }),
+                    };
+                };
+                let project_id = params
+                    .get("project_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let show_archived = params
+                    .get("show_archived")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let limit = params
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(50) as usize;
+                CoreRequest::SessionList {
+                    project_id,
+                    show_archived,
+                    limit,
+                }
+            }
+            "sessions.get" => {
+                let id = if let serde_json::Value::Object(ref p) = req.params {
+                    p.get("id").and_then(|v| v.as_str()).unwrap_or("")
+                } else {
+                    ""
+                };
+                CoreRequest::SessionLoad {
+                    session_id: id.to_string(),
+                }
+            }
+            "sessions.create" => {
+                let dir = if let serde_json::Value::Object(ref p) = req.params {
+                    p.get("directory")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&state.project_dir)
+                } else {
+                    &state.project_dir
+                };
+                CoreRequest::SessionCreate {
+                    directory: dir.to_string(),
+                    title: None,
+                }
+            }
+            "providers.list" | "tools.list" => {
+                // These don't map to CoreRequest; handle directly via daemon's DB pool
+                return handle_rpc_direct(req, state).await;
+            }
+            _ => {
+                return RpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: req.id.clone(),
+                    result: None,
+                    error: Some(RpcError {
+                        code: -32601,
+                        message: format!("Method not found: {}", req.method),
+                    }),
+                };
+            }
+        };
+
+        let envelope = crate::core::new_request(
+            req.id
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
+            core_request,
+        );
+
+        match daemon.handle_request(envelope).await {
+            Ok(response) => {
+                // Convert CoreResponse back to RpcResponse JSON
+                let result = match response {
+                    crate::protocol::core::CoreResponse::SessionList { sessions } => {
+                        let data: Vec<_> = sessions
+                            .into_iter()
+                            .map(|s| {
+                                serde_json::json!({
+                                    "id": s.id,
+                                    "title": s.title,
+                                    "created": s.time_created,
+                                    "updated": s.time_updated,
+                                })
+                            })
+                            .collect();
+                        Some(serde_json::json!({"sessions": data}))
+                    }
+                    crate::protocol::core::CoreResponse::Session { session } => {
+                        Some(serde_json::json!({
+                            "id": session.id,
+                            "title": session.title,
+                            "project_id": session.project_id,
+                            "directory": session.directory,
+                            "created": session.time_created,
+                            "updated": session.time_updated,
+                        }))
+                    }
+                    crate::protocol::core::CoreResponse::Ack => Some(serde_json::json!({})),
+                    crate::protocol::core::CoreResponse::Error { code, message } => {
+                        return RpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id: req.id.clone(),
+                            result: None,
+                            error: Some(RpcError {
+                                code: -32603,
+                                message: format!("{}: {}", code, message),
+                            }),
+                        };
+                    }
+                    _ => Some(serde_json::to_value(&response).unwrap_or_default()),
+                };
+                RpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: req.id.clone(),
+                    result,
+                    error: None,
+                }
+            }
+            Err(e) => RpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: req.id.clone(),
+                result: None,
+                error: Some(RpcError {
+                    code: -32000,
+                    message: e.to_string(),
+                }),
+            },
+        }
+    } else {
+        // Legacy direct DB access (deprecated)
+        handle_rpc_direct(req, state).await
+    }
+}
+
+/// Legacy direct DB access handler. Used as fallback when no CoreDaemon is available,
+/// or for methods not yet routed through CoreDaemon (providers.list, tools.list).
+async fn handle_rpc_direct(
     req: &RpcRequest,
     state: &crate::server::state::ServerState,
 ) -> RpcResponse {
@@ -381,6 +549,7 @@ async fn upgrade_tui(
     let bus_tx_clone = bus_tx.clone();
     let bus_tx_clone2 = bus_tx.clone();
     let bus_tx_clone3 = bus_tx.clone();
+    let daemon_clone = state.daemon.clone();
 
     let mut send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
@@ -432,6 +601,24 @@ async fn upgrade_tui(
         loop {
             match event_bus_rx.recv().await {
                 Ok(event) => {
+                    // Publish to CoreDaemon EventLog when available (dual-write during transition)
+                    if let Some(ref daemon) = daemon_clone {
+                        if let Some(core_event) = crate::core::map_app_event_to_core_event(event.clone()) {
+                            let session_id = match &event {
+                                AppEvent::TextDelta { .. }
+                                | AppEvent::ToolCallStarted { .. }
+                                | AppEvent::ToolResult { .. }
+                                | AppEvent::AgentFinished { .. } => None,
+                                AppEvent::PermissionPending { session_id, .. }
+                                | AppEvent::QuestionPending { session_id, .. } => {
+                                    Some(session_id.clone())
+                                }
+                                _ => None,
+                            };
+                            daemon.event_log.publish(session_id, None, core_event).await;
+                        }
+                    }
+                    // Legacy path: record to TUI buffer and send TuiMessage envelope
                     if let Some(tui_msg) = convert_app_event(event.clone()) {
                         let event_seq = next_tui_event_seq();
                         record_tui_event(event_seq, tui_msg.clone());
@@ -546,13 +733,38 @@ async fn handle_tui_message(
         }
         TuiMessage::Resume { from_event_seq } => {
             tracing::debug!("TUI resume requested from event seq {}", from_event_seq);
-            for (event_seq, msg) in replay_tui_events(from_event_seq) {
-                let envelope = TuiMessage::EventEnvelope {
-                    event_seq,
-                    payload: Box::new(msg),
+            // If a CoreDaemon is available, replay from its EventLog
+            let daemon_available = _server_state.daemon.is_some();
+            if let Some(ref daemon) = _server_state.daemon {
+                let filter = crate::core::event_log::EventFilter {
+                    session_id: None,
+                    client_id: None,
+                    include_global: true,
                 };
-                if let Ok(json) = serde_json::to_string(&envelope) {
-                    let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+                let events = daemon.replay_from(from_event_seq, &filter).await;
+                for event in events {
+                    // Convert CoreEvent back to TuiMessage for legacy clients
+                    if let Some(tui_msg) = convert_core_event_to_tui(event.payload) {
+                        let envelope = TuiMessage::EventEnvelope {
+                            event_seq: event.event_seq,
+                            payload: Box::new(tui_msg),
+                        };
+                        if let Ok(json) = serde_json::to_string(&envelope) {
+                            let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+                        }
+                    }
+                }
+            }
+            // Fallback: legacy TUI buffer (when no daemon available)
+            if !daemon_available {
+                for (event_seq, msg) in replay_tui_events(from_event_seq) {
+                    let envelope = TuiMessage::EventEnvelope {
+                        event_seq,
+                        payload: Box::new(msg),
+                    };
+                    if let Ok(json) = serde_json::to_string(&envelope) {
+                        let _ = bus_tx.send(axum::extract::ws::Message::Text(json.into()));
+                    }
                 }
             }
             let resync_msg = TuiMessage::ResyncRequired {
@@ -603,6 +815,53 @@ async fn handle_tui_message(
     }
 }
 
+/// Convert a CoreEvent back to a TuiMessage for legacy /tui clients replaying from EventLog.
+fn convert_core_event_to_tui(event: crate::protocol::core::CoreEvent) -> Option<TuiMessage> {
+    use crate::protocol::core::CoreEvent;
+    match event {
+        CoreEvent::TurnTextDelta { delta, .. } => Some(TuiMessage::TextDelta { delta }),
+        CoreEvent::ToolStarted {
+            tool_name,
+            tool_id,
+            arguments,
+            ..
+        } => Some(TuiMessage::ToolCallStarted {
+            tool_name,
+            tool_id,
+            arguments,
+        }),
+        CoreEvent::ToolCompleted {
+            tool_id,
+            output,
+            success,
+            ..
+        } => Some(TuiMessage::ToolResult {
+            tool_id,
+            output,
+            success,
+        }),
+        CoreEvent::PermissionPending {
+            id,
+            tool,
+            path,
+            ..
+        } => Some(TuiMessage::PermissionPending { id, tool, path }),
+        CoreEvent::QuestionPending {
+            id,
+            questions,
+            ..
+        } => Some(TuiMessage::QuestionPending {
+            id,
+            questions: serde_json::from_value(questions).ok()?,
+        }),
+        CoreEvent::TurnCompleted { stop_reason, .. } => {
+            Some(TuiMessage::SessionEnded { stop_reason })
+        }
+        CoreEvent::TurnFailed { message, .. } => Some(TuiMessage::Error { message }),
+        _ => None,
+    }
+}
+
 fn convert_app_event(event: AppEvent) -> Option<TuiMessage> {
     match event {
         AppEvent::TextDelta { delta, .. } => Some(TuiMessage::TextDelta {
@@ -631,21 +890,36 @@ fn convert_app_event(event: AppEvent) -> Option<TuiMessage> {
         }),
         AppEvent::PermissionPending {
             perm_id,
+            session_id,
+            turn_id,
             tool,
             path,
             ..
         } => Some(TuiMessage::PermissionPending {
-            id: perm_id,
+            id: format!(
+                "perm:{}:{}:{}",
+                session_id,
+                turn_id.as_deref().unwrap_or(""),
+                perm_id
+            ),
             tool,
             path,
         }),
         AppEvent::QuestionPending {
             session_id,
+            question_id,
+            turn_id,
             questions,
+            ..
         } => {
             let questions_vec: Vec<QuestionSpec> = serde_json::from_str(&questions).ok()?;
             Some(TuiMessage::QuestionPending {
-                id: session_id,
+                id: format!(
+                    "question:{}:{}:{}",
+                    session_id,
+                    turn_id.as_deref().unwrap_or(""),
+                    question_id
+                ),
                 questions: questions_vec,
             })
         }
@@ -654,6 +928,165 @@ fn convert_app_event(event: AppEvent) -> Option<TuiMessage> {
         }
         _ => None,
     }
+}
+
+pub async fn handle_core_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<crate::server::state::ServerState>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    auth: WebSocketAuth,
+) -> impl axum::response::IntoResponse {
+    if let Err(res) = validate_ws_auth(&auth) {
+        return res.into_response();
+    }
+
+    ws.on_upgrade(move |socket| async move {
+        upgrade_core_ws(socket, state, addr).await;
+    })
+}
+
+async fn upgrade_core_ws(
+    mut socket: WebSocket,
+    state: crate::server::state::ServerState,
+    addr: std::net::SocketAddr,
+) {
+    let Some(daemon) = state.daemon else {
+        tracing::warn!("[{}] No CoreDaemon available for /core WebSocket", addr);
+        let _ = socket.close().await;
+        return;
+    };
+
+    let (ws_tx, mut ws_rx) = socket.split();
+
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<axum::extract::ws::Message>();
+
+    let mut send_task = tokio::spawn(async move {
+        let mut ws_tx = ws_tx;
+        while let Some(msg) = out_rx.recv().await {
+            if ws_tx.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut event_rx = daemon.subscribe();
+    let out_tx_events = out_tx.clone();
+    let mut event_task = tokio::spawn(async move {
+        while let Ok(event) = event_rx.recv().await {
+            let frame = CoreFrame::Event(event);
+            if let Ok(json) = serde_json::to_string(&frame) {
+                if out_tx_events
+                    .send(axum::extract::ws::Message::Text(json.into()))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    });
+
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(msg) = ws_rx.next().await {
+            let msg = match msg {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("[{}] CoreFrame WebSocket error: {}", addr, e);
+                    break;
+                }
+            };
+
+            match msg {
+                axum::extract::ws::Message::Text(text) => {
+                    match serde_json::from_str::<CoreFrame>(&text) {
+                        Ok(frame) => {
+                            let frames = handle_core_frame(frame, &daemon).await;
+                            for frame in frames {
+                                if let Ok(json) = serde_json::to_string(&frame) {
+                                    if out_tx
+                                        .send(axum::extract::ws::Message::Text(json.into()))
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "[{}] Failed to parse CoreFrame: {}",
+                                addr,
+                                e
+                            );
+                        }
+                    }
+                }
+                axum::extract::ws::Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = &mut send_task => {
+            recv_task.abort();
+            event_task.abort();
+        }
+        _ = &mut recv_task => {
+            send_task.abort();
+            event_task.abort();
+        }
+        _ = &mut event_task => {
+            send_task.abort();
+            recv_task.abort();
+        }
+    }
+
+    info!("[{}] CoreFrame WebSocket connection closed", addr);
+}
+
+async fn handle_core_frame(
+    frame: CoreFrame,
+    daemon: &Arc<crate::core::daemon::CoreDaemon>,
+) -> Vec<CoreFrame> {
+    let mut responses = Vec::new();
+    match frame {
+        CoreFrame::Request(envelope) => {
+            let request_id = envelope.request_id.clone();
+            match daemon.handle_request(envelope).await {
+                Ok(response) => {
+                    responses.push(CoreFrame::Response { request_id, response });
+                }
+                Err(e) => {
+                    responses.push(CoreFrame::Error {
+                        request_id: Some(request_id),
+                        code: "handler_error".to_string(),
+                        message: e.to_string(),
+                    });
+                }
+            }
+        }
+        CoreFrame::Subscribe {
+            session_id,
+            from_event_seq,
+            ..
+        } => {
+            let filter = crate::core::event_log::EventFilter {
+                session_id,
+                client_id: None,
+                include_global: true,
+            };
+            let from = from_event_seq.unwrap_or(1);
+            let events = daemon.replay_from(from, &filter).await;
+            for event in events {
+                responses.push(CoreFrame::Event(event));
+            }
+        }
+        CoreFrame::Ping => {
+            responses.push(CoreFrame::Pong);
+        }
+        _ => {}
+    }
+    responses
 }
 
 use crate::bus::events::AppEvent;

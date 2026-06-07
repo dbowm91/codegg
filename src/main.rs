@@ -23,7 +23,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Clone, Debug)]
 #[command(
     name = "codegg",
     version,
@@ -110,7 +110,7 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Clone, Debug)]
 enum Commands {
     /// List available providers
     Providers,
@@ -230,6 +230,23 @@ enum Commands {
         #[arg(long)]
         allow_network: bool,
     },
+    /// Manage the core daemon
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+    /// Attach to a running daemon via local Unix socket
+    AttachDaemon {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Session ID to attach to
+        #[arg(long)]
+        session: Option<String>,
+        /// Create a new session
+        #[arg(long)]
+        new: bool,
+    },
     #[command(hide = true, name = "core-stdio")]
     CoreStdio,
 }
@@ -248,6 +265,66 @@ enum CoreTransport {
     Inproc,
     Stdio,
     Socket,
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum DaemonCommand {
+    /// Start the core daemon
+    Start {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+    /// Stop the running daemon
+    Stop {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+    /// Show daemon status
+    Status {
+        /// Socket endpoint path
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+    /// Show daemon logs
+    Logs {
+        /// Log file path (default: auto-detect)
+        #[arg(long)]
+        file: Option<String>,
+        /// Number of lines to show
+        #[arg(long, default_value = "50")]
+        lines: usize,
+    },
+}
+
+fn default_socket_path() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/Library/Application Support/codegg/core.sock", home)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+            .unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/codegg/core.sock", runtime_dir)
+    }
+    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(target_os = "linux"))]
+    {
+        "/tmp/codegg-core.sock".to_string()
+    }
+}
+
+fn default_log_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("codegg_debug.log")
+}
+
+fn resolve_endpoint(endpoint: Option<String>) -> String {
+    endpoint
+        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok())
+        .unwrap_or_else(default_socket_path)
 }
 
 impl OutputFormat {
@@ -372,6 +449,138 @@ async fn main() -> Result<(), AppError> {
                     *allow_network,
                 )
                 .await?;
+            }
+            Commands::Daemon { command } => match command {
+                DaemonCommand::Start { endpoint } => {
+                    run_daemon(endpoint.clone()).await;
+                }
+                DaemonCommand::Stop { endpoint } => {
+                    let ep = resolve_endpoint(endpoint.clone());
+                    let pid_file = std::path::Path::new(&ep).with_extension("pid");
+                    match tokio::fs::read_to_string(&pid_file).await {
+                        Ok(pid_str) => {
+                            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                                // Check if process is alive before sending signal
+                                let kill_result =
+                                    unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                                if kill_result == 0 {
+                                    println!("Sent SIGTERM to daemon (PID {})", pid);
+                                    let _ = tokio::fs::remove_file(&pid_file).await;
+                                } else {
+                                    eprintln!(
+                                        "Daemon process {} not found (may have already exited)",
+                                        pid
+                                    );
+                                    let _ = tokio::fs::remove_file(&pid_file).await;
+                                }
+                            } else {
+                                eprintln!("Invalid PID in {}", pid_file.display());
+                            }
+                        }
+                        Err(_) => {
+                            eprintln!(
+                                "No daemon PID file found at {}",
+                                pid_file.display()
+                            );
+                            eprintln!("Is the daemon running?");
+                        }
+                    }
+                }
+                DaemonCommand::Status { endpoint } => {
+                    let ep = resolve_endpoint(endpoint.clone());
+                    let pid_file = std::path::Path::new(&ep).with_extension("pid");
+                    match codegg::core::transport::SocketCoreClient::connect(&format!(
+                        "unix://{}",
+                        ep
+                    ))
+                    .await
+                    {
+                        Ok(client) => {
+                            let req = codegg::core::new_request(
+                                "status-1".into(),
+                                CoreRequest::SnapshotDaemon,
+                            );
+                            match client.request(req).await {
+                                Ok(CoreResponse::SnapshotDaemon {
+                                    daemon_id,
+                                    uptime_secs,
+                                    active_sessions,
+                                    connected_clients,
+                                    ..
+                                }) => {
+                                    println!("Daemon is running");
+                                    println!("  Daemon ID: {}", daemon_id);
+                                    println!(
+                                        "  Uptime: {}s",
+                                        uptime_secs
+                                    );
+                                    println!(
+                                        "  Active sessions: {}",
+                                        active_sessions.len()
+                                    );
+                                    println!("  Connected clients: {}", connected_clients.len());
+                                    for s in &active_sessions {
+                                        println!(
+                                            "    Session: {} ({})",
+                                            &s.session_id[..8.min(s.session_id.len())],
+                                            s.status
+                                        );
+                                    }
+                                }
+                                Ok(other) => {
+                                    println!("Daemon is running (unexpected response: {:?})", other);
+                                }
+                                Err(e) => {
+                                    eprintln!("Daemon connected but failed to respond: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Daemon is not running or unreachable: {}", e);
+                            if let Ok(pid) = tokio::fs::read_to_string(&pid_file).await {
+                                eprintln!("Stale PID file found: {}", pid.trim());
+                            }
+                        }
+                    }
+                }
+                DaemonCommand::Logs { file, lines } => {
+                    let log_path = file
+                        .clone()
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(default_log_path);
+                    match tokio::fs::read_to_string(&log_path).await {
+                        Ok(content) => {
+                            let all_lines: Vec<&str> = content.lines().collect();
+                            let start = all_lines.len().saturating_sub(*lines);
+                            for line in &all_lines[start..] {
+                                println!("{}", line);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Could not read log file {}: {}", log_path.display(), e);
+                            eprintln!("Daemon logs are written to stderr or a debug log file.");
+                            eprintln!("Start the daemon with RUST_LOG=info or -vv to enable logging.");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            },
+            Commands::AttachDaemon {
+                endpoint,
+                session,
+                new,
+            } => {
+                let ep = resolve_endpoint(endpoint.clone());
+                let mut cli_copy = cli.clone();
+                cli_copy.core_transport = Some(CoreTransport::Socket);
+                cli_copy.core_endpoint = Some(format!("unix://{}", ep));
+                if *new {
+                    cli_copy.continue_session = false;
+                    cli_copy.session = None;
+                } else if let Some(sid) = session {
+                    cli_copy.session = Some(sid.clone());
+                }
+                launch_tui(&cli_copy).await?;
             }
             Commands::CoreStdio => {
                 run_core_stdio().await?;
@@ -834,69 +1043,6 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let pool = storage::init(&project_dir).await?;
-    let session_store = Arc::new(SessionStore::new(pool.clone()));
-    let message_store = Arc::new(MessageStore::new(pool.clone()));
-    let user_prefs = storage::UserPreferences::new(pool.clone());
-    let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|e| {
-        tracing::warn!("Failed to initialize memory store: {}, continuing without persistent memory", e);
-        MemoryStore::default()
-    }));
-
-    let config = Config::load().unwrap_or_default();
-    let notification_mgr = crate::tui::components::notification::NotificationManager::new(
-        config.notifications.clone().unwrap_or_default(),
-    );
-    let mut registry = ProviderRegistry::new();
-    provider::register_builtin_with_config(&mut registry, &config);
-
-    let discovery =
-        provider::discovery::ModelDiscoveryService::new(PathBuf::new()).with_pool(pool.clone());
-    discovery.initialize().await;
-    let model_ids = if discovery.needs_refresh().await {
-        let models = discovery.refresh(&registry).await;
-        models
-            .iter()
-            .map(|m| format!("{}/{}", m.provider, m.id))
-            .collect()
-    } else {
-        discovery.get_model_ids().await
-    };
-
-    let agents = agent::resolve_agents(&config)?;
-
-    let mut app = tui::App::new(project_dir.clone());
-    app.set_session_store(Arc::clone(&session_store));
-    app.set_message_store(Arc::clone(&message_store));
-    app.set_preferences(user_prefs.clone());
-    app.set_memory_store(memory_store.clone());
-    app.set_models(model_ids.clone());
-    app.agent_state.agents = agents.clone();
-    app.notification_manager = Some(notification_mgr);
-
-    // Pull the user's saved theme and last-used model out of SQLite and
-    // apply them on top of the config-file defaults. Called once at
-    // startup; live changes go through the dedicated persist_* helpers.
-    app.apply_persisted_preferences();
-
-    let mut subagent_registry = ProviderRegistry::new();
-    provider::register_builtin_with_config(&mut subagent_registry, &config);
-
-    let subagent_pool = crate::agent::worker::SubAgentPool::new(
-        &config,
-        agents,
-        subagent_registry,
-        session_store.clone(),
-        Some(pool.clone()),
-    )
-    .await;
-    app.subagent_pool = Some(Arc::new(subagent_pool));
-    let scheduler =
-        Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
-    if let Some(ref sub_pool) = app.subagent_pool {
-        scheduler.spawn_loop(Arc::clone(sub_pool), std::time::Duration::from_secs(10));
-    }
-    app.bg_scheduler = Some(scheduler);
     let core_transport = cli
         .core_transport
         .map(|m| match m {
@@ -909,6 +1055,114 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                 .unwrap_or_else(|_| "inproc".to_string())
                 .to_lowercase()
         });
+    let is_socket_mode = core_transport == "socket";
+
+    let config = Config::load().unwrap_or_default();
+    let notification_mgr = crate::tui::components::notification::NotificationManager::new(
+        config.notifications.clone().unwrap_or_default(),
+    );
+
+    // Only initialize heavy local resources for inproc/stdio modes.
+    // In socket mode the daemon owns the DB, providers, scheduler, etc.
+    let (pool, session_store, message_store, memory_store, user_prefs, model_ids, agents) =
+        if is_socket_mode {
+            (None, None, None, None, None, Vec::new(), agent::resolve_agents(&config)?)
+        } else {
+            let pool = storage::init(&project_dir).await?;
+            let session_store = Arc::new(SessionStore::new(pool.clone()));
+            let message_store = Arc::new(MessageStore::new(pool.clone()));
+            let user_prefs = storage::UserPreferences::new(pool.clone());
+            let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Failed to initialize memory store: {}, continuing without persistent memory",
+                    e
+                );
+                MemoryStore::default()
+            }));
+
+            let mut registry = ProviderRegistry::new();
+            provider::register_builtin_with_config(&mut registry, &config);
+
+            let discovery =
+                provider::discovery::ModelDiscoveryService::new(PathBuf::new())
+                    .with_pool(pool.clone());
+            discovery.initialize().await;
+            let model_ids = if discovery.needs_refresh().await {
+                let models = discovery.refresh(&registry).await;
+                models
+                    .iter()
+                    .map(|m| format!("{}/{}", m.provider, m.id))
+                    .collect()
+            } else {
+                discovery.get_model_ids().await
+            };
+
+            let agents = agent::resolve_agents(&config)?;
+            (
+                Some(pool),
+                Some(session_store),
+                Some(message_store),
+                Some(memory_store),
+                Some(user_prefs),
+                model_ids,
+                agents,
+            )
+        };
+
+    let mut app = tui::App::new(project_dir.clone());
+    if let Some(ref ss) = session_store {
+        app.set_session_store(Arc::clone(ss));
+    }
+    if let Some(ref ms) = message_store {
+        app.set_message_store(Arc::clone(ms));
+    }
+    if let Some(ref up) = user_prefs {
+        app.set_preferences(up.clone());
+    }
+    if let Some(ref mm) = memory_store {
+        app.set_memory_store(mm.clone());
+    }
+    app.set_models(model_ids.clone());
+    app.agent_state.agents = agents.clone();
+    app.notification_manager = Some(notification_mgr);
+
+    if is_socket_mode {
+        // Pull theme from config only (no SQLite-backed preferences in socket mode)
+        // apply_persisted_preferences is skipped since there's no pool.
+    } else {
+        // Pull the user's saved theme and last-used model out of SQLite and
+        // apply them on top of the config-file defaults. Called once at
+        // startup; live changes go through the dedicated persist_* helpers.
+        app.apply_persisted_preferences();
+    }
+
+    // Build subagent pool and scheduler only for local modes.
+    if !is_socket_mode {
+        let mut subagent_registry = ProviderRegistry::new();
+        provider::register_builtin_with_config(&mut subagent_registry, &config);
+
+        let subagent_pool = crate::agent::worker::SubAgentPool::new(
+            &config,
+            agents,
+            subagent_registry,
+            session_store
+                .as_ref()
+                .expect("session_store must exist in non-socket mode")
+                .clone(),
+            pool.clone(),
+        )
+        .await;
+        app.subagent_pool = Some(Arc::new(subagent_pool));
+        let scheduler = Arc::new(
+            crate::agent::task::BackgroundScheduler::new()
+                .with_pool(pool.clone().expect("pool must exist in non-socket mode")),
+        );
+        if let Some(ref sub_pool) = app.subagent_pool {
+            scheduler.spawn_loop(Arc::clone(sub_pool), std::time::Duration::from_secs(10));
+        }
+        app.bg_scheduler = Some(scheduler);
+    }
+
     let core_client: Arc<dyn CoreClient> = if core_transport == "stdio" {
         let exe = std::env::current_exe()
             .map_err(|e| AppError::Other(anyhow::anyhow!("cannot resolve current exe: {}", e)))?;
@@ -928,39 +1182,81 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                 );
                 Arc::new(codegg::core::InprocCoreClient::new(
                     app.subagent_pool.clone(),
-                    Some(memory_store.clone()),
+                    memory_store.as_ref().cloned(),
                     app.bg_scheduler.clone(),
-                    Some(pool.clone()),
+                    pool.clone(),
+                    config.clone(),
                 ))
             }
         }
-    } else if core_transport == "socket" {
+    } else if is_socket_mode {
         let endpoint = cli
             .core_endpoint
             .clone()
             .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok())
-            .unwrap_or_else(|| "unix:///tmp/codegg-core.sock".to_string());
+            .unwrap_or_else(|| format!("unix://{}", default_socket_path()));
         match codegg::core::transport::SocketCoreClient::connect(&endpoint).await {
-            Ok(client) => Arc::new(client),
+            Ok(client) => {
+                // Mark the app as RemoteCore now that we have a live connection.
+                app.ui_state.mode = codegg::tui::app::state::AppMode::RemoteCore {
+                    endpoint,
+                };
+                Arc::new(client)
+            }
             Err(e) => {
-                tracing::warn!(
-                    "failed to initialize socket core transport ({}), falling back to inproc",
-                    e
-                );
-                Arc::new(codegg::core::InprocCoreClient::new(
-                    app.subagent_pool.clone(),
-                    Some(memory_store.clone()),
-                    app.bg_scheduler.clone(),
-                    Some(pool.clone()),
-                ))
+                if cli.core_transport.is_some() {
+                    // Check if auto_start is enabled in daemon config
+                    let auto_start = config.daemon.as_ref()
+                        .and_then(|d| d.auto_start)
+                        .unwrap_or(false);
+                    if auto_start {
+                        tracing::info!("Auto-starting daemon...");
+                        let _ = tokio::process::Command::new(
+                            std::env::current_exe().unwrap_or_default(),
+                        )
+                        .args(["daemon", "start"])
+                        .spawn();
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        match codegg::core::transport::SocketCoreClient::connect(&endpoint).await {
+                            Ok(client) => {
+                                app.ui_state.mode = codegg::tui::app::state::AppMode::RemoteCore {
+                                    endpoint,
+                                };
+                                Arc::new(client)
+                            }
+                            Err(e) => {
+                                eprintln!("Daemon auto-start failed: {}", e);
+                                eprintln!("Start the daemon with: codegg daemon start");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        eprintln!("Failed to connect to core daemon at {}: {}", endpoint, e);
+                        eprintln!("Start the daemon with: codegg daemon start");
+                        std::process::exit(1);
+                    }
+                } else {
+                    tracing::warn!(
+                        "failed to initialize socket core transport ({}), falling back to inproc",
+                        e
+                    );
+                    Arc::new(codegg::core::InprocCoreClient::new(
+                        app.subagent_pool.clone(),
+                        memory_store.as_ref().cloned(),
+                        app.bg_scheduler.clone(),
+                        pool.clone(),
+                        config.clone(),
+                    ))
+                }
             }
         }
     } else {
         Arc::new(codegg::core::InprocCoreClient::new(
             app.subagent_pool.clone(),
-            Some(memory_store.clone()),
+            memory_store.as_ref().cloned(),
             app.bg_scheduler.clone(),
-            Some(pool.clone()),
+            pool.clone(),
+            config.clone(),
         ))
     };
     app.set_core_client(core_client);
@@ -994,33 +1290,36 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         return Ok(());
     }
 
-    if let Some(fork_id) = &cli.fork {
-        match session_store.fork(fork_id).await {
-            Ok(forked) => {
-                app.set_session(forked);
+    // Session loading requires a local store — skip in socket mode.
+    if let Some(ss) = &session_store {
+        if let Some(fork_id) = &cli.fork {
+            match ss.fork(fork_id).await {
+                Ok(forked) => {
+                    app.set_session(forked);
+                }
+                Err(e) => {
+                    eprintln!("Failed to fork session: {}", e);
+                }
             }
-            Err(e) => {
-                eprintln!("Failed to fork session: {}", e);
+        } else if let Some(session_id) = &cli.session {
+            match ss.get(session_id).await {
+                Ok(Some(sess)) => {
+                    app.set_session(sess);
+                }
+                Ok(None) => {
+                    eprintln!("Session not found: {}", session_id);
+                }
+                Err(e) => {
+                    eprintln!("Failed to load session: {}", e);
+                }
             }
-        }
-    } else if let Some(session_id) = &cli.session {
-        match session_store.get(session_id).await {
-            Ok(Some(sess)) => {
-                app.set_session(sess);
+        } else if cli.continue_session {
+            match ss.list(&project_dir, 1).await {
+                Ok(sessions) if !sessions.is_empty() => {
+                    app.set_session(sessions[0].clone());
+                }
+                _ => {}
             }
-            Ok(None) => {
-                eprintln!("Session not found: {}", session_id);
-            }
-            Err(e) => {
-                eprintln!("Failed to load session: {}", e);
-            }
-        }
-    } else if cli.continue_session {
-        match session_store.list(&project_dir, 1).await {
-            Ok(sessions) if !sessions.is_empty() => {
-                app.set_session(sessions[0].clone());
-            }
-            _ => {}
         }
     }
 
@@ -1189,6 +1488,101 @@ async fn cmd_research(
     Ok(())
 }
 
+async fn run_daemon(endpoint: Option<String>) {
+    let config = Config::load().unwrap_or_default();
+    let project_dir = match config.daemon.as_ref().and_then(|d| d.project_scope.as_deref()) {
+        Some("user") => dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .to_string_lossy()
+            .to_string(),
+        _ => env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    };
+
+    let pool = match storage::init(&project_dir).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to initialize storage: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let session_store = Arc::new(SessionStore::new(pool.clone()));
+    let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|e| {
+        tracing::warn!("Failed to initialize memory store: {}, continuing without persistent memory", e);
+        MemoryStore::default()
+    }));
+    let agents = match agent::resolve_agents(&config) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Failed to resolve agents: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut subagent_registry = ProviderRegistry::new();
+    provider::register_builtin_with_config(&mut subagent_registry, &config);
+    let subagent_pool = crate::agent::worker::SubAgentPool::new(
+        &config,
+        agents,
+        subagent_registry,
+        session_store,
+        Some(pool.clone()),
+    )
+    .await;
+    let subagent_pool = Arc::new(subagent_pool);
+    let scheduler = Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
+    scheduler.spawn_loop(Arc::clone(&subagent_pool), std::time::Duration::from_secs(10));
+
+    let daemon = Arc::new(codegg::core::daemon::CoreDaemon::new(
+        Some(pool),
+        Some(subagent_pool),
+        Some(memory_store),
+        Some(scheduler),
+    ));
+
+    daemon.start_event_bridge();
+    daemon.recover_state().await;
+
+    let ep = endpoint
+        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok())
+        .unwrap_or_else(default_socket_path);
+
+    if let Some(parent) = std::path::Path::new(&ep).parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+
+    let _ = tokio::fs::remove_file(&ep).await;
+
+    // Write PID file for stop/status commands
+    let pid_file = std::path::Path::new(&ep).with_extension("pid");
+    tokio::fs::write(&pid_file, std::process::id().to_string())
+        .await
+        .ok();
+
+    tracing::info!("Starting core daemon on {}", ep);
+    println!("Core daemon listening on {}", ep);
+
+    // Spawn cleanup task for SIGTERM/SIGINT
+    let pid_file_cleanup = pid_file.clone();
+    let ep_cleanup = ep.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = tokio::fs::remove_file(&pid_file_cleanup).await;
+        let _ = tokio::fs::remove_file(&ep_cleanup).await;
+        std::process::exit(0);
+    });
+
+    if let Err(e) = codegg::core::transport::daemon_socket::run_core_socket(daemon, &ep).await {
+        eprintln!("Daemon error: {}", e);
+        let _ = tokio::fs::remove_file(&pid_file).await;
+        std::process::exit(1);
+    }
+    // Clean up PID file on normal exit
+    let _ = tokio::fs::remove_file(&pid_file).await;
+}
+
 async fn run_core_stdio() -> Result<(), AppError> {
     let project_dir = env::current_dir()
         .ok()
@@ -1219,6 +1613,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
         Some(memory_store),
         Some(scheduler),
         Some(pool),
+        config,
     );
 
     let stdin = BufReader::new(tokio::io::stdin());
@@ -1257,7 +1652,61 @@ fn parse_model(model: &str) -> (String, String) {
 
 #[cfg(feature = "server")]
 async fn cmd_server(host: &str, port: u16) -> Result<(), AppError> {
-    codegg::server::run_server(host, port)
+    let project_dir = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let pool = match storage::init(&project_dir).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Failed to initialize storage for daemon: {}", e);
+            return codegg::server::run_server(host, port, None)
+                .await
+                .map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)));
+        }
+    };
+    let session_store = Arc::new(SessionStore::new(pool.clone()));
+    let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|e| {
+        tracing::warn!("Failed to initialize memory store: {}", e);
+        MemoryStore::default()
+    }));
+    let config = Config::load().unwrap_or_default();
+    let agents = match agent::resolve_agents(&config) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("Failed to resolve agents: {}, continuing without daemon", e);
+            return codegg::server::run_server(host, port, None)
+                .await
+                .map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)));
+        }
+    };
+
+    let mut subagent_registry = ProviderRegistry::new();
+    provider::register_builtin_with_config(&mut subagent_registry, &config);
+    let subagent_pool = crate::agent::worker::SubAgentPool::new(
+        &config,
+        agents,
+        subagent_registry,
+        session_store,
+        Some(pool.clone()),
+    )
+    .await;
+    let subagent_pool = Arc::new(subagent_pool);
+    let scheduler = Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
+    scheduler.spawn_loop(Arc::clone(&subagent_pool), std::time::Duration::from_secs(10));
+
+    let daemon = Arc::new(codegg::core::daemon::CoreDaemon::new(
+        Some(pool),
+        Some(subagent_pool),
+        Some(memory_store),
+        Some(scheduler),
+    ));
+
+    daemon.start_event_bridge();
+    daemon.recover_state().await;
+
+    codegg::server::run_server(host, port, Some(daemon))
         .await
         .map_err(|e| AppError::Other(anyhow::anyhow!("Server error: {}", e)))
 }

@@ -60,6 +60,7 @@ pub struct Config {
     pub vim_mode: Option<bool>,
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
+    pub daemon: Option<DaemonConfig>,
     pub catalog: Option<CatalogConfig>,
     pub tool_deferral: Option<ToolDeferralConfig>,
     pub model_profile: Option<HashMap<String, crate::model_profile::ModelProfileConfig>>,
@@ -558,10 +559,41 @@ pub struct ModeConfig {
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
+pub struct QuietHoursConfig {
+    pub start_hour: Option<u8>,
+    pub end_hour: Option<u8>,
+    pub timezone: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
 pub struct NotificationConfig {
     pub enabled: Option<bool>,
     pub on_task_complete: Option<bool>,
     pub on_error: Option<bool>,
+    pub audio: Option<NotificationAudioConfig>,
+    pub quiet_hours: Option<QuietHoursConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct NotificationAudioConfig {
+    pub enabled: Option<bool>,
+    pub backend: Option<String>,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub speak: Option<Vec<String>>,
+    pub interrupt_on: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct DaemonConfig {
+    pub enabled: Option<bool>,
+    pub auto_start: Option<bool>,
+    pub socket: Option<String>,
+    pub project_scope: Option<String>,
+    pub event_log_capacity: Option<usize>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]

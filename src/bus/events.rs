@@ -156,6 +156,9 @@ pub enum AppEvent {
     /// A question is pending user response.
     QuestionPending {
         session_id: String,
+        question_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         questions: String,
     },
     /// A question was answered by the user.
@@ -164,6 +167,8 @@ pub enum AppEvent {
     PermissionPending {
         session_id: String,
         perm_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         tool: String,
         path: Option<String>,
         args: Option<serde_json::Value>,

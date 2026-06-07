@@ -136,6 +136,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::tui::app::SessionStatus;
+use crate::tui::app::state::AppMode;
 use md5;
 use rand;
 use std::fs::OpenOptions;
@@ -1170,7 +1171,10 @@ async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
             | Ok(CoreResponse::SessionList { .. })
             | Ok(CoreResponse::Session { .. })
             | Ok(CoreResponse::SessionMessageCounts { .. })
-            | Ok(CoreResponse::Json { .. }) => None,
+            | Ok(CoreResponse::Json { .. })
+            | Ok(CoreResponse::SnapshotSession { .. })
+            | Ok(CoreResponse::SnapshotDaemon { .. })
+            | Ok(CoreResponse::ModelsSnapshot { .. }) => None,
             Err(e) => {
                 app.messages_state
                     .toasts
@@ -2318,7 +2322,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             }
         }
 
-        if !app.ui_state.remote_mode && app.prompt_state.pending_send {
+        if !matches!(app.ui_state.mode, AppMode::RemoteCore { .. }) && app.prompt_state.pending_send {
             debug_log!("Event loop: pending_send=true, submitting through core facade");
             let Some(_) = app.core_client else {
                 app.prompt_state.pending_send = false;
@@ -2546,7 +2550,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                             needs_render = true;
 
                             let tts = app.ui_state.tts.clone();
-                            if tts.is_speaking() {
+                            if tts.is_speaking() && !matches!(app.ui_state.mode, AppMode::RemoteCore { .. }) {
                                 tokio::spawn(async move {
                                     if let Err(e) = tts.stop().await {
                                         tracing::debug!("TTS stop error: {}", e);
@@ -2567,7 +2571,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         });
                         needs_render = true;
                     }
-                    AppEvent::QuestionPending { session_id, questions } => {
+                    AppEvent::QuestionPending { session_id, questions, .. } => {
                         debug_log!("Event loop: QuestionPending for session={}", session_id);
                         if let Ok(questions_vec) = serde_json::from_str::<Vec<crate::tui::components::dialogs::question::QuestionSpec>>(&questions) {
                             app.show_question_dialog(questions_vec, session_id);

@@ -1,0 +1,2153 @@
+use std::sync::Arc;
+use std::time::Instant;
+
+use chrono::Utc;
+use crate::error::AppError;
+use crate::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
+
+use super::event_log::EventFilter;
+use crate::core::session_runtime::RuntimeSessionStatus;
+
+pub struct CoreDaemon {
+    pub daemon_id: String,
+    pub pool: Option<sqlx::SqlitePool>,
+    pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+    pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
+    pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
+    pub event_log: Arc<super::event_log::EventLog>,
+    pub sessions: Arc<crate::core::session_runtime::SessionRuntimeRegistry>,
+    pub clients: Arc<super::client_registry::ClientRegistry>,
+    pub notification_router: Arc<super::notification::NotificationRouter>,
+    pub audio_arbiter: Option<Arc<super::notification::AudioArbiter>>,
+    pub started_at: Instant,
+}
+
+impl CoreDaemon {
+    pub fn new(
+        pool: Option<sqlx::SqlitePool>,
+        subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+        memory_store: Option<Arc<crate::memory::MemoryStore>>,
+        bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
+    ) -> Self {
+        let daemon_id = format!("codegg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let config = crate::config::schema::Config::load().unwrap_or_default();
+        let capacity = config.daemon.as_ref()
+            .and_then(|d| d.event_log_capacity)
+            .unwrap_or(4096);
+        let event_log = match pool {
+            Some(ref p) => Arc::new(super::event_log::EventLog::new_with_pool(capacity, p.clone())),
+            None => Arc::new(super::event_log::EventLog::new(capacity)),
+        };
+        let notification_router = Arc::new(super::notification::NotificationRouter::new(
+            super::notification::NotificationPolicy::from_config(&config),
+        ));
+        let audio_arbiter = if notification_router.is_tts_enabled() {
+            let arbiter = Arc::new(super::notification::AudioArbiter::new(Arc::clone(
+                &notification_router,
+            )));
+            arbiter.start();
+            Some(arbiter)
+        } else {
+            None
+        };
+        Self {
+            daemon_id,
+            pool,
+            subagent_pool,
+            memory_store,
+            bg_scheduler,
+            event_log,
+            sessions: Arc::new(crate::core::session_runtime::SessionRuntimeRegistry::new()),
+            clients: Arc::new(super::client_registry::ClientRegistry::new()),
+            notification_router,
+            audio_arbiter,
+            started_at: Instant::now(),
+        }
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>> {
+        self.event_log.subscribe()
+    }
+
+    /// Recover daemon state after restart.
+    /// Marks previously active turns as failed and logs stale permissions/questions.
+    pub async fn recover_state(&self) {
+        let Some(ref pool) = self.pool else {
+            return;
+        };
+
+        // Find interrupted turns: TurnStarted without a matching TurnCompleted/TurnFailed
+        // for the same session_id + turn_id.
+        let active_turns: Vec<(String, String)> = sqlx::query_as(
+            "SELECT DISTINCT e1.session_id, e1.turn_id \
+             FROM core_event_log e1 \
+             WHERE e1.event_type LIKE '%TurnStarted%' \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM core_event_log e2 \
+                 WHERE e2.session_id = e1.session_id \
+                 AND e2.turn_id = e1.turn_id \
+                 AND (e2.event_type LIKE '%TurnCompleted%' OR e2.event_type LIKE '%TurnFailed%') \
+             )",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        if !active_turns.is_empty() {
+            tracing::info!(
+                "Recovery: found {} interrupted turn(s), emitting TurnFailed",
+                active_turns.len()
+            );
+            for (session_id, turn_id) in &active_turns {
+                tracing::info!(
+                    "  Marking session {} turn {} as failed (daemon restarted while active)",
+                    session_id,
+                    turn_id
+                );
+                self.event_log
+                    .publish(
+                        Some(session_id.clone()),
+                        Some(turn_id.clone()),
+                        crate::protocol::core::CoreEvent::TurnFailed {
+                            session_id: session_id.clone(),
+                            turn_id: Some(turn_id.clone()),
+                            message: "Daemon restarted while turn was active".to_string(),
+                        },
+                    )
+                    .await;
+
+                // Clear runtime state for this session
+                if let Some(runtime) = self.sessions.get(session_id) {
+                    let mut active = runtime.active_turn.write().await;
+                    *active = None;
+                    drop(active);
+
+                    let mut status = runtime.status.write().await;
+                    *status = RuntimeSessionStatus::Idle;
+                }
+            }
+        }
+
+        // Count stale PermissionPending events (no PermissionResponded in same session)
+        let stale_perms: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM core_event_log WHERE event_type LIKE '%PermissionPending%' \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM core_event_log e2 \
+                 WHERE e2.event_type LIKE '%PermissionResponded%' \
+                 AND e2.session_id = core_event_log.session_id \
+             )",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+        // Count stale QuestionPending events (no QuestionAnswered in same session)
+        let stale_questions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM core_event_log WHERE event_type LIKE '%QuestionPending%' \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM core_event_log e2 \
+                 WHERE e2.event_type LIKE '%QuestionAnswered%' \
+                 AND e2.session_id = core_event_log.session_id \
+             )",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+        if stale_perms > 0 || stale_questions > 0 {
+            tracing::info!(
+                "Recovery: {} stale permission(s), {} stale question(s) from previous run (will timeout naturally)",
+                stale_perms,
+                stale_questions
+            );
+        }
+
+        tracing::info!("Daemon state recovery complete");
+    }
+
+    pub async fn replay_from(
+        &self,
+        from_event_seq: u64,
+        filter: &EventFilter,
+    ) -> Vec<crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>> {
+        self.event_log.replay_from(from_event_seq, filter).await
+    }
+
+    pub fn start_event_bridge(self: &Arc<Self>) {
+        let daemon = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut bus_rx = crate::bus::global::GlobalEventBus::subscribe();
+            loop {
+                match bus_rx.recv().await {
+                    Ok(app_event) => {
+                        if let Some(core_event) = super::map_app_event_to_core_event(app_event.clone()) {
+                            daemon.event_log.publish(None, None, core_event).await;
+                        }
+                        match &app_event {
+                            crate::bus::events::AppEvent::AgentFinished { session_id, stop_reason, input_tokens, output_tokens, .. } => {
+                                // Update runtime token counts
+                                if let Some(runtime) = daemon.sessions.get(session_id) {
+                                    *runtime.last_input_tokens.write().await = *input_tokens;
+                                    *runtime.last_output_tokens.write().await = *output_tokens;
+                                }
+                                use super::notification::*;
+                                let kind = if stop_reason == "error" {
+                                    NotificationKind::TurnFailed
+                                } else {
+                                    NotificationKind::TurnCompleted
+                                };
+                                let priority = if stop_reason == "error" {
+                                    NotificationPriority::High
+                                } else {
+                                    NotificationPriority::Low
+                                };
+                                let event = NotificationEvent {
+                                    id: format!("notif-{}", uuid::Uuid::new_v4()),
+                                    session_id: Some(session_id.clone()),
+                                    turn_id: None,
+                                    kind,
+                                    priority,
+                                    message: format!("Turn {} for session {}", stop_reason, session_id),
+                                    dedupe_key: Some(format!("turn-done:{}", session_id)),
+                                    created_at: Utc::now(),
+                                };
+                                daemon.notification_router.emit(event.clone()).await;
+                                if let Some(ref pool) = daemon.pool {
+                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                }
+                            }
+                            crate::bus::events::AppEvent::PermissionPending { session_id, turn_id, tool, .. } => {
+                                use super::notification::*;
+                                let event = NotificationEvent {
+                                    id: format!("notif-{}", uuid::Uuid::new_v4()),
+                                    session_id: Some(session_id.clone()),
+                                    turn_id: turn_id.clone(),
+                                    kind: NotificationKind::PermissionRequired,
+                                    priority: NotificationPriority::Urgent,
+                                    message: format!("Permission required for tool: {}", tool),
+                                    dedupe_key: Some(format!("perm:{}", session_id)),
+                                    created_at: Utc::now(),
+                                };
+                                daemon.notification_router.emit(event.clone()).await;
+                                if let Some(ref pool) = daemon.pool {
+                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                }
+                            }
+                            crate::bus::events::AppEvent::QuestionPending { session_id, turn_id, .. } => {
+                                use super::notification::*;
+                                let event = NotificationEvent {
+                                    id: format!("notif-{}", uuid::Uuid::new_v4()),
+                                    session_id: Some(session_id.clone()),
+                                    turn_id: turn_id.clone(),
+                                    kind: NotificationKind::QuestionRequired,
+                                    priority: NotificationPriority::Urgent,
+                                    message: format!("Question requires your input"),
+                                    dedupe_key: Some(format!("question:{}", session_id)),
+                                    created_at: Utc::now(),
+                                };
+                                daemon.notification_router.emit(event.clone()).await;
+                                if let Some(ref pool) = daemon.pool {
+                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                }
+                            }
+                            crate::bus::events::AppEvent::Error { message } => {
+                                use super::notification::*;
+                                let event = NotificationEvent {
+                                    id: format!("notif-{}", uuid::Uuid::new_v4()),
+                                    session_id: None,
+                                    turn_id: None,
+                                    kind: NotificationKind::Error,
+                                    priority: NotificationPriority::High,
+                                    message: message.clone(),
+                                    dedupe_key: None,
+                                    created_at: Utc::now(),
+                                };
+                                daemon.notification_router.emit(event.clone()).await;
+                                if let Some(ref pool) = daemon.pool {
+                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                }
+                            }
+                            crate::bus::events::AppEvent::SubagentStarted { session_id, .. } => {
+                                if let Some(runtime) = daemon.sessions.get(session_id) {
+                                    runtime.active_subagent_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                            crate::bus::events::AppEvent::SubagentCompleted { session_id, task_id, agent, .. } => {
+                                if let Some(runtime) = daemon.sessions.get(session_id) {
+                                    runtime.active_subagent_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                use super::notification::*;
+                                let event = NotificationEvent {
+                                    id: format!("notif-{}", uuid::Uuid::new_v4()),
+                                    session_id: Some(session_id.clone()),
+                                    turn_id: None,
+                                    kind: NotificationKind::SubagentCompleted,
+                                    priority: NotificationPriority::Normal,
+                                    message: format!("Subagent {} completed task {}", agent, task_id),
+                                    dedupe_key: Some(format!("subagent-done:{}:{}", session_id, task_id)),
+                                    created_at: Utc::now(),
+                                };
+                                daemon.notification_router.emit(event.clone()).await;
+                                if let Some(ref pool) = daemon.pool {
+                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                }
+                            }
+                            crate::bus::events::AppEvent::SubagentFailed { session_id, task_id, agent, error } => {
+                                if let Some(runtime) = daemon.sessions.get(session_id) {
+                                    runtime.active_subagent_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                use super::notification::*;
+                                let event = NotificationEvent {
+                                    id: format!("notif-{}", uuid::Uuid::new_v4()),
+                                    session_id: Some(session_id.clone()),
+                                    turn_id: None,
+                                    kind: NotificationKind::SubagentFailed,
+                                    priority: NotificationPriority::High,
+                                    message: format!("Subagent {} failed task {}: {}", agent, task_id, error),
+                                    dedupe_key: Some(format!("subagent-fail:{}:{}", session_id, task_id)),
+                                    created_at: Utc::now(),
+                                };
+                                daemon.notification_router.emit(event.clone()).await;
+                                if let Some(ref pool) = daemon.pool {
+                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("Event bridge lagged, {} events dropped", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    pub async fn handle_request(
+        &self,
+        request: RequestEnvelope<CoreRequest>,
+    ) -> Result<CoreResponse, AppError> {
+        match request.payload {
+            CoreRequest::TurnSubmit {
+                session_id,
+                model,
+                agents,
+                current_agent_idx,
+                messages,
+                plan_mode,
+                ..
+            } => {
+                if current_agent_idx >= agents.len() {
+                    crate::bus::global::GlobalEventBus::publish(
+                        crate::bus::events::AppEvent::Error {
+                            message: format!(
+                                "Invalid agent index {} for {} agents",
+                                current_agent_idx,
+                                agents.len()
+                            ),
+                        },
+                    );
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_agent_index".to_string(),
+                        message: "Invalid agent index".to_string(),
+                    });
+                }
+                let mut registry = crate::provider::ProviderRegistry::new();
+                let config = crate::config::schema::Config::load().unwrap_or_default();
+                crate::provider::register_builtin_with_config(&mut registry, &config);
+                let provider_name = model.split('/').next().unwrap_or("openai").to_string();
+                let model_name = model.split('/').next_back().unwrap_or(&model).to_string();
+                let Some(base_provider) = registry.get(&provider_name) else {
+                    crate::bus::global::GlobalEventBus::publish(
+                        crate::bus::events::AppEvent::Error {
+                            message: format!(
+                                "Provider '{}' not found. Please check your configuration.",
+                                provider_name
+                            ),
+                        },
+                    );
+                    return Ok(CoreResponse::Error {
+                        code: "provider_not_found".to_string(),
+                        message: format!("Provider not found: {}", provider_name),
+                    });
+                };
+                let provider = base_provider.clone_box();
+                let model_profile = crate::model_profile::ModelProfileResolver::new(&config)
+                    .resolve(&model_name);
+                let task_state_policy = model_profile.task_state_policy;
+                let todo_state = std::sync::Arc::new(tokio::sync::Mutex::new(
+                    crate::task_state::TodoState::new(),
+                ));
+                let mut tool_registry = crate::tool::ToolRegistry::with_session_defaults(
+                    todo_state.clone(),
+                    task_state_policy.clone(),
+                    self.pool.clone(),
+                    Some(session_id.clone()),
+                );
+                if let Some(pool) = self.subagent_pool.clone() {
+                    let task_tool = crate::tool::task::TaskTool::new(
+                        pool.task_store(),
+                        Some(pool.spawner()),
+                        Some(session_id.clone()),
+                        Vec::new(),
+                    );
+                    tool_registry.register(task_tool);
+                }
+                let permission_checker =
+                    crate::permission::PermissionChecker::new(Some(&config), None)
+                        .with_active_mode(&config);
+                let memory_context = self
+                    .memory_store
+                    .as_ref()
+                    .map(|store| {
+                        let all_memories = store.list("user/preferences");
+                        if all_memories.is_empty() {
+                            String::new()
+                        } else {
+                            let summary: String = all_memories
+                                .iter()
+                                .take(10)
+                                .map(|m| {
+                                    format!(
+                                        "- [{}] {}",
+                                        m.id,
+                                        m.title.as_deref().unwrap_or("(untitled)")
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            format!("\n\n## Learned Preferences\n{}\n", summary)
+                        }
+                    })
+                    .unwrap_or_default();
+                let mut system = crate::agent::prompt::load_agent_prompt(
+                    &agents[current_agent_idx],
+                    &config,
+                    &model_name,
+                );
+                system.push_str(&memory_context);
+
+                let goal_context = if let Some(pool) = self.pool.clone() {
+                    let goal_store = crate::goal::GoalStore::new(pool.clone());
+                    match goal_store.active_for_session(&session_id).await {
+                        Ok(Some(goal)) if goal.status == crate::goal::GoalStatus::Active => {
+                            let checkpoint_excerpt = if let Some(ref path) = goal.checkpoint_path {
+                                crate::goal::checkpoint::read_checkpoint_excerpt(path, 4000)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                            } else {
+                                None
+                            };
+                            crate::goal::render::render_goal_context(
+                                &goal,
+                                checkpoint_excerpt.as_deref(),
+                            )
+                        }
+                        _ => String::new(),
+                    }
+                } else {
+                    String::new()
+                };
+                system.push_str(&goal_context);
+
+                if plan_mode {
+                    system.push_str("\n\n");
+                    system.push_str(crate::agent::prompt::plan_mode_contract());
+                }
+
+                if let Some(pool) = self.pool.clone() {
+                    tool_registry.register(crate::goal::tool::GoalGetTool::new(
+                        pool.clone(),
+                        session_id.clone(),
+                    ));
+                    tool_registry.register(crate::goal::tool::GoalUpdateProgressTool::new(
+                        pool.clone(),
+                        session_id.clone(),
+                    ));
+                    tool_registry.register(crate::goal::tool::GoalRequestCompletionTool::new(
+                        pool,
+                        session_id.clone(),
+                    ));
+                }
+                let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
+                    agents,
+                    provider,
+                    permission_checker,
+                    tool_registry,
+                    config,
+                    None,
+                    self.pool.clone(),
+                );
+                agent_loop.set_session_id(&session_id);
+                if let Some(ref pool) = self.subagent_pool {
+                    agent_loop.set_subagent_pool(Arc::clone(pool));
+                }
+                agent_loop.set_task_state_policy(task_state_policy);
+                agent_loop.load_persisted_todos().await;
+                let request = crate::provider::ChatRequest {
+                    messages,
+                    model: model_name,
+                    tools: None,
+                    system: Some(system),
+                    temperature: None,
+                    top_p: None,
+                    max_tokens: None,
+                    response_format: None,
+                    thinking_budget: None,
+                    reasoning_effort: None,
+                };
+                let runtime = self.sessions.get_or_create(
+                    &session_id,
+                    &session_id,
+                    std::path::PathBuf::from("."),
+                );
+
+                let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+                agent_loop.set_cancel_receiver(cancel_rx);
+
+                let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
+                agent_loop.set_steer_receiver(steer_rx);
+
+                {
+                    let mut active = runtime.active_turn.write().await;
+                    if active.is_some() {
+                        return Ok(CoreResponse::Error {
+                            code: "turn_already_active".to_string(),
+                            message: "A turn is already active for this session".to_string(),
+                        });
+                    }
+                    let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
+                    *active = Some(crate::core::session_runtime::TurnHandle {
+                        turn_id: turn_id.clone(),
+                        cancel_tx,
+                        steer_tx: Some(steer_tx),
+                        started_at: chrono::Utc::now(),
+                    });
+                }
+
+                {
+                    let mut status = runtime.status.write().await;
+                    *status = crate::core::session_runtime::RuntimeSessionStatus::Running;
+                }
+
+                let runtime_for_spawn = Arc::clone(&runtime);
+                let session_id_for_spawn = session_id.clone();
+                tokio::spawn(async move {
+                    let result = agent_loop.run(request).await;
+                    if let Err(e) = result {
+                        tracing::error!("Agent loop error: {}", e);
+                        crate::bus::global::GlobalEventBus::publish(
+                            crate::bus::events::AppEvent::Error {
+                                message: format!("Agent error: {}", e),
+                            },
+                        );
+                    } else {
+                        crate::bus::global::GlobalEventBus::publish(
+                            crate::bus::events::AppEvent::AgentFinished {
+                                session_id: session_id_for_spawn.clone(),
+                                stop_reason: "completed".to_string(),
+                                input_tokens: None,
+                                output_tokens: None,
+                                cached_tokens: None,
+                                reasoning_tokens: None,
+                            },
+                        );
+                    }
+                    {
+                        let mut active = runtime_for_spawn.active_turn.write().await;
+                        *active = None;
+                    }
+                    {
+                        let mut status = runtime_for_spawn.status.write().await;
+                        *status = crate::core::session_runtime::RuntimeSessionStatus::Idle;
+                    }
+                });
+                Ok(CoreResponse::Ack)
+            }
+            CoreRequest::SessionMessagesLoad { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::MessageStore::new(pool);
+                match store.list(&session_id).await {
+                    Ok(messages) => Ok(CoreResponse::SessionMessages {
+                        session_id,
+                        messages,
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_messages_load_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionMessageCounts { session_ids } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store.message_counts(&session_ids).await {
+                    Ok(counts) => Ok(CoreResponse::SessionMessageCounts { counts }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_message_counts_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionCreate { directory, title } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store
+                    .create(crate::session::CreateSession {
+                        project_id: directory.clone(),
+                        directory,
+                        title,
+                        parent_id: None,
+                        workspace_id: None,
+                        agent: None,
+                        model: None,
+                        tags: None,
+                    })
+                    .await
+                {
+                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_create_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionLoad { session_id } | CoreRequest::SessionAttach { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store.get(&session_id).await {
+                    Ok(Some(session)) => {
+                        self.sessions.get_or_create(
+                            &session_id,
+                            &session.project_id,
+                            std::path::PathBuf::from(&session.directory),
+                        );
+                        Ok(CoreResponse::Session { session })
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "session_not_found".to_string(),
+                        message: format!("Session not found: {}", session_id),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_load_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionList {
+                project_id,
+                show_archived,
+                limit,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                let sessions = if show_archived {
+                    store.list_all(&project_id, None).await
+                } else {
+                    store.list(&project_id, limit).await
+                };
+                match sessions {
+                    Ok(sessions) => Ok(CoreResponse::SessionList { sessions }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_list_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionFork { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store.fork(&session_id).await {
+                    Ok(_) => Ok(CoreResponse::Ack),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_fork_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionDelete {
+                session_id,
+                permanent,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                let result = if permanent {
+                    store.delete(&session_id).await.map(|_| ())
+                } else {
+                    store.soft_delete(&session_id).await.map(|_| ())
+                };
+                match result {
+                    Ok(()) => Ok(CoreResponse::Ack),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_delete_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionArchive {
+                session_id,
+                unarchive,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                let result = if unarchive {
+                    store.unarchive(&session_id).await
+                } else {
+                    store.archive(&session_id).await
+                };
+                match result {
+                    Ok(_) => Ok(CoreResponse::Ack),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_archive_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionRestore { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store.restore(&session_id).await {
+                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_restore_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionShare { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store.share_session(&session_id).await {
+                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_share_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionUnshare { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store.unshare_session(&session_id).await {
+                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_unshare_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionRename {
+                session_id,
+                new_title,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store
+                    .update(
+                        &session_id,
+                        crate::session::UpdateSession {
+                            title: Some(new_title),
+                            share_url: None,
+                            summary_additions: None,
+                            summary_deletions: None,
+                            summary_files: None,
+                            summary_diffs: None,
+                            revert: None,
+                            permission: None,
+                            tags: None,
+                            time_compacting: None,
+                            time_archived: None,
+                        },
+                    )
+                    .await
+                {
+                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_rename_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionExport { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store.export_session(&session_id).await {
+                    Ok(data) => Ok(CoreResponse::Json { data }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_export_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionImportData { data } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store.import_session(data, None).await {
+                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_import_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionCreateFromTemplate {
+                template,
+                project_id,
+                directory,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                match store
+                    .create_from_template(&template, &project_id, &directory)
+                    .await
+                {
+                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "session_create_from_template_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::PermissionRespond { id, choice } => {
+                let parsed = match choice.as_str() {
+                    "allow" => crate::permission::PermissionChoice::AllowOnce,
+                    "always_allow" => crate::permission::PermissionChoice::AlwaysAllow,
+                    "deny" => crate::permission::PermissionChoice::DenyOnce,
+                    "always_deny" => crate::permission::PermissionChoice::AlwaysDeny,
+                    _ => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_permission_choice".to_string(),
+                            message: format!("Invalid permission choice: {}", choice),
+                        });
+                    }
+                };
+                // Extract session_id and simple perm_id from protocol ID: perm:{session_id}:{turn_id}:{perm_id}
+                let (session_id, simple_perm_id) = id
+                    .strip_prefix("perm:")
+                    .and_then(|rest| {
+                        let mut parts = rest.splitn(3, ':');
+                        let sid = parts.next()?.to_string();
+                        let _turn_id = parts.next()?;
+                        let pid = parts.next()?.to_string();
+                        Some((sid, pid))
+                    })
+                    .unwrap_or_default();
+                let sent = crate::bus::PermissionRegistry::respond_scoped(
+                    &session_id,
+                    &simple_perm_id,
+                    parsed,
+                );
+                if sent {
+                    // Remove from session runtime's pending set
+                    if let Some(runtime) = self.sessions.get(&session_id) {
+                        runtime.pending_permissions.remove(&id);
+                    }
+                    // Emit PermissionResponded event
+                    crate::bus::global::GlobalEventBus::publish(
+                        crate::bus::events::AppEvent::PermissionResponded {
+                            session_id,
+                            tool: String::new(),
+                            allowed: parsed.allowed(),
+                        },
+                    );
+                    Ok(CoreResponse::Ack)
+                } else {
+                    Ok(CoreResponse::Error {
+                        code: "permission_response_failed".to_string(),
+                        message: "No pending permission request found".to_string(),
+                    })
+                }
+            }
+            CoreRequest::QuestionRespond { id, answers } => {
+                // Extract session_id and simple question_id from protocol ID: question:{session_id}:{turn_id}:{question_id}
+                let (session_id, simple_question_id) = id
+                    .strip_prefix("question:")
+                    .and_then(|rest| {
+                        let mut parts = rest.splitn(3, ':');
+                        let sid = parts.next()?.to_string();
+                        let _turn_id = parts.next()?;
+                        let qid = parts.next()?.to_string();
+                        Some((sid, qid))
+                    })
+                    .unwrap_or_default();
+                let sent = crate::bus::QuestionRegistry::answer_question_scoped(
+                    &session_id,
+                    &simple_question_id,
+                    answers.to_string(),
+                );
+                if sent {
+                    // Remove from session runtime's pending set
+                    if let Some(runtime) = self.sessions.get(&session_id) {
+                        runtime.pending_questions.remove(&id);
+                    }
+                    // Emit QuestionAnswered event
+                    crate::bus::global::GlobalEventBus::publish(
+                        crate::bus::events::AppEvent::QuestionAnswered {
+                            session_id,
+                            answers: answers.to_string(),
+                        },
+                    );
+                    Ok(CoreResponse::Ack)
+                } else {
+                    Ok(CoreResponse::Error {
+                        code: "question_response_failed".to_string(),
+                        message: "No pending question found".to_string(),
+                    })
+                }
+            }
+            CoreRequest::ModelsRefresh => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let mut registry = crate::provider::ProviderRegistry::new();
+                crate::provider::register_builtin_with_config(&mut registry, &config);
+                let discovery = crate::provider::discovery::ModelDiscoveryService::new(
+                    std::path::PathBuf::new(),
+                )
+                .with_pool(pool);
+                let models = discovery.refresh(&registry).await;
+                let model_ids: Vec<String> = models
+                    .iter()
+                    .map(|m| format!("{}/{}", m.provider, m.id))
+                    .collect();
+                Ok(CoreResponse::Json {
+                    data: serde_json::json!({ "models": model_ids }),
+                })
+            }
+            CoreRequest::TaskList => {
+                let Some(scheduler) = self.bg_scheduler.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_scheduler".to_string(),
+                        message: "Core client missing background scheduler".to_string(),
+                    });
+                };
+                let tasks = scheduler.list().await;
+                Ok(CoreResponse::Json {
+                    data: serde_json::json!({
+                        "tasks": tasks.iter().map(|t| serde_json::json!({
+                            "id": t.id,
+                            "message": t.message,
+                            "interval_secs": t.interval.as_secs(),
+                            "session_id": t.session_id,
+                            "created_at": t.created_at,
+                            "last_run": t.last_run,
+                        })).collect::<Vec<_>>()
+                    }),
+                })
+            }
+            CoreRequest::TaskDelete { id } => {
+                let Some(scheduler) = self.bg_scheduler.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_scheduler".to_string(),
+                        message: "Core client missing background scheduler".to_string(),
+                    });
+                };
+                let removed = scheduler.remove(&id.to_string()).await;
+                if removed {
+                    Ok(CoreResponse::Ack)
+                } else {
+                    Ok(CoreResponse::Error {
+                        code: "task_not_found".to_string(),
+                        message: format!("Task not found: {}", id),
+                    })
+                }
+            }
+            CoreRequest::TaskSchedule {
+                session_id,
+                interval_secs,
+                message,
+            } => {
+                let Some(scheduler) = self.bg_scheduler.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_scheduler".to_string(),
+                        message: "Core client missing background scheduler".to_string(),
+                    });
+                };
+                let task = crate::agent::task::BackgroundTask::new(
+                    session_id.clone(),
+                    std::time::Duration::from_secs(interval_secs),
+                    message.clone(),
+                );
+                let task_id = task.id.clone();
+                match scheduler.add(task).await {
+                    Ok(_) => {
+                        if let Some(pool) = self.subagent_pool.clone() {
+                            let request = crate::agent::worker::SubAgentRequest {
+                                task_id: 0,
+                                prompt: format!("[Background] {}", message),
+                                agent: "build".to_string(),
+                                parent_id: Some(session_id),
+                                denied_tools: Vec::new(),
+                                allowed_paths: Vec::new(),
+                                description: "Background loop task".to_string(),
+                                depth: 1,
+                                max_tool_calls: None,
+                            };
+                            let _ = pool.spawner().send(request).await;
+                        }
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({ "task_id": task_id, "interval_secs": interval_secs }),
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "task_schedule_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::WorktreeList { project_dir } => {
+                let git_root = std::path::PathBuf::from(&project_dir);
+                let Some(root) = crate::worktree::find_git_root(&git_root) else {
+                    return Ok(CoreResponse::Json {
+                        data: serde_json::json!({ "worktrees": [] }),
+                    });
+                };
+                match crate::worktree::list_worktrees(&root) {
+                    Ok(trees) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({
+                            "worktrees": trees.iter().map(|t| serde_json::json!({
+                                "path": t.path,
+                                "branch": t.branch
+                            })).collect::<Vec<_>>()
+                        }),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "worktree_list_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::MemoryList { namespace } => {
+                let Some(memory_store) = self.memory_store.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_memory_store".to_string(),
+                        message: "Core client missing memory store".to_string(),
+                    });
+                };
+                let memories = memory_store.list(&namespace);
+                Ok(CoreResponse::Json {
+                    data: serde_json::json!({ "memories": memories }),
+                })
+            }
+            CoreRequest::MemorySearch { query } => {
+                let Some(memory_store) = self.memory_store.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_memory_store".to_string(),
+                        message: "Core client missing memory store".to_string(),
+                    });
+                };
+                let memories = memory_store.search(&query);
+                Ok(CoreResponse::Json {
+                    data: serde_json::json!({ "memories": memories }),
+                })
+            }
+            CoreRequest::MemoryRemember { text, namespace } => {
+                let Some(memory_store) = self.memory_store.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_memory_store".to_string(),
+                        message: "Core client missing memory store".to_string(),
+                    });
+                };
+                let ns = namespace.unwrap_or_else(|| "user/preferences".to_string());
+                let memory = crate::memory::Memory::new(ns, text);
+                memory_store.add(memory.clone());
+                Ok(CoreResponse::Json {
+                    data: serde_json::json!({ "memory": memory }),
+                })
+            }
+            CoreRequest::MemoryForget { id } => {
+                let Some(memory_store) = self.memory_store.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_memory_store".to_string(),
+                        message: "Core client missing memory store".to_string(),
+                    });
+                };
+                let deleted = memory_store.delete(&id).is_some();
+                Ok(CoreResponse::Json {
+                    data: serde_json::json!({ "deleted": deleted }),
+                })
+            }
+            CoreRequest::GoalSet {
+                session_id,
+                project_id,
+                objective,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool.clone());
+                let title = objective
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or(&objective)
+                    .chars()
+                    .take(80)
+                    .collect::<String>();
+                let completion_criteria = vec![
+                    "Implementation satisfies the stated objective.".to_string(),
+                    "Relevant tests or checks have been run, or skipped with justification."
+                        .to_string(),
+                    "Checkpoint/progress state is updated.".to_string(),
+                ];
+                match goal_store
+                    .create_active(
+                        &session_id,
+                        &project_id,
+                        &title,
+                        &objective,
+                        None,
+                        None,
+                        completion_criteria,
+                    )
+                    .await
+                {
+                    Ok(goal) => {
+                        let project_path = std::path::PathBuf::from(&project_id);
+                        let checkpoint_path = match crate::goal::checkpoint::create_checkpoint_file(
+                            &project_path,
+                            &goal,
+                            None,
+                        )
+                        .await
+                        {
+                            Ok(path) => Some(path.to_string_lossy().to_string()),
+                            Err(_) => None,
+                        };
+                        if let Some(ref cp) = checkpoint_path {
+                            let _ = sqlx::query("UPDATE goal SET checkpoint_path = ? WHERE id = ?")
+                                .bind(cp)
+                                .bind(&goal.id)
+                                .execute(&pool)
+                                .await;
+                        }
+                        let updated = goal_store.get(&goal.id).await.ok().flatten();
+                        super::publish_goal_updated(&session_id, updated);
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({
+                                "status": "active",
+                                "id": goal.id,
+                                "title": title,
+                                "checkpoint_path": checkpoint_path,
+                            }),
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_create_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalFromFile {
+                session_id,
+                project_id,
+                path,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let file_path = if std::path::Path::new(&path).is_absolute() {
+                    std::path::PathBuf::from(&path)
+                } else {
+                    std::path::PathBuf::from(&project_id).join(&path)
+                };
+                let content = match tokio::fs::read_to_string(&file_path).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "file_read_failed".to_string(),
+                            message: format!("Failed to read {}: {}", path, e),
+                        })
+                    }
+                };
+                let title = content
+                    .lines()
+                    .find(|l| l.starts_with('#'))
+                    .map(|l| {
+                        l.trim_start_matches('#')
+                            .trim()
+                            .chars()
+                            .take(80)
+                            .collect::<String>()
+                    })
+                    .unwrap_or_else(|| {
+                        std::path::Path::new(&path)
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "Goal from file".to_string())
+                    });
+                let objective = format!("Follow implementation plan from {}", path);
+                let completion_criteria = vec![
+                    "All phases in the plan file that are in scope are completed.".to_string(),
+                    "Tests/checks specified in the plan have been run.".to_string(),
+                    "Goal checkpoint is updated with completed/remaining work.".to_string(),
+                ];
+                let plan_excerpt = if content.len() > 4000 {
+                    Some(&content[..4000])
+                } else {
+                    Some(content.as_str())
+                };
+                let goal_store = crate::goal::GoalStore::new(pool.clone());
+                match goal_store
+                    .create_active(
+                        &session_id,
+                        &project_id,
+                        &title,
+                        &objective,
+                        Some(path),
+                        None,
+                        completion_criteria,
+                    )
+                    .await
+                {
+                    Ok(goal) => {
+                        let project_path = std::path::PathBuf::from(&project_id);
+                        let checkpoint_path = match crate::goal::checkpoint::create_checkpoint_file(
+                            &project_path,
+                            &goal,
+                            plan_excerpt,
+                        )
+                        .await
+                        {
+                            Ok(path) => Some(path.to_string_lossy().to_string()),
+                            Err(_) => None,
+                        };
+                        if let Some(ref cp) = checkpoint_path {
+                            let _ = sqlx::query("UPDATE goal SET checkpoint_path = ? WHERE id = ?")
+                                .bind(cp)
+                                .bind(&goal.id)
+                                .execute(&pool)
+                                .await;
+                        }
+                        let updated = goal_store.get(&goal.id).await.ok().flatten();
+                        super::publish_goal_updated(&session_id, updated);
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({
+                                "status": "active",
+                                "id": goal.id,
+                                "title": goal.title,
+                                "checkpoint_path": checkpoint_path,
+                            }),
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_create_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalShow { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        let checkpoint_excerpt = if let Some(ref path) = goal.checkpoint_path {
+                            crate::goal::checkpoint::read_checkpoint_excerpt(path, 4000)
+                                .await
+                                .ok()
+                                .flatten()
+                        } else {
+                            None
+                        };
+                        let rendered = crate::goal::render::render_goal_status(&goal);
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({
+                                "goal": serde_json::to_value(&goal).unwrap_or_default(),
+                                "rendered": rendered,
+                                "checkpoint_excerpt": checkpoint_excerpt,
+                            }),
+                        })
+                    }
+                    Ok(None) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({ "active": false }),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_show_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalPause { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        match goal_store
+                            .update_status(&goal.id, crate::goal::GoalStatus::Paused)
+                            .await
+                        {
+                            Ok(Some(updated)) => {
+                                super::publish_goal_updated(&session_id, Some(updated));
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "paused", "id": goal.id }),
+                                })
+                            }
+                            Ok(None) => {
+                                super::publish_goal_updated(&session_id, None);
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "paused", "id": goal.id }),
+                                })
+                            }
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "goal_pause_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_active_goal".to_string(),
+                        message: "No active goal to pause".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_pause_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalResume { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.latest_paused_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        match goal_store
+                            .update_status(&goal.id, crate::goal::GoalStatus::Active)
+                            .await
+                        {
+                            Ok(Some(updated)) => {
+                                super::publish_goal_updated(&session_id, Some(updated));
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "active", "id": goal.id }),
+                                })
+                            }
+                            Ok(None) => {
+                                super::publish_goal_updated(&session_id, None);
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "active", "id": goal.id }),
+                                })
+                            }
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "goal_resume_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_paused_goal".to_string(),
+                        message: "No paused goal to resume".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_resume_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalClear { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.clear_active_for_session(&session_id).await {
+                    Ok(()) => {
+                        super::publish_goal_updated(&session_id, None);
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({ "cleared": true }),
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_clear_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalDone { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        match goal_store
+                            .update_status(&goal.id, crate::goal::GoalStatus::Complete)
+                            .await
+                        {
+                            Ok(Some(updated)) => {
+                                super::publish_goal_updated(&session_id, Some(updated.clone()));
+                                crate::bus::global::GlobalEventBus::publish(
+                                    crate::bus::events::AppEvent::GoalCompleted {
+                                        session_id: session_id.clone(),
+                                        goal_id: goal.id.clone(),
+                                        evidence: "marked complete via /goal done".to_string(),
+                                    },
+                                );
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "complete", "id": goal.id }),
+                                })
+                            }
+                            Ok(None) => {
+                                super::publish_goal_updated(&session_id, None);
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "complete", "id": goal.id }),
+                                })
+                            }
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "goal_done_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_active_goal".to_string(),
+                        message: "No active goal to mark done".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_done_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalCheckpoint {
+                session_id,
+                project_id,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        if let Some(ref cp_path) = goal.checkpoint_path {
+                            let update = crate::goal::GoalProgressUpdate {
+                                current_phase: goal.current_phase.clone(),
+                                progress_summary: Some(goal.progress_summary.clone()),
+                                next_action: goal.next_action.clone(),
+                                completed_items: vec![],
+                                remaining_items: vec![],
+                                open_questions: goal.open_questions.clone(),
+                            };
+                            let _ =
+                                crate::goal::checkpoint::append_checkpoint_update(cp_path, &update)
+                                    .await;
+                            Ok(CoreResponse::Json {
+                                data: serde_json::json!({ "checkpoint_path": cp_path, "appended": true }),
+                            })
+                        } else {
+                            let project_path = std::path::PathBuf::from(&project_id);
+                            match crate::goal::checkpoint::create_checkpoint_file(
+                                &project_path,
+                                &goal,
+                                None,
+                            )
+                            .await
+                            {
+                                Ok(path) => {
+                                    let path_str = path.to_string_lossy().to_string();
+                                    let _ = sqlx::query(
+                                        "UPDATE goal SET checkpoint_path = ? WHERE id = ?",
+                                    )
+                                    .bind(&path_str)
+                                    .bind(&goal.id)
+                                    .execute(&goal_store.pool)
+                                    .await;
+                                    Ok(CoreResponse::Json {
+                                        data: serde_json::json!({ "checkpoint_path": path_str, "created": true }),
+                                    })
+                                }
+                                Err(e) => Ok(CoreResponse::Error {
+                                    code: "goal_checkpoint_failed".to_string(),
+                                    message: e.to_string(),
+                                }),
+                            }
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_active_goal".to_string(),
+                        message: "No active goal".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_checkpoint_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::TodoList { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::store::TodoStore::new(pool);
+                match store.list(&session_id).await {
+                    Ok(items) => {
+                        let snapshots: Vec<crate::bus::events::TodoItemSnapshot> = items
+                            .iter()
+                            .enumerate()
+                            .map(|(i, item)| {
+                                use crate::bus::events::TodoItemSnapshot;
+                                TodoItemSnapshot {
+                                    id: format!("pos-{}", i),
+                                    content: item.content.clone(),
+                                    status: item.status.clone(),
+                                    priority: item.priority.clone(),
+                                }
+                            })
+                            .collect();
+                        Ok(CoreResponse::Json {
+                            data: serde_json::json!({
+                                "items": serde_json::to_value(&snapshots)
+                                    .unwrap_or(serde_json::Value::Array(vec![])),
+                            }),
+                        })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "todo_list_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ActiveGoalLoad { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({
+                            "active": true,
+                            "goal": serde_json::to_value(&goal.to_snapshot())
+                                .unwrap_or(serde_json::Value::Null),
+                        }),
+                    }),
+                    Ok(None) => Ok(CoreResponse::Json {
+                        data: serde_json::json!({ "active": false }),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "active_goal_load_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::GoalSetBudget {
+                session_id,
+                max_turns,
+                max_model_tokens,
+                max_tool_calls,
+                max_wallclock_secs,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let goal_store = crate::goal::GoalStore::new(pool);
+                match goal_store.active_for_session(&session_id).await {
+                    Ok(Some(goal)) => {
+                        let new_budget = crate::goal::model::GoalBudget {
+                            max_turns,
+                            max_model_tokens,
+                            max_tool_calls,
+                            max_wallclock_secs,
+                        };
+                        match goal_store.set_budget(&goal.id, new_budget).await {
+                            Ok(Some(updated)) => {
+                                super::publish_goal_updated(&session_id, Some(updated));
+                                Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "status": "ok", "id": goal.id }),
+                                })
+                            }
+                            Ok(None) => Ok(CoreResponse::Json {
+                                data: serde_json::json!({ "status": "ok", "id": goal.id }),
+                            }),
+                            Err(e) => Ok(CoreResponse::Error {
+                                code: "goal_set_budget_failed".to_string(),
+                                message: e.to_string(),
+                            }),
+                        }
+                    }
+                    Ok(None) => Ok(CoreResponse::Error {
+                        code: "no_active_goal".to_string(),
+                        message: "No active goal to update budget".to_string(),
+                    }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "goal_set_budget_failed".to_string(),
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::Subscribe { session_id } => {
+                let current_seq = self.event_log.current_seq();
+                Ok(CoreResponse::Json {
+                    data: serde_json::json!({
+                        "current_seq": current_seq,
+                        "session_id": session_id,
+                    }),
+                })
+            }
+            CoreRequest::Resume {
+                session_id,
+                from_event_seq,
+            } => {
+                let filter = EventFilter {
+                    session_id: session_id.clone(),
+                    client_id: None,
+                    include_global: true,
+                };
+
+                if !self.event_log.has_events_from(from_event_seq).await {
+                    return Ok(CoreResponse::Error {
+                        code: "resync_required".to_string(),
+                        message: format!(
+                            "Events from seq {} not available. Latest seq: {}",
+                            from_event_seq,
+                            self.event_log.current_seq()
+                        ),
+                    });
+                }
+
+                let events = self.event_log.replay_from(from_event_seq, &filter).await;
+                let current_seq = self.event_log.current_seq();
+                Ok(CoreResponse::Json {
+                    data: serde_json::json!({
+                        "events": events,
+                        "current_seq": current_seq,
+                        "session_id": session_id,
+                    }),
+                })
+            }
+            CoreRequest::TurnCancel {
+                session_id,
+                turn_id: _,
+            } => {
+                let Some(runtime) = self.sessions.get(&session_id) else {
+                    return Ok(CoreResponse::Error {
+                        code: "session_not_found".to_string(),
+                        message: format!("No runtime for session: {}", session_id),
+                    });
+                };
+                let active = runtime.active_turn.read().await;
+                match active.as_ref() {
+                    Some(handle) => {
+                        let _ = handle.cancel_tx.send(true);
+                        Ok(CoreResponse::Ack)
+                    }
+                    None => Ok(CoreResponse::Error {
+                        code: "no_active_turn".to_string(),
+                        message: "No active turn to cancel".to_string(),
+                    }),
+                }
+            }
+            CoreRequest::TurnSteer {
+                session_id,
+                turn_id: _,
+                text,
+            } => {
+                let Some(runtime) = self.sessions.get(&session_id) else {
+                    return Ok(CoreResponse::Error {
+                        code: "session_not_found".to_string(),
+                        message: format!("No runtime for session: {}", session_id),
+                    });
+                };
+                let active = runtime.active_turn.read().await;
+                match active.as_ref() {
+                    Some(handle) => {
+                        if let Some(ref steer_tx) = handle.steer_tx {
+                            let _ = steer_tx.send(text);
+                            Ok(CoreResponse::Ack)
+                        } else {
+                            Ok(CoreResponse::Error {
+                                code: "steer_not_supported".to_string(),
+                                message: "Turn does not support steering".to_string(),
+                            })
+                        }
+                    }
+                    None => Ok(CoreResponse::Error {
+                        code: "no_active_turn".to_string(),
+                        message: "No active turn to steer".to_string(),
+                    }),
+                }
+            }
+            CoreRequest::AgentSelect {
+                session_id,
+                agent_name,
+            } => {
+                let runtime = self.sessions.get_or_create(
+                    &session_id,
+                    &session_id,
+                    std::path::PathBuf::from("."),
+                );
+                {
+                    let mut selected = runtime.selected_agent.write().await;
+                    *selected = Some(agent_name.clone());
+                }
+                crate::bus::global::GlobalEventBus::publish(
+                    crate::bus::events::AppEvent::SessionUpdated {
+                        id: session_id.clone(),
+                    },
+                );
+                Ok(CoreResponse::Ack)
+            }
+            CoreRequest::ModelSelect {
+                session_id,
+                model,
+            } => {
+                let runtime = self.sessions.get_or_create(
+                    &session_id,
+                    &session_id,
+                    std::path::PathBuf::from("."),
+                );
+                {
+                    let mut selected = runtime.selected_model.write().await;
+                    *selected = Some(model.clone());
+                }
+                crate::bus::global::GlobalEventBus::publish(
+                    crate::bus::events::AppEvent::SessionUpdated {
+                        id: session_id.clone(),
+                    },
+                );
+                Ok(CoreResponse::Ack)
+            }
+            CoreRequest::SnapshotSession { session_id } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".to_string(),
+                        message: "Core client missing database pool".to_string(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool.clone());
+                let msg_store = crate::session::MessageStore::new(pool);
+
+                let session = match store.get(&session_id).await {
+                    Ok(Some(s)) => s,
+                    Ok(None) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_not_found".to_string(),
+                            message: format!("Session not found: {}", session_id),
+                        })
+                    }
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_load_failed".to_string(),
+                            message: e.to_string(),
+                        })
+                    }
+                };
+
+                let messages = msg_store.list(&session_id).await.unwrap_or_default();
+
+                let (status, selected_model, selected_agent, pending_permissions, pending_questions, input_tokens, output_tokens, active_subagents) =
+                    if let Some(runtime) = self.sessions.get(&session_id) {
+                        let status = format!("{:?}", *runtime.status.read().await);
+                        let model = runtime.selected_model.read().await.clone();
+                        let agent = runtime.selected_agent.read().await.clone();
+                        let pending_permissions: Vec<String> = runtime
+                            .pending_permissions
+                            .iter()
+                            .map(|r| r.key().clone())
+                            .collect();
+                        let pending_questions: Vec<String> = runtime
+                            .pending_questions
+                            .iter()
+                            .map(|r| r.key().clone())
+                            .collect();
+                        let input_tokens = *runtime.last_input_tokens.read().await;
+                        let output_tokens = *runtime.last_output_tokens.read().await;
+                        let active_subagents = runtime.active_subagent_count.load(std::sync::atomic::Ordering::Relaxed);
+                        (status, model, agent, pending_permissions, pending_questions, input_tokens, output_tokens, active_subagents)
+                    } else {
+                        ("idle".to_string(), None, None, Vec::new(), Vec::new(), None, None, 0)
+                    };
+
+                let event_seq = self.event_log.current_seq();
+
+                Ok(CoreResponse::SnapshotSession {
+                    event_seq,
+                    session,
+                    messages,
+                    status,
+                    selected_model,
+                    selected_agent,
+                    pending_permissions,
+                    pending_questions,
+                    input_tokens,
+                    output_tokens,
+                    active_subagents,
+                })
+            }
+            CoreRequest::SnapshotModels => {
+                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let mut registry = crate::provider::ProviderRegistry::new();
+                crate::provider::register_builtin_with_config(&mut registry, &config);
+                let model_ids: Vec<String> = registry
+                    .list()
+                    .iter()
+                    .map(|p| p.id().to_string())
+                    .collect();
+                Ok(CoreResponse::ModelsSnapshot {
+                    current_model: None,
+                    models: model_ids,
+                })
+            }
+            CoreRequest::SnapshotDaemon => {
+                let event_seq = self.event_log.current_seq();
+                let session_ids = self.sessions.list_sessions();
+                let mut snapshots = Vec::new();
+                for sid in &session_ids {
+                    if let Some(runtime) = self.sessions.get(sid) {
+                        let status = format!("{:?}", *runtime.status.read().await);
+                        let model = runtime.selected_model.read().await.clone();
+                        let agent = runtime.selected_agent.read().await.clone();
+                        let has_active_turn = runtime.active_turn.read().await.is_some();
+                        let pending_permissions: Vec<String> = runtime
+                            .pending_permissions
+                            .iter()
+                            .map(|r| r.key().clone())
+                            .collect();
+                        let pending_questions: Vec<String> = runtime
+                            .pending_questions
+                            .iter()
+                            .map(|r| r.key().clone())
+                            .collect();
+                        let input_tokens = *runtime.last_input_tokens.read().await;
+                        let output_tokens = *runtime.last_output_tokens.read().await;
+                        let active_subagents = runtime.active_subagent_count.load(std::sync::atomic::Ordering::Relaxed);
+                        snapshots.push(crate::protocol::core::SessionSnapshot {
+                            session_id: sid.clone(),
+                            project_id: runtime.project_id.clone(),
+                            status,
+                            selected_model: model,
+                            selected_agent: agent,
+                            has_active_turn,
+                            pending_permissions,
+                            pending_questions,
+                            input_tokens,
+                            output_tokens,
+                            active_subagents,
+                        });
+                    }
+                }
+                Ok(CoreResponse::SnapshotDaemon {
+                    event_seq,
+                    daemon_id: self.daemon_id.clone(),
+                    uptime_secs: self.started_at.elapsed().as_secs(),
+                    active_sessions: snapshots,
+                    connected_clients: self.clients.list().iter().map(|c| {
+                        crate::protocol::core::ClientSnapshot {
+                            client_id: c.client_id.clone(),
+                            client_name: c.client_name.clone(),
+                            connected_at: c.connected_at.to_rfc3339(),
+                            attached_sessions: c.attached_sessions.clone(),
+                        }
+                    }).collect(),
+                })
+            }
+            CoreRequest::SnapshotWorkspace { project_dir } => {
+                let path = std::path::PathBuf::from(&project_dir);
+
+                let git_root = crate::worktree::find_git_root(&path);
+
+                let git_status = git_root.as_ref().and_then(|root| {
+                    std::process::Command::new("git")
+                        .args(["status", "--porcelain"])
+                        .current_dir(root)
+                        .output()
+                        .ok()
+                        .map(|output| {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            let changed_files = stdout.lines().count();
+                            serde_json::json!({
+                                "git_root": root.to_string_lossy(),
+                                "changed_files": changed_files,
+                            })
+                        })
+                });
+
+                let worktrees = git_root
+                    .as_ref()
+                    .and_then(|root| crate::worktree::list_worktrees(root).ok())
+                    .map(|trees| {
+                        trees
+                            .iter()
+                            .map(|t| {
+                                serde_json::json!({
+                                    "path": t.path,
+                                    "branch": t.branch,
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
+                Ok(CoreResponse::Json {
+                    data: serde_json::json!({
+                        "project_dir": project_dir,
+                        "git_status": git_status,
+                        "worktrees": worktrees,
+                    }),
+                })
+            }
+            CoreRequest::NotificationSpeak {
+                text,
+                kind,
+                priority,
+                session_id,
+            } => {
+                use super::notification::*;
+                let kind = match kind.as_deref() {
+                    Some("turn_completed") => NotificationKind::TurnCompleted,
+                    Some("turn_failed") => NotificationKind::TurnFailed,
+                    Some("awaiting_input") => NotificationKind::AwaitingInput,
+                    Some("permission_required") => NotificationKind::PermissionRequired,
+                    Some("question_required") => NotificationKind::QuestionRequired,
+                    Some("subagent_completed") => NotificationKind::SubagentCompleted,
+                    Some("subagent_failed") => NotificationKind::SubagentFailed,
+                    Some("error") => NotificationKind::Error,
+                    _ => NotificationKind::AwaitingInput,
+                };
+                let priority = match priority.as_deref() {
+                    Some("urgent") => NotificationPriority::Urgent,
+                    Some("high") => NotificationPriority::High,
+                    Some("low") => NotificationPriority::Low,
+                    _ => NotificationPriority::Normal,
+                };
+                let event = NotificationEvent {
+                    id: format!("notif-{}", uuid::Uuid::new_v4()),
+                    session_id,
+                    turn_id: None,
+                    kind,
+                    priority,
+                    message: text,
+                    dedupe_key: None,
+                    created_at: Utc::now(),
+                };
+                self.notification_router.emit(event.clone()).await;
+                if let Some(ref pool) = self.pool {
+                    self.notification_router.persist_notification(pool, &event).await;
+                }
+                Ok(CoreResponse::Ack)
+            }
+            CoreRequest::NotificationStop => {
+                if let Some(ref arbiter) = self.audio_arbiter {
+                    arbiter.request_interrupt();
+                }
+                Ok(CoreResponse::Ack)
+            }
+            _ => {
+                tracing::warn!("Unhandled CoreRequest variant");
+                Ok(CoreResponse::Error {
+                    code: "unimplemented".to_string(),
+                    message: "This request type is not yet implemented".to_string(),
+                })
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::schema::migrate;
+
+    async fn test_daemon() -> CoreDaemon {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA busy_timeout=5000")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA foreign_keys=ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate(&pool).await.unwrap();
+        Box::leak(Box::new(dir));
+
+        CoreDaemon::new(Some(pool), None, None, None)
+    }
+
+    #[tokio::test]
+    async fn daemon_has_unique_id() {
+        let d1 = test_daemon().await;
+        let d2 = test_daemon().await;
+        assert_ne!(d1.daemon_id, d2.daemon_id);
+    }
+
+    #[tokio::test]
+    async fn session_create_through_daemon() {
+        let daemon = test_daemon().await;
+        let req = crate::core::new_request(
+            "req-1".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp/test".into(),
+                title: Some("Test".into()),
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        assert!(matches!(resp, CoreResponse::Session { .. }));
+    }
+
+    #[tokio::test]
+    async fn snapshot_daemon_returns_state() {
+        let daemon = test_daemon().await;
+        let req = crate::core::new_request("req-1".into(), CoreRequest::SnapshotDaemon);
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::SnapshotDaemon {
+                daemon_id,
+                uptime_secs,
+                ..
+            } => {
+                assert!(!daemon_id.is_empty());
+                assert!(uptime_secs < 5);
+            }
+            other => panic!("expected SnapshotDaemon, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_submit_rejects_when_active() {
+        let daemon = test_daemon().await;
+        let req = crate::core::new_request(
+            "req-1".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp".into(),
+                title: None,
+            },
+        );
+        let session_id = match daemon.handle_request(req).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            _ => panic!("expected Session"),
+        };
+
+        let runtime = daemon.sessions.get_or_create(
+            &session_id,
+            &session_id,
+            std::path::PathBuf::new(),
+        );
+        assert!(runtime.active_turn.read().await.is_none());
+    }
+}

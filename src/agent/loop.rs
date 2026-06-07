@@ -442,10 +442,18 @@ impl AgentLoop {
         if &*tc.name == "question" {
             if let Ok(questions) = parse_question_questions(tc.arguments.clone()) {
                 let questions_json = serde_json::to_string(&questions).unwrap_or_default();
+                let question_id = format!("q-{}", uuid::Uuid::new_v4());
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                QuestionRegistry::register(self.session_id.clone(), tx);
+                QuestionRegistry::register_with_session(
+                    self.session_id.clone(),
+                    None,
+                    question_id.clone(),
+                    tx,
+                );
                 crate::bus::global::GlobalEventBus::publish(AppEvent::QuestionPending {
                     session_id: self.session_id.clone(),
+                    question_id,
+                    turn_id: None,
                     questions: questions_json,
                 });
                 self.question_rx = Some(rx);
@@ -521,7 +529,12 @@ impl AgentLoop {
                         .unwrap_or_else(|| "sensitive path".to_string());
                     let perm_id = format!("{}-{}", tc.id, tc.name);
                     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                    PermissionRegistry::register(perm_id.clone(), resp_tx);
+                    PermissionRegistry::register_with_session(
+                        self.session_id.clone(),
+                        None,
+                        perm_id.clone(),
+                        resp_tx,
+                    );
                     let args = serde_json::json!({
                         "command": bash_command.as_deref().unwrap_or(""),
                         "security": {
@@ -533,6 +546,7 @@ impl AgentLoop {
                     crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
                         session_id: self.session_id.clone(),
                         perm_id: perm_id.clone(),
+                        turn_id: None,
                         tool: (*tc.name).clone(),
                         path: path.clone(),
                         args: Some(args),
@@ -571,7 +585,12 @@ impl AgentLoop {
                 ) {
                     let perm_id = format!("{}-{}", tc.id, tc.name);
                     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                    PermissionRegistry::register(perm_id.clone(), resp_tx);
+                    PermissionRegistry::register_with_session(
+                        self.session_id.clone(),
+                        None,
+                        perm_id.clone(),
+                        resp_tx,
+                    );
                     let args = serde_json::json!({
                         "command": bash_command.as_deref().unwrap_or(""),
                         "security": {
@@ -583,6 +602,7 @@ impl AgentLoop {
                     crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
                         session_id: self.session_id.clone(),
                         perm_id: perm_id.clone(),
+                        turn_id: None,
                         tool: (*tc.name).clone(),
                         path: path.clone(),
                         args: Some(args),
@@ -636,10 +656,16 @@ impl AgentLoop {
 
                 let perm_id = format!("{}-{}", tc.id, tc.name);
                 let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                PermissionRegistry::register(perm_id.clone(), resp_tx);
+                PermissionRegistry::register_with_session(
+                    self.session_id.clone(),
+                    None,
+                    perm_id.clone(),
+                    resp_tx,
+                );
                 crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
                     session_id: self.session_id.clone(),
                     perm_id: perm_id.clone(),
+                    turn_id: None,
                     tool: req.tool.clone(),
                     path: req.path.clone(),
                     args: req.args.clone(),
@@ -757,6 +783,9 @@ pub struct AgentLoop {
     max_tool_calls: Option<usize>,
     goal_store: Option<Arc<crate::goal::GoalStore>>,
     goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
+    cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    steer_rx: Option<mpsc::UnboundedReceiver<String>>,
+    pending_steer: Option<String>,
 }
 
 impl AgentLoop {
@@ -949,6 +978,9 @@ impl AgentLoop {
                 .as_ref()
                 .map(|p| Arc::new(crate::goal::GoalStore::new(p.clone()))),
             goal_wall_clock: std::sync::Mutex::new(crate::goal::runtime::GoalWallClock::default()),
+            cancel_rx: None,
+            steer_rx: None,
+            pending_steer: None,
         }
     }
 
@@ -1099,6 +1131,14 @@ impl AgentLoop {
 
     pub fn set_max_tool_calls(&mut self, max: Option<usize>) {
         self.max_tool_calls = max;
+    }
+
+    pub fn set_cancel_receiver(&mut self, rx: tokio::sync::watch::Receiver<bool>) {
+        self.cancel_rx = Some(rx);
+    }
+
+    pub fn set_steer_receiver(&mut self, rx: mpsc::UnboundedReceiver<String>) {
+        self.steer_rx = Some(rx);
     }
 
     /// Evaluate the research trigger heuristic against a user prompt
@@ -2130,6 +2170,10 @@ impl AgentLoop {
                 content.push_str("\n\n");
                 content.push_str(&hints);
             }
+            if let Some(ref steer) = self.pending_steer {
+                content.push_str(&format!("\n\n## User Steering\n{}\n", steer));
+                self.pending_steer = None;
+            }
             request.messages.insert(
                 0,
                 Message::System {
@@ -2208,6 +2252,20 @@ impl AgentLoop {
             if let Some(reason) = self.check_limits() {
                 tracing::info!("Agent loop stopping: {}", reason);
                 break;
+            }
+
+            if let Some(ref mut cancel_rx) = self.cancel_rx {
+                if *cancel_rx.borrow() {
+                    tracing::info!("Turn cancelled via cancel signal");
+                    break;
+                }
+            }
+
+            if let Some(ref mut steer_rx) = self.steer_rx {
+                if let Ok(text) = steer_rx.try_recv() {
+                    self.pending_steer = Some(text.clone());
+                    tracing::info!("Turn steer received: {}", text);
+                }
             }
 
             if let Some(agent) = self.agents.get(&self.state.current_agent) {

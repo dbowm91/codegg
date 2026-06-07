@@ -1,3 +1,7 @@
+//! TTS module. In daemon mode, TTS is owned by CoreDaemon's NotificationRouter.
+//! In embedded mode, TTS remains here for direct user-triggered speech.
+//! Global notification speech should go through the daemon, not this module.
+
 use crate::error::AppError;
 use async_trait::async_trait;
 use std::sync::Mutex;

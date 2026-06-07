@@ -16,6 +16,7 @@ pub struct ServerState {
     pub mcp_service: Arc<RwLock<McpService>>,
     pub config: Config,
     pub ws_rate_limiter: Arc<WsRateLimiter>,
+    pub daemon: Option<Arc<crate::core::daemon::CoreDaemon>>,
 }
 
 #[derive(Clone)]

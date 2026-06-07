@@ -1,3 +1,4 @@
+pub mod daemon_socket;
 pub mod socket;
 pub mod stdio;
 

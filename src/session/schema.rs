@@ -79,6 +79,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 19 {
         migrate_and_record(pool, 19).await?;
     }
+    if current_version < 20 {
+        migrate_and_record(pool, 20).await?;
+    }
+    if current_version < 21 {
+        migrate_and_record(pool, 21).await?;
+    }
 
     Ok(())
 }
@@ -110,6 +116,8 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             17 => migrate_v17(pool).await?,
             18 => migrate_v18(pool).await?,
             19 => migrate_v19(pool).await?,
+            20 => migrate_v20(pool).await?,
+            21 => migrate_v21(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -703,6 +711,73 @@ async fn migrate_v19(pool: &SqlitePool) -> Result<(), StorageError> {
             updated_at INTEGER NOT NULL
         )
         "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v20(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS core_event_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_seq INTEGER NOT NULL,
+            session_id TEXT,
+            turn_id TEXT,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(event_seq)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_core_event_log_session ON core_event_log(session_id)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_core_event_log_seq ON core_event_log(event_seq)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn migrate_v21(pool: &SqlitePool) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS notification_history (
+            id TEXT PRIMARY KEY,
+            session_id TEXT,
+            turn_id TEXT,
+            kind TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_notification_history_session ON notification_history(session_id)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_notification_history_kind ON notification_history(kind)",
     )
     .execute(pool)
     .await

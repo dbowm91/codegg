@@ -153,7 +153,11 @@ fn build_cors(config: &Option<crate::config::schema::ServerConfig>) -> CorsLayer
     }
 }
 
-pub async fn run_server(host: &str, port: u16) -> Result<(), crate::error::ServerRuntimeError> {
+pub async fn run_server(
+    host: &str,
+    port: u16,
+    daemon: Option<Arc<crate::core::daemon::CoreDaemon>>,
+) -> Result<(), crate::error::ServerRuntimeError> {
     let project_dir = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().to_string())
@@ -206,6 +210,7 @@ pub async fn run_server(host: &str, port: u16) -> Result<(), crate::error::Serve
         mcp_service: Arc::new(RwLock::new(mcp_service)),
         config: config.unwrap_or_default(),
         ws_rate_limiter: Arc::new(WsRateLimiter::new(100, 60)),
+        daemon,
     };
 
     let cors = build_cors(&server_config);
@@ -263,6 +268,7 @@ pub async fn run_server(host: &str, port: u16) -> Result<(), crate::error::Serve
         .route("/api/workspace/list", get(routes::list_workspaces))
         .route("/ws", get(ws::handle_ws))
         .route("/tui", get(ws::handle_tui))
+        .route("/core", get(ws::handle_core_ws))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

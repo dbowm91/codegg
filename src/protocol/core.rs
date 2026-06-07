@@ -43,6 +43,53 @@ pub enum CoreResponse {
         code: String,
         message: String,
     },
+    SnapshotSession {
+        event_seq: u64,
+        session: crate::session::Session,
+        messages: Vec<crate::session::message::Message>,
+        status: String,
+        selected_model: Option<String>,
+        selected_agent: Option<String>,
+        pending_permissions: Vec<String>,
+        pending_questions: Vec<String>,
+        input_tokens: Option<usize>,
+        output_tokens: Option<usize>,
+        active_subagents: usize,
+    },
+    SnapshotDaemon {
+        event_seq: u64,
+        daemon_id: String,
+        uptime_secs: u64,
+        active_sessions: Vec<SessionSnapshot>,
+        connected_clients: Vec<ClientSnapshot>,
+    },
+    ModelsSnapshot {
+        current_model: Option<String>,
+        models: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    pub session_id: String,
+    pub project_id: String,
+    pub status: String,
+    pub selected_model: Option<String>,
+    pub selected_agent: Option<String>,
+    pub has_active_turn: bool,
+    pub pending_permissions: Vec<String>,
+    pub pending_questions: Vec<String>,
+    pub input_tokens: Option<usize>,
+    pub output_tokens: Option<usize>,
+    pub active_subagents: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientSnapshot {
+    pub client_id: String,
+    pub client_name: String,
+    pub connected_at: String,
+    pub attached_sessions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +263,29 @@ pub enum CoreRequest {
         max_tool_calls: Option<i64>,
         max_wallclock_secs: Option<i64>,
     },
+    SnapshotSession { session_id: String },
+    SnapshotWorkspace { project_dir: String },
+    SnapshotModels,
+    SnapshotDaemon,
+    /// Route a TTS speak request through the daemon's `NotificationRouter`
+    /// rather than speaking locally. Used in `RemoteCore` mode where the
+    /// local TUI has no audio output of its own.
+    ///
+    /// `kind` and `priority` are optional string labels (`turn_completed`,
+    /// `turn_failed`, `awaiting_input`, `permission_required`,
+    /// `question_required`, `subagent_completed`, `subagent_failed`,
+    /// `error`; and `low` / `normal` / `high` / `urgent` respectively).
+    /// Unknown values fall back to a normal-priority `AwaitingInput`
+    /// event so the router still surfaces the message.
+    NotificationSpeak {
+        text: String,
+        kind: Option<String>,
+        priority: Option<String>,
+        session_id: Option<String>,
+    },
+    /// Ask the daemon to stop any currently-active TTS playback
+    /// (delegates to the `AudioArbiter` interrupt channel).
+    NotificationStop,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,12 +334,18 @@ pub enum CoreEvent {
     },
     PermissionPending {
         id: String,
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         tool: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
     QuestionPending {
         id: String,
+        session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
         questions: serde_json::Value,
     },
     TurnCompleted {
@@ -318,4 +394,71 @@ pub enum CoreEvent {
         code: String,
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_version_is_set() {
+        assert_eq!(PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn request_envelope_serializes() {
+        let req = RequestEnvelope {
+            protocol_version: 1,
+            request_id: "test-1".to_string(),
+            payload: CoreRequest::SessionCreate {
+                directory: "/tmp".to_string(),
+                title: Some("Test".to_string()),
+            },
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("session_create"));
+        assert!(json.contains("test-1"));
+    }
+
+    #[test]
+    fn response_serializes_ack() {
+        let resp = CoreResponse::Ack;
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("ack"));
+    }
+
+    #[test]
+    fn response_serializes_error() {
+        let resp = CoreResponse::Error {
+            code: "test_error".to_string(),
+            message: "test message".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("test_error"));
+    }
+
+    #[test]
+    fn event_envelope_has_seq() {
+        let env = EventEnvelope {
+            protocol_version: 1,
+            event_seq: 42,
+            timestamp_ms: 1234567890,
+            session_id: Some("s1".to_string()),
+            turn_id: None,
+            payload: CoreEvent::Error {
+                code: "e".to_string(),
+                message: "m".to_string(),
+            },
+        };
+        assert_eq!(env.event_seq, 42);
+        assert_eq!(env.session_id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn core_frame_tagged_correctly() {
+        use crate::protocol::frames::CoreFrame;
+        let frame = CoreFrame::Ping;
+        let json = serde_json::to_string(&frame).unwrap();
+        assert!(json.contains("ping"));
+    }
 }

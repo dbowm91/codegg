@@ -12,7 +12,7 @@ pub struct Command {
     pub template: String,
     pub agent: Option<String>,
     pub model: Option<String>,
-    #[deprecated(since = "2026-05-22", note = "subtask field is not yet implemented")]
+    #[deprecated(since = "0.1.0", note = "subtask field is not yet implemented")]
     pub subtask: Option<bool>,
     pub source: String,
 }

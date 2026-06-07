@@ -33,6 +33,7 @@ use crate::agent::builtin_agents;
 use crate::agent::Agent;
 use crate::config::schema::SessionTemplate;
 use crate::core::CoreClient;
+use crate::error::AppError;
 use crate::memory::MemoryStore;
 use crate::permission::PermissionRequest;
 use crate::protocol::core::CoreRequest;
@@ -467,7 +468,7 @@ impl App {
                 help_lines,
                 bindings,
                 keybinds: keybinds.clone(),
-                remote_mode: false,
+                mode: AppMode::Embedded,
                 remote_status: None,
                 sidebar_visible: true,
                 auto_scroll: true,
@@ -482,6 +483,7 @@ impl App {
                 fullscreen: false,
                 dirty_regions: Vec::new(),
                 resize_debounce: None,
+                tts_via_daemon: false,
             },
             session_state: SessionState {
                 session: None,
@@ -611,7 +613,10 @@ impl App {
 
     pub fn new_remote(project_dir: String) -> Self {
         let mut app = Self::new(project_dir);
-        app.ui_state.remote_mode = true;
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: String::new(),
+        };
+        app.ui_state.tts_via_daemon = true;
         app.ui_state.remote_status = Some("Connected".to_string());
         app.remote_event_rx = None;
         app.remote_send_tx = None;
@@ -666,7 +671,7 @@ impl App {
                 help_lines,
                 bindings,
                 keybinds: None,
-                remote_mode: false,
+                mode: AppMode::Embedded,
                 remote_status: None,
                 sidebar_visible: true,
                 auto_scroll: true,
@@ -681,6 +686,7 @@ impl App {
                 fullscreen: false,
                 dirty_regions: Vec::new(),
                 resize_debounce: None,
+                tts_via_daemon: false,
             },
             session_state: SessionState {
                 session: None,
@@ -2221,7 +2227,7 @@ impl App {
                 };
                 if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
                     let perm_id = perm_id.clone();
-                    if self.ui_state.remote_mode {
+                    if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
                         let choice = match choice {
                             crate::permission::PermissionChoice::AllowOnce => "allow",
                             crate::permission::PermissionChoice::AlwaysAllow => "always_allow",
@@ -2243,7 +2249,7 @@ impl App {
             TuiMsg::SubmitQuestionAnswers { answers_json } => {
                 if let Some(session_id) = self.dialog_state.question_session_id.take() {
                     let answers = answers_json.clone();
-                    if self.ui_state.remote_mode {
+                    if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
                         let answers = serde_json::from_str::<serde_json::Value>(&answers)
                             .unwrap_or(serde_json::Value::String(answers));
                         self.send_remote_message(RemoteTuiMessage::QuestionResponse {
@@ -3289,7 +3295,7 @@ impl App {
             self.prompt_state.show_completions = false;
             self.reset_live_token_estimate();
             self.session_state.session_status = SessionStatus::Working;
-            if self.ui_state.remote_mode {
+            if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
                 self.send_remote_message(RemoteTuiMessage::Input { text: rendered });
                 self.prompt_state.pending_send = false;
             } else {
@@ -4023,7 +4029,7 @@ impl App {
         // content has been re-wrapped. `set_width` already invalidates
         // the layout cache, so this scroll reset is independent of that.
         self.messages_state.messages.scroll_to_bottom();
-        if self.ui_state.remote_mode {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
             let (w, h) = crossterm::terminal::size().unwrap_or((0, 0));
             self.send_remote_message(RemoteTuiMessage::Resize { w, h });
         }
@@ -4630,7 +4636,7 @@ impl App {
             .add_user_message(trimmed_text, Some(self.agent_state.plan_mode));
         self.prompt_state.prompt.clear();
         self.prompt_state.show_completions = false;
-        if self.ui_state.remote_mode {
+        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
             self.send_remote_message(RemoteTuiMessage::Input {
                 text: text.trim().to_string(),
             });
@@ -5329,6 +5335,31 @@ impl App {
 
     fn toggle_tts(&mut self) {
         self.ui_state.tts_enabled = !self.ui_state.tts_enabled;
+        if self.ui_state.tts_via_daemon {
+            if self.ui_state.tts_enabled {
+                if let Some(idx) = self.messages_state.messages.sel_msg {
+                    if let Some(msg) = self.messages_state.messages.get_message(idx) {
+                        let text = msg.text_content();
+                        if !text.is_empty() {
+                            self.send_notification_speak_to_daemon(text);
+                            self.messages_state
+                                .toasts
+                                .info("TTS speak sent to daemon");
+                            return;
+                        }
+                    }
+                }
+                self.messages_state
+                    .toasts
+                    .info("TTS enabled (daemon: nothing selected to speak)");
+            } else {
+                self.send_notification_stop_to_daemon();
+                self.messages_state
+                    .toasts
+                    .info("TTS disabled (daemon: stop sent)");
+            }
+            return;
+        }
         if self.ui_state.tts_enabled {
             if let Some(idx) = self.messages_state.messages.sel_msg {
                 if let Some(msg) = self.messages_state.messages.get_message(idx) {
@@ -5357,6 +5388,10 @@ impl App {
     }
 
     fn stop_tts(&mut self) {
+        if self.ui_state.tts_via_daemon {
+            self.send_notification_stop_to_daemon();
+            return;
+        }
         let tts = self.ui_state.tts.clone();
         tokio::spawn(async move {
             if let Err(e) = tts.stop().await {
@@ -5364,6 +5399,56 @@ impl App {
             }
         });
         self.messages_state.toasts.info("TTS stopped");
+    }
+
+    /// Send a TTS speak request to the daemon's `NotificationRouter` via
+    /// the `CoreClient`. Used in `RemoteCore` mode where the local TUI
+    /// has no audio output. The daemon's `AudioArbiter` (if enabled)
+    /// will pick the event up and speak it.
+    fn send_notification_speak_to_daemon(&mut self, text: String) {
+        let Some(client) = self.core_client.clone() else {
+            self.messages_state
+                .toasts
+                .info("TTS: no core client; cannot route to daemon");
+            return;
+        };
+        let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+        let request = crate::core::new_request(
+            format!("notification-speak-{}", uuid::Uuid::new_v4()),
+            CoreRequest::NotificationSpeak {
+                text,
+                kind: Some("turn_completed".to_string()),
+                priority: Some("normal".to_string()),
+                session_id,
+            },
+        );
+        tokio::spawn(async move {
+            if let Err(e) = client.request(request).await {
+                tracing::debug!("core facade notification_speak failed: {}", e);
+            }
+        });
+    }
+
+    /// Ask the daemon to stop any in-flight TTS playback.
+    fn send_notification_stop_to_daemon(&mut self) {
+        let Some(client) = self.core_client.clone() else {
+            self.messages_state
+                .toasts
+                .info("TTS: no core client; cannot stop daemon TTS");
+            return;
+        };
+        let request = crate::core::new_request(
+            format!("notification-stop-{}", uuid::Uuid::new_v4()),
+            CoreRequest::NotificationStop,
+        );
+        tokio::spawn(async move {
+            if let Err(e) = client.request(request).await {
+                tracing::debug!("core facade notification_stop failed: {}", e);
+            }
+        });
+        self.messages_state
+            .toasts
+            .info("TTS stop sent to daemon");
     }
 
     fn toggle_fullscreen(&mut self) {
@@ -6531,6 +6616,70 @@ impl App {
 
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
         self.session_store = Some(store);
+    }
+
+    pub async fn load_sessions_via_core(
+        &mut self,
+    ) -> Result<Vec<crate::session::Session>, AppError> {
+        let core_client = self
+            .core_client
+            .clone()
+            .ok_or_else(|| AppError::Tui("core client unavailable for session list".to_string()))?;
+        let project_id = self.session_state.project_dir.clone();
+        let show_archived = self.dialog_state.session_dialog.show_archived;
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::SessionList {
+                project_id,
+                show_archived,
+                limit: 100,
+            },
+        );
+        match core_client.request(request).await {
+            Ok(crate::protocol::core::CoreResponse::SessionList { sessions }) => Ok(sessions),
+            Ok(crate::protocol::core::CoreResponse::Error { code, message }) => Err(AppError::Tui(
+                format!("core session list failed ({}): {}", code, message),
+            )),
+            Ok(other) => Err(AppError::Tui(format!(
+                "unexpected core response for session list: {:?}",
+                other
+            ))),
+            Err(e) => Err(AppError::Tui(format!(
+                "core session list request failed: {}",
+                e
+            ))),
+        }
+    }
+
+    pub async fn load_messages_via_core(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Vec<crate::session::message::Message>, AppError> {
+        let core_client = self.core_client.clone().ok_or_else(|| {
+            AppError::Tui("core client unavailable for message load".to_string())
+        })?;
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::SessionMessagesLoad {
+                session_id: session_id.to_string(),
+            },
+        );
+        match core_client.request(request).await {
+            Ok(crate::protocol::core::CoreResponse::SessionMessages { messages, .. }) => {
+                Ok(messages)
+            }
+            Ok(crate::protocol::core::CoreResponse::Error { code, message }) => Err(AppError::Tui(
+                format!("core session messages load failed ({}): {}", code, message),
+            )),
+            Ok(other) => Err(AppError::Tui(format!(
+                "unexpected core response for session messages load: {:?}",
+                other
+            ))),
+            Err(e) => Err(AppError::Tui(format!(
+                "core session messages load request failed: {}",
+                e
+            ))),
+        }
     }
 
     /// Attach the SQLite-backed user-preferences store. Should be called

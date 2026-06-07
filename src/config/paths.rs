@@ -685,6 +685,8 @@ mod tests {
                 enabled: Some(true),
                 on_task_complete: Some(true),
                 on_error: Some(false),
+                audio: None,
+                quiet_hours: None,
             }),
             catalog: Some(crate::config::schema::CatalogConfig {
                 enabled: Some(true),

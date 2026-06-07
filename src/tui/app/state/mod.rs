@@ -10,4 +10,4 @@ pub use dialog::DialogState;
 pub use messages::MessagesState;
 pub use prompt::PromptState;
 pub use session::SessionState;
-pub use ui::UiState;
+pub use ui::{AppMode, UiState};
