@@ -36,7 +36,7 @@ use crate::core::CoreClient;
 use crate::error::AppError;
 use crate::memory::MemoryStore;
 use crate::permission::PermissionRequest;
-use crate::protocol::core::CoreRequest;
+use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::protocol::tui::TuiMessage as RemoteTuiMessage;
 use crate::provider::ChatEvent;
 use crate::session::message::ToolStatus;
@@ -318,6 +318,33 @@ pub struct App {
     /// table via `AppEvent::GoalUpdated` and friends. Used by the
     /// sidebar, the status bar, and the `/goal show` command.
     pub active_goal: Option<crate::bus::events::GoalSnapshot>,
+}
+
+/// What to do at TUI startup with respect to session loading. The TUI
+/// constructs one of these from CLI flags / `AttachDaemon` subcommand
+/// arguments and dispatches it through `App::load_initial_session_via_core`
+/// so the same code path works for both inproc (local stores) and
+/// socket/RemoteCore (`CoreClient`) modes.
+#[derive(Debug, Clone)]
+pub enum InitialSessionRequest {
+    /// Attach to an existing session by id.
+    Attach { session_id: String },
+    /// Continue the most recent session in `project_dir`.
+    Continue { project_dir: String },
+    /// Create a brand new session in `directory`.
+    New {
+        directory: String,
+        title: Option<String>,
+    },
+    /// Fork the given session id and attach the resulting fork.
+    ///
+    /// The core client only returns an `Ack` from `SessionFork` today,
+    /// so we follow up with a `SessionList` to pick up the new fork.
+    /// If the listing does not contain a brand-new session, we fall
+    /// back to attaching the original id (best-effort).
+    Fork { session_id: String },
+    /// No session to load — start with an empty TUI.
+    None,
 }
 
 impl App {
@@ -6744,6 +6771,172 @@ impl App {
         }
     }
 
+    /// Drive the TUI's initial session load through the attached
+    /// `CoreClient`. In socket/RemoteCore mode there is no local
+    /// `SessionStore`, so this is the only way to open / continue /
+    /// fork a session at startup.
+    ///
+    /// Best-effort: any failure is logged and swallowed so the TUI
+    /// still starts (with no session) if the daemon is unreachable or
+    /// a specific id is missing. The local `SessionStore` path in
+    /// `main.rs` is the equivalent for inproc mode and is preserved.
+    pub async fn load_initial_session_via_core(&mut self, request: InitialSessionRequest) {
+        let Some(core_client) = self.core_client.clone() else {
+            return;
+        };
+        match request {
+            InitialSessionRequest::Attach { session_id } => {
+                let req = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionAttach { session_id: session_id.clone() },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::Session { session }) => {
+                        self.set_session(session);
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Attach): core error {}: {}",
+                            code,
+                            message
+                        );
+                    }
+                    Ok(other) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Attach): unexpected response {:?}",
+                            other
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Attach): request failed: {}",
+                            e
+                        );
+                    }
+                }
+            }
+            InitialSessionRequest::Continue { project_dir } => {
+                let req = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionList {
+                        project_id: project_dir,
+                        show_archived: false,
+                        limit: 1,
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::SessionList { mut sessions }) => {
+                        if let Some(sess) = sessions.pop() {
+                            self.set_session(sess);
+                        }
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Continue): core error {}: {}",
+                            code,
+                            message
+                        );
+                    }
+                    Ok(other) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Continue): unexpected response {:?}",
+                            other
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Continue): request failed: {}",
+                            e
+                        );
+                    }
+                }
+            }
+            InitialSessionRequest::New { directory, title } => {
+                let req = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionCreate { directory, title },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::Session { session }) => {
+                        self.set_session(session);
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(New): core error {}: {}",
+                            code,
+                            message
+                        );
+                    }
+                    Ok(other) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(New): unexpected response {:?}",
+                            other
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(New): request failed: {}",
+                            e
+                        );
+                    }
+                }
+            }
+            InitialSessionRequest::Fork { session_id } => {
+                let fork_req = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionFork {
+                        session_id: session_id.clone(),
+                    },
+                );
+                if let Err(e) = core_client.request(fork_req).await {
+                    tracing::warn!(
+                        "load_initial_session_via_core(Fork): fork request failed: {}",
+                        e
+                    );
+                }
+                let list_req = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionList {
+                        project_id: self.session_state.project_dir.clone(),
+                        show_archived: false,
+                        limit: 1,
+                    },
+                );
+                match core_client.request(list_req).await {
+                    Ok(CoreResponse::SessionList { mut sessions }) => {
+                        if let Some(sess) = sessions.pop() {
+                            self.set_session(sess);
+                        } else {
+                            tracing::warn!(
+                                "load_initial_session_via_core(Fork): SessionList returned no sessions"
+                            );
+                        }
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Fork): SessionList error {}: {}",
+                            code,
+                            message
+                        );
+                    }
+                    Ok(other) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Fork): unexpected SessionList response {:?}",
+                            other
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "load_initial_session_via_core(Fork): SessionList request failed: {}",
+                            e
+                        );
+                    }
+                }
+            }
+            InitialSessionRequest::None => {}
+        }
+    }
+
     /// Initialize App state for `AppMode::RemoteCore` by pulling snapshots
     /// from the connected daemon. Best-effort: any individual load failure
     /// is logged and swallowed so a transient daemon error doesn't block
@@ -8307,5 +8500,220 @@ mod remote_core_loader_tests {
         let mut app = App::new_for_testing("/tmp".to_string());
         let err = app.load_models_via_core().await.unwrap_err();
         assert!(err.to_string().contains("core client unavailable"));
+    }
+
+    async fn build_inproc_client() -> Arc<dyn CoreClient> {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use std::time::Duration;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+        Arc::new(InprocCoreClient::new(
+            None,
+            None,
+            None,
+            Some(pool),
+            crate::config::schema::Config::default(),
+        ))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_attach_sets_session() {
+        let client = build_inproc_client().await;
+        // Pre-create a session via the inproc client so we have a real id.
+        let create_req = new_request(
+            "create-1".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp/proj".into(),
+                title: Some("Existing".into()),
+            },
+        );
+        let session_id = match client.request(create_req).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+
+        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::Attach {
+            session_id: session_id.clone(),
+        })
+        .await;
+
+        let sess = app
+            .session_state
+            .session
+            .as_ref()
+            .expect("session should be set after Attach");
+        assert_eq!(sess.id, session_id);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_continue_picks_most_recent() {
+        let client = build_inproc_client().await;
+        // Create two sessions in the same project; `Continue` should
+        // pick the most recent one (limit 1, ordered by `time_updated`).
+        let req_a = new_request(
+            "create-a".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp/proj".into(),
+                title: Some("A".into()),
+            },
+        );
+        let id_a = match client.request(req_a).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+        // Sleep a touch so the second session's time_updated is later.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let req_b = new_request(
+            "create-b".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp/proj".into(),
+                title: Some("B".into()),
+            },
+        );
+        let id_b = match client.request(req_b).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+        assert_ne!(id_a, id_b);
+
+        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::Continue {
+            project_dir: "/tmp/proj".to_string(),
+        })
+        .await;
+
+        let sess = app
+            .session_state
+            .session
+            .as_ref()
+            .expect("Continue should pick a session");
+        assert_eq!(sess.id, id_b, "Continue should pick the most recent session");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_new_creates_session() {
+        let client = build_inproc_client().await;
+
+        let mut app = App::new_for_testing("/tmp/proj-new".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::New {
+            directory: "/tmp/proj-new".to_string(),
+            title: Some("Brand New".to_string()),
+        })
+        .await;
+
+        let sess = app
+            .session_state
+            .session
+            .as_ref()
+            .expect("New should create a session");
+        assert_eq!(sess.title, "Brand New");
+        assert_eq!(sess.directory, "/tmp/proj-new");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_fork_attaches_via_listing() {
+        let client = build_inproc_client().await;
+        // Create a session to fork.
+        let create_req = new_request(
+            "create-fork".into(),
+            CoreRequest::SessionCreate {
+                directory: "/tmp/proj".into(),
+                title: Some("Parent".into()),
+            },
+        );
+        let parent_id = match client.request(create_req).await.unwrap() {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {:?}", other),
+        };
+
+        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::Fork {
+            session_id: parent_id.clone(),
+        })
+        .await;
+
+        let sess = app
+            .session_state
+            .session
+            .as_ref()
+            .expect("Fork should result in a session being attached");
+        // The most-recent session after a fork is the new fork, not the parent.
+        assert_ne!(sess.id, parent_id, "Fork should attach the new fork, not the parent");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_none_does_nothing() {
+        let client = build_inproc_client().await;
+        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        app.set_core_client(client);
+
+        app.load_initial_session_via_core(InitialSessionRequest::None)
+            .await;
+
+        assert!(
+            app.session_state.session.is_none(),
+            "None should leave the app with no session"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn load_initial_session_without_core_client_is_noop() {
+        // App with no core client attached: every variant must be a no-op
+        // (must not panic, must not set a session).
+        let mut app = App::new_for_testing("/tmp/proj".to_string());
+        app.ui_state.mode = AppMode::RemoteCore {
+            endpoint: "unix:///tmp/test.sock".to_string(),
+        };
+        // Note: intentionally NOT calling set_core_client.
+
+        app.load_initial_session_via_core(InitialSessionRequest::Attach {
+            session_id: "any".into(),
+        })
+        .await;
+        app.load_initial_session_via_core(InitialSessionRequest::Continue {
+            project_dir: "/tmp/proj".into(),
+        })
+        .await;
+        app.load_initial_session_via_core(InitialSessionRequest::New {
+            directory: "/tmp/proj".into(),
+            title: None,
+        })
+        .await;
+        app.load_initial_session_via_core(InitialSessionRequest::Fork {
+            session_id: "any".into(),
+        })
+        .await;
+        app.load_initial_session_via_core(InitialSessionRequest::None).await;
+
+        assert!(app.session_state.session.is_none());
     }
 }

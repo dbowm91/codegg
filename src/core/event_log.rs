@@ -91,7 +91,7 @@ impl EventLog {
         // Persist important events to SQLite (best-effort)
         if let Some(ref pool) = self.pool {
             if should_persist(&envelope.payload) {
-                let event_type = format!("{:?}", std::mem::discriminant(&envelope.payload));
+                let event_type = super::core_event_type(&envelope.payload).to_string();
                 if let Ok(payload_json) = serde_json::to_string(&envelope.payload) {
                     let _ = sqlx::query(
                         "INSERT OR IGNORE INTO core_event_log \
@@ -119,7 +119,10 @@ impl EventLog {
         self.tx.subscribe()
     }
 
-    /// Replay events from a given sequence number, filtered.
+    /// Replay events strictly after `from_event_seq` (i.e. with
+    /// `event_seq > from_event_seq`). `from_event_seq` is treated as
+    /// the last sequence already seen by the client; pass `0` to
+    /// replay from the very first event.
     /// Falls through to SQLite when the ring buffer doesn't cover the requested sequence.
     pub async fn replay_from(
         &self,
@@ -129,7 +132,7 @@ impl EventLog {
         let ring_events = {
             let ring = self.ring.lock().await;
             ring.iter()
-                .filter(|e| e.event_seq >= from_event_seq)
+                .filter(|e| e.event_seq > from_event_seq)
                 .filter(|e| {
                     if let Some(ref sid) = filter.session_id {
                         e.session_id.as_deref() == Some(sid.as_str())
@@ -146,7 +149,7 @@ impl EventLog {
         // If ring buffer has events from the requested seq, use them
         if !ring_events.is_empty() {
             let earliest_seq = ring_events.first().map(|e| e.event_seq).unwrap_or(0);
-            if earliest_seq <= from_event_seq {
+            if earliest_seq <= from_event_seq.saturating_add(1) {
                 return ring_events;
             }
         }
@@ -159,8 +162,9 @@ impl EventLog {
         }
     }
 
-    /// Replay events from SQLite when the ring buffer doesn't have them.
-    /// Returns events ordered by event_seq ASC.
+    /// Replay events strictly after `from_event_seq` from SQLite when
+    /// the ring buffer doesn't have them. Returns events ordered by
+    /// `event_seq` ASC.
     pub async fn replay_from_db(
         &self,
         from_event_seq: u64,
@@ -172,7 +176,7 @@ impl EventLog {
 
         let mut query = String::from(
             "SELECT event_seq, session_id, turn_id, event_type, payload_json, created_at \
-             FROM core_event_log WHERE event_seq >= ?",
+             FROM core_event_log WHERE event_seq > ?",
         );
         let bind_seq: i64 = from_event_seq as i64;
 
@@ -226,13 +230,17 @@ impl EventLog {
         self.next_seq.load(Ordering::SeqCst).saturating_sub(1)
     }
 
-    /// Check if events exist from the requested sequence (ring buffer or DB).
+    /// Check if events exist strictly after `from_event_seq` (ring buffer or DB).
+    /// `from_event_seq` is the last sequence the client has already seen; pass `0`
+    /// to ask "do I have any events at all".
     pub async fn has_events_from(&self, from_event_seq: u64) -> bool {
-        // Check ring buffer first
+        // Check ring buffer first. The ring is ordered by event_seq ascending,
+        // so the back holds the highest seq; if the back is > from_event_seq
+        // then the ring has at least one event with seq > from_event_seq.
         {
             let ring = self.ring.lock().await;
-            if let Some(front) = ring.front() {
-                if front.event_seq <= from_event_seq {
+            if let Some(back) = ring.back() {
+                if back.event_seq > from_event_seq {
                     return true;
                 }
             }
@@ -246,12 +254,12 @@ impl EventLog {
         }
     }
 
-    /// Check if the DB has events from the requested sequence.
+    /// Check if the DB has events strictly after `from_event_seq`.
     pub async fn has_events_in_db(&self, from_event_seq: u64) -> bool {
         let Some(ref pool) = self.pool else {
             return false;
         };
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM core_event_log WHERE event_seq >= ?")
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM core_event_log WHERE event_seq > ?")
             .bind(from_event_seq as i64)
             .fetch_one(pool)
             .await
@@ -319,7 +327,7 @@ mod tests {
         }
         let events = log
             .replay_from(
-                1,
+                0,
                 &EventFilter {
                     session_id: None,
                     client_id: None,
@@ -332,22 +340,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replay_filters_by_session() {
+    async fn replay_filters_by_envelope_session_id() {
         let log = EventLog::new(100);
         log.publish(
             Some("s1".into()),
             None,
             CoreEvent::Error {
-                code: "e1".into(),
+                code: "session-event".into(),
                 message: "m".into(),
             },
         )
         .await;
         log.publish(
-            Some("s2".into()),
+            None,
             None,
             CoreEvent::Error {
-                code: "e2".into(),
+                code: "global-event".into(),
                 message: "m".into(),
             },
         )
@@ -358,9 +366,145 @@ mod tests {
             client_id: None,
             include_global: false,
         };
-        let events = log.replay_from(1, &filter).await;
+        let events = log.replay_from(0, &filter).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].session_id.as_deref(), Some("s1"));
+    }
+
+    #[tokio::test]
+    async fn replay_after_last_seen_does_not_duplicate() {
+        let log = EventLog::new(100);
+        let s1 = log
+            .publish(
+                Some("s1".into()),
+                None,
+                CoreEvent::Error {
+                    code: "e1".into(),
+                    message: "m".into(),
+                },
+            )
+            .await;
+        assert_eq!(s1, 1);
+
+        let events = log
+            .replay_from(
+                s1,
+                &EventFilter {
+                    session_id: Some("s1".into()),
+                    client_id: None,
+                    include_global: false,
+                },
+            )
+            .await;
+        assert!(events.is_empty(), "expected no events, got {:?}", events);
+    }
+
+    #[tokio::test]
+    async fn replay_from_zero_returns_first_event() {
+        let log = EventLog::new(100);
+        log.publish(
+            Some("s1".into()),
+            None,
+            CoreEvent::Error {
+                code: "e1".into(),
+                message: "m".into(),
+            },
+        )
+        .await;
+
+        let events = log
+            .replay_from(
+                0,
+                &EventFilter {
+                    session_id: Some("s1".into()),
+                    client_id: None,
+                    include_global: false,
+                },
+            )
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_seq, 1);
+    }
+
+    #[tokio::test]
+    async fn replay_strictly_after_seq() {
+        let log = EventLog::new(100);
+        for i in 1..=3 {
+            log.publish(
+                Some("s1".into()),
+                None,
+                CoreEvent::Error {
+                    code: format!("e{}", i),
+                    message: "m".into(),
+                },
+            )
+            .await;
+        }
+
+        let events = log
+            .replay_from(
+                2,
+                &EventFilter {
+                    session_id: Some("s1".into()),
+                    client_id: None,
+                    include_global: false,
+                },
+            )
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_seq, 3);
+    }
+
+    #[tokio::test]
+    async fn replay_semantics_zero_one_two_with_two_events() {
+        // Combined replay semantics test for Pass I of the integration
+        // matrix: with two events already published, `replay_from(0, ...)`
+        // must return both, `replay_from(1, ...)` must return only the
+        // second, and `replay_from(2, ...)` must return none.
+        let log = EventLog::new(100);
+        let s1 = log
+            .publish(
+                Some("s1".into()),
+                None,
+                CoreEvent::Error {
+                    code: "e1".into(),
+                    message: "m".into(),
+                },
+            )
+            .await;
+        let s2 = log
+            .publish(
+                Some("s1".into()),
+                None,
+                CoreEvent::Error {
+                    code: "e2".into(),
+                    message: "m".into(),
+                },
+            )
+            .await;
+        assert_eq!(s1, 1);
+        assert_eq!(s2, 2);
+
+        let global_filter = EventFilter {
+            session_id: None,
+            client_id: None,
+            include_global: true,
+        };
+
+        // resume from 0 -> both events
+        let events = log.replay_from(0, &global_filter).await;
+        assert_eq!(events.len(), 2, "expected both events, got {:?}", events);
+        assert_eq!(events[0].event_seq, 1);
+        assert_eq!(events[1].event_seq, 2);
+
+        // resume from 1 -> only the second event
+        let events = log.replay_from(1, &global_filter).await;
+        assert_eq!(events.len(), 1, "expected only second event, got {:?}", events);
+        assert_eq!(events[0].event_seq, 2);
+
+        // resume from 2 -> none
+        let events = log.replay_from(2, &global_filter).await;
+        assert!(events.is_empty(), "expected no events, got {:?}", events);
     }
 
     #[tokio::test]
@@ -396,5 +540,97 @@ mod tests {
             turn_id: "t".into(),
             delta: "x".into(),
         }));
+    }
+
+    #[tokio::test]
+    async fn has_events_from_strict_semantics() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use crate::session::schema::migrate;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA busy_timeout=5000")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA foreign_keys=ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate(&pool).await.unwrap();
+        Box::leak(Box::new(dir));
+
+        let log = EventLog::new_with_pool(100, pool.clone());
+        let s1 = log
+            .publish(
+                Some("s1".into()),
+                None,
+                CoreEvent::TurnStarted {
+                    session_id: "s1".into(),
+                    turn_id: "t1".into(),
+                },
+            )
+            .await;
+        assert_eq!(s1, 1);
+
+        assert!(log.has_events_from(0).await);
+        assert!(!log.has_events_from(1).await);
+        assert!(log.has_events_in_db(0).await);
+        assert!(!log.has_events_in_db(1).await);
+    }
+
+    #[tokio::test]
+    async fn event_log_persists_event_type_as_string() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        use crate::session::schema::migrate;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA busy_timeout=5000")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA foreign_keys=ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate(&pool).await.unwrap();
+        Box::leak(Box::new(dir));
+
+        let log = EventLog::new_with_pool(100, pool.clone());
+        log.publish(
+            Some("s1".into()),
+            Some("t1".into()),
+            CoreEvent::TurnStarted {
+                session_id: "s1".into(),
+                turn_id: "t1".into(),
+            },
+        )
+        .await;
+
+        let row: (String,) =
+            sqlx::query_as("SELECT event_type FROM core_event_log ORDER BY event_seq ASC LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(row.0, "turn_started");
     }
 }

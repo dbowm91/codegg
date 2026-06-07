@@ -161,6 +161,137 @@ impl CoreClient for InprocCoreClient {
     }
 }
 
+pub(crate) fn core_event_metadata(
+    event: &crate::protocol::core::CoreEvent,
+) -> (Option<String>, Option<String>) {
+    use crate::protocol::core::CoreEvent;
+    match event {
+        CoreEvent::TurnStarted { session_id, turn_id } => {
+            (Some(session_id.clone()), Some(turn_id.clone()))
+        }
+        CoreEvent::TurnTextDelta { session_id, turn_id, .. } => {
+            (Some(session_id.clone()), Some(turn_id.clone()))
+        }
+        CoreEvent::TurnReasoningDelta { session_id, turn_id, .. } => {
+            (Some(session_id.clone()), Some(turn_id.clone()))
+        }
+        CoreEvent::ToolStarted { session_id, turn_id, .. } => {
+            (Some(session_id.clone()), turn_id.clone())
+        }
+        CoreEvent::ToolCompleted { session_id, turn_id, .. } => {
+            (Some(session_id.clone()), turn_id.clone())
+        }
+        CoreEvent::PermissionPending { session_id, turn_id, .. } => {
+            (Some(session_id.clone()), turn_id.clone())
+        }
+        CoreEvent::QuestionPending { session_id, turn_id, .. } => {
+            (Some(session_id.clone()), turn_id.clone())
+        }
+        CoreEvent::TurnCompleted { session_id, turn_id, .. } => {
+            (Some(session_id.clone()), Some(turn_id.clone()))
+        }
+        CoreEvent::TurnFailed { session_id, turn_id, .. } => {
+            (Some(session_id.clone()), turn_id.clone())
+        }
+        CoreEvent::SessionUpdated { session_id } => {
+            (Some(session_id.clone()), None)
+        }
+        CoreEvent::SubagentStarted { session_id, .. }
+        | CoreEvent::SubagentProgress { session_id, .. }
+        | CoreEvent::SubagentCompleted { session_id, .. }
+        | CoreEvent::SubagentFailed { session_id, .. } => {
+            (Some(session_id.clone()), None)
+        }
+        _ => (None, None),
+    }
+}
+
+/// Re-construct a `CoreEvent` with a new `turn_id`. Variants that carry
+/// `turn_id` as a `String` (e.g. `TurnTextDelta`) are immutable after
+/// `map_app_event_to_core_event` returns, so the bridge has to rebuild
+/// them here when it discovers the active `turn_id` from the runtime.
+/// Variants that carry `turn_id: Option<String>` are reconstructed by
+/// taking the new value (overwriting the prior `None` or empty). All
+/// other variants are returned unchanged.
+pub(crate) fn set_turn_id_on_event(
+    event: crate::protocol::core::CoreEvent,
+    turn_id: String,
+) -> crate::protocol::core::CoreEvent {
+    use crate::protocol::core::CoreEvent;
+    match event {
+        CoreEvent::TurnStarted { session_id, .. } => CoreEvent::TurnStarted {
+            session_id,
+            turn_id,
+        },
+        CoreEvent::TurnTextDelta { session_id, delta, .. } => CoreEvent::TurnTextDelta {
+            session_id,
+            turn_id,
+            delta,
+        },
+        CoreEvent::TurnReasoningDelta { session_id, delta, .. } => CoreEvent::TurnReasoningDelta {
+            session_id,
+            turn_id,
+            delta,
+        },
+        CoreEvent::TurnCompleted { session_id, stop_reason, .. } => CoreEvent::TurnCompleted {
+            session_id,
+            turn_id,
+            stop_reason,
+        },
+        CoreEvent::TurnFailed { session_id, message, .. } => CoreEvent::TurnFailed {
+            session_id,
+            turn_id: Some(turn_id),
+            message,
+        },
+        CoreEvent::ToolStarted {
+            session_id,
+            tool_name,
+            tool_id,
+            arguments,
+            ..
+        } => CoreEvent::ToolStarted {
+            session_id,
+            turn_id: Some(turn_id),
+            tool_name,
+            tool_id,
+            arguments,
+        },
+        CoreEvent::ToolCompleted {
+            session_id,
+            tool_id,
+            output,
+            success,
+            ..
+        } => CoreEvent::ToolCompleted {
+            session_id,
+            turn_id: Some(turn_id),
+            tool_id,
+            output,
+            success,
+        },
+        other => other,
+    }
+}
+
+pub fn core_event_type(event: &crate::protocol::core::CoreEvent) -> &'static str {
+    use crate::protocol::core::CoreEvent;
+    match event {
+        CoreEvent::TurnStarted { .. } => "turn_started",
+        CoreEvent::TurnCompleted { .. } => "turn_completed",
+        CoreEvent::TurnFailed { .. } => "turn_failed",
+        CoreEvent::ToolStarted { .. } => "tool_started",
+        CoreEvent::ToolCompleted { .. } => "tool_completed",
+        CoreEvent::PermissionPending { .. } => "permission_pending",
+        CoreEvent::QuestionPending { .. } => "question_pending",
+        CoreEvent::SessionUpdated { .. } => "session_updated",
+        CoreEvent::SubagentStarted { .. } => "subagent_started",
+        CoreEvent::SubagentCompleted { .. } => "subagent_completed",
+        CoreEvent::SubagentFailed { .. } => "subagent_failed",
+        CoreEvent::Error { .. } => "error",
+        _ => "other",
+    }
+}
+
 pub(crate) fn map_app_event_to_core_event(event: crate::bus::events::AppEvent) -> Option<CoreEvent> {
     match event {
         crate::bus::events::AppEvent::TextDelta { delta, session_id } => {
@@ -458,7 +589,7 @@ mod tests {
         let req = new_request(
             "req-1".into(),
             CoreRequest::PermissionRespond {
-                id: "fake-perm-id".into(),
+                id: "perm:nonexistent-session:turn-1:perm-1".into(),
                 choice: "allow".into(),
             },
         );
@@ -492,7 +623,7 @@ mod tests {
         let req = new_request(
             "req-1".into(),
             CoreRequest::QuestionRespond {
-                id: "fake-question-id".into(),
+                id: "question:nonexistent-session:turn-1:q-1".into(),
                 answers: serde_json::json!("yes"),
             },
         );
@@ -517,6 +648,128 @@ mod tests {
         match resp {
             CoreResponse::Error { code, .. } => assert_eq!(code, "missing_pool"),
             other => panic!("expected Error(missing_pool), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_turn_id_on_event_replaces_empty_string_variants() {
+        use crate::protocol::core::CoreEvent;
+        let new_turn = "turn-fresh".to_string();
+
+        // TurnTextDelta with an empty turn_id should be rewritten.
+        let ev = CoreEvent::TurnTextDelta {
+            session_id: "s1".into(),
+            turn_id: String::new(),
+            delta: "hi".into(),
+        };
+        let out = set_turn_id_on_event(ev, new_turn.clone());
+        match out {
+            CoreEvent::TurnTextDelta { turn_id, .. } => assert_eq!(turn_id, new_turn),
+            other => panic!("expected TurnTextDelta, got {:?}", other),
+        }
+
+        // TurnReasoningDelta
+        let ev = CoreEvent::TurnReasoningDelta {
+            session_id: "s1".into(),
+            turn_id: String::new(),
+            delta: "hmm".into(),
+        };
+        let out = set_turn_id_on_event(ev, new_turn.clone());
+        match out {
+            CoreEvent::TurnReasoningDelta { turn_id, .. } => assert_eq!(turn_id, new_turn),
+            other => panic!("expected TurnReasoningDelta, got {:?}", other),
+        }
+
+        // TurnCompleted
+        let ev = CoreEvent::TurnCompleted {
+            session_id: "s1".into(),
+            turn_id: String::new(),
+            stop_reason: "ok".into(),
+        };
+        let out = set_turn_id_on_event(ev, new_turn.clone());
+        match out {
+            CoreEvent::TurnCompleted { turn_id, .. } => assert_eq!(turn_id, new_turn),
+            other => panic!("expected TurnCompleted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_turn_id_on_event_replaces_option_variants() {
+        use crate::protocol::core::CoreEvent;
+        let new_turn = "turn-fresh".to_string();
+
+        // TurnFailed with None
+        let ev = CoreEvent::TurnFailed {
+            session_id: "s1".into(),
+            turn_id: None,
+            message: "boom".into(),
+        };
+        let out = set_turn_id_on_event(ev, new_turn.clone());
+        match out {
+            CoreEvent::TurnFailed { turn_id, .. } => {
+                assert_eq!(turn_id.as_deref(), Some(new_turn.as_str()));
+            }
+            other => panic!("expected TurnFailed, got {:?}", other),
+        }
+
+        // ToolStarted
+        let ev = CoreEvent::ToolStarted {
+            session_id: "s1".into(),
+            turn_id: None,
+            tool_name: "bash".into(),
+            tool_id: "t1".into(),
+            arguments: "[]".into(),
+        };
+        let out = set_turn_id_on_event(ev, new_turn.clone());
+        match out {
+            CoreEvent::ToolStarted { turn_id, .. } => {
+                assert_eq!(turn_id.as_deref(), Some(new_turn.as_str()));
+            }
+            other => panic!("expected ToolStarted, got {:?}", other),
+        }
+
+        // ToolCompleted
+        let ev = CoreEvent::ToolCompleted {
+            session_id: "s1".into(),
+            turn_id: None,
+            tool_id: "t1".into(),
+            output: "ok".into(),
+            success: true,
+        };
+        let out = set_turn_id_on_event(ev, new_turn.clone());
+        match out {
+            CoreEvent::ToolCompleted { turn_id, .. } => {
+                assert_eq!(turn_id.as_deref(), Some(new_turn.as_str()));
+            }
+            other => panic!("expected ToolCompleted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_turn_id_on_event_passes_through_unrelated_variants() {
+        use crate::protocol::core::CoreEvent;
+        // SessionUpdated has no turn_id and should be returned unchanged.
+        let ev = CoreEvent::SessionUpdated {
+            session_id: "s1".into(),
+        };
+        let out = set_turn_id_on_event(ev.clone(), "turn-x".into());
+        match out {
+            CoreEvent::SessionUpdated { session_id } => assert_eq!(session_id, "s1"),
+            other => panic!("expected SessionUpdated, got {:?}", other),
+        }
+
+        // Error variant has no turn_id.
+        let ev = CoreEvent::Error {
+            code: "x".into(),
+            message: "y".into(),
+        };
+        let out = set_turn_id_on_event(ev.clone(), "turn-x".into());
+        match out {
+            CoreEvent::Error { code, message } => {
+                assert_eq!(code, "x");
+                assert_eq!(message, "y");
+            }
+            other => panic!("expected Error, got {:?}", other),
         }
     }
 }

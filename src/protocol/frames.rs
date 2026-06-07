@@ -33,6 +33,13 @@ pub struct ServerHello {
     pub daemon_id: String,
     pub protocol_version: u32,
     pub server_capabilities: ServerCapabilities,
+    /// Negotiated client_id assigned by the daemon. The client should use this
+    /// when sending `Subscribe` frames so the daemon's `ClientRegistry` can
+    /// record the negotiated identity (instead of trusting a client-supplied id).
+    /// This is a wire-protocol addition; older clients that ignore it are still
+    /// forward-compatible with the daemon.
+    #[serde(default)]
+    pub client_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

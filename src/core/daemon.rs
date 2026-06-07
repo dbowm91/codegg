@@ -69,6 +69,43 @@ impl CoreDaemon {
         self.event_log.subscribe()
     }
 
+    /// Apply the bridge fallback to a single `AppEvent` and return the
+    /// resulting `(session_id, turn_id, core_event)` triple, or `None` if
+    /// the event has no corresponding `CoreEvent`. If the bridged event
+    /// has an empty or missing `turn_id`, look up the active turn for the
+    /// session and attach its `turn_id` to the event so every event
+    /// belonging to a turn carries the same identity.
+    pub(crate) async fn bridge_app_event(
+        &self,
+        app_event: crate::bus::events::AppEvent,
+    ) -> Option<(
+        Option<String>,
+        Option<String>,
+        crate::protocol::core::CoreEvent,
+    )> {
+        let mut core_event = super::map_app_event_to_core_event(app_event)?;
+        let (session_id, mut turn_id) = super::core_event_metadata(&core_event);
+        let turn_id_empty = match &turn_id {
+            Some(t) => t.is_empty(),
+            None => true,
+        };
+        if turn_id_empty {
+            if let Some(sid) = session_id.clone() {
+                if let Some(runtime) = self.sessions.get(&sid) {
+                    let active = runtime.active_turn.read().await;
+                    if let Some(handle) = active.as_ref() {
+                        core_event = super::set_turn_id_on_event(
+                            core_event,
+                            handle.turn_id.clone(),
+                        );
+                        turn_id = Some(handle.turn_id.clone());
+                    }
+                }
+            }
+        }
+        Some((session_id, turn_id, core_event))
+    }
+
     /// Recover daemon state after restart.
     /// Marks previously active turns as failed and logs stale permissions/questions.
     pub async fn recover_state(&self) {
@@ -77,16 +114,21 @@ impl CoreDaemon {
         };
 
         // Find interrupted turns: TurnStarted without a matching TurnCompleted/TurnFailed
-        // for the same session_id + turn_id.
+        // for the same session_id + turn_id. Use the explicit event-type strings
+        // written by `core_event_type()` (snake_case) so the query is stable and
+        // grep-able. The DISTINCT + NOT EXISTS pattern ensures each (session, turn)
+        // pair is reported at most once and we only flag turns that have a real
+        // turn_id (e.g., not blank rows from older schemas).
         let active_turns: Vec<(String, String)> = sqlx::query_as(
             "SELECT DISTINCT e1.session_id, e1.turn_id \
              FROM core_event_log e1 \
-             WHERE e1.event_type LIKE '%TurnStarted%' \
+             WHERE e1.event_type = 'turn_started' \
+             AND e1.turn_id IS NOT NULL \
              AND NOT EXISTS ( \
                  SELECT 1 FROM core_event_log e2 \
                  WHERE e2.session_id = e1.session_id \
                  AND e2.turn_id = e1.turn_id \
-                 AND (e2.event_type LIKE '%TurnCompleted%' OR e2.event_type LIKE '%TurnFailed%') \
+                 AND (e2.event_type = 'turn_completed' OR e2.event_type = 'turn_failed') \
              )",
         )
         .fetch_all(pool)
@@ -130,10 +172,10 @@ impl CoreDaemon {
 
         // Count stale PermissionPending events (no PermissionResponded in same session)
         let stale_perms: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM core_event_log WHERE event_type LIKE '%PermissionPending%' \
+            "SELECT COUNT(*) FROM core_event_log WHERE event_type = 'permission_pending' \
              AND NOT EXISTS ( \
                  SELECT 1 FROM core_event_log e2 \
-                 WHERE e2.event_type LIKE '%PermissionResponded%' \
+                 WHERE e2.event_type = 'permission_responded' \
                  AND e2.session_id = core_event_log.session_id \
              )",
         )
@@ -143,10 +185,10 @@ impl CoreDaemon {
 
         // Count stale QuestionPending events (no QuestionAnswered in same session)
         let stale_questions: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM core_event_log WHERE event_type LIKE '%QuestionPending%' \
+            "SELECT COUNT(*) FROM core_event_log WHERE event_type = 'question_pending' \
              AND NOT EXISTS ( \
                  SELECT 1 FROM core_event_log e2 \
-                 WHERE e2.event_type LIKE '%QuestionAnswered%' \
+                 WHERE e2.event_type = 'question_answered' \
                  AND e2.session_id = core_event_log.session_id \
              )",
         )
@@ -180,8 +222,13 @@ impl CoreDaemon {
             loop {
                 match bus_rx.recv().await {
                     Ok(app_event) => {
-                        if let Some(core_event) = super::map_app_event_to_core_event(app_event.clone()) {
-                            daemon.event_log.publish(None, None, core_event).await;
+                        if let Some((session_id, turn_id, core_event)) =
+                            daemon.bridge_app_event(app_event.clone()).await
+                        {
+                            daemon
+                                .event_log
+                                .publish(session_id, turn_id, core_event)
+                                .await;
                         }
                         match &app_event {
                             crate::bus::events::AppEvent::AgentFinished { session_id, stop_reason, input_tokens, output_tokens, .. } => {
@@ -510,7 +557,7 @@ impl CoreDaemon {
                 let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
                 agent_loop.set_steer_receiver(steer_rx);
 
-                {
+                let turn_id = {
                     let mut active = runtime.active_turn.write().await;
                     if active.is_some() {
                         return Ok(CoreResponse::Error {
@@ -525,12 +572,26 @@ impl CoreDaemon {
                         steer_tx: Some(steer_tx),
                         started_at: chrono::Utc::now(),
                     });
-                }
+                    turn_id
+                };
 
                 {
                     let mut status = runtime.status.write().await;
                     *status = crate::core::session_runtime::RuntimeSessionStatus::Running;
                 }
+
+                // Emit TurnStarted immediately so subscribers (and the bridge
+                // fallback) see a coherent turn identity from the first event.
+                self.event_log
+                    .publish(
+                        Some(session_id.clone()),
+                        Some(turn_id.clone()),
+                        crate::protocol::core::CoreEvent::TurnStarted {
+                            session_id: session_id.clone(),
+                            turn_id: turn_id.clone(),
+                        },
+                    )
+                    .await;
 
                 let runtime_for_spawn = Arc::clone(&runtime);
                 let session_id_for_spawn = session_id.clone();
@@ -898,8 +959,10 @@ impl CoreDaemon {
                         });
                     }
                 };
-                // Extract session_id and simple perm_id from protocol ID: perm:{session_id}:{turn_id}:{perm_id}
-                let (session_id, simple_perm_id) = id
+                // Extract session_id and simple perm_id from protocol ID: perm:{session_id}:{turn_id}:{perm_id}.
+                // Reject malformed IDs explicitly rather than silently using empty defaults
+                // (which could route a response to the wrong session).
+                let (session_id, simple_perm_id) = match id
                     .strip_prefix("perm:")
                     .and_then(|rest| {
                         let mut parts = rest.splitn(3, ':');
@@ -907,8 +970,18 @@ impl CoreDaemon {
                         let _turn_id = parts.next()?;
                         let pid = parts.next()?.to_string();
                         Some((sid, pid))
-                    })
-                    .unwrap_or_default();
+                    }) {
+                    Some(parsed) => parsed,
+                    None => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_permission_id".to_string(),
+                            message: format!(
+                                "Permission ID '{}' is not in perm:<session_id>:<turn_id>:<perm_id> format",
+                                id
+                            ),
+                        });
+                    }
+                };
                 let sent = crate::bus::PermissionRegistry::respond_scoped(
                     &session_id,
                     &simple_perm_id,
@@ -936,8 +1009,9 @@ impl CoreDaemon {
                 }
             }
             CoreRequest::QuestionRespond { id, answers } => {
-                // Extract session_id and simple question_id from protocol ID: question:{session_id}:{turn_id}:{question_id}
-                let (session_id, simple_question_id) = id
+                // Extract session_id and simple question_id from protocol ID: question:{session_id}:{turn_id}:{question_id}.
+                // Reject malformed IDs explicitly.
+                let (session_id, simple_question_id) = match id
                     .strip_prefix("question:")
                     .and_then(|rest| {
                         let mut parts = rest.splitn(3, ':');
@@ -945,8 +1019,18 @@ impl CoreDaemon {
                         let _turn_id = parts.next()?;
                         let qid = parts.next()?.to_string();
                         Some((sid, qid))
-                    })
-                    .unwrap_or_default();
+                    }) {
+                    Some(parsed) => parsed,
+                    None => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_question_id".to_string(),
+                            message: format!(
+                                "Question ID '{}' is not in question:<session_id>:<turn_id>:<question_id> format",
+                                id
+                            ),
+                        });
+                    }
+                };
                 let sent = crate::bus::QuestionRegistry::answer_question_scoped(
                     &session_id,
                     &simple_question_id,
@@ -1721,7 +1805,7 @@ impl CoreDaemon {
             }
             CoreRequest::TurnCancel {
                 session_id,
-                turn_id: _,
+                turn_id,
             } => {
                 let Some(runtime) = self.sessions.get(&session_id) else {
                     return Ok(CoreResponse::Error {
@@ -1731,10 +1815,17 @@ impl CoreDaemon {
                 };
                 let active = runtime.active_turn.read().await;
                 match active.as_ref() {
-                    Some(handle) => {
+                    Some(handle) if handle.turn_id == turn_id => {
                         let _ = handle.cancel_tx.send(true);
                         Ok(CoreResponse::Ack)
                     }
+                    Some(handle) => Ok(CoreResponse::Error {
+                        code: "turn_id_mismatch".to_string(),
+                        message: format!(
+                            "Requested turn_id '{}' does not match active turn_id '{}'",
+                            turn_id, handle.turn_id
+                        ),
+                    }),
                     None => Ok(CoreResponse::Error {
                         code: "no_active_turn".to_string(),
                         message: "No active turn to cancel".to_string(),
@@ -1743,7 +1834,7 @@ impl CoreDaemon {
             }
             CoreRequest::TurnSteer {
                 session_id,
-                turn_id: _,
+                turn_id,
                 text,
             } => {
                 let Some(runtime) = self.sessions.get(&session_id) else {
@@ -1754,7 +1845,7 @@ impl CoreDaemon {
                 };
                 let active = runtime.active_turn.read().await;
                 match active.as_ref() {
-                    Some(handle) => {
+                    Some(handle) if handle.turn_id == turn_id => {
                         if let Some(ref steer_tx) = handle.steer_tx {
                             let _ = steer_tx.send(text);
                             Ok(CoreResponse::Ack)
@@ -1765,6 +1856,13 @@ impl CoreDaemon {
                             })
                         }
                     }
+                    Some(handle) => Ok(CoreResponse::Error {
+                        code: "turn_id_mismatch".to_string(),
+                        message: format!(
+                            "Requested turn_id '{}' does not match active turn_id '{}'",
+                            turn_id, handle.turn_id
+                        ),
+                    }),
                     None => Ok(CoreResponse::Error {
                         code: "no_active_turn".to_string(),
                         message: "No active turn to steer".to_string(),
@@ -1882,11 +1980,27 @@ impl CoreDaemon {
                 let config = crate::config::schema::Config::load().unwrap_or_default();
                 let mut registry = crate::provider::ProviderRegistry::new();
                 crate::provider::register_builtin_with_config(&mut registry, &config);
-                let model_ids: Vec<String> = registry
-                    .list()
-                    .iter()
-                    .map(|p| p.id().to_string())
-                    .collect();
+                let model_ids: Vec<String> = if let Some(pool) = self.pool.clone() {
+                    let discovery = crate::provider::discovery::ModelDiscoveryService::new(
+                        std::path::PathBuf::new(),
+                    )
+                    .with_pool(pool);
+                    let models = discovery.refresh(&registry).await;
+                    models
+                        .iter()
+                        .map(|m| format!("{}/{}", m.provider, m.id))
+                        .collect()
+                } else {
+                    let mut ids = Vec::new();
+                    for provider in registry.list() {
+                        if let Ok(models) = provider.models().await {
+                            for m in models {
+                                ids.push(format!("{}/{}", provider.id(), m.id));
+                            }
+                        }
+                    }
+                    ids
+                };
                 Ok(CoreResponse::ModelsSnapshot {
                     current_model: None,
                     models: model_ids,
@@ -2050,6 +2164,7 @@ impl CoreDaemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::CoreEvent;
     use crate::session::schema::migrate;
 
     async fn test_daemon() -> CoreDaemon {
@@ -2187,7 +2302,7 @@ mod tests {
             "req-resume-ok".into(),
             CoreRequest::Resume {
                 session_id: Some("s1".into()),
-                from_event_seq: 1,
+                from_event_seq: 0,
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();
@@ -2198,6 +2313,523 @@ mod tests {
                 assert_eq!(events[0].event_seq, 1);
             }
             other => panic!("expected Events, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_detects_interrupted_turn() {
+        let daemon = test_daemon().await;
+
+        // Subscribe before publishing so we can observe the recovery-emitted TurnFailed.
+        let mut rx = daemon.event_log.subscribe();
+
+        // Insert an interrupted TurnStarted directly (no matching TurnCompleted/TurnFailed).
+        sqlx::query(
+            "INSERT INTO core_event_log (event_seq, session_id, turn_id, event_type, payload_json) \
+             VALUES (1, 's1', 't1', 'turn_started', '{}')",
+        )
+        .execute(daemon.pool.as_ref().unwrap())
+        .await
+        .unwrap();
+
+        daemon.recover_state().await;
+
+        // The recovery should have published a TurnFailed for (s1, t1).
+        let mut found = false;
+        while let Ok(env) = rx.try_recv() {
+            if let crate::protocol::core::CoreEvent::TurnFailed { session_id, turn_id, .. } =
+                &env.payload
+            {
+                if session_id == "s1" && turn_id.as_deref() == Some("t1") {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "expected recovery to emit TurnFailed for s1/t1");
+    }
+
+    #[tokio::test]
+    async fn recovery_ignores_completed_turn() {
+        let daemon = test_daemon().await;
+
+        let mut rx = daemon.event_log.subscribe();
+
+        // Insert a completed turn: TurnStarted followed by TurnCompleted.
+        sqlx::query(
+            "INSERT INTO core_event_log (event_seq, session_id, turn_id, event_type, payload_json) \
+             VALUES (1, 's1', 't1', 'turn_started', '{}')",
+        )
+        .execute(daemon.pool.as_ref().unwrap())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO core_event_log (event_seq, session_id, turn_id, event_type, payload_json) \
+             VALUES (2, 's1', 't1', 'turn_completed', '{\"stop_reason\":\"ok\"}')",
+        )
+        .execute(daemon.pool.as_ref().unwrap())
+        .await
+        .unwrap();
+
+        daemon.recover_state().await;
+
+        // Drain and ensure no TurnFailed was emitted.
+        let mut emitted_failed = false;
+        while let Ok(env) = rx.try_recv() {
+            if let crate::protocol::core::CoreEvent::TurnFailed { session_id, turn_id, .. } =
+                &env.payload
+            {
+                if session_id == "s1" && turn_id.as_deref() == Some("t1") {
+                    emitted_failed = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            !emitted_failed,
+            "did not expect recovery to emit TurnFailed for a completed turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_models_returns_model_ids() {
+        let daemon = test_daemon().await;
+        let req = crate::core::new_request("req-snap".into(), CoreRequest::SnapshotModels);
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::ModelsSnapshot { current_model, models } => {
+                assert!(current_model.is_none());
+                // With no providers configured, the model list is empty.
+                // The format contract is `provider/model` (e.g. `openai/gpt-4o`),
+                // which is exercised by ModelsRefresh; for the empty-config case
+                // we only assert the response shape is well-formed.
+                for m in &models {
+                    assert!(m.contains('/'), "model id '{}' should be 'provider/model'", m);
+                }
+            }
+            other => panic!("expected ModelsSnapshot, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_respond_invalid_id_format() {
+        let daemon = test_daemon().await;
+        let req = crate::core::new_request(
+            "req-perm-invalid".into(),
+            CoreRequest::PermissionRespond {
+                id: "perm-1".into(),
+                choice: "allow".into(),
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::Error { code, message } => {
+                assert_eq!(code, "invalid_permission_id");
+                assert!(message.contains("perm-1"));
+            }
+            other => panic!("expected Error(invalid_permission_id), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_respond_malformed_id() {
+        let daemon = test_daemon().await;
+        let req = crate::core::new_request(
+            "req-perm-malformed".into(),
+            CoreRequest::PermissionRespond {
+                id: "perm:foo:bar".into(),
+                choice: "allow".into(),
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::Error { code, .. } => {
+                assert_eq!(code, "invalid_permission_id");
+            }
+            other => panic!("expected Error(invalid_permission_id), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn question_respond_invalid_id_format() {
+        let daemon = test_daemon().await;
+        let req = crate::core::new_request(
+            "req-q-invalid".into(),
+            CoreRequest::QuestionRespond {
+                id: "q-1".into(),
+                answers: serde_json::json!("yes"),
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::Error { code, message } => {
+                assert_eq!(code, "invalid_question_id");
+                assert!(message.contains("q-1"));
+            }
+            other => panic!("expected Error(invalid_question_id), got {:?}", other),
+        }
+    }
+
+    /// Manually install a `TurnHandle` on the given runtime's
+    /// `active_turn` so we can exercise `TurnCancel`/`TurnSteer` paths
+    /// without spinning up an actual agent loop. Returns the cancel
+    /// sender, the cancel receiver (so the watch channel stays open),
+    /// and the steer receiver so tests can observe the downstream
+    /// effects.
+    async fn install_active_turn(
+        runtime: &std::sync::Arc<crate::core::session_runtime::SessionRuntime>,
+        turn_id: &str,
+    ) -> (
+        tokio::sync::watch::Sender<bool>,
+        tokio::sync::watch::Receiver<bool>,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut active = runtime.active_turn.write().await;
+        *active = Some(crate::core::session_runtime::TurnHandle {
+            turn_id: turn_id.to_string(),
+            cancel_tx: cancel_tx.clone(),
+            steer_tx: Some(steer_tx),
+            started_at: chrono::Utc::now(),
+        });
+        (cancel_tx, cancel_rx, steer_rx)
+    }
+
+    #[tokio::test]
+    async fn turn_cancel_wrong_id_rejected() {
+        let daemon = test_daemon().await;
+        let runtime = daemon.sessions.get_or_create(
+            "s-cancel-wrong",
+            "s-cancel-wrong",
+            std::path::PathBuf::from("."),
+        );
+        let (cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, "turn-real").await;
+
+        let req = crate::core::new_request(
+            "req-cancel".into(),
+            CoreRequest::TurnCancel {
+                session_id: "s-cancel-wrong".into(),
+                turn_id: "turn-typo".into(),
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::Error { code, message } => {
+                assert_eq!(code, "turn_id_mismatch");
+                assert!(message.contains("turn-typo"));
+                assert!(message.contains("turn-real"));
+            }
+            other => panic!("expected Error(turn_id_mismatch), got {:?}", other),
+        }
+
+        // The runtime should still have an active turn; we did not cancel.
+        let active = runtime.active_turn.read().await;
+        assert!(
+            active.is_some(),
+            "active_turn should remain set after a rejected cancel"
+        );
+        // The cancel channel should not have been signaled.
+        assert!(!*cancel_tx.borrow(), "cancel_tx should not have been signaled");
+    }
+
+    #[tokio::test]
+    async fn turn_cancel_correct_id_succeeds() {
+        let daemon = test_daemon().await;
+        let runtime = daemon.sessions.get_or_create(
+            "s-cancel-ok",
+            "s-cancel-ok",
+            std::path::PathBuf::from("."),
+        );
+        let (cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, "turn-good").await;
+
+        let req = crate::core::new_request(
+            "req-cancel".into(),
+            CoreRequest::TurnCancel {
+                session_id: "s-cancel-ok".into(),
+                turn_id: "turn-good".into(),
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        assert!(matches!(resp, CoreResponse::Ack));
+
+        // The cancel channel should have been signaled.
+        assert!(
+            *cancel_tx.borrow(),
+            "cancel_tx should have been signaled on matching turn_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_cancel_no_active_turn() {
+        let daemon = test_daemon().await;
+        // Register the session but do not install an active turn.
+        daemon.sessions.get_or_create(
+            "s-cancel-none",
+            "s-cancel-none",
+            std::path::PathBuf::from("."),
+        );
+
+        let req = crate::core::new_request(
+            "req-cancel".into(),
+            CoreRequest::TurnCancel {
+                session_id: "s-cancel-none".into(),
+                turn_id: "turn-anything".into(),
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::Error { code, .. } => {
+                assert_eq!(code, "no_active_turn");
+            }
+            other => panic!("expected Error(no_active_turn), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_steer_wrong_id_rejected() {
+        let daemon = test_daemon().await;
+        let runtime = daemon.sessions.get_or_create(
+            "s-steer-wrong",
+            "s-steer-wrong",
+            std::path::PathBuf::from("."),
+        );
+        let (_cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, "turn-real-steer").await;
+
+        let req = crate::core::new_request(
+            "req-steer".into(),
+            CoreRequest::TurnSteer {
+                session_id: "s-steer-wrong".into(),
+                turn_id: "turn-typo".into(),
+                text: "redirect".into(),
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::Error { code, .. } => {
+                assert_eq!(code, "turn_id_mismatch");
+            }
+            other => panic!("expected Error(turn_id_mismatch), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_steer_correct_id_succeeds() {
+        let daemon = test_daemon().await;
+        let runtime = daemon.sessions.get_or_create(
+            "s-steer-ok",
+            "s-steer-ok",
+            std::path::PathBuf::from("."),
+        );
+        let (_cancel_tx, _cancel_rx, mut steer_rx) = install_active_turn(&runtime, "turn-good-steer").await;
+
+        let req = crate::core::new_request(
+            "req-steer".into(),
+            CoreRequest::TurnSteer {
+                session_id: "s-steer-ok".into(),
+                turn_id: "turn-good-steer".into(),
+                text: "redirect".into(),
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        assert!(matches!(resp, CoreResponse::Ack));
+
+        // The steer channel should have received the message.
+        let got = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            steer_rx.recv(),
+        )
+        .await
+        .expect("steer message should arrive")
+        .expect("steer_rx should yield a value");
+        assert_eq!(got, "redirect");
+    }
+
+    #[tokio::test]
+    async fn turn_started_emitted_on_submit() {
+        // Set up an env var to register the openai provider so TurnSubmit
+        // passes the provider-not-found check. The actual API call will
+        // fail in the spawned agent loop, but we only care that TurnStarted
+        // is published synchronously by the daemon before the spawn.
+        std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
+
+        let daemon = test_daemon().await;
+        let mut agent = crate::agent::Agent::default();
+        agent.name = "test".into();
+        agent.description = "test agent".into();
+
+        let session_id = "s-submit-started".to_string();
+        let req = crate::core::new_request(
+            "req-submit".into(),
+            CoreRequest::TurnSubmit {
+                session_id: session_id.clone(),
+                text: "hello".into(),
+                plan_mode: false,
+                model: "openai/gpt-4o".into(),
+                agents: vec![agent],
+                current_agent_idx: 0,
+                messages: vec![],
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        assert!(matches!(resp, CoreResponse::Ack));
+
+        // The TurnStarted event should be in the log, identified by
+        // session_id and a turn_id that starts with "turn-".
+        let filter = EventFilter {
+            session_id: Some(session_id.clone()),
+            include_global: true,
+            client_id: None,
+        };
+        let events = daemon.event_log.replay_from(0, &filter).await;
+
+        let mut found: Option<(String, String)> = None;
+        for env in &events {
+            if let CoreEvent::TurnStarted { session_id: sid, turn_id } = &env.payload {
+                if sid == &session_id {
+                    found = Some((sid.clone(), turn_id.clone()));
+                    break;
+                }
+            }
+        }
+        let (sid, turn_id) = found.expect("expected TurnStarted event in log");
+        assert_eq!(sid, session_id);
+        assert!(
+            turn_id.starts_with("turn-"),
+            "turn_id '{}' should start with 'turn-'",
+            turn_id
+        );
+
+        std::env::remove_var("OPENAI_API_KEY");
+    }
+
+    #[tokio::test]
+    async fn bridge_attaches_turn_id_for_text_delta() {
+        let daemon = test_daemon().await;
+        let runtime = daemon.sessions.get_or_create(
+            "s-bridge-delta",
+            "s-bridge-delta",
+            std::path::PathBuf::from("."),
+        );
+        let turn_id = "turn-bridge-delta".to_string();
+        let (_cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, &turn_id).await;
+
+        // A TextDelta from the bus carries no turn_id; the bridge must
+        // attach the active turn_id.
+        let app_event = crate::bus::events::AppEvent::TextDelta {
+            session_id: "s-bridge-delta".into(),
+            delta: "hi".into(),
+        };
+        let result = daemon
+            .bridge_app_event(app_event)
+            .await
+            .expect("bridge_app_event should map TextDelta");
+        let (session_id, attached_turn_id, core_event) = result;
+        assert_eq!(session_id.as_deref(), Some("s-bridge-delta"));
+        assert_eq!(attached_turn_id.as_deref(), Some(turn_id.as_str()));
+        match core_event {
+            CoreEvent::TurnTextDelta { turn_id: tid, .. } => {
+                assert_eq!(tid, turn_id, "TurnTextDelta should carry the active turn_id");
+            }
+            other => panic!("expected TurnTextDelta, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_attaches_turn_id_for_agent_finished() {
+        let daemon = test_daemon().await;
+        let runtime = daemon.sessions.get_or_create(
+            "s-bridge-finished",
+            "s-bridge-finished",
+            std::path::PathBuf::from("."),
+        );
+        let turn_id = "turn-bridge-finished".to_string();
+        let (_cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, &turn_id).await;
+
+        let app_event = crate::bus::events::AppEvent::AgentFinished {
+            session_id: "s-bridge-finished".into(),
+            stop_reason: "completed".into(),
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
+        };
+        let result = daemon
+            .bridge_app_event(app_event)
+            .await
+            .expect("bridge_app_event should map AgentFinished");
+        let (_session_id, attached_turn_id, core_event) = result;
+        assert_eq!(attached_turn_id.as_deref(), Some(turn_id.as_str()));
+        match core_event {
+            CoreEvent::TurnCompleted { turn_id: tid, .. } => {
+                assert_eq!(tid, turn_id, "TurnCompleted should carry the active turn_id");
+            }
+            other => panic!("expected TurnCompleted, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_keeps_turn_id_from_event_when_present() {
+        let daemon = test_daemon().await;
+        let runtime = daemon.sessions.get_or_create(
+            "s-bridge-explicit",
+            "s-bridge-explicit",
+            std::path::PathBuf::from("."),
+        );
+        let active_turn_id = "turn-active".to_string();
+        let (_cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, &active_turn_id).await;
+
+        // ToolResult carries a turn_id on the AppEvent? No - the bus
+        // AppEvent::ToolResult doesn't have a turn_id. The bridged
+        // CoreEvent::ToolCompleted has turn_id: None, so the bridge
+        // should fall back to the active turn_id.
+        let app_event = crate::bus::events::AppEvent::ToolResult {
+            session_id: "s-bridge-explicit".into(),
+            tool_id: "t1".into(),
+            tool_name: "bash".into(),
+            output: "ok".into(),
+            success: true,
+        };
+        let result = daemon
+            .bridge_app_event(app_event)
+            .await
+            .expect("bridge_app_event should map ToolResult");
+        let (_session_id, attached_turn_id, core_event) = result;
+        assert_eq!(attached_turn_id.as_deref(), Some(active_turn_id.as_str()));
+        match core_event {
+            CoreEvent::ToolCompleted { turn_id, .. } => {
+                assert_eq!(turn_id.as_deref(), Some(active_turn_id.as_str()));
+            }
+            other => panic!("expected ToolCompleted, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_no_active_turn_keeps_empty_turn_id() {
+        let daemon = test_daemon().await;
+        // No active turn installed for this session.
+        daemon.sessions.get_or_create(
+            "s-bridge-none",
+            "s-bridge-none",
+            std::path::PathBuf::from("."),
+        );
+
+        let app_event = crate::bus::events::AppEvent::TextDelta {
+            session_id: "s-bridge-none".into(),
+            delta: "orphan".into(),
+        };
+        let result = daemon
+            .bridge_app_event(app_event)
+            .await
+            .expect("bridge_app_event should map TextDelta");
+        let (_session_id, attached_turn_id, core_event) = result;
+        // No active turn -> turn_id is the empty default from the mapper.
+        assert_eq!(attached_turn_id.as_deref(), Some(""));
+        match core_event {
+            CoreEvent::TurnTextDelta { turn_id, .. } => {
+                assert_eq!(turn_id, "");
+            }
+            other => panic!("expected TurnTextDelta, got {:?}", other),
         }
     }
 }

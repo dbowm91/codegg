@@ -17,6 +17,10 @@ pub struct SocketCoreClient {
     write_stream: Arc<Mutex<Option<tokio::net::unix::OwnedWriteHalf>>>,
     pending: Arc<DashMap<String, oneshot::Sender<CoreResponse>>>,
     event_bus: broadcast::Sender<EventEnvelope<CoreEvent>>,
+    /// Client id negotiated by the daemon via `ServerHello`. Populated by the
+    /// reader task once the handshake completes; readers should not assume it
+    /// is set before the first `ServerHello` frame is processed.
+    client_id: Arc<Mutex<Option<String>>>,
 }
 
 impl SocketCoreClient {
@@ -38,6 +42,7 @@ impl SocketCoreClient {
             write_stream: Arc::new(Mutex::new(Some(write_half))),
             pending: Arc::clone(&pending),
             event_bus: event_bus.clone(),
+            client_id: Arc::new(Mutex::new(None)),
         };
 
         client.spawn_reader(reader, pending, event_bus);
@@ -83,12 +88,24 @@ impl SocketCoreClient {
         Ok(())
     }
 
+    /// Return the negotiated `client_id` once the `ServerHello` has been
+    /// processed. Returns `None` if the handshake has not completed yet.
+    pub async fn client_id(&self) -> Option<String> {
+        self.client_id.lock().await.clone()
+    }
+
     fn spawn_reader(
         &self,
         mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
         pending: Arc<DashMap<String, oneshot::Sender<CoreResponse>>>,
         event_bus: broadcast::Sender<EventEnvelope<CoreEvent>>,
     ) {
+        // Capture handles we need back in the parent so the reader can record
+        // the negotiated client_id and send a default global Subscribe frame
+        // after the handshake.
+        let client_id_slot = Arc::clone(&self.client_id);
+        let write_stream = Arc::clone(&self.write_stream);
+
         tokio::spawn(async move {
             let mut line = String::new();
             loop {
@@ -116,10 +133,39 @@ impl SocketCoreClient {
                                 CoreFrame::Pong => {}
                                 CoreFrame::ServerHello(hello) => {
                                     tracing::info!(
-                                        "Server connected: {} (protocol v{})",
+                                        "Server connected: {} (protocol v{}, client_id={})",
                                         hello.daemon_id,
-                                        hello.protocol_version
+                                        hello.protocol_version,
+                                        hello.client_id
                                     );
+                                    // Record the negotiated id so callers can
+                                    // correlate the connection in the daemon's
+                                    // `ClientRegistry`.
+                                    *client_id_slot.lock().await =
+                                        Some(hello.client_id.clone());
+
+                                    // Default global subscription: a TUI
+                                    // client typically wants to see global
+                                    // events (e.g. session updates). Pass
+                                    // `from_event_seq: Some(0)` so any
+                                    // subsequent live events flow but no
+                                    // historical replay is sent on connect.
+                                    // Specific session subscriptions can be
+                                    // added later by sending another
+                                    // Subscribe frame with `session_id`.
+                                    let default_sub = CoreFrame::Subscribe {
+                                        client_id: hello.client_id.clone(),
+                                        session_id: None,
+                                        from_event_seq: Some(0),
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&default_sub) {
+                                        let mut guard = write_stream.lock().await;
+                                        if let Some(stream) = guard.as_mut() {
+                                            let _ = stream.write_all(json.as_bytes()).await;
+                                            let _ = stream.write_all(b"\n").await;
+                                            let _ = stream.flush().await;
+                                        }
+                                    }
                                 }
                                 _ => {}
                             },

@@ -43,6 +43,25 @@ impl ClientRegistry {
         self.clients.remove(client_id);
     }
 
+    /// Update the display name (and optionally capabilities) for an already
+    /// registered client. Returns true if a record was found and updated.
+    pub fn set_name(
+        &self,
+        client_id: &str,
+        new_name: String,
+        capabilities: Option<crate::protocol::frames::ClientCapabilities>,
+    ) -> bool {
+        if let Some(mut client) = self.clients.get_mut(client_id) {
+            client.client_name = new_name;
+            if capabilities.is_some() {
+                client.capabilities = capabilities;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn attach_session(&self, client_id: &str, session_id: &str) {
         if let Some(mut client) = self.clients.get_mut(client_id) {
             if !client.attached_sessions.contains(&session_id.to_string()) {
@@ -106,5 +125,42 @@ mod tests {
         reg.detach_session("c1", "s1");
         let clients = reg.list();
         assert_eq!(clients[0].attached_sessions.len(), 1);
+    }
+
+    #[test]
+    fn set_name_updates_existing_client() {
+        let reg = ClientRegistry::new();
+        reg.register("c1".to_string(), "placeholder".to_string(), None);
+
+        let updated = reg.set_name("c1", "real-name".to_string(), None);
+        assert!(updated);
+        let clients = reg.list();
+        assert_eq!(clients[0].client_name, "real-name");
+    }
+
+    #[test]
+    fn set_name_missing_client_returns_false() {
+        let reg = ClientRegistry::new();
+        let updated = reg.set_name("nonexistent", "x".to_string(), None);
+        assert!(!updated);
+    }
+
+    #[test]
+    fn register_preserves_codegg_tui_client_name() {
+        // The `SocketCoreClient::connect` flow registers the client with
+        // `client_name = "codegg-tui"`. Verify that registration round-trips
+        // the name through `list()` so the daemon's snapshot of connected
+        // clients reports the right identity.
+        let reg = ClientRegistry::new();
+        reg.register(
+            "client-codegg-1".to_string(),
+            "codegg-tui".to_string(),
+            None,
+        );
+
+        let clients = reg.list();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].client_id, "client-codegg-1");
+        assert_eq!(clients[0].client_name, "codegg-tui");
     }
 }

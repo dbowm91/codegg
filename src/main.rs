@@ -1295,7 +1295,10 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         return Ok(());
     }
 
-    // Session loading requires a local store — skip in socket mode.
+    // Session loading. Inproc mode has a local `SessionStore` and
+    // uses it directly; socket/RemoteCore mode has no local store
+    // and must drive session loading through the `CoreClient` via
+    // `App::load_initial_session_via_core`.
     if let Some(ss) = &session_store {
         if let Some(fork_id) = &cli.fork {
             match ss.fork(fork_id).await {
@@ -1326,6 +1329,29 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                 _ => {}
             }
         }
+    } else {
+        use codegg::tui::app::InitialSessionRequest;
+        let request = if let Some(fork_id) = &cli.fork {
+            InitialSessionRequest::Fork {
+                session_id: fork_id.clone(),
+            }
+        } else if let Some(session_id) = &cli.session {
+            InitialSessionRequest::Attach {
+                session_id: session_id.clone(),
+            }
+        } else if cli.continue_session {
+            InitialSessionRequest::Continue {
+                project_dir: project_dir.clone(),
+            }
+        } else if cli.no_session {
+            InitialSessionRequest::None
+        } else {
+            InitialSessionRequest::New {
+                directory: project_dir.clone(),
+                title: None,
+            }
+        };
+        app.load_initial_session_via_core(request).await;
     }
 
     tui::run_event_loop(&mut app).await
