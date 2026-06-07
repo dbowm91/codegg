@@ -94,6 +94,54 @@ impl SocketCoreClient {
         self.client_id.lock().await.clone()
     }
 
+    /// Send a session-scoped `Subscribe` frame to the daemon. The
+    /// resulting filter on the server is `EventFilter { session_id,
+    /// include_global: true }` so the client sees events for that
+    /// session plus sessionless/global events. The default global
+    /// subscription installed after `ServerHello` remains active
+    /// (filters are append-only per connection) and may be used to
+    /// receive additional session updates.
+    pub async fn subscribe_session_events(
+        &self,
+        session_id: String,
+        from_event_seq: Option<u64>,
+    ) -> Result<(), AppError> {
+        let client_id = self.client_id().await.ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!(
+                "socket client has not received ServerHello"
+            ))
+        })?;
+        let frame = CoreFrame::Subscribe {
+            client_id,
+            session_id: Some(session_id),
+            from_event_seq,
+        };
+        self.send_frame(&frame).await
+    }
+
+    /// Send a single `CoreFrame` over the socket. Used by
+    /// `subscribe_session_events` and any future socket-only helpers.
+    async fn send_frame(&self, frame: &CoreFrame) -> Result<(), AppError> {
+        let json = serde_json::to_string(frame).map_err(AppError::Json)?;
+        let mut guard = self.write_stream.lock().await;
+        let stream = guard.as_mut().ok_or_else(|| {
+            AppError::Other(anyhow::anyhow!("socket core stream unavailable"))
+        })?;
+        stream
+            .write_all(json.as_bytes())
+            .await
+            .map_err(|e| AppError::Other(anyhow::anyhow!("socket write failed: {}", e)))?;
+        stream
+            .write_all(b"\n")
+            .await
+            .map_err(|e| AppError::Other(anyhow::anyhow!("socket write failed: {}", e)))?;
+        stream
+            .flush()
+            .await
+            .map_err(|e| AppError::Other(anyhow::anyhow!("socket flush failed: {}", e)))?;
+        Ok(())
+    }
+
     fn spawn_reader(
         &self,
         mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,

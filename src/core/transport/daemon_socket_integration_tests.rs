@@ -25,6 +25,34 @@ async fn read_frame(
     }
 }
 
+/// Set up a daemon listening on a temp Unix socket, returning the
+/// path and a `JoinHandle` to the server task. The test must abort
+/// the handle when done.
+async fn spawn_daemon(daemon: Arc<CoreDaemon>) -> (String, tokio::task::JoinHandle<()>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("daemon.sock");
+    let socket_path_str = socket_path.to_string_lossy().to_string();
+
+    let daemon_for_server = Arc::clone(&daemon);
+    let socket_path_for_server = socket_path_str.clone();
+    let handle = tokio::spawn(async move {
+        let _ = crate::core::transport::daemon_socket::run_core_socket(
+            daemon_for_server,
+            &socket_path_for_server,
+        )
+        .await;
+    });
+
+    // The server binds the listener inside the spawned task; a short
+    // sleep is enough to let the OS register the listener before the
+    // test starts connecting.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Leak the tempdir so the socket file is not removed before the
+    // test finishes; this mirrors the existing test pattern.
+    Box::leak(Box::new(dir));
+    (socket_path_str, handle)
+}
+
 /// Drive a complete `ClientHello` + `Subscribe` handshake against the
 /// running daemon, then drain any replayed events. Returns the
 /// `BufReader` positioned at the live event boundary, plus the
@@ -95,57 +123,19 @@ async fn handshake_and_subscribe(
     (reader, client_id)
 }
 
+async fn abort_server(handle: tokio::task::JoinHandle<()>) {
+    handle.abort();
+    let _ = tokio::time::timeout(Duration::from_millis(100), handle).await;
+}
+
 /// Test for Pass I of the integration test matrix: two real Unix
 /// socket connections on a real running daemon must be isolated by
 /// session filter. Client A subscribes to `s_A`, client B subscribes
 /// to `s_B`; an event published for `s_A` must reach A and not B.
 #[tokio::test]
 async fn two_socket_session_filter_isolation() {
-    use sqlx::sqlite::SqlitePoolOptions;
-    use crate::session::schema::migrate;
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let socket_path = dir.path().join("daemon.sock");
-    let socket_path_str = socket_path.to_string_lossy().to_string();
-
-    let db_path = dir.path().join("test.db");
-    let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect(&db_url)
-        .await
-        .unwrap();
-    sqlx::query("PRAGMA journal_mode=WAL")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("PRAGMA busy_timeout=5000")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("PRAGMA foreign_keys=ON")
-        .execute(&pool)
-        .await
-        .unwrap();
-    migrate(&pool).await.unwrap();
-
-    let daemon = Arc::new(CoreDaemon::new(Some(pool), None, None, None));
-
-    // Spawn the daemon socket server. It runs until the test ends.
-    let daemon_for_server = Arc::clone(&daemon);
-    let socket_path_for_server = socket_path_str.clone();
-    let server_handle = tokio::spawn(async move {
-        let _ = crate::core::transport::daemon_socket::run_core_socket(
-            daemon_for_server,
-            &socket_path_for_server,
-        )
-        .await;
-    });
-
-    // Wait for the listener to come up. `run_core_socket` binds
-    // synchronously inside the spawned task; a short sleep is enough
-    // to let the OS register the listener.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
+    let (socket_path_str, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
 
     // Connect client A and B.
     let stream_a = UnixStream::connect(&socket_path_str)
@@ -223,6 +213,229 @@ async fn two_socket_session_filter_isolation() {
     }
 
     // Clean shutdown.
-    server_handle.abort();
-    let _ = tokio::time::timeout(Duration::from_millis(100), server_handle).await;
+    abort_server(server_handle).await;
+}
+
+/// Test for Pass 1 of the hardening plan: a socket client whose
+/// subscription is global-only (session_id: None) must NOT receive
+/// session-scoped events. This is the regression test for the
+/// historical "global filter matches everything" bug. After Pass 1,
+/// a default global subscription means "sessionless events only", so
+/// a session event published to a different session must not reach
+/// this client.
+#[tokio::test]
+async fn global_only_subscription_does_not_receive_session_events() {
+    let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
+    let (socket_path_str, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+
+    let stream = UnixStream::connect(&socket_path_str)
+        .await
+        .expect("connect client");
+    let (mut reader, _client_id) = handshake_and_subscribe(stream, None).await;
+
+    // Publish a session event. The client should NOT see it.
+    daemon
+        .event_log
+        .publish(
+            Some("s_session".into()),
+            None,
+            CoreEvent::SessionUpdated {
+                session_id: "s_session".into(),
+            },
+        )
+        .await;
+
+    let leaked = tokio::time::timeout(Duration::from_millis(200), async {
+        read_frame(&mut reader).await
+    })
+    .await;
+    match leaked {
+        Ok(Some(CoreFrame::Event(env))) => {
+            assert_ne!(
+                env.session_id.as_deref(),
+                Some("s_session"),
+                "global-only client must not receive session events, got {:?}",
+                env
+            );
+        }
+        Ok(Some(_other)) => {
+            // Non-Event frame is acceptable.
+        }
+        Ok(None) | Err(_) => {
+            // Timeout or EOF: no event arrived, which is the expected outcome.
+        }
+    }
+
+    // Now publish a global/sessionless event. The client should
+    // receive it.
+    daemon
+        .event_log
+        .publish(
+            None,
+            None,
+            CoreEvent::Error {
+                code: "global_only".into(),
+                message: "m".into(),
+            },
+        )
+        .await;
+
+    let got = tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            match read_frame(&mut reader).await {
+                Some(CoreFrame::Event(env)) => {
+                    if env.session_id.is_none() {
+                        return Some(env);
+                    }
+                }
+                _ => return None,
+            }
+        }
+    })
+    .await
+    .expect("global-only client should receive a sessionless event");
+    assert!(got.is_some(), "expected a sessionless event for the global client");
+
+    abort_server(server_handle).await;
+}
+
+/// Test for Pass 4: replay on Subscribe uses the same filter as live
+/// forwarding. Two session events and one global event are published
+/// before any client connects; the client subscribes to session s1
+/// from_event_seq=0 and must see the s1 event and the global event
+/// (because include_global is true on a session filter), but not the
+/// s2 event.
+#[tokio::test]
+async fn resume_replay_uses_same_filter_as_live_forwarding() {
+    let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
+
+    // Publish events before any client connects so the Subscribe
+    // frame's replay returns them.
+    daemon
+        .event_log
+        .publish(
+            Some("s1".into()),
+            None,
+            CoreEvent::SessionUpdated {
+                session_id: "s1".into(),
+            },
+        )
+        .await;
+    daemon
+        .event_log
+        .publish(
+            Some("s2".into()),
+            None,
+            CoreEvent::SessionUpdated {
+                session_id: "s2".into(),
+            },
+        )
+        .await;
+    daemon
+        .event_log
+        .publish(
+            None,
+            None,
+            CoreEvent::Error {
+                code: "global_pre".into(),
+                message: "m".into(),
+            },
+        )
+        .await;
+
+    let (socket_path_str, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+    let stream = UnixStream::connect(&socket_path_str)
+        .await
+        .expect("connect client");
+    let (mut reader, _client_id) =
+        handshake_and_subscribe(stream, Some("s1".to_string())).await;
+
+    // The replay burst was drained by `handshake_and_subscribe`. Now
+    // confirm we received s1 + global but NOT s2. We have to inspect
+    // the buffers we already saw -- since the helper drains silently,
+    // we re-do the test with a non-draining handshake to verify the
+    // replay contents directly.
+    abort_server(server_handle).await;
+    drop(reader);
+
+    // Restart the test with a non-draining handshake to capture the
+    // replayed events.
+    let (socket_path_str2, server_handle2) = spawn_daemon(Arc::clone(&daemon)).await;
+    let stream2 = UnixStream::connect(&socket_path_str2)
+        .await
+        .expect("connect client 2");
+    let (read_half, mut write_half) = stream2.into_split();
+    let mut reader2 = BufReader::new(read_half);
+
+    let hello = CoreFrame::ClientHello(ClientHello {
+        client_name: "integration-test".to_string(),
+        client_kind: ClientKind::Automation,
+        protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+        capabilities: ClientCapabilities {
+            visual_notifications: false,
+            desktop_notifications: false,
+            audio: false,
+            tts: false,
+            multi_session_view: false,
+        },
+    });
+    write_half
+        .write_all(serde_json::to_string(&hello).unwrap().as_bytes())
+        .await
+        .unwrap();
+    write_half.write_all(b"\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    let server_hello = match read_frame(&mut reader2).await.unwrap() {
+        CoreFrame::ServerHello(sh) => sh,
+        other => panic!("expected ServerHello, got {:?}", other),
+    };
+    let sub = CoreFrame::Subscribe {
+        client_id: server_hello.client_id.clone(),
+        session_id: Some("s1".to_string()),
+        from_event_seq: Some(0),
+    };
+    write_half
+        .write_all(serde_json::to_string(&sub).unwrap().as_bytes())
+        .await
+        .unwrap();
+    write_half.write_all(b"\n").await.unwrap();
+    write_half.flush().await.unwrap();
+    drop(write_half);
+
+    // Collect every event frame for a short window. The replay
+    // delivers them as a burst; live events would be very rare
+    // here because we are not publishing during this window.
+    let mut received_sids: Vec<Option<String>> = Vec::new();
+    let collect = tokio::time::timeout(Duration::from_millis(300), async {
+        while let Some(frame) = read_frame(&mut reader2).await {
+            if let CoreFrame::Event(env) = frame {
+                received_sids.push(env.session_id.clone());
+            } else {
+                // Stop on a non-Event frame (e.g. Response, Pong).
+                break;
+            }
+        }
+    })
+    .await;
+    let _ = collect;
+
+    // We expect exactly the s1 event and the global event from the
+    // pre-publish burst, in seq order. The s2 event must NOT appear.
+    assert!(
+        received_sids.iter().any(|s| s.as_deref() == Some("s1")),
+        "expected s1 event in replay, got {:?}",
+        received_sids
+    );
+    assert!(
+        received_sids.iter().any(|s| s.is_none()),
+        "expected global event in replay (session filter has include_global=true), got {:?}",
+        received_sids
+    );
+    assert!(
+        !received_sids.iter().any(|s| s.as_deref() == Some("s2")),
+        "must not see s2 event in s1 replay, got {:?}",
+        received_sids
+    );
+
+    abort_server(server_handle2).await;
 }

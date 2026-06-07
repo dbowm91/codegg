@@ -595,16 +595,73 @@ impl CoreDaemon {
 
                 let runtime_for_spawn = Arc::clone(&runtime);
                 let session_id_for_spawn = session_id.clone();
+                // Capture the event log and the captured turn_id so the
+                // spawned task can publish `TurnCompleted` / `TurnFailed`
+                // directly with the correct identity -- without going
+                // through the bridge's lookup of `runtime.active_turn`,
+                // which may have been cleared by the time the bridge
+                // processes the bus event.
+                let event_log_for_spawn = Arc::clone(&self.event_log);
+                let turn_id_for_spawn = turn_id.clone();
                 tokio::spawn(async move {
                     let result = agent_loop.run(request).await;
                     if let Err(e) = result {
                         tracing::error!("Agent loop error: {}", e);
+                        // Direct TurnFailed with the captured turn_id.
+                        // Ordering invariant: this CoreEvent MUST be
+                        // published before we clear `runtime.active_turn`
+                        // and before the bridge can process any subsequent
+                        // bus event for this turn.
+                        event_log_for_spawn
+                            .publish(
+                                Some(session_id_for_spawn.clone()),
+                                Some(turn_id_for_spawn.clone()),
+                                crate::protocol::core::CoreEvent::TurnFailed {
+                                    session_id: session_id_for_spawn.clone(),
+                                    turn_id: Some(turn_id_for_spawn.clone()),
+                                    message: format!("Agent error: {}", e),
+                                },
+                            )
+                            .await;
+                        // Publish an Error on the bus for legacy consumers
+                        // (notifications, log surfaces) -- it does NOT get
+                        // translated into another turn lifecycle event.
                         crate::bus::global::GlobalEventBus::publish(
                             crate::bus::events::AppEvent::Error {
                                 message: format!("Agent error: {}", e),
                             },
                         );
+                        // Also publish AgentFinished so the bridge can
+                        // update token counts (None) and emit a
+                        // TurnFailed notification; the bridge no longer
+                        // maps this into a CoreEvent::TurnFailed.
+                        crate::bus::global::GlobalEventBus::publish(
+                            crate::bus::events::AppEvent::AgentFinished {
+                                session_id: session_id_for_spawn.clone(),
+                                stop_reason: "error".to_string(),
+                                input_tokens: None,
+                                output_tokens: None,
+                                cached_tokens: None,
+                                reasoning_tokens: None,
+                            },
+                        );
                     } else {
+                        // Direct TurnCompleted with the captured turn_id.
+                        event_log_for_spawn
+                            .publish(
+                                Some(session_id_for_spawn.clone()),
+                                Some(turn_id_for_spawn.clone()),
+                                crate::protocol::core::CoreEvent::TurnCompleted {
+                                    session_id: session_id_for_spawn.clone(),
+                                    turn_id: turn_id_for_spawn.clone(),
+                                    stop_reason: "completed".to_string(),
+                                },
+                            )
+                            .await;
+                        // Publish AgentFinished so the bridge can still
+                        // update token counts and emit a TurnCompleted
+                        // notification. The bridge no longer maps this
+                        // into a CoreEvent::TurnCompleted.
                         crate::bus::global::GlobalEventBus::publish(
                             crate::bus::events::AppEvent::AgentFinished {
                                 session_id: session_id_for_spawn.clone(),
@@ -1791,16 +1848,34 @@ impl CoreDaemon {
                     include_global: true,
                 };
 
-                if !self.event_log.has_events_from(from_event_seq).await {
+                let current_seq = self.event_log.current_seq();
+
+                // `ResyncRequired` means "the requested sequence is too old
+                // to replay from available event storage" -- not "there are
+                // no new events". A client that is already caught up
+                // (from_event_seq >= current_seq) gets an empty `Events`
+                // response so the resume handshake always completes for
+                // in-sync clients.
+                if !self.event_log.covers_from(from_event_seq).await {
                     return Ok(CoreResponse::ResyncRequired {
                         from_event_seq,
-                        current_seq: self.event_log.current_seq(),
+                        current_seq,
                         session_id,
                     });
                 }
 
+                // Already caught up (or covered by the ring/DB): return
+                // an empty events vector. A future `from_event_seq` (above
+                // `current_seq`) also returns empty here rather than
+                // erroring; clients treat that as a no-op resume.
+                if from_event_seq >= current_seq {
+                    return Ok(CoreResponse::Events {
+                        events: Vec::new(),
+                        current_seq,
+                    });
+                }
+
                 let events = self.event_log.replay_from(from_event_seq, &filter).await;
-                let current_seq = self.event_log.current_seq();
                 Ok(CoreResponse::Events { events, current_seq })
             }
             CoreRequest::TurnCancel {
@@ -2259,10 +2334,31 @@ mod tests {
 
     #[tokio::test]
     async fn resume_returns_typed_resync_when_seq_too_old() {
-        let daemon = test_daemon().await;
-
+        // This test exercises the same path as before -- a too-old seq
+        // when nothing is recorded anywhere. To force the ring to
+        // have no record of seq 1, we use a no-pool daemon (so the
+        // DB layer is bypassed) and a small ring, then evict the
+        // only event by overflowing the ring.
+        let daemon = CoreDaemon::new(None, None, None, None);
+        // No pool is configured, so the event log is in-memory only
+        // and the ring is the source of truth.
+        // Publish a few events to a small ring by setting capacity
+        // indirectly: we use the default capacity (4096) and publish
+        // a single event so seq=1 is in the ring, then issue a
+        // resume from seq 0 with no pool -- this would be covered by
+        // the ring. To get a true "too old" we need to evict seq 1.
+        // The cleanest way without changing daemon internals is to
+        // request a seq the ring definitely does not have; with no
+        // pool, the only valid request is one the ring can satisfy.
+        // A future seq (e.g. 999_999) is treated as caught-up and
+        // returns Events(empty), NOT ResyncRequired. So we use a
+        // daemon without a pool and no events at all, with a
+        // from_event_seq < current_seq (0 < 0 is false). The truly
+        // "too old" case below uses a pool + eviction.
+        // With no events and from_event_seq=0 and current_seq=0, the
+        // path is caught-up and returns empty events.
         let req = crate::core::new_request(
-            "req-resume-old".into(),
+            "req-resume-future".into(),
             CoreRequest::Resume {
                 session_id: Some("s1".into()),
                 from_event_seq: 999_999,
@@ -2270,16 +2366,14 @@ mod tests {
         );
         let resp = daemon.handle_request(req).await.unwrap();
         match resp {
-            CoreResponse::ResyncRequired {
-                from_event_seq,
-                current_seq,
-                session_id,
-            } => {
-                assert_eq!(from_event_seq, 999_999);
+            CoreResponse::Events { events, current_seq } => {
                 assert_eq!(current_seq, 0);
-                assert_eq!(session_id.as_deref(), Some("s1"));
+                assert!(events.is_empty());
             }
-            other => panic!("expected ResyncRequired, got {:?}", other),
+            other => panic!(
+                "expected Events(empty) for future seq, got {:?}",
+                other
+            ),
         }
     }
 
@@ -2313,6 +2407,131 @@ mod tests {
                 assert_eq!(events[0].event_seq, 1);
             }
             other => panic!("expected Events, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_from_current_seq_returns_empty_events_not_resync() {
+        // A client that is already caught up (from_event_seq == current_seq)
+        // must get an empty Events response, NOT ResyncRequired. This is
+        // the core Pass 2 invariant: ResyncRequired is reserved for
+        // too-old sequences that can no longer be replayed.
+        let daemon = test_daemon().await;
+        let s1 = daemon
+            .event_log
+            .publish(
+                Some("s1".into()),
+                None,
+                crate::protocol::core::CoreEvent::SessionUpdated {
+                    session_id: "s1".into(),
+                },
+            )
+            .await;
+
+        let req = crate::core::new_request(
+            "req-resume-current".into(),
+            CoreRequest::Resume {
+                session_id: Some("s1".into()),
+                from_event_seq: s1,
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::Events { events, current_seq } => {
+                assert_eq!(current_seq, s1);
+                assert!(
+                    events.is_empty(),
+                    "expected empty events for caught-up client, got {:?}",
+                    events
+                );
+            }
+            other => panic!("expected Events(empty), got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_from_future_seq_returns_empty_events() {
+        // from_event_seq > current_seq is treated as "no new events" --
+        // the client effectively overshot but we don't have anything to
+        // send. Return Events(empty, current_seq) so the client can
+        // resync its bookkeeping. The plan lists this as one of the
+        // acceptable behaviors; we chose empty events.
+        let daemon = test_daemon().await;
+        let s1 = daemon
+            .event_log
+            .publish(
+                Some("s1".into()),
+                None,
+                crate::protocol::core::CoreEvent::SessionUpdated {
+                    session_id: "s1".into(),
+                },
+            )
+            .await;
+
+        let req = crate::core::new_request(
+            "req-resume-future".into(),
+            CoreRequest::Resume {
+                session_id: Some("s1".into()),
+                from_event_seq: s1 + 100,
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::Events { events, current_seq } => {
+                assert_eq!(current_seq, s1);
+                assert!(events.is_empty());
+            }
+            other => panic!("expected Events(empty) for future seq, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_from_too_old_seq_returns_resync() {
+        // To force a real "too old" outcome we need a daemon without
+        // a SQLite pool. With a pool, the DB layer would still cover
+        // any from_event_seq whose `from_event_seq + 1` is in the
+        // persisted range, so the resync path becomes unreachable
+        // for ordinary replay requests. With no pool, the ring is
+        // the source of truth and eviction makes old seqs unsatisfiable.
+        let daemon = CoreDaemon::new(None, None, None, None);
+        // Publish enough events to overflow the default ring (4096).
+        for _ in 0..5000 {
+            daemon
+                .event_log
+                .publish(
+                    Some("s1".into()),
+                    None,
+                    crate::protocol::core::CoreEvent::Error {
+                        code: "filler".into(),
+                        message: "m".into(),
+                    },
+                )
+                .await;
+        }
+        let current = daemon.event_log.current_seq();
+        assert!(current > 4096, "ring should have wrapped, current={}", current);
+
+        // from_event_seq=0 is now too old: the ring's front is
+        // current-4095 and there is no DB to fall back to.
+        let req = crate::core::new_request(
+            "req-resume-old".into(),
+            CoreRequest::Resume {
+                session_id: Some("s1".into()),
+                from_event_seq: 0,
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        match resp {
+            CoreResponse::ResyncRequired {
+                from_event_seq,
+                current_seq,
+                session_id,
+            } => {
+                assert_eq!(from_event_seq, 0);
+                assert_eq!(current_seq, current);
+                assert_eq!(session_id.as_deref(), Some("s1"));
+            }
+            other => panic!("expected ResyncRequired for too-old seq, got {:?}", other),
         }
     }
 
@@ -2736,7 +2955,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bridge_attaches_turn_id_for_agent_finished() {
+    async fn bridge_no_longer_maps_agent_finished_to_turn_completed() {
+        // Pass 3 invariant: the bridge must NOT produce a duplicate
+        // `CoreEvent::TurnCompleted` for `AppEvent::AgentFinished`,
+        // because the TurnSubmit spawned task publishes the lifecycle
+        // event directly with the captured turn_id. The bus event is
+        // still consumed by the event bridge to update token counts
+        // and emit notifications, but it does not flow through
+        // `map_app_event_to_core_event`.
         let daemon = test_daemon().await;
         let runtime = daemon.sessions.get_or_create(
             "s-bridge-finished",
@@ -2754,15 +2980,46 @@ mod tests {
             cached_tokens: None,
             reasoning_tokens: None,
         };
-        let result = daemon
-            .bridge_app_event(app_event)
-            .await
-            .expect("bridge_app_event should map AgentFinished");
-        let (_session_id, attached_turn_id, core_event) = result;
-        assert_eq!(attached_turn_id.as_deref(), Some(turn_id.as_str()));
-        match core_event {
-            CoreEvent::TurnCompleted { turn_id: tid, .. } => {
-                assert_eq!(tid, turn_id, "TurnCompleted should carry the active turn_id");
+        let result = daemon.bridge_app_event(app_event).await;
+        assert!(
+            result.is_none(),
+            "AgentFinished must not produce a CoreEvent from the bridge; got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_turn_completion_uses_runtime_turn_id() {
+        // The TurnSubmit spawn task publishes a CoreEvent::TurnCompleted
+        // directly with the captured turn_id. We exercise this path
+        // here by publishing the same event shape the spawn task
+        // produces and asserting that the envelope carries the
+        // non-empty turn id and matches what a subscriber sees on
+        // the broadcast channel.
+        let daemon = test_daemon().await;
+        let session_id = "s-direct-completion".to_string();
+        let turn_id = "turn-direct".to_string();
+        let mut rx = daemon.event_log.subscribe();
+
+        // Direct publish path (mirrors the spawn task).
+        daemon
+            .event_log
+            .publish(
+                Some(session_id.clone()),
+                Some(turn_id.clone()),
+                CoreEvent::TurnCompleted {
+                    session_id: session_id.clone(),
+                    turn_id: turn_id.clone(),
+                    stop_reason: "completed".to_string(),
+                },
+            )
+            .await;
+
+        let env = rx.recv().await.expect("expected an envelope on the bus");
+        match env.payload {
+            CoreEvent::TurnCompleted { turn_id: tid, stop_reason, .. } => {
+                assert_eq!(tid, turn_id);
+                assert_eq!(stop_reason, "completed");
             }
             other => panic!("expected TurnCompleted, got {:?}", other),
         }

@@ -34,14 +34,23 @@ pub async fn run_core_socket(
 }
 
 /// Match an event envelope against a single subscription filter.
-/// Session-specific filters only match events for that session; global
-/// filters match either explicitly global events (no session_id) or any
-/// event when `include_global` is set.
+///
+/// Semantics (per the `include_global` interim contract):
+///
+/// - `session_id: Some(sid), include_global: true`  -> events for `sid` plus
+///   global/sessionless events.
+/// - `session_id: Some(sid), include_global: false` -> events for `sid` only.
+/// - `session_id: None`                            -> global/sessionless
+///   events only. `include_global` is ignored in this branch. A
+///   `session_id: None` filter does NOT match all sessions; an
+///   all-sessions subscription would require a distinct protocol field.
 fn event_matches_filter(event: &EventEnvelope<CoreEvent>, filter: &EventFilter) -> bool {
-    if let Some(ref sid) = filter.session_id {
-        event.session_id.as_deref() == Some(sid.as_str())
-    } else {
-        filter.include_global || event.session_id.is_none()
+    match (&filter.session_id, filter.include_global) {
+        (Some(sid), true) => {
+            event.session_id.as_deref() == Some(sid.as_str()) || event.session_id.is_none()
+        }
+        (Some(sid), false) => event.session_id.as_deref() == Some(sid.as_str()),
+        (None, _) => event.session_id.is_none(),
     }
 }
 
@@ -100,21 +109,25 @@ async fn handle_client(
                             ..
                         } => {
                             // Build the new filter from this Subscribe frame.
+                            //
                             // A session_id produces a session-scoped filter
-                            // (only events for that session); the absence of
-                            // session_id yields a global filter (all events
-                            // when `include_global` is true).
+                            // (events for that session, plus sessionless
+                            // events when `include_global: true`). The absence
+                            // of session_id yields a global-only filter
+                            // (`include_global: false`); it does NOT match
+                            // every session. An all-sessions subscription
+                            // would require a distinct protocol field.
                             let new_filter = if let Some(sid) = session_id.clone() {
                                 EventFilter {
                                     session_id: Some(sid),
                                     client_id: None,
-                                    include_global: false,
+                                    include_global: true,
                                 }
                             } else {
                                 EventFilter {
                                     session_id: None,
                                     client_id: None,
-                                    include_global: true,
+                                    include_global: false,
                                 }
                             };
                             // Append to the connection's filter set. The wire
@@ -273,7 +286,7 @@ mod tests {
         let filter = EventFilter {
             session_id: Some("s1".into()),
             client_id: None,
-            include_global: false,
+            include_global: true,
         };
         assert!(event_matches_filter(&ev, &filter));
     }
@@ -284,44 +297,76 @@ mod tests {
         let filter = EventFilter {
             session_id: Some("s1".into()),
             client_id: None,
-            include_global: false,
+            include_global: true,
         };
         assert!(!event_matches_filter(&ev, &filter));
     }
 
     #[test]
-    fn global_filter_matches_global_event() {
-        let ev = envelope(1, None);
-        let filter = EventFilter {
-            session_id: None,
-            client_id: None,
-            include_global: true,
-        };
-        assert!(event_matches_filter(&ev, &filter));
-    }
-
-    #[test]
-    fn global_filter_with_include_global_matches_session_event() {
+    fn global_filter_rejects_session_event() {
+        // session_id=None must NOT match session-scoped events, regardless
+        // of include_global. This is the core Pass 1 invariant: a global
+        // subscription is global-only, not all-sessions.
         let ev = envelope(1, Some("s1"));
         let filter = EventFilter {
             session_id: None,
             client_id: None,
             include_global: true,
         };
-        assert!(event_matches_filter(&ev, &filter));
-    }
+        assert!(
+            !event_matches_filter(&ev, &filter),
+            "global filter must not match session events"
+        );
 
-    #[test]
-    fn global_filter_without_include_global_only_matches_unscoped() {
-        let ev_session = envelope(1, Some("s1"));
-        let ev_global = envelope(2, None);
-        let filter = EventFilter {
+        let filter_no_global = EventFilter {
             session_id: None,
             client_id: None,
             include_global: false,
         };
-        assert!(!event_matches_filter(&ev_session, &filter));
+        assert!(!event_matches_filter(&ev, &filter_no_global));
+    }
+
+    #[test]
+    fn global_filter_matches_global_event() {
+        let ev = envelope(1, None);
+        let filter_with = EventFilter {
+            session_id: None,
+            client_id: None,
+            include_global: true,
+        };
+        assert!(event_matches_filter(&ev, &filter_with));
+
+        let filter_without = EventFilter {
+            session_id: None,
+            client_id: None,
+            include_global: false,
+        };
+        assert!(event_matches_filter(&ev, &filter_without));
+    }
+
+    #[test]
+    fn session_filter_can_include_global_event_if_configured() {
+        // A session-specific filter with include_global=true must also
+        // match sessionless/global events so session subscribers still
+        // see updates that affect them (e.g. session list changes).
+        let ev_global = envelope(1, None);
+        let filter = EventFilter {
+            session_id: Some("s1".into()),
+            client_id: None,
+            include_global: true,
+        };
         assert!(event_matches_filter(&ev_global, &filter));
+    }
+
+    #[test]
+    fn session_filter_without_include_global_rejects_global_event() {
+        let ev_global = envelope(1, None);
+        let filter = EventFilter {
+            session_id: Some("s1".into()),
+            client_id: None,
+            include_global: false,
+        };
+        assert!(!event_matches_filter(&ev_global, &filter));
     }
 
     #[tokio::test]
@@ -346,24 +391,40 @@ mod tests {
         })
         .await;
 
+        // Session-scoped filter (include_global: true to also pull global events).
         let s1_filter = EventFilter {
+            session_id: Some("s1".into()),
+            client_id: None,
+            include_global: true,
+        };
+        let s1_events = log.replay_from(0, &s1_filter).await;
+        // s1 events + the global event.
+        assert_eq!(s1_events.len(), 2);
+        for env in &s1_events {
+            let sid = env.session_id.as_deref();
+            assert!(sid == Some("s1") || sid.is_none());
+        }
+
+        // Session-scoped filter without include_global -> s1 only.
+        let s1_strict = EventFilter {
             session_id: Some("s1".into()),
             client_id: None,
             include_global: false,
         };
-        // `replay_from(0, ...)` replays events strictly after seq 0, so all
-        // three events are candidates; the session filter then narrows to s1.
-        let s1_events = log.replay_from(0, &s1_filter).await;
-        assert_eq!(s1_events.len(), 1);
-        assert_eq!(s1_events[0].session_id.as_deref(), Some("s1"));
+        let s1_strict_events = log.replay_from(0, &s1_strict).await;
+        assert_eq!(s1_strict_events.len(), 1);
+        assert_eq!(s1_strict_events[0].session_id.as_deref(), Some("s1"));
 
+        // Global filter: session_id: None, regardless of include_global, must
+        // NOT return session events. Only the sessionless one.
         let global_filter = EventFilter {
             session_id: None,
             client_id: None,
             include_global: true,
         };
-        let all_events = log.replay_from(0, &global_filter).await;
-        assert_eq!(all_events.len(), 3);
+        let global_events = log.replay_from(0, &global_filter).await;
+        assert_eq!(global_events.len(), 1);
+        assert!(global_events[0].session_id.is_none());
     }
 }
 

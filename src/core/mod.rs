@@ -368,18 +368,14 @@ pub(crate) fn map_app_event_to_core_event(event: crate::bus::events::AppEvent) -
             turn_id,
             questions: serde_json::from_str(&questions).unwrap_or(serde_json::Value::Null),
         }),
-        crate::bus::events::AppEvent::AgentFinished {
-            session_id,
-            stop_reason,
-            input_tokens: _,
-            output_tokens: _,
-            cached_tokens: _,
-            reasoning_tokens: _,
-        } => Some(CoreEvent::TurnCompleted {
-            session_id,
-            turn_id: String::new(),
-            stop_reason,
-        }),
+        // AgentFinished is intentionally NOT mapped to a CoreEvent here.
+        // The TurnSubmit spawned task publishes `CoreEvent::TurnCompleted`
+        // or `CoreEvent::TurnFailed` directly with the captured turn_id,
+        // so the bridge must not produce a second lifecycle event. The
+        // bus event is still used (via `start_event_bridge`) to update
+        // runtime token counts and to emit a notification, neither of
+        // which goes through `map_app_event_to_core_event`.
+        crate::bus::events::AppEvent::AgentFinished { .. } => None,
         crate::bus::events::AppEvent::Error { message } => Some(CoreEvent::Error {
             code: "agent_error".to_string(),
             message,

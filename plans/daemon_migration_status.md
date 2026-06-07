@@ -2,29 +2,33 @@
 
 ## Current Status
 
-The daemon migration skeleton is implemented and usable for early testing.
+The daemon migration is implemented at an early-usable stage. Most
+tightening passes are implemented and validated, but several require
+validation and one final hardening pass.
 
-Completed / mostly complete:
+Implemented:
 - CoreDaemon extraction
-- EventLog ring buffer and basic persistence
-- Socket frame protocol
-- Daemon CLI
-- SessionRuntimeRegistry skeleton
-- Scoped permission/question registry APIs
-- Basic snapshot/resume responses
-- RemoteCore mode avoids local heavy initialization
-- NotificationRouter and AudioArbiter first pass
-
-Needs hardening:
-- Event envelope metadata
-- Coherent turn IDs
-- Socket live-event filtering
-- Client identity negotiation
-- SnapshotModels correctness
-- Recovery event type persistence
+- EventLog ring buffer + SQLite persistence
+- Replay-after-last-seen semantics
+- Event metadata inference
+- TurnStarted emission
+- Socket client_id negotiation
+- Per-connection socket filters
+- SnapshotModels provider/model IDs
 - Remote-core initial session loading
-- Cross-session notification batching
-- Integration tests for multi-client/session isolation
+- Notification batching
+
+Implemented but needs final hardening/validation:
+- Socket default subscription semantics (must distinguish
+  global-only from all-sessions) — Pass B
+- Resume from current sequence should return empty `Events`, not
+  `ResyncRequired` — Pass C
+- Turn completion/failure should publish direct `CoreEvent`s with
+  captured `turn_id`, not depend on bridge lookup — Pass B/C
+
+Remaining:
+- End-to-end two-client/two-session socket isolation tests — Pass I
+  (added in the hardening pass; see "What's New (hardening)")
 
 ## Completed Passes (initial migration)
 
@@ -44,16 +48,16 @@ Needs hardening:
 
 ## Completed Passes (polish)
 
-- **Pass A**: Event metadata and replay semantics (turn/session metadata on envelopes; replay returns `event_seq > from_event_seq`)
-- **Pass B**: Coherent turn identity (`TurnStarted` emitted; deltas inherit active turn_id)
-- **Pass C**: Real socket subscription filtering (per-connection filters; negotiated client_id)
-- **Pass D**: TUI remote-core initial session loading (session/fork via core)
-- **Pass E**: SnapshotModels correctness (returns `provider/model` ids)
-- **Pass F**: Event persistence and recovery fixes (explicit event type names)
-- **Pass G**: Permission/question routing hardening (invalid IDs return `invalid_*_id`)
-- **Pass H**: Notification batching (cross-session batch with priority)
-- **Pass I**: Integration test matrix (multi-client/session isolation)
-- **Pass J**: Status file correction (this file)
+- **Pass A**: Event metadata and replay semantics (turn/session metadata on envelopes; replay returns `event_seq > from_event_seq`) ✅
+- **Pass B**: Coherent turn identity (`TurnStarted` emitted; deltas inherit active turn_id) — *implemented, validated by direct-publish tests; the bridge fallback still exists for deltas/tool events but lifecycle completion no longer relies on it* ✅
+- **Pass C**: Real socket subscription filtering (per-connection filters; negotiated client_id) — *implemented, semantics hardened to distinguish global-only from all-sessions* ✅
+- **Pass D**: TUI remote-core initial session loading (session/fork via core) ✅
+- **Pass E**: SnapshotModels correctness (returns `provider/model` ids) ✅
+- **Pass F**: Event persistence and recovery fixes (explicit event type names) ✅
+- **Pass G**: Permission/question routing hardening (invalid IDs return `invalid_*_id`) ✅
+- **Pass H**: Notification batching (cross-session batch with priority) ✅
+- **Pass I**: Integration test matrix (multi-client/session isolation) — *partial* (see "What's New (hardening)" for the new end-to-end socket isolation tests) 🟡
+- **Pass J**: Status file correction (this file) ✅
 
 ## Architecture
 
@@ -137,6 +141,48 @@ Frontends
   `--continue`, `--new`, and `--fork` startup paths through
   `CoreClient` without touching local stores in socket mode
 
+## What's New (hardening)
+
+- **Socket subscription semantics hardened**: a `session_id: None`
+  Subscribe frame produces a global-only filter (`include_global:
+  false`) and no longer matches every session. A `session_id:
+  Some(sid)` Subscribe frame produces a session-scoped filter
+  (`include_global: true`) so subscribers still see sessionless
+  events. `event_matches_filter()` and the in-memory `filter_matches`
+  helper in `event_log.rs` are the single source of truth for
+  matching and are mirrored by `replay_from_db` for SQL queries.
+- **Resume coverage semantics**: `EventLog::covers_from()` and
+  `db_covers_from()` distinguish "no new events" from "the
+  requested sequence is too old to replay". `CoreRequest::Resume`
+  returns `Events { events: [], current_seq }` for already-caught-up
+  or future seqs and only returns `ResyncRequired` when the ring
+  and DB together cannot satisfy the request.
+- **Direct turn completion/failure**: the `TurnSubmit` spawn task
+  now publishes `CoreEvent::TurnCompleted` / `TurnFailed` directly
+  with the captured `turn_id`, before clearing
+  `runtime.active_turn`. `AppEvent::AgentFinished` is still
+  published (and still used by the bridge to update token counts
+  and emit notifications) but is no longer mapped to a
+  `CoreEvent::TurnCompleted`; this prevents duplicate lifecycle
+  events.
+- **`SocketCoreClient::subscribe_session_events`**: an inherent
+  helper that sends a session-scoped `Subscribe` frame using the
+  negotiated `client_id`. Used by tests and by any socket-only
+  client that wants to opt in to a specific session after
+  `ServerHello`.
+- **End-to-end socket isolation tests**: three new tests in
+  `src/core/transport/daemon_socket_integration_tests.rs` prove
+  the daemon socket path actually isolates events across
+  clients/sessions:
+  - `two_socket_session_filter_isolation` (existing) — two
+    clients, two sessions, no cross-talk.
+  - `global_only_subscription_does_not_receive_session_events` —
+    a global-only client receives sessionless events and never
+    receives session events.
+  - `resume_replay_uses_same_filter_as_live_forwarding` —
+    replay on Subscribe filters with the same semantics as live
+    forwarding.
+
 ## What's Preserved
 
 - Inproc mode works exactly as before
@@ -181,6 +227,27 @@ notification batching:
 - `src/notification/`: tests for `next_speech_batch` priority
   ordering, dedupe, and cross-session synthesis
 - `src/bus/`: test confirming `TurnCancel` rejects a wrong turn id
+
+Hardening pass added coverage for the new semantics:
+
+- `src/core/daemon.rs`:
+  - `resume_from_current_seq_returns_empty_events_not_resync`
+  - `resume_from_future_seq_returns_empty_events`
+  - `resume_from_too_old_seq_returns_resync`
+  - `bridge_no_longer_maps_agent_finished_to_turn_completed`
+  - `direct_turn_completion_uses_runtime_turn_id`
+- `src/core/event_log.rs`:
+  - `covers_from_current_seq_is_true`
+  - `covers_from_too_old_ring_seq_is_false_without_db`
+  - `covers_from_too_old_ring_seq_is_true_with_db`
+  - `replay_from_current_seq_returns_empty`
+- `src/core/transport/daemon_socket.rs`: filter unit tests renamed
+  and extended to assert that a global filter never matches session
+  events and that a session filter can opt into global events via
+  `include_global`.
+- `src/core/transport/daemon_socket_integration_tests.rs`:
+  - `global_only_subscription_does_not_receive_session_events`
+  - `resume_replay_uses_same_filter_as_live_forwarding`
 
 `cargo check --all-features` and `cargo clippy --all-features` are
 clean for all modified files; no new warnings introduced.
