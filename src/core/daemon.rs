@@ -518,13 +518,15 @@ impl CoreDaemon {
                         session_id.clone(),
                     ));
                 }
+                let (mcp_service, _report) =
+                    crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
                 let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
                     agents,
                     provider,
                     permission_checker,
                     tool_registry,
                     config,
-                    None,
+                    mcp_service,
                     self.pool.clone(),
                 );
                 agent_loop.set_session_id(&session_id);

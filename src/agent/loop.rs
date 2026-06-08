@@ -67,6 +67,7 @@ type ToolDefCache = (
     bool,
     usize,
     u64,
+    bool,
     Vec<crate::provider::ToolDefinition>,
     Vec<crate::provider::ToolDefinition>,
 );
@@ -1720,8 +1721,22 @@ impl AgentLoop {
 
         // Set defer_loading on MCP tools based on the catalog
         let catalog = self.tool_registry.catalog();
+        let expose_raw_eggsearch = crate::search_backend::state::search_config()
+            .expose_raw_mcp_tools();
+        let eggsearch_server = crate::search_backend::state::search_config()
+            .eggsearch
+            .as_ref()
+            .and_then(|e| e.server_name.clone())
+            .unwrap_or_else(|| "eggsearch".to_string());
+        let raw_prefix = format!("mcp__{}__", eggsearch_server);
         let mcp_tools: Vec<_> = mcp_tools
             .into_iter()
+            .filter(|t| {
+                if !expose_raw_eggsearch && t.name.starts_with(&raw_prefix) {
+                    return false;
+                }
+                true
+            })
             .map(|mut t| {
                 if catalog.is_deferred(&t.name) {
                     t.defer_loading = Some(true);
@@ -1744,6 +1759,7 @@ impl AgentLoop {
             cache_lsp,
             cache_mcp_count,
             cache_perm_ver,
+            cache_expose_raw,
             ref cached_defs,
             ref cached_deferred,
         )) = self.tool_def_cache
@@ -1753,6 +1769,7 @@ impl AgentLoop {
                 && cache_lsp == lsp_enabled
                 && cache_mcp_count == mcp_tool_count
                 && cache_perm_ver == permission_version
+                && cache_expose_raw == expose_raw_eggsearch
             {
                 let mut definitions = cached_defs.clone();
                 self.deferred_tool_definitions = cached_deferred.clone();
@@ -1894,6 +1911,7 @@ impl AgentLoop {
             lsp_enabled,
             mcp_tool_count,
             permission_version,
+            expose_raw_eggsearch,
             definitions.clone(),
             deferred,
         ));

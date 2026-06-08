@@ -2098,6 +2098,44 @@ async fn handle_send_notification(
     }
 }
 
+async fn handle_run_doctor(app: &mut app::App) {
+    use crate::search_backend::bootstrap;
+    let config = match crate::config::schema::Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            app.messages_state
+                .toasts
+                .error(&format!("doctor: failed to load config: {e}"));
+            return;
+        }
+    };
+    let (_svc, report) = bootstrap::bootstrap_search_backend(&config).await;
+    let summary = if report.connected {
+        format!(
+            "doctor: {} OK ({})",
+            report.search_backend.as_deref().unwrap_or("?"),
+            report.tools.join(", ")
+        )
+    } else if let Some(err) = &report.connection_error {
+        format!(
+            "doctor: {} unavailable ({err})",
+            report.search_backend.as_deref().unwrap_or("?")
+        )
+    } else {
+        format!(
+            "doctor: {} (no MCP service)",
+            report.search_backend.as_deref().unwrap_or("?")
+        )
+    };
+    for line in report.summary_lines() {
+        tracing::info!(target: "codegg::doctor", "{}", line);
+    }
+    if let Some(mcp) = config.mcp.as_ref() {
+        tracing::info!(target: "codegg::doctor", "MCP servers: {}", mcp.len());
+    }
+    app.messages_state.toasts.info(&summary);
+}
+
 async fn handle_research_list_runs(app: &mut app::App) {
     let project_dir = app.session_state.project_dir.clone();
     let service =
@@ -2995,6 +3033,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     TuiCommand::ResearchLoadSection { run_id, section } => {
                         handle_research_load_section(app, run_id, section).await;
+                    }
+                    TuiCommand::RunDoctor => {
+                        handle_run_doctor(app).await;
                     }
                 }
                 needs_render = true;

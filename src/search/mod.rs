@@ -1,7 +1,21 @@
-//! Pluggable web search providers.
+//! Legacy built-in web search providers.
 //!
-//! This module exposes a single [`SearchProvider`] trait that the
-//! `websearch` tool uses to dispatch queries. A
+//! This module retains the original in-tree [`SearchProvider`]
+//! implementations that powered `websearch` before the eggsearch
+//! migration. New provider work should happen in the
+//! [eggsearch](https://github.com/anomalyco/eggsearch) project.
+//! Codegg's native `websearch` and `webfetch` tools are now thin
+//! wrappers around eggsearch when
+//! `[search].backend = "eggsearch"` (the default).
+//!
+//! The in-tree implementation is kept as an explicit fallback path
+//! for users who cannot install eggsearch; it is selected with
+//! `[search].backend = "builtin"`. It also runs automatically when
+//! `[search].fallback_to_builtin = true` and the eggsearch backend
+//! fails.
+//!
+//! ## Provider dispatch
+//!
 //! [`SearchProviderRegistry`] tries providers in a deterministic order:
 //!
 //! 1. **Key-based providers** (Exa, Tavily, Brave, Kagi, SerpAPI) — best
@@ -36,7 +50,9 @@ pub use registry::SearchProviderRegistry;
 pub use routing::{classify_query, QueryKind};
 pub use types::{SearchError, SearchHit, SearchProvider, Specificity};
 
-/// Convenience: run a search using the default registry.
+/// Convenience: run a search using the default registry. Used by the
+/// `[search].backend = "builtin"` fallback path; the eggsearch backend
+/// has its own dispatcher in `crate::search_backend`.
 pub async fn search_default(
     query: &str,
     num_results: usize,

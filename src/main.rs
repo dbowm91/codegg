@@ -249,6 +249,22 @@ enum Commands {
     },
     #[command(hide = true, name = "core-stdio")]
     CoreStdio,
+    /// Run diagnostics for search backend, MCP, providers, and storage.
+    Doctor {
+        /// Restrict diagnostics to a single subsystem.
+        #[arg(long, value_enum)]
+        subsystem: Option<DoctorSubsystem>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum DoctorSubsystem {
+    /// All subsystems.
+    All,
+    /// Web search/fetch backend (eggsearch).
+    Search,
+    /// Configured MCP servers.
+    Mcp,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, clap::ValueEnum)]
@@ -404,6 +420,9 @@ async fn main() -> Result<(), AppError> {
             #[cfg(feature = "server")]
             Commands::Attach { url, token } => {
                 cmd_attach(url, token.as_deref()).await?;
+            }
+            Commands::Doctor { subsystem } => {
+                cmd_doctor(subsystem.unwrap_or(DoctorSubsystem::All)).await?;
             }
             Commands::Validate { config } => {
                 cmd_validate(config.as_deref()).await?;
@@ -885,6 +904,69 @@ async fn cmd_validate(config_path: Option<&str>) -> Result<(), AppError> {
     }
 }
 
+async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
+    use codegg::search_backend::bootstrap;
+
+    let config = Config::load()?;
+    println!("== Codegg doctor ==");
+    println!("config: loaded");
+
+    if matches!(subsystem, DoctorSubsystem::Mcp) {
+        println!("\n== MCP ==");
+        list_mcp_servers(&config);
+        return Ok(());
+    }
+
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Search) {
+        println!("\n== Search backend ==");
+        let (_svc, report) = bootstrap::bootstrap_search_backend(&config).await;
+        for line in report.summary_lines() {
+            println!("{line}");
+        }
+    }
+
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Mcp) {
+        println!("\n== MCP ==");
+        list_mcp_servers(&config);
+    }
+
+    Ok(())
+}
+
+fn list_mcp_servers(config: &Config) {
+    let Some(mcp) = config.mcp.as_ref() else {
+        println!("No MCP servers configured");
+        return;
+    };
+    if mcp.is_empty() {
+        println!("No MCP servers configured");
+        return;
+    }
+    for (name, entry) in mcp {
+        let enabled = entry.enabled.unwrap_or(true);
+        let server_type = entry
+            .inner
+            .as_ref()
+            .and_then(|c| c.server_type.clone())
+            .unwrap_or_else(|| "local".to_string());
+        let cmd = entry
+            .inner
+            .as_ref()
+            .and_then(|c| c.command.clone())
+            .unwrap_or_default();
+        let url = entry
+            .inner
+            .as_ref()
+            .and_then(|c| c.url.clone())
+            .unwrap_or_default();
+        let detail = if !url.is_empty() { url } else { cmd };
+        println!(
+            "  - {} [{}] enabled={} {}",
+            name, server_type, enabled, detail
+        );
+    }
+}
+
 fn cmd_completions(shell: Shell, output_dir: Option<&str>) -> Result<(), AppError> {
     let mut cmd = Cli::command();
     let name = cmd.get_name().to_string();
@@ -984,6 +1066,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
 
     let permission_checker = codegg::permission::PermissionChecker::new(Some(&config), None)
         .with_active_mode(&config);
+    let (mcp_service, _report) = codegg::search_backend::bootstrap::bootstrap_search_backend(&config).await;
     let tool_registry = codegg::tool::ToolRegistry::with_defaults();
     let mut agent_loop = codegg::agent::r#loop::AgentLoop::new(
         agents,
@@ -991,7 +1074,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         permission_checker,
         tool_registry,
         config.clone(),
-        None,
+        mcp_service,
         None,
     );
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -1061,6 +1144,16 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     let notification_mgr = crate::tui::components::notification::NotificationManager::new(
         config.notifications.clone().unwrap_or_default(),
     );
+
+    // Boot the search backend (eggsearch by default) early so the
+    // McpService is available to any in-process agent loop. This call
+    // is idempotent: the daemon's TurnSubmit handler will reuse the
+    // same Arc<RwLock<McpService>> rather than spawning a second
+    // eggsearch process.
+    if !is_socket_mode {
+        let (_mcp_service, _report) =
+            codegg::search_backend::bootstrap::bootstrap_search_backend(&config).await;
+    }
 
     // Only initialize heavy local resources for inproc/stdio modes.
     // In socket mode the daemon owns the DB, providers, scheduler, etc.

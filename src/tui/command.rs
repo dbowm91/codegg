@@ -205,6 +205,8 @@ impl CommandRegistry {
                 .with_description("Show research runs and details (/research-show report|handoff|claims <run_id>)"),
             Command::new("/search", CommandCategory::Session, None)
                 .with_description("Search session transcript"),
+            Command::new("/doctor", CommandCategory::System, None)
+                .with_description("Run diagnostics (search backend, MCP, providers)"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

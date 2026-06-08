@@ -218,6 +218,10 @@ pub enum TuiCommand {
         run_id: String,
         section: String,
     },
+    /// Run diagnostics (search backend, MCP, providers). The result is
+    /// logged at `codegg::doctor` and surfaced as a toast. The
+    /// handler in `tui_cmd.rs` performs the actual async work.
+    RunDoctor,
 }
 
 /// Main application state for the TUI.
@@ -3926,6 +3930,19 @@ impl App {
                             query
                         ));
                     }
+                }
+            }
+            "/doctor" => {
+                // The doctor routine is async (it has to await the
+                // eggsearch MCP spawn), so fire it in a background task
+                // and let the agent loop pick up the result via a
+                // TuiCommand::SendNotification on the way back.
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::RunDoctor);
+                } else {
+                    self.messages_state
+                        .toasts
+                        .info("doctor: not connected to a core client");
                 }
             }
             "/review" => {

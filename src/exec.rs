@@ -102,9 +102,9 @@ impl ExecMode {
         }
 
         let permission_checker = PermissionChecker::new(Some(&config), None).with_exec_mode();
+        let (mcp_service, _report) =
+            crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
         let tool_registry = crate::tool::ToolRegistry::with_defaults();
-
-        let mcp_service = None;
 
         let mut loop_instance = AgentLoop::new(
             all_agents,

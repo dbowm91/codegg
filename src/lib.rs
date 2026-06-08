@@ -28,6 +28,7 @@ pub mod provider;
 pub mod shell_session;
 pub mod resilience;
 pub mod search;
+pub mod search_backend;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod session;

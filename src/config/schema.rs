@@ -67,6 +67,109 @@ pub struct Config {
     pub security: Option<SecurityConfig>,
     pub research: Option<ResearchConfig>,
     pub theme: Option<ThemeConfig>,
+    pub search: Option<SearchConfig>,
+}
+
+/// Web search/fetch backend configuration.
+///
+/// Codegg's native `websearch` and `webfetch` tools are thin wrappers
+/// around an external backend. The default backend is `eggsearch`, an
+/// external MCP server that owns the provider list, fetching, and
+/// extraction logic. Built-in providers are kept as an explicit
+/// fallback for users who cannot install `eggsearch`.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// Which backend to use.
+    pub backend: Option<SearchBackendConfig>,
+    /// Whether to expose raw `mcp__eggsearch__*` tools to the model.
+    /// Defaults to `false` so the model only sees the native wrappers.
+    pub expose_raw_mcp_tools: Option<bool>,
+    /// If `true`, fall back to the legacy built-in implementation when
+    /// the eggsearch backend is unavailable. Defaults to `false` to
+    /// encourage explicit configuration.
+    pub fallback_to_builtin: Option<bool>,
+    /// Output cap for `websearch` results, in characters.
+    pub max_search_output_chars: Option<usize>,
+    /// Output cap for `webfetch` results, in characters.
+    pub max_fetch_output_chars: Option<usize>,
+    /// Eggsearch-specific configuration.
+    pub eggsearch: Option<EggsearchConfig>,
+}
+
+impl SearchConfig {
+    pub fn backend(&self) -> SearchBackendConfig {
+        self.backend.unwrap_or(SearchBackendConfig::Eggsearch)
+    }
+
+    pub fn expose_raw_mcp_tools(&self) -> bool {
+        self.expose_raw_mcp_tools.unwrap_or(false)
+    }
+
+    pub fn fallback_to_builtin(&self) -> bool {
+        self.fallback_to_builtin.unwrap_or(false)
+    }
+
+    pub fn max_search_output_chars(&self) -> usize {
+        self.max_search_output_chars.unwrap_or(12_000)
+    }
+
+    pub fn max_fetch_output_chars(&self) -> usize {
+        self.max_fetch_output_chars.unwrap_or(20_000)
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchBackendConfig {
+    /// Use the external eggsearch MCP server.
+    Eggsearch,
+    /// Use Codegg's in-tree built-in providers only.
+    Builtin,
+    /// Disable web search/fetch entirely.
+    Disabled,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct EggsearchConfig {
+    /// Whether the eggsearch backend is enabled. When `false`, the
+    /// wrapper tools behave as if `[search].backend = "disabled"`.
+    pub enabled: Option<bool>,
+    /// MCP server name to register under. Defaults to `eggsearch`.
+    pub server_name: Option<String>,
+    /// Command to spawn (e.g. `eggsearch`).
+    pub command: Option<String>,
+    /// Arguments to the command.
+    pub args: Option<Vec<String>>,
+    /// MCP call timeout in milliseconds.
+    pub timeout_ms: Option<u64>,
+    /// Environment variables to set on the spawned process.
+    pub env: Option<HashMap<String, String>>,
+}
+
+impl EggsearchConfig {
+    pub fn server_name(&self) -> &str {
+        self.server_name.as_deref().unwrap_or("eggsearch")
+    }
+
+    pub fn command(&self) -> &str {
+        self.command.as_deref().unwrap_or("eggsearch")
+    }
+
+    pub fn args(&self) -> Vec<String> {
+        self.args
+            .clone()
+            .unwrap_or_else(|| vec!["mcp".to_string(), "stdio".to_string()])
+    }
+
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_ms.unwrap_or(60_000)
+    }
+
+    pub fn env(&self) -> HashMap<String, String> {
+        self.env.clone().unwrap_or_default()
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -1048,7 +1151,7 @@ pub struct SearchProviderConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::ProviderConfig;
+    use super::{ProviderConfig, SearchConfig, SearchBackendConfig, EggsearchConfig, Config};
 
     #[test]
     fn test_provider_api_key_supports_master_key_for_decryption() {
@@ -1067,5 +1170,98 @@ mod tests {
         assert_eq!(key.as_deref(), Some("decrypted-value"));
 
         std::env::remove_var("CODEGG_MASTER_KEY");
+    }
+
+    #[test]
+    fn search_config_default_backend_is_eggsearch() {
+        let cfg = SearchConfig::default();
+        assert_eq!(cfg.backend(), SearchBackendConfig::Eggsearch);
+        assert!(!cfg.expose_raw_mcp_tools());
+        assert!(!cfg.fallback_to_builtin());
+        assert_eq!(cfg.max_search_output_chars(), 12_000);
+        assert_eq!(cfg.max_fetch_output_chars(), 20_000);
+    }
+
+    #[test]
+    fn eggsearch_config_resolves_defaults() {
+        let egg = EggsearchConfig::default();
+        assert_eq!(egg.server_name(), "eggsearch");
+        assert_eq!(egg.command(), "eggsearch");
+        assert_eq!(egg.args(), vec!["mcp", "stdio"]);
+        assert_eq!(egg.timeout_ms(), 60_000);
+        assert!(egg.env().is_empty());
+    }
+
+    #[test]
+    fn eggsearch_config_resolves_overrides() {
+        let egg = EggsearchConfig {
+            enabled: Some(true),
+            server_name: Some("alt".to_string()),
+            command: Some("/usr/local/bin/eggsearch".to_string()),
+            args: Some(vec!["serve".to_string()]),
+            timeout_ms: Some(15_000),
+            env: Some(Default::default()),
+        };
+        assert_eq!(egg.server_name(), "alt");
+        assert_eq!(egg.command(), "/usr/local/bin/eggsearch");
+        assert_eq!(egg.args(), vec!["serve"]);
+        assert_eq!(egg.timeout_ms(), 15_000);
+    }
+
+    #[test]
+    fn search_section_parses() {
+        let json = r#"{
+            "search": {
+                "backend": "eggsearch",
+                "expose_raw_mcp_tools": true,
+                "fallback_to_builtin": true,
+                "max_search_output_chars": 5000,
+                "max_fetch_output_chars": 8000,
+                "eggsearch": {
+                    "enabled": true,
+                    "command": "eggsearch-test",
+                    "args": ["mcp", "stdio"],
+                    "timeout_ms": 30000
+                }
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).expect("parse");
+        let s = cfg.search.expect("search section");
+        assert_eq!(s.backend(), SearchBackendConfig::Eggsearch);
+        assert!(s.expose_raw_mcp_tools());
+        assert!(s.fallback_to_builtin());
+        assert_eq!(s.max_search_output_chars(), 5000);
+        assert_eq!(s.max_fetch_output_chars(), 8000);
+        let egg = s.eggsearch.expect("eggsearch section");
+        assert_eq!(egg.command(), "eggsearch-test");
+        assert_eq!(egg.timeout_ms(), 30_000);
+    }
+
+    #[test]
+    fn search_section_omitted_uses_defaults() {
+        let json = "{}";
+        let cfg: Config = serde_json::from_str(json).expect("parse");
+        assert!(cfg.search.is_none());
+        // Effective behavior: defaults to eggsearch.
+        let s = cfg.search.unwrap_or_default();
+        assert_eq!(s.backend(), SearchBackendConfig::Eggsearch);
+    }
+
+    #[test]
+    fn explicit_mcp_eggsearch_does_not_force_search_section() {
+        // `[mcp.eggsearch]` is a valid alternative to `[search.eggsearch]`.
+        let json = r#"{
+            "mcp": {
+                "eggsearch": {
+                    "type": "local",
+                    "command": "eggsearch",
+                    "args": ["mcp", "stdio"]
+                }
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).expect("parse");
+        assert!(cfg.search.is_none());
+        let mcp = cfg.mcp.expect("mcp");
+        assert!(mcp.contains_key("eggsearch"));
     }
 }
