@@ -1,10 +1,15 @@
 //! LSP - Language Server Protocol integration.
 //!
 //! The actual client and service live in the `egglsp` crate. This
-//! module re-exports the entire `egglsp` module tree so existing
-//! call sites that used `crate::lsp::service::LspService` and
+//! module is a **compatibility shim** that re-exports the entire
+//! `egglsp` module tree so existing call sites that used
+//! `crate::lsp::service::LspService` and
 //! `crate::lsp::language::extension_to_language_id` continue to
-//! work.
+//! work. New code should prefer direct `egglsp::...` imports. The
+//! shim is intentionally narrow: a `From<egglsp::LspError>` for
+//! `crate::error::LspError`, the legacy `Lsp` aggregator struct,
+//! and the `crate::config::schema::LspConfig` → `egglsp::LspConfig`
+//! `From` impl. See `plans/native_tool_crates_hardening.md` Phase 7.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -49,8 +54,7 @@ pub use egglsp::service::LspService;
 impl From<crate::config::schema::LspConfig> for egglsp::LspConfig {
     fn from(c: crate::config::schema::LspConfig) -> Self {
         // The shapes are intentionally identical; serde round-trips both.
-        serde_json::from_value(serde_json::to_value(c).unwrap_or_default())
-            .unwrap_or_default()
+        serde_json::from_value(serde_json::to_value(c).unwrap_or_default()).unwrap_or_default()
     }
 }
 

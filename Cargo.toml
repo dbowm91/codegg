@@ -134,13 +134,16 @@ regex = "1"
 # HTML to markdown
 html2text = "0.13"
 
-# LSP
-lsp-types = "0.97"
-lsp-server = "0.7"
-zip = "2"
+# LSP-related runtime dependencies are owned by the `egglsp` crate
+# (lsp-types, zip, xz2). The root crate no longer imports them
+# directly; it consumes the `egglsp` API surface and the `lsp`
+# tool wrapper.
+# `flate2` and `tar` are also pulled in by `egglsp` (for LSP server
+# download archives), but the root crate uses them too for plugin
+# installation in `src/plugin/install.rs`.
 flate2 = "1"
 tar = "0.4"
-xz2 = "0.1"
+
 notify = "7"
 
 # Server (feature-gated)

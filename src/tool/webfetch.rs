@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use html2text::from_read;
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::ToolError;
 use crate::search_backend;
 use crate::security::ssrf::{revalidate_dns, validate_host_ip, validate_url_host};
-use crate::tool::{Tool, ToolCategory};
+use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024; // 5MB
 const IMAGE_CONTENT_TYPES: &[&str] = &[
@@ -93,6 +93,31 @@ impl Tool for WebFetchTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         search_backend::dispatch_web_fetch(&input).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let start = Instant::now();
+        let output = search_backend::dispatch_web_fetch(&input).await?;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let mut provenance = search_backend::provenance_for_fetch().unwrap_or_else(|| {
+            use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
+            ToolProvenance {
+                backend: ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
+                implementation: "webfetch".to_string(),
+                version: None,
+                elapsed_ms: Some(elapsed_ms),
+                truncated: false,
+                trust: ToolTrust::ExternalUntrusted,
+            }
+        });
+        provenance.elapsed_ms = Some(elapsed_ms);
+        Ok(StructuredToolResult::with_provenance(
+            output, true, provenance,
+        ))
     }
 }
 

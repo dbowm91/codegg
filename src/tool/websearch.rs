@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 use serde_json::json;
+use std::time::Instant;
 
 use crate::error::ToolError;
 use crate::search_backend;
-use crate::tool::{Tool, ToolCategory};
+use crate::tool::{
+    StructuredToolResult, Tool, ToolBackendKind, ToolCategory, ToolExecutionContext,
+    ToolProvenance, ToolTrust,
+};
 
 /// Native `websearch` tool.
 ///
@@ -58,6 +62,32 @@ impl Tool for WebSearchTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         search_backend::dispatch_web_search(&input).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let start = Instant::now();
+        let output = search_backend::dispatch_web_search(&input).await?;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let provenance =
+            search_backend::provenance_for_search().unwrap_or_else(|| ToolProvenance {
+                backend: ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
+                implementation: "websearch".to_string(),
+                version: None,
+                elapsed_ms: Some(elapsed_ms),
+                truncated: false,
+                trust: ToolTrust::ExternalUntrusted,
+            });
+        let truncated = provenance.truncated;
+        let mut provenance = provenance;
+        provenance.elapsed_ms = Some(elapsed_ms);
+        provenance.truncated = truncated;
+        Ok(StructuredToolResult::with_provenance(
+            output, true, provenance,
+        ))
     }
 }
 

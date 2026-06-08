@@ -3545,9 +3545,7 @@ impl App {
                         }
                     });
                     if trees.is_empty() {
-                        self.messages_state
-                            .toasts
-                            .info("No worktrees found");
+                        self.messages_state.toasts.info("No worktrees found");
                     } else {
                         let names: Vec<String> = trees
                             .iter()
@@ -8090,34 +8088,25 @@ fn estimate_cost(input_tokens: &u64, output_tokens: &u64, model: &str) -> String
 }
 
 fn get_git_branch(git_root: &std::path::Path) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .args(["branch", "--show-current"])
-        .current_dir(git_root)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if branch.is_empty() {
-            Some("detached".to_string())
-        } else {
-            Some(branch)
-        }
+    // Use the `egggit` crate for branch lookup. This is a sync
+    // call (the helper is sync), so we run the async status
+    // fetch on the current-thread runtime.
+    let root = git_root.to_path_buf();
+    let result =
+        futures::executor::block_on(async move { egggit::status::repo_status(&root).await.ok() });
+    let status = result?;
+    if status.branch.is_empty() {
+        Some("detached".to_string())
     } else {
-        None
+        Some(status.branch)
     }
 }
 
 fn check_git_dirty(git_root: &std::path::Path) -> bool {
-    let output = std::process::Command::new("git")
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .args(["status", "--porcelain"])
-        .current_dir(git_root)
-        .output()
-        .ok();
-    output.is_some_and(|o| !o.stdout.is_empty())
+    let root = git_root.to_path_buf();
+    let result =
+        futures::executor::block_on(async move { egggit::status::repo_status(&root).await.ok() });
+    result.is_some_and(|s| s.is_dirty)
 }
 
 fn format_token_short(tokens: u64) -> String {

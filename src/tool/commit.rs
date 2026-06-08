@@ -27,36 +27,20 @@ impl CommitTool {
     }
 
     async fn get_diff(&self, all: bool) -> Result<String, ToolError> {
-        let args = if all {
-            vec!["diff", "--staged"]
+        // `all` means "stage all changes", so the diff we want is
+        // the staged slice. Otherwise we want HEAD vs working tree
+        // (both staged and unstaged).
+        let mode = if all {
+            egggit::DiffMode::Staged
         } else {
-            vec!["diff", "HEAD"]
+            egggit::DiffMode::Head
         };
-
-        let mut cmd = Command::new("git");
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        } else {
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-        }
-        cmd.kill_on_drop(true);
-        let output = cmd
-            .args(&args)
-            .current_dir(&self.workdir)
-            .output()
+        let diff = egggit::diff_text(&self.workdir, mode)
             .await
-            .map_err(|e| ToolError::Execution(format!("git diff failed: {}", e)))?;
-
-        if !output.status.success() && output.stdout.is_empty() && output.stderr.is_empty() {
-            return Err(ToolError::Execution("no diff available".to_string()));
-        }
-
-        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+            .map_err(|e| ToolError::Execution(format!("git diff failed: {e}")))?;
         if diff.is_empty() {
             return Err(ToolError::Execution("no changes to commit".to_string()));
         }
-
         Ok(diff)
     }
 

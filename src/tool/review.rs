@@ -21,28 +21,14 @@ impl ReviewTool {
     }
 
     async fn get_diff(&self, staged: bool) -> Result<String, ToolError> {
-        let args: &[&str] = if staged {
-            &["diff", "--cached", "HEAD"]
+        let mode = if staged {
+            egggit::DiffMode::Staged
         } else {
-            &["diff", "HEAD"]
+            egggit::DiffMode::Head
         };
-        let mut cmd = tokio::process::Command::new("git");
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        } else {
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-        }
-        cmd.kill_on_drop(true).args(args).current_dir(&self.workdir);
-        let output = cmd
-            .output()
+        let diff = egggit::diff_text(&self.workdir, mode)
             .await
-            .map_err(|e| ToolError::Execution(format!("git diff failed: {}", e)))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ToolError::Execution(format!("git diff failed: {}", stderr)));
-        }
-        let diff = String::from_utf8_lossy(&output.stdout).to_string();
+            .map_err(|e| ToolError::Execution(format!("git diff failed: {e}")))?;
         if diff.is_empty() {
             return Err(ToolError::Execution("no changes to review".to_string()));
         }

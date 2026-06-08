@@ -10,7 +10,10 @@ pub struct WorktreeInfo {
     pub is_detached: bool,
 }
 
-async fn run_git_async(root: PathBuf, args: Vec<String>) -> Result<std::process::Output, EgggitError> {
+async fn run_git_async(
+    root: PathBuf,
+    args: Vec<String>,
+) -> Result<std::process::Output, EgggitError> {
     tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new("git");
         cmd.env_clear();
@@ -62,9 +65,15 @@ fn push_parsed_worktree(
 
 /// List worktrees in a repository (read-only).
 pub async fn list_worktrees(git_root: &Path) -> Result<Vec<WorktreeInfo>, EgggitError> {
-    let output = run_git_async(git_root.to_path_buf(), vec!["worktree".into(), "list".into(), "--porcelain".into()]).await?;
+    let output = run_git_async(
+        git_root.to_path_buf(),
+        vec!["worktree".into(), "list".into(), "--porcelain".into()],
+    )
+    .await?;
     if !output.status.success() {
-        return Err(EgggitError::Git(String::from_utf8_lossy(&output.stderr).to_string()));
+        return Err(EgggitError::Git(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut worktrees = Vec::new();
@@ -89,13 +98,11 @@ pub async fn list_worktrees(git_root: &Path) -> Result<Vec<WorktreeInfo>, Egggit
             current_head = None;
             current_is_detached = false;
             current_is_current = Path::new(path) == git_root
-                || Path::new(path)
-                    .canonicalize()
-                    .is_ok_and(|p| {
-                        p == git_root
-                            .canonicalize()
-                            .unwrap_or_else(|_| git_root.to_path_buf())
-                    });
+                || Path::new(path).canonicalize().is_ok_and(|p| {
+                    p == git_root
+                        .canonicalize()
+                        .unwrap_or_else(|_| git_root.to_path_buf())
+                });
         } else if let Some(branch) = line.strip_prefix("branch ") {
             current_branch = branch.to_string();
         } else if let Some(head) = line.strip_prefix("HEAD ") {

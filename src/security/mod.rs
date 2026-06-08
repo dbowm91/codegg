@@ -1,3 +1,28 @@
+//! Security module — boundary between Codegg and the `eggsec` crate.
+//!
+//! ## Codegg owns (this crate)
+//!
+//! - `policy` — permission policy / escalation
+//! - `sandbox` — Landlock filesystem sandboxing
+//! - `service` — high-level security service (Codegg-side glue)
+//! - `ssrf` — SSRF protection (URL allow-listing, DNS re-validation)
+//! - sensitive path matching
+//!
+//! ## `eggsec` crate owns
+//!
+//! - command classification (`classify_bash_command`,
+//!   `classify_git_subcommand`, `classify_tool_call`)
+//! - secret / text scanning (`inspect_text`, `inspect_file`)
+//! - dependency file detection and recommended audit commands
+//! - `ProfileRunner` (deterministic profile scans)
+//! - finding types (`SecurityFinding`, `SecurityReport`,
+//!   `Severity`, `Confidence`, `SecurityCategory`)
+//!
+//! The re-exports below preserve the old `crate::security::finding::...`
+//! path for any call site that has not yet been migrated. New code
+//! should prefer direct `eggsec::...` imports. See
+//! `plans/native_tool_crates_hardening.md` Phase 8.
+
 pub mod policy;
 pub mod sandbox;
 pub mod service;

@@ -499,12 +499,16 @@ impl CoreDaemon {
                 let todo_state = std::sync::Arc::new(tokio::sync::Mutex::new(
                     crate::task_state::TodoState::new(),
                 ));
-                let mut tool_registry = crate::tool::ToolRegistry::with_session_defaults(
-                    todo_state.clone(),
-                    task_state_policy.clone(),
-                    self.pool.clone(),
-                    Some(session_id.clone()),
-                );
+                let tool_backends = crate::tool::ToolBackendConfig::from_config(&config);
+                let mut tool_registry =
+                    crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+                        todo_state: Some(todo_state.clone()),
+                        todo_policy: Some(task_state_policy.clone()),
+                        pool: self.pool.clone(),
+                        session_id: Some(session_id.clone()),
+                        lsp_service: None,
+                        tool_backends,
+                    });
                 if let Some(pool) = self.subagent_pool.clone() {
                     let task_tool = crate::tool::task::TaskTool::new(
                         pool.task_store(),

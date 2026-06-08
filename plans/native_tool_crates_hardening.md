@@ -1,5 +1,42 @@
 # Native Tool Crates Hardening and Integration Plan
 
+## Status
+
+All 12 phases of this plan are complete (see commit history). The
+highlights:
+
+- `ToolRegistry::with_config(&Config)` and
+  `ToolRegistryOptions::tool_backends` are the single authoritative
+  construction path; `main.rs`, `exec.rs`, and `core/daemon.rs` now
+  populate backend config from the loaded config.
+- `src/tool/backend_config.rs` is the single explicit
+  config-schema → runtime-type conversion site.
+- `ToolRegistry::backend_report(mcp_server_names)` reports
+  Active / Disabled / ConfiguredButUnavailable / FallbackToNative
+  based on actually registered tools plus the resolved config.
+- LSP and Security wrappers honour `[tool_backends.lsp|security]`
+  by either registering the real tool, a `DisabledTool` stub (for
+  `disabled`), or a clear-error stub (for the unimplemented
+  `mcp`).
+- `Tool::execute_structured()` is the central execution path used
+  by the agent loop; `websearch`, `webfetch`, `lsp`, and
+  `security` attach real `ToolProvenance` records.
+- `egggit::diff_text(root, DiffMode)` plus the `DiffMode` enum is
+  the new authoritative read-only diff API; `review.rs` and
+  `commit.rs` consume it.
+- Root `Cargo.toml` no longer owns `lsp_server` / `lsp-types`
+  (those moved to `egglsp`).
+- `eggcontext` exposes `TokenEstimate { tokens, tokenizer,
+  approximate }` and `TokenizerType::is_approximate()`; Claude and
+  Gemini are documented as approximate.
+- The agent loop's tool-definition merge in
+  `build_tool_definitions` now uses
+  `McpService::list_filtered_tools(policy)` with a policy built
+  from `[search]` and `[tool_backends.*]`, so managed MCP servers
+  are hidden by default.
+- `tests/tool_registry.rs` locks down the model-facing tool
+  surface.
+
 ## Purpose
 
 Tighten the first native-tool-crate extraction pass.

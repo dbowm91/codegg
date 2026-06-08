@@ -4,8 +4,8 @@ use lsp_types::*;
 use tracing::trace;
 use url::Url;
 
-use crate::error::LspError;
 use crate::client::url_to_uri;
+use crate::error::LspError;
 use crate::service::LspService;
 
 pub struct LspOperations {

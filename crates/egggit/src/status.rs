@@ -21,7 +21,10 @@ impl Default for RepoStatus {
     }
 }
 
-async fn run_git_async(root: std::path::PathBuf, args: Vec<String>) -> Result<std::process::Output, EgggitError> {
+async fn run_git_async(
+    root: std::path::PathBuf,
+    args: Vec<String>,
+) -> Result<std::process::Output, EgggitError> {
     tokio::task::spawn_blocking(move || {
         if !root.exists() {
             return Err(EgggitError::NotARepository(root.display().to_string()));
@@ -45,7 +48,9 @@ async fn capture_stdout(root: &Path, args: &[&str]) -> Result<String, EgggitErro
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let output = run_git_async(root, args).await?;
     if !output.status.success() {
-        return Err(EgggitError::Git(String::from_utf8_lossy(&output.stderr).to_string()));
+        return Err(EgggitError::Git(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
@@ -87,12 +92,8 @@ pub async fn repo_status(root: &Path) -> Result<RepoStatus, EgggitError> {
 
     let stash_count = {
         let out = capture_stdout(root, &["stash", "list"]).await;
-        out.map(|s| {
-            s.lines()
-                .filter(|line| line.starts_with("stash@"))
-                .count()
-        })
-        .unwrap_or(0)
+        out.map(|s| s.lines().filter(|line| line.starts_with("stash@")).count())
+            .unwrap_or(0)
     };
 
     Ok(RepoStatus {

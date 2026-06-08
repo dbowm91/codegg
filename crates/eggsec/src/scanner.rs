@@ -277,8 +277,9 @@ pub async fn inspect_file(
     let max = max_bytes;
 
     let text = tokio::task::spawn_blocking(move || -> Result<String, EggsecError> {
-        let meta = std::fs::metadata(&path_buf)
-            .map_err(|e| EggsecError::Io(format!("failed to read {}: {}", path_buf.display(), e)))?;
+        let meta = std::fs::metadata(&path_buf).map_err(|e| {
+            EggsecError::Io(format!("failed to read {}: {}", path_buf.display(), e))
+        })?;
         if meta.len() as usize > max {
             return Err(EggsecError::FileTooLarge(meta.len(), max));
         }

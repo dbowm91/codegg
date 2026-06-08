@@ -174,11 +174,7 @@ impl StructuredToolResult {
     }
 
     /// Build a structured result with explicit provenance.
-    pub fn with_provenance(
-        output: String,
-        success: bool,
-        provenance: ToolProvenance,
-    ) -> Self {
+    pub fn with_provenance(output: String, success: bool, provenance: ToolProvenance) -> Self {
         Self {
             output,
             success,
@@ -249,6 +245,16 @@ impl ToolBackendConfig {
         };
         cfg.and_then(|c| c.backend)
             .unwrap_or(ToolImplementationBackend::Native)
+    }
+
+    /// Borrow the per-domain config entry. Returns `None` for
+    /// domains that have no `[tool_backends.<domain>]` section.
+    pub fn cfg_for(&self, domain: BackendDomain) -> Option<&ExternalToolBackendConfig> {
+        match domain {
+            BackendDomain::Lsp => self.lsp.as_ref(),
+            BackendDomain::Security => self.security.as_ref(),
+            BackendDomain::Context => self.context.as_ref(),
+        }
     }
 }
 
@@ -329,9 +335,7 @@ impl ToolImplementationBackend {
         match s.trim().to_lowercase().as_str() {
             "native" => Some(ToolImplementationBackend::Native),
             "mcp" => Some(ToolImplementationBackend::Mcp),
-            "builtin" | "legacy" | "builtin_legacy" => {
-                Some(ToolImplementationBackend::Builtin)
-            }
+            "builtin" | "legacy" | "builtin_legacy" => Some(ToolImplementationBackend::Builtin),
             "disabled" | "off" | "none" => Some(ToolImplementationBackend::Disabled),
             _ => None,
         }
@@ -352,12 +356,27 @@ mod tests {
 
     #[test]
     fn backend_kind_parse_accepts_known_values() {
-        assert_eq!(ToolBackendKind::parse("native"), Some(ToolBackendKind::Native));
+        assert_eq!(
+            ToolBackendKind::parse("native"),
+            Some(ToolBackendKind::Native)
+        );
         assert_eq!(ToolBackendKind::parse("MCP"), Some(ToolBackendKind::Mcp));
-        assert_eq!(ToolBackendKind::parse("Shell"), Some(ToolBackendKind::Shell));
-        assert_eq!(ToolBackendKind::parse("builtin"), Some(ToolBackendKind::BuiltinLegacy));
-        assert_eq!(ToolBackendKind::parse("builtin_legacy"), Some(ToolBackendKind::BuiltinLegacy));
-        assert_eq!(ToolBackendKind::parse("legacy"), Some(ToolBackendKind::BuiltinLegacy));
+        assert_eq!(
+            ToolBackendKind::parse("Shell"),
+            Some(ToolBackendKind::Shell)
+        );
+        assert_eq!(
+            ToolBackendKind::parse("builtin"),
+            Some(ToolBackendKind::BuiltinLegacy)
+        );
+        assert_eq!(
+            ToolBackendKind::parse("builtin_legacy"),
+            Some(ToolBackendKind::BuiltinLegacy)
+        );
+        assert_eq!(
+            ToolBackendKind::parse("legacy"),
+            Some(ToolBackendKind::BuiltinLegacy)
+        );
     }
 
     #[test]
@@ -404,7 +423,10 @@ mod tests {
         assert_eq!(ToolTrust::LocalTrusted.label(), "local_trusted");
         assert_eq!(ToolTrust::LocalUntrusted.label(), "local_untrusted");
         assert_eq!(ToolTrust::ExternalUntrusted.label(), "external_untrusted");
-        assert_eq!(ToolTrust::MutatingSideEffect.label(), "mutating_side_effect");
+        assert_eq!(
+            ToolTrust::MutatingSideEffect.label(),
+            "mutating_side_effect"
+        );
     }
 
     #[test]
@@ -584,9 +606,11 @@ pub fn build_report(
 
     // --- websearch ---
     let (websearch_backend, websearch_impl, websearch_status) = match search_backend {
-        crate::config::schema::SearchBackendConfig::Disabled => {
-            ("Disabled".to_string(), "—".to_string(), "disabled".to_string())
-        }
+        crate::config::schema::SearchBackendConfig::Disabled => (
+            "Disabled".to_string(),
+            "—".to_string(),
+            "disabled".to_string(),
+        ),
         crate::config::schema::SearchBackendConfig::Builtin => (
             "Builtin".to_string(),
             "codegg/legacy".to_string(),
@@ -617,8 +641,10 @@ pub fn build_report(
     });
 
     // --- webfetch ---
-    let webfetch_status = if matches!(search_backend, crate::config::schema::SearchBackendConfig::Disabled)
-    {
+    let webfetch_status = if matches!(
+        search_backend,
+        crate::config::schema::SearchBackendConfig::Disabled
+    ) {
         "disabled"
     } else if matches!(
         search_backend,
@@ -682,10 +708,7 @@ pub fn build_report(
                     if mcp_server_names
                         .map(|names| {
                             names.iter().any(|n| {
-                                lsp.server_name
-                                    .as_deref()
-                                    .map(|s| s == n)
-                                    .unwrap_or(false)
+                                lsp.server_name.as_deref().map(|s| s == n).unwrap_or(false)
                             })
                         })
                         .unwrap_or(false)
@@ -696,7 +719,9 @@ pub fn build_report(
                     }
                 }
                 Some(crate::config::schema::ToolImplementationBackendSchema::Builtin) => "ready",
-                Some(crate::config::schema::ToolImplementationBackendSchema::Native) | None => "ready",
+                Some(crate::config::schema::ToolImplementationBackendSchema::Native) | None => {
+                    "ready"
+                }
             };
             // Update the `lsp` row already in the table.
             if let Some(row) = report.rows.iter_mut().find(|r| r.tool == "lsp") {
@@ -779,7 +804,8 @@ pub fn build_report(
         search_backend,
         crate::config::schema::SearchBackendConfig::Disabled
     ) {
-        report.warnings
+        report
+            .warnings
             .push("web search/fetch disabled ([search].backend = \"disabled\").".to_string());
     }
     if !expose_raw

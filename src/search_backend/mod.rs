@@ -110,6 +110,63 @@ fn effective_server_name(cfg: &SearchConfig) -> String {
         .unwrap_or_else(|| "eggsearch".to_string())
 }
 
+/// Build a `ToolProvenance` describing the current `websearch`
+/// backend. Returns `None` only if the resolved `SearchConfig` cannot
+/// be read (which should not happen in production).
+pub fn provenance_for_search() -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("websearch", None))
+}
+
+/// Build a `ToolProvenance` describing the current `webfetch`
+/// backend.
+pub fn provenance_for_fetch() -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("webfetch", None))
+}
+
+fn provenance_for_backend(_tool: &str, elapsed_ms: Option<u64>) -> crate::tool::ToolProvenance {
+    use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
+    let cfg = state::search_config();
+    let server = effective_server_name(&cfg);
+    let (backend, implementation, trust) = match cfg.backend() {
+        SearchBackendConfig::Disabled => (
+            ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
+            "disabled".to_string(),
+            ToolTrust::LocalTrusted,
+        ),
+        SearchBackendConfig::Builtin => (
+            ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
+            "codegg/legacy".to_string(),
+            ToolTrust::ExternalUntrusted,
+        ),
+        SearchBackendConfig::Eggsearch => {
+            let connected = state::mcp_service().is_some();
+            let impl_label = if connected {
+                format!("{}/search", server)
+            } else {
+                format!("{}/search (unavailable)", server)
+            };
+            let trust = if connected {
+                ToolTrust::ExternalUntrusted
+            } else {
+                ToolTrust::LocalUntrusted
+            };
+            (
+                ToolBackendKind::Mcp.label().to_lowercase(),
+                impl_label,
+                trust,
+            )
+        }
+    };
+    ToolProvenance {
+        backend,
+        implementation,
+        version: None,
+        elapsed_ms,
+        truncated: false,
+        trust,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +214,33 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(effective_server_name(&cfg), "myegg");
+    }
+
+    #[test]
+    fn provenance_for_search_reflects_backend() {
+        state::reset_for_tests();
+        // Disabled backend.
+        let mut cfg = SearchConfig::default();
+        cfg.backend = Some(SearchBackendConfig::Disabled);
+        state::install_search_config(cfg);
+        let p = provenance_for_search().unwrap();
+        assert_eq!(p.implementation, "disabled");
+
+        // Builtin backend.
+        state::reset_for_tests();
+        let mut cfg = SearchConfig::default();
+        cfg.backend = Some(SearchBackendConfig::Builtin);
+        state::install_search_config(cfg);
+        let p = provenance_for_search().unwrap();
+        assert_eq!(p.implementation, "codegg/legacy");
+        assert_eq!(p.backend, "builtinlegacy");
+
+        // Eggsearch backend, not connected.
+        state::reset_for_tests();
+        let cfg = SearchConfig::default();
+        state::install_search_config(cfg);
+        let p = provenance_for_search().unwrap();
+        assert_eq!(p.backend, "mcp");
+        assert!(p.implementation.starts_with("eggsearch"));
     }
 }

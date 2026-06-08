@@ -88,20 +88,18 @@ impl ProfileRunner {
                         &path.display().to_string(),
                         0,
                     );
-                    report
-                        .findings
-                        .push(crate::finding::SecurityFinding {
-                            id,
-                            severity: Severity::Info,
-                            confidence: Confidence::High,
-                            category: SecurityCategory::Unknown,
-                            source: FindingSource::BuiltinHeuristic,
-                            mode: FindingMode::Deterministic,
-                            file: Some(path.clone()),
-                            line_range: None,
-                            evidence: "file too large or unreadable for security scan".into(),
-                            recommendation: "Reduce file size or adjust scan limits".into(),
-                        });
+                    report.findings.push(crate::finding::SecurityFinding {
+                        id,
+                        severity: Severity::Info,
+                        confidence: Confidence::High,
+                        category: SecurityCategory::Unknown,
+                        source: FindingSource::BuiltinHeuristic,
+                        mode: FindingMode::Deterministic,
+                        file: Some(path.clone()),
+                        line_range: None,
+                        evidence: "file too large or unreadable for security scan".into(),
+                        recommendation: "Reduce file size or adjust scan limits".into(),
+                    });
                 }
             }
         }
@@ -197,7 +195,7 @@ mod tests {
 
         let runner = ProfileRunner::new(default_config());
         let report = runner
-            .inspect_paths(SecurityProfile::Ambient, &[file.clone()])
+            .inspect_paths(SecurityProfile::Ambient, std::slice::from_ref(&file))
             .await;
 
         let unsafe_findings: Vec<_> = report
@@ -239,7 +237,10 @@ mod tests {
 
         let runner = ProfileRunner::new(default_config());
         let report = runner
-            .inspect_paths(SecurityProfile::DependencyDelta, &[cargo.clone()])
+            .inspect_paths(
+                SecurityProfile::DependencyDelta,
+                std::slice::from_ref(&cargo),
+            )
             .await;
 
         let supply_findings: Vec<_> = report

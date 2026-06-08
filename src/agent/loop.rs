@@ -1731,15 +1731,61 @@ impl AgentLoop {
             .and_then(|e| e.lsp_tool)
             .unwrap_or(false);
 
+        // Build an MCP exposure policy from the resolved
+        // `[search]` and `[tool_backends.*]` config so raw
+        // Codegg-managed backends (eggsearch today, future
+        // egglsp/eggsec MCP adapters) are hidden by default while
+        // user-configured third-party MCP servers stay visible.
+        let search_cfg = crate::search_backend::state::search_config();
+        let tool_backends = self.tool_registry.tool_backends();
+        let expose_raw_search = search_cfg.expose_raw_mcp_tools();
+        let eggsearch_server = search_cfg
+            .eggsearch
+            .as_ref()
+            .and_then(|e| e.server_name.clone())
+            .unwrap_or_else(|| "eggsearch".to_string());
+        let mut hidden_servers: Vec<String> = Vec::new();
+        // Always hide eggsearch raw tools unless explicitly opted
+        // in via `[search].expose_raw_mcp_tools = true`.
+        if !expose_raw_search {
+            hidden_servers.push(eggsearch_server.clone());
+        }
+        // Per-domain backend config: when the user has set
+        // `expose_raw_mcp_tools = true` for a managed backend,
+        // unhide that server. This is the forward-compatible hook
+        // for the future `egglsp` and `eggsec` MCP adapters.
+        for domain_cfg in [
+            tool_backends.lsp.as_ref(),
+            tool_backends.security.as_ref(),
+            tool_backends.context.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(server) = domain_cfg.server_name.as_ref() {
+                if domain_cfg.expose_raw_mcp_tools() {
+                    hidden_servers.retain(|s| s != server);
+                } else {
+                    if !hidden_servers.iter().any(|s| s == server) {
+                        hidden_servers.push(server.clone());
+                    }
+                }
+            }
+        }
+        let policy = crate::mcp::McpExposurePolicy {
+            show_raw: true,
+            hidden_servers,
+        };
+
         let mcp_tools = if let Some(ref mcp_arc) = self.mcp_service {
             match mcp_arc.try_read() {
-                Ok(mcp) => mcp.list_tools(),
+                Ok(mcp) => mcp.list_filtered_tools(&policy),
                 Err(_) => {
                     tracing::debug!("MCP service write-locked during tool def building, retrying");
                     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                     mcp_arc
                         .try_read()
-                        .map(|mcp| mcp.list_tools())
+                        .map(|mcp| mcp.list_filtered_tools(&policy))
                         .unwrap_or_default()
                 }
             }
@@ -1750,22 +1796,8 @@ impl AgentLoop {
 
         // Set defer_loading on MCP tools based on the catalog
         let catalog = self.tool_registry.catalog();
-        let expose_raw_eggsearch =
-            crate::search_backend::state::search_config().expose_raw_mcp_tools();
-        let eggsearch_server = crate::search_backend::state::search_config()
-            .eggsearch
-            .as_ref()
-            .and_then(|e| e.server_name.clone())
-            .unwrap_or_else(|| "eggsearch".to_string());
-        let raw_prefix = format!("mcp__{}__", eggsearch_server);
         let mcp_tools: Vec<_> = mcp_tools
             .into_iter()
-            .filter(|t| {
-                if !expose_raw_eggsearch && t.name.starts_with(&raw_prefix) {
-                    return false;
-                }
-                true
-            })
             .map(|mut t| {
                 if catalog.is_deferred(&t.name) {
                     t.defer_loading = Some(true);
@@ -1798,7 +1830,7 @@ impl AgentLoop {
                 && cache_lsp == lsp_enabled
                 && cache_mcp_count == mcp_tool_count
                 && cache_perm_ver == permission_version
-                && cache_expose_raw == expose_raw_eggsearch
+                && cache_expose_raw == expose_raw_search
             {
                 let mut definitions = cached_defs.clone();
                 self.deferred_tool_definitions = cached_deferred.clone();
@@ -1939,7 +1971,7 @@ impl AgentLoop {
             lsp_enabled,
             mcp_tool_count,
             permission_version,
-            expose_raw_eggsearch,
+            expose_raw_search,
             definitions.clone(),
             deferred,
         ));
@@ -3188,12 +3220,17 @@ impl AgentLoop {
                                         attempt + 1
                                     );
                                 }
-                                match tokio::time::timeout(
-                                    timeout,
-                                    t.execute(tc_inner.arguments.clone()),
-                                )
-                                .await
-                                {
+                                // Prefer the structured path so wrappers
+                                // can record provenance/trust framing.
+                                // The model-facing string output is
+                                // identical to `t.execute(...)`.
+                                let exec_fut = async {
+                                    let structured = t
+                                        .execute_structured(tc_inner.arguments.clone(), None)
+                                        .await?;
+                                    Ok::<String, ToolError>(structured.output)
+                                };
+                                match tokio::time::timeout(timeout, exec_fut).await {
                                     Ok(r) => match &r {
                                         Ok(_) => {
                                             last_result = r;

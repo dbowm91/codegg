@@ -27,7 +27,7 @@ each of these crates.
 
 | Side | Direction | Notes |
 |------|-----------|-------|
-| Codegg config types | codegg → crate | Codegg converts `crate::config::schema::*` into crate-local config types via `From` impls |
+| Codegg config types | codegg → crate | Codegg converts `crate::config::schema::*` into crate-local config types via `From` impls in `src/tool/backend_config.rs` |
 | Crate config types | crate → codegg | Crates never import codegg config types |
 | `Tool` trait | codegg | Native wrappers in `src/tool/*.rs` implement the trait and call into the crates |
 | Permission gating | codegg | PermissionChecker is authoritative; crates may classify operations but cannot weaken policy |
@@ -75,6 +75,12 @@ pub struct StructuredToolResult {
 that have not yet adopted structured execution; `into_legacy_output()`
 extracts the string for model-facing calls.
 
+The central agent-loop execution path in `src/agent/loop.rs` now
+prefers `t.execute_structured(input, None)` so wrappers can record
+provenance, but the model-facing string output is unchanged.
+`ToolRegistry::execute_capture(name, input, ctx)` is the convenience
+helper used by callers that need provenance.
+
 ## Backend selection config
 
 Per-domain backend configuration is parsed from TOML/JSON via
@@ -92,7 +98,33 @@ timeout_ms = 30000
 The runtime-facing `tool::backend::ToolBackendConfig` (and its
 helpers `ToolBackendKind::parse`, `parse_implementation`) is built
 from the schema on startup and is the single source of truth for
-which backend handles which model-facing tool.
+which backend handles which model-facing tool. The conversion
+lives in `src/tool/backend_config.rs`:
+
+```rust
+impl From<&ToolBackendConfigSchema> for ToolBackendConfig { ... }
+impl ToolBackendConfig::from_config(&Config) -> Self { ... }
+```
+
+When the `[tool_backends]` section is absent, the runtime falls back
+to `ToolBackendConfig::all_native()` so domains without explicit
+configuration stay authoritative native.
+
+### ToolRegistry honours the config
+
+`ToolRegistry::with_config(&Config)` and
+`ToolRegistry::with_options(ToolRegistryOptions { tool_backends, .. })`
+are the single authoritative construction path. The resolved
+`tool_backends` are stashed on the registry (`registry.tool_backends()`)
+and consulted by:
+
+- `ToolRegistry::backend_report(mcp_server_names)` for `/tool-backends`
+  diagnostics
+- `with_options` to decide between the real `LspTool` / `SecurityTool`
+  and a `DisabledTool` stub when the user sets the backend to
+  `disabled` (or the unimplemented `mcp`)
+- `agent/loop.rs::build_tool_definitions` to build the MCP exposure
+  policy used by `McpService::list_filtered_tools`
 
 ## Raw MCP exposure policy
 
@@ -100,10 +132,15 @@ Codegg-owned backend MCPs (the default for `eggsearch`, and any
 future `egglsp`/`eggsec` MCP adapters) are hidden by default. The
 `McpService::list_filtered_tools(policy)` API takes an
 `McpExposurePolicy { show_raw, hidden_servers }` and returns either
-all `mcp__*` tools, or only the non-managed subset. The
-`SearchConfig::expose_raw_mcp_tools` flag toggles this for
-`websearch`/`webfetch`; future per-server policies live in the same
-`McpExposurePolicy` shape.
+all `mcp__*` tools, or only the non-managed subset. The agent loop
+now constructs this policy in `build_tool_definitions` from the
+resolved `SearchConfig` and per-domain `[tool_backends.*]` config so:
+
+- `websearch`/`webfetch` raw `mcp__eggsearch__*` are hidden unless
+  `[search].expose_raw_mcp_tools = true`
+- A future `egglsp` MCP adapter would be hidden by default, with
+  `[tool_backends.lsp].expose_raw_mcp_tools = true` opting in
+- User-configured third-party MCP servers remain visible
 
 ## Diagnostics
 
@@ -119,9 +156,14 @@ security     Native    eggsec             ready        n/a
 git          Native    codegg/egggit      ready        n/a
 ```
 
-`tool::backend::build_report()` constructs the report synchronously
-from the resolved backend config plus any pre-installed context (e.g.
-eggsearch availability from `search_backend::state`).
+There are now two report sources:
+
+1. `tool::backend::build_report(&SearchConfig, Option<&ToolBackendConfigSchema>, Option<&[String]>)`
+   — synchronous, config-only. Used by the TUI toast.
+2. `ToolRegistry::backend_report(Option<&[String]>)` — runtime-aware
+   and returns `Vec<RegistryBackendStatus>` (Active | Disabled |
+   ConfiguredButUnavailable | FallbackToNative). Used by tests and
+   any future diagnostic that has access to the live registry.
 
 ## Per-crate public APIs
 
@@ -133,12 +175,15 @@ eggsearch availability from `search_backend::state`).
 - `finding::SecurityFinding`, `SecurityReport`, `Severity`, `Confidence`, `SecurityCategory`
 - `profile::ProfileRunner`, `SecurityProfile`, `ProfileConfig`
 - `scanner::inspect_file`, `inspect_text`
-- `EggsecError { Io, FileTooLarge, Join }`
+- `EggsecError { Io, FileTooLarge, Join }` — bridged to `ToolError`
+  in `src/error.rs`.
 
 ### `eggcontext`
 
-- `TokenizerType::{Cl100kBase, Claude, Gemini, O200kBase}` with `for_model`, `multiplier`
-- `estimate_tokens_sync(text, model) -> usize`
+- `TokenizerType::{Cl100kBase, Claude, Gemini, O200kBase}` with `for_model`, `multiplier`, `is_approximate`
+- `TokenEstimate { tokens, tokenizer, approximate }`
+- `estimate_with_provenance(text, model) -> TokenEstimate`
+- `estimate_tokens_sync(text, model) -> usize` (compatibility wrapper; approximate for Claude/Gemini)
 - `estimate_tokens(text) -> usize`
 - `EggcontextError`
 
@@ -146,6 +191,7 @@ eggsearch availability from `search_backend::state`).
 
 - `repo_status(root) -> RepoStatus`
 - `diff_summary(root, base) -> DiffSummary`
+- `diff_text(root, mode) -> String` with `DiffMode::{Head, Staged, Base(&'static str)}`
 - `changed_files(root, base) -> Vec<ChangedFile>`
 - `file_diff(root, path, base) -> FileDiff`
 - `validate_patch(root, patch) -> PatchValidation`
@@ -168,13 +214,35 @@ When a Codegg config type needs to flow into a crate, conversion
 happens in a dedicated `*_bridge` style site near the top of the
 relevant module (no glob-re-exports across the boundary). For example:
 
-- `src/lsp/mod.rs` is a thin wrapper that converts `crate::config::schema::LspConfig` → `egglsp::LspConfig` and bridges `egglsp::LspError` → `crate::error::LspError`.
-- `src/worktree/mod.rs` keeps the mutating worktree operations (`create_worktree`, `remove_worktree`) and re-exports `list_worktrees` from `egggit` after wrapping the result in the legacy `Worktree` shape used by callers.
-- `src/security/mod.rs` re-exports `eggsec::{command, dependency, finding, profile, scanner}` so internal call sites that still use `crate::security::finding::Severity` etc. keep working.
+- `src/lsp/mod.rs` is a thin **compatibility shim** that re-exports
+  the `egglsp` module tree, converts
+  `crate::config::schema::LspConfig` → `egglsp::LspConfig`, and
+  bridges `egglsp::LspError` → `crate::error::LspError`. New code
+  should prefer direct `egglsp::...` imports.
+- `src/security/mod.rs` keeps policy, sandboxing, SSRF, and
+  sensitive-path matching in Codegg; the `eggsec` re-exports under
+  the `command`, `dependency`, `finding`, `profile`, and `scanner`
+  submodules are kept for backward compatibility but new code
+  should import directly from `eggsec::...`.
+- `src/worktree/mod.rs` keeps the mutating worktree operations
+  (`create_worktree`, `remove_worktree`) and re-exports
+  `list_worktrees` from `egggit` after wrapping the result in the
+  legacy `Worktree` shape used by callers.
 
 ## Test strategy
 
 - Each crate has self-contained unit tests in `crates/<name>/src/*.rs`.
-- Codegg wrapper tests snapshot the model-facing JSON schemas (`security::parameters_schema_snapshot`, `lsp::lsp_parameters_schema_snapshot`).
-- Failure paths (missing backend binary, disabled backend, malformed input) are tested at the dispatch layer (`tool::backend::report_tests`).
-- Integration tests that exercise real subprocesses (e.g. `tests/worktree.rs`) call the now-`async` APIs via `#[tokio::test]`.
+- Codegg wrapper tests snapshot the model-facing JSON schemas
+  (`security::parameters_schema_snapshot`,
+  `lsp::lsp_parameters_schema_snapshot`).
+- `tests/tool_registry.rs` (added in the hardening pass) locks down
+  the model-facing tool surface: required tool names, tool
+  categories, and disabled/missing tool behaviour across backend
+  configs.
+- Failure paths (missing backend binary, disabled backend,
+  malformed input) are tested at the dispatch layer
+  (`tool::backend::report_tests`,
+  `tool::backend_report_tests::*`).
+- Integration tests that exercise real subprocesses (e.g.
+  `tests/worktree.rs`) call the now-`async` APIs via
+  `#[tokio::test]`.

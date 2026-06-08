@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::json;
+use std::time::Instant;
 
 use crate::config::schema::SecurityConfig;
 use crate::error::ToolError;
@@ -7,7 +8,10 @@ use crate::security::command::classify_bash_command;
 use crate::security::finding::SecurityReport;
 use crate::security::profile::{ProfileConfig, ProfileRunner, SecurityProfile};
 use crate::security::scanner::{inspect_file, inspect_text};
-use crate::tool::{Tool, ToolCategory};
+use crate::tool::{
+    StructuredToolResult, Tool, ToolBackendKind, ToolCategory, ToolExecutionContext,
+    ToolProvenance, ToolTrust,
+};
 
 pub struct SecurityTool;
 
@@ -143,6 +147,27 @@ impl Tool for SecurityTool {
                 other
             ))),
         }
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let start = Instant::now();
+        let output = self.execute(input).await?;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let provenance = ToolProvenance {
+            backend: ToolBackendKind::Native.label().to_lowercase(),
+            implementation: "eggsec".to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            elapsed_ms: Some(elapsed_ms),
+            truncated: false,
+            trust: ToolTrust::LocalTrusted,
+        };
+        Ok(StructuredToolResult::with_provenance(
+            output, true, provenance,
+        ))
     }
 }
 
@@ -546,5 +571,25 @@ mod tests {
         let categories = parsed["categories"].as_array().unwrap();
         let has_rce = categories.iter().any(|c| c == "remote_code_execution");
         assert!(has_rce);
+    }
+
+    #[tokio::test]
+    async fn execute_structured_attaches_eggsec_provenance() {
+        use crate::tool::Tool;
+        let tool = SecurityTool;
+        let result = tool
+            .execute_structured(
+                json!({
+                    "action": "classify_command",
+                    "command": "ls"
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        let provenance = result.provenance.expect("provenance present");
+        assert_eq!(provenance.backend, "native");
+        assert_eq!(provenance.implementation, "eggsec");
+        assert!(provenance.elapsed_ms.is_some());
     }
 }

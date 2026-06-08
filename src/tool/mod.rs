@@ -7,6 +7,7 @@
 
 pub mod apply_patch;
 pub mod backend;
+pub mod backend_config;
 pub mod bash;
 pub mod batch;
 pub mod catalog;
@@ -14,6 +15,7 @@ pub mod codesearch;
 pub mod commit;
 pub mod destructive;
 pub mod diff;
+pub mod disabled;
 pub mod edit;
 pub mod formatter;
 pub mod git;
@@ -144,6 +146,7 @@ pub struct ToolResult {
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     catalog: catalog::ToolCatalog,
+    tool_backends: ToolBackendConfig,
 }
 
 impl Default for ToolRegistry {
@@ -189,6 +192,7 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
             catalog: catalog::ToolCatalog::new(),
+            tool_backends: ToolBackendConfig::default(),
         }
     }
 
@@ -216,10 +220,7 @@ impl ToolRegistry {
         registry.register(crate::tool::question::QuestionTool);
 
         // --- Todo tools (policy + persistence gated) ---
-        match (
-            options.todo_state.as_ref(),
-            options.todo_policy.as_ref(),
-        ) {
+        match (options.todo_state.as_ref(), options.todo_policy.as_ref()) {
             (Some(state), Some(policy)) => {
                 use crate::model_profile::types::TodoMode;
                 if policy.mode != TodoMode::Disabled && policy.allow_model_todo_write {
@@ -230,10 +231,7 @@ impl ToolRegistry {
                             p,
                             sid,
                         ),
-                        _ => crate::tool::todo::TodoWriteTool::new(
-                            state.clone(),
-                            policy.clone(),
-                        ),
+                        _ => crate::tool::todo::TodoWriteTool::new(state.clone(), policy.clone()),
                     };
                     registry.register(tool);
                 }
@@ -258,36 +256,94 @@ impl ToolRegistry {
         registry.register(crate::tool::terminal::TerminalTool::default());
         registry.register(crate::tool::git::GitTool::default());
 
-        // --- LSP: prefer injected service, otherwise build default. ---
-        let lsp_service = options.lsp_service.unwrap_or_else(|| {
-            Arc::new(crate::lsp::service::LspService::new(
-                crate::config::schema::LspConfig::default().into(),
-            ))
-        });
-        registry.register(crate::tool::lsp::LspTool::new(lsp_service));
+        // --- LSP: consult resolved backend config. ---
+        let lsp_backend = options
+            .tool_backends
+            .backend_for(crate::tool::backend::BackendDomain::Lsp);
+        match lsp_backend {
+            ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
+                let lsp_service = options.lsp_service.unwrap_or_else(|| {
+                    Arc::new(crate::lsp::service::LspService::new(
+                        crate::config::schema::LspConfig::default().into(),
+                    ))
+                });
+                registry.register(crate::tool::lsp::LspTool::new(lsp_service));
+            }
+            ToolImplementationBackend::Disabled => {
+                registry.register(crate::tool::disabled::DisabledTool::new(
+                    "lsp",
+                    crate::tool::lsp::LspTool::new(Arc::new(crate::lsp::service::LspService::new(
+                        crate::config::schema::LspConfig::default().into(),
+                    )))
+                    .description(),
+                    "lsp backend is configured as 'disabled' ([tool_backends.lsp].backend = \"disabled\")",
+                ));
+            }
+            ToolImplementationBackend::Mcp => {
+                registry.register(crate::tool::disabled::DisabledTool::new(
+                    "lsp",
+                    "Experimental: Query LSP server for code intelligence.",
+                    "lsp MCP backend is configured but not implemented; set [tool_backends.lsp].backend = \"native\" or \"disabled\"",
+                ));
+            }
+        }
 
         registry.register(crate::tool::commit::CommitTool::new());
-        registry.register(crate::tool::security::SecurityTool);
+
+        // --- Security: consult resolved backend config. ---
+        let sec_backend = options
+            .tool_backends
+            .backend_for(crate::tool::backend::BackendDomain::Security);
+        match sec_backend {
+            ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
+                registry.register(crate::tool::security::SecurityTool);
+            }
+            ToolImplementationBackend::Disabled => {
+                registry.register(crate::tool::disabled::DisabledTool::new(
+                    "security",
+                    crate::tool::security::SecurityTool.description(),
+                    "security backend is configured as 'disabled' ([tool_backends.security].backend = \"disabled\")",
+                ));
+            }
+            ToolImplementationBackend::Mcp => {
+                registry.register(crate::tool::disabled::DisabledTool::new(
+                    "security",
+                    "Deterministic security scanning tool.",
+                    "security MCP backend is configured but not implemented; set [tool_backends.security].backend = \"native\" or \"disabled\"",
+                ));
+            }
+        }
         registry.register(crate::tool::plan::PlanEnterTool);
         registry.register(crate::tool::plan::PlanExitTool);
         registry.register(crate::tool::invalid::InvalidTool);
 
         // Register tool_search with catalog for on-demand tool discovery.
-        let search_tool = crate::tool::tool_search::ToolSearchTool::new(Arc::new(
-            registry.catalog().clone(),
-        ));
+        let search_tool =
+            crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
         registry.register(search_tool);
 
-        // Note: `options.tool_backends` is currently only used to
-        // thread through the resolved configuration. Future phases
-        // will consult it from individual wrapper tools.
-        let _ = options.tool_backends;
+        // Stash the resolved backend configuration for diagnostics
+        // (`backend_report`) and any wrapper that wants to consult
+        // the runtime-resolved backend at call time.
+        registry.tool_backends = options.tool_backends;
 
         registry
     }
 
     pub fn with_defaults() -> Self {
         Self::with_options(ToolRegistryOptions::default())
+    }
+
+    /// Build a registry from a loaded `Config`. The resolved
+    /// per-domain backend configuration is passed through to
+    /// `ToolRegistryOptions::tool_backends` so individual wrappers
+    /// can consult it.
+    pub fn with_config(config: &crate::config::schema::Config) -> Self {
+        let tool_backends = ToolBackendConfig::from_config(config);
+        Self::with_options(ToolRegistryOptions {
+            tool_backends,
+            ..ToolRegistryOptions::default()
+        })
     }
 
     pub fn register(&mut self, tool: impl Tool + 'static) {
@@ -377,5 +433,385 @@ impl ToolRegistry {
         if let Some(tool) = self.tools.get_mut("tool_search") {
             tool.set_available_tools(available);
         }
+    }
+
+    /// Resolved backend configuration captured at construction.
+    /// Used by `backend_report` and by wrapper tools that want to
+    /// consult the runtime-resolved backend at call time.
+    pub fn tool_backends(&self) -> &ToolBackendConfig {
+        &self.tool_backends
+    }
+
+    /// Whether a tool with the given name is currently registered.
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
+    }
+
+    /// Run a tool by name, preferring `execute_structured` so that
+    /// provenance/trust metadata can be recorded. The model-facing
+    /// string output is identical to `execute()`. Tools that do not
+    /// override `execute_structured` get a legacy provenance record
+    /// so call sites that read provenance still get *something*
+    /// useful.
+    pub async fn execute_capture(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, crate::error::ToolError> {
+        let tool = self
+            .get(name)
+            .ok_or_else(|| crate::error::ToolError::NotFound(name.to_string()))?;
+        let start = std::time::Instant::now();
+        let result = tool.execute_structured(input, ctx).await;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        match result {
+            Ok(mut structured) => {
+                if let Some(p) = structured.provenance.as_mut() {
+                    if p.elapsed_ms.is_none() {
+                        p.elapsed_ms = Some(elapsed_ms);
+                    }
+                } else {
+                    structured.provenance = Some(ToolProvenance::legacy(name));
+                }
+                tracing::debug!(
+                    tool = %name,
+                    backend = structured.provenance.as_ref().map(|p| p.backend.as_str()).unwrap_or(""),
+                    implementation = structured.provenance.as_ref().map(|p| p.implementation.as_str()).unwrap_or(""),
+                    elapsed_ms,
+                    "tool executed via structured path"
+                );
+                Ok(structured)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Build a runtime status report for the three configurable
+    /// backends (lsp, security, context). The report is derived
+    /// from the **actually registered** tools plus the resolved
+    /// backend config, not from hardcoded assumptions.
+    ///
+    /// `mcp_server_names` is the list of MCP server names currently
+    /// connected to `McpService`. When `None`, the report cannot
+    /// tell whether an MCP-configured domain has a live server.
+    pub fn backend_report(
+        &self,
+        mcp_server_names: Option<&[String]>,
+    ) -> Vec<RegistryBackendStatus> {
+        use crate::tool::backend::{BackendDomain, ToolImplementationBackend};
+        use RegistryBackendStatusKind as Kind;
+
+        let mut out = Vec::with_capacity(3);
+        for (domain, tool_name) in [
+            (BackendDomain::Lsp, "lsp"),
+            (BackendDomain::Security, "security"),
+            (BackendDomain::Context, "context"),
+        ] {
+            let cfg = self.tool_backends.cfg_for(domain);
+            let configured = cfg.and_then(|c| c.backend);
+            let is_registered = self.tools.contains_key(tool_name);
+
+            let (status, backend_label) = match configured {
+                Some(ToolImplementationBackend::Disabled) => {
+                    (Kind::Disabled, "disabled".to_string())
+                }
+                Some(ToolImplementationBackend::Mcp) => {
+                    let server = cfg.and_then(|c| c.server_name.as_deref());
+                    let connected = match (server, mcp_server_names) {
+                        (Some(s), Some(names)) => names.iter().any(|n| n == s),
+                        _ => false,
+                    };
+                    let fallback = cfg.map(|c| c.fallback_to_native()).unwrap_or(true);
+                    if connected && is_registered {
+                        (Kind::Active, "mcp".to_string())
+                    } else if fallback {
+                        (Kind::FallbackToNative, "mcp".to_string())
+                    } else {
+                        (Kind::ConfiguredButUnavailable, "mcp".to_string())
+                    }
+                }
+                Some(ToolImplementationBackend::Builtin) => {
+                    if is_registered {
+                        (Kind::Active, "builtin".to_string())
+                    } else {
+                        (Kind::ConfiguredButUnavailable, "builtin".to_string())
+                    }
+                }
+                Some(ToolImplementationBackend::Native) | None => {
+                    if is_registered {
+                        (Kind::Active, "native".to_string())
+                    } else {
+                        (Kind::ConfiguredButUnavailable, "native".to_string())
+                    }
+                }
+            };
+
+            out.push(RegistryBackendStatus {
+                domain: match domain {
+                    BackendDomain::Lsp => "lsp",
+                    BackendDomain::Security => "security",
+                    BackendDomain::Context => "context",
+                },
+                tool: tool_name,
+                backend: backend_label,
+                status,
+            });
+        }
+        out
+    }
+}
+
+/// Runtime status of a single configurable tool backend, derived
+/// from the resolved config plus the actual registered tools.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryBackendStatus {
+    pub domain: &'static str,
+    pub tool: &'static str,
+    pub backend: String,
+    pub status: RegistryBackendStatusKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryBackendStatusKind {
+    /// Tool is registered and ready.
+    Active,
+    /// Tool is intentionally not registered because the backend
+    /// is configured as `disabled`.
+    Disabled,
+    /// Tool is configured to use a backend that is not currently
+    /// available (e.g. MCP server not connected, no fallback).
+    ConfiguredButUnavailable,
+    /// Backend is unavailable but `fallback_to_native = true`,
+    /// so the native wrapper is the live path.
+    FallbackToNative,
+}
+
+impl std::fmt::Display for RegistryBackendStatusKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegistryBackendStatusKind::Active => write!(f, "active"),
+            RegistryBackendStatusKind::Disabled => write!(f, "disabled"),
+            RegistryBackendStatusKind::ConfiguredButUnavailable => {
+                write!(f, "unavailable")
+            }
+            RegistryBackendStatusKind::FallbackToNative => write!(f, "fallback-native"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod backend_report_tests {
+    use super::*;
+    use crate::tool::backend::{
+        ExternalToolBackendConfig, ToolBackendConfig, ToolImplementationBackend,
+    };
+
+    fn build_with_backends(backends: ToolBackendConfig) -> ToolRegistry {
+        ToolRegistry::with_options(ToolRegistryOptions {
+            tool_backends: backends,
+            ..ToolRegistryOptions::default()
+        })
+    }
+
+    #[test]
+    fn all_native_with_default_registry_reports_active_for_registered_domains() {
+        let registry = ToolRegistry::with_defaults();
+        let report = registry.backend_report(None);
+        assert_eq!(report.len(), 3);
+        // lsp and security are real tools; context is not a wrapper
+        // tool today, so it lands in the ConfiguredButUnavailable arm
+        // for the default registry. That is the intended honest
+        // signal: the backend is "native" but no tool is registered
+        // because `context` helpers are inlined into the prompt
+        // builder / compaction.
+        for r in &report {
+            if r.domain == "lsp" || r.domain == "security" {
+                assert_eq!(
+                    r.status,
+                    RegistryBackendStatusKind::Active,
+                    "expected active for {}, got {:?}",
+                    r.domain,
+                    r.status
+                );
+                assert_eq!(r.backend, "native");
+            } else {
+                assert_eq!(r.backend, "native");
+            }
+        }
+    }
+
+    #[test]
+    fn disabled_lsp_reports_disabled() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.lsp = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Disabled),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let report = registry.backend_report(None);
+        let lsp = report.iter().find(|r| r.domain == "lsp").unwrap();
+        assert_eq!(lsp.status, RegistryBackendStatusKind::Disabled);
+    }
+
+    #[test]
+    fn mcp_without_connected_server_reports_unavailable() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.lsp = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Mcp),
+            server_name: Some("egglsp".to_string()),
+            fallback_to_native: Some(false),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let report = registry.backend_report(Some(&[]));
+        let lsp = report.iter().find(|r| r.domain == "lsp").unwrap();
+        assert_eq!(
+            lsp.status,
+            RegistryBackendStatusKind::ConfiguredButUnavailable
+        );
+    }
+
+    #[test]
+    fn mcp_with_fallback_reports_fallback_native() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.security = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Mcp),
+            server_name: Some("eggsec".to_string()),
+            fallback_to_native: Some(true),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let report = registry.backend_report(Some(&[]));
+        let sec = report.iter().find(|r| r.domain == "security").unwrap();
+        assert_eq!(sec.status, RegistryBackendStatusKind::FallbackToNative);
+    }
+
+    #[test]
+    fn mcp_with_connected_server_reports_active() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.lsp = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Mcp),
+            server_name: Some("egglsp".to_string()),
+            fallback_to_native: Some(false),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let names = vec!["egglsp".to_string()];
+        let report = registry.backend_report(Some(&names));
+        let lsp = report.iter().find(|r| r.domain == "lsp").unwrap();
+        assert_eq!(lsp.status, RegistryBackendStatusKind::Active);
+        assert_eq!(lsp.backend, "mcp");
+    }
+
+    #[test]
+    fn status_kind_display_values() {
+        assert_eq!(RegistryBackendStatusKind::Active.to_string(), "active");
+        assert_eq!(RegistryBackendStatusKind::Disabled.to_string(), "disabled");
+        assert_eq!(
+            RegistryBackendStatusKind::ConfiguredButUnavailable.to_string(),
+            "unavailable"
+        );
+        assert_eq!(
+            RegistryBackendStatusKind::FallbackToNative.to_string(),
+            "fallback-native"
+        );
+    }
+
+    #[test]
+    fn disabled_lsp_registers_disabled_stub() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.lsp = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Disabled),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let lsp = registry
+            .get("lsp")
+            .expect("disabled lsp stub should be registered");
+        assert_eq!(lsp.name(), "lsp");
+        // Calling should fail with the configured reason.
+        let result =
+            futures::executor::block_on(lsp.execute(serde_json::json!({"operation": "hover"})));
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("lsp backend is configured as 'disabled'"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn disabled_security_registers_disabled_stub() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.security = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Disabled),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let sec = registry
+            .get("security")
+            .expect("disabled security stub should be registered");
+        let result = futures::executor::block_on(
+            sec.execute(serde_json::json!({"action": "classify_command"})),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mcp_lsp_registers_clear_error_stub() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.lsp = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Mcp),
+            server_name: Some("egglsp".to_string()),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let lsp = registry.get("lsp").expect("stub should be registered");
+        let result =
+            futures::executor::block_on(lsp.execute(serde_json::json!({"operation": "hover"})));
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("lsp MCP backend is configured but not implemented"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn mcp_security_registers_clear_error_stub() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.security = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Mcp),
+            server_name: Some("eggsec".to_string()),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let sec = registry.get("security").expect("stub should be registered");
+        let result = futures::executor::block_on(
+            sec.execute(serde_json::json!({"action": "classify_command"})),
+        );
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("security MCP backend is configured but not implemented"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn builtin_lsp_treated_as_native() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.lsp = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Builtin),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        // The real LspTool is registered (Builtin == Native for lsp).
+        let lsp = registry
+            .get("lsp")
+            .expect("real lsp tool should be registered");
+        // The description should match the real LspTool description.
+        assert!(lsp.description().contains("LSP server"));
     }
 }

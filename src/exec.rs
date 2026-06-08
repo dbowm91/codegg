@@ -109,7 +109,7 @@ impl ExecMode {
         // loop starts. Idempotent if already bootstrapped.
         let (mcp_service, _report) =
             crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
-        let tool_registry = crate::tool::ToolRegistry::with_defaults();
+        let tool_registry = crate::tool::ToolRegistry::with_config(&config);
 
         let mut loop_instance = AgentLoop::new(
             all_agents,

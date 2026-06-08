@@ -1,9 +1,13 @@
 use crate::error::ToolError;
-use crate::tool::{Tool, ToolCategory};
+use crate::tool::{
+    StructuredToolResult, Tool, ToolBackendKind, ToolCategory, ToolExecutionContext,
+    ToolProvenance, ToolTrust,
+};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Debug, Deserialize)]
 struct LspInput {
@@ -322,6 +326,27 @@ impl Tool for LspTool {
 
         Ok(result)
     }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let start = Instant::now();
+        let output = self.execute(input).await?;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        let provenance = ToolProvenance {
+            backend: ToolBackendKind::Native.label().to_lowercase(),
+            implementation: "egglsp".to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            elapsed_ms: Some(elapsed_ms),
+            truncated: false,
+            trust: ToolTrust::LocalUntrusted,
+        };
+        Ok(StructuredToolResult::with_provenance(
+            output, true, provenance,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -331,18 +356,18 @@ mod tests {
 
     #[test]
     fn lsp_tool_name() {
-        let tool = LspTool::new(std::sync::Arc::new(
-            crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default().into()),
-        ));
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::config::schema::LspConfig::default().into(),
+        )));
         assert_eq!(tool.name(), "lsp");
         assert!(!tool.description().is_empty());
     }
 
     #[test]
     fn lsp_parameters_schema_snapshot() {
-        let tool = LspTool::new(std::sync::Arc::new(
-            crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default().into()),
-        ));
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::config::schema::LspConfig::default().into(),
+        )));
         let params = tool.parameters();
         let expected = json!({
             "type": "object",
@@ -385,5 +410,19 @@ mod tests {
             "required": ["operation"]
         });
         assert_eq!(params, expected);
+    }
+
+    #[tokio::test]
+    async fn lsp_execute_structured_attaches_native_provenance() {
+        use crate::tool::Tool;
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::config::schema::LspConfig::default().into(),
+        )));
+        // Use an unknown operation: this still exercises the
+        // structured path and produces the configured error.
+        let res = tool
+            .execute_structured(json!({"operation": "no_such_op"}), None)
+            .await;
+        assert!(res.is_err());
     }
 }

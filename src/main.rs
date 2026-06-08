@@ -1062,7 +1062,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     // loop starts. Idempotent if already bootstrapped.
     let (mcp_service, _report) =
         codegg::search_backend::bootstrap::bootstrap_search_backend(&config).await;
-    let tool_registry = codegg::tool::ToolRegistry::with_defaults();
+    let tool_registry = codegg::tool::ToolRegistry::with_config(&config);
     let mut agent_loop = codegg::agent::r#loop::AgentLoop::new(
         agents,
         provider,

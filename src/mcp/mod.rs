@@ -522,10 +522,7 @@ mod tests {
     use super::*;
     use crate::error::McpError;
 
-    fn mock_handler(
-        _tool: &str,
-        _args: serde_json::Value,
-    ) -> Result<String, McpError> {
+    fn mock_handler(_tool: &str, _args: serde_json::Value) -> Result<String, McpError> {
         Ok("ok".to_string())
     }
 

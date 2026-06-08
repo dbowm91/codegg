@@ -9,11 +9,11 @@ pub mod diff;
 pub mod status;
 pub mod worktree;
 
-pub use status::RepoStatus;
 pub use diff::{
-    changed_files, diff_summary, file_diff, validate_patch, ChangedFile, DiffSummary, FileDiff,
-    PatchValidation,
+    changed_files, diff_summary, diff_text, file_diff, validate_patch, ChangedFile, DiffMode,
+    DiffSummary, FileDiff, PatchValidation,
 };
+pub use status::RepoStatus;
 pub use worktree::WorktreeInfo;
 
 use thiserror::Error;

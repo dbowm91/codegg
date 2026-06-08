@@ -20,7 +20,7 @@ pub use finding::{
     Confidence, FindingMode, FindingSource, SecurityCategory, SecurityFinding, SecurityReport,
     Severity,
 };
-pub use profile::{ProfileRunner, ProfileConfig, SecurityProfile};
+pub use profile::{ProfileConfig, ProfileRunner, SecurityProfile};
 pub use scanner::{inspect_file, inspect_text};
 
 use thiserror::Error;
