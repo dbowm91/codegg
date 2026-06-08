@@ -68,6 +68,16 @@ impl Tool for DisabledTool {
     async fn execute(&self, _input: serde_json::Value) -> Result<String, ToolError> {
         Err(ToolError::Execution(self.reason.clone()))
     }
+
+    /// Disabled tools are not exposed to the model: a disabled
+    /// domain is intentionally hidden from the catalog so the model
+    /// does not pick a tool whose every call is a guaranteed
+    /// failure. The stub still exists in the registry so that
+    /// `/tool-backends` and tests can introspect the disabled
+    /// reason.
+    fn expose_in_definitions(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

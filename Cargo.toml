@@ -144,6 +144,10 @@ html2text = "0.13"
 flate2 = "1"
 tar = "0.4"
 
+# Root-crate direct use: config-file watcher
+# (`src/config/watcher.rs`). The `egglsp` crate does not depend
+# on `notify`; this stays at the root because the watcher watches
+# the user's `~/.config/codegg` files, not LSP server installs.
 notify = "7"
 
 # Server (feature-gated)

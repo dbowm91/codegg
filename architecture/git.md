@@ -2,7 +2,7 @@
 
 The `git` module previously provided Git session management for tracking repository state and worktree operations. As of the [native tool crate extraction](native_crates.md), this module has been **removed** from `src/`. Read-only git facts (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`) now live in the `egggit` workspace crate (`crates/egggit/`). Mutating worktree operations live in `src/worktree/`.
 
-The Codegg `git` tool (`src/tool/git.rs`) remains a low-level command wrapper and continues to expose the model-facing `git` name unchanged. The `commit` and `review` tools consume `egggit` for diff facts and keep their mutation/permission flow in codegg.
+The Codegg `git` tool (`src/tool/git.rs`) remains a low-level command wrapper and continues to expose the model-facing `git` name unchanged. The `commit` and `review` tools consume `egggit` for diff facts and keep their mutation/permission flow in codegg. Native tool calls (including `git`, `commit`, and `review`) execute through `ToolRegistry::execute_capture(...)` in `AgentLoop::execute_tool_calls`; structured provenance is recorded via `tracing::debug!` without changing the model-facing string output.
 
 ## Overview
 

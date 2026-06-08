@@ -2,6 +2,17 @@
 
 ## Status
 
+> **Superseded by [`native_tool_runtime_correctness.md`](native_tool_runtime_correctness.md).**
+>
+> The 12 phases of this plan are complete (see commit history). The
+> follow-up runtime-correctness pass refined the contracts laid down
+> here: `with_session_config_defaults(&Config, ...)` is now the
+> production session constructor; `Tool::expose_in_definitions()`
+> filters disabled/MCP-stub tools from the model-facing catalog;
+> `ToolRegistry::execute_capture(...)` is the central agent-loop
+> execution path. The highlights from the original plan are preserved
+> below for context.
+
 All 12 phases of this plan are complete (see commit history). The
 highlights:
 

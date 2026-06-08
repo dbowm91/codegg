@@ -133,6 +133,19 @@ pub trait Tool: Send + Sync {
         let output = self.execute(input).await?;
         Ok(StructuredToolResult::legacy(self.name(), output))
     }
+
+    /// Whether this tool should appear in the model-facing tool
+    /// definitions (`ToolRegistry::definitions()` /
+    /// `AgentLoop::build_tool_definitions()`). Defaults to `true`.
+    /// Tools that exist only for diagnostics, placeholders, or
+    /// hidden state (e.g. `DisabledTool`) should override this to
+    /// `false` so they do not pollute the model's tool surface.
+    /// These tools can still be invoked by name (e.g. by tests or
+    /// `/tool-backends` diagnostics) — they just do not appear in
+    /// the catalog the model sees.
+    fn expose_in_definitions(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +273,12 @@ impl ToolRegistry {
         let lsp_backend = options
             .tool_backends
             .backend_for(crate::tool::backend::BackendDomain::Lsp);
+        let lsp_fallback = options
+            .tool_backends
+            .lsp
+            .as_ref()
+            .map(|c| c.fallback_to_native())
+            .unwrap_or(true);
         match lsp_backend {
             ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
                 let lsp_service = options.lsp_service.unwrap_or_else(|| {
@@ -280,11 +299,27 @@ impl ToolRegistry {
                 ));
             }
             ToolImplementationBackend::Mcp => {
-                registry.register(crate::tool::disabled::DisabledTool::new(
-                    "lsp",
-                    "Experimental: Query LSP server for code intelligence.",
-                    "lsp MCP backend is configured but not implemented; set [tool_backends.lsp].backend = \"native\" or \"disabled\"",
-                ));
+                if lsp_fallback {
+                    // MCP-configured but no live server: keep the
+                    // native wrapper as the active path. Diagnostics
+                    // report this row as `fallback-native`.
+                    let lsp_service = options.lsp_service.clone().unwrap_or_else(|| {
+                        Arc::new(crate::lsp::service::LspService::new(
+                            crate::config::schema::LspConfig::default().into(),
+                        ))
+                    });
+                    registry.register(crate::tool::lsp::LspTool::new(lsp_service));
+                } else {
+                    // MCP configured, no fallback. Don't register a
+                    // model-visible tool. The diagnostic
+                    // `backend_report` reports this as
+                    // `unavailable` (ConfiguredButUnavailable).
+                    registry.register(crate::tool::disabled::DisabledTool::new(
+                        "lsp",
+                        "Experimental: Query LSP server for code intelligence.",
+                        "lsp MCP backend is configured but no MCP server is connected and fallback_to_native is false; set [tool_backends.lsp].backend = \"native\" or \"disabled\" or enable fallback_to_native",
+                    ));
+                }
             }
         }
 
@@ -294,6 +329,12 @@ impl ToolRegistry {
         let sec_backend = options
             .tool_backends
             .backend_for(crate::tool::backend::BackendDomain::Security);
+        let sec_fallback = options
+            .tool_backends
+            .security
+            .as_ref()
+            .map(|c| c.fallback_to_native())
+            .unwrap_or(true);
         match sec_backend {
             ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
                 registry.register(crate::tool::security::SecurityTool);
@@ -306,11 +347,22 @@ impl ToolRegistry {
                 ));
             }
             ToolImplementationBackend::Mcp => {
-                registry.register(crate::tool::disabled::DisabledTool::new(
-                    "security",
-                    "Deterministic security scanning tool.",
-                    "security MCP backend is configured but not implemented; set [tool_backends.security].backend = \"native\" or \"disabled\"",
-                ));
+                if sec_fallback {
+                    // MCP-configured but no live server: keep the
+                    // native wrapper as the active path. Diagnostics
+                    // report this row as `fallback-native`.
+                    registry.register(crate::tool::security::SecurityTool);
+                } else {
+                    // MCP configured, no fallback. Don't register a
+                    // model-visible tool. The diagnostic
+                    // `backend_report` reports this as
+                    // `unavailable` (ConfiguredButUnavailable).
+                    registry.register(crate::tool::disabled::DisabledTool::new(
+                        "security",
+                        "Deterministic security scanning tool.",
+                        "security MCP backend is configured but no MCP server is connected and fallback_to_native is false; set [tool_backends.security].backend = \"native\" or \"disabled\" or enable fallback_to_native",
+                    ));
+                }
             }
         }
         registry.register(crate::tool::plan::PlanEnterTool);
@@ -404,6 +456,7 @@ impl ToolRegistry {
         let interner = crate::util::interner::tool_interner();
         self.tools
             .values()
+            .filter(|t| t.expose_in_definitions())
             .map(|t| crate::provider::ToolDefinition {
                 name: interner.intern(t.name()).to_string(),
                 description: interner.intern(t.description()).to_string(),
@@ -413,6 +466,40 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Build a session registry using the loaded `Config`'s
+    /// resolved `[tool_backends]` config.
+    ///
+    /// **This is the constructor that production session paths
+    /// (the agent loop, the daemon) must use.** It preserves the
+    /// user's resolved backend configuration so that
+    /// `backend_report`, `definitions`, and the per-domain
+    /// registration branches all agree with what was configured.
+    pub fn with_session_config_defaults(
+        config: &crate::config::schema::Config,
+        todo_state: std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
+        policy: crate::model_profile::types::TaskStatePolicy,
+        pool: Option<sqlx::SqlitePool>,
+        session_id: Option<String>,
+    ) -> Self {
+        Self::with_options(ToolRegistryOptions {
+            todo_state: Some(todo_state),
+            todo_policy: Some(policy),
+            pool,
+            session_id,
+            lsp_service: None,
+            tool_backends: ToolBackendConfig::from_config(config),
+        })
+    }
+
+    /// Session registry with all-native backend defaults.
+    ///
+    /// **WARNING: This constructor drops the loaded
+    /// `[tool_backends]` config.** It exists for tests and
+    /// non-config-aware callers that only care about session-aware
+    /// todo wiring. Production code that has access to a loaded
+    /// `Config` must use [`Self::with_session_config_defaults`]
+    /// (or build a `ToolRegistryOptions` directly) so that backend
+    /// config is preserved.
     pub fn with_session_defaults(
         todo_state: std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
         policy: crate::model_profile::types::TaskStatePolicy,
@@ -502,6 +589,21 @@ impl ToolRegistry {
         use crate::tool::backend::{BackendDomain, ToolImplementationBackend};
         use RegistryBackendStatusKind as Kind;
 
+        // Helper: classify a registered tool as "native" (real
+        // wrapper), "disabled" (DisabledTool stub), or absent.
+        let classify_registered = |name: &str| -> RegisteredKind {
+            match self.tools.get(name) {
+                None => RegisteredKind::Absent,
+                Some(t) => {
+                    if t.expose_in_definitions() {
+                        RegisteredKind::Native
+                    } else {
+                        RegisteredKind::DisabledStub
+                    }
+                }
+            }
+        };
+
         let mut out = Vec::with_capacity(3);
         for (domain, tool_name) in [
             (BackendDomain::Lsp, "lsp"),
@@ -510,7 +612,7 @@ impl ToolRegistry {
         ] {
             let cfg = self.tool_backends.cfg_for(domain);
             let configured = cfg.and_then(|c| c.backend);
-            let is_registered = self.tools.contains_key(tool_name);
+            let registered = classify_registered(tool_name);
 
             let (status, backend_label) = match configured {
                 Some(ToolImplementationBackend::Disabled) => {
@@ -523,28 +625,38 @@ impl ToolRegistry {
                         _ => false,
                     };
                     let fallback = cfg.map(|c| c.fallback_to_native()).unwrap_or(true);
-                    if connected && is_registered {
-                        (Kind::Active, "mcp".to_string())
-                    } else if fallback {
-                        (Kind::FallbackToNative, "mcp".to_string())
-                    } else {
-                        (Kind::ConfiguredButUnavailable, "mcp".to_string())
+                    match (fallback, connected, registered) {
+                        // MCP configured, no fallback, no live
+                        // server: tool is hidden from model.
+                        (false, false, _) => (Kind::ConfiguredButUnavailable, "mcp".to_string()),
+                        // MCP configured, no fallback, live server:
+                        // a disabled stub is still registered so
+                        // diagnostics are honest. Real execution
+                        // is not possible because the native
+                        // wrapper is *not* registered in this
+                        // mode.
+                        (false, true, _) => (Kind::ConfiguredButUnavailable, "mcp".to_string()),
+                        // MCP configured, fallback enabled, live
+                        // server: the native wrapper is the live
+                        // path (we never delegate from
+                        // `LspTool`/`SecurityTool` to an MCP
+                        // server), so we still report
+                        // `fallback-native`.
+                        (true, true, _) => (Kind::FallbackToNative, "mcp".to_string()),
+                        // MCP configured, fallback enabled, no
+                        // live server: native wrapper is the
+                        // active path.
+                        (true, false, _) => (Kind::FallbackToNative, "mcp".to_string()),
                     }
                 }
-                Some(ToolImplementationBackend::Builtin) => {
-                    if is_registered {
-                        (Kind::Active, "builtin".to_string())
-                    } else {
-                        (Kind::ConfiguredButUnavailable, "builtin".to_string())
-                    }
-                }
-                Some(ToolImplementationBackend::Native) | None => {
-                    if is_registered {
-                        (Kind::Active, "native".to_string())
-                    } else {
-                        (Kind::ConfiguredButUnavailable, "native".to_string())
-                    }
-                }
+                Some(ToolImplementationBackend::Builtin) => match registered {
+                    RegisteredKind::Native => (Kind::Active, "builtin".to_string()),
+                    _ => (Kind::ConfiguredButUnavailable, "builtin".to_string()),
+                },
+                Some(ToolImplementationBackend::Native) | None => match registered {
+                    RegisteredKind::Native => (Kind::Active, "native".to_string()),
+                    _ => (Kind::ConfiguredButUnavailable, "native".to_string()),
+                },
             };
 
             out.push(RegistryBackendStatus {
@@ -585,6 +697,19 @@ pub enum RegistryBackendStatusKind {
     /// Backend is unavailable but `fallback_to_native = true`,
     /// so the native wrapper is the live path.
     FallbackToNative,
+}
+
+/// Internal helper for [`ToolRegistry::backend_report`]: what kind
+/// of tool, if any, is registered under a configurable domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisteredKind {
+    /// The real native wrapper is registered.
+    Native,
+    /// A non-model-visible [`crate::tool::disabled::DisabledTool`]
+    /// stub is registered.
+    DisabledStub,
+    /// No tool is registered under this name.
+    Absent,
 }
 
 impl std::fmt::Display for RegistryBackendStatusKind {
@@ -688,7 +813,33 @@ mod backend_report_tests {
     }
 
     #[test]
-    fn mcp_with_connected_server_reports_active() {
+    fn mcp_with_connected_server_reports_fallback_native() {
+        // When the MCP server is connected but the native wrapper
+        // is registered (fallback_to_native = true, default), the
+        // live path is the native wrapper. The diagnostic is
+        // honest about this: `fallback-native` with the live
+        // implementation being the native LspTool, not the
+        // (non-existent) MCP dispatcher.
+        let mut backends = ToolBackendConfig::all_native();
+        backends.lsp = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Mcp),
+            server_name: Some("egglsp".to_string()),
+            fallback_to_native: Some(true),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let names = vec!["egglsp".to_string()];
+        let report = registry.backend_report(Some(&names));
+        let lsp = report.iter().find(|r| r.domain == "lsp").unwrap();
+        assert_eq!(lsp.status, RegistryBackendStatusKind::FallbackToNative);
+        assert_eq!(lsp.backend, "mcp");
+    }
+
+    #[test]
+    fn mcp_with_connected_server_no_fallback_reports_unavailable() {
+        // With fallback disabled, the live path is not registered
+        // (only a hidden disabled stub). Even with a connected
+        // server, the wrapper is unavailable.
         let mut backends = ToolBackendConfig::all_native();
         backends.lsp = Some(ExternalToolBackendConfig {
             backend: Some(ToolImplementationBackend::Mcp),
@@ -700,8 +851,10 @@ mod backend_report_tests {
         let names = vec!["egglsp".to_string()];
         let report = registry.backend_report(Some(&names));
         let lsp = report.iter().find(|r| r.domain == "lsp").unwrap();
-        assert_eq!(lsp.status, RegistryBackendStatusKind::Active);
-        assert_eq!(lsp.backend, "mcp");
+        assert_eq!(
+            lsp.status,
+            RegistryBackendStatusKind::ConfiguredButUnavailable
+        );
     }
 
     #[test]
@@ -759,42 +912,107 @@ mod backend_report_tests {
     }
 
     #[test]
-    fn mcp_lsp_registers_clear_error_stub() {
+    fn mcp_lsp_with_fallback_registers_native_wrapper() {
         let mut backends = ToolBackendConfig::all_native();
         backends.lsp = Some(ExternalToolBackendConfig {
             backend: Some(ToolImplementationBackend::Mcp),
             server_name: Some("egglsp".to_string()),
+            fallback_to_native: Some(true),
             ..Default::default()
         });
         let registry = build_with_backends(backends);
-        let lsp = registry.get("lsp").expect("stub should be registered");
+        // With fallback_to_native = true the native wrapper is
+        // registered (not a disabled stub). It is the live path
+        // even though MCP is configured.
+        let lsp = registry
+            .get("lsp")
+            .expect("native lsp wrapper should be registered when fallback is on");
+        assert_eq!(lsp.name(), "lsp");
+        // The native wrapper is exposed in definitions.
+        let defs = registry.definitions();
+        assert!(
+            defs.iter().any(|d| d.name == "lsp"),
+            "lsp should be model-visible when fallback is on"
+        );
+    }
+
+    #[test]
+    fn mcp_lsp_without_fallback_registers_hidden_stub() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.lsp = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Mcp),
+            server_name: Some("egglsp".to_string()),
+            fallback_to_native: Some(false),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        // A disabled stub is registered for diagnostics but is
+        // hidden from the model.
+        let lsp = registry
+            .get("lsp")
+            .expect("disabled lsp stub should be registered");
+        let defs = registry.definitions();
+        assert!(
+            !defs.iter().any(|d| d.name == "lsp"),
+            "lsp should NOT be model-visible when fallback is off"
+        );
+        // Calling the stub still surfaces a clear reason.
         let result =
             futures::executor::block_on(lsp.execute(serde_json::json!({"operation": "hover"})));
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("lsp MCP backend is configured but not implemented"),
+            msg.contains("lsp MCP backend is configured but no MCP server is connected"),
             "got: {msg}"
         );
     }
 
     #[test]
-    fn mcp_security_registers_clear_error_stub() {
+    fn mcp_security_with_fallback_registers_native_wrapper() {
         let mut backends = ToolBackendConfig::all_native();
         backends.security = Some(ExternalToolBackendConfig {
             backend: Some(ToolImplementationBackend::Mcp),
             server_name: Some("eggsec".to_string()),
+            fallback_to_native: Some(true),
             ..Default::default()
         });
         let registry = build_with_backends(backends);
-        let sec = registry.get("security").expect("stub should be registered");
+        let sec = registry
+            .get("security")
+            .expect("native security wrapper should be registered when fallback is on");
+        assert_eq!(sec.name(), "security");
+        let defs = registry.definitions();
+        assert!(
+            defs.iter().any(|d| d.name == "security"),
+            "security should be model-visible when fallback is on"
+        );
+    }
+
+    #[test]
+    fn mcp_security_without_fallback_registers_hidden_stub() {
+        let mut backends = ToolBackendConfig::all_native();
+        backends.security = Some(ExternalToolBackendConfig {
+            backend: Some(ToolImplementationBackend::Mcp),
+            server_name: Some("eggsec".to_string()),
+            fallback_to_native: Some(false),
+            ..Default::default()
+        });
+        let registry = build_with_backends(backends);
+        let sec = registry
+            .get("security")
+            .expect("disabled security stub should be registered");
+        let defs = registry.definitions();
+        assert!(
+            !defs.iter().any(|d| d.name == "security"),
+            "security should NOT be model-visible when fallback is off"
+        );
         let result = futures::executor::block_on(
             sec.execute(serde_json::json!({"action": "classify_command"})),
         );
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("security MCP backend is configured but not implemented"),
+            msg.contains("security MCP backend is configured but no MCP server is connected"),
             "got: {msg}"
         );
     }

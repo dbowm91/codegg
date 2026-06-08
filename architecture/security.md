@@ -243,3 +243,24 @@ Check against allowed_paths
 - [tool.md](tool.md) - Uses security validation
 - [permission.md](permission.md) - Path permissions
 - [sandbox skill](../../.opencode/skills/sandbox/SKILL.md) - Sandboxing details
+
+## Tool Backend (MCP fallback semantics)
+
+`SecurityTool` (`src/tool/security.rs`) wraps `eggsec` and is
+registered by `ToolRegistry::with_options` based on
+`[tool_backends.security]` in the loaded `Config`. The matrix mirrors
+LSP and is reflected exactly in `ToolRegistry::backend_report(...)`:
+
+| `[tool_backends.security]` setting | Registered tool | `backend_report` status |
+|-------------------------------------|-----------------|-------------------------|
+| `backend = "native"` (default) or `"builtin"` | real `SecurityTool` wrapper around `eggsec` | `ready` |
+| `backend = "mcp", fallback_to_native = true` (default for `mcp`) | real `SecurityTool` wrapper (the live path is the native crate, not an MCP server) | `fallback-native` |
+| `backend = "mcp", fallback_to_native = false` | hidden `DisabledTool` stub — model never sees `security` | `unavailable` (`ConfiguredButUnavailable`) regardless of MCP server connectivity |
+| `backend = "disabled"` | hidden `DisabledTool` stub — model never sees `security` | `disabled` |
+
+`DisabledTool` overrides `Tool::expose_in_definitions()` to `false`,
+so the stub is registered (callable by name for `/tool-backends`
+diagnostics and tests) but filtered from the model-facing tool
+definitions. `SecurityTool::execute_structured()` reports provenance
+with `backend = "native"`, `implementation = "eggsec"` when called
+through `ToolRegistry::execute_capture` from the agent loop.

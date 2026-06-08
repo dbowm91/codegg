@@ -1873,6 +1873,15 @@ impl AgentLoop {
 
         let tools = self.tool_registry.list();
         let flags = compute_model_flags(model);
+        // Hide tools that the registry marks as non-exposed
+        // (e.g. `DisabledTool` stubs) so the model never sees a
+        // tool whose every call is a guaranteed failure. This is
+        // the model-facing half of the same predicate the
+        // registry uses in `definitions()`.
+        let tools: Vec<&dyn crate::tool::Tool> = tools
+            .into_iter()
+            .filter(|t| t.expose_in_definitions())
+            .collect();
         let filtered =
             filter_tools_for_model(model, &tools, self.state.plan_mode, lsp_enabled, &flags);
         let all_definitions: Vec<_> = filtered
@@ -3204,68 +3213,81 @@ impl AgentLoop {
 
                 let result = {
                     let tc_inner = Arc::clone(&tc_arc);
-                    let tool = registry
-                        .get(&tc_inner.name)
-                        .ok_or_else(|| ToolError::NotFound(tc_inner.name.to_string()));
-                    match tool {
-                        Ok(t) => {
-                            let mut last_result: Result<String, ToolError> =
-                                Err(ToolError::NotFound("no attempts made".into()));
-                            for attempt in 0..2 {
-                                if attempt > 0 {
-                                    tokio::time::sleep(Duration::from_millis(500)).await;
-                                    tracing::info!(
-                                        "Retrying tool '{}' (attempt {})",
-                                        tc_inner.name,
-                                        attempt + 1
-                                    );
-                                }
-                                // Prefer the structured path so wrappers
-                                // can record provenance/trust framing.
-                                // The model-facing string output is
-                                // identical to `t.execute(...)`.
-                                let exec_fut = async {
-                                    let structured = t
-                                        .execute_structured(tc_inner.arguments.clone(), None)
-                                        .await?;
-                                    Ok::<String, ToolError>(structured.output)
-                                };
-                                match tokio::time::timeout(timeout, exec_fut).await {
-                                    Ok(r) => match &r {
-                                        Ok(_) => {
-                                            last_result = r;
-                                            break;
-                                        }
-                                        Err(e) if e.is_retryable() => {
-                                            tracing::warn!(
-                                                "Tool '{}' retryable error: {}",
-                                                tc_inner.name,
-                                                e
-                                            );
-                                            last_result = r;
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Tool '{}' non-retryable error: {}",
-                                                tc_inner.name,
-                                                e
-                                            );
-                                            last_result = r;
-                                            break;
-                                        }
-                                    },
-                                    Err(_) => {
-                                        last_result = Err(ToolError::Execution(format!(
-                                            "Tool '{}' timed out after {:?}",
-                                            tc_inner.name, timeout
-                                        )));
+                    if registry.get(&tc_inner.name).is_none() {
+                        Err(ToolError::NotFound(tc_inner.name.to_string()))
+                    } else {
+                        let mut last_result: Result<String, ToolError> =
+                            Err(ToolError::NotFound("no attempts made".into()));
+                        for attempt in 0..2 {
+                            if attempt > 0 {
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                tracing::info!(
+                                    "Retrying tool '{}' (attempt {})",
+                                    tc_inner.name,
+                                    attempt + 1
+                                );
+                            }
+                            // Use the registry's structured
+                            // execution path so wrappers can
+                            // record provenance/trust framing and
+                            // disabled/MCP stub tools surface
+                            // their configured reason. The
+                            // model-facing string output is
+                            // identical to what the legacy
+                            // `t.execute(...)` would have
+                            // returned.
+                            let exec_ctx = Some(crate::tool::backend::ToolExecutionContext {
+                                backend: crate::tool::backend::ToolBackendKind::Native,
+                                session_id: Some(session_id.clone()),
+                                cwd: std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                permission_mode: None,
+                                timeout_ms: Some(timeout.as_millis() as u64),
+                            });
+                            let exec_fut = async {
+                                let structured = registry
+                                    .execute_capture(
+                                        &tc_inner.name,
+                                        tc_inner.arguments.clone(),
+                                        exec_ctx,
+                                    )
+                                    .await?;
+                                Ok::<String, ToolError>(structured.output)
+                            };
+                            match tokio::time::timeout(timeout, exec_fut).await {
+                                Ok(r) => match &r {
+                                    Ok(_) => {
+                                        last_result = r;
                                         break;
                                     }
+                                    Err(e) if e.is_retryable() => {
+                                        tracing::warn!(
+                                            "Tool '{}' retryable error: {}",
+                                            tc_inner.name,
+                                            e
+                                        );
+                                        last_result = r;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Tool '{}' non-retryable error: {}",
+                                            tc_inner.name,
+                                            e
+                                        );
+                                        last_result = r;
+                                        break;
+                                    }
+                                },
+                                Err(_) => {
+                                    last_result = Err(ToolError::Execution(format!(
+                                        "Tool '{}' timed out after {:?}",
+                                        tc_inner.name, timeout
+                                    )));
+                                    break;
                                 }
                             }
-                            last_result
                         }
-                        Err(e) => Err(e),
+                        last_result
                     }
                 };
 

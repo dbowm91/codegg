@@ -29,6 +29,11 @@ pub trait Tool: Send + Sync {
     fn category(&self) -> ToolCategory { ToolCategory::Mutating }
     fn set_available_tools(&mut self, _tools: Vec<String>) {}
     fn defer_loading(&self) -> bool { false }
+    /// Whether this tool should appear in the model-facing tool
+    /// definitions (default `true`). Overridden by `DisabledTool`
+    /// to `false` so hidden stubs do not pollute the model tool
+    /// surface.
+    fn expose_in_definitions(&self) -> bool { true }
 
     // Optional structured execution — default wraps `execute()`.
     async fn execute_structured(
@@ -44,6 +49,7 @@ pub trait Tool: Send + Sync {
 - `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`) - a common oversight
 - Every `Tool` reports a `ToolCategory` via `fn category(&self) -> ToolCategory` (default `Mutating`)
 - `execute_structured` is opt-in — new wrappers may use it; existing tools keep the default impl
+- `expose_in_definitions` is opt-out — hidden stubs (`DisabledTool` for `disabled` or `mcp + fallback_to_native = false`) override it to `false` and rely on the registry/agent loop filtering step to keep them out of the model-facing catalog while remaining callable by name for diagnostics
 
 ### ToolCategory
 
@@ -198,18 +204,22 @@ pub struct ToolRegistry {
 | Method | Description |
 |--------|-------------|
 | `new()` | Create empty registry |
-| `with_options(ToolRegistryOptions)` | Authoritative registration sequence; `with_defaults()` and `with_session_defaults(...)` are thin wrappers |
-| `with_defaults()` | Create registry with all 27 built-in tools |
-| `with_session_defaults(todo_state, policy, pool, session_id)` | Same as `with_defaults()` plus todo tools gated by policy |
+| `with_options(ToolRegistryOptions)` | Authoritative registration sequence; the other constructors are thin wrappers |
+| `with_defaults()` | Create registry with all 27 built-in tools, all-native backend defaults |
+| `with_session_config_defaults(&Config, todo_state, policy, pool, session_id)` | **Production session constructor.** Resolves `ToolBackendConfig::from_config(&Config)` and threads it through `with_options`, so resolved `[tool_backends]` config (LSP/security backends, MCP fallback) is preserved. |
+| `with_session_defaults(todo_state, policy, pool, session_id)` | Session registry with **all-native backend defaults** — drops any loaded `[tool_backends]`. Kept for tests and non-config-aware callers; the doc comment warns against using it in production paths. |
 | `register(&mut self, tool: impl Tool + 'static)` | Register a tool (takes `&dyn Tool` not `Box<dyn Tool>`) |
-| `get(&self, name: &str) -> Option<&dyn Tool>` | Get tool by name |
-| `list(&self) -> Vec<&dyn Tool>` | List all tools |
+| `get(&self, name: &str) -> Option<&dyn Tool>` | Get tool by name (includes hidden stubs) |
+| `list(&self) -> Vec<&dyn Tool>` | List all tools (includes hidden stubs) |
 | `filter_out(&mut self, denied_tools: &[String])` | Remove denied tools from registry |
-| `definitions(&self) -> Vec<ToolDefinition>` | Get tool definitions for LLM |
+| `definitions(&self) -> Vec<ToolDefinition>` | Get tool definitions for LLM — filters via `Tool::expose_in_definitions()` so `DisabledTool` stubs are hidden |
 | `catalog(&self) -> &ToolCatalog` | Access the tool catalog |
 | `set_search_mode(&mut self, mode)` | Set tool catalog search mode |
 | `register_deferred_names(&mut self, names)` | Register names of tools that load on-demand |
 | `set_search_tool_available_tools(&mut self, available)` | Inject available tool names into `tool_search` |
+| `execute_capture(name, input, ctx) -> StructuredToolResult` | Central execution path used by `AgentLoop::execute_tool_calls` for native tools. Returns structured provenance; the model-facing `structured.output` matches the legacy `execute()` string. |
+| `tool_backends()` | Resolved `ToolBackendConfig` captured at construction |
+| `backend_report(mcp_server_names)` | Runtime-aware status report for `/tool-backends` (Active / FallbackToNative / Disabled / ConfiguredButUnavailable) |
 
 ### ToolRegistryOptions (Phase 2)
 
@@ -226,7 +236,7 @@ pub struct ToolRegistryOptions {
 }
 ```
 
-Both `with_defaults()` and `with_session_defaults(...)` build a
+Both `with_defaults()` and `with_session_*_defaults(...)` build a
 `ToolRegistryOptions` and delegate to `with_options()`. LSP service
 construction is now injectable instead of hardcoded in two places.
 
@@ -238,6 +248,37 @@ for actual work. Crate local config types are converted from Codegg's
 `crate::config::schema::*` types at the bridge site. See
 `architecture/native_crates.md` for the full boundary, public APIs,
 and provenance model.
+
+The central execution path for native tools in
+`AgentLoop::execute_tool_calls` (`src/agent/loop.rs`) is
+`ToolRegistry::execute_capture(name, input, ctx)`. It calls
+`Tool::execute_structured()` internally, populates a fallback
+`ToolProvenance::legacy(...)` for tools that do not override it, and
+records provenance via `tracing::debug!` (backend, implementation,
+elapsed_ms). The returned `StructuredToolResult` is collapsed to
+`structured.output` for the model — the model-facing string is
+identical to the legacy `execute()` path. MCP tools
+(`mcp__server__tool`) continue to dispatch through
+`McpService::call_tool` and are not funnelled through
+`execute_capture`.
+
+### `expose_in_definitions` filtering
+
+`Tool::expose_in_definitions()` (default `true`) is the model-facing
+predicate. `DisabledTool` overrides it to `false`, so
+`ToolRegistry::definitions()` and `AgentLoop::build_tool_definitions()`
+both filter the tool out of the model-visible catalog. The stub
+remains registered and callable by name so:
+
+- `/tool-backends` and `ToolRegistry::backend_report(...)` can
+  introspect the disabled/MCP-stub state.
+- Tests can call the stub to assert the error message.
+- The disabled reason remains in the registry for diagnostics.
+
+Because both `definitions()` and `build_tool_definitions()` apply the
+same predicate, the model's view of the tool surface and
+`tool_search`'s view stay in lockstep: disabled/MCP-stub tools are
+never advertised.
 
 ## ToolCatalog
 

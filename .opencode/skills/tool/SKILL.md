@@ -43,6 +43,21 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError>;
+
+    // Optional:
+    fn category(&self) -> ToolCategory { ToolCategory::Mutating }
+    fn set_available_tools(&mut self, _tools: Vec<String>) {}
+    fn defer_loading(&self) -> bool { false }
+    /// Whether this tool should appear in the model-facing tool
+    /// definitions (default `true`). Overridden by `DisabledTool`
+    /// to `false` so disabled/MCP-stub tools do not pollute the
+    /// model tool surface.
+    fn expose_in_definitions(&self) -> bool { true }
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> { /* default wraps execute() */ }
 }
 ```
 
@@ -52,6 +67,15 @@ pub trait Tool: Send + Sync {
 2. **description()** - LLM-facing description of what the tool does
 3. **parameters()** - JSON schema for tool input parameters
 4. **execute()** - Async execution logic
+
+`expose_in_definitions()` defaults to `true`. Tools that exist only
+for diagnostics or as placeholders (e.g. `DisabledTool` registered
+when `[tool_backends.lsp|security]` is `disabled` or
+`mcp + fallback_to_native = false`) override it to `false` so the
+model never sees them, while remaining callable by name from
+`/tool-backends` and tests. `ToolRegistry::definitions()` and
+`AgentLoop::build_tool_definitions()` both filter through this
+predicate.
 
 ### Example Implementation
 
@@ -97,17 +121,56 @@ Manages tool registration and lookup:
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
     catalog: ToolCatalog,
+    tool_backends: ToolBackendConfig,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self;
     pub fn with_defaults() -> Self;
+    /// **Production session constructor.** Resolves
+    /// `ToolBackendConfig::from_config(&Config)` and threads it
+    /// through `with_options`, so resolved `[tool_backends]`
+    /// config is preserved.
+    pub fn with_session_config_defaults(
+        config: &Config,
+        todo_state: Arc<Mutex<TodoState>>,
+        policy: TaskStatePolicy,
+        pool: Option<SqlitePool>,
+        session_id: Option<String>,
+    ) -> Self;
+    /// Session registry with **all-native backend defaults** —
+    /// drops any loaded `[tool_backends]`. Kept for tests and
+    /// non-config-aware callers; the doc comment warns against
+    /// using it in production paths.
+    pub fn with_session_defaults(
+        todo_state: Arc<Mutex<TodoState>>,
+        policy: TaskStatePolicy,
+        pool: Option<SqlitePool>,
+        session_id: Option<String>,
+    ) -> Self;
+    /// Central execution path for native tool calls in the agent
+    /// loop. Calls `execute_structured()` internally, falls back
+    /// to `ToolProvenance::legacy(name)` for tools that do not
+    /// override it, and records provenance via `tracing::debug!`.
+    pub async fn execute_capture(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError>;
     pub fn register(&mut self, tool: impl Tool + 'static);
     pub fn get(&self, name: &str) -> Option<&dyn Tool>;
     pub fn list(&self) -> Vec<&dyn Tool>;
+    /// Filters through `Tool::expose_in_definitions()` so
+    /// `DisabledTool` stubs are hidden from the model.
     pub fn definitions(&self) -> Vec<ToolDefinition>;
     pub fn filter_out(&mut self, denied_tools: &[String]);
     pub fn catalog(&self) -> &ToolCatalog;
+    pub fn tool_backends(&self) -> &ToolBackendConfig;
+    pub fn backend_report(
+        &self,
+        mcp_server_names: Option<&[String]>,
+    ) -> Vec<RegistryBackendStatus>;
 }
 ```
 

@@ -176,6 +176,10 @@ These items were verified during review sessions:
 | Pricing service | `src/util/pricing.rs` - ModelPricing, calculate_cost | `src/util/pricing.rs` |
 | Auto-compact wrapper | Both `auto_compact()` and `auto_compact_sync()` exist | `src/agent/compaction.rs:550,594` |
 | ImageTool | IS registered in ToolRegistry::with_defaults() | `src/tool/mod.rs:102` |
+| Tool session constructor | `with_session_config_defaults(&Config, ...)` is the production session constructor; `with_session_defaults(...)` is the legacy all-native fallback (documented footgun for config-aware paths) | `src/tool/mod.rs:477,503` |
+| `Tool::expose_in_definitions()` | Default `true`; `DisabledTool` overrides to `false`. Both `ToolRegistry::definitions()` and `AgentLoop::build_tool_definitions()` filter through it, so disabled/MCP-stub tools are hidden from the model but remain callable for diagnostics and `/tool-backends` | `src/tool/mod.rs:146`, `src/tool/disabled.rs:78` |
+| Central native tool execution | `AgentLoop::execute_tool_calls` calls `ToolRegistry::execute_capture(name, input, ctx)` for native tool calls; provenance is recorded via `tracing::debug!` without changing the model-facing string output | `src/agent/loop.rs:3249` |
+| Structured execution smoke test | `tests/tool_structured_execution.rs` locks down `ToolProvenance` shape, disabled/MCP-fallback semantics, and definition visibility | `tests/tool_structured_execution.rs` |
 | Dialog::Stats | EXISTS in Dialog enum | `src/tui/app/types.rs:21` |
 | Goal module | Goal, GoalStatus, GoalBudget, GoalUsage, GoalStore, runtime | `src/goal/` |
 | Goal budget axes | 4 axes: max_turns, max_model_tokens, max_tool_calls, max_wallclock_secs | `src/goal/model.rs` |

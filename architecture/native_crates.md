@@ -75,11 +75,15 @@ pub struct StructuredToolResult {
 that have not yet adopted structured execution; `into_legacy_output()`
 extracts the string for model-facing calls.
 
-The central agent-loop execution path in `src/agent/loop.rs` now
-prefers `t.execute_structured(input, None)` so wrappers can record
-provenance, but the model-facing string output is unchanged.
-`ToolRegistry::execute_capture(name, input, ctx)` is the convenience
-helper used by callers that need provenance.
+The central agent-loop execution path in `src/agent/loop.rs` goes
+through `ToolRegistry::execute_capture(name, input, ctx)` for every
+native Codegg tool call (replacing direct `t.execute_structured()`
+calls at the call site). The model-facing string output
+(`structured.output`) is unchanged; the `ToolProvenance` returned to
+the caller is recorded internally via `tracing::debug!` plus the
+elapsed time and trust metadata. MCP tools (`mcp__server__tool`)
+continue to dispatch through `McpService::call_tool` and are not
+funnelled through `execute_capture` in this pass.
 
 ## Backend selection config
 
@@ -112,19 +116,63 @@ configuration stay authoritative native.
 
 ### ToolRegistry honours the config
 
-`ToolRegistry::with_config(&Config)` and
 `ToolRegistry::with_options(ToolRegistryOptions { tool_backends, .. })`
-are the single authoritative construction path. The resolved
+is the single authoritative construction path. The resolved
 `tool_backends` are stashed on the registry (`registry.tool_backends()`)
 and consulted by:
 
 - `ToolRegistry::backend_report(mcp_server_names)` for `/tool-backends`
   diagnostics
-- `with_options` to decide between the real `LspTool` / `SecurityTool`
-  and a `DisabledTool` stub when the user sets the backend to
-  `disabled` (or the unimplemented `mcp`)
+- `with_options` to decide between the real `LspTool` / `SecurityTool`,
+  a `DisabledTool` stub (hidden from the model), and the
+  fallback-native wrapper
 - `agent/loop.rs::build_tool_definitions` to build the MCP exposure
   policy used by `McpService::list_filtered_tools`
+
+### Session construction: `with_session_config_defaults` vs `with_session_defaults`
+
+There are two session constructors. Production code paths (the agent
+loop, the daemon) must use the config-aware one:
+
+- `ToolRegistry::with_session_config_defaults(&Config, todo_state,
+  policy, pool, session_id)` — resolves
+  `ToolBackendConfig::from_config(&Config)` and threads it through
+  `with_options`. **This is the constructor real session code uses.**
+- `ToolRegistry::with_session_defaults(todo_state, policy, pool,
+  session_id)` — kept for tests and non-config-aware callers; it
+  builds `ToolBackendConfig::default()` so it **silently drops any
+  loaded `[tool_backends]` config**. The doc comment explicitly warns
+  against using it in production paths that have access to a
+  `Config`.
+
+The split was introduced so a config-aware path can never accidentally
+end up with the all-native default for LSP/security.
+
+### MCP fallback semantics
+
+`with_options` consults `ToolBackendConfig` for each configurable
+domain (LSP, security) and applies this matrix, which `backend_report`
+mirrors exactly:
+
+| `backend` setting | `fallback_to_native` | Registered tool | `backend_report` status |
+|-------------------|----------------------|-----------------|-------------------------|
+| `native` / `builtin` | (any) | real `LspTool` / `SecurityTool` wrapper | `ready` |
+| `mcp` | `true` (default) | real native wrapper (live path is the native crate, not the MCP server) | `fallback-native` |
+| `mcp` | `false` | hidden `DisabledTool` stub (model never sees it) | `unavailable` (`ConfiguredButUnavailable`) regardless of whether the MCP server is connected |
+| `disabled` | (any) | hidden `DisabledTool` stub (model never sees it) | `disabled` |
+
+`DisabledTool` overrides `Tool::expose_in_definitions()` to `false`,
+so it is registered in the registry (callable for diagnostics and
+tests) but filtered out of the model-facing tool definitions and
+`tool_search` results.
+
+### Model-facing definition visibility
+
+`Tool::expose_in_definitions()` (default `true`) is the model-facing
+predicate. `ToolRegistry::definitions()` and
+`AgentLoop::build_tool_definitions()` both filter through it, so
+disabled/MCP-stub tools are hidden from the model but remain callable
+by name for diagnostics and `/tool-backends` reports.
 
 ## Raw MCP exposure policy
 
@@ -239,6 +287,15 @@ relevant module (no glob-re-exports across the boundary). For example:
   the model-facing tool surface: required tool names, tool
   categories, and disabled/missing tool behaviour across backend
   configs.
+- `tests/tool_structured_execution.rs` (added in the runtime
+  correctness pass) locks down the structured execution and
+  definition-visibility contracts: legacy tools return
+  `ToolProvenance::legacy`; `security` returns
+  `implementation = "eggsec"`; disabled `security` is filtered from
+  definitions; `mcp + fallback_to_native = true` registers the
+  native wrapper and reports `fallback-native`;
+  `mcp + fallback_to_native = false` exposes nothing and reports
+  `unavailable`.
 - Failure paths (missing backend binary, disabled backend,
   malformed input) are tested at the dispatch layer
   (`tool::backend::report_tests`,

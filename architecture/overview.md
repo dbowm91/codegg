@@ -124,7 +124,9 @@ hidden by default — see [MCP](mcp.md)).
 - Optional `execute_structured()` (default impl wraps `execute()`) — see `src/tool/backend.rs`
 - 27 built-in tools in default registry (bash, read, edit, write, glob, grep, task, webfetch, etc.)
 - `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`)
-- `ToolRegistry::with_options(ToolRegistryOptions)` is the authoritative registration sequence; `with_defaults()` and `with_session_defaults(...)` are thin wrappers
+- `ToolRegistry::with_options(ToolRegistryOptions)` is the authoritative registration sequence; `with_defaults()` and the two session constructors `with_session_config_defaults(&Config, ...)` / `with_session_defaults(...)` are thin wrappers (production session code uses the config-aware one to preserve `[tool_backends]`)
+- `Tool::expose_in_definitions()` (default `true`, overridden to `false` by `DisabledTool`) is the model-facing predicate; `ToolRegistry::definitions()` and `AgentLoop::build_tool_definitions()` both filter through it
+- `ToolRegistry::execute_capture(name, input, ctx)` is the central execution path for native tool calls in the agent loop
 
 ### Tool Backends
 - `ToolBackendKind` — `Native | Mcp | Shell | BuiltinLegacy`

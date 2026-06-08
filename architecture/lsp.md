@@ -263,6 +263,27 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
 
 LSP is exposed via `LspTool` in `src/tool/lsp.rs` when `experimental.lsp_tool` config is enabled.
 
+### Backend config (MCP fallback semantics)
+
+The `lsp` tool's registration is decided by `[tool_backends.lsp]` in
+the loaded `Config`. The matrix is applied by `ToolRegistry::with_options`
+and mirrored exactly by `ToolRegistry::backend_report(...)`:
+
+| `[tool_backends.lsp]` setting | Registered tool | `backend_report` status |
+|-------------------------------|-----------------|-------------------------|
+| `backend = "native"` (default) or `"builtin"` | real `LspTool` wrapper around `egglsp::LspService` | `ready` |
+| `backend = "mcp", fallback_to_native = true` (default for `mcp`) | real `LspTool` wrapper (the live path is the native crate, not an MCP server) | `fallback-native` |
+| `backend = "mcp", fallback_to_native = false` | hidden `DisabledTool` stub — model never sees `lsp` | `unavailable` (`ConfiguredButUnavailable`) regardless of MCP server connectivity |
+| `backend = "disabled"` | hidden `DisabledTool` stub — model never sees `lsp` | `disabled` |
+
+The `DisabledTool` stub is registered (callable for diagnostics) but
+filters itself out of the model-facing catalog via
+`Tool::expose_in_definitions() == false`. Production session
+construction uses `ToolRegistry::with_session_config_defaults(&config,
+...)` so the resolved config is preserved; the legacy
+`with_session_defaults(...)` is documented as a footgun for
+config-aware paths.
+
 ## Error Handling
 
 ```rust

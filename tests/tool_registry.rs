@@ -12,7 +12,7 @@
 use codegg::tool::backend::{
     ExternalToolBackendConfig, ToolBackendConfig, ToolImplementationBackend,
 };
-use codegg::tool::{Tool, ToolCategory, ToolRegistry};
+use codegg::tool::{ToolCategory, ToolRegistry};
 
 /// Tools that must always be present in a default registry.
 const REQUIRED_TOOLS: &[&str] = &[
@@ -87,7 +87,7 @@ fn default_tool_categories_are_consistent() {
 }
 
 #[test]
-fn disabled_lsp_backend_removes_lsp_tool() {
+fn disabled_lsp_backend_keeps_stub_but_hides_from_definitions() {
     let mut backends = ToolBackendConfig::all_native();
     backends.lsp = Some(ExternalToolBackendConfig {
         backend: Some(ToolImplementationBackend::Disabled),
@@ -97,16 +97,25 @@ fn disabled_lsp_backend_removes_lsp_tool() {
         tool_backends: backends,
         ..Default::default()
     });
+    // A `DisabledTool` stub is still registered for diagnostics.
     assert!(
         registry.contains("lsp"),
-        "disabled lsp is still registered as a DisabledTool stub"
+        "disabled lsp stub should remain in the registry for diagnostics"
     );
     let lsp = registry.get("lsp").unwrap();
     assert_eq!(lsp.name(), "lsp");
+    // But the stub is hidden from the model-facing tool
+    // definitions: the model never sees a tool whose every call
+    // is a guaranteed failure.
+    let defs = registry.definitions();
+    assert!(
+        !defs.iter().any(|d| d.name == "lsp"),
+        "disabled lsp must not appear in model-facing definitions"
+    );
 }
 
 #[test]
-fn disabled_security_backend_keeps_security_tool_as_stub() {
+fn disabled_security_backend_keeps_stub_but_hides_from_definitions() {
     let mut backends = ToolBackendConfig::all_native();
     backends.security = Some(ExternalToolBackendConfig {
         backend: Some(ToolImplementationBackend::Disabled),
@@ -117,6 +126,90 @@ fn disabled_security_backend_keeps_security_tool_as_stub() {
         ..Default::default()
     });
     assert!(registry.contains("security"));
+    let defs = registry.definitions();
+    assert!(
+        !defs.iter().any(|d| d.name == "security"),
+        "disabled security must not appear in model-facing definitions"
+    );
+}
+
+#[test]
+fn mcp_lsp_with_fallback_keeps_lsp_in_definitions() {
+    let mut backends = ToolBackendConfig::all_native();
+    backends.lsp = Some(ExternalToolBackendConfig {
+        backend: Some(ToolImplementationBackend::Mcp),
+        server_name: Some("egglsp".to_string()),
+        fallback_to_native: Some(true),
+        ..Default::default()
+    });
+    let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        tool_backends: backends,
+        ..Default::default()
+    });
+    // The native LspTool is registered and exposed to the model
+    // because fallback_to_native = true.
+    let defs = registry.definitions();
+    assert!(
+        defs.iter().any(|d| d.name == "lsp"),
+        "lsp must remain model-visible when MCP fallback is on"
+    );
+}
+
+#[test]
+fn mcp_lsp_without_fallback_hides_lsp_from_definitions() {
+    let mut backends = ToolBackendConfig::all_native();
+    backends.lsp = Some(ExternalToolBackendConfig {
+        backend: Some(ToolImplementationBackend::Mcp),
+        server_name: Some("egglsp".to_string()),
+        fallback_to_native: Some(false),
+        ..Default::default()
+    });
+    let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        tool_backends: backends,
+        ..Default::default()
+    });
+    let defs = registry.definitions();
+    assert!(
+        !defs.iter().any(|d| d.name == "lsp"),
+        "lsp must NOT be model-visible when MCP fallback is off"
+    );
+}
+
+#[test]
+fn with_session_config_defaults_preserves_resolved_backends() {
+    use codegg::config::schema::{
+        ExternalToolBackendConfigSchema, ToolBackendConfigSchema, ToolImplementationBackendSchema,
+    };
+    let mut config = codegg::config::schema::Config::default();
+    config.tool_backends = Some(ToolBackendConfigSchema {
+        lsp: Some(ExternalToolBackendConfigSchema {
+            backend: Some(ToolImplementationBackendSchema::Disabled),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let todo_state =
+        std::sync::Arc::new(tokio::sync::Mutex::new(codegg::task_state::TodoState::new()));
+    let registry = ToolRegistry::with_session_config_defaults(
+        &config,
+        todo_state,
+        codegg::model_profile::types::TaskStatePolicy::explicit_todo(),
+        None,
+        None,
+    );
+    // The resolved backend config flows through, so lsp is hidden
+    // from the model.
+    let defs = registry.definitions();
+    assert!(
+        !defs.iter().any(|d| d.name == "lsp"),
+        "with_session_config_defaults must respect the loaded [tool_backends] config"
+    );
+    assert_eq!(
+        registry
+            .tool_backends()
+            .backend_for(codegg::tool::backend::BackendDomain::Lsp),
+        ToolImplementationBackend::Disabled
+    );
 }
 
 #[test]
