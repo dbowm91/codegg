@@ -6,6 +6,7 @@
 //! and execution logic.
 
 pub mod apply_patch;
+pub mod backend;
 pub mod bash;
 pub mod batch;
 pub mod catalog;
@@ -48,6 +49,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::ToolError;
+
+// Re-export the backend contract types from `tool::backend` so the
+// rest of the codebase (and downstream callers) can refer to them
+// via `tool::ToolBackendKind` / `tool::StructuredToolResult` etc.
+pub use backend::{
+    BackendDomain, ExternalToolBackendConfig, StructuredToolResult, ToolBackendConfig,
+    ToolBackendKind, ToolExecutionContext, ToolImplementationBackend, ToolProvenance, ToolTrust,
+};
 
 static DEFAULT_REGISTRY: Lazy<ToolRegistry> = Lazy::new(ToolRegistry::with_defaults);
 
@@ -105,6 +114,23 @@ pub trait Tool: Send + Sync {
     fn defer_loading(&self) -> bool {
         false
     }
+
+    /// Opt-in structured execution. The default implementation simply
+    /// delegates to `execute()` and wraps the result in a
+    /// `StructuredToolResult::legacy(...)` with no provenance beyond
+    /// the tool name. Tools with rich backend metadata (e.g. native
+    /// wrappers that delegate to MCP) should override this to attach
+    /// provenance, trust framing, and timing information.
+    ///
+    /// Callers that only need a string can keep using `execute()`.
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let output = self.execute(input).await?;
+        Ok(StructuredToolResult::legacy(self.name(), output))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +152,38 @@ impl Default for ToolRegistry {
     }
 }
 
+/// Options that configure how a `ToolRegistry` is built.
+///
+/// This is the single authoritative input for tool registration. All
+/// other constructors (`with_defaults`, `with_session_defaults`) are
+/// thin wrappers that build a `ToolRegistryOptions` and call
+/// `with_options`.
+#[derive(Default)]
+pub struct ToolRegistryOptions {
+    /// Optional shared todo state. When `None`, the legacy
+    /// `TodoTool::default()` is registered (no session persistence).
+    pub todo_state: Option<Arc<tokio::sync::Mutex<crate::task_state::TodoState>>>,
+    /// Optional task-state policy. When `None` and `todo_state` is
+    /// also `None`, the legacy todo tool is used. When both are
+    /// `Some`, the policy gates whether todowrite/todoread are
+    /// registered.
+    pub todo_policy: Option<crate::model_profile::types::TaskStatePolicy>,
+    /// Optional SQLite pool, used to enable session-todo persistence
+    /// for `TodoWriteTool`.
+    pub pool: Option<sqlx::SqlitePool>,
+    /// Optional session id, used together with `pool` to enable
+    /// session-todo persistence.
+    pub session_id: Option<String>,
+    /// Optional pre-built LSP service. When `None`, a default
+    /// `Arc<LspService>` is constructed from `LspConfig::default()`.
+    pub lsp_service: Option<Arc<crate::lsp::service::LspService>>,
+    /// Resolved per-domain backend configuration. The registry does
+    /// not consume this directly today, but exposing it lets future
+    /// wrappers consult the resolved backend without re-parsing
+    /// config.
+    pub tool_backends: ToolBackendConfig,
+}
+
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
@@ -134,8 +192,14 @@ impl ToolRegistry {
         }
     }
 
-    pub fn with_defaults() -> Self {
+    /// Single authoritative registration sequence.
+    ///
+    /// `with_defaults()` and `with_session_defaults()` are thin
+    /// wrappers that construct a `ToolRegistryOptions` and call this.
+    pub fn with_options(options: ToolRegistryOptions) -> Self {
         let mut registry = Self::new();
+
+        // --- File-system / shell tools (always native) ---
         registry.register(crate::tool::bash::BashTool::default());
         registry.register(crate::tool::read::ReadTool::default());
         registry.register(crate::tool::edit::EditTool::default());
@@ -150,7 +214,42 @@ impl ToolRegistry {
         registry.register(crate::tool::image::ImageTool::default());
         registry.register(crate::tool::codesearch::CodeSearchTool);
         registry.register(crate::tool::question::QuestionTool);
-        registry.register(crate::tool::todo::TodoTool::default());
+
+        // --- Todo tools (policy + persistence gated) ---
+        match (
+            options.todo_state.as_ref(),
+            options.todo_policy.as_ref(),
+        ) {
+            (Some(state), Some(policy)) => {
+                use crate::model_profile::types::TodoMode;
+                if policy.mode != TodoMode::Disabled && policy.allow_model_todo_write {
+                    let tool = match (options.pool.clone(), options.session_id.clone()) {
+                        (Some(p), Some(sid)) => crate::tool::todo::TodoWriteTool::with_persistence(
+                            state.clone(),
+                            policy.clone(),
+                            p,
+                            sid,
+                        ),
+                        _ => crate::tool::todo::TodoWriteTool::new(
+                            state.clone(),
+                            policy.clone(),
+                        ),
+                    };
+                    registry.register(tool);
+                }
+                if policy.allow_model_todo_read {
+                    registry.register(crate::tool::todo::TodoReadTool::new(
+                        state.clone(),
+                        policy.clone(),
+                    ));
+                }
+            }
+            _ => {
+                // No session context: register the legacy default todo tool.
+                registry.register(crate::tool::todo::TodoTool::default());
+            }
+        }
+
         registry.register(crate::tool::skill::SkillTool);
         registry.register(crate::tool::apply_patch::ApplyPatchTool::new());
         registry.register(crate::tool::diff::DiffTool::default());
@@ -158,19 +257,37 @@ impl ToolRegistry {
         registry.register(crate::tool::review::ReviewTool::default());
         registry.register(crate::tool::terminal::TerminalTool::default());
         registry.register(crate::tool::git::GitTool::default());
-        registry.register(crate::tool::lsp::LspTool::new(Arc::new(
-            crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default()),
-        )));
+
+        // --- LSP: prefer injected service, otherwise build default. ---
+        let lsp_service = options.lsp_service.unwrap_or_else(|| {
+            Arc::new(crate::lsp::service::LspService::new(
+                crate::config::schema::LspConfig::default().into(),
+            ))
+        });
+        registry.register(crate::tool::lsp::LspTool::new(lsp_service));
+
         registry.register(crate::tool::commit::CommitTool::new());
         registry.register(crate::tool::security::SecurityTool);
         registry.register(crate::tool::plan::PlanEnterTool);
         registry.register(crate::tool::plan::PlanExitTool);
         registry.register(crate::tool::invalid::InvalidTool);
-        // Register tool_search with catalog for on-demand tool discovery
-        let search_tool =
-            crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
+
+        // Register tool_search with catalog for on-demand tool discovery.
+        let search_tool = crate::tool::tool_search::ToolSearchTool::new(Arc::new(
+            registry.catalog().clone(),
+        ));
         registry.register(search_tool);
+
+        // Note: `options.tool_backends` is currently only used to
+        // thread through the resolved configuration. Future phases
+        // will consult it from individual wrapper tools.
+        let _ = options.tool_backends;
+
         registry
+    }
+
+    pub fn with_defaults() -> Self {
+        Self::with_options(ToolRegistryOptions::default())
     }
 
     pub fn register(&mut self, tool: impl Tool + 'static) {
@@ -246,60 +363,14 @@ impl ToolRegistry {
         pool: Option<sqlx::SqlitePool>,
         session_id: Option<String>,
     ) -> Self {
-        let mut registry = Self::new();
-        registry.register(crate::tool::bash::BashTool::default());
-        registry.register(crate::tool::read::ReadTool::default());
-        registry.register(crate::tool::edit::EditTool::default());
-        registry.register(crate::tool::write::WriteTool::default());
-        registry.register(crate::tool::glob::GlobTool::default());
-        registry.register(crate::tool::grep::GrepTool::default());
-        registry.register(crate::tool::list::ListTool::default());
-        registry.register(crate::tool::task::TaskTool::default());
-        registry.register(crate::tool::webfetch::WebFetchTool::default());
-        registry.register(crate::tool::websearch::WebSearchTool::default());
-        registry.register(crate::tool::research::ResearchTool::with_default_service());
-        registry.register(crate::tool::image::ImageTool::default());
-        registry.register(crate::tool::codesearch::CodeSearchTool);
-        registry.register(crate::tool::question::QuestionTool);
-        // Register todowrite/todoread based on policy
-        use crate::model_profile::types::TodoMode;
-        if policy.mode != TodoMode::Disabled && policy.allow_model_todo_write {
-            let tool = match (pool.clone(), session_id.clone()) {
-                (Some(p), Some(sid)) => crate::tool::todo::TodoWriteTool::with_persistence(
-                    todo_state.clone(),
-                    policy.clone(),
-                    p,
-                    sid,
-                ),
-                _ => crate::tool::todo::TodoWriteTool::new(todo_state.clone(), policy.clone()),
-            };
-            registry.register(tool);
-        }
-        if policy.allow_model_todo_read {
-            registry.register(crate::tool::todo::TodoReadTool::new(
-                todo_state.clone(),
-                policy.clone(),
-            ));
-        }
-        registry.register(crate::tool::skill::SkillTool);
-        registry.register(crate::tool::apply_patch::ApplyPatchTool::new());
-        registry.register(crate::tool::diff::DiffTool::default());
-        registry.register(crate::tool::replace::ReplaceTool::default());
-        registry.register(crate::tool::review::ReviewTool::default());
-        registry.register(crate::tool::terminal::TerminalTool::default());
-        registry.register(crate::tool::git::GitTool::default());
-        registry.register(crate::tool::lsp::LspTool::new(Arc::new(
-            crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default()),
-        )));
-        registry.register(crate::tool::commit::CommitTool::new());
-        registry.register(crate::tool::security::SecurityTool);
-        registry.register(crate::tool::plan::PlanEnterTool);
-        registry.register(crate::tool::plan::PlanExitTool);
-        registry.register(crate::tool::invalid::InvalidTool);
-        let search_tool =
-            crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
-        registry.register(search_tool);
-        registry
+        Self::with_options(ToolRegistryOptions {
+            todo_state: Some(todo_state),
+            todo_policy: Some(policy),
+            pool,
+            session_id,
+            lsp_service: None,
+            tool_backends: ToolBackendConfig::default(),
+        })
     }
 
     pub fn set_search_tool_available_tools(&mut self, available: Vec<String>) {

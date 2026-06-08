@@ -147,3 +147,40 @@ pub fn detect_language(path: &str) -> Option<&'static str> {
     };
     extension_to_language_id(ext)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extension_rust() {
+        assert_eq!(extension_to_language_id("rs"), Some("rust"));
+    }
+
+    #[test]
+    fn extension_python() {
+        assert_eq!(extension_to_language_id("py"), Some("python"));
+    }
+
+    #[test]
+    fn extension_unknown() {
+        assert!(extension_to_language_id("unknown_xyz").is_none());
+    }
+
+    #[test]
+    fn language_to_server() {
+        assert_eq!(language_id_to_server_id("rust"), Some("rust-analyzer"));
+        assert_eq!(language_id_to_server_id("go"), Some("gopls"));
+    }
+
+    #[test]
+    fn detect_language_with_path() {
+        assert_eq!(detect_language("src/main.rs"), Some("rust"));
+        assert_eq!(detect_language("a/b/c.py"), Some("python"));
+    }
+
+    #[test]
+    fn detect_language_dockerfile() {
+        assert_eq!(detect_language("Dockerfile"), Some("dockerfile"));
+    }
+}

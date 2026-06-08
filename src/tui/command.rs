@@ -207,6 +207,9 @@ impl CommandRegistry {
                 .with_description("Search session transcript"),
             Command::new("/doctor", CommandCategory::System, None)
                 .with_description("Run diagnostics (search backend, MCP, providers)"),
+            Command::new("/tool-backends", CommandCategory::System, None)
+                .with_aliases(&["/tools", "/backends"])
+                .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

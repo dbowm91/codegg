@@ -1,15 +1,15 @@
 # Worktree Module
 
-The `worktree` module provides Git worktree management.
+The `worktree` module provides Git worktree management. The read-only `list_worktrees` operation is delegated to the `egggit` workspace crate (`crates/egggit/src/worktree.rs`); mutating operations (`create_worktree`, `remove_worktree`) remain in codegg core under the permission flow.
 
 ## Overview
 
-**Location**: `src/worktree/`
+**Location**: `src/worktree/` (mutating ops) and `crates/egggit/src/worktree.rs` (read-only listing)
 
 **Key Responsibilities**:
-- List git worktrees
-- Create new worktrees
-- Remove worktrees
+- List git worktrees (delegated to `egggit::worktree::list_worktrees` — async)
+- Create new worktrees (codegg-side, sync via `std::process::Command`)
+- Remove worktrees (codegg-side, sync)
 - Find git root (walks up directory tree looking for `.git`)
 - Check if a directory is a git worktree
 
@@ -18,10 +18,13 @@ The `worktree` module provides Git worktree management.
 ### list_worktrees()
 
 ```rust
-pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError>
+pub async fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError>
 ```
 
-Parses `git worktree list --porcelain` output to return worktree list.
+Async since the [native crate extraction](native_crates.md); it
+delegates to `egggit::worktree::list_worktrees` and wraps the result
+in the legacy `Worktree` shape used by codegg callers (TUI, server
+routes, core daemon). Integration tests use `#[tokio::test]`.
 
 ### create_worktree()
 

@@ -226,7 +226,7 @@ fn extract_tar_gz(
 
         if let Some(name) = path.file_name() {
             if name.to_string_lossy() == binary_name {
-                std::fs::create_dir_all(&full_path.parent().unwrap_or(&dest))?;
+                std::fs::create_dir_all(full_path.parent().unwrap_or(&dest))?;
                 entry.unpack(&full_path)?;
                 return Ok(full_path);
             }

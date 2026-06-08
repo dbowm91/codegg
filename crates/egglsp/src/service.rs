@@ -7,12 +7,12 @@ use tracing::{info, warn};
 use url::Url;
 
 use super::client::LspClient;
+use super::config::{LspConfig, LspRule};
 use super::download;
+use super::error::LspError;
 use super::language::{detect_language, language_id_to_server_id};
 use super::root;
 use super::server::{self, LspServerDef};
-use crate::config::schema::{LspConfig, LspRule};
-use crate::error::LspError;
 
 struct ClientEntry {
     client: LspClient,

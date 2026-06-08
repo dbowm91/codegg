@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/eggsec", "crates/eggcontext", "crates/egggit", "crates/egglsp"]
+resolver = "2"
+
 [package]
 name = "codegg"
 version = "0.1.0"
@@ -162,6 +166,12 @@ clap_complete = "4.6.2"
 ratatui-image = { version = "10", default-features = false, features = ["crossterm", "image-defaults"], optional = true }
 image = { version = "0.25", optional = true, features = ["png", "jpeg", "gif", "webp"] }
 num-traits = "0.2.19"
+
+# Extracted tool crates
+eggsec = { path = "crates/eggsec" }
+eggcontext = { path = "crates/eggcontext" }
+egggit = { path = "crates/egggit" }
+egglsp = { path = "crates/egglsp" }
 
 [dev-dependencies]
 proptest = "1"

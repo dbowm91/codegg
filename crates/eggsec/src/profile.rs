@@ -1,10 +1,9 @@
-use crate::config::schema::SecurityConfig;
-use crate::security::dependency::{detect_dependency_file, recommended_audit_commands};
-use crate::security::finding::{
+use crate::dependency::{detect_dependency_file, recommended_audit_commands};
+use crate::finding::{
     Confidence, FindingMode, FindingSource, SecurityCategory, SecurityFinding, SecurityReport,
     Severity,
 };
-use crate::security::scanner::inspect_file;
+use crate::scanner::inspect_file;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -28,13 +27,21 @@ impl SecurityProfile {
     }
 }
 
+/// Crate-local placeholder for the subset of `codegg::SecurityConfig` that
+/// `ProfileRunner` needs. Codegg converts its own config into this type at
+/// the boundary so that `eggsec` does not depend on Codegg config types.
+#[derive(Debug, Clone, Default)]
+pub struct ProfileConfig {
+    pub max_bytes: Option<usize>,
+}
+
 pub struct ProfileRunner {
     #[allow(dead_code)]
-    config: SecurityConfig,
+    config: ProfileConfig,
 }
 
 impl ProfileRunner {
-    pub fn new(config: SecurityConfig) -> Self {
+    pub fn new(config: ProfileConfig) -> Self {
         Self { config }
     }
 
@@ -69,21 +76,21 @@ impl ProfileRunner {
     }
 
     async fn run_ambient(&self, report: &mut SecurityReport, paths: &[PathBuf]) {
-        let max_bytes = 1_048_576; // 1 MB
+        let max_bytes = self.config.max_bytes.unwrap_or(1_048_576);
         for path in paths {
             match inspect_file(path, max_bytes).await {
                 Ok(findings) => report.findings.extend(findings),
                 Err(_) => {
                     // File too large or unreadable - add info finding
-                    let id = crate::security::finding::SecurityFinding::deterministic_id(
+                    let id = crate::finding::SecurityFinding::deterministic_id(
                         "file",
-                        &crate::security::finding::SecurityCategory::Unknown,
+                        &crate::finding::SecurityCategory::Unknown,
                         &path.display().to_string(),
                         0,
                     );
                     report
                         .findings
-                        .push(crate::security::finding::SecurityFinding {
+                        .push(crate::finding::SecurityFinding {
                             id,
                             severity: Severity::Info,
                             confidence: Confidence::High,
@@ -178,8 +185,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn default_config() -> SecurityConfig {
-        SecurityConfig::default()
+    fn default_config() -> ProfileConfig {
+        ProfileConfig::default()
     }
 
     #[tokio::test]

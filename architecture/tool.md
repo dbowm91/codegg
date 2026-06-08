@@ -12,10 +12,11 @@ The `tool` module provides the built-in tools that the agent can use to interact
 - Tool execution with permission checking
 - Parameter validation
 - On-demand tool discovery via ToolCatalog
+- Backend abstraction (native, MCP, shell, builtin legacy) — see `src/tool/backend.rs` and `architecture/native_crates.md`
 
 ## Tool Trait
 
-All tools implement the `Tool` trait defined at `src/tool/mod.rs:54-60`:
+All tools implement the `Tool` trait defined at `src/tool/mod.rs:85-108`:
 
 ```rust
 #[async_trait]
@@ -24,13 +25,25 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError>;
+
+    fn category(&self) -> ToolCategory { ToolCategory::Mutating }
+    fn set_available_tools(&mut self, _tools: Vec<String>) {}
+    fn defer_loading(&self) -> bool { false }
+
+    // Optional structured execution — default wraps `execute()`.
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> { ... }
 }
 ```
 
 **Important Notes**:
-- Tools receive only `serde_json::Value` as input (no `ToolContext` struct)
+- Tools receive only `serde_json::Value` as input (no `ToolContext` struct) by default
 - `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`) - a common oversight
-- Every `Tool` reports a `ToolCategory` via `fn category(&self) -> ToolCategory { ReadOnly }` (with a default of `ReadOnly`)
+- Every `Tool` reports a `ToolCategory` via `fn category(&self) -> ToolCategory` (default `Mutating`)
+- `execute_structured` is opt-in — new wrappers may use it; existing tools keep the default impl
 
 ### ToolCategory
 
@@ -171,7 +184,7 @@ registry.register(crate::tool::multiedit::MultiEditTool::default());
 
 ## ToolRegistry
 
-Manages registration and lookup of tools at `src/tool/mod.rs:70-73`:
+Manages registration and lookup of tools at `src/tool/mod.rs:118-121`:
 
 ```rust
 pub struct ToolRegistry {
@@ -185,56 +198,46 @@ pub struct ToolRegistry {
 | Method | Description |
 |--------|-------------|
 | `new()` | Create empty registry |
+| `with_options(ToolRegistryOptions)` | Authoritative registration sequence; `with_defaults()` and `with_session_defaults(...)` are thin wrappers |
 | `with_defaults()` | Create registry with all 27 built-in tools |
+| `with_session_defaults(todo_state, policy, pool, session_id)` | Same as `with_defaults()` plus todo tools gated by policy |
 | `register(&mut self, tool: impl Tool + 'static)` | Register a tool (takes `&dyn Tool` not `Box<dyn Tool>`) |
 | `get(&self, name: &str) -> Option<&dyn Tool>` | Get tool by name |
 | `list(&self) -> Vec<&dyn Tool>` | List all tools |
 | `filter_out(&mut self, denied_tools: &[String])` | Remove denied tools from registry |
 | `definitions(&self) -> Vec<ToolDefinition>` | Get tool definitions for LLM |
 | `catalog(&self) -> &ToolCatalog` | Access the tool catalog |
+| `set_search_mode(&mut self, mode)` | Set tool catalog search mode |
+| `register_deferred_names(&mut self, names)` | Register names of tools that load on-demand |
+| `set_search_tool_available_tools(&mut self, available)` | Inject available tool names into `tool_search` |
 
-### Registration in with_defaults() (lines 89-119)
+### ToolRegistryOptions (Phase 2)
+
+Centralizes all knobs that influence registration:
 
 ```rust
-pub fn with_defaults() -> Self {
-    let mut registry = Self::new();
-    registry.register(crate::tool::bash::BashTool::default());
-    registry.register(crate::tool::read::ReadTool::default());
-    registry.register(crate::tool::edit::EditTool::default());
-    registry.register(crate::tool::write::WriteTool::default());
-    registry.register(crate::tool::glob::GlobTool::default());
-    registry.register(crate::tool::grep::GrepTool::default());
-    registry.register(crate::tool::list::ListTool::default());
-    registry.register(crate::tool::task::TaskTool::default());
-    registry.register(crate::tool::webfetch::WebFetchTool::default());
-    registry.register(crate::tool::websearch::WebSearchTool::default());
-    registry.register(crate::tool::image::ImageTool::default());
-    registry.register(crate::tool::codesearch::CodeSearchTool);
-    registry.register(crate::tool::question::QuestionTool);
-    registry.register(crate::tool::todo::TodoTool::default());
-    registry.register(crate::tool::skill::SkillTool);
-    registry.register(crate::tool::apply_patch::ApplyPatchTool::new());
-    registry.register(crate::tool::diff::DiffTool::default());
-    registry.register(crate::tool::replace::ReplaceTool::default());
-    registry.register(crate::tool::review::ReviewTool::default());
-    registry.register(crate::tool::batch::BatchTool::default());
-    registry.register(crate::tool::terminal::TerminalTool::default());
-    registry.register(crate::tool::git::GitTool::default());
-    registry.register(crate::tool::lsp::LspTool::new(Arc::new(
-        crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default()),
-    )));
-    registry.register(crate::tool::commit::CommitTool::new());
-    registry.register(crate::tool::plan::PlanEnterTool);
-    registry.register(crate::tool::plan::PlanExitTool);
-    registry.register(crate::tool::invalid::InvalidTool);
-    // Register tool_search with catalog for on-demand tool discovery
-    let search_tool = crate::tool::tool_search::ToolSearchTool::new(Arc::new(registry.catalog().clone()));
-    registry.register(search_tool);
-    registry
+pub struct ToolRegistryOptions {
+    pub todo_state: Option<Arc<Mutex<TodoState>>>,
+    pub todo_policy: Option<TaskStatePolicy>,
+    pub pool: Option<SqlitePool>,
+    pub session_id: Option<String>,
+    pub lsp_service: Option<Arc<LspService>>,
+    pub tool_backends: ToolBackendConfig,
 }
 ```
 
-Note: ImageTool IS registered in `with_defaults()` at line 102.
+Both `with_defaults()` and `with_session_defaults(...)` build a
+`ToolRegistryOptions` and delegate to `with_options()`. LSP service
+construction is now injectable instead of hardcoded in two places.
+
+### Native tool execution path
+
+Native tool wrappers (e.g. `lsp`, `security`, `git`, `review`) call
+into the corresponding workspace crate (`egglsp`, `eggsec`, `egggit`)
+for actual work. Crate local config types are converted from Codegg's
+`crate::config::schema::*` types at the bridge site. See
+`architecture/native_crates.md` for the full boundary, public APIs,
+and provenance model.
 
 ## ToolCatalog
 
@@ -417,11 +420,37 @@ impl ToolError {
 8. **Environment variable filtering**: TerminalTool filters dangerous env vars (LD_PRELOAD, DYLD_*)
 9. **Allowlist support**: BashTool and TerminalTool support command allowlists
 
+## Tool Backend Diagnostics (Phase 10)
+
+`/tool-backends` (aliases `/tools`, `/backends`) surfaces the native vs
+MCP wiring of every model-facing tool. The handler builds a
+synchronous report from the resolved `ToolBackendConfig` plus any
+pre-installed context (e.g. eggsearch availability from
+`search_backend::state`) and renders it as a toast. The report shape:
+
+```
+Tool         Backend   Implementation    Status       Raw MCP exposed
+websearch    MCP       eggsearch          ready        no
+webfetch     MCP       eggsearch          ready        no
+lsp          Native    egglsp             ready        n/a
+security     Native    eggsec             ready        n/a
+git          Native    codegg/egggit      ready        n/a
+```
+
+Status values are: `ready`, `disabled`, `unavailable`, `error(<msg>)`.
+Warnings are appended when a backend is configured-but-unavailable or
+when raw MCP tools are hidden because a native wrapper is active.
+
+See `architecture/native_crates.md` for the underlying contract
+(`ToolBackendKind`, `ToolProvenance`, `McpExposurePolicy`).
+
 ## File Structure Summary
 
 ```
 src/tool/
-├── mod.rs          # Tool trait, ToolRegistry, with_defaults() (27 tools)
+├── mod.rs          # Tool trait, ToolRegistry, with_options() / with_defaults() / with_session_defaults()
+├── backend.rs      # ToolBackendKind, ToolProvenance, ToolExecutionContext, StructuredToolResult,
+│                   # ToolBackendConfig, build_report() for /tool-backends
 ├── catalog.rs      # ToolCatalog for metadata and search
 ├── util.rs         # Path validation helpers
 ├── bash.rs         # Shell command execution
@@ -436,24 +465,25 @@ src/tool/
 ├── apply_patch.rs  # Unified diff patch application
 ├── task.rs         # Subagent task spawning
 ├── todo.rs         # Todo list management
-├── webfetch.rs     # URL content fetching
-├── websearch.rs    # Web search via Exa
+├── webfetch.rs     # URL content fetching (dispatches to search_backend)
+├── websearch.rs    # Web search (dispatches to search_backend)
 ├── codesearch.rs   # Code search via Exa
 ├── question.rs     # User question asking
 ├── skill.rs        # Skill loading
-├── review.rs       # LLM-based code review
+├── review.rs       # LLM-based code review (uses egggit::diff_summary)
 ├── batch.rs        # Parallel tool execution
 ├── terminal.rs     # Terminal command execution
-├── git.rs          # Git command execution
+├── git.rs          # Git command execution (low-level wrapper)
 ├── commit.rs       # LLM-generated commit messages
 ├── plan.rs         # plan_enter and plan_exit tools
 ├── invalid.rs      # Malformed call handler
 ├── multiedit.rs    # Multi-edit tool (NOT registered)
 ├── image.rs        # DALL-E image generation
 ├── tool_search.rs  # On-demand tool discovery
-├── lsp.rs          # LSP client tools
+├── lsp.rs          # LSP client tools (wraps egglsp::LspService)
+├── security.rs     # Security scanning (wraps eggsec)
 ├── teams.rs        # Team operation tools
-├── formatter.rs     # Auto-formatting support
+├── formatter.rs    # Auto-formatting support
 └── ...
 ```
 

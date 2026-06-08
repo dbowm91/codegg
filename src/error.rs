@@ -357,6 +357,19 @@ impl ToolError {
     }
 }
 
+impl From<eggsec::EggsecError> for ToolError {
+    fn from(err: eggsec::EggsecError) -> Self {
+        match err {
+            eggsec::EggsecError::Io(msg) => ToolError::Io(msg),
+            eggsec::EggsecError::FileTooLarge(size, max) => ToolError::Execution(format!(
+                "file too large: {} bytes (max {})",
+                size, max
+            )),
+            eggsec::EggsecError::Join(msg) => ToolError::Execution(msg),
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum PermissionError {
     #[error("permission denied for {tool} on {path}")]

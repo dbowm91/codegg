@@ -1002,6 +1002,10 @@ dependencies = [
  "dashmap",
  "dirs",
  "dunce",
+ "eggcontext",
+ "egggit",
+ "egglsp",
+ "eggsec",
  "flate2",
  "futures",
  "globset",
@@ -1716,6 +1720,59 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "eggcontext"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tiktoken",
+]
+
+[[package]]
+name = "egggit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "egglsp"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "flate2",
+ "lsp-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "walkdir",
+ "xz2",
+ "zip",
+]
+
+[[package]]
+name = "eggsec"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "either"

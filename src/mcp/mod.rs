@@ -98,6 +98,65 @@ pub struct McpService {
     oauth: OAuthManager,
 }
 
+/// Per-server policy for how raw MCP tools should be exposed to the
+/// model.
+///
+/// `McpService::list_filtered_tools` and friends consult this when
+/// building the model-facing tool catalog. The default
+/// (raw hidden, native wrapper preferred) is the eggsearch pattern
+/// from `src/search_backend/`; it is extended here so additional
+/// Codegg-managed backends can opt in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpExposurePolicy {
+    /// When `true`, raw `mcp__<server>__<tool>` definitions are
+    /// included in the model-facing tool catalog.
+    pub show_raw: bool,
+    /// Servers whose raw tools should be hidden from the model even
+    /// when `show_raw` is `true`. Used for Codegg-managed backends
+    /// that have a native wrapper (`websearch`, `webfetch`).
+    pub hidden_servers: Vec<String>,
+}
+
+impl McpExposurePolicy {
+    /// Default policy: hide raw tools, with no hidden-server
+    /// overrides. The model sees only the stable native wrappers.
+    pub fn hide_all() -> Self {
+        Self {
+            show_raw: false,
+            hidden_servers: Vec::new(),
+        }
+    }
+
+    /// Whether a given fully-qualified MCP tool name (e.g.
+    /// `mcp__eggsearch__web_search`) should be visible to the model
+    /// under this policy.
+    pub fn is_visible(&self, tool_name: &str) -> bool {
+        if !self.show_raw {
+            return false;
+        }
+        // Check if the tool belongs to a server explicitly hidden.
+        if let Some(server) = parse_mcp_tool_server(tool_name) {
+            if self.hidden_servers.iter().any(|s| s == &server) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Parse `mcp__<server>__<tool>` and return the server name.
+///
+/// Returns `None` if the input doesn't follow the MCP naming
+/// convention.
+pub fn parse_mcp_tool_server(tool_name: &str) -> Option<String> {
+    let rest = tool_name.strip_prefix("mcp__")?;
+    let (server, _tool) = rest.split_once("__")?;
+    if server.is_empty() {
+        return None;
+    }
+    Some(server.to_string())
+}
+
 impl McpService {
     pub fn new() -> Self {
         Self {
@@ -224,8 +283,27 @@ impl McpService {
     }
 
     pub fn list_tools(&self) -> Vec<ToolDefinition> {
+        self.list_filtered_tools(&McpExposurePolicy {
+            show_raw: true,
+            hidden_servers: Vec::new(),
+        })
+    }
+
+    /// List MCP tool definitions, filtered through the given
+    /// exposure policy.
+    ///
+    /// When `policy.show_raw` is `false`, no `mcp__*__*` tool
+    /// definitions are returned. When `true`, definitions for
+    /// servers in `policy.hidden_servers` are filtered out (so a
+    /// native wrapper owns that surface and the model never sees
+    /// the raw duplicate).
+    pub fn list_filtered_tools(&self, policy: &McpExposurePolicy) -> Vec<ToolDefinition> {
+        if !policy.show_raw {
+            return Vec::new();
+        }
         self.servers
             .values()
+            .filter(|s| !policy.hidden_servers.iter().any(|h| h == &s.name))
             .flat_map(|s| {
                 s.tools.iter().map(|t| ToolDefinition {
                     name: format!("mcp__{}__{}", s.name, t.name),
@@ -436,5 +514,127 @@ impl McpService {
 impl Default for McpService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::McpError;
+
+    fn mock_handler(
+        _tool: &str,
+        _args: serde_json::Value,
+    ) -> Result<String, McpError> {
+        Ok("ok".to_string())
+    }
+
+    fn build_service() -> McpService {
+        let mut svc = McpService::new();
+        svc.register_mock_server(
+            "eggsearch",
+            vec![
+                McpTool {
+                    name: "web_search".to_string(),
+                    description: "raw web search".to_string(),
+                    input_schema: serde_json::json!({}),
+                    server: "eggsearch".to_string(),
+                },
+                McpTool {
+                    name: "web_fetch".to_string(),
+                    description: "raw web fetch".to_string(),
+                    input_schema: serde_json::json!({}),
+                    server: "eggsearch".to_string(),
+                },
+            ],
+            Box::new(mock_handler),
+        );
+        svc.register_mock_server(
+            "github",
+            vec![McpTool {
+                name: "list_issues".to_string(),
+                description: "list issues".to_string(),
+                input_schema: serde_json::json!({}),
+                server: "github".to_string(),
+            }],
+            Box::new(mock_handler),
+        );
+        svc
+    }
+
+    #[test]
+    fn list_tools_shows_everything_by_default() {
+        let svc = build_service();
+        let tools = svc.list_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"mcp__eggsearch__web_search"));
+        assert!(names.contains(&"mcp__eggsearch__web_fetch"));
+        assert!(names.contains(&"mcp__github__list_issues"));
+    }
+
+    #[test]
+    fn list_filtered_tools_hides_raw_by_default() {
+        let svc = build_service();
+        let policy = McpExposurePolicy::hide_all();
+        let tools = svc.list_filtered_tools(&policy);
+        assert!(tools.is_empty(), "hide_all should hide all raw tools");
+    }
+
+    #[test]
+    fn list_filtered_tools_hides_managed_servers() {
+        let svc = build_service();
+        let policy = McpExposurePolicy {
+            show_raw: true,
+            hidden_servers: vec!["eggsearch".to_string()],
+        };
+        let tools = svc.list_filtered_tools(&policy);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(!names.contains(&"mcp__eggsearch__web_search"));
+        assert!(!names.contains(&"mcp__eggsearch__web_fetch"));
+        assert!(names.contains(&"mcp__github__list_issues"));
+    }
+
+    #[test]
+    fn list_filtered_tools_shows_all_when_unrestricted() {
+        let svc = build_service();
+        let policy = McpExposurePolicy {
+            show_raw: true,
+            hidden_servers: Vec::new(),
+        };
+        let tools = svc.list_filtered_tools(&policy);
+        assert_eq!(tools.len(), 3);
+    }
+
+    #[test]
+    fn parse_mcp_tool_server_extracts_server() {
+        assert_eq!(
+            parse_mcp_tool_server("mcp__eggsearch__web_search"),
+            Some("eggsearch".to_string())
+        );
+        assert_eq!(
+            parse_mcp_tool_server("mcp__github__list_issues"),
+            Some("github".to_string())
+        );
+        assert_eq!(parse_mcp_tool_server("websearch"), None);
+        assert_eq!(parse_mcp_tool_server("mcp____tool"), None);
+    }
+
+    #[test]
+    fn exposure_policy_is_visible() {
+        let policy = McpExposurePolicy::hide_all();
+        assert!(!policy.is_visible("mcp__eggsearch__web_search"));
+
+        let policy = McpExposurePolicy {
+            show_raw: true,
+            hidden_servers: vec!["eggsearch".to_string()],
+        };
+        assert!(!policy.is_visible("mcp__eggsearch__web_search"));
+        assert!(policy.is_visible("mcp__github__list_issues"));
+
+        let policy = McpExposurePolicy {
+            show_raw: true,
+            hidden_servers: Vec::new(),
+        };
+        assert!(policy.is_visible("mcp__eggsearch__web_search"));
     }
 }

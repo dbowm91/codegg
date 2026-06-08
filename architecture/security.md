@@ -4,13 +4,15 @@ The `security` module provides security features for URL validation, IP checking
 
 ## Overview
 
-**Location**: `src/security/`
+**Location**: `src/security/` (SSRF, sandbox, sensitive-path policy) and `crates/eggsec/` (deterministic security scanning — see [native_crates.md](native_crates.md))
 
 **Key Responsibilities**:
 - SSRF protection (Server-Side Request Forgery)
 - Internal IP validation (IPv4 and IPv6 including IPv4-mapped)
 - Symlink detection for path safety
 - Landlock sandboxing (Linux)
+- Codegg-side re-exports of `eggsec::{command, dependency, finding, profile, scanner}` for backward-compatible `crate::security::finding::Severity` style paths used by other modules
+- Permission policy: `crate::security::policy` (decides Observe/Ask/Deny based on Codegg `SecurityConfig`) — kept in codegg core because it depends on codegg config types
 
 ## Key Functions
 

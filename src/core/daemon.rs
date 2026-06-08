@@ -1299,7 +1299,7 @@ impl CoreDaemon {
                         data: serde_json::json!({ "worktrees": [] }),
                     });
                 };
-                match crate::worktree::list_worktrees(&root) {
+                match crate::worktree::list_worktrees(&root).await {
                     Ok(trees) => Ok(CoreResponse::Json {
                         data: serde_json::json!({
                             "worktrees": trees.iter().map(|t| serde_json::json!({
@@ -2263,21 +2263,20 @@ impl CoreDaemon {
                         })
                 });
 
-                let worktrees = git_root
-                    .as_ref()
-                    .and_then(|root| crate::worktree::list_worktrees(root).ok())
-                    .map(|trees| {
-                        trees
-                            .iter()
-                            .map(|t| {
-                                serde_json::json!({
-                                    "path": t.path,
-                                    "branch": t.branch,
-                                })
+                let worktrees: Vec<serde_json::Value> = match git_root.as_ref() {
+                    Some(root) => crate::worktree::list_worktrees(root)
+                        .await
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|t| {
+                            serde_json::json!({
+                                "path": t.path,
+                                "branch": t.branch,
                             })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                        })
+                        .collect(),
+                    None => Vec::new(),
+                };
 
                 Ok(CoreResponse::Json {
                     data: serde_json::json!({

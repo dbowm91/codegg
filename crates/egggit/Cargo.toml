@@ -1,0 +1,15 @@
+[package]
+name = "egggit"
+version = "0.1.0"
+edition = "2021"
+description = "Read-only git and worktree facts extracted from Codegg."
+license = "MIT"
+rust-version = "1.81"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process", "io-util"] }
+
+[dev-dependencies]
+tempfile = "3"

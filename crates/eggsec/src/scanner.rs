@@ -1,7 +1,7 @@
-use crate::error::ToolError;
-use crate::security::finding::{
+use crate::finding::{
     Confidence, FindingMode, FindingSource, SecurityCategory, SecurityFinding, Severity,
 };
+use crate::EggsecError;
 use regex::Regex;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -272,26 +272,21 @@ pub fn inspect_text(path: Option<&std::path::Path>, text: &str) -> Vec<SecurityF
 pub async fn inspect_file(
     path: &std::path::Path,
     max_bytes: usize,
-) -> Result<Vec<SecurityFinding>, ToolError> {
+) -> Result<Vec<SecurityFinding>, EggsecError> {
     let path_buf = path.to_path_buf();
     let max = max_bytes;
 
-    let text = tokio::task::spawn_blocking(move || -> Result<String, ToolError> {
+    let text = tokio::task::spawn_blocking(move || -> Result<String, EggsecError> {
         let meta = std::fs::metadata(&path_buf)
-            .map_err(|e| ToolError::Io(format!("failed to read {}: {}", path_buf.display(), e)))?;
+            .map_err(|e| EggsecError::Io(format!("failed to read {}: {}", path_buf.display(), e)))?;
         if meta.len() as usize > max {
-            return Err(ToolError::Execution(format!(
-                "file too large: {} ({} bytes, max {})",
-                path_buf.display(),
-                meta.len(),
-                max
-            )));
+            return Err(EggsecError::FileTooLarge(meta.len(), max));
         }
         std::fs::read_to_string(&path_buf)
-            .map_err(|e| ToolError::Io(format!("failed to read {}: {}", path_buf.display(), e)))
+            .map_err(|e| EggsecError::Io(format!("failed to read {}: {}", path_buf.display(), e)))
     })
     .await
-    .map_err(|e| ToolError::Execution(format!("task join error: {}", e)))??;
+    .map_err(|e| EggsecError::Join(format!("task join error: {}", e)))??;
 
     Ok(inspect_lines(Some(path), &text))
 }

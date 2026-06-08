@@ -10,7 +10,7 @@ use tracing::debug;
 use url::Url;
 
 use crate::error::LspError;
-use crate::lsp::service::LspService;
+use crate::service::LspService;
 
 const DEBOUNCE_MS: u64 = 150;
 const MAX_ENTRIES: usize = 1000;

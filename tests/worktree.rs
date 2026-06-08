@@ -61,15 +61,15 @@ fn test_find_git_root_with_git_file() {
     assert_eq!(result.unwrap(), temp_dir.path().to_path_buf());
 }
 
-#[test]
-fn test_list_worktrees_non_git_dir() {
+#[tokio::test]
+async fn test_list_worktrees_non_git_dir() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-    let result = list_worktrees(temp_dir.path());
+    let result = list_worktrees(temp_dir.path()).await;
     assert!(result.is_err());
 }
 
-#[test]
-fn test_list_worktrees_parses_current_and_detached() {
+#[tokio::test]
+async fn test_list_worktrees_parses_current_and_detached() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let repo_dir = temp_dir.path().join("repo");
     let wt_dir = temp_dir.path().join("wt1");
@@ -89,7 +89,9 @@ fn test_list_worktrees_parses_current_and_detached() {
     );
     git(&["checkout", "HEAD^0"], &wt_dir);
 
-    let trees = list_worktrees(&repo_dir).expect("list_worktrees failed");
+    let trees = list_worktrees(&repo_dir)
+        .await
+        .expect("list_worktrees failed");
     assert_eq!(trees.len(), 2);
 
     let main_tree = trees
@@ -109,8 +111,8 @@ fn test_list_worktrees_parses_current_and_detached() {
     assert!(detached_tree.branch.starts_with("detached@"));
 }
 
-#[test]
-fn test_create_and_remove_worktree() {
+#[tokio::test]
+async fn test_create_and_remove_worktree() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let repo_dir = temp_dir.path().join("repo");
     let wt_dir = temp_dir.path().join("wt-create-remove");
@@ -126,7 +128,9 @@ fn test_create_and_remove_worktree() {
     create_worktree(&repo_dir, &wt_dir, "feature/create-remove", true)
         .expect("create_worktree failed");
 
-    let trees_after_create = list_worktrees(&repo_dir).expect("list_worktrees after create failed");
+    let trees_after_create = list_worktrees(&repo_dir)
+        .await
+        .expect("list_worktrees after create failed");
     assert!(
         trees_after_create
             .iter()
@@ -135,7 +139,9 @@ fn test_create_and_remove_worktree() {
     );
 
     remove_worktree(&repo_dir, &wt_dir, false).expect("remove_worktree failed");
-    let trees_after_remove = list_worktrees(&repo_dir).expect("list_worktrees after remove failed");
+    let trees_after_remove = list_worktrees(&repo_dir)
+        .await
+        .expect("list_worktrees after remove failed");
     assert!(
         !trees_after_remove
             .iter()
@@ -202,8 +208,8 @@ fn test_is_git_file_without_gitdir_prefix() {
 }
 
 #[cfg(unix)]
-#[test]
-fn test_list_worktrees_symlink_detection() {
+#[tokio::test]
+async fn test_list_worktrees_symlink_detection() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let repo_dir = temp_dir.path().join("repo");
     let symlink_dir = temp_dir.path().join("repo-link");
@@ -221,7 +227,9 @@ fn test_list_worktrees_symlink_detection() {
     std::os::unix::fs::symlink(&repo_dir, &symlink_dir).expect("failed to create symlink");
 
     // List worktrees from symlinked path - should still detect current worktree
-    let trees = list_worktrees(&symlink_dir).expect("list_worktrees failed");
+    let trees = list_worktrees(&symlink_dir)
+        .await
+        .expect("list_worktrees failed");
     assert_eq!(trees.len(), 1);
 
     let main_tree = &trees[0];
@@ -232,8 +240,8 @@ fn test_list_worktrees_symlink_detection() {
 }
 
 #[cfg(unix)]
-#[test]
-fn test_list_worktrees_symlink_worktree_path() {
+#[tokio::test]
+async fn test_list_worktrees_symlink_worktree_path() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let repo_dir = temp_dir.path().join("repo");
     let wt_dir = temp_dir.path().join("wt-real");
@@ -267,7 +275,9 @@ fn test_list_worktrees_symlink_worktree_path() {
     );
 
     // List worktrees and verify detection works with symlinks
-    let trees = list_worktrees(&repo_dir).expect("list_worktrees failed");
+    let trees = list_worktrees(&repo_dir)
+        .await
+        .expect("list_worktrees failed");
     assert!(trees.len() >= 2, "should have at least 2 worktrees");
 
     // The main worktree should be detected as current

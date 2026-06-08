@@ -68,6 +68,10 @@ pub struct Config {
     pub research: Option<ResearchConfig>,
     pub theme: Option<ThemeConfig>,
     pub search: Option<SearchConfig>,
+    /// Per-domain tool backend selection (Phase 3 of the native tool
+    /// crates plan). Each entry is a generic selector that the
+    /// `ToolRegistry` resolves into the actual implementation.
+    pub tool_backends: Option<ToolBackendConfigSchema>,
 }
 
 /// Web search/fetch backend configuration.
@@ -1099,6 +1103,95 @@ pub struct ResearchConfig {
     pub auto_trigger: Option<ResearchAutoTriggerConfig>,
 }
 
+/// Per-domain tool backend selection.
+///
+/// This is the generic pattern that the native tool crates plan
+/// generalizes from the eggsearch integration. Each entry is a
+/// generic selector that the `ToolRegistry` resolves into the
+/// actual implementation. Today, no domain uses the non-native
+/// option; the schema is in place so future wrappers (egglsp,
+/// eggsec, eggcontext) can opt into the same pattern without
+/// re-inventing config types.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ToolBackendConfigSchema {
+    /// Backend for the LSP domain.
+    pub lsp: Option<ExternalToolBackendConfigSchema>,
+    /// Backend for the deterministic security domain.
+    pub security: Option<ExternalToolBackendConfigSchema>,
+    /// Backend for context-packing helpers.
+    pub context: Option<ExternalToolBackendConfigSchema>,
+}
+
+impl ToolBackendConfigSchema {
+    /// Resolve the effective backend for a given domain key, defaulting
+    /// to `Native` when unset.
+    pub fn backend_for(&self, domain: &str) -> Option<ToolImplementationBackendSchema> {
+        let section = match domain {
+            "lsp" => self.lsp.as_ref(),
+            "security" => self.security.as_ref(),
+            "context" => self.context.as_ref(),
+            _ => None,
+        };
+        section.and_then(|s| s.backend)
+    }
+}
+
+/// Resolved per-domain backend configuration (config-time view).
+///
+/// Mirrors `tool::backend::ExternalToolBackendConfig` so config
+/// parsing does not have to depend on the tool module.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ExternalToolBackendConfigSchema {
+    /// Which backend kind to use.
+    pub backend: Option<ToolImplementationBackendSchema>,
+    /// Whether to expose raw `mcp__*__tool` definitions in the model
+    /// catalog when a native wrapper exists. Defaults to `false` for
+    /// Codegg-managed backends.
+    pub expose_raw_mcp_tools: Option<bool>,
+    /// Whether to fall back to the in-tree implementation if the
+    /// configured backend is unavailable.
+    pub fallback_to_native: Option<bool>,
+    /// MCP server name (when `backend = Mcp`).
+    pub server_name: Option<String>,
+    /// Command to spawn (when `backend = Mcp` and the server is
+    /// local stdio).
+    pub command: Option<String>,
+    /// Args for the spawned process.
+    pub args: Option<Vec<String>>,
+    /// Per-call timeout in milliseconds.
+    pub timeout_ms: Option<u64>,
+    /// Environment variables to set on the spawned process.
+    pub env: Option<HashMap<String, String>>,
+}
+
+/// Which implementation backs a given tool domain (config-time view).
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolImplementationBackendSchema {
+    /// Direct in-process Rust implementation.
+    Native,
+    /// External MCP server.
+    Mcp,
+    /// In-tree built-in / legacy implementation.
+    Builtin,
+    /// The tool domain is disabled; the wrapper tool should hide
+    /// itself or return a clear "disabled" error.
+    Disabled,
+}
+
+impl ToolImplementationBackendSchema {
+    pub fn label(self) -> &'static str {
+        match self {
+            ToolImplementationBackendSchema::Native => "native",
+            ToolImplementationBackendSchema::Mcp => "mcp",
+            ToolImplementationBackendSchema::Builtin => "builtin",
+            ToolImplementationBackendSchema::Disabled => "disabled",
+        }
+    }
+}
+
 /// User-facing theme configuration.
 ///
 /// `name` selects the active theme. `source` overrides the format detection
@@ -1151,7 +1244,10 @@ pub struct SearchProviderConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, EggsearchConfig, ProviderConfig, SearchBackendConfig, SearchConfig};
+    use super::{
+        Config, EggsearchConfig, ProviderConfig, SearchBackendConfig, SearchConfig,
+        ToolImplementationBackendSchema,
+    };
 
     #[test]
     fn test_provider_api_key_supports_master_key_for_decryption() {
@@ -1263,5 +1359,67 @@ mod tests {
         assert!(cfg.search.is_none());
         let mcp = cfg.mcp.expect("mcp");
         assert!(mcp.contains_key("eggsearch"));
+    }
+
+    #[test]
+    fn tool_backends_section_defaults_to_native() {
+        let cfg = Config::default();
+        assert!(cfg.tool_backends.is_none());
+        // Effective behavior: every domain defaults to Native.
+        let resolved = cfg.tool_backends.unwrap_or_default();
+        assert_eq!(
+            resolved.backend_for("lsp"),
+            None,
+            "explicit None means 'no override' and resolves to the default Native"
+        );
+    }
+
+    #[test]
+    fn tool_backends_section_parses_lsp_section() {
+        let json = r#"{
+            "tool_backends": {
+                "lsp": {
+                    "backend": "native",
+                    "expose_raw_mcp_tools": false,
+                    "fallback_to_native": true
+                },
+                "security": {
+                    "backend": "native"
+                },
+                "context": {
+                    "backend": "mcp",
+                    "server_name": "eggcontext",
+                    "command": "eggcontext",
+                    "args": ["mcp", "stdio"],
+                    "timeout_ms": 30000
+                }
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).expect("parse");
+        let tb = cfg.tool_backends.expect("tool_backends section");
+        let lsp = tb.lsp.expect("lsp");
+        assert_eq!(lsp.backend, Some(ToolImplementationBackendSchema::Native));
+        assert_eq!(lsp.expose_raw_mcp_tools, Some(false));
+        assert_eq!(lsp.fallback_to_native, Some(true));
+        let security = tb.security.expect("security");
+        assert_eq!(
+            security.backend,
+            Some(ToolImplementationBackendSchema::Native)
+        );
+        let context = tb.context.expect("context");
+        assert_eq!(context.backend, Some(ToolImplementationBackendSchema::Mcp));
+        assert_eq!(context.server_name.as_deref(), Some("eggcontext"));
+        assert_eq!(context.timeout_ms, Some(30_000));
+    }
+
+    #[test]
+    fn tool_backends_omitted_uses_defaults() {
+        let json = "{}";
+        let cfg: Config = serde_json::from_str(json).expect("parse");
+        assert!(cfg.tool_backends.is_none());
+        let resolved = cfg.tool_backends.unwrap_or_default();
+        assert_eq!(resolved.backend_for("lsp"), None);
+        assert_eq!(resolved.backend_for("security"), None);
+        assert_eq!(resolved.backend_for("context"), None);
     }
 }

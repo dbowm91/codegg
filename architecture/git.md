@@ -1,16 +1,18 @@
 # Git Module
 
-The `git` module provides Git session management for tracking repository state and worktree operations.
+The `git` module previously provided Git session management for tracking repository state and worktree operations. As of the [native tool crate extraction](native_crates.md), this module has been **removed** from `src/`. Read-only git facts (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`) now live in the `egggit` workspace crate (`crates/egggit/`). Mutating worktree operations live in `src/worktree/`.
+
+The Codegg `git` tool (`src/tool/git.rs`) remains a low-level command wrapper and continues to expose the model-facing `git` name unchanged. The `commit` and `review` tools consume `egggit` for diff facts and keep their mutation/permission flow in codegg.
 
 ## Overview
 
-**Location**: `src/git/`
+**Location**: `crates/egggit/` (read-only git facts) and `src/worktree/` (mutating worktree operations)
 
 **Key Responsibilities**:
-- Track Git session state (branch, dirty status, commit hash, stash count)
-- Manage per-session worktrees for isolated file operations
-- Provide git status information for prompt injection
-- Integrate with the `worktree` module for worktree creation/removal
+- Read-only git facts via the `egggit` crate (status, diff summary, changed files, file diff, patch validation, worktree list)
+- Per-session worktree management (creation/removal) in `src/worktree/`
+- Git status information for prompt injection (consumed from `egggit::repo_status`)
+- Mutating operations (commit, worktree create/remove) stay in codegg under the permission flow
 
 ## Key Types
 

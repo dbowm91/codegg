@@ -3535,7 +3535,26 @@ impl App {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = tx.try_send(TuiCommand::WorktreeList);
                 } else {
-                    self.handle_worktree_command();
+                    let git_root = std::path::PathBuf::from(&self.session_state.project_dir);
+                    let trees = tokio::runtime::Handle::current().block_on(async {
+                        match crate::worktree::find_git_root(&git_root) {
+                            Some(root) => crate::worktree::list_worktrees(&root)
+                                .await
+                                .unwrap_or_default(),
+                            None => Vec::new(),
+                        }
+                    });
+                    if trees.is_empty() {
+                        self.messages_state
+                            .toasts
+                            .info("No worktrees found");
+                    } else {
+                        let names: Vec<String> = trees
+                            .iter()
+                            .map(|t| format!("{} ({})", t.path, t.branch))
+                            .collect();
+                        self.messages_state.toasts.info(&names.join(", "));
+                    }
                 }
             }
             "/editor" => {
@@ -3941,6 +3960,31 @@ impl App {
                         .toasts
                         .info("doctor: not connected to a core client");
                 }
+            }
+            "/tool-backends" | "/tools" | "/backends" => {
+                // Build the report synchronously from the resolved
+                // config. The App doesn't hold a direct reference to
+                // the live `ToolRegistry`, so we rely on the resolved
+                // `Config` plus the eggsearch server name in
+                // `search_backend::state` (if initialized).
+                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let search_cfg = config.search.clone().unwrap_or_default();
+                let mcp_server_names: Option<Vec<String>> =
+                    crate::search_backend::state::mcp_service().map(|_mcp| {
+                        // We don't currently expose the live list of
+                        // server names without an async call, so we
+                        // approximate by checking the resolved
+                        // SearchConfig. The full live list is shown
+                        // by `/mcps`.
+                        Vec::new()
+                    });
+                let report = crate::tool::backend::build_report(
+                    &search_cfg,
+                    config.tool_backends.as_ref(),
+                    mcp_server_names.as_deref(),
+                );
+                let rendered = report.render();
+                self.messages_state.toasts.info(&rendered);
             }
             "/review" => {
                 self.ui_state.command_mode = false;
@@ -5503,34 +5547,6 @@ impl App {
             self.messages_state
                 .toasts
                 .info("No recently edited file to open");
-        }
-    }
-
-    fn handle_worktree_command(&mut self) {
-        let git_root = std::path::PathBuf::from(&self.session_state.project_dir);
-        let root = match crate::worktree::find_git_root(&git_root) {
-            Some(r) => r,
-            None => {
-                self.messages_state.toasts.info("Not in a git repository");
-                return;
-            }
-        };
-
-        match crate::worktree::list_worktrees(&root) {
-            Ok(trees) => {
-                if trees.is_empty() {
-                    self.messages_state.toasts.info("No worktrees found");
-                } else {
-                    let names: Vec<String> = trees
-                        .iter()
-                        .map(|t| format!("{} ({})", t.path, t.branch))
-                        .collect();
-                    self.messages_state.toasts.info(&names.join(", "));
-                }
-            }
-            Err(e) => {
-                self.messages_state.toasts.info(&format!("Error: {}", e));
-            }
         }
     }
 

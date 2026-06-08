@@ -1,4 +1,4 @@
-use crate::security::finding::{
+use crate::finding::{
     Confidence, FindingMode, FindingSource, SecurityCategory, SecurityFinding, Severity,
 };
 use regex::Regex;

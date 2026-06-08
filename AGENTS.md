@@ -22,7 +22,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
-| `git/` | Git session management, git info injection into prompts, worktree per session |
+| `git/` | **Removed** in 2026 native crate extraction. Read-only git facts now in `crates/egggit/` (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`); mutating worktree operations in `src/worktree/`. The `git` tool wrapper still lives at `src/tool/git.rs` |
 | `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
@@ -59,7 +59,8 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
-- `architecture/git.md`: Git session management, git info injection, worktree per session
+- `architecture/native_crates.md`: Workspace crates (egglsp, egggit, eggsec, eggcontext), backend contract, raw MCP exposure policy, diagnostics
+- `architecture/git.md`: Git session management, git info injection, worktree per session (now in `crates/egggit` + `src/worktree`)
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 
 ## Critical Implementation Notes
@@ -138,7 +139,7 @@ These items are important for future agents to know when working with the codeba
 
 7. **multiedit tool exists but not in default registry** - `src/tool/multiedit.rs` exists and `multiedit` module is registered via `pub mod multiedit`, but it's NOT included in `ToolRegistry::with_defaults()`. Don't assume every tool in `/tool` is in the default registry.
 
-8. **LSP server count is 39** (verified 2026-05-27) - count entries in `server_definitions()` array at `src/lsp/server.rs:27-383`. cmake-language-server is NOT in the list despite some review claims. clangd, rust-analyzer, gopls, etc. are included.
+8. **LSP server count is 39** (verified 2026-05-27) - count entries in `server_definitions()` array at `crates/egglsp/src/server.rs` (moved from `src/lsp/server.rs:27-383`). cmake-language-server is NOT in the list despite some review claims. clangd, rust-analyzer, gopls, etc. are included.
 
 9. **Permission mode documentation corrected** - `architecture/permission.md:202` (docs mode) now correctly shows restricted tools as `bash, task, todowrite` (without `write`). Code at `modes.rs:174-178` correctly excludes `write`.
 
@@ -149,7 +150,10 @@ These items were verified during review sessions:
 | Item | Value | Location |
 |------|-------|----------|
 | Tool count | 27 | `src/tool/mod.rs:90-122` (27 registrations in with_defaults()) |
-| LSP server count | 39 | `src/lsp/server.rs:27-383` |
+| LSP server count | 39 | `crates/egglsp/src/server.rs` (moved from `src/lsp/server.rs:27-383`) |
+| Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsec`, `crates/eggcontext` — see `architecture/native_crates.md` |
+| Tool backend contract | `src/tool/backend.rs` | `ToolBackendKind`, `ToolProvenance`, `StructuredToolResult`, `build_report()` for `/tool-backends` |
+| `/tool-backends` slash command | `src/tui/command.rs`, handler in `src/tui/app/mod.rs` | aliases: `/tools`, `/backends` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` except pool which is `Option<SqlitePool>` | `src/core/mod.rs:22-28` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
@@ -168,7 +172,7 @@ These items were verified during review sessions:
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct | `src/tui/app/state/ui.rs:62-63` |
 | Snapshot hash | Uses SHA256 consistently | `src/snapshot/mod.rs` |
-| Git module | `src/git/mod.rs` - GitSession, GitStatus, git info in prompts | `src/git/mod.rs` |
+| Git module | removed in 2026 native crate extraction; read-only facts now in `crates/egggit/` (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`). Mutating worktree operations remain in `src/worktree/` (sync `create_worktree`/`remove_worktree`) | `crates/egggit/src/{lib,status,diff,worktree}.rs`, `src/worktree/mod.rs` |
 | Pricing service | `src/util/pricing.rs` - ModelPricing, calculate_cost | `src/util/pricing.rs` |
 | Auto-compact wrapper | Both `auto_compact()` and `auto_compact_sync()` exist | `src/agent/compaction.rs:550,594` |
 | ImageTool | IS registered in ToolRegistry::with_defaults() | `src/tool/mod.rs:102` |
@@ -343,6 +347,12 @@ cargo test messages
 
 # Run specific module tests
 cargo test --package codegg -- <module>_test_pattern
+
+# Test the native tool crates
+cargo test -p eggsec
+cargo test -p eggcontext
+cargo test -p egggit
+cargo test -p egglsp
 ```
 
 ## Security Reminders

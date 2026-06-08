@@ -28,11 +28,43 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 │  ┌──────────────────────┼───────────────────────────────────────┐  │
 │  │            Modules    │                                       │  │
 │  │  ┌────────┐ ┌───────┐ │ ┌───────┐ ┌──────┐ ┌────────┐       │  │
-│  │  │ Session│ │Memory │ │ │ LSP   │ │MCP   │ │Plugins │       │  │
-│  │  └────────┘ └───────┘ │ └───────┘ └──────┘ └────────┘       │  │
+│  │  │ Session│ │Memory │ │ │ MCP   │ │Plugins│ │Native  │       │  │
+│  │  └────────┘ └───────┘ │ └───────┘ └──────┘ │ Crates │       │  │
+│  │                                         ┌─── egglsp        │  │
+│  │                                         │    egggit        │  │
+│  │                                         │    eggsec        │  │
+│  │                                         │    eggcontext    │  │
+│  │                                         └──────────────────┘  │
 │  └──────────────────────┴───────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+## Native Tool Crates (Workspace)
+
+Codegg follows a **library-first, MCP-second** tool architecture (see
+`plans/native_tool_crates.md`). Durable tool domains live in workspace
+crates under `crates/` and are consumed directly in-process by Codegg's
+tool wrappers. The same crates can later expose optional MCP adapter
+binaries without changing the model-facing tool names.
+
+| Crate | Purpose | Key Files |
+|-------|---------|-----------|
+| `crates/egglsp` | Language Server Protocol client/server management | `service.rs`, `client.rs`, `operations.rs`, `server.rs` |
+| `crates/egggit` | Read-only git facts (status, diff, changed files, worktrees) | `status.rs`, `diff.rs`, `worktree.rs` |
+| `crates/eggsec` | Deterministic security scanning (secrets, commands, deps, unsafe code) | `scanner.rs`, `command.rs`, `finding.rs`, `profile.rs` |
+| `crates/eggcontext` | Token counting and context utilities (tiktoken-based) | `lib.rs` |
+
+Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`,
+`src/tool/security.rs`, etc.) consume these crates. The model-facing
+tool names (`lsp`, `git`, `security`, ...) and JSON schemas are
+preserved exactly. Conversion between Codegg's `crate::config::schema`
+types and the crates' local config types is one-way: crates never
+import Codegg config types.
+
+The native `websearch` and `webfetch` wrappers follow the same
+pattern via `src/search_backend/`, with the external `eggsearch` MCP
+server as the default backend (raw `mcp__eggsearch__*` tools are
+hidden by default — see [MCP](mcp.md)).
 
 ## Core Protocol
 
@@ -58,7 +90,7 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 | [exec/](exec.md) | Non-interactive exec mode for CI/CD with JSON I/O | `exec.rs` |
 | [hooks/](hooks.md) | Lifecycle hooks for agent events | `mod.rs` |
 | [ide/](ide.md) | VS Code / JetBrains detection and diff viewing | `mod.rs` |
-| [lsp/](lsp.md) | Language Server Protocol support (39 servers) | `server.rs`, `service.rs`, `operations.rs` |
+| [lsp/](lsp.md) | LSP wrapper (implementation in `crates/egglsp`) | `mod.rs` (re-exports) |
 | [mcp/](mcp.md) | Model Context Protocol client (local/remote) | `local.rs`, `remote.rs`, `auth.rs` |
 | [memory/](memory.md) | Persistent memory across sessions | `mod.rs` |
 | [permission/](permission.md) | Access control, DoomLoop detection, mode system | `mod.rs`, `modes.rs` |
@@ -66,21 +98,19 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 | [provider/](provider.md) | LLM providers (Anthropic, OpenAI, Google, etc.) | `mod.rs`, `anthropic.rs`, `fallback.rs` |
 | [protocol/](protocol.md) | Shared request/response envelopes and message types | `core.rs`, `tui.rs` |
 | [resilience/](resilience.md) | Circuit breaker, retry mechanisms | `circuit.rs` |
-| [security/](security.md) | SSRF protection, Landlock sandboxing | `ssrf.rs`, `sandbox.rs` |
+| [security/](security.md) | SSRF protection, Landlock sandboxing; scanning core in `crates/eggsec` | `ssrf.rs`, `sandbox.rs` |
 | [server/](server.md) | HTTP/WebSocket server for remote TUI | `http.rs`, `ws.rs`, `routes/` |
 | [session/](session.md) | SQLite session storage, message history | `store.rs`, `schema.rs`, `message.rs` |
 | [shell_session/](shell_session.md) | Shell session metadata (no PTY) | `mod.rs` |
 | [skills/](skills.md) | Runtime skill loader and activation | `mod.rs` |
 | [snapshot/](snapshot.md) | File state capture and restore | `mod.rs` |
 | [storage/](storage.md) | SQLite initialization and connection pooling | `mod.rs` |
-| [tool/](tool.md) | Built-in tools (27 tools in default registry) | `mod.rs`, `bash.rs`, `read.rs`, etc. |
+| [tool/](tool.md) | Built-in tools (27 tools in default registry) and backend abstractions | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, etc. |
 | [tts/](tts.md) | Text-to-speech (macOS `say` command) | `mod.rs` |
 | [tui/](tui.md) | Terminal user interface (Ratatui) | `app/mod.rs`, `components/` |
 | [upgrade/](upgrade.md) | Self-upgrade via GitHub releases | `mod.rs` |
 | [util/](util.md) | Clipboard, fuzzy search, pricing, metrics | `mod.rs` |
-| [worktree/](worktree.md) | Git worktree management | `mod.rs` |
-
-**Orphaned module**: `git/` exists at `src/git/mod.rs` but is not declared in `lib.rs` and has no references.
+| [worktree/](worktree.md) | Git worktree management (read-only facts in `crates/egggit`) | `mod.rs` |
 
 ## Key Types
 
@@ -91,8 +121,19 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 
 ### Tools
 - `Tool` trait - All tools implement `name()`, `description()`, `parameters()`, `execute()`
+- Optional `execute_structured()` (default impl wraps `execute()`) — see `src/tool/backend.rs`
 - 27 built-in tools in default registry (bash, read, edit, write, glob, grep, task, webfetch, etc.)
 - `ToolCatalog::register()` takes `&dyn Tool` (not `Box<dyn Tool>`)
+- `ToolRegistry::with_options(ToolRegistryOptions)` is the authoritative registration sequence; `with_defaults()` and `with_session_defaults(...)` are thin wrappers
+
+### Tool Backends
+- `ToolBackendKind` — `Native | Mcp | Shell | BuiltinLegacy`
+- `ToolExecutionContext` — request-scoped execution context (cwd, session_id, permission_mode, timeout)
+- `ToolProvenance` — `backend`, `implementation`, `version`, `elapsed_ms`, `truncated`, `trust`
+- `ToolTrust` — `LocalTrusted | LocalUntrusted | ExternalUntrusted | MutatingSideEffect`
+- `StructuredToolResult` — wraps output with provenance; `legacy()` helper preserves the string contract for older tools
+- Diagnostics: `/tool-backends` (aliases `/tools`, `/backends`) renders a table of tool → backend → implementation → status → raw MCP exposure
+- Config: `[tool_backends.<domain>]` sections with `backend`, `expose_raw_mcp_tools`, `fallback_to_native`, `server_name`, `command`, `args`, `timeout_ms`, `env` (see `config::schema::ExternalToolBackendConfigSchema`)
 
 ### Events
 - `AppEvent` enum - 36 variants for session, tool, MCP, permission, subagent events
@@ -113,8 +154,9 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 
 | Item | Count | Location |
 |------|-------|----------|
-| Tools (default registry) | 27 | `tool/mod.rs:89-119` |
-| LSP servers | 39 | `lsp/server.rs:27-383` |
+| Tools (default registry) | 27 | `tool/mod.rs:90-122` |
+| LSP servers | 39 | `crates/egglsp/src/server.rs` (moved from `lsp/server.rs`) |
+| Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsec`, `crates/eggcontext` |
 | UiState fields | 26 | `tui/app/state/ui.rs:27-76` |
 | AppEvent variants | 36 | `bus/events.rs:5-147` |
 | Built-in commands | 46 | `tui/command.rs:79-182` |
@@ -197,6 +239,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [LSP](lsp.md) - Language Server Protocol
 - [MCP](mcp.md) - Model Context Protocol
 - [Memory](memory.md) - Persistent memory system
+- [Native Crates](native_crates.md) - Workspace crates (egglsp, egggit, eggsec, eggcontext) and native/MCP backend contract
 - [Permission](permission.md) - Access control and modes
 - [Plugin](plugin.md) - WASM plugin system
 - [Protocol](protocol.md) - Shared request/response envelopes

@@ -1,12 +1,23 @@
-pub mod command;
-pub mod dependency;
-pub mod finding;
 pub mod policy;
-pub mod profile;
 pub mod sandbox;
-pub mod scanner;
 pub mod service;
 pub mod ssrf;
+
+pub mod command {
+    pub use eggsec::command::*;
+}
+pub mod dependency {
+    pub use eggsec::dependency::*;
+}
+pub mod finding {
+    pub use eggsec::finding::*;
+}
+pub mod profile {
+    pub use eggsec::profile::*;
+}
+pub mod scanner {
+    pub use eggsec::scanner::*;
+}
 
 pub use sandbox::{
     get_default_allowed_paths, get_sensitive_paths, validate_path_safety, SandboxConfig,

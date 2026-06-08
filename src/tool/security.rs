@@ -5,7 +5,7 @@ use crate::config::schema::SecurityConfig;
 use crate::error::ToolError;
 use crate::security::command::classify_bash_command;
 use crate::security::finding::SecurityReport;
-use crate::security::profile::{ProfileRunner, SecurityProfile};
+use crate::security::profile::{ProfileConfig, ProfileRunner, SecurityProfile};
 use crate::security::scanner::{inspect_file, inspect_text};
 use crate::tool::{Tool, ToolCategory};
 
@@ -131,8 +131,9 @@ impl Tool for SecurityTool {
                             .collect()
                     })
                     .unwrap_or_default();
-                let config = SecurityConfig::default();
-                let runner = ProfileRunner::new(config);
+                let _ = SecurityConfig::default();
+                let profile_config = ProfileConfig::default();
+                let runner = ProfileRunner::new(profile_config);
                 let report = runner.inspect_paths(profile, &paths).await;
                 serde_json::to_string_pretty(&report)
                     .map_err(|e| ToolError::Execution(format!("serialization error: {}", e)))
@@ -155,6 +156,46 @@ mod tests {
         let tool = SecurityTool;
         assert_eq!(tool.name(), "security");
         assert!(!tool.description().is_empty());
+    }
+
+    #[test]
+    fn parameters_schema_snapshot() {
+        let tool = SecurityTool;
+        let params = tool.parameters();
+        let expected = json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["classify_command", "inspect_text", "inspect_file", "run_profile"],
+                    "description": "The security action to perform"
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Command string to classify (for classify_command)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File path to inspect (for inspect_file) or context path for inspect_text"
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Text content to inspect (for inspect_text)"
+                },
+                "profile": {
+                    "type": "string",
+                    "enum": ["ambient", "dependency_delta", "pre_commit", "security_review"],
+                    "description": "Security profile to run (for run_profile)"
+                },
+                "paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "File paths to scan (for run_profile)"
+                }
+            },
+            "required": ["action"]
+        });
+        assert_eq!(params, expected);
     }
 
     #[test]

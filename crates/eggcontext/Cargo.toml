@@ -1,0 +1,11 @@
+[package]
+name = "eggcontext"
+version = "0.1.0"
+edition = "2021"
+description = "Token counting and context packing utilities extracted from Codegg."
+license = "MIT"
+rust-version = "1.81"
+
+[dependencies]
+thiserror = "2"
+tiktoken = "3.1"

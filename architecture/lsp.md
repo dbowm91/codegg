@@ -2,7 +2,7 @@
 
 The `lsp` module provides Language Server Protocol support for IDE-like features. It implements a **client-side LSP integration** that spawns and manages external LSP server processes.
 
-**Location**: `src/lsp/`
+**Location**: `src/lsp/` (Codegg-side thin re-exports) and `crates/egglsp/` (full implementation; see [native_crates.md](native_crates.md))
 
 ## Key Responsibilities
 
@@ -14,11 +14,18 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 
 ## Architecture
 
-The module uses a client-per-root pattern: `LspService` maintains a `HashMap<String, ClientEntry>` where the key is `"{project_root}:{server_id}"`.
+The full LSP implementation lives in the `egglsp` workspace crate
+(`crates/egglsp/`). Codegg-side `src/lsp/mod.rs` is a thin wrapper
+that re-exports `egglsp::*` and bridges:
+
+- `crate::config::schema::LspConfig` → `egglsp::LspConfig` (via `From` impl in the wrapper)
+- `egglsp::LspError` → `crate::error::LspError` (delegates to the existing codegg-side error variant)
+
+The crate uses a client-per-root pattern: `LspService` maintains a `HashMap<String, ClientEntry>` where the key is `"{project_root}:{server_id}"`.
 
 ## Components
 
-### mod.rs - Main Entry Point
+### src/lsp/mod.rs - Codegg-side thin wrapper
 
 ```rust
 pub struct Lsp {

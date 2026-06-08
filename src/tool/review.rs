@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::json;
-use tokio::process::Command;
 
 use crate::config::schema::Config;
 use crate::error::ToolError;
@@ -22,37 +21,31 @@ impl ReviewTool {
     }
 
     async fn get_diff(&self, staged: bool) -> Result<String, ToolError> {
-        let args = if staged {
-            vec!["diff", "--staged"]
+        let args: &[&str] = if staged {
+            &["diff", "--cached", "HEAD"]
         } else {
-            vec!["diff", "HEAD"]
+            &["diff", "HEAD"]
         };
-
-        let mut cmd = Command::new("git");
+        let mut cmd = tokio::process::Command::new("git");
         cmd.env_clear();
         if let Some(path) = std::env::var_os("PATH") {
             cmd.env("PATH", path);
         } else {
             cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
         }
-        cmd.kill_on_drop(true);
+        cmd.kill_on_drop(true).args(args).current_dir(&self.workdir);
         let output = cmd
-            .args(&args)
-            .current_dir(&self.workdir)
             .output()
             .await
             .map_err(|e| ToolError::Execution(format!("git diff failed: {}", e)))?;
-
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ToolError::Execution(format!("git diff failed: {}", stderr)));
         }
-
         let diff = String::from_utf8_lossy(&output.stdout).to_string();
         if diff.is_empty() {
             return Err(ToolError::Execution("no changes to review".to_string()));
         }
-
         Ok(diff)
     }
 

@@ -5,8 +5,8 @@ use tracing::trace;
 use url::Url;
 
 use crate::error::LspError;
-use crate::lsp::client::url_to_uri;
-use crate::lsp::service::LspService;
+use crate::client::url_to_uri;
+use crate::service::LspService;
 
 pub struct LspOperations {
     service: std::sync::Arc<LspService>,

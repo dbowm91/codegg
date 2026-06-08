@@ -323,3 +323,67 @@ impl Tool for LspTool {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn lsp_tool_name() {
+        let tool = LspTool::new(std::sync::Arc::new(
+            crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default().into()),
+        ));
+        assert_eq!(tool.name(), "lsp");
+        assert!(!tool.description().is_empty());
+    }
+
+    #[test]
+    fn lsp_parameters_schema_snapshot() {
+        let tool = LspTool::new(std::sync::Arc::new(
+            crate::lsp::service::LspService::new(crate::config::schema::LspConfig::default().into()),
+        ));
+        let params = tool.parameters();
+        let expected = json!({
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": [
+                        "goToDefinition", "findReferences", "hover",
+                        "documentSymbol", "workspaceSymbol", "goToImplementation",
+                        "prepareCallHierarchy", "incomingCalls", "outgoingCalls",
+                        "codeAction", "codeLens"
+                    ],
+                    "description": "LSP operation to perform"
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "File path for the operation"
+                },
+                "line": {
+                    "type": "number",
+                    "description": "Line number (1-indexed)"
+                },
+                "column": {
+                    "type": "number",
+                    "description": "Column number"
+                },
+                "end_line": {
+                    "type": "number",
+                    "description": "End line number for codeAction range (1-indexed)"
+                },
+                "end_column": {
+                    "type": "number",
+                    "description": "End column number for codeAction range"
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name for symbol-based operations"
+                }
+            },
+            "required": ["operation"]
+        });
+        assert_eq!(params, expected);
+    }
+}

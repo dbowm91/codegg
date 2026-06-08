@@ -1,7 +1,7 @@
 use crate::provider::{ChatRequest, ContentPart, Message, Provider};
+use eggcontext::estimate_tokens_sync as egg_estimate_tokens_sync;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use tiktoken::encoding_for_model;
 
 /// # Compaction Invariant
 /// All compaction strategies must uphold the following invariants:
@@ -13,65 +13,10 @@ use tiktoken::encoding_for_model;
 /// 4. Truncation of tool outputs must preserve the `tool_call_id` field unchanged.
 /// 5. Multi-tool pairs (assistant with multiple tool calls + matching tool results) must preserve
 ///    all IDs and their original order.
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TokenizerType {
-    Cl100kBase,
-    Claude,
-    Gemini,
-    O200kBase,
-}
-
-impl TokenizerType {
-    pub fn for_model(model: &str) -> Self {
-        let lower = model.to_lowercase();
-        if lower.contains("claude") {
-            TokenizerType::Claude
-        } else if lower.contains("gemini") {
-            TokenizerType::Gemini
-        } else if lower.contains("o200k") {
-            TokenizerType::O200kBase
-        } else {
-            TokenizerType::Cl100kBase
-        }
-    }
-
-    pub fn multiplier(&self) -> f64 {
-        match self {
-            TokenizerType::Cl100kBase => 1.0,
-            TokenizerType::Claude => 1.4,
-            TokenizerType::Gemini => 1.2,
-            TokenizerType::O200kBase => 1.0,
-        }
-    }
-}
+pub use eggcontext::TokenizerType;
 
 fn estimate_tokens_sync(text: &str, model: Option<&str>) -> usize {
-    let tokenizer_type = model
-        .map(TokenizerType::for_model)
-        .unwrap_or(TokenizerType::Cl100kBase);
-
-    let base_tokens = if tokenizer_type == TokenizerType::Cl100kBase {
-        let model_name = model
-            .map(|m| {
-                if m.to_lowercase().contains("gpt-4") {
-                    "gpt-4"
-                } else {
-                    "gpt-3.5-turbo"
-                }
-            })
-            .unwrap_or("gpt-3.5-turbo");
-
-        encoding_for_model(model_name)
-            .or_else(|| encoding_for_model("gpt-3.5-turbo"))
-            .map(|enc| enc.encode(text).len())
-            .unwrap_or_else(|| tiktoken::encoding::cl100k_base().encode(text).len())
-    } else {
-        tiktoken::encoding::cl100k_base().encode(text).len()
-    };
-
-    let multiplier = tokenizer_type.multiplier();
-    (base_tokens as f64 * multiplier) as usize
+    egg_estimate_tokens_sync(text, model)
 }
 
 pub struct ContextTracker {
