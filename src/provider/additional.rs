@@ -1,5 +1,5 @@
-use crate::provider::openai_compatible::OpenAiCompatibleProvider;
 use crate::provider::anthropic::AnthropicProvider;
+use crate::provider::openai_compatible::OpenAiCompatibleProvider;
 use crate::provider::{ModelInfo, Provider};
 
 pub fn create_xai(api_key: String) -> impl Provider {

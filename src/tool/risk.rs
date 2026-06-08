@@ -11,9 +11,7 @@ pub fn classify_tool_risk(tool_name: &str, input: &serde_json::Value) -> ToolRis
         "read" | "grep" | "glob" | "list" | "codesearch" | "webfetch" | "websearch" => {
             ToolRisk::Read
         }
-        "write" | "edit" | "replace" | "multiedit" | "formatter" | "apply_patch" => {
-            ToolRisk::Write
-        }
+        "write" | "edit" | "replace" | "multiedit" | "formatter" | "apply_patch" => ToolRisk::Write,
         "git" | "commit" => ToolRisk::GitMutation,
         "bash" | "terminal" => classify_bash_risk(input),
         _ => ToolRisk::Unknown,
@@ -73,7 +71,7 @@ fn is_destructive_command(cmd: &str) -> bool {
         || cmd.contains("mkfs")
         || cmd.contains("> /dev/sd")
         || (cmd.contains("chmod") && cmd.contains("-R") && cmd.contains("/"))
-        && !cmd.contains("chmod -R u+r")
+            && !cmd.contains("chmod -R u+r")
 }
 
 fn is_credential_command(cmd: &str) -> bool {
@@ -242,7 +240,9 @@ fn summarize_failure(_tool_name: &str, lines: &[&str]) -> Option<String> {
 fn summarize_test_failure(lines: &[&str]) -> Option<String> {
     let failed_tests: Vec<&str> = lines
         .iter()
-        .filter(|l| l.contains("FAILED") || l.contains("failures:") || l.contains("test result: FAILED"))
+        .filter(|l| {
+            l.contains("FAILED") || l.contains("failures:") || l.contains("test result: FAILED")
+        })
         .take(3)
         .copied()
         .collect();
@@ -272,7 +272,11 @@ fn summarize_compiler_errors(lines: &[&str]) -> Option<String> {
     if !errors.is_empty() {
         let error_count = lines.iter().filter(|l| l.contains("error[")).count();
         if error_count > errors.len() {
-            Some(format!("{} (and {} more errors)", errors.join("; "), error_count - errors.len()))
+            Some(format!(
+                "{} (and {} more errors)",
+                errors.join("; "),
+                error_count - errors.len()
+            ))
         } else {
             Some(errors.join("; "))
         }
@@ -298,9 +302,15 @@ fn summarize_bash_output(lines: &[&str], line_count: usize) -> Option<String> {
         let branch_line = lines.iter().find(|l| l.contains("On branch")).unwrap();
         let changes = lines
             .iter()
-            .filter(|l| l.contains("modified:") || l.contains("new file:") || l.contains("deleted:"))
+            .filter(|l| {
+                l.contains("modified:") || l.contains("new file:") || l.contains("deleted:")
+            })
             .count();
-        return Some(format!("{}, {} changed file(s)", branch_line.trim(), changes));
+        return Some(format!(
+            "{}, {} changed file(s)",
+            branch_line.trim(),
+            changes
+        ));
     }
 
     // General: summarize by line count and first significant lines
@@ -350,13 +360,19 @@ mod tests {
         assert_eq!(classify_tool_risk("edit", &json!({})), ToolRisk::Write);
         assert_eq!(classify_tool_risk("replace", &json!({})), ToolRisk::Write);
         assert_eq!(classify_tool_risk("multiedit", &json!({})), ToolRisk::Write);
-        assert_eq!(classify_tool_risk("apply_patch", &json!({})), ToolRisk::Write);
+        assert_eq!(
+            classify_tool_risk("apply_patch", &json!({})),
+            ToolRisk::Write
+        );
     }
 
     #[test]
     fn classify_git_tools() {
         assert_eq!(classify_tool_risk("git", &json!({})), ToolRisk::GitMutation);
-        assert_eq!(classify_tool_risk("commit", &json!({})), ToolRisk::GitMutation);
+        assert_eq!(
+            classify_tool_risk("commit", &json!({})),
+            ToolRisk::GitMutation
+        );
     }
 
     #[test]
@@ -485,7 +501,10 @@ mod tests {
 
     #[test]
     fn summarize_empty_output() {
-        assert_eq!(summarize_tool_output("bash", "", true), Some("empty output".to_string()));
+        assert_eq!(
+            summarize_tool_output("bash", "", true),
+            Some("empty output".to_string())
+        );
     }
 
     #[test]
@@ -514,7 +533,10 @@ mod tests {
 
     #[test]
     fn summarize_long_output() {
-        let output = (0..100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let output = (0..100)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let summary = summarize_tool_output("bash", &output, true).unwrap();
         assert!(summary.contains("100 lines"));
     }

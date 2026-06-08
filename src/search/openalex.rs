@@ -52,7 +52,11 @@ impl SearchProvider for OpenAlexProvider {
         let resp = self
             .client
             .get(ENDPOINT)
-            .query(&[("search", query), ("per_page", &limit.to_string()), ("mailto", MAILTO)])
+            .query(&[
+                ("search", query),
+                ("per_page", &limit.to_string()),
+                ("mailto", MAILTO),
+            ])
             .send()
             .await?;
         let status = resp.status();
@@ -78,7 +82,10 @@ impl SearchProvider for OpenAlexProvider {
             #[serde(default)]
             abstract_inverted_index: Option<serde_json::Value>,
         }
-        let r: R = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: R = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         if r.results.is_empty() {
             return Err(SearchError::Empty);
         }

@@ -198,41 +198,35 @@ impl EventLog {
 
         let bind_seq: i64 = from_event_seq as i64;
         let rows: Vec<CoreEventRow> = match (&filter.session_id, filter.include_global) {
-            (Some(sid), true) => {
-                sqlx::query_as::<_, CoreEventRow>(
-                    "SELECT event_seq, session_id, turn_id, event_type, payload_json, created_at \
+            (Some(sid), true) => sqlx::query_as::<_, CoreEventRow>(
+                "SELECT event_seq, session_id, turn_id, event_type, payload_json, created_at \
                      FROM core_event_log WHERE event_seq > ? \
                      AND (session_id = ? OR session_id IS NULL) ORDER BY event_seq ASC",
-                )
-                .bind(bind_seq)
-                .bind(sid)
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default()
-            }
-            (Some(sid), false) => {
-                sqlx::query_as::<_, CoreEventRow>(
-                    "SELECT event_seq, session_id, turn_id, event_type, payload_json, created_at \
+            )
+            .bind(bind_seq)
+            .bind(sid)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default(),
+            (Some(sid), false) => sqlx::query_as::<_, CoreEventRow>(
+                "SELECT event_seq, session_id, turn_id, event_type, payload_json, created_at \
                      FROM core_event_log WHERE event_seq > ? AND session_id = ? \
                      ORDER BY event_seq ASC",
-                )
-                .bind(bind_seq)
-                .bind(sid)
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default()
-            }
-            (None, _) => {
-                sqlx::query_as::<_, CoreEventRow>(
-                    "SELECT event_seq, session_id, turn_id, event_type, payload_json, created_at \
+            )
+            .bind(bind_seq)
+            .bind(sid)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default(),
+            (None, _) => sqlx::query_as::<_, CoreEventRow>(
+                "SELECT event_seq, session_id, turn_id, event_type, payload_json, created_at \
                      FROM core_event_log WHERE event_seq > ? AND session_id IS NULL \
                      ORDER BY event_seq ASC",
-                )
-                .bind(bind_seq)
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default()
-            }
+            )
+            .bind(bind_seq)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default(),
         };
 
         rows.into_iter()
@@ -346,13 +340,12 @@ impl EventLog {
         let Some(ref pool) = self.pool else {
             return false;
         };
-        let row: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
-            "SELECT MIN(event_seq), MAX(event_seq) FROM core_event_log",
-        )
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
+        let row: Option<(Option<i64>, Option<i64>)> =
+            sqlx::query_as("SELECT MIN(event_seq), MAX(event_seq) FROM core_event_log")
+                .fetch_optional(pool)
+                .await
+                .ok()
+                .flatten();
         if let Some((min_seq, max_seq)) = row {
             let need = (from_event_seq as i64).saturating_add(1);
             match (min_seq, max_seq) {
@@ -599,7 +592,12 @@ mod tests {
 
         // resume from 1 -> only the second event
         let events = log.replay_from(1, &s1_filter).await;
-        assert_eq!(events.len(), 1, "expected only second event, got {:?}", events);
+        assert_eq!(
+            events.len(),
+            1,
+            "expected only second event, got {:?}",
+            events
+        );
         assert_eq!(events[0].event_seq, 2);
 
         // resume from 2 -> none
@@ -644,8 +642,8 @@ mod tests {
 
     #[tokio::test]
     async fn has_events_from_strict_semantics() {
-        use sqlx::sqlite::SqlitePoolOptions;
         use crate::session::schema::migrate;
+        use sqlx::sqlite::SqlitePoolOptions;
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let url = format!("sqlite:{}?mode=rwc", db_path.display());
@@ -690,8 +688,8 @@ mod tests {
 
     #[tokio::test]
     async fn event_log_persists_event_type_as_string() {
-        use sqlx::sqlite::SqlitePoolOptions;
         use crate::session::schema::migrate;
+        use sqlx::sqlite::SqlitePoolOptions;
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let url = format!("sqlite:{}?mode=rwc", db_path.display());
@@ -781,8 +779,8 @@ mod tests {
     async fn covers_from_too_old_ring_seq_is_true_with_db() {
         // Same scenario, but with a SQLite pool: the DB still has
         // event 1 so the request is covered.
-        use sqlx::sqlite::SqlitePoolOptions;
         use crate::session::schema::migrate;
+        use sqlx::sqlite::SqlitePoolOptions;
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let url = format!("sqlite:{}?mode=rwc", db_path.display());

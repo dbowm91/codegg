@@ -82,7 +82,11 @@ pub fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError> {
             current_head = None;
             current_is_detached = false;
             current_is_current = Path::new(path) == git_root
-                || Path::new(path).canonicalize().map_or(false, |p| p == git_root.canonicalize().unwrap_or_else(|_| git_root.to_path_buf()));
+                || Path::new(path).canonicalize().map_or(false, |p| {
+                    p == git_root
+                        .canonicalize()
+                        .unwrap_or_else(|_| git_root.to_path_buf())
+                });
         } else if let Some(branch) = line.strip_prefix("branch ") {
             current_branch = branch.to_string();
         } else if let Some(head) = line.strip_prefix("HEAD ") {

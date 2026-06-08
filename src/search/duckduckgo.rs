@@ -22,8 +22,10 @@ const MAX_RESULTS_CAP: usize = 30;
 /// `<article class="result ...">...</article>`. Both end with
 /// `</div>` / `</article>`.
 static RESULT_BLOCK: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?s)<(?:div|article)[^>]*class="[^"]*\bresult\b[^"]*"[^>]*>(.*?)</(?:div|article)>"#)
-        .expect("RESULT_BLOCK regex")
+    Regex::new(
+        r#"(?s)<(?:div|article)[^>]*class="[^"]*\bresult\b[^"]*"[^>]*>(.*?)</(?:div|article)>"#,
+    )
+    .expect("RESULT_BLOCK regex")
 });
 
 /// Captures the title link's href inside a result block.
@@ -38,9 +40,7 @@ static SNIPPET: Lazy<Regex> = Lazy::new(|| {
         .expect("SNIPPET regex")
 });
 
-static TAG_STRIP: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"<[^>]+>").expect("TAG_STRIP regex")
-});
+static TAG_STRIP: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").expect("TAG_STRIP regex"));
 
 static WHITESPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").expect("WHITESPACE regex"));
 
@@ -116,7 +116,11 @@ pub fn parse_duckduckgo_html(html: &str, limit: usize) -> Result<Vec<SearchHit>,
         let Some(href_cap) = TITLE_HREF.captures(block) else {
             continue;
         };
-        let href_raw = href_cap.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
+        let href_raw = href_cap
+            .get(1)
+            .map(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
         let url = resolve_uddg(&href_raw).unwrap_or(href_raw);
         if url.is_empty() {
             continue;
@@ -170,7 +174,8 @@ pub fn resolve_uddg(href: &str) -> Option<String> {
         href.to_string()
     };
     let parsed = Url::parse(&normalized).ok()?;
-    if parsed.host_str() == Some("duckduckgo.com") && (parsed.path() == "/l/" || parsed.path() == "/l")
+    if parsed.host_str() == Some("duckduckgo.com")
+        && (parsed.path() == "/l/" || parsed.path() == "/l")
     {
         if let Some((_, target)) = parsed.query_pairs().find(|(k, _)| k == "uddg") {
             return Some(percent_decode(&target));
@@ -250,8 +255,8 @@ mod tests {
 
     #[test]
     fn uddg_resolver_decodes_redirector() {
-        let out = resolve_uddg("//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Farticle")
-            .unwrap();
+        let out =
+            resolve_uddg("//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Farticle").unwrap();
         assert_eq!(out, "https://example.com/article");
     }
 }

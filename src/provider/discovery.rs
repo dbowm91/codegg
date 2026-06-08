@@ -75,7 +75,10 @@ impl ModelDiscoveryService {
             .collect();
     }
 
-    async fn load_from_db(&self, pool: &SqlitePool) -> Result<Vec<ModelInfoInternal>, StorageError> {
+    async fn load_from_db(
+        &self,
+        pool: &SqlitePool,
+    ) -> Result<Vec<ModelInfoInternal>, StorageError> {
         #[allow(clippy::type_complexity)]
         let rows: Vec<(
             String,
@@ -257,9 +260,7 @@ impl ModelDiscoveryService {
             *last = None;
         }
         if let Some(ref pool) = self.pool {
-            let _ = sqlx::query("DELETE FROM cached_models")
-                .execute(pool)
-                .await;
+            let _ = sqlx::query("DELETE FROM cached_models").execute(pool).await;
         }
     }
 }

@@ -97,7 +97,10 @@ impl SseParser {
                         message,
                         data
                     );
-                    return Some(Err(ProviderError::api(code.to_string(), message.to_string())));
+                    return Some(Err(ProviderError::api(
+                        code.to_string(),
+                        message.to_string(),
+                    )));
                 }
                 return self.parse_openai_chunk(&val);
             }
@@ -119,7 +122,10 @@ impl SseParser {
                         message,
                         trimmed
                     );
-                    return Some(Err(ProviderError::api(code.to_string(), message.to_string())));
+                    return Some(Err(ProviderError::api(
+                        code.to_string(),
+                        message.to_string(),
+                    )));
                 }
                 return self.parse_openai_chunk(&val);
             }
@@ -230,8 +236,7 @@ impl SseParser {
                     }
 
                     state.args_buffer.push_str(args_str);
-                    if let Ok(args) =
-                        serde_json::from_str::<serde_json::Value>(&state.args_buffer)
+                    if let Ok(args) = serde_json::from_str::<serde_json::Value>(&state.args_buffer)
                     {
                         if !state.name.trim().is_empty() {
                             self.pending_tool_calls.push_back(ToolCall {
@@ -281,9 +286,7 @@ impl SseParser {
                 }
             }
 
-            if let Some(function_call) = choice
-                .get("message")
-                .and_then(|m| m.get("function_call"))
+            if let Some(function_call) = choice.get("message").and_then(|m| m.get("function_call"))
             {
                 if let Some(parsed) = parse_openai_legacy_function_call(function_call) {
                     return Some(Ok(ChatEvent::ToolCall(parsed)));
@@ -421,9 +424,7 @@ fn pop_queued_tool_call(buffer: &mut String) -> Option<ToolCall> {
     const STATE_PREFIX: &str = "\n__OAI_STATE__:";
     let prefix_idx = buffer.find(PREFIX)?;
     let json_start = prefix_idx + PREFIX.len();
-    let next_tc = buffer[json_start..]
-        .find(PREFIX)
-        .map(|i| json_start + i);
+    let next_tc = buffer[json_start..].find(PREFIX).map(|i| json_start + i);
     let next_state = buffer[json_start..]
         .find(STATE_PREFIX)
         .map(|i| json_start + i);
@@ -679,7 +680,10 @@ fn parse_anthropic_event_with_state(
                     {
                         u.output_tokens = output_tokens as usize;
                     }
-                    if let Some(cached) = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()) {
+                    if let Some(cached) = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64())
+                    {
                         u.cached_tokens = Some(cached as usize);
                     }
                     u.total_tokens = u.input_tokens + u.output_tokens;
@@ -864,13 +868,20 @@ fn parse_openai_tool_call_value(tc: &serde_json::Value) -> Option<ToolCall> {
 }
 
 fn parse_openai_legacy_function_call(function_call: &serde_json::Value) -> Option<ToolCall> {
-    let name = function_call.get("name").and_then(|v| v.as_str())?.to_string();
+    let name = function_call
+        .get("name")
+        .and_then(|v| v.as_str())?
+        .to_string();
     let arguments = function_call.get("arguments")?;
     let args = if let Some(s) = arguments.as_str() {
         match serde_json::from_str::<serde_json::Value>(s) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("failed to parse legacy function call '{}' arguments: {}", name, e);
+                tracing::warn!(
+                    "failed to parse legacy function call '{}' arguments: {}",
+                    name,
+                    e
+                );
                 serde_json::Value::Object(serde_json::Map::new())
             }
         }
@@ -963,10 +974,7 @@ where
                         }
                     }
                     Some(Err(e)) => {
-                        return Some((
-                            Err(ProviderError::Stream(e.to_string())),
-                            (stream, buffer),
-                        ));
+                        return Some((Err(ProviderError::Stream(e.to_string())), (stream, buffer)));
                     }
                     None => {
                         if buffer.is_empty() {

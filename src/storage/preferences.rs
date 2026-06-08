@@ -33,13 +33,12 @@ impl UserPreferences {
 
     /// Read a value by key. Returns `Ok(None)` when the key is absent.
     pub async fn get(&self, key: &str) -> Result<Option<String>, StorageError> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT value FROM user_preferences WHERE key = ?1",
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM user_preferences WHERE key = ?1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(row.map(|(v,)| v))
     }
 
@@ -78,13 +77,12 @@ impl UserPreferences {
     /// Returns the `updated_at` epoch-millis for `key`, or `None` if the
     /// key has never been set.
     pub async fn updated_at(&self, key: &str) -> Result<Option<i64>, StorageError> {
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT updated_at FROM user_preferences WHERE key = ?1",
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT updated_at FROM user_preferences WHERE key = ?1")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(row.map(|(v,)| v))
     }
 }
@@ -144,7 +142,8 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_key() {
         let prefs = UserPreferences::new(temp_pool().await);
-        prefs.set(KEY_MODEL_LAST_USED, "opencode_zen/big-pickle")
+        prefs
+            .set(KEY_MODEL_LAST_USED, "opencode_zen/big-pickle")
             .await
             .unwrap();
         let n = prefs.delete(KEY_MODEL_LAST_USED).await.unwrap();
@@ -162,6 +161,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(5)).await;
         prefs.set(KEY_THEME_ACTIVE, "cyber-red").await.unwrap();
         let t2 = prefs.updated_at(KEY_THEME_ACTIVE).await.unwrap().unwrap();
-        assert!(t2 >= t1, "updated_at should not go backwards ({} < {})", t2, t1);
+        assert!(
+            t2 >= t1,
+            "updated_at should not go backwards ({} < {})",
+            t2,
+            t1
+        );
     }
 }

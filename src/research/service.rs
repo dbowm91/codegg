@@ -187,10 +187,7 @@ impl ResearchService {
     /// and diff the new claims against the old ones.
     pub async fn rerun(&self, original_run_id: &str) -> Result<RerunResult> {
         let (new_run, diff) = self.coordinator.rerun(original_run_id).await?;
-        Ok(RerunResult {
-            new_run,
-            diff,
-        })
+        Ok(RerunResult { new_run, diff })
     }
 
     /// Re-synthesize output profiles from an existing run's evidence and claims.

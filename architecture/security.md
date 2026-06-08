@@ -100,10 +100,18 @@ pub fn validate_url_host(url: &str) -> Result<String, String>
 ```
 
 Used by:
-- `webfetch` - `validate_url_host` at `src/tool/webfetch.rs:90`
-- `websearch` - `validate_host_ip` at `src/tool/websearch.rs:58`, `revalidate_dns` at `src/tool/websearch.rs:68`
-- `codesearch` - `validate_host_ip` at `src/tool/codesearch.rs:86`, `revalidate_dns` at `src/tool/codesearch.rs:99`
-- `mcp/remote` - `validate_url_host` at `src/mcp/remote.rs:400`, `validate_host_ip` at `src/mcp/remote.rs:407`
+- The `builtin` webfetch path - `validate_url_host`,
+  `validate_host_ip`, and `revalidate_dns` inside
+  `tool::webfetch::execute_builtin` (`src/tool/webfetch.rs`).
+  The default `eggsearch` backend delegates SSRF protection to
+  the eggsearch subprocess; these calls are only exercised when
+  `backend = "builtin"` or `fallback_to_builtin = true`.
+- `codesearch` - `validate_host_ip` and `revalidate_dns` at
+  `src/tool/codesearch.rs` (line numbers drift; search for the
+  call sites).
+- `mcp/remote` - `validate_url_host` and `validate_host_ip` at
+  `src/mcp/remote.rs` (line numbers drift; search for the call
+  sites).
 
 ### sandbox.rs - Landlock Sandboxing
 
@@ -157,26 +165,38 @@ Used by: `bash` tool for Landlock sandbox enforcement
 
 ### WebFetch Security
 
-```
-WebFetch tool
-    │
-    ▼
-validate_url_host(url)
-    │
-    ├── Parse URL (scheme check: http/https only)
-    ├── validate_host_ip(host, port)
-    │     ├── DNS resolution
-    │     └── Check IPs against internal ranges
-    │
-    ▼
-validate_host_ip() returns validated_ips
-    │
-    ▼
-revalidate_dns() before HTTP request
-    │ (detects DNS rebinding attacks)
-    ▼
-HTTP request
-```
+SSRF protection is applied in two places:
+
+- The `builtin` webfetch path (`tool::webfetch::execute_builtin`),
+  which runs when `[search].backend = "builtin"` or as a fallback
+  when `fallback_to_builtin = true`:
+  ```
+  WebFetch tool -> search_backend::dispatch_web_fetch
+      │            (builtin branch)
+      ▼
+  tool::webfetch::execute_builtin
+      │
+      ▼
+  validate_url_host(url)
+      │
+      ├── Parse URL (scheme check: http/https only)
+      ├── validate_host_ip(host, port)
+      │     ├── DNS resolution
+      │     └── Check IPs against internal ranges
+      │
+      ▼
+  validate_host_ip() returns validated_ips
+      │
+      ▼
+  revalidate_dns() before HTTP request
+      │ (detects DNS rebinding attacks)
+      ▼
+  HTTP request
+  ```
+- The default `eggsearch` backend delegates SSRF protection to
+  the eggsearch subprocess. Codegg does not duplicate the
+  check on the eggsearch path; the eggsearch binary is
+  responsible for refusing internal targets.
 
 ### Path Safety Validation
 

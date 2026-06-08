@@ -57,7 +57,9 @@ pub const BUILTIN_THEME_FILES: &[BundledTheme] = &[
     BundledTheme {
         id: "black-but-with-important-highlights",
         name: "black but with important highlights",
-        content: include_str!("../../assets/themes/halloy/black but with important highlights.toml"),
+        content: include_str!(
+            "../../assets/themes/halloy/black but with important highlights.toml"
+        ),
     },
     BundledTheme {
         id: "booberry",
@@ -379,13 +381,14 @@ impl ThemeRegistry {
                     (t, d)
                 })
             } else {
-                parse_native_theme(entry.content, ThemeSource::Builtin, &dark_fallback)
-                    .map(|mut t| {
+                parse_native_theme(entry.content, ThemeSource::Builtin, &dark_fallback).map(
+                    |mut t| {
                         t.id = entry.id.to_string();
                         t.name = entry.name.to_string();
                         let diags = validate_theme(&t);
                         (t, diags)
-                    })
+                    },
+                )
             };
             match result {
                 Ok((theme, diags)) => {
@@ -519,7 +522,9 @@ impl ThemeRegistry {
 
         let theme = parse_native_theme(
             &content,
-            ThemeSource::NativeFile { path: path.to_path_buf() },
+            ThemeSource::NativeFile {
+                path: path.to_path_buf(),
+            },
             &fallback,
         )?;
         let diags = validate_theme(&theme);
@@ -660,11 +665,11 @@ pub fn builtin_fallback() -> SemanticTheme {
 }
 
 fn placeholder_fallback() -> SemanticTheme {
+    use crate::theme::color::Rgb;
     use crate::theme::schema::{
         AgentColors, BaseColors, CodeColors, ConversationColors, DiffColors, StatusColors,
         TextColors, UiColors,
     };
-    use crate::theme::color::Rgb;
     SemanticTheme {
         id: "dark".to_string(),
         name: "Dark".to_string(),
@@ -739,9 +744,7 @@ pub fn resolve_theme_for_app(
             return theme;
         }
     }
-    registry
-        .get_tui("dark")
-        .unwrap_or_else(Theme::dark)
+    registry.get_tui("dark").unwrap_or_else(Theme::dark)
 }
 
 #[allow(dead_code)]

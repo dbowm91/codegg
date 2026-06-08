@@ -160,21 +160,21 @@ impl Provider for OpencodeZenProvider {
         let api_key = self.api_key.clone();
         let client = self.client.clone();
 
-        tracing::debug!("CodeggZen: sending request to {} with model {}", url, req.model);
+        tracing::debug!(
+            "CodeggZen: sending request to {} with model {}",
+            url,
+            req.model
+        );
 
         let req_builder = client
             .post(&url)
             .header("authorization", format!("Bearer {}", api_key))
             .header("content-type", "application/json");
 
-        let resp = req_builder
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                tracing::error!("CodeggZen: request failed: {}", e);
-                ProviderError::from(e)
-            })?;
+        let resp = req_builder.json(&body).send().await.map_err(|e| {
+            tracing::error!("CodeggZen: request failed: {}", e);
+            ProviderError::from(e)
+        })?;
 
         tracing::debug!("CodeggZen: received response with status {}", resp.status());
 
@@ -188,7 +188,7 @@ impl Provider for OpencodeZenProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown error".to_string());
-                tracing::error!("CodeggZen: API error ({}): {}", status, err_text);
+            tracing::error!("CodeggZen: API error ({}): {}", status, err_text);
             return Err(ProviderError::api(
                 status.as_u16().to_string(),
                 format!("HTTP {}: {}", status, err_text),
@@ -209,7 +209,7 @@ impl Provider for OpencodeZenProvider {
                     }
 
                     if buffer.len() > MAX_BUFFER_SIZE {
-                            tracing::error!("CodeggZen: buffer overflow");
+                        tracing::error!("CodeggZen: buffer overflow");
                         return Some((
                             Err(ProviderError::Stream(
                                 "response buffer exceeded limit".to_string(),

@@ -18,17 +18,26 @@
 //!   `include_links = false` to keep output bounded.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 
-use codegg::config::schema::{
-    EggsearchConfig, SearchBackendConfig, SearchConfig,
-};
+use codegg::config::schema::{EggsearchConfig, SearchBackendConfig, SearchConfig};
 use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::search_backend::framing;
 use codegg::search_backend::state;
-use tokio::sync::Mutex;
 
-static TEST_LOCK: Mutex<()> = Mutex::const_new(());
+/// Test serialization lock.
+///
+/// A `std::sync::Mutex` (thread-level) is used instead of a
+/// `tokio::sync::Mutex` because each `#[tokio::test]` creates its own
+/// runtime, and a static tokio Mutex can race when the holder is parked
+/// across runtimes. We tolerate poisoning (a test that panics while
+/// holding the lock) by clearing it before re-acquiring.
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn eggsearch_config() -> SearchConfig {
     SearchConfig {
@@ -112,7 +121,8 @@ fn install_mock_recorder() -> Arc<Mutex<Vec<(String, serde_json::Value)>>> {
 
 #[tokio::test]
 async fn num_results_maps_to_max_results() {
-    let _g = TEST_LOCK.lock().await;
+    let _g = lock_tests();
+    state::reset_for_tests();
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -120,7 +130,7 @@ async fn num_results_maps_to_max_results() {
     }))
     .await
     .unwrap();
-    let rec = calls.lock().await;
+    let rec = calls.lock().expect("calls poisoned");
     let (tool, args) = rec.last().expect("at least one call");
     assert_eq!(tool, "web_search");
     assert_eq!(args["query"], "x");
@@ -129,7 +139,8 @@ async fn num_results_maps_to_max_results() {
 
 #[tokio::test]
 async fn max_results_alias_is_accepted() {
-    let _g = TEST_LOCK.lock().await;
+    let _g = lock_tests();
+    state::reset_for_tests();
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -137,7 +148,7 @@ async fn max_results_alias_is_accepted() {
     }))
     .await
     .unwrap();
-    let rec = calls.lock().await;
+    let rec = calls.lock().expect("calls poisoned");
     let (tool, args) = rec.last().expect("at least one call");
     assert_eq!(tool, "web_search");
     assert_eq!(args["max_results"], 7);
@@ -145,7 +156,8 @@ async fn max_results_alias_is_accepted() {
 
 #[tokio::test]
 async fn num_results_is_capped_at_30() {
-    let _g = TEST_LOCK.lock().await;
+    let _g = lock_tests();
+    state::reset_for_tests();
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -153,14 +165,15 @@ async fn num_results_is_capped_at_30() {
     }))
     .await
     .unwrap();
-    let rec = calls.lock().await;
+    let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     assert_eq!(args["max_results"], 30);
 }
 
 #[tokio::test]
 async fn provider_pinned_to_specific_backend() {
-    let _g = TEST_LOCK.lock().await;
+    let _g = lock_tests();
+    state::reset_for_tests();
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -168,7 +181,7 @@ async fn provider_pinned_to_specific_backend() {
     }))
     .await
     .unwrap();
-    let rec = calls.lock().await;
+    let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     let providers = args["providers"].as_array().expect("providers array");
     assert_eq!(providers.len(), 1);
@@ -177,7 +190,8 @@ async fn provider_pinned_to_specific_backend() {
 
 #[tokio::test]
 async fn provider_unknown_does_not_emit_providers_field() {
-    let _g = TEST_LOCK.lock().await;
+    let _g = lock_tests();
+    state::reset_for_tests();
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
@@ -185,7 +199,7 @@ async fn provider_unknown_does_not_emit_providers_field() {
     }))
     .await
     .unwrap();
-    let rec = calls.lock().await;
+    let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     // The dispatcher may emit a `providers` field with an empty
     // array for unknown hints; what we want to assert is that the
@@ -200,7 +214,8 @@ async fn provider_unknown_does_not_emit_providers_field() {
 
 #[tokio::test]
 async fn webfetch_max_length_maps_to_max_chars() {
-    let _g = TEST_LOCK.lock().await;
+    let _g = lock_tests();
+    state::reset_for_tests();
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
         "url": "https://example.com",
@@ -208,7 +223,7 @@ async fn webfetch_max_length_maps_to_max_chars() {
     }))
     .await
     .unwrap();
-    let rec = calls.lock().await;
+    let rec = calls.lock().expect("calls poisoned");
     let (tool, args) = rec.last().unwrap();
     assert_eq!(tool, "web_fetch");
     assert_eq!(args["url"], "https://example.com");
@@ -219,14 +234,15 @@ async fn webfetch_max_length_maps_to_max_chars() {
 
 #[tokio::test]
 async fn webfetch_default_extract_mode_is_text() {
-    let _g = TEST_LOCK.lock().await;
+    let _g = lock_tests();
+    state::reset_for_tests();
     let calls = install_mock_recorder();
     let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
         "url": "https://example.com",
     }))
     .await
     .unwrap();
-    let rec = calls.lock().await;
+    let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     assert_eq!(args["extract_mode"], "text");
     assert_eq!(args["include_links"], false);

@@ -27,7 +27,10 @@ impl Clone for Tts {
     fn clone(&self) -> Self {
         Self {
             speaking: Mutex::new(std::sync::atomic::AtomicBool::new(
-                self.speaking.lock().unwrap().load(std::sync::atomic::Ordering::SeqCst),
+                self.speaking
+                    .lock()
+                    .unwrap()
+                    .load(std::sync::atomic::Ordering::SeqCst),
             )),
         }
     }
@@ -68,7 +71,10 @@ impl Tts {
             .output()
             .await
             .map_err(|e| {
-                self.speaking.lock().unwrap().store(false, std::sync::atomic::Ordering::SeqCst);
+                self.speaking
+                    .lock()
+                    .unwrap()
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 AppError::Io(e)
             })?;
         self.speaking
@@ -111,7 +117,10 @@ impl Tts {
     }
 
     pub fn is_speaking(&self) -> bool {
-        self.speaking.lock().unwrap().load(std::sync::atomic::Ordering::SeqCst)
+        self.speaking
+            .lock()
+            .unwrap()
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 

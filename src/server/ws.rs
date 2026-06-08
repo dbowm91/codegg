@@ -98,7 +98,7 @@ async fn upgrade_ws(
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<axum::extract::ws::Message>();
 
     let state_clone = state.clone();
-let mut send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         while let Some(msg) = out_rx.recv().await {
             let _ = ws_tx.send(msg).await;
@@ -184,10 +184,7 @@ async fn handle_rpc_request(
                     .get("show_archived")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let limit = params
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(50) as usize;
+                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
                 CoreRequest::SessionList {
                     project_id,
                     show_archived,
@@ -234,13 +231,8 @@ async fn handle_rpc_request(
             }
         };
 
-        let envelope = crate::core::new_request(
-            req.id
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-            core_request,
-        );
+        let envelope =
+            crate::core::new_request(req.id.as_str().unwrap_or("").to_string(), core_request);
 
         match daemon.handle_request(envelope).await {
             Ok(response) => {
@@ -403,7 +395,9 @@ async fn handle_rpc_direct(
         }
         "sessions.create" => {
             let dir = if let serde_json::Value::Object(ref p) = req.params {
-                p.get("directory").and_then(|v| v.as_str()).unwrap_or(&state.project_dir)
+                p.get("directory")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&state.project_dir)
             } else {
                 &state.project_dir
             };
@@ -583,7 +577,8 @@ async fn upgrade_tui(
                     tracing::warn!("Event log receiver lagged, sending resync");
                     let resync_msg = TuiMessage::ResyncRequired {
                         reason: Some("lagged".to_string()),
-                        pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(),
+                        pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(
+                        ),
                         pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
                     };
                     if let Ok(json) = serde_json::to_string(&resync_msg) {
@@ -768,17 +763,10 @@ fn convert_core_event_to_tui(event: crate::protocol::core::CoreEvent) -> Option<
             output,
             success,
         }),
-        CoreEvent::PermissionPending {
-            id,
-            tool,
-            path,
-            ..
-        } => Some(TuiMessage::PermissionPending { id, tool, path }),
-        CoreEvent::QuestionPending {
-            id,
-            questions,
-            ..
-        } => Some(TuiMessage::QuestionPending {
+        CoreEvent::PermissionPending { id, tool, path, .. } => {
+            Some(TuiMessage::PermissionPending { id, tool, path })
+        }
+        CoreEvent::QuestionPending { id, questions, .. } => Some(TuiMessage::QuestionPending {
             id,
             questions: serde_json::from_value(questions).ok()?,
         }),
@@ -872,11 +860,7 @@ async fn upgrade_core_ws(
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "[{}] Failed to parse CoreFrame: {}",
-                                addr,
-                                e
-                            );
+                            tracing::warn!("[{}] Failed to parse CoreFrame: {}", addr, e);
                         }
                     }
                 }
@@ -914,7 +898,10 @@ async fn handle_core_frame(
             let request_id = envelope.request_id.clone();
             match daemon.handle_request(envelope).await {
                 Ok(response) => {
-                    responses.push(CoreFrame::Response { request_id, response });
+                    responses.push(CoreFrame::Response {
+                        request_id,
+                        response,
+                    });
                 }
                 Err(e) => {
                     responses.push(CoreFrame::Error {

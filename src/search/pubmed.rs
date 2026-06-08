@@ -83,7 +83,10 @@ impl SearchProvider for PubMedProvider {
             #[serde(default)]
             idlist: Vec<String>,
         }
-        let r: ESearchResp = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: ESearchResp = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         if r.esearchresult.idlist.is_empty() {
             return Err(SearchError::Empty);
         }
@@ -109,7 +112,10 @@ impl SearchProvider for PubMedProvider {
         struct ESummaryResp {
             result: std::collections::HashMap<String, serde_json::Value>,
         }
-        let s: ESummaryResp = resp2.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let s: ESummaryResp = resp2
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         let mut out = Vec::new();
         for pmid in pmids {
             if let Some(item) = s.result.get(&pmid) {

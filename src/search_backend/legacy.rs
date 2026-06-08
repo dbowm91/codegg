@@ -132,13 +132,8 @@ mod tests {
             // Skip: external env has a provider configured.
             return;
         }
-        let res = call_web_search_legacy(
-            registry,
-            &serde_json::json!({"query": "q"}),
-            1000,
-            1,
-        )
-        .await;
+        let res =
+            call_web_search_legacy(registry, &serde_json::json!({"query": "q"}), 1000, 1).await;
         let err = res.expect_err("should fail when no providers configured");
         let msg = err.to_string();
         assert!(

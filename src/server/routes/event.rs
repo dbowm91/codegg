@@ -1,13 +1,9 @@
-use axum::{
-    response::sse::{Event, Sse},
-};
+use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
-
-
 
 pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = crate::bus::global::GlobalEventBus::subscribe();

@@ -153,9 +153,7 @@ async fn verify_claim_batch(
                 .filter_map(|eid| {
                     evidence.iter().find(|e| &e.id == eid).map(|e| {
                         let source = sources.iter().find(|s| s.id == e.source_id);
-                        let src = source
-                            .and_then(|s| s.title.as_deref())
-                            .unwrap_or("unknown");
+                        let src = source.and_then(|s| s.title.as_deref()).unwrap_or("unknown");
                         serde_json::json!({
                             "evidence_id": e.id,
                             "source": src,
@@ -306,11 +304,7 @@ mod tests {
         }
     }
 
-    fn make_claim(
-        id: &str,
-        evidence_ids: Vec<String>,
-        claim_type: ClaimType,
-    ) -> ClaimRecord {
+    fn make_claim(id: &str, evidence_ids: Vec<String>, claim_type: ClaimType) -> ClaimRecord {
         ClaimRecord {
             id: id.to_string(),
             run_id: "req-1".to_string(),
@@ -328,11 +322,7 @@ mod tests {
         let request = make_request();
         let sources = vec![make_source("s1")];
         let evidence = vec![make_evidence("e1", "s1")];
-        let claims = vec![make_claim(
-            "c1",
-            vec!["e1".to_string()],
-            ClaimType::Fact,
-        )];
+        let claims = vec![make_claim("c1", vec!["e1".to_string()], ClaimType::Fact)];
         let result = verify_structural(&request, &sources, &evidence, &claims, &[]);
         assert!(result.passed);
         assert!(result.errors.is_empty());
@@ -361,10 +351,7 @@ mod tests {
         )];
         let result = verify_structural(&request, &sources, &evidence, &claims, &[]);
         assert!(!result.passed);
-        assert!(result
-            .errors
-            .iter()
-            .any(|e| e.contains("missing evidence")));
+        assert!(result.errors.iter().any(|e| e.contains("missing evidence")));
     }
 
     #[test]
@@ -382,11 +369,7 @@ mod tests {
         let request = make_request();
         let sources = vec![make_source("s1")];
         let evidence = vec![make_evidence("e1", "s1")];
-        let claims = vec![make_claim(
-            "c1",
-            vec!["e1".to_string()],
-            ClaimType::Fact,
-        )];
+        let claims = vec![make_claim("c1", vec!["e1".to_string()], ClaimType::Fact)];
         let contras = vec![ContradictionRecord {
             id: "x1".to_string(),
             run_id: "req-1".to_string(),
@@ -394,8 +377,7 @@ mod tests {
             claim_ids: vec!["missing-claim".to_string()],
             severity: ContradictionSeverity::High,
         }];
-        let result =
-            verify_structural(&request, &sources, &evidence, &claims, &contras);
+        let result = verify_structural(&request, &sources, &evidence, &claims, &contras);
         assert!(!result.passed);
         assert!(result.errors.iter().any(|e| e.contains("missing claim")));
     }
@@ -420,11 +402,7 @@ mod tests {
         let request = make_request();
         let sources = vec![make_source("s1")];
         let evidence = vec![make_evidence("e1", "s1")];
-        let claims = vec![make_claim(
-            "c1",
-            vec!["e1".to_string()],
-            ClaimType::Fact,
-        )];
+        let claims = vec![make_claim("c1", vec!["e1".to_string()], ClaimType::Fact)];
         let contras = vec![ContradictionRecord {
             id: "x1".to_string(),
             run_id: "req-1".to_string(),
@@ -432,11 +410,7 @@ mod tests {
             claim_ids: vec!["c1".to_string()],
             severity: ContradictionSeverity::High,
         }];
-        let result =
-            verify_structural(&request, &sources, &evidence, &claims, &contras);
-        assert!(result
-            .warnings
-            .iter()
-            .any(|w| w.contains("High-severity")));
+        let result = verify_structural(&request, &sources, &evidence, &claims, &contras);
+        assert!(result.warnings.iter().any(|w| w.contains("High-severity")));
     }
 }

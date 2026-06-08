@@ -50,12 +50,13 @@ pub async fn call_llm(
         reasoning_effort: None,
     };
 
-    let events = tokio::time::timeout(std::time::Duration::from_secs(120), provider.stream(&request))
-        .await
-        .map_err(|_| {
-            ResearchError::Provider("LLM call timed out after 120s".to_string())
-        })?
-        .map_err(|e| ResearchError::Provider(format!("LLM stream error: {e}")))?;
+    let events = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        provider.stream(&request),
+    )
+    .await
+    .map_err(|_| ResearchError::Provider("LLM call timed out after 120s".to_string()))?
+    .map_err(|e| ResearchError::Provider(format!("LLM stream error: {e}")))?;
 
     let mut stream = events;
     let mut text = String::new();
@@ -72,9 +73,7 @@ pub async fn call_llm(
     }
 
     if text.is_empty() {
-        return Err(ResearchError::Provider(
-            "Empty LLM response".to_string(),
-        ));
+        return Err(ResearchError::Provider("Empty LLM response".to_string()));
     }
 
     Ok(text)

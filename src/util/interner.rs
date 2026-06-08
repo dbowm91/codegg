@@ -1,6 +1,6 @@
 use dashmap::DashMap;
-use std::sync::LazyLock;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 #[derive(Default)]
 pub struct StringInterner {
@@ -9,7 +9,9 @@ pub struct StringInterner {
 
 impl StringInterner {
     pub fn new() -> Self {
-        Self { map: DashMap::new() }
+        Self {
+            map: DashMap::new(),
+        }
     }
 
     pub fn intern(&self, s: &str) -> Arc<str> {

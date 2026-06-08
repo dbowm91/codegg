@@ -32,7 +32,8 @@ pub async fn get_workspace(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "default".to_string());
 
-    let is_wt = crate::worktree::is_git_file(&std::path::PathBuf::from(&state.project_dir).join(".git"));
+    let is_wt =
+        crate::worktree::is_git_file(&std::path::PathBuf::from(&state.project_dir).join(".git"));
 
     Ok(Json(WorkspaceInfo {
         id: state.project_dir.clone(),
@@ -52,7 +53,9 @@ pub async fn list_workspaces(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "default".to_string()),
         path: state.project_dir.clone(),
-        is_worktree: crate::worktree::is_git_file(&std::path::PathBuf::from(&state.project_dir).join(".git")),
+        is_worktree: crate::worktree::is_git_file(
+            &std::path::PathBuf::from(&state.project_dir).join(".git"),
+        ),
     };
 
     let mut workspaces = vec![current];
@@ -101,5 +104,3 @@ pub async fn create_workspace(
         }),
     ))
 }
-
-

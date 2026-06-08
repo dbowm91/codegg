@@ -121,14 +121,9 @@ mod tests {
         );
         let func = tool_calls[0].get("function").unwrap();
         assert_eq!(func.get("name").unwrap().as_str().unwrap(), "echo_args");
-        let args: serde_json::Value = serde_json::from_str(
-            func.get("arguments").unwrap().as_str().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            args.get("value").unwrap().as_str().unwrap(),
-            "hello"
-        );
+        let args: serde_json::Value =
+            serde_json::from_str(func.get("arguments").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(args.get("value").unwrap().as_str().unwrap(), "hello");
 
         let tool_msg_result = &msgs[2];
         assert_eq!(
@@ -532,10 +527,7 @@ mod tests {
             assistant_msg.get("role").unwrap().as_str().unwrap(),
             "assistant"
         );
-        assert_eq!(
-            assistant_msg.get("content").unwrap().as_str().unwrap(),
-            ""
-        );
+        assert_eq!(assistant_msg.get("content").unwrap().as_str().unwrap(), "");
 
         let tool_calls = assistant_msg.get("tool_calls").unwrap().as_array().unwrap();
         assert_eq!(tool_calls.len(), 1);
@@ -546,14 +538,9 @@ mod tests {
         );
         let func = tool_calls[0].get("function").unwrap();
         assert_eq!(func.get("name").unwrap().as_str().unwrap(), "echo_args");
-        let args: serde_json::Value = serde_json::from_str(
-            func.get("arguments").unwrap().as_str().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            args.get("value").unwrap().as_str().unwrap(),
-            "test"
-        );
+        let args: serde_json::Value =
+            serde_json::from_str(func.get("arguments").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(args.get("value").unwrap().as_str().unwrap(), "test");
     }
 
     #[test]
@@ -594,19 +581,14 @@ mod tests {
             assistant_msg.get("role").unwrap().as_str().unwrap(),
             "assistant"
         );
-        assert_eq!(
-            assistant_msg.get("content").unwrap().as_str().unwrap(),
-            ""
-        );
+        assert_eq!(assistant_msg.get("content").unwrap().as_str().unwrap(), "");
 
         let tool_calls = assistant_msg.get("tool_calls").unwrap().as_array().unwrap();
         assert_eq!(tool_calls.len(), 1);
         let func = tool_calls[0].get("function").unwrap();
         assert_eq!(func.get("name").unwrap().as_str().unwrap(), "echo_args");
-        let args: serde_json::Value = serde_json::from_str(
-            func.get("arguments").unwrap().as_str().unwrap(),
-        )
-        .unwrap();
+        let args: serde_json::Value =
+            serde_json::from_str(func.get("arguments").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(args.get("value").unwrap().as_str().unwrap(), "test");
     }
 

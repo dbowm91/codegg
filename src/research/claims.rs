@@ -84,9 +84,7 @@ pub async fn build_claims_with_model(
         .iter()
         .map(|e| {
             let source = sources.iter().find(|s| s.id == e.source_id);
-            let source_desc = source
-                .and_then(|s| s.title.as_deref())
-                .unwrap_or("unknown");
+            let source_desc = source.and_then(|s| s.title.as_deref()).unwrap_or("unknown");
             serde_json::json!({
                 "id": e.id,
                 "source": source_desc,
@@ -149,7 +147,8 @@ pub async fn build_claims_with_model(
 
             let mut caveats = item.caveats.unwrap_or_default();
             if evidence_ids.is_empty() {
-                caveats.push("Model-generated claim with no matched evidence references".to_string());
+                caveats
+                    .push("Model-generated claim with no matched evidence references".to_string());
             }
 
             ClaimRecord {
@@ -268,7 +267,10 @@ mod tests {
 
     #[test]
     fn deterministic_claims_links_evidence() {
-        let evidence = vec![make_evidence("ev-1", "src-1"), make_evidence("ev-2", "src-1")];
+        let evidence = vec![
+            make_evidence("ev-1", "src-1"),
+            make_evidence("ev-2", "src-1"),
+        ];
         let claims = deterministic_claims("run-1", &evidence, &[]);
         assert_eq!(claims[0].evidence_ids, vec!["ev-1"]);
         assert_eq!(claims[1].evidence_ids, vec!["ev-2"]);

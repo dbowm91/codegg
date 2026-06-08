@@ -271,10 +271,7 @@ impl ToolRegistry {
                     p,
                     sid,
                 ),
-                _ => crate::tool::todo::TodoWriteTool::new(
-                    todo_state.clone(),
-                    policy.clone(),
-                ),
+                _ => crate::tool::todo::TodoWriteTool::new(todo_state.clone(), policy.clone()),
             };
             registry.register(tool);
         }

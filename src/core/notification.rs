@@ -228,9 +228,7 @@ impl NotificationRouter {
         let mut best_priority = NotificationPriority::Low;
 
         for (i, event) in queue.iter().enumerate() {
-            if self.policy.speak_kinds.contains(&event.kind)
-                && event.priority >= best_priority
-            {
+            if self.policy.speak_kinds.contains(&event.kind) && event.priority >= best_priority {
                 best_idx = Some(i);
                 best_priority = event.priority.clone();
             }
@@ -375,10 +373,7 @@ impl NotificationRouter {
 
         q = q.bind(limit as i64);
 
-        let rows = q
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
+        let rows = q.fetch_all(pool).await.unwrap_or_default();
 
         rows.into_iter()
             .filter_map(|row| {
@@ -435,8 +430,7 @@ impl AudioArbiter {
     pub fn start(self: &std::sync::Arc<Self>) {
         let arbiter = std::sync::Arc::clone(self);
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_millis(500));
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
             loop {
                 interval.tick().await;
                 arbiter.process_queue().await;
@@ -475,10 +469,7 @@ impl AudioArbiter {
 pub async fn speak_text(text: &str) {
     #[cfg(target_os = "macos")]
     {
-        let _ = tokio::process::Command::new("say")
-            .arg(text)
-            .output()
-            .await;
+        let _ = tokio::process::Command::new("say").arg(text).output().await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -673,18 +664,28 @@ mod tests {
     #[test]
     fn default_policy_has_expected_speak_kinds() {
         let policy = NotificationPolicy::default();
-        assert!(policy.speak_kinds.contains(&NotificationKind::PermissionRequired));
-        assert!(policy.speak_kinds.contains(&NotificationKind::QuestionRequired));
+        assert!(policy
+            .speak_kinds
+            .contains(&NotificationKind::PermissionRequired));
+        assert!(policy
+            .speak_kinds
+            .contains(&NotificationKind::QuestionRequired));
         assert!(policy.speak_kinds.contains(&NotificationKind::TurnFailed));
-        assert!(!policy.speak_kinds.contains(&NotificationKind::TurnCompleted));
+        assert!(!policy
+            .speak_kinds
+            .contains(&NotificationKind::TurnCompleted));
     }
 
     #[test]
     fn default_policy_interrupt_on() {
         let policy = NotificationPolicy::default();
-        assert!(policy.interrupt_on.contains(&NotificationKind::PermissionRequired));
+        assert!(policy
+            .interrupt_on
+            .contains(&NotificationKind::PermissionRequired));
         assert!(policy.interrupt_on.contains(&NotificationKind::TurnFailed));
-        assert!(!policy.interrupt_on.contains(&NotificationKind::TurnCompleted));
+        assert!(!policy
+            .interrupt_on
+            .contains(&NotificationKind::TurnCompleted));
     }
 
     #[tokio::test]
@@ -710,26 +711,30 @@ mod tests {
     #[tokio::test]
     async fn next_speech_returns_highest_priority() {
         let router = Arc::new(NotificationRouter::new(NotificationPolicy::default()));
-        router.emit(NotificationEvent {
-            id: "1".into(),
-            session_id: None,
-            turn_id: None,
-            kind: NotificationKind::PermissionRequired,
-            priority: NotificationPriority::Urgent,
-            message: "perm".into(),
-            dedupe_key: None,
-            created_at: Utc::now(),
-        }).await;
-        router.emit(NotificationEvent {
-            id: "2".into(),
-            session_id: None,
-            turn_id: None,
-            kind: NotificationKind::TurnFailed,
-            priority: NotificationPriority::High,
-            message: "fail".into(),
-            dedupe_key: None,
-            created_at: Utc::now(),
-        }).await;
+        router
+            .emit(NotificationEvent {
+                id: "1".into(),
+                session_id: None,
+                turn_id: None,
+                kind: NotificationKind::PermissionRequired,
+                priority: NotificationPriority::Urgent,
+                message: "perm".into(),
+                dedupe_key: None,
+                created_at: Utc::now(),
+            })
+            .await;
+        router
+            .emit(NotificationEvent {
+                id: "2".into(),
+                session_id: None,
+                turn_id: None,
+                kind: NotificationKind::TurnFailed,
+                priority: NotificationPriority::High,
+                message: "fail".into(),
+                dedupe_key: None,
+                created_at: Utc::now(),
+            })
+            .await;
 
         let speech = router.next_speech().await;
         assert!(speech.is_some());
@@ -926,8 +931,16 @@ mod tests {
         assert!(batch.message.contains("alpha-00"), "got: {}", batch.message);
         assert!(batch.message.contains("bravo-00"), "got: {}", batch.message);
         assert!(!batch.message.contains("charlie"), "got: {}", batch.message);
-        assert!(!batch.message.contains("delta-00"), "got: {}", batch.message);
-        assert!(!batch.message.contains("echo-005"), "got: {}", batch.message);
+        assert!(
+            !batch.message.contains("delta-00"),
+            "got: {}",
+            batch.message
+        );
+        assert!(
+            !batch.message.contains("echo-005"),
+            "got: {}",
+            batch.message
+        );
         assert_eq!(router.queue_len().await, 3);
     }
 
@@ -1072,7 +1085,11 @@ mod tests {
         // First 8 chars: "parser-r" and "tui-poli".
         assert!(message.contains("parser-r"), "got: {}", message);
         assert!(message.contains("tui-poli"), "got: {}", message);
-        assert!(message.contains("2") || message.contains("Two"), "got: {}", message);
+        assert!(
+            message.contains("2") || message.contains("Two"),
+            "got: {}",
+            message
+        );
         assert!(message.contains("attention"), "got: {}", message);
     }
 }

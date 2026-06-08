@@ -17,19 +17,9 @@ impl GlobalEventBus {
     pub fn publish(event: AppEvent) {
         let discriminant = std::mem::discriminant(&event);
         match GLOBAL_BUS.tx.send(event) {
-            Ok(0) => tracing::debug!(
-                "No subscribers for event: {:?}",
-                discriminant
-            ),
-            Ok(n) => tracing::trace!(
-                "Event published to {} subscribers: {:?}",
-                n,
-                discriminant
-            ),
-            Err(e) => tracing::warn!(
-                "Failed to publish event (channel closed): {:?}",
-                e
-            ),
+            Ok(0) => tracing::debug!("No subscribers for event: {:?}", discriminant),
+            Ok(n) => tracing::trace!("Event published to {} subscribers: {:?}", n, discriminant),
+            Err(e) => tracing::warn!("Failed to publish event (channel closed): {:?}", e),
         }
     }
 

@@ -59,19 +59,19 @@ impl CratesIoSource {
 
         // Find words that look like crate names (lowercase, alphanumeric + underscores)
         const STOP_WORDS: &[&str] = &[
-            "the", "and", "for", "what", "which", "this", "that", "are", "is",
-            "was", "were", "how", "why", "where", "when", "does", "has", "can",
-            "could", "should", "would", "may", "might", "must", "shall", "will",
-            "tell", "about", "best", "use", "with", "from", "into", "than",
-            "evaluate", "look", "check", "give", "show", "find", "search",
-            "compare", "review", "analyze", "examine", "consider", "think",
-            "consider", "consider", "consider", "consider", "consider",
+            "the", "and", "for", "what", "which", "this", "that", "are", "is", "was", "were",
+            "how", "why", "where", "when", "does", "has", "can", "could", "should", "would", "may",
+            "might", "must", "shall", "will", "tell", "about", "best", "use", "with", "from",
+            "into", "than", "evaluate", "look", "check", "give", "show", "find", "search",
+            "compare", "review", "analyze", "examine", "consider", "think", "consider", "consider",
+            "consider", "consider", "consider",
         ];
 
         for word in &words {
             let w = word.to_lowercase();
             if w.len() >= 3
-                && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && w.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
                 && !STOP_WORDS.contains(&w.as_str())
             {
                 return Some(w);
@@ -94,9 +94,7 @@ impl CratesIoSource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "HTTP {status} for {url}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("HTTP {status} for {url}")));
         }
 
         let resp: CratesIoResponse = response

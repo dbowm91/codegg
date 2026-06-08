@@ -301,11 +301,16 @@ AgentLoop
 6. Apply output truncation (2000 lines, 50KB default)
 
 **Web Tools** (webfetch, websearch, codesearch, image):
-1. Parse URL
-2. Call `validate_host_ip()` for SSRF protection
-3. Call `revalidate_dns()` to verify DNS
-4. Make HTTP request with appropriate headers
-5. Process response (markdown for HTML, base64 for images)
+1. `websearch`/`webfetch` dispatch to the configured backend via
+   `search_backend`. With the default `eggsearch` backend, SSRF
+   protection is delegated to the eggsearch subprocess; with the
+   `builtin` backend, `tool::webfetch::execute_builtin` runs the
+   steps below.
+2. `image` (and the legacy `builtin` webfetch) parse the URL,
+   call `validate_host_ip()` for SSRF protection, then
+   `revalidate_dns()` to verify DNS, then make the HTTP request
+   with appropriate headers and process the response (markdown
+   for HTML, base64 for images).
 
 **Subagent Tools** (task):
 1. Create task in TaskStore

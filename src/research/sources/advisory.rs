@@ -31,9 +31,7 @@ impl AdvisorySource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "HTTP {status} for {url}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("HTTP {status} for {url}")));
         }
 
         let body: serde_json::Value = response
@@ -41,10 +39,7 @@ impl AdvisorySource {
             .await
             .map_err(|e| ResearchError::UrlFetch(format!("failed to parse JSON: {e}")))?;
 
-        let versions = body["versions"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let versions = body["versions"].as_array().cloned().unwrap_or_default();
 
         let mut notes = Vec::new();
         let mut has_yanked = false;

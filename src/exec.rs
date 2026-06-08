@@ -98,10 +98,15 @@ impl ExecMode {
         let all_agents = agent::resolve_agents(&config)?;
         let agent_name = input.agent.unwrap_or_else(|| "build".to_string());
         if !all_agents.iter().any(|a| a.name == agent_name) {
-            return Err(AppError::Other(anyhow::anyhow!("Agent not found: {}", agent_name)));
+            return Err(AppError::Other(anyhow::anyhow!(
+                "Agent not found: {}",
+                agent_name
+            )));
         }
 
         let permission_checker = PermissionChecker::new(Some(&config), None).with_exec_mode();
+        // Bootstraps the search backend (eggsearch by default) before the agent
+        // loop starts. Idempotent if already bootstrapped.
         let (mcp_service, _report) =
             crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
         let tool_registry = crate::tool::ToolRegistry::with_defaults();
@@ -116,7 +121,10 @@ impl ExecMode {
             None,
         );
 
-        let session_id = self.session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let session_id = self
+            .session_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         loop_instance.set_session_id(&session_id);
         loop_instance.setup_question_channel_for_exec();
 
@@ -175,7 +183,10 @@ impl ExecMode {
             Err(e) => {
                 let duration_ms = start.elapsed().as_millis() as u64;
                 let (code, msg) = Self::classify_error(&e);
-                Ok(ExecOutput::error(format!("{}: {} ({}ms)", msg, e, duration_ms), code))
+                Ok(ExecOutput::error(
+                    format!("{}: {} ({}ms)", msg, e, duration_ms),
+                    code,
+                ))
             }
         }
     }
@@ -188,7 +199,7 @@ impl ExecMode {
         }
     }
 
-fn classify_error(error: &AppError) -> (String, String) {
+    fn classify_error(error: &AppError) -> (String, String) {
         match error {
             AppError::Permission(_) => (
                 "PERMISSION_ERROR".to_string(),
@@ -207,18 +218,21 @@ fn classify_error(error: &AppError) -> (String, String) {
             AppError::Provider(ProviderError::ModelNotFound(_)) => {
                 ("MODEL_NOT_FOUND".to_string(), "Model not found".to_string())
             }
-            AppError::Provider(ProviderError::CircuitOpen(name)) => {
-                ("CIRCUIT_OPEN".to_string(), format!("Provider circuit open: {}", name))
-            }
-            AppError::Provider(ProviderError::Api { code, message, .. }) => {
-                ("API_ERROR".to_string(), format!("API error [{}]: {}", code, message))
-            }
+            AppError::Provider(ProviderError::CircuitOpen(name)) => (
+                "CIRCUIT_OPEN".to_string(),
+                format!("Provider circuit open: {}", name),
+            ),
+            AppError::Provider(ProviderError::Api { code, message, .. }) => (
+                "API_ERROR".to_string(),
+                format!("API error [{}]: {}", code, message),
+            ),
             AppError::Provider(ProviderError::Stream(_)) => {
                 ("STREAM_ERROR".to_string(), "Stream error".to_string())
             }
-            AppError::Provider(ProviderError::NotFound(_)) => {
-                ("PROVIDER_NOT_FOUND".to_string(), "Provider not found".to_string())
-            }
+            AppError::Provider(ProviderError::NotFound(_)) => (
+                "PROVIDER_NOT_FOUND".to_string(),
+                "Provider not found".to_string(),
+            ),
             AppError::Io(_) => ("IO_ERROR".to_string(), "I/O error".to_string()),
             AppError::Config(_) => (
                 "CONFIG_ERROR".to_string(),
@@ -231,26 +245,21 @@ fn classify_error(error: &AppError) -> (String, String) {
             AppError::Tool(ToolError::Timeout(_)) => {
                 ("TOOL_TIMEOUT".to_string(), "Tool timeout".to_string())
             }
-            AppError::Tool(ToolError::Permission(_)) => {
-                ("TOOL_PERMISSION".to_string(), "Tool permission denied".to_string())
-            }
+            AppError::Tool(ToolError::Permission(_)) => (
+                "TOOL_PERMISSION".to_string(),
+                "Tool permission denied".to_string(),
+            ),
             AppError::Tool(ToolError::Disabled(_)) => {
                 ("TOOL_DISABLED".to_string(), "Tool disabled".to_string())
             }
-            AppError::Tool(_) => (
-                "TOOL_ERROR".to_string(),
-                "Tool execution error".to_string(),
-            ),
+            AppError::Tool(_) => ("TOOL_ERROR".to_string(), "Tool execution error".to_string()),
             AppError::Mcp(_) => ("MCP_ERROR".to_string(), "MCP error".to_string()),
             AppError::Lsp(_) => ("LSP_ERROR".to_string(), "LSP error".to_string()),
             AppError::Plugin(_) => ("PLUGIN_ERROR".to_string(), "Plugin error".to_string()),
             AppError::Agent(_) => ("AGENT_ERROR".to_string(), "Agent error".to_string()),
             AppError::Json(_) => ("JSON_ERROR".to_string(), "JSON error".to_string()),
             AppError::Http(_) => ("HTTP_ERROR".to_string(), "HTTP error".to_string()),
-            AppError::Other(_) => (
-                "EXECUTION_ERROR".to_string(),
-                "Execution error".to_string(),
-            ),
+            AppError::Other(_) => ("EXECUTION_ERROR".to_string(), "Execution error".to_string()),
             AppError::Worktree(_) => ("WORKTREE_ERROR".to_string(), "Worktree error".to_string()),
             AppError::Upgrade(_) => ("UPGRADE_ERROR".to_string(), "Upgrade error".to_string()),
             AppError::Clipboard(_) => {

@@ -29,7 +29,8 @@ fn is_safe_env_var_name(name: &str) -> bool {
 }
 
 static BLOCKED_PATTERN: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?x)
+    Regex::new(
+        r"(?x)
         \$\(            # command substitution
         |`             # backtick substitution
         |\|/.*sh       # pipe to shell
@@ -74,7 +75,9 @@ static BLOCKED_PATTERN: Lazy<Regex> = Lazy::new(|| {
         |curl\s+.*-o\s+/                  # curl to root
         |:\(\)\s*:\s*\|                   # fork bomb
         |(?:^|\s)&(?:[\s]|$)               # standalone &
-    ").unwrap()
+    ",
+    )
+    .unwrap()
 });
 
 pub struct TerminalTool {
@@ -183,9 +186,7 @@ impl TerminalTool {
                 cmd = cmd_parts.next().unwrap_or("");
             }
 
-            if (cmd == "bash" || cmd == "sh" || cmd == "dash")
-                && full_command.contains(" -c ")
-            {
+            if (cmd == "bash" || cmd == "sh" || cmd == "dash") && full_command.contains(" -c ") {
                 if !allowlist.contains(&cmd) {
                     return Err(ToolError::Permission(format!(
                         "command '{}' not in allowlist",

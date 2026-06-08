@@ -111,8 +111,8 @@ impl Tool for ImageTool {
             .host_str()
             .ok_or_else(|| ToolError::Execution("base_url must have a host".to_string()))?;
         let port = parsed_url.port().unwrap_or(443);
-        let validated_ips =
-            validate_host_ip(host, port).map_err(|e| ToolError::Execution(format!("SSRF protection: {}", e)))?;
+        let validated_ips = validate_host_ip(host, port)
+            .map_err(|e| ToolError::Execution(format!("SSRF protection: {}", e)))?;
 
         let mut body = serde_json::json!({
             "prompt": prompt,

@@ -6,23 +6,25 @@ use tokio::sync::{broadcast, RwLock};
 use crate::core::daemon::CoreDaemon;
 use crate::core::event_log::EventFilter;
 use crate::error::AppError;
-use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
 use crate::protocol::core::{CoreEvent, EventEnvelope};
+use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
 
-pub async fn run_core_socket(
-    daemon: Arc<CoreDaemon>,
-    endpoint: &str,
-) -> Result<(), AppError> {
+pub async fn run_core_socket(daemon: Arc<CoreDaemon>, endpoint: &str) -> Result<(), AppError> {
     let listener = UnixListener::bind(endpoint).map_err(|e| {
-        AppError::Other(anyhow::anyhow!("failed to bind socket '{}': {}", endpoint, e))
+        AppError::Other(anyhow::anyhow!(
+            "failed to bind socket '{}': {}",
+            endpoint,
+            e
+        ))
     })?;
 
     tracing::info!("Core daemon listening on {}", endpoint);
 
     loop {
-        let (stream, _addr) = listener.accept().await.map_err(|e| {
-            AppError::Other(anyhow::anyhow!("accept failed: {}", e))
-        })?;
+        let (stream, _addr) = listener
+            .accept()
+            .await
+            .map_err(|e| AppError::Other(anyhow::anyhow!("accept failed: {}", e)))?;
 
         let daemon = Arc::clone(&daemon);
         tokio::spawn(async move {
@@ -92,14 +94,15 @@ async fn handle_client(
                             let request_id = envelope.request_id.clone();
                             let response = match daemon.handle_request(envelope).await {
                                 Ok(resp) => resp,
-                                Err(e) => {
-                                    crate::protocol::core::CoreResponse::Error {
-                                        code: "handler_error".to_string(),
-                                        message: e.to_string(),
-                                    }
-                                }
+                                Err(e) => crate::protocol::core::CoreResponse::Error {
+                                    code: "handler_error".to_string(),
+                                    message: e.to_string(),
+                                },
                             };
-                            let frame = CoreFrame::Response { request_id, response };
+                            let frame = CoreFrame::Response {
+                                request_id,
+                                response,
+                            };
                             send_frame(&writer, &frame).await;
                         }
                         CoreFrame::Subscribe {
@@ -375,20 +378,32 @@ mod tests {
         // filter semantics the forwarder relies on. This protects against
         // divergent logic between live forwarding and replay.
         let log = crate::core::event_log::EventLog::new(64);
-        log.publish(Some("s1".into()), None, CoreEvent::Error {
-            code: "a".into(),
-            message: "m".into(),
-        })
+        log.publish(
+            Some("s1".into()),
+            None,
+            CoreEvent::Error {
+                code: "a".into(),
+                message: "m".into(),
+            },
+        )
         .await;
-        log.publish(Some("s2".into()), None, CoreEvent::Error {
-            code: "b".into(),
-            message: "m".into(),
-        })
+        log.publish(
+            Some("s2".into()),
+            None,
+            CoreEvent::Error {
+                code: "b".into(),
+                message: "m".into(),
+            },
+        )
         .await;
-        log.publish(None, None, CoreEvent::Error {
-            code: "c".into(),
-            message: "m".into(),
-        })
+        log.publish(
+            None,
+            None,
+            CoreEvent::Error {
+                code: "c".into(),
+                message: "m".into(),
+            },
+        )
         .await;
 
         // Session-scoped filter (include_global: true to also pull global events).

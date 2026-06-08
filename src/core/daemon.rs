@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use chrono::Utc;
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
+use chrono::Utc;
 
 use super::event_log::EventFilter;
 use crate::core::session_runtime::RuntimeSessionStatus;
@@ -31,11 +31,16 @@ impl CoreDaemon {
     ) -> Self {
         let daemon_id = format!("codegg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let config = crate::config::schema::Config::load().unwrap_or_default();
-        let capacity = config.daemon.as_ref()
+        let capacity = config
+            .daemon
+            .as_ref()
             .and_then(|d| d.event_log_capacity)
             .unwrap_or(4096);
         let event_log = match pool {
-            Some(ref p) => Arc::new(super::event_log::EventLog::new_with_pool(capacity, p.clone())),
+            Some(ref p) => Arc::new(super::event_log::EventLog::new_with_pool(
+                capacity,
+                p.clone(),
+            )),
             None => Arc::new(super::event_log::EventLog::new(capacity)),
         };
         let notification_router = Arc::new(super::notification::NotificationRouter::new(
@@ -65,7 +70,11 @@ impl CoreDaemon {
         }
     }
 
-    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>> {
+    pub fn subscribe(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<
+        crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+    > {
         self.event_log.subscribe()
     }
 
@@ -94,10 +103,8 @@ impl CoreDaemon {
                 if let Some(runtime) = self.sessions.get(&sid) {
                     let active = runtime.active_turn.read().await;
                     if let Some(handle) = active.as_ref() {
-                        core_event = super::set_turn_id_on_event(
-                            core_event,
-                            handle.turn_id.clone(),
-                        );
+                        core_event =
+                            super::set_turn_id_on_event(core_event, handle.turn_id.clone());
                         turn_id = Some(handle.turn_id.clone());
                     }
                 }
@@ -231,7 +238,13 @@ impl CoreDaemon {
                                 .await;
                         }
                         match &app_event {
-                            crate::bus::events::AppEvent::AgentFinished { session_id, stop_reason, input_tokens, output_tokens, .. } => {
+                            crate::bus::events::AppEvent::AgentFinished {
+                                session_id,
+                                stop_reason,
+                                input_tokens,
+                                output_tokens,
+                                ..
+                            } => {
                                 // Update runtime token counts
                                 if let Some(runtime) = daemon.sessions.get(session_id) {
                                     *runtime.last_input_tokens.write().await = *input_tokens;
@@ -254,16 +267,27 @@ impl CoreDaemon {
                                     turn_id: None,
                                     kind,
                                     priority,
-                                    message: format!("Turn {} for session {}", stop_reason, session_id),
+                                    message: format!(
+                                        "Turn {} for session {}",
+                                        stop_reason, session_id
+                                    ),
                                     dedupe_key: Some(format!("turn-done:{}", session_id)),
                                     created_at: Utc::now(),
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
-                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                    daemon
+                                        .notification_router
+                                        .persist_notification(pool, &event)
+                                        .await;
                                 }
                             }
-                            crate::bus::events::AppEvent::PermissionPending { session_id, turn_id, tool, .. } => {
+                            crate::bus::events::AppEvent::PermissionPending {
+                                session_id,
+                                turn_id,
+                                tool,
+                                ..
+                            } => {
                                 use super::notification::*;
                                 let event = NotificationEvent {
                                     id: format!("notif-{}", uuid::Uuid::new_v4()),
@@ -277,10 +301,17 @@ impl CoreDaemon {
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
-                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                    daemon
+                                        .notification_router
+                                        .persist_notification(pool, &event)
+                                        .await;
                                 }
                             }
-                            crate::bus::events::AppEvent::QuestionPending { session_id, turn_id, .. } => {
+                            crate::bus::events::AppEvent::QuestionPending {
+                                session_id,
+                                turn_id,
+                                ..
+                            } => {
                                 use super::notification::*;
                                 let event = NotificationEvent {
                                     id: format!("notif-{}", uuid::Uuid::new_v4()),
@@ -294,7 +325,10 @@ impl CoreDaemon {
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
-                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                    daemon
+                                        .notification_router
+                                        .persist_notification(pool, &event)
+                                        .await;
                                 }
                             }
                             crate::bus::events::AppEvent::Error { message } => {
@@ -311,17 +345,31 @@ impl CoreDaemon {
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
-                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                    daemon
+                                        .notification_router
+                                        .persist_notification(pool, &event)
+                                        .await;
                                 }
                             }
-                            crate::bus::events::AppEvent::SubagentStarted { session_id, .. } => {
+                            crate::bus::events::AppEvent::SubagentStarted {
+                                session_id, ..
+                            } => {
                                 if let Some(runtime) = daemon.sessions.get(session_id) {
-                                    runtime.active_subagent_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    runtime
+                                        .active_subagent_count
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 }
                             }
-                            crate::bus::events::AppEvent::SubagentCompleted { session_id, task_id, agent, .. } => {
+                            crate::bus::events::AppEvent::SubagentCompleted {
+                                session_id,
+                                task_id,
+                                agent,
+                                ..
+                            } => {
                                 if let Some(runtime) = daemon.sessions.get(session_id) {
-                                    runtime.active_subagent_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                                    runtime
+                                        .active_subagent_count
+                                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                                 }
                                 use super::notification::*;
                                 let event = NotificationEvent {
@@ -330,18 +378,34 @@ impl CoreDaemon {
                                     turn_id: None,
                                     kind: NotificationKind::SubagentCompleted,
                                     priority: NotificationPriority::Normal,
-                                    message: format!("Subagent {} completed task {}", agent, task_id),
-                                    dedupe_key: Some(format!("subagent-done:{}:{}", session_id, task_id)),
+                                    message: format!(
+                                        "Subagent {} completed task {}",
+                                        agent, task_id
+                                    ),
+                                    dedupe_key: Some(format!(
+                                        "subagent-done:{}:{}",
+                                        session_id, task_id
+                                    )),
                                     created_at: Utc::now(),
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
-                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                    daemon
+                                        .notification_router
+                                        .persist_notification(pool, &event)
+                                        .await;
                                 }
                             }
-                            crate::bus::events::AppEvent::SubagentFailed { session_id, task_id, agent, error } => {
+                            crate::bus::events::AppEvent::SubagentFailed {
+                                session_id,
+                                task_id,
+                                agent,
+                                error,
+                            } => {
                                 if let Some(runtime) = daemon.sessions.get(session_id) {
-                                    runtime.active_subagent_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                                    runtime
+                                        .active_subagent_count
+                                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                                 }
                                 use super::notification::*;
                                 let event = NotificationEvent {
@@ -350,13 +414,22 @@ impl CoreDaemon {
                                     turn_id: None,
                                     kind: NotificationKind::SubagentFailed,
                                     priority: NotificationPriority::High,
-                                    message: format!("Subagent {} failed task {}: {}", agent, task_id, error),
-                                    dedupe_key: Some(format!("subagent-fail:{}:{}", session_id, task_id)),
+                                    message: format!(
+                                        "Subagent {} failed task {}: {}",
+                                        agent, task_id, error
+                                    ),
+                                    dedupe_key: Some(format!(
+                                        "subagent-fail:{}:{}",
+                                        session_id, task_id
+                                    )),
                                     created_at: Utc::now(),
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
-                                    daemon.notification_router.persist_notification(pool, &event).await;
+                                    daemon
+                                        .notification_router
+                                        .persist_notification(pool, &event)
+                                        .await;
                                 }
                             }
                             _ => {}
@@ -420,8 +493,8 @@ impl CoreDaemon {
                     });
                 };
                 let provider = base_provider.clone_box();
-                let model_profile = crate::model_profile::ModelProfileResolver::new(&config)
-                    .resolve(&model_name);
+                let model_profile =
+                    crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
                 let task_state_policy = model_profile.task_state_policy;
                 let todo_state = std::sync::Arc::new(tokio::sync::Mutex::new(
                     crate::task_state::TodoState::new(),
@@ -518,6 +591,8 @@ impl CoreDaemon {
                         session_id.clone(),
                     ));
                 }
+                // Bootstraps the search backend (eggsearch by default) before the agent
+                // loop starts. Idempotent if already bootstrapped.
                 let (mcp_service, _report) =
                     crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
                 let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
@@ -1021,15 +1096,13 @@ impl CoreDaemon {
                 // Extract session_id and simple perm_id from protocol ID: perm:{session_id}:{turn_id}:{perm_id}.
                 // Reject malformed IDs explicitly rather than silently using empty defaults
                 // (which could route a response to the wrong session).
-                let (session_id, simple_perm_id) = match id
-                    .strip_prefix("perm:")
-                    .and_then(|rest| {
-                        let mut parts = rest.splitn(3, ':');
-                        let sid = parts.next()?.to_string();
-                        let _turn_id = parts.next()?;
-                        let pid = parts.next()?.to_string();
-                        Some((sid, pid))
-                    }) {
+                let (session_id, simple_perm_id) = match id.strip_prefix("perm:").and_then(|rest| {
+                    let mut parts = rest.splitn(3, ':');
+                    let sid = parts.next()?.to_string();
+                    let _turn_id = parts.next()?;
+                    let pid = parts.next()?.to_string();
+                    Some((sid, pid))
+                }) {
                     Some(parsed) => parsed,
                     None => {
                         return Ok(CoreResponse::Error {
@@ -1070,15 +1143,15 @@ impl CoreDaemon {
             CoreRequest::QuestionRespond { id, answers } => {
                 // Extract session_id and simple question_id from protocol ID: question:{session_id}:{turn_id}:{question_id}.
                 // Reject malformed IDs explicitly.
-                let (session_id, simple_question_id) = match id
-                    .strip_prefix("question:")
-                    .and_then(|rest| {
+                let (session_id, simple_question_id) = match id.strip_prefix("question:").and_then(
+                    |rest| {
                         let mut parts = rest.splitn(3, ':');
                         let sid = parts.next()?.to_string();
                         let _turn_id = parts.next()?;
                         let qid = parts.next()?.to_string();
                         Some((sid, qid))
-                    }) {
+                    },
+                ) {
                     Some(parsed) => parsed,
                     None => {
                         return Ok(CoreResponse::Error {
@@ -1878,7 +1951,10 @@ impl CoreDaemon {
                 }
 
                 let events = self.event_log.replay_from(from_event_seq, &filter).await;
-                Ok(CoreResponse::Events { events, current_seq })
+                Ok(CoreResponse::Events {
+                    events,
+                    current_seq,
+                })
             }
             CoreRequest::TurnCancel {
                 session_id,
@@ -1966,10 +2042,7 @@ impl CoreDaemon {
                 );
                 Ok(CoreResponse::Ack)
             }
-            CoreRequest::ModelSelect {
-                session_id,
-                model,
-            } => {
+            CoreRequest::ModelSelect { session_id, model } => {
                 let runtime = self.sessions.get_or_create(
                     &session_id,
                     &session_id,
@@ -2014,28 +2087,56 @@ impl CoreDaemon {
 
                 let messages = msg_store.list(&session_id).await.unwrap_or_default();
 
-                let (status, selected_model, selected_agent, pending_permissions, pending_questions, input_tokens, output_tokens, active_subagents) =
-                    if let Some(runtime) = self.sessions.get(&session_id) {
-                        let status = format!("{:?}", *runtime.status.read().await);
-                        let model = runtime.selected_model.read().await.clone();
-                        let agent = runtime.selected_agent.read().await.clone();
-                        let pending_permissions: Vec<String> = runtime
-                            .pending_permissions
-                            .iter()
-                            .map(|r| r.key().clone())
-                            .collect();
-                        let pending_questions: Vec<String> = runtime
-                            .pending_questions
-                            .iter()
-                            .map(|r| r.key().clone())
-                            .collect();
-                        let input_tokens = *runtime.last_input_tokens.read().await;
-                        let output_tokens = *runtime.last_output_tokens.read().await;
-                        let active_subagents = runtime.active_subagent_count.load(std::sync::atomic::Ordering::Relaxed);
-                        (status, model, agent, pending_permissions, pending_questions, input_tokens, output_tokens, active_subagents)
-                    } else {
-                        ("idle".to_string(), None, None, Vec::new(), Vec::new(), None, None, 0)
-                    };
+                let (
+                    status,
+                    selected_model,
+                    selected_agent,
+                    pending_permissions,
+                    pending_questions,
+                    input_tokens,
+                    output_tokens,
+                    active_subagents,
+                ) = if let Some(runtime) = self.sessions.get(&session_id) {
+                    let status = format!("{:?}", *runtime.status.read().await);
+                    let model = runtime.selected_model.read().await.clone();
+                    let agent = runtime.selected_agent.read().await.clone();
+                    let pending_permissions: Vec<String> = runtime
+                        .pending_permissions
+                        .iter()
+                        .map(|r| r.key().clone())
+                        .collect();
+                    let pending_questions: Vec<String> = runtime
+                        .pending_questions
+                        .iter()
+                        .map(|r| r.key().clone())
+                        .collect();
+                    let input_tokens = *runtime.last_input_tokens.read().await;
+                    let output_tokens = *runtime.last_output_tokens.read().await;
+                    let active_subagents = runtime
+                        .active_subagent_count
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    (
+                        status,
+                        model,
+                        agent,
+                        pending_permissions,
+                        pending_questions,
+                        input_tokens,
+                        output_tokens,
+                        active_subagents,
+                    )
+                } else {
+                    (
+                        "idle".to_string(),
+                        None,
+                        None,
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                        None,
+                        0,
+                    )
+                };
 
                 let event_seq = self.event_log.current_seq();
 
@@ -2105,7 +2206,9 @@ impl CoreDaemon {
                             .collect();
                         let input_tokens = *runtime.last_input_tokens.read().await;
                         let output_tokens = *runtime.last_output_tokens.read().await;
-                        let active_subagents = runtime.active_subagent_count.load(std::sync::atomic::Ordering::Relaxed);
+                        let active_subagents = runtime
+                            .active_subagent_count
+                            .load(std::sync::atomic::Ordering::Relaxed);
                         snapshots.push(crate::protocol::core::SessionSnapshot {
                             session_id: sid.clone(),
                             project_id: runtime.project_id.clone(),
@@ -2126,14 +2229,17 @@ impl CoreDaemon {
                     daemon_id: self.daemon_id.clone(),
                     uptime_secs: self.started_at.elapsed().as_secs(),
                     active_sessions: snapshots,
-                    connected_clients: self.clients.list().iter().map(|c| {
-                        crate::protocol::core::ClientSnapshot {
+                    connected_clients: self
+                        .clients
+                        .list()
+                        .iter()
+                        .map(|c| crate::protocol::core::ClientSnapshot {
                             client_id: c.client_id.clone(),
                             client_name: c.client_name.clone(),
                             connected_at: c.connected_at.to_rfc3339(),
                             attached_sessions: c.attached_sessions.clone(),
-                        }
-                    }).collect(),
+                        })
+                        .collect(),
                 })
             }
             CoreRequest::SnapshotWorkspace { project_dir } => {
@@ -2217,7 +2323,9 @@ impl CoreDaemon {
                 };
                 self.notification_router.emit(event.clone()).await;
                 if let Some(ref pool) = self.pool {
-                    self.notification_router.persist_notification(pool, &event).await;
+                    self.notification_router
+                        .persist_notification(pool, &event)
+                        .await;
                 }
                 Ok(CoreResponse::Ack)
             }
@@ -2326,11 +2434,10 @@ mod tests {
             _ => panic!("expected Session"),
         };
 
-        let runtime = daemon.sessions.get_or_create(
-            &session_id,
-            &session_id,
-            std::path::PathBuf::new(),
-        );
+        let runtime =
+            daemon
+                .sessions
+                .get_or_create(&session_id, &session_id, std::path::PathBuf::new());
         assert!(runtime.active_turn.read().await.is_none());
     }
 
@@ -2368,14 +2475,14 @@ mod tests {
         );
         let resp = daemon.handle_request(req).await.unwrap();
         match resp {
-            CoreResponse::Events { events, current_seq } => {
+            CoreResponse::Events {
+                events,
+                current_seq,
+            } => {
                 assert_eq!(current_seq, 0);
                 assert!(events.is_empty());
             }
-            other => panic!(
-                "expected Events(empty) for future seq, got {:?}",
-                other
-            ),
+            other => panic!("expected Events(empty) for future seq, got {:?}", other),
         }
     }
 
@@ -2403,7 +2510,10 @@ mod tests {
         );
         let resp = daemon.handle_request(req).await.unwrap();
         match resp {
-            CoreResponse::Events { events, current_seq } => {
+            CoreResponse::Events {
+                events,
+                current_seq,
+            } => {
                 assert_eq!(current_seq, 1);
                 assert_eq!(events.len(), 1);
                 assert_eq!(events[0].event_seq, 1);
@@ -2439,7 +2549,10 @@ mod tests {
         );
         let resp = daemon.handle_request(req).await.unwrap();
         match resp {
-            CoreResponse::Events { events, current_seq } => {
+            CoreResponse::Events {
+                events,
+                current_seq,
+            } => {
                 assert_eq!(current_seq, s1);
                 assert!(
                     events.is_empty(),
@@ -2479,7 +2592,10 @@ mod tests {
         );
         let resp = daemon.handle_request(req).await.unwrap();
         match resp {
-            CoreResponse::Events { events, current_seq } => {
+            CoreResponse::Events {
+                events,
+                current_seq,
+            } => {
                 assert_eq!(current_seq, s1);
                 assert!(events.is_empty());
             }
@@ -2511,7 +2627,11 @@ mod tests {
                 .await;
         }
         let current = daemon.event_log.current_seq();
-        assert!(current > 4096, "ring should have wrapped, current={}", current);
+        assert!(
+            current > 4096,
+            "ring should have wrapped, current={}",
+            current
+        );
 
         // from_event_seq=0 is now too old: the ring's front is
         // current-4095 and there is no DB to fall back to.
@@ -2558,8 +2678,11 @@ mod tests {
         // The recovery should have published a TurnFailed for (s1, t1).
         let mut found = false;
         while let Ok(env) = rx.try_recv() {
-            if let crate::protocol::core::CoreEvent::TurnFailed { session_id, turn_id, .. } =
-                &env.payload
+            if let crate::protocol::core::CoreEvent::TurnFailed {
+                session_id,
+                turn_id,
+                ..
+            } = &env.payload
             {
                 if session_id == "s1" && turn_id.as_deref() == Some("t1") {
                     found = true;
@@ -2597,8 +2720,11 @@ mod tests {
         // Drain and ensure no TurnFailed was emitted.
         let mut emitted_failed = false;
         while let Ok(env) = rx.try_recv() {
-            if let crate::protocol::core::CoreEvent::TurnFailed { session_id, turn_id, .. } =
-                &env.payload
+            if let crate::protocol::core::CoreEvent::TurnFailed {
+                session_id,
+                turn_id,
+                ..
+            } = &env.payload
             {
                 if session_id == "s1" && turn_id.as_deref() == Some("t1") {
                     emitted_failed = true;
@@ -2618,14 +2744,21 @@ mod tests {
         let req = crate::core::new_request("req-snap".into(), CoreRequest::SnapshotModels);
         let resp = daemon.handle_request(req).await.unwrap();
         match resp {
-            CoreResponse::ModelsSnapshot { current_model, models } => {
+            CoreResponse::ModelsSnapshot {
+                current_model,
+                models,
+            } => {
                 assert!(current_model.is_none());
                 // With no providers configured, the model list is empty.
                 // The format contract is `provider/model` (e.g. `openai/gpt-4o`),
                 // which is exercised by ModelsRefresh; for the empty-config case
                 // we only assert the response shape is well-formed.
                 for m in &models {
-                    assert!(m.contains('/'), "model id '{}' should be 'provider/model'", m);
+                    assert!(
+                        m.contains('/'),
+                        "model id '{}' should be 'provider/model'",
+                        m
+                    );
                 }
             }
             other => panic!("expected ModelsSnapshot, got {:?}", other),
@@ -2751,7 +2884,10 @@ mod tests {
             "active_turn should remain set after a rejected cancel"
         );
         // The cancel channel should not have been signaled.
-        assert!(!*cancel_tx.borrow(), "cancel_tx should not have been signaled");
+        assert!(
+            !*cancel_tx.borrow(),
+            "cancel_tx should not have been signaled"
+        );
     }
 
     #[tokio::test]
@@ -2815,7 +2951,8 @@ mod tests {
             "s-steer-wrong",
             std::path::PathBuf::from("."),
         );
-        let (_cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, "turn-real-steer").await;
+        let (_cancel_tx, _cancel_rx, _steer_rx) =
+            install_active_turn(&runtime, "turn-real-steer").await;
 
         let req = crate::core::new_request(
             "req-steer".into(),
@@ -2842,7 +2979,8 @@ mod tests {
             "s-steer-ok",
             std::path::PathBuf::from("."),
         );
-        let (_cancel_tx, _cancel_rx, mut steer_rx) = install_active_turn(&runtime, "turn-good-steer").await;
+        let (_cancel_tx, _cancel_rx, mut steer_rx) =
+            install_active_turn(&runtime, "turn-good-steer").await;
 
         let req = crate::core::new_request(
             "req-steer".into(),
@@ -2856,13 +2994,10 @@ mod tests {
         assert!(matches!(resp, CoreResponse::Ack));
 
         // The steer channel should have received the message.
-        let got = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            steer_rx.recv(),
-        )
-        .await
-        .expect("steer message should arrive")
-        .expect("steer_rx should yield a value");
+        let got = tokio::time::timeout(std::time::Duration::from_millis(50), steer_rx.recv())
+            .await
+            .expect("steer message should arrive")
+            .expect("steer_rx should yield a value");
         assert_eq!(got, "redirect");
     }
 
@@ -2906,7 +3041,11 @@ mod tests {
 
         let mut found: Option<(String, String)> = None;
         for env in &events {
-            if let CoreEvent::TurnStarted { session_id: sid, turn_id } = &env.payload {
+            if let CoreEvent::TurnStarted {
+                session_id: sid,
+                turn_id,
+            } = &env.payload
+            {
                 if sid == &session_id {
                     found = Some((sid.clone(), turn_id.clone()));
                     break;
@@ -2950,7 +3089,10 @@ mod tests {
         assert_eq!(attached_turn_id.as_deref(), Some(turn_id.as_str()));
         match core_event {
             CoreEvent::TurnTextDelta { turn_id: tid, .. } => {
-                assert_eq!(tid, turn_id, "TurnTextDelta should carry the active turn_id");
+                assert_eq!(
+                    tid, turn_id,
+                    "TurnTextDelta should carry the active turn_id"
+                );
             }
             other => panic!("expected TurnTextDelta, got {:?}", other),
         }
@@ -3019,7 +3161,11 @@ mod tests {
 
         let env = rx.recv().await.expect("expected an envelope on the bus");
         match env.payload {
-            CoreEvent::TurnCompleted { turn_id: tid, stop_reason, .. } => {
+            CoreEvent::TurnCompleted {
+                turn_id: tid,
+                stop_reason,
+                ..
+            } => {
                 assert_eq!(tid, turn_id);
                 assert_eq!(stop_reason, "completed");
             }
@@ -3036,7 +3182,8 @@ mod tests {
             std::path::PathBuf::from("."),
         );
         let active_turn_id = "turn-active".to_string();
-        let (_cancel_tx, _cancel_rx, _steer_rx) = install_active_turn(&runtime, &active_turn_id).await;
+        let (_cancel_tx, _cancel_rx, _steer_rx) =
+            install_active_turn(&runtime, &active_turn_id).await;
 
         // ToolResult carries a turn_id on the AppEvent? No - the bus
         // AppEvent::ToolResult doesn't have a turn_id. The bridged

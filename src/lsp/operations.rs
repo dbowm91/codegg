@@ -279,10 +279,11 @@ impl LspOperations {
             return Ok(Vec::new());
         }
 
-        let items: Vec<CompletionItem> = match serde_json::from_value::<CompletionList>(resp.clone()) {
-            Ok(list) => list.items,
-            Err(_) => serde_json::from_value(resp).unwrap_or_default(),
-        };
+        let items: Vec<CompletionItem> =
+            match serde_json::from_value::<CompletionList>(resp.clone()) {
+                Ok(list) => list.items,
+                Err(_) => serde_json::from_value(resp).unwrap_or_default(),
+            };
         Ok(items)
     }
 

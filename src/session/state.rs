@@ -1,8 +1,6 @@
 //! Derived TUI session state reconstructed from session events.
 
-use super::events::{
-    AgentPlan, FileChangeKind, SessionEvent, ToolCallStatus, ToolRisk,
-};
+use super::events::{AgentPlan, FileChangeKind, SessionEvent, ToolCallStatus, ToolRisk};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -58,7 +56,9 @@ pub struct SubagentSummary {
 pub enum TestState {
     Unknown,
     Stale,
-    Running { command: String },
+    Running {
+        command: String,
+    },
     Passed {
         command: String,
         duration_ms: Option<u64>,
@@ -337,12 +337,12 @@ impl TuiSessionState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::events::{
-        AgentPlanItem, ContextCompactedEvent, EventMeta, FileChangedEvent,
-        GoalSetEvent, ModelRoutedEvent, PlanItemStatus, PlanItemUpdatedEvent, PlanUpdatedEvent,
+        AgentPlanItem, ContextCompactedEvent, EventMeta, FileChangedEvent, GoalSetEvent,
+        ModelRoutedEvent, PlanItemStatus, PlanItemUpdatedEvent, PlanUpdatedEvent,
         TestRunFinishedEvent, TestRunStartedEvent, ToolCallFinishedEvent, ToolCallStartedEvent,
     };
+    use super::*;
 
     fn meta(session_id: &str) -> EventMeta {
         EventMeta::new(session_id)
@@ -421,7 +421,11 @@ mod tests {
         ];
         let state = TuiSessionState::from_events(&events);
         assert_eq!(state.changed_files.len(), 2);
-        let main = state.changed_files.iter().find(|f| f.path == "src/main.rs").unwrap();
+        let main = state
+            .changed_files
+            .iter()
+            .find(|f| f.path == "src/main.rs")
+            .unwrap();
         assert_eq!(main.additions, 10);
         assert_eq!(main.deletions, 3);
     }
@@ -753,4 +757,3 @@ mod tests {
         assert_eq!(state.changed_files.len(), 2);
     }
 }
-

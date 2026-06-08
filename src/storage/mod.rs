@@ -4,7 +4,7 @@
 //! of sessions, messages, and analytics. It uses sqlx for async database operations.
 
 pub mod preferences;
-pub use preferences::{UserPreferences, KEY_THEME_ACTIVE, KEY_MODEL_LAST_USED};
+pub use preferences::{UserPreferences, KEY_MODEL_LAST_USED, KEY_THEME_ACTIVE};
 
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -138,14 +138,13 @@ pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError> {
         })?;
     }
 
-    let dir_metadata = tokio::fs::metadata(dir).await
-        .map_err(|e| {
-            StorageError::Database(format!(
-                "cannot access database directory {}: {}",
-                dir.display(),
-                e
-            ))
-        })?;
+    let dir_metadata = tokio::fs::metadata(dir).await.map_err(|e| {
+        StorageError::Database(format!(
+            "cannot access database directory {}: {}",
+            dir.display(),
+            e
+        ))
+    })?;
 
     if dir_metadata.permissions().readonly() {
         return Err(StorageError::Database(format!(

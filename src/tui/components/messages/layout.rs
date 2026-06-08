@@ -44,10 +44,7 @@ impl MessageLayoutCache {
             .find_message_at_line(end_line)
             .map(|(idx, _)| idx + 2)
             .unwrap_or(self.message_offsets.len());
-        (
-            start_idx,
-            end_idx.min(self.message_offsets.len()),
-        )
+        (start_idx, end_idx.min(self.message_offsets.len()))
     }
 
     pub fn total_lines(&self) -> usize {

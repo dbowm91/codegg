@@ -33,7 +33,9 @@ forwards to the right adapter.
 
 ## State management
 
-`src/search_backend/state.rs` exposes two `OnceLock`-style slots:
+`src/search_backend/state.rs` exposes two process-global slots
+backed by `std::sync::RwLock<Option<...>>` (despite an older
+docstring calling them "OnceLock-style"):
 
 ```rust
 pub fn install_mcp_service(svc: Arc<RwLock<McpService>>);
@@ -42,11 +44,12 @@ pub fn install_search_config(cfg: SearchConfig);
 pub fn search_config() -> SearchConfig;
 ```
 
-The slots are populated once at startup by
+The slots are populated at startup by
 `bootstrap::bootstrap_search_backend`. Tool execution reads them
-later. The values are read-only after startup; tests can override
-the config explicitly via the install methods. Production code
-must not mutate state at runtime.
+later. The values are installed once in production; tests can
+re-install them to override the config and the `McpService`
+between cases. Production code should treat the slots as
+immutable after startup.
 
 ## Bootstrap
 
@@ -100,11 +103,14 @@ The returned `BootstrapReport` is consumed by the doctor command
 
 ## Hiding raw MCP tools
 
-The agent loop at `src/agent/loop.rs:1724-1740` filters out tools
-whose name starts with `mcp__<server_name>__` from the model
-prompt when `expose_raw_mcp_tools = false` (the default). The
-server name is resolved from the `SearchConfig` so custom names
-are honored.
+The agent loop's `build_tool_definitions` filters out tools whose
+name starts with `mcp__<server_name>__` from the model prompt
+when `expose_raw_mcp_tools = false` (the default). The server
+name is resolved from the `SearchConfig` so custom names are
+honored. The filter lives near the top of the MCP tool handling
+block in `src/agent/loop.rs` (the line range drifts; search for
+`expose_raw_mcp_tools` and the `mcp__` prefix filter for the
+exact location).
 
 ## Trust framing
 
@@ -154,6 +160,37 @@ codegg doctor search
 Output is a `BootstrapReport::summary_lines()` dump covering:
 backend, command, MCP connection status, advertised tools,
 `expose_raw_mcp_tools`, `fallback_to_builtin`, and output caps.
+
+## Where to add new providers
+
+New web search providers should be added in the eggsearch
+project, not in Codegg's built-in search provider registry
+(`src/search/`). The built-in registry is legacy fallback only.
+Codegg owns the wrapper UX, permissioning, output caps, trust
+framing, and backend selection; the actual search/fetch logic
+lives in eggsearch.
+
+## Why this design?
+
+- **Why do `websearch` and `webfetch` still exist in Codegg?**
+  They are stable native tool names. Codegg owns the wrapper UX,
+  permissioning, output caps, trust framing, and backend
+  selection. The actual search/fetch logic lives in eggsearch.
+- **Why does Codegg also have generic MCP support?**
+  The general MCP infrastructure connects arbitrary MCP servers
+  (file system, git, db, etc.). Eggsearch is just one consumer
+  of that infrastructure.
+- **Why are raw eggsearch MCP tools hidden by default?**
+  To keep the model's tool surface stable and prevent it from
+  bypassing the native wrapper's framing, output caps, and
+  permission rules.
+- **Where should a new web search provider be added?**
+  In eggsearch, not in Codegg.
+- **What happens if eggsearch is missing?**
+  `codegg doctor search` reports it as unavailable. With
+  `backend = "eggsearch"`, `websearch`/`webfetch` return an
+  actionable error. With `fallback_to_builtin = true`, they fall
+  back to the legacy implementation.
 
 ## See also
 

@@ -255,7 +255,10 @@ impl Component for TemplateDialog {
             }
             crossterm::event::KeyCode::Enter => {
                 if let Some((key, template)) = self.selected() {
-                    Some(TuiMsg::SelectTemplate { key, template: Box::new(template) })
+                    Some(TuiMsg::SelectTemplate {
+                        key,
+                        template: Box::new(template),
+                    })
                 } else {
                     None
                 }

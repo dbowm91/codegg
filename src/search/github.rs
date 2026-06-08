@@ -80,7 +80,10 @@ impl SearchProvider for GitHubProvider {
             description: Option<String>,
             stargazers_count: Option<u64>,
         }
-        let r: R = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: R = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         if r.items.is_empty() {
             return Err(SearchError::Empty);
         }

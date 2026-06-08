@@ -9,8 +9,8 @@ use crate::research::error::{ResearchError, Result};
 use crate::research::extract::{extract_evidence, extract_evidence_with_model};
 use crate::research::sources::{
     advisory::AdvisorySource, crates_io::CratesIoSource, docs_rs::DocsRsSource,
-    github::GitHubSource, local_repo::LocalRepoSource, search_provider::SearchProviderSource,
-    search_provider::SearchProvider, url::UrlSource, ResearchSourceAdapter,
+    github::GitHubSource, local_repo::LocalRepoSource, search_provider::SearchProvider,
+    search_provider::SearchProviderSource, url::UrlSource, ResearchSourceAdapter,
 };
 use crate::research::store::ResearchStore;
 use crate::research::synthesis;
@@ -187,13 +187,8 @@ impl ResearchCoordinator {
         }
 
         // Phase 7: Verification (structural + optional semantic)
-        let verification = verify::verify_structural(
-            &request,
-            &sources,
-            &evidence,
-            &claims,
-            &contradictions,
-        );
+        let verification =
+            verify::verify_structural(&request, &sources, &evidence, &claims, &contradictions);
 
         // Phase 7b: Semantic verification when model available
         if let (Some(provider), Some(model)) = (&self.provider, &self.model) {
@@ -227,11 +222,7 @@ impl ResearchCoordinator {
                     );
                     let _ = self
                         .store
-                        .write_report(
-                            &run_id,
-                            &ResearchOutputProfile::EvidenceBundle,
-                            &warn_text,
-                        )
+                        .write_report(&run_id, &ResearchOutputProfile::EvidenceBundle, &warn_text)
                         .await;
                 }
             }
@@ -266,7 +257,9 @@ impl ResearchCoordinator {
         let mut status = self.store.load_run_status(&run_id).await?;
         status.status = RunStatus::Completed;
         status.finished_at = Some(Utc::now());
-        self.store.update_run_status(&run_id, status.clone()).await?;
+        self.store
+            .update_run_status(&run_id, status.clone())
+            .await?;
 
         Ok(ResearchRunResult {
             run_id,
@@ -365,7 +358,10 @@ impl ResearchCoordinator {
                 "Exclude test fixtures unless relevant to question".to_string(),
             ],
             stopping_conditions: vec![
-                format!("Budget limits reached (max {} sources)", request.budget.max_sources),
+                format!(
+                    "Budget limits reached (max {} sources)",
+                    request.budget.max_sources
+                ),
                 "All requested comparison axes covered".to_string(),
             ],
             expected_outputs: request
@@ -414,10 +410,7 @@ impl ResearchCoordinator {
                     match tokio::fs::read_to_string(path).await {
                         Ok(c) => c,
                         Err(e) => {
-                            eprintln!(
-                                "Warning: failed to read {}: {}",
-                                source.uri, e
-                            );
+                            eprintln!("Warning: failed to read {}: {}", source.uri, e);
                             continue;
                         }
                     }
@@ -511,9 +504,14 @@ impl ResearchCoordinator {
         profile: &ResearchOutputProfile,
     ) -> String {
         match profile {
-            ResearchOutputProfile::HumanFullReport => {
-                synthesis::render_human_full_report(request, plan, sources, evidence, claims, contradictions)
-            }
+            ResearchOutputProfile::HumanFullReport => synthesis::render_human_full_report(
+                request,
+                plan,
+                sources,
+                evidence,
+                claims,
+                contradictions,
+            ),
             ResearchOutputProfile::HumanBrief => {
                 synthesis::render_human_brief(request, claims, contradictions)
             }
@@ -522,7 +520,13 @@ impl ResearchCoordinator {
             }
             ResearchOutputProfile::AgentHandoff => {
                 let artifact_dir = self.store.root().join(&request.id);
-                synthesis::render_agent_handoff(request, plan, claims, contradictions, &artifact_dir)
+                synthesis::render_agent_handoff(
+                    request,
+                    plan,
+                    claims,
+                    contradictions,
+                    &artifact_dir,
+                )
             }
             ResearchOutputProfile::EvidenceBundle => {
                 synthesis::render_evidence_bundle(sources, evidence, claims, contradictions)
@@ -534,10 +538,7 @@ impl ResearchCoordinator {
     /// and diff the new claims against the old ones.
     ///
     /// Returns the new run result and a diff showing what changed.
-    pub async fn rerun(
-        &self,
-        original_run_id: &str,
-    ) -> Result<(ResearchRunResult, ClaimDiff)> {
+    pub async fn rerun(&self, original_run_id: &str) -> Result<(ResearchRunResult, ClaimDiff)> {
         // Load the original run bundle
         let original = self.store.load_run_bundle(original_run_id).await?;
 
@@ -592,10 +593,7 @@ impl ResearchCoordinator {
                 &bundle.contradictions,
                 profile,
             );
-            let path = self
-                .store
-                .write_report(run_id, profile, &text)
-                .await?;
+            let path = self.store.write_report(run_id, profile, &text).await?;
             outputs.push(ResearchArtifactRef {
                 run_id: run_id.to_string(),
                 profile: profile.clone(),

@@ -450,12 +450,11 @@ impl LocalClient {
             }
         }
 
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| McpError::Connection(
-                "MCP server process has no stdin available (process may have exited)".into()
-            ))?;
+        let stdin = self.stdin.as_mut().ok_or_else(|| {
+            McpError::Connection(
+                "MCP server process has no stdin available (process may have exited)".into(),
+            )
+        })?;
 
         let line = format!("{data}\n");
         stdin

@@ -675,19 +675,15 @@ async fn migrate_v18(pool: &SqlitePool) -> Result<(), StorageError> {
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_research_run_status ON research_run(status)",
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_research_run_status ON research_run(status)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
 
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_research_run_started ON research_run(started_at)",
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_research_run_started ON research_run(started_at)")
+        .execute(pool)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_research_run_project ON research_run(project_root)",
@@ -738,10 +734,12 @@ async fn migrate_v20(pool: &SqlitePool) -> Result<(), StorageError> {
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_core_event_log_session ON core_event_log(session_id)")
-        .execute(pool)
-        .await
-        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_core_event_log_session ON core_event_log(session_id)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_core_event_log_seq ON core_event_log(event_seq)")
         .execute(pool)

@@ -6,8 +6,8 @@ use codegg::config::schema::Config;
 use codegg::core::CoreClient;
 use codegg::error::{AppError, ConfigError, StorageError};
 use codegg::exec::{ExecInput, ExecMode};
-use codegg::memory::MemoryStore;
 use codegg::mcp;
+use codegg::memory::MemoryStore;
 use codegg::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
 use codegg::provider::{self, ProviderRegistry};
 use codegg::session::{MessageStore, Session, SessionStore};
@@ -18,10 +18,10 @@ use codegg::upgrade;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::Read;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing_subscriber::util::SubscriberInitExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Parser, Clone, Debug)]
 #[command(
@@ -322,8 +322,7 @@ fn default_socket_path() -> String {
     }
     #[cfg(target_os = "linux")]
     {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-            .unwrap_or_else(|_| "/tmp".to_string());
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
         format!("{}/codegg/core.sock", runtime_dir)
     }
     #[cfg(not(target_os = "macos"))]
@@ -480,8 +479,7 @@ async fn main() -> Result<(), AppError> {
                         Ok(pid_str) => {
                             if let Ok(pid) = pid_str.trim().parse::<u32>() {
                                 // Check if process is alive before sending signal
-                                let kill_result =
-                                    unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                                let kill_result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
                                 if kill_result == 0 {
                                     println!("Sent SIGTERM to daemon (PID {})", pid);
                                     let _ = tokio::fs::remove_file(&pid_file).await;
@@ -497,10 +495,7 @@ async fn main() -> Result<(), AppError> {
                             }
                         }
                         Err(_) => {
-                            eprintln!(
-                                "No daemon PID file found at {}",
-                                pid_file.display()
-                            );
+                            eprintln!("No daemon PID file found at {}", pid_file.display());
                             eprintln!("Is the daemon running?");
                         }
                     }
@@ -529,14 +524,8 @@ async fn main() -> Result<(), AppError> {
                                 }) => {
                                     println!("Daemon is running");
                                     println!("  Daemon ID: {}", daemon_id);
-                                    println!(
-                                        "  Uptime: {}s",
-                                        uptime_secs
-                                    );
-                                    println!(
-                                        "  Active sessions: {}",
-                                        active_sessions.len()
-                                    );
+                                    println!("  Uptime: {}s", uptime_secs);
+                                    println!("  Active sessions: {}", active_sessions.len());
                                     println!("  Connected clients: {}", connected_clients.len());
                                     for s in &active_sessions {
                                         println!(
@@ -547,7 +536,10 @@ async fn main() -> Result<(), AppError> {
                                     }
                                 }
                                 Ok(other) => {
-                                    println!("Daemon is running (unexpected response: {:?})", other);
+                                    println!(
+                                        "Daemon is running (unexpected response: {:?})",
+                                        other
+                                    );
                                 }
                                 Err(e) => {
                                     eprintln!("Daemon connected but failed to respond: {}", e);
@@ -578,7 +570,9 @@ async fn main() -> Result<(), AppError> {
                         Err(e) => {
                             eprintln!("Could not read log file {}: {}", log_path.display(), e);
                             eprintln!("Daemon logs are written to stderr or a debug log file.");
-                            eprintln!("Start the daemon with RUST_LOG=info or -vv to enable logging.");
+                            eprintln!(
+                                "Start the daemon with RUST_LOG=info or -vv to enable logging."
+                            );
                             std::process::exit(1);
                         }
                     }
@@ -1052,21 +1046,22 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         .clone_box();
 
     let agents = agent::resolve_agents(&config)?;
-    let target_agent = cli.agent.as_deref().unwrap_or(
-        config
-            .default_agent
-            .as_deref()
-            .unwrap_or("build"),
-    );
+    let target_agent = cli
+        .agent
+        .as_deref()
+        .unwrap_or(config.default_agent.as_deref().unwrap_or("build"));
     let selected_agent = agents
         .iter()
         .find(|a| a.name == target_agent)
         .cloned()
         .ok_or_else(|| AppError::Other(anyhow::anyhow!("Agent not found: {}", target_agent)))?;
 
-    let permission_checker = codegg::permission::PermissionChecker::new(Some(&config), None)
-        .with_active_mode(&config);
-    let (mcp_service, _report) = codegg::search_backend::bootstrap::bootstrap_search_backend(&config).await;
+    let permission_checker =
+        codegg::permission::PermissionChecker::new(Some(&config), None).with_active_mode(&config);
+    // Bootstraps the search backend (eggsearch by default) before the agent
+    // loop starts. Idempotent if already bootstrapped.
+    let (mcp_service, _report) =
+        codegg::search_backend::bootstrap::bootstrap_search_backend(&config).await;
     let tool_registry = codegg::tool::ToolRegistry::with_defaults();
     let mut agent_loop = codegg::agent::r#loop::AgentLoop::new(
         agents,
@@ -1159,7 +1154,15 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // In socket mode the daemon owns the DB, providers, scheduler, etc.
     let (pool, session_store, message_store, memory_store, user_prefs, model_ids, agents) =
         if is_socket_mode {
-            (None, None, None, None, None, Vec::new(), agent::resolve_agents(&config)?)
+            (
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                agent::resolve_agents(&config)?,
+            )
         } else {
             let pool = storage::init(&project_dir).await?;
             let session_store = Arc::new(SessionStore::new(pool.clone()));
@@ -1176,9 +1179,8 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             let mut registry = ProviderRegistry::new();
             provider::register_builtin_with_config(&mut registry, &config);
 
-            let discovery =
-                provider::discovery::ModelDiscoveryService::new(PathBuf::new())
-                    .with_pool(pool.clone());
+            let discovery = provider::discovery::ModelDiscoveryService::new(PathBuf::new())
+                .with_pool(pool.clone());
             discovery.initialize().await;
             let model_ids = if discovery.needs_refresh().await {
                 let models = discovery.refresh(&registry).await;
@@ -1291,15 +1293,15 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         match codegg::core::transport::SocketCoreClient::connect(&endpoint).await {
             Ok(client) => {
                 // Mark the app as RemoteCore now that we have a live connection.
-                app.ui_state.mode = codegg::tui::app::state::AppMode::RemoteCore {
-                    endpoint,
-                };
+                app.ui_state.mode = codegg::tui::app::state::AppMode::RemoteCore { endpoint };
                 Arc::new(client)
             }
             Err(e) => {
                 if cli.core_transport.is_some() {
                     // Check if auto_start is enabled in daemon config
-                    let auto_start = config.daemon.as_ref()
+                    let auto_start = config
+                        .daemon
+                        .as_ref()
                         .and_then(|d| d.auto_start)
                         .unwrap_or(false);
                     if auto_start {
@@ -1312,9 +1314,8 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         match codegg::core::transport::SocketCoreClient::connect(&endpoint).await {
                             Ok(client) => {
-                                app.ui_state.mode = codegg::tui::app::state::AppMode::RemoteCore {
-                                    endpoint,
-                                };
+                                app.ui_state.mode =
+                                    codegg::tui::app::state::AppMode::RemoteCore { endpoint };
                                 Arc::new(client)
                             }
                             Err(e) => {
@@ -1585,13 +1586,17 @@ async fn cmd_research(
 
     eprintln!("Starting research run {}...", &request.id[..8]);
     eprintln!("Question: {}", request.question);
-    eprintln!("Mode: {:?}, Depth: {:?}, Audience: {:?}", request.mode, request.depth, request.audience);
+    eprintln!(
+        "Mode: {:?}, Depth: {:?}, Audience: {:?}",
+        request.mode, request.depth, request.audience
+    );
 
     match coordinator.run(request).await {
         Ok(result) => {
             eprintln!("\nResearch completed successfully!");
             eprintln!("Status: {:?}", result.status);
-            eprintln!("Sources: {}, Evidence: {}, Claims: {}, Contradictions: {}",
+            eprintln!(
+                "Sources: {}, Evidence: {}, Claims: {}, Contradictions: {}",
                 result.counts.sources,
                 result.counts.evidence_spans,
                 result.counts.claims,
@@ -1614,7 +1619,11 @@ async fn cmd_research(
 
 async fn run_daemon(endpoint: Option<String>) {
     let config = Config::load().unwrap_or_default();
-    let project_dir = match config.daemon.as_ref().and_then(|d| d.project_scope.as_deref()) {
+    let project_dir = match config
+        .daemon
+        .as_ref()
+        .and_then(|d| d.project_scope.as_deref())
+    {
         Some("user") => dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .to_string_lossy()
@@ -1634,7 +1643,10 @@ async fn run_daemon(endpoint: Option<String>) {
     };
     let session_store = Arc::new(SessionStore::new(pool.clone()));
     let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|e| {
-        tracing::warn!("Failed to initialize memory store: {}, continuing without persistent memory", e);
+        tracing::warn!(
+            "Failed to initialize memory store: {}, continuing without persistent memory",
+            e
+        );
         MemoryStore::default()
     }));
     let agents = match agent::resolve_agents(&config) {
@@ -1656,8 +1668,12 @@ async fn run_daemon(endpoint: Option<String>) {
     )
     .await;
     let subagent_pool = Arc::new(subagent_pool);
-    let scheduler = Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
-    scheduler.spawn_loop(Arc::clone(&subagent_pool), std::time::Duration::from_secs(10));
+    let scheduler =
+        Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
+    scheduler.spawn_loop(
+        Arc::clone(&subagent_pool),
+        std::time::Duration::from_secs(10),
+    );
 
     let daemon = Arc::new(codegg::core::daemon::CoreDaemon::new(
         Some(pool),
@@ -1729,8 +1745,12 @@ async fn run_core_stdio() -> Result<(), AppError> {
     )
     .await;
     let subagent_pool = Arc::new(subagent_pool);
-    let scheduler = Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
-    scheduler.spawn_loop(Arc::clone(&subagent_pool), std::time::Duration::from_secs(10));
+    let scheduler =
+        Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
+    scheduler.spawn_loop(
+        Arc::clone(&subagent_pool),
+        std::time::Duration::from_secs(10),
+    );
 
     let core = codegg::core::InprocCoreClient::new(
         Some(subagent_pool),
@@ -1759,7 +1779,10 @@ async fn run_core_stdio() -> Result<(), AppError> {
             },
         };
         let out = serde_json::to_string(&response).map_err(AppError::Json)?;
-        stdout.write_all(out.as_bytes()).await.map_err(AppError::Io)?;
+        stdout
+            .write_all(out.as_bytes())
+            .await
+            .map_err(AppError::Io)?;
         stdout.write_all(b"\n").await.map_err(AppError::Io)?;
         stdout.flush().await.map_err(AppError::Io)?;
     }
@@ -1817,8 +1840,12 @@ async fn cmd_server(host: &str, port: u16) -> Result<(), AppError> {
     )
     .await;
     let subagent_pool = Arc::new(subagent_pool);
-    let scheduler = Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
-    scheduler.spawn_loop(Arc::clone(&subagent_pool), std::time::Duration::from_secs(10));
+    let scheduler =
+        Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
+    scheduler.spawn_loop(
+        Arc::clone(&subagent_pool),
+        std::time::Duration::from_secs(10),
+    );
 
     let daemon = Arc::new(codegg::core::daemon::CoreDaemon::new(
         Some(pool),

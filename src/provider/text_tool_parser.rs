@@ -8,17 +8,18 @@ static INVOKE_PATTERN: LazyLock<Regex> =
 static CODE_BLOCK_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?s)```\s*(\w+)\s*(\{.*?\})\s*```"#).unwrap());
 
-static XML_TOOL_CALL_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?s)<tool_call>\s*(\{.*?\})\s*</tool_call>"#).unwrap()
-});
+static XML_TOOL_CALL_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?s)<tool_call>\s*(\{.*?\})\s*</tool_call>"#).unwrap());
 
 static XML_TOOL_CALL_NAME_ATTR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<tool_call\s+name="([A-Za-z0-9_:\-]+)"\s*>(.*?)</tool_call>"#).unwrap()
 });
 
 static RAW_JSON_TOOL_CALL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?s)\{\s*"name"\s*:\s*"([A-Za-z0-9_:\-]+)"\s*,\s*"arguments"\s*:\s*(\{.*?\})\s*\}"#)
-        .unwrap()
+    Regex::new(
+        r#"(?s)\{\s*"name"\s*:\s*"([A-Za-z0-9_:\-]+)"\s*,\s*"arguments"\s*:\s*(\{.*?\})\s*\}"#,
+    )
+    .unwrap()
 });
 
 pub fn parse_text_as_tool_calls(text: &str) -> Option<Vec<ToolCall>> {
@@ -269,8 +270,7 @@ mod tests {
 
     #[test]
     fn test_parse_raw_json_tool_call() {
-        let text =
-            r#"Here is the call: {"name": "bash", "arguments": {"command": "pwd"}} end."#;
+        let text = r#"Here is the call: {"name": "bash", "arguments": {"command": "pwd"}} end."#;
         let result = parse_text_as_tool_calls(text);
         assert!(result.is_some(), "should parse raw JSON tool call");
         let calls = result.unwrap();

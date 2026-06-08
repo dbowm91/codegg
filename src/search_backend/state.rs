@@ -57,3 +57,20 @@ pub fn search_config() -> SearchConfig {
         .clone()
         .unwrap_or_default()
 }
+
+/// Test-only: reset the global search backend state slots to `None`.
+///
+/// Tests that mutate `install_search_config` or `install_mcp_service` should
+/// call this at the start of the test to ensure a clean baseline and avoid
+/// cross-test interference.
+///
+/// **Not** intended for production use.
+#[doc(hidden)]
+pub fn reset_for_tests() {
+    if let Ok(mut svc) = MCP_SERVICE.write() {
+        *svc = None;
+    }
+    if let Ok(mut cfg) = SEARCH_CONFIG.write() {
+        *cfg = None;
+    }
+}

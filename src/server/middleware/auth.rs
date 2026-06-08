@@ -1,4 +1,8 @@
-use axum::{extract::{Request, State}, middleware::Next, response::Response};
+use axum::{
+    extract::{Request, State},
+    middleware::Next,
+    response::Response,
+};
 use http::StatusCode;
 use subtle::ConstantTimeEq;
 
@@ -14,9 +18,9 @@ pub async fn auth_middleware(
         return Ok(next.run(request).await);
     }
 
-    let expected_token = std::env::var("CODEGG_SERVER_TOKEN").ok().or_else(|| {
-        state.config.server.as_ref().and_then(|s| s.token.clone())
-    });
+    let expected_token = std::env::var("CODEGG_SERVER_TOKEN")
+        .ok()
+        .or_else(|| state.config.server.as_ref().and_then(|s| s.token.clone()));
 
     match expected_token {
         Some(expected) => {
@@ -34,9 +38,7 @@ pub async fn auth_middleware(
                 _ => Err(StatusCode::UNAUTHORIZED),
             }
         }
-        None => {
-            Ok(next.run(request).await)
-        }
+        None => Ok(next.run(request).await),
     }
 }
 

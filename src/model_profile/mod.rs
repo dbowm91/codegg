@@ -1,6 +1,6 @@
-pub mod types;
-pub mod resolve;
 pub mod policy;
+pub mod resolve;
+pub mod types;
 
-pub use types::*;
 pub use resolve::*;
+pub use types::*;

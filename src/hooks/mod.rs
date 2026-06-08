@@ -131,16 +131,18 @@ impl Hook for ShellCommandHook {
                     Ok(())
                 } else {
                     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                Err(AppError::Other(anyhow::anyhow!(
-                    "Hook command failed (event={}): {}",
-                    self.event.as_str(), stderr
-                )))
+                    Err(AppError::Other(anyhow::anyhow!(
+                        "Hook command failed (event={}): {}",
+                        self.event.as_str(),
+                        stderr
+                    )))
                 }
             }
             Ok(Err(e)) => Err(AppError::Io(e)),
             Err(_) => Err(AppError::Other(anyhow::anyhow!(
                 "Hook command timed out after {:?} (event={})",
-                self.timeout, self.event.as_str()
+                self.timeout,
+                self.event.as_str()
             ))),
         }
     }

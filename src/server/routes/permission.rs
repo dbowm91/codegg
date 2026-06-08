@@ -31,7 +31,8 @@ pub async fn submit_permission(
         "always_deny" => crate::permission::PermissionChoice::AlwaysDeny,
         _ => {
             return Err(AppError::Tool(ToolError::Execution(
-                "invalid decision, must be 'allow', 'deny', 'always_allow', or 'always_deny'".to_string(),
+                "invalid decision, must be 'allow', 'deny', 'always_allow', or 'always_deny'"
+                    .to_string(),
             )));
         }
     };

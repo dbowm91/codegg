@@ -38,7 +38,7 @@ pub(crate) mod theme_registry_test_helpers;
 pub use color::{Rgb, ThemeColor};
 pub use error::ThemeError;
 pub use registry::{
-    resolve_theme_for_app, expand_home, builtin_fallback, ThemeRegistry, ThemeResolutionConfig,
+    builtin_fallback, expand_home, resolve_theme_for_app, ThemeRegistry, ThemeResolutionConfig,
     ThemeSourceConfig,
 };
 pub use schema::{

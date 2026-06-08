@@ -36,7 +36,10 @@ impl SpinnerWidget {
     }
 
     pub fn with_label(self, label: &str) -> Self {
-        Self { label: label.to_string(), ..self }
+        Self {
+            label: label.to_string(),
+            ..self
+        }
     }
 
     pub fn start(&mut self, label: Option<String>) {

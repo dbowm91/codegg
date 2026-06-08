@@ -101,7 +101,9 @@ fn build_mock_eggsearch(
                 g.push((tool.to_string(), args.clone()));
             }
             match tool {
-                "web_search" => Ok(r#"{"hits": [{"title": "Mock", "url": "https://x"}]}"#.to_string()),
+                "web_search" => {
+                    Ok(r#"{"hits": [{"title": "Mock", "url": "https://x"}]}"#.to_string())
+                }
                 "web_fetch" => Ok("mock page body".to_string()),
                 "provider_status" => Ok(r#"{"providers": ["mock"]}"#.to_string()),
                 _ => Err(McpError::Server(format!("unknown tool {tool}"))),
@@ -122,11 +124,12 @@ async fn lock() -> MutexGuard<'static, ()> {
 /// installed.
 #[tokio::test]
 async fn websearch_dispatches_to_mcp_web_search() {
+    state::reset_for_tests();
     let _g = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(
-        Arc::clone(&calls),
-    )));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
+        &calls,
+    ))));
     state::install_mcp_service(svc);
     state::install_search_config(eggsearch_config(false, false));
 
@@ -155,11 +158,12 @@ async fn websearch_dispatches_to_mcp_web_search() {
 /// when the eggsearch backend is configured.
 #[tokio::test]
 async fn webfetch_dispatches_to_mcp_web_fetch() {
+    state::reset_for_tests();
     let _g = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(
-        Arc::clone(&calls),
-    )));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
+        &calls,
+    ))));
     state::install_mcp_service(svc);
     state::install_search_config(eggsearch_config(false, false));
 
@@ -188,11 +192,12 @@ async fn webfetch_dispatches_to_mcp_web_fetch() {
 /// when the eggsearch backend is connected.
 #[tokio::test]
 async fn provider_status_dispatches_via_doctor_helper() {
+    state::reset_for_tests();
     let _g = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(
-        Arc::clone(&calls),
-    )));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
+        &calls,
+    ))));
     state::install_mcp_service(svc);
     state::install_search_config(eggsearch_config(false, false));
 
@@ -211,6 +216,7 @@ async fn provider_status_dispatches_via_doctor_helper() {
 /// failure (an `eggsearch_unavailable`-style error).
 #[tokio::test]
 async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
+    state::reset_for_tests();
     let _g = lock().await;
     // Empty service: no "eggsearch" server registered.
     let svc = McpService::new();
@@ -222,8 +228,7 @@ async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
     let err = res.expect_err("should fail when no eggsearch server registered");
     let msg = err.to_string();
     assert!(
-        msg.contains("eggsearch")
-            && (msg.contains("unavailable") || msg.contains("not found")),
+        msg.contains("eggsearch") && (msg.contains("unavailable") || msg.contains("not found")),
         "expected actionable eggsearch error, got: {msg}"
     );
 }
@@ -231,11 +236,12 @@ async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
 /// With `backend = builtin`, dispatch should not touch MCP at all.
 #[tokio::test]
 async fn builtin_backend_does_not_invoke_mcp() {
+    state::reset_for_tests();
     let _g = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(
-        Arc::clone(&calls),
-    )));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
+        &calls,
+    ))));
     state::install_mcp_service(svc);
     state::install_search_config(builtin_config());
 
@@ -255,11 +261,12 @@ async fn builtin_backend_does_not_invoke_mcp() {
 /// should return a clear disabled error.
 #[tokio::test]
 async fn disabled_backend_does_not_invoke_mcp() {
+    state::reset_for_tests();
     let _g = lock().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(
-        Arc::clone(&calls),
-    )));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
+        &calls,
+    ))));
     state::install_mcp_service(svc);
     state::install_search_config(disabled_config());
 
@@ -267,7 +274,8 @@ async fn disabled_backend_does_not_invoke_mcp() {
     let err = res.expect_err("disabled should error");
     assert!(err.to_string().contains("disabled"));
 
-    let res = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({"url": "https://x"})).await;
+    let res =
+        codegg::search_backend::dispatch_web_fetch(&serde_json::json!({"url": "https://x"})).await;
     let err = res.expect_err("disabled should error");
     assert!(err.to_string().contains("disabled"));
 

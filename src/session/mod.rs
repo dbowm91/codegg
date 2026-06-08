@@ -19,21 +19,19 @@ pub mod store;
 use serde_json;
 use tracing::warn;
 
+pub use checkpoint::{compute_checksum, create_working_file, verify_file, CheckpointStore};
+pub use events::{
+    AgentPlan, AgentPlanItem, EventMeta, FileChangeKind, PlanItemStatus, SessionEvent, ToolRisk,
+};
 pub use models::{
     CreateSession, PermissionEntry, Session, SessionAnalytics, SessionSummaryProvider, TodoItem,
     TodoItemInput, UpdateSession, UsageRecord,
 };
 pub use row::{MessageRow, PartRow, PermissionRow, SessionRow, TodoRow};
-pub use events::{
-    AgentPlan, AgentPlanItem, EventMeta, FileChangeKind, PlanItemStatus, SessionEvent, ToolRisk,
-};
 pub use state::TuiSessionState;
 pub use store::{
     escape_sql_like, generate_slug, EventStore, MessageStore, PartStore, PermissionStore,
     SessionStore, TodoStore, UsageStore,
-};
-pub use checkpoint::{
-    CheckpointStore, compute_checksum, create_working_file, verify_file,
 };
 
 const SESSION_COLUMNS: &str = r#"id, project_id, workspace_id, parent_id, slug, directory,

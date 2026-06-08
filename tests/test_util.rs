@@ -45,10 +45,7 @@ pub fn make_skill_content(name: &str, description: &str, body: &str) -> String {
     )
 }
 
-pub async fn wait_for_async<T>(
-    mut check: impl FnMut() -> Option<T>,
-    timeout_secs: u64,
-) -> T {
+pub async fn wait_for_async<T>(mut check: impl FnMut() -> Option<T>, timeout_secs: u64) -> T {
     use std::future::Future;
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);

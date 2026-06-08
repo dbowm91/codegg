@@ -14,9 +14,9 @@
 //! - `ContextTracker` - monitors token usage for compaction
 
 use crate::agent::compaction::{
-    auto_compact_async, compact_messages_sync, detect_overflow, prune_tool_outputs,
-    CompactionStrategy, ContextTracker,
-    compact_with_policy, CompactionInput, ResolvedCompactionConfig,
+    auto_compact_async, compact_messages_sync, compact_with_policy, detect_overflow,
+    prune_tool_outputs, CompactionInput, CompactionStrategy, ContextTracker,
+    ResolvedCompactionConfig,
 };
 use crate::agent::processor::EventProcessor;
 use crate::agent::router::ModelRouter;
@@ -803,18 +803,44 @@ impl AgentLoop {
         let filtered = match policy.initial_tool_mode {
             crate::agent::policy::ToolExposureMode::Full => definitions,
             crate::agent::policy::ToolExposureMode::Curated => {
-                let core_tools = ["read", "list", "grep", "glob", "codesearch", "edit",
-                    "apply_patch", "bash", "git", "diff", "todoread", "todowrite",
-                    "question", "tool_search", "skill", "websearch"];
+                let core_tools = [
+                    "read",
+                    "list",
+                    "grep",
+                    "glob",
+                    "codesearch",
+                    "edit",
+                    "apply_patch",
+                    "bash",
+                    "git",
+                    "diff",
+                    "todoread",
+                    "todowrite",
+                    "question",
+                    "tool_search",
+                    "skill",
+                    "websearch",
+                ];
                 definitions
                     .into_iter()
                     .filter(|t| core_tools.contains(&t.name.as_str()))
                     .collect()
             }
             crate::agent::policy::ToolExposureMode::MinimalWithDiscovery => {
-                let minimal_tools = ["read", "list", "grep", "codesearch", "edit",
-                    "apply_patch", "bash", "question", "todowrite", "todoread",
-                    "tool_search", "websearch"];
+                let minimal_tools = [
+                    "read",
+                    "list",
+                    "grep",
+                    "codesearch",
+                    "edit",
+                    "apply_patch",
+                    "bash",
+                    "question",
+                    "todowrite",
+                    "todoread",
+                    "tool_search",
+                    "websearch",
+                ];
                 definitions
                     .into_iter()
                     .filter(|t| minimal_tools.contains(&t.name.as_str()))
@@ -900,13 +926,18 @@ impl AgentLoop {
 
         let todo_pool = pool.clone();
 
-        let usage_store = pool.clone().map(|p| Arc::new(crate::session::UsageStore::new(p)));
+        let usage_store = pool
+            .clone()
+            .map(|p| Arc::new(crate::session::UsageStore::new(p)));
         let pricing_service = crate::util::pricing::PricingService::new();
         let security_service =
             crate::security::service::SecurityService::new(config.security.as_ref());
 
         let mut tool_registry = tool_registry;
-        if let Some(ref deferred) = config.catalog.as_ref().and_then(|c| c.deferred_tools.as_ref())
+        if let Some(ref deferred) = config
+            .catalog
+            .as_ref()
+            .and_then(|c| c.deferred_tools.as_ref())
         {
             tool_registry.register_deferred_names(deferred);
         }
@@ -964,7 +995,9 @@ impl AgentLoop {
             pricing_service,
             security_service,
             recent_findings: Vec::new(),
-            todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new())),
+            todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::task_state::TodoState::new(),
+            )),
             task_state_policy: crate::model_profile::types::TaskStatePolicy::explicit_todo(),
             todo_pool: todo_pool.clone(),
             event_store: pool
@@ -1124,9 +1157,9 @@ impl AgentLoop {
 
     pub fn set_execution_policy(&mut self, policy: crate::agent::policy::ExecutionPolicy) {
         self.context_tracker.set_limit(policy.context_window);
-        self.context_tracker.set_threshold(policy.compaction_threshold);
         self.context_tracker
-            .set_model(Some(policy.model.clone()));
+            .set_threshold(policy.compaction_threshold);
+        self.context_tracker.set_model(Some(policy.model.clone()));
         self.execution_policy = Some(policy);
     }
 
@@ -1174,12 +1207,7 @@ impl AgentLoop {
             min_confidence: f64::from(trigger_cfg.min_confidence),
             ..Default::default()
         };
-        let analysis = crate::research::triggers::analyze_trigger(
-            user_prompt,
-            &[],
-            &[],
-            &trigger,
-        );
+        let analysis = crate::research::triggers::analyze_trigger(user_prompt, &[], &[], &trigger);
         if !analysis.should_invoke {
             return None;
         }
@@ -1257,7 +1285,10 @@ impl AgentLoop {
         }
     }
 
-    async fn stream_with_retry(&mut self, request: &ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
+    async fn stream_with_retry(
+        &mut self,
+        request: &ChatRequest,
+    ) -> Result<Vec<ChatEvent>, AppError> {
         const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
         let max_retries = 3;
         let mut delay = Duration::from_secs(1);
@@ -1411,16 +1442,14 @@ impl AgentLoop {
                     Some(usage.input_tokens),
                     Some(usage.output_tokens),
                     usage.cached_tokens,
-                    if usage.reasoning_tokens > 0 { Some(usage.reasoning_tokens) } else { None },
+                    if usage.reasoning_tokens > 0 {
+                        Some(usage.reasoning_tokens)
+                    } else {
+                        None
+                    },
                 )
             } else {
-                (
-                    "completed".to_string(),
-                    None,
-                    None,
-                    None,
-                    None,
-                )
+                ("completed".to_string(), None, None, None, None)
             };
 
         crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
@@ -1514,8 +1543,7 @@ impl AgentLoop {
                 if let Some(prompt) = decision.prompt {
                     // Final wrap-up prompt (e.g. budget-limited).
                     let _ = self.follow_up_tx.send(prompt);
-                    self.drain_follow_up(request, all_events, processor)
-                        .await;
+                    self.drain_follow_up(request, all_events, processor).await;
                 }
                 return;
             }
@@ -1533,8 +1561,7 @@ impl AgentLoop {
             self.state.last_turn_input_tokens = 0;
             self.state.last_turn_output_tokens = 0;
             let _ = self.follow_up_tx.send(prompt);
-            self.drain_follow_up(request, all_events, processor)
-                .await;
+            self.drain_follow_up(request, all_events, processor).await;
             // After the continuation turn finishes, account for it
             // before deciding whether to continue again.
             // We can't call `account_goal_for_turn` here directly
@@ -1543,9 +1570,7 @@ impl AgentLoop {
             // accounting using a clone of the wall-clock state.
             self.account_goal_for_turn().await;
         }
-        tracing::warn!(
-            "goal continuation hit MAX_CONTINUATIONS={MAX_CONTINUATIONS}, halting"
-        );
+        tracing::warn!("goal continuation hit MAX_CONTINUATIONS={MAX_CONTINUATIONS}, halting");
     }
 
     fn check_limits(&self) -> Option<String> {
@@ -1602,7 +1627,11 @@ impl AgentLoop {
         }
     }
 
-    fn apply_model_profile_defaults(&self, request: &mut ChatRequest, profile: &crate::model_profile::types::ResolvedModelProfile) {
+    fn apply_model_profile_defaults(
+        &self,
+        request: &mut ChatRequest,
+        profile: &crate::model_profile::types::ResolvedModelProfile,
+    ) {
         if request.reasoning_effort.is_none() {
             request.reasoning_effort = profile.default_reasoning_effort.clone();
         }
@@ -1721,8 +1750,8 @@ impl AgentLoop {
 
         // Set defer_loading on MCP tools based on the catalog
         let catalog = self.tool_registry.catalog();
-        let expose_raw_eggsearch = crate::search_backend::state::search_config()
-            .expose_raw_mcp_tools();
+        let expose_raw_eggsearch =
+            crate::search_backend::state::search_config().expose_raw_mcp_tools();
         let eggsearch_server = crate::search_backend::state::search_config()
             .eggsearch
             .as_ref()
@@ -1859,8 +1888,7 @@ impl AgentLoop {
 
             for def in all_definitions {
                 let is_always_loaded = always_loaded.iter().any(|n| n == &def.name);
-                let should_defer = !is_always_loaded
-                    && def.defer_loading == Some(true);
+                let should_defer = !is_always_loaded && def.defer_loading == Some(true);
 
                 if should_defer {
                     deferred_tools.push(def);
@@ -1943,7 +1971,11 @@ impl AgentLoop {
         result
     }
 
-    async fn compact_if_needed(&mut self, messages: &mut Vec<Message>, model_profile: &crate::model_profile::types::ResolvedModelProfile) {
+    async fn compact_if_needed(
+        &mut self,
+        messages: &mut Vec<Message>,
+        model_profile: &crate::model_profile::types::ResolvedModelProfile,
+    ) {
         let auto = self
             .config
             .compaction
@@ -2035,7 +2067,9 @@ impl AgentLoop {
             }
 
             // Check if new hybrid engine should be used
-            let has_new_config = self.config.compaction
+            let has_new_config = self
+                .config
+                .compaction
                 .as_ref()
                 .map(|c| c.mode.is_some())
                 .unwrap_or(false);
@@ -2043,13 +2077,17 @@ impl AgentLoop {
             if has_new_config && auto {
                 // Use new hybrid engine
                 let active_model = Some(model_profile.model.as_str());
-                let resolved_config = self.config.compaction
+                let resolved_config = self
+                    .config
+                    .compaction
                     .as_ref()
-                    .map(|c| ResolvedCompactionConfig::from_config(
-                        c,
-                        self.context_tracker.context_limit(),
-                        active_model,
-                    ))
+                    .map(|c| {
+                        ResolvedCompactionConfig::from_config(
+                            c,
+                            self.context_tracker.context_limit(),
+                            active_model,
+                        )
+                    })
                     .unwrap_or_default();
 
                 let input = CompactionInput {
@@ -2071,9 +2109,20 @@ impl AgentLoop {
                         tracing::error!("Hybrid compaction failed: {}, using legacy", err);
                         let limit = self.context_tracker.context_limit();
                         let threshold = self.context_tracker.threshold();
-                        let model = self.config.compaction.as_ref()
+                        let model = self
+                            .config
+                            .compaction
+                            .as_ref()
                             .and_then(|c| c.summarize_model.as_deref());
-                        let compacted = auto_compact_async(messages, limit, threshold, prune, Some(self.provider.as_ref()), model).await;
+                        let compacted = auto_compact_async(
+                            messages,
+                            limit,
+                            threshold,
+                            prune,
+                            Some(self.provider.as_ref()),
+                            model,
+                        )
+                        .await;
                         *messages = compacted;
                     }
                 }
@@ -2098,8 +2147,10 @@ impl AgentLoop {
                     .await;
                     *messages = compacted;
                 } else {
-                    *messages =
-                        compact_messages_sync(messages.clone(), CompactionStrategy::DropMiddleMessages);
+                    *messages = compact_messages_sync(
+                        messages.clone(),
+                        CompactionStrategy::DropMiddleMessages,
+                    );
                 }
             }
 
@@ -2117,7 +2168,10 @@ impl AgentLoop {
                 let frame = self.build_context_frame().await;
                 if !frame.is_empty() {
                     let frame_text = frame.to_control_text();
-                    tracing::debug!("Inserting context frame after compaction: {} chars", frame_text.len());
+                    tracing::debug!(
+                        "Inserting context frame after compaction: {} chars",
+                        frame_text.len()
+                    );
                     push_control_instruction(messages, &model_profile, &frame_text);
                 }
             }
@@ -2125,7 +2179,9 @@ impl AgentLoop {
             if self.task_state_policy.inject_after_compaction {
                 let mut todo = self.todo_state.lock().await;
                 if !todo.is_all_done() {
-                    if let Some(reminder) = crate::task_state::build_todo_reminder(&todo, &self.task_state_policy) {
+                    if let Some(reminder) =
+                        crate::task_state::build_todo_reminder(&todo, &self.task_state_policy)
+                    {
                         push_control_instruction(messages, &model_profile, &reminder);
                         todo.reminder_pending = false;
                         todo.tool_calls_since_injection = 0;
@@ -2168,7 +2224,8 @@ impl AgentLoop {
         let model_profile =
             crate::model_profile::ModelProfileResolver::new(&self.config).resolve(&request.model);
 
-        let exec_policy = crate::agent::policy::ExecutionPolicy::from_profile(&model_profile, &self.config);
+        let exec_policy =
+            crate::agent::policy::ExecutionPolicy::from_profile(&model_profile, &self.config);
         self.set_execution_policy(exec_policy.clone());
         self.apply_model_profile_defaults(&mut request, &model_profile);
         tracing::debug!(
@@ -2258,10 +2315,7 @@ impl AgentLoop {
                     let old = std::mem::replace(content, Vec::new());
                     new_parts.extend(old);
                     *content = new_parts;
-                    tracing::debug!(
-                        "Injected research trigger hint for mode: {}",
-                        hint
-                    );
+                    tracing::debug!("Injected research trigger hint for mode: {}", hint);
                 }
             }
         }
@@ -2335,26 +2389,28 @@ impl AgentLoop {
             // Inject todo reminder if needed
             {
                 let mut todo = self.todo_state.lock().await;
-                let should_inject = (self.task_state_policy.inject_on_resume && self.state.turn_count == 1)
+                let should_inject = (self.task_state_policy.inject_on_resume
+                    && self.state.turn_count == 1)
                     || todo.reminder_pending
-                    || (self.task_state_policy.inject_after_tool_calls
+                    || (self
+                        .task_state_policy
+                        .inject_after_tool_calls
                         .map_or(false, |threshold| {
                             todo.tool_calls_since_injection >= threshold
                         }));
                 if should_inject {
-                    if let Some(reminder) = crate::task_state::build_todo_reminder(&todo, &self.task_state_policy) {
-                        push_control_instruction(
-                            &mut request.messages,
-                            &model_profile,
-                            &reminder,
-                        );
+                    if let Some(reminder) =
+                        crate::task_state::build_todo_reminder(&todo, &self.task_state_policy)
+                    {
+                        push_control_instruction(&mut request.messages, &model_profile, &reminder);
                         todo.reminder_pending = false;
                         todo.tool_calls_since_injection = 0;
                     }
                 }
             }
 
-            self.compact_if_needed(&mut request.messages, &model_profile).await;
+            self.compact_if_needed(&mut request.messages, &model_profile)
+                .await;
             harden_history(&mut request.messages);
 
             let events = match self.stream_with_retry(&request).await {
@@ -2401,8 +2457,8 @@ impl AgentLoop {
                     .map_or(true, |p| p.allow_bootstrap_tool);
                 let stop_is_soft_or_confused = is_soft_stop_reason(processor.stop_reason())
                     || matches!(processor.stop_reason(), Some("tool_calls"));
-                let model_stuck_narrating = indicates_more_work(processor.text())
-                    && processor.text().trim().len() >= 10;
+                let model_stuck_narrating =
+                    indicates_more_work(processor.text()) && processor.text().trim().len() >= 10;
                 if bootstrap_allowed
                     && (!did_bootstrap_tool
                         || (model_stuck_narrating && bootstrap_repeat_budget < 2))
@@ -2582,11 +2638,7 @@ impl AgentLoop {
                     .cloned()
                     .collect();
                 if !high_risk_findings.is_empty() || !sensitive_edits.is_empty() {
-                    self.maybe_spawn_security_review(
-                        &high_risk_findings,
-                        &sensitive_edits,
-                        false,
-                    );
+                    self.maybe_spawn_security_review(&high_risk_findings, &sensitive_edits, false);
                 }
             }
 
@@ -2672,7 +2724,8 @@ impl AgentLoop {
             }
 
             // Compact after tool results to prevent context overflow from large outputs
-            self.compact_if_needed(&mut request.messages, &model_profile).await;
+            self.compact_if_needed(&mut request.messages, &model_profile)
+                .await;
 
             processor.reset();
 
@@ -3251,21 +3304,26 @@ impl AgentLoop {
 
                     // Emit test run events for test commands
                     if *tool_name == *"bash" {
-                        if let Some(cmd) = tc_arc.arguments.get("command").and_then(|v| v.as_str()) {
+                        if let Some(cmd) = tc_arc.arguments.get("command").and_then(|v| v.as_str())
+                        {
                             if is_test_command(cmd) {
                                 let test_meta = crate::session::events::EventMeta::new(&session_id);
-                                let start_event = crate::session::events::SessionEvent::TestRunStarted(
-                                    crate::session::events::TestRunStartedEvent {
-                                        meta: test_meta,
-                                        command: cmd.to_string(),
-                                    },
-                                );
+                                let start_event =
+                                    crate::session::events::SessionEvent::TestRunStarted(
+                                        crate::session::events::TestRunStartedEvent {
+                                            meta: test_meta,
+                                            command: cmd.to_string(),
+                                        },
+                                    );
                                 if let Some(ref store) = event_store {
                                     let store = Arc::clone(store);
                                     let ev = start_event;
                                     tokio::spawn(async move {
                                         if let Err(e) = store.append(&ev).await {
-                                            tracing::warn!("Failed to store TestRunStarted event: {}", e);
+                                            tracing::warn!(
+                                                "Failed to store TestRunStarted event: {}",
+                                                e
+                                            );
                                         }
                                     });
                                 }
@@ -3282,22 +3340,27 @@ impl AgentLoop {
                                     };
                                     format!("failed: {}", preview)
                                 };
-                                let finish_meta = crate::session::events::EventMeta::new(&session_id);
-                                let finish_event = crate::session::events::SessionEvent::TestRunFinished(
-                                    crate::session::events::TestRunFinishedEvent {
-                                        meta: finish_meta,
-                                        command: cmd.to_string(),
-                                        passed,
-                                        duration_ms: Some(duration_ms),
-                                        summary,
-                                    },
-                                );
+                                let finish_meta =
+                                    crate::session::events::EventMeta::new(&session_id);
+                                let finish_event =
+                                    crate::session::events::SessionEvent::TestRunFinished(
+                                        crate::session::events::TestRunFinishedEvent {
+                                            meta: finish_meta,
+                                            command: cmd.to_string(),
+                                            passed,
+                                            duration_ms: Some(duration_ms),
+                                            summary,
+                                        },
+                                    );
                                 if let Some(ref store) = event_store {
                                     let store = Arc::clone(store);
                                     let ev = finish_event;
                                     tokio::spawn(async move {
                                         if let Err(e) = store.append(&ev).await {
-                                            tracing::warn!("Failed to store TestRunFinished event: {}", e);
+                                            tracing::warn!(
+                                                "Failed to store TestRunFinished event: {}",
+                                                e
+                                            );
                                         }
                                     });
                                 }
@@ -3317,7 +3380,9 @@ impl AgentLoop {
         let max_tool_result_bytes = self
             .execution_policy
             .as_ref()
-            .map_or(MAX_TOOL_RESULT_BYTES_FALLBACK, |p| p.max_tool_result_tokens * 4);
+            .map_or(MAX_TOOL_RESULT_BYTES_FALLBACK, |p| {
+                p.max_tool_result_tokens * 4
+            });
         for (idx, id, result) in results {
             let output = match result {
                 Ok(output) => output,
@@ -3456,7 +3521,8 @@ impl AgentLoop {
             let mut just_executed_tools = false;
             let mut narration_retry_budget: u8 = 0;
             loop {
-                self.compact_if_needed(&mut request.messages, &model_profile).await;
+                self.compact_if_needed(&mut request.messages, &model_profile)
+                    .await;
                 harden_history(&mut request.messages);
 
                 let events = match self.stream_with_retry(request).await {
@@ -3993,9 +4059,8 @@ mod tests {
         use crate::tool::Tool;
         // Use session defaults (not just with_defaults) so todoread is
         // present. The main agent's tool registry is built this way.
-        let todo_state = std::sync::Arc::new(tokio::sync::Mutex::new(
-            crate::task_state::TodoState::new(),
-        ));
+        let todo_state =
+            std::sync::Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
         let registry = crate::tool::ToolRegistry::with_session_defaults(
             todo_state,
             TaskStatePolicy::explicit_todo(),
@@ -4011,20 +4076,31 @@ mod tests {
         };
 
         // Plan mode: should include todo tools and bash.
-        let plan_tools =
-            filter_tools_for_model(None, &tools, true, true, &flags);
+        let plan_tools = filter_tools_for_model(None, &tools, true, true, &flags);
         let plan_names: Vec<&str> = plan_tools.iter().map(|t| t.name()).collect();
-        assert!(plan_names.contains(&"todoread"), "plan mode must include todoread");
-        assert!(plan_names.contains(&"todowrite"), "plan mode must include todowrite");
+        assert!(
+            plan_names.contains(&"todoread"),
+            "plan mode must include todoread"
+        );
+        assert!(
+            plan_names.contains(&"todowrite"),
+            "plan mode must include todowrite"
+        );
         assert!(plan_names.contains(&"bash"), "plan mode must include bash");
         assert!(plan_names.contains(&"read"), "plan mode must include read");
 
         // Plan mode: should NOT include mutating tools.
         assert!(!plan_names.contains(&"edit"), "plan mode must hide edit");
         assert!(!plan_names.contains(&"write"), "plan mode must hide write");
-        assert!(!plan_names.contains(&"apply_patch"), "plan mode must hide apply_patch");
+        assert!(
+            !plan_names.contains(&"apply_patch"),
+            "plan mode must hide apply_patch"
+        );
         assert!(!plan_names.contains(&"task"), "plan mode must hide task");
-        assert!(!plan_names.contains(&"commit"), "plan mode must hide commit");
+        assert!(
+            !plan_names.contains(&"commit"),
+            "plan mode must hide commit"
+        );
     }
 
     #[test]
@@ -4040,12 +4116,35 @@ mod tests {
         };
 
         // Normal mode: should include the full tool set.
-        let normal_tools =
-            filter_tools_for_model(None, &tools, false, true, &flags);
+        let normal_tools = filter_tools_for_model(None, &tools, false, true, &flags);
         let normal_names: Vec<&str> = normal_tools.iter().map(|t| t.name()).collect();
-        assert!(normal_names.contains(&"bash"), "normal mode must include bash");
-        assert!(normal_names.contains(&"edit"), "normal mode must include edit");
-        assert!(normal_names.contains(&"write"), "normal mode must include write");
-        assert!(normal_names.contains(&"todowrite"), "normal mode must include todowrite");
+        assert!(
+            normal_names.contains(&"bash"),
+            "normal mode must include bash"
+        );
+        assert!(
+            normal_names.contains(&"edit"),
+            "normal mode must include edit"
+        );
+        assert!(
+            normal_names.contains(&"write"),
+            "normal mode must include write"
+        );
+        assert!(
+            normal_names.contains(&"todowrite"),
+            "normal mode must include todowrite"
+        );
+    }
+}
+
+/// Test-only: expose `build_tool_definitions` so integration tests can
+/// assert the actual tool set the agent sends to the model.
+///
+/// **Not** intended for production use.
+#[doc(hidden)]
+impl AgentLoop {
+    #[doc(hidden)]
+    pub async fn test_build_tool_definitions(&mut self) -> Vec<crate::provider::ToolDefinition> {
+        self.build_tool_definitions().await
     }
 }

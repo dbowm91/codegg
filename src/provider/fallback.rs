@@ -210,7 +210,7 @@ mod tests {
             vec![429, 500, 502, 503, 504],
         );
 
-let request = ChatRequest {
+        let request = ChatRequest {
             messages: vec![],
             model: "test".to_string(),
             tools: None,

@@ -9,9 +9,9 @@ pub mod compaction;
 pub mod context_frame;
 pub mod r#loop;
 pub mod mention;
+pub mod policy;
 pub mod processor;
 pub mod prompt;
-pub mod policy;
 pub mod router;
 pub mod task;
 pub mod team;
@@ -865,9 +865,18 @@ mod tests {
         assert!(!research.hidden);
         assert_eq!(research.role.as_deref(), Some("researcher"));
         // Network + research tools allowed; mutating tools ask; image denied.
-        assert_eq!(research.permissions.get("websearch"), Some(&"allow".to_string()));
-        assert_eq!(research.permissions.get("webfetch"), Some(&"allow".to_string()));
-        assert_eq!(research.permissions.get("research"), Some(&"allow".to_string()));
+        assert_eq!(
+            research.permissions.get("websearch"),
+            Some(&"allow".to_string())
+        );
+        assert_eq!(
+            research.permissions.get("webfetch"),
+            Some(&"allow".to_string())
+        );
+        assert_eq!(
+            research.permissions.get("research"),
+            Some(&"allow".to_string())
+        );
         assert_eq!(research.permissions.get("edit"), Some(&"ask".to_string()));
         assert_eq!(research.permissions.get("image"), Some(&"deny".to_string()));
     }
@@ -886,9 +895,18 @@ mod tests {
             "plan_exit".to_string(),
         ];
         registry.filter_out(&blocked);
-        assert!(registry.get("websearch").is_some(), "subagent must have websearch");
-        assert!(registry.get("research").is_some(), "subagent must have research tool");
-        assert!(registry.get("webfetch").is_some(), "subagent must have webfetch");
+        assert!(
+            registry.get("websearch").is_some(),
+            "subagent must have websearch"
+        );
+        assert!(
+            registry.get("research").is_some(),
+            "subagent must have research tool"
+        );
+        assert!(
+            registry.get("webfetch").is_some(),
+            "subagent must have webfetch"
+        );
     }
 
     #[test]

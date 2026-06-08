@@ -114,7 +114,10 @@ impl SearchProvider for ExaProvider {
             url: String,
             text: Option<String>,
         }
-        let r: R = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: R = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         Ok(r.results
             .into_iter()
             .map(|x| SearchHit {
@@ -196,7 +199,10 @@ impl SearchProvider for TavilyProvider {
             url: String,
             content: String,
         }
-        let r: R = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: R = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         Ok(r.results
             .into_iter()
             .map(|x| SearchHit {
@@ -278,7 +284,10 @@ impl SearchProvider for BraveProvider {
             url: String,
             description: String,
         }
-        let r: R = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: R = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         Ok(r.web
             .results
             .into_iter()
@@ -357,7 +366,10 @@ impl SearchProvider for SerpApiProvider {
             link: String,
             snippet: String,
         }
-        let r: R = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: R = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         Ok(r.organic_results
             .unwrap_or_default()
             .into_iter()
@@ -432,7 +444,10 @@ impl SearchProvider for KagiProvider {
             url: String,
             snippet: String,
         }
-        let r: R = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: R = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         Ok(r.data
             .into_iter()
             .take(num_results)

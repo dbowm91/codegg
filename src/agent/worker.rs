@@ -718,13 +718,24 @@ async fn execute_agent_task(
     let permission_checker =
         PermissionChecker::new(Some(&config), None).with_agent_rules(agent_rules);
 
+    // Bootstraps the search backend (eggsearch by default) before the agent
+    // loop starts. The bootstrap is idempotent: if the parent process has
+    // already populated the global `McpService` slot, this returns the
+    // existing service without spawning a new eggsearch connection. If the
+    // subagent is spawned in a context where no parent has bootstrapped,
+    // this gives the subagent a chance to set up its own service. If the
+    // backend is `disabled`, this returns `None` and the loop runs without
+    // MCP tools.
+    let (mcp_service, _report) =
+        crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
+
     let mut agent_loop = AgentLoop::new(
         agents.iter().cloned().collect(),
         provider,
         permission_checker,
         tool_registry,
         (*config).clone(),
-        None,
+        mcp_service,
         pool,
     );
 

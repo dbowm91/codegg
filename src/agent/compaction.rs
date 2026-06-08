@@ -320,7 +320,9 @@ pub async fn compact_messages_async(
 
     let compacted = match strategy {
         CompactionStrategy::TruncateToolOutputs => truncate_tool_outputs(non_system),
-        CompactionStrategy::SummarizeOldTurns => summarize_old_turns(non_system, provider, model).await,
+        CompactionStrategy::SummarizeOldTurns => {
+            summarize_old_turns(non_system, provider, model).await
+        }
         CompactionStrategy::DropMiddleMessages => drop_middle_messages(non_system),
     };
 
@@ -352,7 +354,11 @@ fn truncate_tool_outputs(messages: Vec<Message>) -> Vec<Message> {
         .collect()
 }
 
-async fn summarize_old_turns(messages: Vec<Message>, provider: &dyn Provider, model: &str) -> Vec<Message> {
+async fn summarize_old_turns(
+    messages: Vec<Message>,
+    provider: &dyn Provider,
+    model: &str,
+) -> Vec<Message> {
     if messages.len() <= 6 {
         return messages;
     }
@@ -467,9 +473,7 @@ pub async fn llm_summarize(
     )
     .await
     .map_err(|_| {
-        crate::error::AppError::Provider(
-            "Compaction LLM call timed out after 120s".into(),
-        )
+        crate::error::AppError::Provider("Compaction LLM call timed out after 120s".into())
     })??;
     let mut summary = String::new();
     let mut stream = events;
@@ -811,22 +815,30 @@ impl ResolvedCompactionConfig {
     ) -> Self {
         use crate::config::schema::{CompactionModeConfig, CompactionPolicyConfig};
 
-        let mode = config.mode.map(|m| match m {
-            CompactionModeConfig::Programmatic => CompactionMode::Programmatic,
-            CompactionModeConfig::Agent => CompactionMode::Agent,
-            CompactionModeConfig::Hybrid => CompactionMode::Hybrid,
-        }).unwrap_or(CompactionMode::Hybrid);
+        let mode = config
+            .mode
+            .map(|m| match m {
+                CompactionModeConfig::Programmatic => CompactionMode::Programmatic,
+                CompactionModeConfig::Agent => CompactionMode::Agent,
+                CompactionModeConfig::Hybrid => CompactionMode::Hybrid,
+            })
+            .unwrap_or(CompactionMode::Hybrid);
 
-        let policy = config.policy.map(|p| match p {
-            CompactionPolicyConfig::Conservative => CompactionPolicy::Conservative,
-            CompactionPolicyConfig::Balanced => CompactionPolicy::Balanced,
-            CompactionPolicyConfig::Cheap => CompactionPolicy::Cheap,
-            CompactionPolicyConfig::Emergency => CompactionPolicy::Emergency,
-            CompactionPolicyConfig::LosslessDebug => CompactionPolicy::LosslessDebug,
-        }).unwrap_or(CompactionPolicy::Balanced);
+        let policy = config
+            .policy
+            .map(|p| match p {
+                CompactionPolicyConfig::Conservative => CompactionPolicy::Conservative,
+                CompactionPolicyConfig::Balanced => CompactionPolicy::Balanced,
+                CompactionPolicyConfig::Cheap => CompactionPolicy::Cheap,
+                CompactionPolicyConfig::Emergency => CompactionPolicy::Emergency,
+                CompactionPolicyConfig::LosslessDebug => CompactionPolicy::LosslessDebug,
+            })
+            .unwrap_or(CompactionPolicy::Balanced);
 
         // Model resolution: compaction.model -> summarize_model -> active_model
-        let compaction_model = config.model.clone()
+        let compaction_model = config
+            .model
+            .clone()
             .or_else(|| config.summarize_model.clone())
             .or_else(|| active_model.map(|s| s.to_string()));
 
@@ -842,10 +854,16 @@ impl ResolvedCompactionConfig {
             context_limit,
             threshold,
             reserved_tokens,
-            max_tool_output_tokens: config.max_tool_output_tokens.unwrap_or(policy.max_tool_output_tokens()),
-            max_summary_tokens: config.max_summary_tokens.unwrap_or(policy.max_summary_tokens()),
+            max_tool_output_tokens: config
+                .max_tool_output_tokens
+                .unwrap_or(policy.max_tool_output_tokens()),
+            max_summary_tokens: config
+                .max_summary_tokens
+                .unwrap_or(policy.max_summary_tokens()),
             max_events: config.max_events.unwrap_or(50),
-            keep_recent_messages: config.keep_recent_messages.unwrap_or(policy.keep_recent_messages()),
+            keep_recent_messages: config
+                .keep_recent_messages
+                .unwrap_or(policy.keep_recent_messages()),
             validate: config.validate.unwrap_or(true),
             preserve_evidence: config.preserve_evidence.unwrap_or(true),
             inject_context_frame: config.inject_context_frame.unwrap_or(true),
@@ -1090,14 +1108,14 @@ pub async fn semantic_checkpoint(
         reasoning_effort: None,
     };
 
-    let events =
-        tokio::time::timeout(std::time::Duration::from_secs(60), provider.stream(&request))
-            .await
-            .map_err(|_| {
-                crate::error::AppError::Provider(
-                    "Semantic checkpoint LLM call timed out after 60s".into(),
-                )
-            })??;
+    let events = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        provider.stream(&request),
+    )
+    .await
+    .map_err(|_| {
+        crate::error::AppError::Provider("Semantic checkpoint LLM call timed out after 60s".into())
+    })??;
 
     let mut response_text = String::new();
     let mut stream = events;
@@ -1217,7 +1235,8 @@ pub struct ToolPair<'a> {
 
 pub fn collect_tool_pairs(messages: &[Message]) -> Vec<ToolPair<'_>> {
     let mut pairs: Vec<ToolPair<'_>> = Vec::new();
-    let mut id_to_pair_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut id_to_pair_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     for (idx, msg) in messages.iter().enumerate() {
         match msg {
@@ -1235,7 +1254,10 @@ pub fn collect_tool_pairs(messages: &[Message]) -> Vec<ToolPair<'_>> {
                     id_to_pair_index.insert(tc.id.to_string(), pair_index);
                 }
             }
-            Message::Tool { tool_call_id, content } => {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => {
                 if let Some(&pair_index) = id_to_pair_index.get(tool_call_id.as_ref()) {
                     pairs[pair_index].tool_index = Some(idx);
                     pairs[pair_index].result = Some(content.as_str());
@@ -1259,17 +1281,35 @@ pub fn collect_tool_pairs(messages: &[Message]) -> Vec<ToolPair<'_>> {
 
 #[derive(Debug, Clone)]
 pub enum CompactionInvariantError {
-    OrphanToolResult { tool_call_id: String, message_index: usize },
-    MissingToolResult { tool_call_id: String, assistant_index: usize },
+    OrphanToolResult {
+        tool_call_id: String,
+        message_index: usize,
+    },
+    MissingToolResult {
+        tool_call_id: String,
+        assistant_index: usize,
+    },
 }
 
 impl std::fmt::Display for CompactionInvariantError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::OrphanToolResult { tool_call_id, message_index } =>
-                write!(f, "Orphan tool result at index {}: tool_call_id '{}' has no matching assistant", message_index, tool_call_id),
-            Self::MissingToolResult { tool_call_id, assistant_index } =>
-                write!(f, "Missing tool result for assistant at index {}: tool_call_id '{}'", assistant_index, tool_call_id),
+            Self::OrphanToolResult {
+                tool_call_id,
+                message_index,
+            } => write!(
+                f,
+                "Orphan tool result at index {}: tool_call_id '{}' has no matching assistant",
+                message_index, tool_call_id
+            ),
+            Self::MissingToolResult {
+                tool_call_id,
+                assistant_index,
+            } => write!(
+                f,
+                "Missing tool result for assistant at index {}: tool_call_id '{}'",
+                assistant_index, tool_call_id
+            ),
         }
     }
 }
@@ -1277,20 +1317,25 @@ impl std::fmt::Display for CompactionInvariantError {
 impl std::error::Error for CompactionInvariantError {}
 
 pub fn validate_message_invariants(messages: &[Message]) -> Result<(), CompactionInvariantError> {
-    let tool_result_ids: std::collections::HashSet<String> = messages.iter().filter_map(|m| {
-        if let Message::Tool { tool_call_id, .. } = m {
-            Some(tool_call_id.to_string())
-        } else {
-            None
-        }
-    }).collect();
+    let tool_result_ids: std::collections::HashSet<String> = messages
+        .iter()
+        .filter_map(|m| {
+            if let Message::Tool { tool_call_id, .. } = m {
+                Some(tool_call_id.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     for (idx, msg) in messages.iter().enumerate() {
         match msg {
             Message::Tool { tool_call_id, .. } => {
                 let has_matching_assistant = messages.iter().take(idx).any(|m| {
                     if let Message::Assistant { tool_calls, .. } = m {
-                        tool_calls.iter().any(|tc| tc.id.as_ref() == tool_call_id.as_ref())
+                        tool_calls
+                            .iter()
+                            .any(|tc| tc.id.as_ref() == tool_call_id.as_ref())
                     } else {
                         false
                     }
@@ -1303,7 +1348,8 @@ pub fn validate_message_invariants(messages: &[Message]) -> Result<(), Compactio
                 }
             }
             Message::Assistant { tool_calls, .. } => {
-                let all_tool_call_ids: Vec<String> = tool_calls.iter().map(|tc| tc.id.to_string()).collect();
+                let all_tool_call_ids: Vec<String> =
+                    tool_calls.iter().map(|tc| tc.id.to_string()).collect();
 
                 if !all_tool_call_ids.is_empty() {
                     for tc_id in &all_tool_call_ids {
@@ -1332,7 +1378,8 @@ pub fn emergency_pair_safe_compaction(
     }
 
     let groups = build_message_groups(messages);
-    let non_system_groups: Vec<&MessageGroup> = groups.iter()
+    let non_system_groups: Vec<&MessageGroup> = groups
+        .iter()
         .filter(|g| !matches!(g, MessageGroup::System { .. }))
         .collect();
 
@@ -1340,7 +1387,10 @@ pub fn emergency_pair_safe_compaction(
 
     let mut result_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-    for group in groups.iter().filter(|g| matches!(g, MessageGroup::System { .. })) {
+    for group in groups
+        .iter()
+        .filter(|g| matches!(g, MessageGroup::System { .. }))
+    {
         for &idx in group.indices() {
             result_indices.insert(idx);
         }
@@ -1357,14 +1407,24 @@ pub fn emergency_pair_safe_compaction(
         }
     }
 
-    let mut result: Vec<Message> = messages.iter().enumerate()
+    let mut result: Vec<Message> = messages
+        .iter()
+        .enumerate()
         .filter(|(i, _)| result_indices.contains(i))
         .map(|(_, m)| m.clone())
         .collect();
 
     let marker = "[Emergency compaction applied. Tool-call/result pairs preserved.]".to_string();
-    let insert_pos = result.iter().position(|m| !matches!(m, Message::System { .. })).unwrap_or(result.len());
-    result.insert(insert_pos, Message::System { content: marker.into() });
+    let insert_pos = result
+        .iter()
+        .position(|m| !matches!(m, Message::System { .. }))
+        .unwrap_or(result.len());
+    result.insert(
+        insert_pos,
+        Message::System {
+            content: marker.into(),
+        },
+    );
 
     result
 }
@@ -1439,13 +1499,21 @@ pub fn build_evidence_index(messages: &[Message]) -> Vec<EvidenceRef> {
                     msg_counter += 1;
                 }
             }
-            Message::Assistant { content, tool_calls, .. } => {
+            Message::Assistant {
+                content,
+                tool_calls,
+                ..
+            } => {
                 if !tool_calls.is_empty() {
                     for tc in tool_calls {
                         evidence.push(EvidenceRef {
                             id: format!("tool_{:04}", tool_counter),
                             kind: EvidenceKind::ToolCall,
-                            summary: format!("{}({})", tc.name, truncate_for_summary(&tc.arguments.to_string(), 100)),
+                            summary: format!(
+                                "{}({})",
+                                tc.name,
+                                truncate_for_summary(&tc.arguments.to_string(), 100)
+                            ),
                             content_hash: None,
                         });
                         tool_counter += 1;
@@ -1465,7 +1533,11 @@ pub fn build_evidence_index(messages: &[Message]) -> Vec<EvidenceRef> {
             }
             Message::Tool { content, .. } => {
                 let is_test = looks_like_test_output(content);
-                let kind = if is_test { EvidenceKind::TestRun } else { EvidenceKind::ToolResult };
+                let kind = if is_test {
+                    EvidenceKind::TestRun
+                } else {
+                    EvidenceKind::ToolResult
+                };
                 evidence.push(EvidenceRef {
                     id: format!("tool_{:04}", tool_counter),
                     kind,
@@ -1490,9 +1562,13 @@ pub fn prune_tool_outputs_rich(
         return messages.to_vec();
     }
 
-    messages.iter().map(|msg| {
-        match msg {
-            Message::Tool { tool_call_id, content } => {
+    messages
+        .iter()
+        .map(|msg| match msg {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } => {
                 let tokens = ContextTracker::estimate_tokens(content);
                 if tokens <= max_tokens_per_output {
                     return msg.clone();
@@ -1505,12 +1581,15 @@ pub fn prune_tool_outputs_rich(
                 let keep_head = (total_lines / 5).max(10).min(80);
                 let keep_tail = (total_lines / 10).max(5).min(40);
 
-                let salient_indices: Vec<usize> = lines.iter().enumerate()
+                let salient_indices: Vec<usize> = lines
+                    .iter()
+                    .enumerate()
                     .filter(|(_, line)| looks_like_salient_line(line))
                     .map(|(i, _)| i)
                     .collect();
 
-                let mut kept_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
+                let mut kept_indices: std::collections::HashSet<usize> =
+                    std::collections::HashSet::new();
                 for i in 0..keep_head.min(total_lines) {
                     kept_indices.insert(i);
                 }
@@ -1523,9 +1602,8 @@ pub fn prune_tool_outputs_rich(
                     }
                 }
 
-                let mut kept_lines: Vec<(usize, &str)> = kept_indices.iter()
-                    .map(|&i| (i, lines[i]))
-                    .collect();
+                let mut kept_lines: Vec<(usize, &str)> =
+                    kept_indices.iter().map(|&i| (i, lines[i])).collect();
                 kept_lines.sort_by_key(|(i, _)| *i);
 
                 let content_hash = compute_content_hash(content);
@@ -1536,11 +1614,15 @@ pub fn prune_tool_outputs_rich(
                      original_chars: {}\n\
                      content_hash: {}\n\
                      kept: {} of {} lines\n\n",
-                    tokens, original_len, content_hash,
-                    kept_lines.len(), total_lines,
+                    tokens,
+                    original_len,
+                    content_hash,
+                    kept_lines.len(),
+                    total_lines,
                 );
 
-                let head_lines: Vec<&str> = kept_lines.iter()
+                let head_lines: Vec<&str> = kept_lines
+                    .iter()
                     .filter(|(i, _)| *i < keep_head)
                     .map(|(_, l)| *l)
                     .collect();
@@ -1550,7 +1632,8 @@ pub fn prune_tool_outputs_rich(
                     compacted.push_str("\n\n");
                 }
 
-                let salient_lines: Vec<&str> = kept_lines.iter()
+                let salient_lines: Vec<&str> = kept_lines
+                    .iter()
                     .filter(|(i, _)| *i >= keep_head && *i < total_lines.saturating_sub(keep_tail))
                     .map(|(_, l)| *l)
                     .collect();
@@ -1560,7 +1643,8 @@ pub fn prune_tool_outputs_rich(
                     compacted.push_str("\n\n");
                 }
 
-                let tail_lines: Vec<&str> = kept_lines.iter()
+                let tail_lines: Vec<&str> = kept_lines
+                    .iter()
                     .filter(|(i, _)| *i >= total_lines.saturating_sub(keep_tail))
                     .map(|(_, l)| *l)
                     .collect();
@@ -1575,8 +1659,8 @@ pub fn prune_tool_outputs_rich(
                 }
             }
             other => other.clone(),
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 fn looks_like_salient_line(line: &str) -> bool {
@@ -1601,11 +1685,17 @@ pub fn extract_commands(tool_pairs: &[ToolPair<'_>]) -> Vec<String> {
 
     for pair in tool_pairs {
         if pair.tool_name == "bash" || pair.tool_name == "exec" {
-            if let Some(cmd) = pair.arguments.get("command")
+            if let Some(cmd) = pair
+                .arguments
+                .get("command")
                 .or_else(|| pair.arguments.get("cmd"))
                 .and_then(|v| v.as_str())
             {
-                let is_salient = is_salient_command(cmd) || pair.result.map(|r| !is_successful_output(r)).unwrap_or(false);
+                let is_salient = is_salient_command(cmd)
+                    || pair
+                        .result
+                        .map(|r| !is_successful_output(r))
+                        .unwrap_or(false);
                 if is_salient {
                     commands.push(cmd.to_string());
                 }
@@ -1676,7 +1766,9 @@ fn normalize_path(path: &str) -> String {
     for segment in path.split('/') {
         match segment {
             "." => {}
-            ".." => { parts.pop(); }
+            ".." => {
+                parts.pop();
+            }
             "" if parts.is_empty() => {}
             p => parts.push(p),
         }
@@ -1687,7 +1779,9 @@ fn normalize_path(path: &str) -> String {
 fn extract_paths_from_text(text: &str) -> Vec<String> {
     let mut paths = Vec::new();
     for word in text.split_whitespace() {
-        let clean = word.trim_matches(|c: char| c == '(' || c == ')' || c == ',' || c == '`' || c == '"' || c == '\'');
+        let clean = word.trim_matches(|c: char| {
+            c == '(' || c == ')' || c == ',' || c == '`' || c == '"' || c == '\''
+        });
         if looks_like_path(clean) && clean.len() > 5 {
             paths.push(clean.to_string());
         }
@@ -1705,7 +1799,10 @@ pub fn extract_test_and_error_state(tool_pairs: &[ToolPair<'_>]) -> (Vec<String>
                 if line.contains("test result:") || line.contains("FAILED") {
                     test_results.push(line.trim().to_string());
                 }
-                if line.starts_with("error[") || line.starts_with("error:") || line.contains("panicked at") {
+                if line.starts_with("error[")
+                    || line.starts_with("error:")
+                    || line.contains("panicked at")
+                {
                     errors.push(line.trim().to_string());
                 }
             }
@@ -1719,19 +1816,34 @@ pub fn extract_test_and_error_state(tool_pairs: &[ToolPair<'_>]) -> (Vec<String>
 }
 
 fn looks_like_test_output(text: &str) -> bool {
-    text.contains("test result:")
-        || text.contains("running ")
-        || text.contains("FAILED")
+    text.contains("test result:") || text.contains("running ") || text.contains("FAILED")
 }
 
 pub fn extract_user_constraints(messages: &[Message]) -> Vec<String> {
     let mut constraints = Vec::new();
-    let keywords = ["must", "do not", "don't", "avoid", "only", "prefer", "default", "should", "should not", "must not", "unless", "keep", "preserve", "configurable"];
+    let keywords = [
+        "must",
+        "do not",
+        "don't",
+        "avoid",
+        "only",
+        "prefer",
+        "default",
+        "should",
+        "should not",
+        "must not",
+        "unless",
+        "keep",
+        "preserve",
+        "configurable",
+    ];
 
     for msg in messages {
         if let Message::User { content } = msg {
             let text = extract_text_from_content(content);
-            let sentences: Vec<&str> = text.split(|c: char| c == '.' || c == '!' || c == '\n').collect();
+            let sentences: Vec<&str> = text
+                .split(|c: char| c == '.' || c == '!' || c == '\n')
+                .collect();
 
             for sentence in sentences {
                 let sentence = sentence.trim();
@@ -1764,7 +1876,9 @@ pub fn select_retained_messages(
         }
     }
 
-    let non_system_indices: Vec<usize> = messages.iter().enumerate()
+    let non_system_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
         .filter(|(_, m)| !matches!(m, Message::System { .. }))
         .map(|(i, _)| i)
         .collect();
@@ -1779,29 +1893,40 @@ pub fn select_retained_messages(
         retained.insert(idx);
     }
 
-    let tool_call_to_assistant: std::collections::HashMap<String, usize> = messages.iter().enumerate().filter_map(|(i, m)| {
-        if let Message::Assistant { tool_calls, .. } = m {
-            tool_calls.first().map(|tc| (tc.id.to_string(), i))
-        } else {
-            None
-        }
-    }).collect();
+    let tool_call_to_assistant: std::collections::HashMap<String, usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            if let Message::Assistant { tool_calls, .. } = m {
+                tool_calls.first().map(|tc| (tc.id.to_string(), i))
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    let tool_result_to_index: std::collections::HashMap<String, usize> = messages.iter().enumerate().filter_map(|(i, m)| {
-        if let Message::Tool { tool_call_id, .. } = m {
-            Some((tool_call_id.to_string(), i))
-        } else {
-            None
-        }
-    }).collect();
+    let tool_result_to_index: std::collections::HashMap<String, usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            if let Message::Tool { tool_call_id, .. } = m {
+                Some((tool_call_id.to_string(), i))
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    let ids_to_resolve: Vec<String> = retained.iter().filter_map(|&i| {
-        if let Message::Tool { tool_call_id, .. } = &messages[i] {
-            Some(tool_call_id.to_string())
-        } else {
-            None
-        }
-    }).collect();
+    let ids_to_resolve: Vec<String> = retained
+        .iter()
+        .filter_map(|&i| {
+            if let Message::Tool { tool_call_id, .. } = &messages[i] {
+                Some(tool_call_id.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     for id in &ids_to_resolve {
         if let Some(&assistant_idx) = tool_call_to_assistant.get(id) {
@@ -1809,13 +1934,16 @@ pub fn select_retained_messages(
         }
     }
 
-    let assistant_ids_to_resolve: Vec<String> = retained.iter().filter_map(|&i| {
-        if let Message::Assistant { tool_calls, .. } = &messages[i] {
-            tool_calls.first().map(|tc| tc.id.to_string())
-        } else {
-            None
-        }
-    }).collect();
+    let assistant_ids_to_resolve: Vec<String> = retained
+        .iter()
+        .filter_map(|&i| {
+            if let Message::Assistant { tool_calls, .. } = &messages[i] {
+                tool_calls.first().map(|tc| tc.id.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     for id in &assistant_ids_to_resolve {
         if let Some(&tool_idx) = tool_result_to_index.get(id) {
@@ -1862,7 +1990,11 @@ pub fn build_programmatic_state(
     let mut diagnostics = Vec::new();
     diagnostics.push(CompactionDiagnostic {
         level: CompactionDiagnosticLevel::Info,
-        message: format!("Programmatic: {} evidence, {} retained", evidence.len(), retained_indices.len()),
+        message: format!(
+            "Programmatic: {} evidence, {} retained",
+            evidence.len(),
+            retained_indices.len()
+        ),
     });
 
     ProgrammaticCompactionState {
@@ -1889,7 +2021,9 @@ pub fn compile_programmatic_messages(
     }
 
     let control_text = state.frame.to_compaction_control_text();
-    result.push(Message::System { content: control_text.into() });
+    result.push(Message::System {
+        content: control_text.into(),
+    });
 
     for &idx in &state.retained_message_indices {
         if idx < original.len() && !matches!(&original[idx], Message::System { .. }) {
@@ -1915,7 +2049,9 @@ pub fn compile_hybrid_messages(
     }
 
     let control_text = frame.to_compaction_control_text();
-    result.push(Message::System { content: control_text.into() });
+    result.push(Message::System {
+        content: control_text.into(),
+    });
 
     for &idx in &state.retained_message_indices {
         if idx < original.len() && !matches!(&original[idx], Message::System { .. }) {
@@ -1933,7 +2069,15 @@ async fn compact_agent_only(
     if let Some(provider) = provider {
         if let Some(model) = input.config.compaction_model.as_deref() {
             let programmatic = build_programmatic_state(input.messages, &input.config);
-            match semantic_checkpoint(&programmatic, input.messages, provider, model, input.config.max_summary_tokens).await {
+            match semantic_checkpoint(
+                &programmatic,
+                input.messages,
+                provider,
+                model,
+                input.config.max_summary_tokens,
+            )
+            .await
+            {
                 Ok(frame) => {
                     let mut result = Vec::new();
                     for msg in input.messages {
@@ -1942,10 +2086,14 @@ async fn compact_agent_only(
                         }
                     }
                     let control_text = frame.to_compaction_control_text();
-                    result.push(Message::System { content: control_text.into() });
+                    result.push(Message::System {
+                        content: control_text.into(),
+                    });
 
                     let keep = input.config.keep_recent_messages;
-                    let non_system: Vec<&Message> = input.messages.iter()
+                    let non_system: Vec<&Message> = input
+                        .messages
+                        .iter()
                         .filter(|m| !matches!(m, Message::System { .. }))
                         .collect();
                     for msg in non_system.iter().rev().take(keep) {
@@ -1961,15 +2109,19 @@ async fn compact_agent_only(
     }
 
     let programmatic = build_programmatic_state(input.messages, &input.config);
-    Ok(compile_programmatic_messages(input.messages, &programmatic, &input.config))
+    Ok(compile_programmatic_messages(
+        input.messages,
+        &programmatic,
+        &input.config,
+    ))
 }
 
 pub async fn compact_with_policy(
     input: CompactionInput<'_>,
     provider: Option<&dyn crate::provider::Provider>,
 ) -> Result<CompactionOutput, crate::error::AppError> {
-    let tracker = ContextTracker::new(usize::MAX, 0.0)
-        .with_model(input.active_model.map(|s| s.to_string()));
+    let tracker =
+        ContextTracker::new(usize::MAX, 0.0).with_model(input.active_model.map(|s| s.to_string()));
     let tokens_before = tracker.estimate_tokens_for_messages(input.messages);
 
     let programmatic = build_programmatic_state(input.messages, &input.config);
@@ -1985,13 +2137,21 @@ pub async fn compact_with_policy(
         CompactionMode::Programmatic => {
             compile_programmatic_messages(messages_ref, &programmatic, &input.config)
         }
-        CompactionMode::Agent => {
-            compact_agent_only(input, provider).await?
-        }
+        CompactionMode::Agent => compact_agent_only(input, provider).await?,
         CompactionMode::Hybrid => {
             let mut frame = programmatic.frame.clone();
-            if let (Some(provider), Some(model)) = (provider, input.config.compaction_model.as_deref()) {
-                match semantic_checkpoint(&programmatic, messages_ref, provider, model, input.config.max_summary_tokens).await {
+            if let (Some(provider), Some(model)) =
+                (provider, input.config.compaction_model.as_deref())
+            {
+                match semantic_checkpoint(
+                    &programmatic,
+                    messages_ref,
+                    provider,
+                    model,
+                    input.config.max_summary_tokens,
+                )
+                .await
+                {
                     Ok(semantic_frame) => merge_frames(&mut frame, semantic_frame),
                     Err(err) => {
                         tracing::warn!("Semantic checkpoint failed: {}", err);
@@ -2014,21 +2174,26 @@ pub async fn compact_with_policy(
             };
             messages = emergency_pair_safe_compaction(messages_ref, &config_clone);
             if let Err(err2) = validate_message_invariants(&messages) {
-                tracing::error!("Emergency fallback also failed: {}, preserving original", err2);
+                tracing::error!(
+                    "Emergency fallback also failed: {}, preserving original",
+                    err2
+                );
                 messages = messages_ref.to_vec();
             }
         }
     }
 
-    let after_tracker = ContextTracker::new(usize::MAX, 0.0)
-        .with_model(active_model.map(|s| s.to_string()));
+    let after_tracker =
+        ContextTracker::new(usize::MAX, 0.0).with_model(active_model.map(|s| s.to_string()));
     let tokens_after = after_tracker.estimate_tokens_for_messages(&messages);
 
     let mut diagnostics = programmatic.diagnostics;
     diagnostics.push(CompactionDiagnostic {
         level: CompactionDiagnosticLevel::Info,
-        message: format!("Compaction {:?}/{:?}: {} -> {} tokens",
-            mode, policy, tokens_before, tokens_after),
+        message: format!(
+            "Compaction {:?}/{:?}: {} -> {} tokens",
+            mode, policy, tokens_before, tokens_after
+        ),
     });
 
     Ok(CompactionOutput {
@@ -2252,7 +2417,7 @@ mod tests {
         // Just verify the messages were compacted
         assert!(result.len() < 10);
     }
-    
+
     #[test]
     fn test_compact_messages_drop_middle() {
         let messages: Vec<Message> = (0..8)
@@ -2325,7 +2490,11 @@ mod tests {
     #[test]
     fn test_collect_tool_pairs_valid() {
         let messages = vec![
-            Message::User { content: vec![ContentPart::Text { text: "hello".to_string().into() }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string().into(),
+                }],
+            },
             Message::Assistant {
                 content: vec![],
                 tool_calls: vec![crate::provider::ToolCall {
@@ -2339,7 +2508,9 @@ mod tests {
                 content: "output".to_string().into(),
             },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: "done".to_string().into() }],
+                content: vec![ContentPart::Text {
+                    text: "done".to_string().into(),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -2352,7 +2523,11 @@ mod tests {
     #[test]
     fn test_validate_valid_history() {
         let messages = vec![
-            Message::User { content: vec![ContentPart::Text { text: "hello".to_string().into() }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string().into(),
+                }],
+            },
             Message::Assistant {
                 content: vec![],
                 tool_calls: vec![crate::provider::ToolCall {
@@ -2366,7 +2541,9 @@ mod tests {
                 content: "output".to_string().into(),
             },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: "done".to_string().into() }],
+                content: vec![ContentPart::Text {
+                    text: "done".to_string().into(),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -2376,13 +2553,19 @@ mod tests {
     #[test]
     fn test_validate_orphan_tool_result() {
         let messages = vec![
-            Message::User { content: vec![ContentPart::Text { text: "hello".to_string().into() }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string().into(),
+                }],
+            },
             Message::Tool {
                 tool_call_id: "orphan".to_string().into(),
                 content: "output".to_string().into(),
             },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: "done".to_string().into() }],
+                content: vec![ContentPart::Text {
+                    text: "done".to_string().into(),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -2396,7 +2579,11 @@ mod tests {
     #[test]
     fn test_validate_missing_tool_result() {
         let messages = vec![
-            Message::User { content: vec![ContentPart::Text { text: "hello".to_string().into() }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string().into(),
+                }],
+            },
             Message::Assistant {
                 content: vec![],
                 tool_calls: vec![crate::provider::ToolCall {
@@ -2406,7 +2593,9 @@ mod tests {
                 }],
             },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: "no result".to_string().into() }],
+                content: vec![ContentPart::Text {
+                    text: "no result".to_string().into(),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -2420,8 +2609,14 @@ mod tests {
     #[test]
     fn test_emergency_pair_safe_preserves_pairs() {
         let messages = vec![
-            Message::System { content: "system".to_string().into() },
-            Message::User { content: vec![ContentPart::Text { text: "msg1".to_string().into() }] },
+            Message::System {
+                content: "system".to_string().into(),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "msg1".to_string().into(),
+                }],
+            },
             Message::Assistant {
                 content: vec![],
                 tool_calls: vec![crate::provider::ToolCall {
@@ -2434,19 +2629,37 @@ mod tests {
                 tool_call_id: "c1".to_string().into(),
                 content: "output1".to_string().into(),
             },
-            Message::User { content: vec![ContentPart::Text { text: "msg2".to_string().into() }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "msg2".to_string().into(),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: "resp1".to_string().into() }],
+                content: vec![ContentPart::Text {
+                    text: "resp1".to_string().into(),
+                }],
                 tool_calls: vec![],
             },
-            Message::User { content: vec![ContentPart::Text { text: "msg3".to_string().into() }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "msg3".to_string().into(),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: "resp2".to_string().into() }],
+                content: vec![ContentPart::Text {
+                    text: "resp2".to_string().into(),
+                }],
                 tool_calls: vec![],
             },
-            Message::User { content: vec![ContentPart::Text { text: "msg4".to_string().into() }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "msg4".to_string().into(),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: "resp3".to_string().into() }],
+                content: vec![ContentPart::Text {
+                    text: "resp3".to_string().into(),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -2455,7 +2668,11 @@ mod tests {
         assert!(result.iter().any(|m| matches!(m, Message::System { .. })));
         let tool_pairs = collect_tool_pairs(&result);
         for pair in &tool_pairs {
-            assert!(pair.result.is_some(), "Tool pair {} should have result", pair.tool_call_id);
+            assert!(
+                pair.result.is_some(),
+                "Tool pair {} should have result",
+                pair.tool_call_id
+            );
         }
     }
 
@@ -2500,8 +2717,16 @@ mod tests {
     #[test]
     fn test_extract_user_constraints() {
         let messages = vec![
-            Message::User { content: vec![ContentPart::Text { text: "You must use Rust for this project.".to_string().into() }] },
-            Message::User { content: vec![ContentPart::Text { text: "Do not use unwrap in production code.".to_string().into() }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "You must use Rust for this project.".to_string().into(),
+                }],
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "Do not use unwrap in production code.".to_string().into(),
+                }],
+            },
         ];
         let constraints = extract_user_constraints(&messages);
         assert_eq!(constraints.len(), 2);
@@ -2510,10 +2735,18 @@ mod tests {
     #[test]
     fn test_build_programmatic_state() {
         let messages = vec![
-            Message::System { content: "system".to_string().into() },
-            Message::User { content: vec![ContentPart::Text { text: "hello".to_string().into() }] },
+            Message::System {
+                content: "system".to_string().into(),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string().into(),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: "world".to_string().into() }],
+                content: vec![ContentPart::Text {
+                    text: "world".to_string().into(),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -2525,10 +2758,18 @@ mod tests {
     #[test]
     fn test_compile_programmatic_messages() {
         let messages = vec![
-            Message::System { content: "system".to_string().into() },
-            Message::User { content: vec![ContentPart::Text { text: "hello".to_string().into() }] },
+            Message::System {
+                content: "system".to_string().into(),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string().into(),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: "world".to_string().into() }],
+                content: vec![ContentPart::Text {
+                    text: "world".to_string().into(),
+                }],
                 tool_calls: vec![],
             },
         ];

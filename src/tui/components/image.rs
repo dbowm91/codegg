@@ -52,9 +52,15 @@ impl ImageViewer {
         let img = image::load_from_memory(&data)?;
         let source = ImageSource::new(img, self.font_size, image::Rgba([0, 0, 0, 0]));
         let protocol_type = match detect_terminal_protocol() {
-            "kitty" => StatefulProtocolType::Kitty(ratatui_image::protocol::kitty::StatefulKitty::new(rand::random(), false)),
-            "iterm2" => StatefulProtocolType::ITerm2(ratatui_image::protocol::iterm2::Iterm2::default()),
-            _ => StatefulProtocolType::Halfblocks(ratatui_image::protocol::halfblocks::Halfblocks::default()),
+            "kitty" => StatefulProtocolType::Kitty(
+                ratatui_image::protocol::kitty::StatefulKitty::new(rand::random(), false),
+            ),
+            "iterm2" => {
+                StatefulProtocolType::ITerm2(ratatui_image::protocol::iterm2::Iterm2::default())
+            }
+            _ => StatefulProtocolType::Halfblocks(
+                ratatui_image::protocol::halfblocks::Halfblocks::default(),
+            ),
         };
         let state = StatefulProtocol::new(source, self.font_size, protocol_type);
         *self.state.borrow_mut() = Some(state);
@@ -65,9 +71,15 @@ impl ImageViewer {
         let img = image::open(path)?;
         let source = ImageSource::new(img, self.font_size, image::Rgba([0, 0, 0, 0]));
         let protocol_type = match detect_terminal_protocol() {
-            "kitty" => StatefulProtocolType::Kitty(ratatui_image::protocol::kitty::StatefulKitty::new(rand::random(), false)),
-            "iterm2" => StatefulProtocolType::ITerm2(ratatui_image::protocol::iterm2::Iterm2::default()),
-            _ => StatefulProtocolType::Halfblocks(ratatui_image::protocol::halfblocks::Halfblocks::default()),
+            "kitty" => StatefulProtocolType::Kitty(
+                ratatui_image::protocol::kitty::StatefulKitty::new(rand::random(), false),
+            ),
+            "iterm2" => {
+                StatefulProtocolType::ITerm2(ratatui_image::protocol::iterm2::Iterm2::default())
+            }
+            _ => StatefulProtocolType::Halfblocks(
+                ratatui_image::protocol::halfblocks::Halfblocks::default(),
+            ),
         };
         let state = StatefulProtocol::new(source, self.font_size, protocol_type);
         *self.state.borrow_mut() = Some(state);

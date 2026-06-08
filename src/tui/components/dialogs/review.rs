@@ -220,10 +220,7 @@ impl ReviewDialog {
                 let line = Line::from(vec![
                     Span::styled(format!("  {} ", kind_char), kind_style),
                     Span::styled(&item.path, style),
-                    Span::styled(
-                        stats,
-                        Style::default().fg(self.theme.muted),
-                    ),
+                    Span::styled(stats, Style::default().fg(self.theme.muted)),
                 ]);
                 ListItem::new(line)
             })

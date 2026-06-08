@@ -31,9 +31,7 @@ impl UrlSource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "HTTP {status} for {url}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("HTTP {status} for {url}")));
         }
 
         let content_type = response
@@ -98,7 +96,11 @@ impl UrlSource {
                 url: url.to_string(),
                 heading: None,
             },
-            notes: vec![format!("fetched {} bytes, content-type: {}", bytes.len(), content_type)],
+            notes: vec![format!(
+                "fetched {} bytes, content-type: {}",
+                bytes.len(),
+                content_type
+            )],
         })
     }
 }

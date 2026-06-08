@@ -174,7 +174,12 @@ impl LspService {
         {
             let mut clients = self.clients.write().await;
             if let Some(entry) = clients.values_mut().nth(client_idx) {
-                let was_open = entry.client.opened_files.lock().await.contains_key(&uri_str);
+                let was_open = entry
+                    .client
+                    .opened_files
+                    .lock()
+                    .await
+                    .contains_key(&uri_str);
                 if was_open {
                     let _ = entry.client.close_file(&uri).await;
                     entry.client.opened_files.lock().await.remove(&uri_str);

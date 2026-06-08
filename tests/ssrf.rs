@@ -228,14 +228,18 @@ mod tests {
     fn test_validate_url_host_internal_blocked() {
         let result = validate_url_host("https://127.0.0.1");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("internal addresses not allowed"));
+        assert!(result
+            .unwrap_err()
+            .contains("internal addresses not allowed"));
     }
 
     #[test]
     fn test_validate_url_host_internal_blocked_10() {
         let result = validate_url_host("http://10.0.0.1:8080");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("internal addresses not allowed"));
+        assert!(result
+            .unwrap_err()
+            .contains("internal addresses not allowed"));
     }
 
     #[test]
@@ -253,6 +257,8 @@ mod tests {
     fn test_validate_host_ip_internal_blocked() {
         let result = validate_host_ip("127.0.0.1", 80);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("internal addresses not allowed"));
+        assert!(result
+            .unwrap_err()
+            .contains("internal addresses not allowed"));
     }
 }

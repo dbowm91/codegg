@@ -21,7 +21,11 @@ pub struct ThemeDiagnostic {
 }
 
 impl ThemeDiagnostic {
-    pub fn warn(theme_id: impl Into<String>, field: Option<&str>, message: impl Into<String>) -> Self {
+    pub fn warn(
+        theme_id: impl Into<String>,
+        field: Option<&str>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             level: ThemeDiagnosticLevel::Warning,
             theme_id: theme_id.into(),
@@ -30,7 +34,11 @@ impl ThemeDiagnostic {
         }
     }
 
-    pub fn error(theme_id: impl Into<String>, field: Option<&str>, message: impl Into<String>) -> Self {
+    pub fn error(
+        theme_id: impl Into<String>,
+        field: Option<&str>,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             level: ThemeDiagnosticLevel::Error,
             theme_id: theme_id.into(),
@@ -176,7 +184,10 @@ mod tests {
                 input_background: bg,
                 title_background: bg,
             },
-            text: TextColors { muted: fg, link: fg },
+            text: TextColors {
+                muted: fg,
+                link: fg,
+            },
             status: StatusColors {
                 success: fg,
                 warning: fg,

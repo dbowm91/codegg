@@ -89,7 +89,10 @@ impl SearchProvider for WikipediaProvider {
             #[serde(default)]
             snippet: String,
         }
-        let r: R = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: R = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         let items = r.query.map(|q| q.search).unwrap_or_default();
         if items.is_empty() {
             return Err(SearchError::Empty);
@@ -100,10 +103,7 @@ impl SearchProvider for WikipediaProvider {
                 let url_title = it.title.clone();
                 SearchHit {
                     title: it.title,
-                    url: format!(
-                        "https://en.wikipedia.org/wiki/{}",
-                        urlencoding(&url_title)
-                    ),
+                    url: format!("https://en.wikipedia.org/wiki/{}", urlencoding(&url_title)),
                     snippet: strip_html(&it.snippet),
                     source: "wikipedia".into(),
                 }

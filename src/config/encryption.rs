@@ -1,6 +1,6 @@
 use crate::config::schema::Config;
-use crate::error::{AppError, ConfigError};
 use crate::crypto::FORMAT_V2_PREFIX;
+use crate::error::{AppError, ConfigError};
 
 pub fn get_master_key() -> Option<String> {
     std::env::var("CODEGG_MASTER_KEY")
@@ -69,12 +69,14 @@ pub fn encrypt_provider_keys(config: &mut Config) -> Result<(), AppError> {
                 if let Some(ref encrypted_key) = provider.encrypted_api_key {
                     if !encrypted_key.starts_with(FORMAT_V2_PREFIX) {
                         match crate::crypto::decrypt_from_string(encrypted_key, &master_key) {
-                            Ok(decrypted) => match crate::crypto::encrypt_to_string(&decrypted, &master_key) {
-                                Ok(migrated) => {
-                                    migrations.push((name.clone(), migrated));
+                            Ok(decrypted) => {
+                                match crate::crypto::encrypt_to_string(&decrypted, &master_key) {
+                                    Ok(migrated) => {
+                                        migrations.push((name.clone(), migrated));
+                                    }
+                                    Err(e) => failures.push(format!("{name}: {e}")),
                                 }
-                                Err(e) => failures.push(format!("{name}: {e}")),
-                            },
+                            }
                             Err(e) => failures.push(format!("{name}: {e}")),
                         }
                     }

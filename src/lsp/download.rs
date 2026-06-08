@@ -179,7 +179,11 @@ fn extract_zip(
                 .unwrap_or(std::ffi::OsStr::new(binary_name));
             let out_path = dest.join(file_name);
 
-            if !out_path.canonicalize().map(|p| p.starts_with(&dest)).unwrap_or(false) {
+            if !out_path
+                .canonicalize()
+                .map(|p| p.starts_with(&dest))
+                .unwrap_or(false)
+            {
                 return Err(LspError::DownloadFailed("path traversal blocked".into()));
             }
 

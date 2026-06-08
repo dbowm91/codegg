@@ -319,11 +319,13 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                         if let Some(mcp) = &config.mcp {
                             if let Some(entry) = mcp.get(&server_name) {
                                 if let Some(ref inner) = entry.inner {
-                                    let server_type = inner.server_type.as_deref().unwrap_or("local");
+                                    let server_type =
+                                        inner.server_type.as_deref().unwrap_or("local");
                                     match server_type {
                                         "remote" => {
                                             if let Some(ref url) = inner.url {
-                                                let headers = inner.headers.clone().unwrap_or_default();
+                                                let headers =
+                                                    inner.headers.clone().unwrap_or_default();
                                                 let result = handle.block_on(async {
                                                     let mut manager = crate::mcp::remote::McpConnectionManager::new(
                                                         url,
@@ -341,16 +343,25 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                                                     return Err(e);
                                                 }
                                             } else {
-                                                println!("No URL configured for server '{}'", server_name);
+                                                println!(
+                                                    "No URL configured for server '{}'",
+                                                    server_name
+                                                );
                                             }
                                         }
                                         "local" => {
                                             if let Some(ref cmd) = inner.command {
                                                 let args = inner.args.clone().unwrap_or_default();
                                                 println!("Local server - exec format not tested via debug");
-                                                println!("Command: {} {:?} (configured, not executed)", cmd, args);
+                                                println!(
+                                                    "Command: {} {:?} (configured, not executed)",
+                                                    cmd, args
+                                                );
                                             } else {
-                                                println!("No command configured for server '{}'", server_name);
+                                                println!(
+                                                    "No command configured for server '{}'",
+                                                    server_name
+                                                );
                                             }
                                         }
                                         _ => {
@@ -358,7 +369,10 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                                         }
                                     }
                                 } else {
-                                    println!("Server '{}' config missing inner details", server_name);
+                                    println!(
+                                        "Server '{}' config missing inner details",
+                                        server_name
+                                    );
                                 }
                             } else {
                                 println!("Server '{}' not found in config", server_name);

@@ -18,7 +18,8 @@ const ENDPOINT: &str = "http://export.arxiv.org/api/query";
 static ENTRY: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<entry>(.*?)</entry>").expect("ENTRY"));
 static TITLE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<title>(.*?)</title>").expect("TITLE"));
 static ID: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<id>([^<]+)</id>").expect("ID"));
-static SUMMARY: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<summary>(.*?)</summary>").expect("SUMMARY"));
+static SUMMARY: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)<summary>(.*?)</summary>").expect("SUMMARY"));
 
 pub struct ArxivProvider {
     client: Client,

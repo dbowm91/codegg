@@ -125,11 +125,7 @@ fn build_cors(config: &Option<crate::config::schema::ServerConfig>) -> CorsLayer
             let origins: Vec<_> = origins.into_iter().filter_map(|o| o.parse().ok()).collect();
             CorsLayer::new()
                 .allow_origin(origins)
-                .allow_methods([
-                    http::Method::GET,
-                    http::Method::POST,
-                    http::Method::DELETE,
-                ])
+                .allow_methods([http::Method::GET, http::Method::POST, http::Method::DELETE])
                 .allow_headers(tower_http::cors::Any)
         }
         _ => {
@@ -143,11 +139,7 @@ fn build_cors(config: &Option<crate::config::schema::ServerConfig>) -> CorsLayer
                 .collect();
             CorsLayer::new()
                 .allow_origin(origins)
-                .allow_methods([
-                    http::Method::GET,
-                    http::Method::POST,
-                    http::Method::DELETE,
-                ])
+                .allow_methods([http::Method::GET, http::Method::POST, http::Method::DELETE])
                 .allow_headers(tower_http::cors::Any)
         }
     }

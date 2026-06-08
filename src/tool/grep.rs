@@ -232,7 +232,13 @@ impl Tool for GrepTool {
                                     let post_ctx = read_context_lines(&path, line_num, ctx);
                                     for (ctx_line_num, ctx_line) in &post_ctx {
                                         if ctx_line_num > &line_num
-                                            && !expanded.iter().any(|e| e.starts_with(&format!("{}:{}:", path.display(), ctx_line_num)))
+                                            && !expanded.iter().any(|e| {
+                                                e.starts_with(&format!(
+                                                    "{}:{}:",
+                                                    path.display(),
+                                                    ctx_line_num
+                                                ))
+                                            })
                                         {
                                             expanded.push(format!(
                                                 "{}:{}:- {}",
@@ -324,7 +330,11 @@ impl Sink for GrepSink {
     }
 }
 
-fn read_context_lines(path: &std::path::Path, line_num: usize, context: usize) -> Vec<(usize, String)> {
+fn read_context_lines(
+    path: &std::path::Path,
+    line_num: usize,
+    context: usize,
+) -> Vec<(usize, String)> {
     if context == 0 {
         return Vec::new();
     }

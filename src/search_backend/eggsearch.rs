@@ -53,7 +53,8 @@ pub async fn call_web_search(
         "max_results": num_results,
     });
 
-    if let Some(providers) = translate_provider_hint(input.get("provider").and_then(Value::as_str)) {
+    if let Some(providers) = translate_provider_hint(input.get("provider").and_then(Value::as_str))
+    {
         if !providers.is_empty() {
             args["providers"] = Value::Array(providers.into_iter().map(Value::String).collect());
         }
@@ -61,13 +62,10 @@ pub async fn call_web_search(
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        async {
-            let guard = svc.read().await;
-            guard.call_tool(mcp_server, "web_search", args).await
-        },
-    )
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let guard = svc.read().await;
+        guard.call_tool(mcp_server, "web_search", args).await
+    })
     .await
     .map_err(|_| ToolError::Timeout("eggsearch web_search timed out after 60s".to_string()))?
     .map_err(|e| ToolError::Execution(format!("eggsearch web_search: {e}")))?;
@@ -103,13 +101,10 @@ pub async fn call_web_fetch(
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        async {
-            let guard = svc.read().await;
-            guard.call_tool(mcp_server, "web_fetch", args).await
-        },
-    )
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let guard = svc.read().await;
+        guard.call_tool(mcp_server, "web_fetch", args).await
+    })
     .await
     .map_err(|_| ToolError::Timeout("eggsearch web_fetch timed out after 60s".to_string()))?
     .map_err(|e| ToolError::Execution(format!("eggsearch web_fetch: {e}")))?;
@@ -121,9 +116,15 @@ pub async fn call_web_fetch(
 /// Best-effort translation of the historical Codegg `provider` hint to
 /// eggsearch's `providers` list. Returns `Some(vec)` when the user
 /// pinned a specific provider, `Some(vec![])` (i.e. "let eggsearch
-/// auto-pick") for `auto`/missing, or `None` to mean "omit the field
-/// entirely".
-fn translate_provider_hint(hint: Option<&str>) -> Option<Vec<String>> {
+/// auto-pick") for `auto`/missing or any hint that eggsearch does not
+/// recognize, or `None` to mean "omit the field entirely".
+///
+/// Note: The model-facing enum advertises a long list of historical
+/// provider hints, but we do not have ground truth on which of them
+/// eggsearch supports today. Hints that eggsearch does not recognize
+/// are intentionally mapped to an empty list (auto-pick) so that the
+/// search still succeeds with a sensible default provider.
+pub(crate) fn translate_provider_hint(hint: Option<&str>) -> Option<Vec<String>> {
     let h = hint.unwrap_or("auto");
     match h {
         "auto" => Some(Vec::new()),
@@ -157,15 +158,12 @@ pub fn eggsearch_unavailable(detail: &str) -> ToolError {
 pub async fn call_provider_status(mcp_server: &str) -> Result<String, ToolError> {
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        async {
-            let guard = svc.read().await;
-            guard
-                .call_tool(mcp_server, "provider_status", json!({}))
-                .await
-        },
-    )
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let guard = svc.read().await;
+        guard
+            .call_tool(mcp_server, "provider_status", json!({}))
+            .await
+    })
     .await
     .map_err(|_| ToolError::Timeout("eggsearch provider_status timed out".to_string()))?
     .map_err(|e| ToolError::Execution(format!("eggsearch provider_status: {e}")))?;
@@ -183,9 +181,35 @@ mod tests {
     }
 
     #[test]
+    fn provider_hint_duckduckgo_passes_through() {
+        assert_eq!(
+            translate_provider_hint(Some("duckduckgo")),
+            Some(vec!["duckduckgo".to_string()])
+        );
+    }
+
+    #[test]
+    fn provider_hint_mojeek_passes_through() {
+        assert_eq!(
+            translate_provider_hint(Some("mojeek")),
+            Some(vec!["mojeek".to_string()])
+        );
+    }
+
+    #[test]
     fn provider_hint_brave_maps_to_brave_api() {
         let v = translate_provider_hint(Some("brave"));
         assert_eq!(v, Some(vec!["brave_api".to_string()]));
+    }
+
+    #[test]
+    fn provider_hint_unsupported_returns_empty_for_auto_pick() {
+        // The adapter intentionally treats unknown historical hints as "auto"
+        // (empty list) so that eggsearch can pick a provider.
+        assert_eq!(
+            translate_provider_hint(Some("unsupported_historical")),
+            Some(vec![])
+        );
     }
 
     #[test]
@@ -208,12 +232,11 @@ mod tests {
     /// can debug.
     #[tokio::test]
     async fn web_search_unavailable_returns_actionable_error() {
-        crate::search_backend::state::install_search_config(
-            crate::config::schema::SearchConfig {
-                backend: Some(crate::config::schema::SearchBackendConfig::Eggsearch),
-                ..Default::default()
-            },
-        );
+        crate::search_backend::state::reset_for_tests();
+        crate::search_backend::state::install_search_config(crate::config::schema::SearchConfig {
+            backend: Some(crate::config::schema::SearchBackendConfig::Eggsearch),
+            ..Default::default()
+        });
         let res = super::super::dispatch_web_search(&serde_json::json!({"query": "test"})).await;
         let err = res.expect_err("should be unavailable");
         let msg = err.to_string();

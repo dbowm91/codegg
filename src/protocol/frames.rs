@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::core::{CoreEvent, CoreResponse, EventEnvelope, RequestEnvelope, CoreRequest};
+use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse, EventEnvelope, RequestEnvelope};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientHello {

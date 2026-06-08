@@ -110,7 +110,7 @@ impl Tool for BatchTool {
 
             if tool_name == "batch" {
                 return Err(ToolError::Execution(
-                    "the batch tool cannot call itself recursively".to_string()
+                    "the batch tool cannot call itself recursively".to_string(),
                 ));
             }
 

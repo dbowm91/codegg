@@ -213,7 +213,9 @@ pub fn merge_configs(configs: &[Config]) -> Config {
                         existing.ignore.clone_from(&watcher.ignore);
                     }
                     if watcher.debounce_duration_ms.is_some() {
-                        existing.debounce_duration_ms.clone_from(&watcher.debounce_duration_ms);
+                        existing
+                            .debounce_duration_ms
+                            .clone_from(&watcher.debounce_duration_ms);
                     }
                 }
                 None => merged.watcher = Some(watcher.clone()),
@@ -766,6 +768,9 @@ mod tests {
         let openai = providers.get("openai").unwrap();
         assert_eq!(openai.api_key.as_deref(), Some("key2"));
         assert_eq!(openai.base_url.as_deref(), Some("https://api.openai.com"));
-        assert!(matches!(openai.timeout, Some(crate::config::schema::ProviderTimeout::Ms(5000))));
+        assert!(matches!(
+            openai.timeout,
+            Some(crate::config::schema::ProviderTimeout::Ms(5000))
+        ));
     }
 }

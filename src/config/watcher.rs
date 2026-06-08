@@ -93,8 +93,7 @@ impl ConfigWatcher {
         while let Some(()) = self.rx.recv().await {
             sleep(self.debounce_duration).await;
 
-            while let Ok(()) = self.rx.try_recv() {
-            }
+            while let Ok(()) = self.rx.try_recv() {}
 
             let first_hash = Self::compute_config_hash();
             sleep(Duration::from_millis(100)).await;
@@ -203,7 +202,10 @@ mod tests {
             debounce_duration_ms: None,
         };
         let watcher = ConfigWatcher::new().with_config(&watcher_config);
-        assert_eq!(watcher.ignore_patterns, vec![".git".to_string(), "target".to_string()]);
+        assert_eq!(
+            watcher.ignore_patterns,
+            vec![".git".to_string(), "target".to_string()]
+        );
     }
 
     #[test]

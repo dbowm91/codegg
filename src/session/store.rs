@@ -2092,7 +2092,10 @@ impl UsageStore {
         Ok(())
     }
 
-    pub async fn get_session_usage(&self, session_id: &str) -> Result<Vec<UsageRecord>, StorageError> {
+    pub async fn get_session_usage(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<UsageRecord>, StorageError> {
         let rows: Vec<(String, String, String, String, i64, i64, i64, f64, i64)> = sqlx::query_as(
             r#"
             SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
@@ -2108,7 +2111,17 @@ impl UsageStore {
         Ok(rows
             .into_iter()
             .map(
-                |(id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp)| {
+                |(
+                    id,
+                    session_id,
+                    provider,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens,
+                    cost_usd,
+                    timestamp,
+                )| {
                     UsageRecord {
                         id,
                         session_id,
@@ -2125,8 +2138,14 @@ impl UsageStore {
             .collect())
     }
 
-    pub async fn get_all_usage(&self, limit: Option<usize>) -> Result<Vec<UsageRecord>, StorageError> {
-        let rows: Vec<(String, String, String, String, i64, i64, i64, f64, i64)> = if let Some(limit) = limit {
+    pub async fn get_all_usage(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<UsageRecord>, StorageError> {
+        let rows: Vec<(String, String, String, String, i64, i64, i64, f64, i64)> = if let Some(
+            limit,
+        ) = limit
+        {
             sqlx::query_as(
                 r#"
                 SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
@@ -2155,7 +2174,17 @@ impl UsageStore {
         Ok(rows
             .into_iter()
             .map(
-                |(id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp)| {
+                |(
+                    id,
+                    session_id,
+                    provider,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens,
+                    cost_usd,
+                    timestamp,
+                )| {
                     UsageRecord {
                         id,
                         session_id,
@@ -2243,8 +2272,9 @@ impl EventStore {
 
         rows.into_iter()
             .map(|(payload,)| {
-                serde_json::from_str::<super::events::SessionEvent>(&payload)
-                    .map_err(|e| StorageError::Database(format!("failed to deserialize event: {}", e)))
+                serde_json::from_str::<super::events::SessionEvent>(&payload).map_err(|e| {
+                    StorageError::Database(format!("failed to deserialize event: {}", e))
+                })
             })
             .collect()
     }

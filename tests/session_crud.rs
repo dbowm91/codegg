@@ -935,10 +935,7 @@ async fn test_import_session() {
         .await
         .unwrap();
 
-    let imported = session_store
-        .import_session(exported, None)
-        .await
-        .unwrap();
+    let imported = session_store.import_session(exported, None).await.unwrap();
 
     assert_ne!(imported.id, original_session.id);
     assert_eq!(imported.project_id, "proj_1");

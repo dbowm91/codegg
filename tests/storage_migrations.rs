@@ -74,12 +74,13 @@ async fn migration_rerun_resumes_after_mid_migration_failure() {
     .expect("failed to read final migration version");
     assert_eq!(final_version, 14, "expected latest migration version");
 
-    let allowed_paths_exists: i64 =
-        sqlx::query("SELECT COUNT(*) AS cnt FROM pragma_table_info('task') WHERE name = 'allowed_paths'")
-            .fetch_one(&pool)
-            .await
-            .expect("failed to inspect task schema")
-            .get("cnt");
+    let allowed_paths_exists: i64 = sqlx::query(
+        "SELECT COUNT(*) AS cnt FROM pragma_table_info('task') WHERE name = 'allowed_paths'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("failed to inspect task schema")
+    .get("cnt");
     assert_eq!(
         allowed_paths_exists, 1,
         "expected v14 schema change to be present"

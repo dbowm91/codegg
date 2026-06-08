@@ -312,7 +312,9 @@ impl OAuthManager {
                     "authorization code has already been used".into(),
                 ));
             }
-            entry.or_insert(UsedCode { expires_at: code_expires_at });
+            entry.or_insert(UsedCode {
+                expires_at: code_expires_at,
+            });
         }
 
         if let Err(e) = self.save_used_codes_async().await {
@@ -531,8 +533,7 @@ impl OAuthManager {
             Some(k) => k,
             None => {
                 return Err(McpError::OAuth(
-                    "cannot load tokens: CODEGG_TOKEN_KEY environment variable not set"
-                        .to_string(),
+                    "cannot load tokens: CODEGG_TOKEN_KEY environment variable not set".to_string(),
                 ));
             }
         };
@@ -574,8 +575,7 @@ impl OAuthManager {
             Some(k) => k,
             None => {
                 return Err(McpError::OAuth(
-                    "cannot load tokens: CODEGG_TOKEN_KEY environment variable not set"
-                        .to_string(),
+                    "cannot load tokens: CODEGG_TOKEN_KEY environment variable not set".to_string(),
                 ));
             }
         };

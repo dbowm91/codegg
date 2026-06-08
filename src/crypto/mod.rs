@@ -32,8 +32,8 @@ pub struct EncryptedData {
 }
 
 fn derive_key_argon2id(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], CryptoError> {
-    let params = Params::new(19_456, 2, 1, Some(KEY_LEN))
-        .map_err(|_| CryptoError::KeyDerivationFailed)?;
+    let params =
+        Params::new(19_456, 2, 1, Some(KEY_LEN)).map_err(|_| CryptoError::KeyDerivationFailed)?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; KEY_LEN];
     argon2

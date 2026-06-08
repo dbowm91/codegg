@@ -227,11 +227,17 @@ impl PatternDetector {
         let mut scored: Vec<ScoredMemory> = by_topic
             .into_iter()
             .map(|(topic, topic_matches)| {
-                let base_score = topic_matches.iter().map(|m| m.score).sum::<f64>()
-                    / topic_matches.len() as f64;
+                let base_score =
+                    topic_matches.iter().map(|m| m.score).sum::<f64>() / topic_matches.len() as f64;
                 let frequency_bonus = (topic_matches.len() as f64 - 1.0) * 2.0;
-                let context_sample = topic_matches.first().map(|m| m.context.clone()).unwrap_or_default();
-                let pattern_type = topic_matches.first().map(|m| m.pattern_type.clone()).unwrap_or(PatternType::UserPreference);
+                let context_sample = topic_matches
+                    .first()
+                    .map(|m| m.context.clone())
+                    .unwrap_or_default();
+                let pattern_type = topic_matches
+                    .first()
+                    .map(|m| m.pattern_type.clone())
+                    .unwrap_or(PatternType::UserPreference);
 
                 let final_score = base_score + frequency_bonus;
 
@@ -245,7 +251,11 @@ impl PatternDetector {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         scored
     }
 }
@@ -330,7 +340,10 @@ mod tests {
         let matches = detector.detect_in_text(text);
 
         assert!(!matches.is_empty());
-        assert_eq!(matches[0].score, 5.0, "Don't use X should score base 8.0 - negation 3.0 = 5.0");
+        assert_eq!(
+            matches[0].score, 5.0,
+            "Don't use X should score base 8.0 - negation 3.0 = 5.0"
+        );
     }
 
     #[test]
@@ -340,7 +353,9 @@ mod tests {
         let matches = detector.detect_in_text(text);
 
         assert!(!matches.is_empty());
-        assert!(matches.iter().any(|m| m.pattern_type == PatternType::NamingPattern));
+        assert!(matches
+            .iter()
+            .any(|m| m.pattern_type == PatternType::NamingPattern));
     }
 
     #[test]

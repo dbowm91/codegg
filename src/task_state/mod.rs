@@ -184,12 +184,10 @@ impl TodoState {
         }
         self.items = items;
         self.revision += 1;
-        let all_done = self.items.iter().all(|i| {
-            matches!(
-                i.status,
-                TodoStatus::Completed | TodoStatus::Cancelled
-            )
-        });
+        let all_done = self
+            .items
+            .iter()
+            .all(|i| matches!(i.status, TodoStatus::Completed | TodoStatus::Cancelled));
         self.reminder_pending = !all_done;
         Ok(())
     }
@@ -207,12 +205,9 @@ impl TodoState {
     }
 
     pub fn is_all_done(&self) -> bool {
-        self.items.iter().all(|i| {
-            matches!(
-                i.status,
-                TodoStatus::Completed | TodoStatus::Cancelled
-            )
-        })
+        self.items
+            .iter()
+            .all(|i| matches!(i.status, TodoStatus::Completed | TodoStatus::Cancelled))
     }
 
     pub fn compact_projection(&self, policy: &TaskStatePolicy) -> Option<String> {
@@ -273,7 +268,8 @@ impl TodoState {
                     parts.push(format!("blocked: {}", item.content));
                 }
                 result.push_str(&parts.join("; "));
-                result.push_str(". Continue from the active item unless the user changes direction.");
+                result
+                    .push_str(". Continue from the active item unless the user changes direction.");
             }
             TodoMode::ExplicitTodo => {
                 result.push_str("Active todo state:\n");
@@ -287,7 +283,9 @@ impl TodoState {
                     };
                     result.push_str(&format!("- {}: {}\n", status, item.content));
                 }
-                result.push_str("Continue from the in-progress item unless the user changes direction.");
+                result.push_str(
+                    "Continue from the in-progress item unless the user changes direction.",
+                );
             }
             TodoMode::GuidedCurrentTask => {
                 let unfinished_display: Vec<&TodoItem> = if expose_completed {
@@ -300,7 +298,10 @@ impl TodoState {
                         "Current task: {}. Do this task only. Report a blocker if unable to continue.",
                         active.content
                     ));
-                    if let Some(next) = unfinished_display.iter().find(|i| i.status == TodoStatus::Pending) {
+                    if let Some(next) = unfinished_display
+                        .iter()
+                        .find(|i| i.status == TodoStatus::Pending)
+                    {
                         result.push_str(&format!("\nNext task: {}.", next.content));
                     }
                 } else if let Some(first) = unfinished_display.first() {
@@ -354,7 +355,9 @@ pub fn build_todo_reminder(todo: &TodoState, policy: &TaskStatePolicy) -> Option
     if todo.items.is_empty() {
         return None;
     }
-    if !todo.reminder_pending && todo.tool_calls_since_injection < policy.inject_after_tool_calls.unwrap_or(usize::MAX) {
+    if !todo.reminder_pending
+        && todo.tool_calls_since_injection < policy.inject_after_tool_calls.unwrap_or(usize::MAX)
+    {
         return None;
     }
     todo.compact_projection(policy)
@@ -531,7 +534,7 @@ mod tests {
         let items = vec![make_item("1", "Task A", TodoStatus::InProgress)];
         state.replace_from_model(items, &policy).unwrap();
         assert_eq!(state.items.len(), 1);
-        
+
         state.replace_from_model(vec![], &policy).unwrap();
         assert!(state.items.is_empty());
         assert_eq!(state.revision, 2);

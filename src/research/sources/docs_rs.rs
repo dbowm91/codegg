@@ -44,13 +44,11 @@ impl DocsRsSource {
         let mut item_path = None;
 
         const STOP_WORDS: &[&str] = &[
-            "the", "and", "for", "what", "which", "this", "that", "are", "is",
-            "was", "were", "how", "why", "where", "when", "does", "has", "can",
-            "could", "should", "would", "may", "might", "must", "shall", "will",
-            "tell", "about", "best", "use", "with", "from", "into", "than",
-            "evaluate", "look", "check", "give", "show", "find", "search",
-            "compare", "review", "analyze", "examine", "consider", "think",
-            "module",
+            "the", "and", "for", "what", "which", "this", "that", "are", "is", "was", "were",
+            "how", "why", "where", "when", "does", "has", "can", "could", "should", "would", "may",
+            "might", "must", "shall", "will", "tell", "about", "best", "use", "with", "from",
+            "into", "than", "evaluate", "look", "check", "give", "show", "find", "search",
+            "compare", "review", "analyze", "examine", "consider", "think", "module",
         ];
 
         for word in &words {
@@ -81,7 +79,8 @@ impl DocsRsSource {
             for word in &words {
                 let w = word.to_lowercase().trim_end_matches("::").to_string();
                 if w.len() >= 3
-                    && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                    && w.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
                     && !STOP_WORDS.contains(&w.as_str())
                 {
                     crate_name = Some(w);
@@ -111,9 +110,7 @@ impl DocsRsSource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "HTTP {status} for {url}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("HTTP {status} for {url}")));
         }
 
         let content_length = response.content_length().map(|v| v as usize);
@@ -217,10 +214,7 @@ impl ResearchSourceAdapter for DocsRsSource {
                             } else {
                                 None
                             };
-                            match self
-                                .fetch_docs(&crate_name, item_path.as_deref())
-                                .await
-                            {
+                            match self.fetch_docs(&crate_name, item_path.as_deref()).await {
                                 Ok(source) => sources.push(source),
                                 Err(e) => {
                                     eprintln!("Warning: docs.rs fetch failed: {}", e);
@@ -239,10 +233,7 @@ impl ResearchSourceAdapter for DocsRsSource {
                     match self.fetch_docs(&crate_name, item_path.as_deref()).await {
                         Ok(source) => sources.push(source),
                         Err(e) => {
-                            eprintln!(
-                                "Warning: docs.rs fetch failed for '{}': {}",
-                                crate_name, e
-                            );
+                            eprintln!("Warning: docs.rs fetch failed for '{}': {}", crate_name, e);
                         }
                     }
                 }

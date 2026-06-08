@@ -399,5 +399,3 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef> {
         .iter()
         .find(|s| s.extensions.contains(&ext))
 }
-
-

@@ -1,8 +1,8 @@
 use crate::error::ProviderError;
 use crate::provider::sse_parser::parse_anthropic_buffer_with_state;
 use crate::provider::{
-    create_http_client, ChatRequest, ContentPart, EventStream, Message, ModelInfo,
-    Provider, MAX_BUFFER_SIZE,
+    create_http_client, ChatRequest, ContentPart, EventStream, Message, ModelInfo, Provider,
+    MAX_BUFFER_SIZE,
 };
 use async_trait::async_trait;
 use futures::stream::unfold;
@@ -233,9 +233,11 @@ impl Provider for AnthropicProvider {
             (stream, buffer, current_tool, args_buffer),
             |(mut stream, mut buffer, mut current_tool, mut args_buffer)| async move {
                 loop {
-                    if let Some(event) =
-                        parse_anthropic_buffer_with_state(&mut buffer, &mut current_tool, &mut args_buffer)
-                    {
+                    if let Some(event) = parse_anthropic_buffer_with_state(
+                        &mut buffer,
+                        &mut current_tool,
+                        &mut args_buffer,
+                    ) {
                         return Some((event, (stream, buffer, current_tool, args_buffer)));
                     }
 
@@ -263,9 +265,11 @@ impl Provider for AnthropicProvider {
                             if buffer.is_empty() {
                                 return None;
                             }
-                            if let Some(event) =
-                                parse_anthropic_buffer_with_state(&mut buffer, &mut current_tool, &mut args_buffer)
-                            {
+                            if let Some(event) = parse_anthropic_buffer_with_state(
+                                &mut buffer,
+                                &mut current_tool,
+                                &mut args_buffer,
+                            ) {
                                 return Some((event, (stream, buffer, current_tool, args_buffer)));
                             }
                             return None;

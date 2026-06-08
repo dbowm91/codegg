@@ -48,7 +48,9 @@ use crossterm::event::KeyEvent;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, Wrap,
+};
 use ratatui::Frame;
 use std::collections::HashMap;
 #[allow(unused_imports)]
@@ -481,9 +483,8 @@ impl App {
                 }
             }
         }
-        let resolution = crate::theme::ThemeResolutionConfig::from_config(
-            cfg.and_then(|c| c.theme.as_ref()),
-        );
+        let resolution =
+            crate::theme::ThemeResolutionConfig::from_config(cfg.and_then(|c| c.theme.as_ref()));
         let theme = theme_registry.resolve_tui_arc(&resolution);
 
         Self {
@@ -879,9 +880,7 @@ impl App {
         if let Some(saved) = self.read_persisted_model_id() {
             if self.agent_state.models.iter().any(|m| m == &saved) {
                 self.agent_state.current_model = saved.clone();
-                if let Some(idx) =
-                    self.agent_state.models.iter().position(|m| m == &saved)
-                {
+                if let Some(idx) = self.agent_state.models.iter().position(|m| m == &saved) {
                     self.agent_state.model_idx = idx;
                 }
                 self.dialog_state.model_dialog.set_current(&saved);
@@ -899,10 +898,7 @@ impl App {
         if let Some(prefs) = self.preferences.clone() {
             let id = theme_id.to_string();
             tokio::spawn(async move {
-                if let Err(e) = prefs
-                    .set(crate::storage::KEY_THEME_ACTIVE, &id)
-                    .await
-                {
+                if let Err(e) = prefs.set(crate::storage::KEY_THEME_ACTIVE, &id).await {
                     tracing::warn!("failed to persist theme to user_preferences: {}", e);
                 }
             });
@@ -925,10 +921,9 @@ impl App {
         config.theme = Some(theme_cfg);
 
         if let Err(e) = config.save() {
-            self.messages_state.toasts.error(&format!(
-                "Theme applied, but failed to save config: {}",
-                e
-            ));
+            self.messages_state
+                .toasts
+                .error(&format!("Theme applied, but failed to save config: {}", e));
         }
     }
 
@@ -939,10 +934,7 @@ impl App {
         if let Some(prefs) = self.preferences.clone() {
             let id = model.to_string();
             tokio::spawn(async move {
-                if let Err(e) = prefs
-                    .set(crate::storage::KEY_MODEL_LAST_USED, &id)
-                    .await
-                {
+                if let Err(e) = prefs.set(crate::storage::KEY_MODEL_LAST_USED, &id).await {
                     tracing::warn!("failed to persist model to user_preferences: {}", e);
                 }
             });
@@ -975,7 +967,8 @@ impl App {
     fn read_persisted_model_id(&self) -> Option<String> {
         let prefs = self.preferences.as_ref()?;
         match tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(prefs.get(crate::storage::KEY_MODEL_LAST_USED))
+            tokio::runtime::Handle::current()
+                .block_on(prefs.get(crate::storage::KEY_MODEL_LAST_USED))
         }) {
             Ok(v) => v,
             Err(e) => {
@@ -1119,9 +1112,11 @@ impl App {
                 self.messages_state.messages.finalize_streaming();
                 match serde_json::from_str::<serde_json::Value>(&arguments) {
                     Ok(args_val) => {
-                        self.messages_state
-                            .messages
-                            .add_tool_call(tool_id.clone(), tool_name, args_val);
+                        self.messages_state.messages.add_tool_call(
+                            tool_id.clone(),
+                            tool_name,
+                            args_val,
+                        );
                         self.messages_state
                             .messages
                             .mark_tool_call_running(&tool_id);
@@ -1129,7 +1124,8 @@ impl App {
                     Err(e) => {
                         tracing::warn!(
                             "Failed to parse remote tool call arguments for {}: {}",
-                            tool_name, e
+                            tool_name,
+                            e
                         );
                         self.messages_state.messages.add_tool_call(
                             tool_id.clone(),
@@ -1242,10 +1238,7 @@ impl App {
         // overwrite the leftmost column with their own text.
         let bordered = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(0),
-            ])
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
             .split(main_area);
         let main_area_inner = bordered[1];
         self.left_border_area = Some(bordered[0]);
@@ -1464,8 +1457,12 @@ impl App {
 
         if footer_area.height > 0 {
             let footer_bottom_y = footer_area.y + footer_area.height - 1;
-            self.bottom_border_area =
-                Some(Rect::new(footer_area.x, footer_bottom_y, footer_area.width, 1));
+            self.bottom_border_area = Some(Rect::new(
+                footer_area.x,
+                footer_bottom_y,
+                footer_area.width,
+                1,
+            ));
         }
         if header_area.height > 0 {
             // Corner cells: top-left, top-right, bottom-left, bottom-right.
@@ -1584,10 +1581,10 @@ impl App {
         frame.render_widget(&self.messages_state.messages, content_area);
 
         if self.scrollbar_area.is_some() {
-            let mut state =
-                self.messages_state
-                    .messages
-                    .scrollbar_state(scrollbar_area.height as usize);
+            let mut state = self
+                .messages_state
+                .messages
+                .scrollbar_state(scrollbar_area.height as usize);
             frame.render_stateful_widget(
                 Scrollbar::default()
                     .orientation(ScrollbarOrientation::VerticalRight)
@@ -2218,9 +2215,7 @@ impl App {
                     .theme_picker
                     .as_ref()
                     .and_then(|p| p.preview_original_id())
-                    .unwrap_or_else(|| {
-                        crate::theme::registry::DEFAULT_THEME_ID.to_string()
-                    });
+                    .unwrap_or_else(|| crate::theme::registry::DEFAULT_THEME_ID.to_string());
                 if let Some(theme) = self.theme_registry.get_tui(&target) {
                     self.ui_state.theme = Arc::new(theme);
                 }
@@ -3728,9 +3723,15 @@ impl App {
                     }
                     _ => {
                         // Treat bare text as goal set (e.g., /goal fix the bug)
-                        if !subcmd.is_empty() && subcmd != "set" && subcmd != "from-file"
-                            && subcmd != "show" && subcmd != "pause" && subcmd != "resume"
-                            && subcmd != "clear" && subcmd != "done" && subcmd != "checkpoint"
+                        if !subcmd.is_empty()
+                            && subcmd != "set"
+                            && subcmd != "from-file"
+                            && subcmd != "show"
+                            && subcmd != "pause"
+                            && subcmd != "resume"
+                            && subcmd != "clear"
+                            && subcmd != "done"
+                            && subcmd != "checkpoint"
                             && subcmd != "budget"
                         {
                             // The whole query is the goal text
@@ -3744,14 +3745,14 @@ impl App {
                                     });
                                 }
                             } else {
-                                self.messages_state.toasts.warning(
-                                    "Usage: /goal <text> or /goal set <text>",
-                                );
+                                self.messages_state
+                                    .toasts
+                                    .warning("Usage: /goal <text> or /goal set <text>");
                             }
                         } else {
-                            self.messages_state.toasts.warning(
-                                "Usage: /goal <text> or /goal set <text>",
-                            );
+                            self.messages_state
+                                .toasts
+                                .warning("Usage: /goal <text> or /goal set <text>");
                         }
                     }
                 }
@@ -3771,14 +3772,12 @@ impl App {
                             return;
                         }
                         let item_id = format!("plan-{}", uuid::Uuid::new_v4().to_string());
-                        let mut plan = self
-                            .session_state_derived
-                            .plan
-                            .clone()
-                            .unwrap_or(crate::session::events::AgentPlan {
+                        let mut plan = self.session_state_derived.plan.clone().unwrap_or(
+                            crate::session::events::AgentPlan {
                                 items: Vec::new(),
                                 updated_at: chrono::Utc::now(),
-                            });
+                            },
+                        );
                         plan.items.push(crate::session::events::AgentPlanItem {
                             id: item_id,
                             text: args.to_string(),
@@ -3803,20 +3802,16 @@ impl App {
                             if let Some(ref mut plan) = self.session_state_derived.plan {
                                 if let Some(item) = plan.items.get_mut(idx) {
                                     item.status = status;
-                                    self.messages_state.toasts.info(&format!(
-                                        "Plan item {} marked as {}",
-                                        idx,
-                                        subcmd
-                                    ));
+                                    self.messages_state
+                                        .toasts
+                                        .info(&format!("Plan item {} marked as {}", idx, subcmd));
                                 } else {
                                     self.messages_state
                                         .toasts
                                         .warning(&format!("Plan item {} not found", idx));
                                 }
                             } else {
-                                self.messages_state
-                                    .toasts
-                                    .warning("No active plan");
+                                self.messages_state.toasts.warning("No active plan");
                             }
                         } else {
                             self.messages_state
@@ -3841,26 +3836,36 @@ impl App {
                                     .map(|(i, item)| {
                                         let icon = match item.status {
                                             crate::session::events::PlanItemStatus::Done => "[x]",
-                                            crate::session::events::PlanItemStatus::InProgress => "[>]",
-                                            crate::session::events::PlanItemStatus::Skipped => "[-]",
-                                            crate::session::events::PlanItemStatus::Blocked => "[?]",
-                                            crate::session::events::PlanItemStatus::Pending => "[ ]",
+                                            crate::session::events::PlanItemStatus::InProgress => {
+                                                "[>]"
+                                            }
+                                            crate::session::events::PlanItemStatus::Skipped => {
+                                                "[-]"
+                                            }
+                                            crate::session::events::PlanItemStatus::Blocked => {
+                                                "[?]"
+                                            }
+                                            crate::session::events::PlanItemStatus::Pending => {
+                                                "[ ]"
+                                            }
                                         };
                                         format!("{} {} {}", i, icon, item.text)
                                     })
                                     .collect();
-                                self.messages_state
-                                    .toasts
-                                    .info(&format!("Plan ({} items):\n{}", plan.items.len(), items.join("\n")));
+                                self.messages_state.toasts.info(&format!(
+                                    "Plan ({} items):\n{}",
+                                    plan.items.len(),
+                                    items.join("\n")
+                                ));
                             }
                         } else {
                             self.messages_state.toasts.info("No active plan");
                         }
                     }
                     _ => {
-                        self.messages_state.toasts.warning(
-                            "Usage: /plan [add <text>|done <i>|skip <i>|block <i>|clear]",
-                        );
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /plan [add <text>|done <i>|skip <i>|block <i>|clear]");
                     }
                 }
             }
@@ -3887,18 +3892,12 @@ impl App {
                     .split('/')
                     .next_back()
                     .unwrap_or(&self.agent_state.current_model);
-                lines.push(format!(
-                    "Model: {}",
-                    model_short
-                ));
+                lines.push(format!("Model: {}", model_short));
 
                 let agent_name = &self.agent_state.agents[self.agent_state.current_agent].name;
                 lines.push(format!("Agent: {}", agent_name));
 
-                lines.push(format!(
-                    "Files: {} changed",
-                    state.changed_files.len()
-                ));
+                lines.push(format!("Files: {} changed", state.changed_files.len()));
 
                 lines.push(format!(
                     "Context: {}%",
@@ -3912,9 +3911,7 @@ impl App {
             "/search" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 if query.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /search <query>");
+                    self.messages_state.toasts.warning("Usage: /search <query>");
                 } else {
                     self.messages_state.messages.search(&query);
                     let count = self.messages_state.messages.search_matches.len();
@@ -3951,9 +3948,7 @@ impl App {
             }
             "/diff" => {
                 let query = self.dialog_state.command_palette.query.clone();
-                let path_arg = query
-                    .trim_start_matches("/diff")
-                    .trim();
+                let path_arg = query.trim_start_matches("/diff").trim();
                 self.ui_state.command_mode = false;
                 if path_arg.is_empty() {
                     self.handle_diff_command(None);
@@ -3969,14 +3964,10 @@ impl App {
             }
             "/revert" => {
                 let query = self.dialog_state.command_palette.query.clone();
-                let path_arg = query
-                    .trim_start_matches("/revert")
-                    .trim();
+                let path_arg = query.trim_start_matches("/revert").trim();
                 self.ui_state.command_mode = false;
                 if path_arg.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .warning("Usage: /revert <path>");
+                    self.messages_state.toasts.warning("Usage: /revert <path>");
                 } else {
                     self.handle_revert_command(path_arg);
                 }
@@ -4094,9 +4085,7 @@ impl App {
             ClickTarget::Dialog => "Enter: Select | Esc: Close".to_string(),
             ClickTarget::Completion => "Tab/Enter: Complete | Esc: Close".to_string(),
             ClickTarget::Sidebar => "Click: Collapse section | Wheel: Scroll sidebar".to_string(),
-            ClickTarget::Scrollbar { .. } => {
-                "Click/drag: Jump | Scroll: Page up/down".to_string()
-            }
+            ClickTarget::Scrollbar { .. } => "Click/drag: Jump | Scroll: Page up/down".to_string(),
             ClickTarget::None => String::new(),
         };
     }
@@ -4224,7 +4213,9 @@ impl App {
         }
         if let Some(ref area) = self.scrollbar_area {
             if Self::in_rect(x, y, *area) {
-                let track_y = area.y.saturating_sub(self.viewport_area.map(|v| v.y).unwrap_or(0));
+                let track_y = area
+                    .y
+                    .saturating_sub(self.viewport_area.map(|v| v.y).unwrap_or(0));
                 return ClickTarget::Scrollbar {
                     track_y,
                     track_height: area.height,
@@ -4870,9 +4861,9 @@ impl App {
         if self.ui_state.dialog == Dialog::Theme {
             if let Some(picker) = self.dialog_state.theme_picker.as_ref() {
                 if picker.is_previewing() {
-                    let target = picker.preview_original_id().unwrap_or_else(|| {
-                        crate::theme::registry::DEFAULT_THEME_ID.to_string()
-                    });
+                    let target = picker
+                        .preview_original_id()
+                        .unwrap_or_else(|| crate::theme::registry::DEFAULT_THEME_ID.to_string());
                     if let Some(theme) = self.theme_registry.get_tui(&target) {
                         self.ui_state.theme = Arc::new(theme);
                     }
@@ -5141,10 +5132,11 @@ impl App {
             }
             Dialog::ResearchBrowser => {
                 if self.dialog_state.research_browser.is_none() {
-                    self.dialog_state.research_browser =
-                        Some(crate::tui::components::dialogs::research::ResearchBrowserDialog::new(
+                    self.dialog_state.research_browser = Some(
+                        crate::tui::components::dialogs::research::ResearchBrowserDialog::new(
                             Arc::clone(&self.ui_state.theme),
-                        ));
+                        ),
+                    );
                 }
                 if let Some(ref mut browser) = self.dialog_state.research_browser {
                     browser.set_theme(&self.ui_state.theme);
@@ -5302,18 +5294,14 @@ impl App {
                 if let Some(name) = parts.next() {
                     if self.apply_theme(name) {
                         self.persist_theme_selection(name);
-                        self.messages_state
-                            .toasts
-                            .info(&format!("Theme: {}", name));
+                        self.messages_state.toasts.info(&format!("Theme: {}", name));
                     } else {
                         self.messages_state
                             .toasts
                             .error(&format!("Unknown theme: {}", name));
                     }
                 } else {
-                    self.messages_state
-                        .toasts
-                        .error("Usage: /theme use <name>");
+                    self.messages_state.toasts.error("Usage: /theme use <name>");
                 }
             }
             "reload" => {
@@ -5328,16 +5316,12 @@ impl App {
                     // default theme id (Cyber Red).
                     self.apply_theme(crate::theme::registry::DEFAULT_THEME_ID);
                 }
-                self.messages_state
-                    .toasts
-                    .info("Theme registry reloaded");
+                self.messages_state.toasts.info("Theme registry reloaded");
             }
             "diagnostics" => {
                 let diags = self.theme_registry.diagnostics();
                 if diags.is_empty() {
-                    self.messages_state
-                        .toasts
-                        .info("No theme diagnostics");
+                    self.messages_state.toasts.info("No theme diagnostics");
                 } else {
                     for d in diags {
                         let level = match d.level {
@@ -5386,9 +5370,7 @@ impl App {
                         let text = msg.text_content();
                         if !text.is_empty() {
                             self.send_notification_speak_to_daemon(text);
-                            self.messages_state
-                                .toasts
-                                .info("TTS speak sent to daemon");
+                            self.messages_state.toasts.info("TTS speak sent to daemon");
                             return;
                         }
                     }
@@ -5490,9 +5472,7 @@ impl App {
                 tracing::debug!("core facade notification_stop failed: {}", e);
             }
         });
-        self.messages_state
-            .toasts
-            .info("TTS stop sent to daemon");
+        self.messages_state.toasts.info("TTS stop sent to daemon");
     }
 
     fn toggle_fullscreen(&mut self) {
@@ -5589,9 +5569,7 @@ impl App {
             let new_content = std::fs::read_to_string(&abs_path).unwrap_or_default();
 
             if old_content == new_content {
-                self.messages_state
-                    .toasts
-                    .info("No changes detected");
+                self.messages_state.toasts.info("No changes detected");
                 return;
             }
 
@@ -5613,9 +5591,7 @@ impl App {
                 Ok(o) if o.status.success() => {
                     let diff_text = String::from_utf8_lossy(&o.stdout).to_string();
                     if diff_text.is_empty() {
-                        self.messages_state
-                            .toasts
-                            .info("No changes detected");
+                        self.messages_state.toasts.info("No changes detected");
                         return;
                     }
                     self.process_msg(TuiMsg::OpenDiffDialog {
@@ -5701,9 +5677,7 @@ impl App {
                             .info(&format!("Failed tests: {}", summary));
                     }
                     _ => {
-                        self.messages_state
-                            .toasts
-                            .info("No failed tests");
+                        self.messages_state.toasts.info("No failed tests");
                     }
                 }
             }
@@ -5720,9 +5694,7 @@ impl App {
         let git_root = match crate::worktree::find_git_root(&project_dir) {
             Some(r) => r,
             None => {
-                self.messages_state
-                    .toasts
-                    .error("Not in a git repository");
+                self.messages_state.toasts.error("Not in a git repository");
                 return;
             }
         };
@@ -5979,8 +5951,9 @@ impl App {
             .info(&format!("Starting research: {}", question));
 
         tokio::spawn(async move {
-            let service =
-                crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+            let service = crate::research::service::ResearchService::new(std::path::PathBuf::from(
+                &project_dir,
+            ));
             match service
                 .answer_for_agent(&question, parsed_mode, parsed_depth)
                 .await
@@ -6703,9 +6676,10 @@ impl App {
         &mut self,
         session_id: &str,
     ) -> Result<Vec<crate::session::message::Message>, AppError> {
-        let core_client = self.core_client.clone().ok_or_else(|| {
-            AppError::Tui("core client unavailable for message load".to_string())
-        })?;
+        let core_client = self
+            .core_client
+            .clone()
+            .ok_or_else(|| AppError::Tui("core client unavailable for message load".to_string()))?;
         let request = crate::core::new_request(
             uuid::Uuid::new_v4().to_string(),
             CoreRequest::SessionMessagesLoad {
@@ -6758,13 +6732,12 @@ impl App {
     }
 
     pub async fn load_tasks_via_core(&mut self) -> Result<Vec<serde_json::Value>, AppError> {
-        let core_client = self.core_client.clone().ok_or_else(|| {
-            AppError::Tui("core client unavailable for task list".to_string())
-        })?;
-        let request = crate::core::new_request(
-            uuid::Uuid::new_v4().to_string(),
-            CoreRequest::TaskList,
-        );
+        let core_client = self
+            .core_client
+            .clone()
+            .ok_or_else(|| AppError::Tui("core client unavailable for task list".to_string()))?;
+        let request =
+            crate::core::new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::TaskList);
         match core_client.request(request).await {
             Ok(crate::protocol::core::CoreResponse::Json { data }) => {
                 let tasks = data
@@ -6805,7 +6778,9 @@ impl App {
             InitialSessionRequest::Attach { session_id } => {
                 let req = crate::core::new_request(
                     uuid::Uuid::new_v4().to_string(),
-                    CoreRequest::SessionAttach { session_id: session_id.clone() },
+                    CoreRequest::SessionAttach {
+                        session_id: session_id.clone(),
+                    },
                 );
                 match core_client.request(req).await {
                     Ok(CoreResponse::Session { session }) => {
@@ -6891,10 +6866,7 @@ impl App {
                         );
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "load_initial_session_via_core(New): request failed: {}",
-                            e
-                        );
+                        tracing::warn!("load_initial_session_via_core(New): request failed: {}", e);
                     }
                 }
             }
@@ -7782,14 +7754,11 @@ impl App {
 
         let goal = derived.goal.as_deref().unwrap_or("(no goal set)");
         let model = self.agent_state.current_model.clone();
-        let branch = session
-            .map(|s| s.directory.clone())
-            .unwrap_or_default();
+        let branch = session.map(|s| s.directory.clone()).unwrap_or_default();
         let ctx_pct = if self.session_state.context_limit > 0 {
             format!(
                 "{:.0}%",
-                self.session_state.context_tokens as f64
-                    / self.session_state.context_limit as f64
+                self.session_state.context_tokens as f64 / self.session_state.context_limit as f64
                     * 100.0
             )
         } else {
@@ -7830,13 +7799,18 @@ impl App {
             md.push_str(&format!("- Branch/dir: {}\n", branch));
         }
         if !derived.changed_files.is_empty() {
-            md.push_str(&format!("- Changed files: {}\n", derived.changed_files.len()));
+            md.push_str(&format!(
+                "- Changed files: {}\n",
+                derived.changed_files.len()
+            ));
         }
         match &derived.test_state {
             crate::session::state::TestState::Passed { command, .. } => {
                 md.push_str(&format!("- Tests: passed ({})\n", command));
             }
-            crate::session::state::TestState::Failed { command, summary, .. } => {
+            crate::session::state::TestState::Failed {
+                command, summary, ..
+            } => {
                 md.push_str(&format!("- Tests: FAILED ({}) - {}\n", command, summary));
             }
             crate::session::state::TestState::Running { command } => {
@@ -7870,7 +7844,10 @@ impl App {
 
         md.push_str("## Latest test result\n");
         match &derived.test_state {
-            crate::session::state::TestState::Passed { command, duration_ms } => {
+            crate::session::state::TestState::Passed {
+                command,
+                duration_ms,
+            } => {
                 md.push_str(&format!(
                     "PASSED: {} ({:.1}s)\n",
                     command,
@@ -8162,7 +8139,11 @@ fn format_token_line(
     } else {
         0.0
     };
-    let output_prefix = if live_output_tokens > 0 { "↑~" } else { "↑" };
+    let output_prefix = if live_output_tokens > 0 {
+        "↑~"
+    } else {
+        "↑"
+    };
     format!(
         "↓{} {}{} ({}) / {} {:.0}%",
         format_token_short(token_in),
@@ -8197,17 +8178,15 @@ pub(crate) fn format_goal_status_line(g: &crate::bus::events::GoalSnapshot) -> S
         budget_parts.push(format!("/{}", format_token_short(max.max(0) as u64)));
     }
     if let Some(max) = g.budget.max_turns {
-        budget_parts.push(format!(
-            "turns {}/{}",
-            g.usage.turns_used, max
-        ));
+        budget_parts.push(format!("turns {}/{}", g.usage.turns_used, max));
     }
     if let Some(max) = g.budget.max_tool_calls {
         let over = g.usage.tool_calls >= max;
         budget_parts.push(format!(
             "{}calls {}/{}",
             if over { "!" } else { "" },
-            g.usage.tool_calls, max
+            g.usage.tool_calls,
+            max
         ));
     }
     if let Some(max) = g.budget.max_wallclock_secs {
@@ -8215,7 +8194,8 @@ pub(crate) fn format_goal_status_line(g: &crate::bus::events::GoalSnapshot) -> S
         budget_parts.push(format!(
             "{}wall {}s/{}s",
             if over { "!" } else { "" },
-            g.usage.wallclock_secs, max
+            g.usage.wallclock_secs,
+            max
         ));
     }
     let budget = if budget_parts.is_empty() {
@@ -8406,7 +8386,10 @@ mod theme_integration_tests {
             .await
             .unwrap();
         prefs
-            .set(crate::storage::KEY_MODEL_LAST_USED, "opencode_zen/nemotron-3-super-free")
+            .set(
+                crate::storage::KEY_MODEL_LAST_USED,
+                "opencode_zen/nemotron-3-super-free",
+            )
             .await
             .unwrap();
 
@@ -8435,8 +8418,8 @@ mod theme_integration_tests {
 #[cfg(test)]
 mod remote_core_loader_tests {
     use super::*;
-    use crate::core::InprocCoreClient;
     use crate::core::new_request;
+    use crate::core::InprocCoreClient;
     use crate::protocol::core::{CoreRequest, CoreResponse};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -8470,11 +8453,12 @@ mod remote_core_loader_tests {
 
         assert_eq!(app.agent_state.models, models);
 
-        if let CoreResponse::ModelsSnapshot { models: expected, .. } =
-            Arc::clone(&app.core_client.unwrap())
-                .request(new_request("snap2".into(), CoreRequest::SnapshotModels))
-                .await
-                .unwrap()
+        if let CoreResponse::ModelsSnapshot {
+            models: expected, ..
+        } = Arc::clone(&app.core_client.unwrap())
+            .request(new_request("snap2".into(), CoreRequest::SnapshotModels))
+            .await
+            .unwrap()
         {
             assert_eq!(models, expected);
         } else {
@@ -8620,7 +8604,10 @@ mod remote_core_loader_tests {
             .session
             .as_ref()
             .expect("Continue should pick a session");
-        assert_eq!(sess.id, id_b, "Continue should pick the most recent session");
+        assert_eq!(
+            sess.id, id_b,
+            "Continue should pick the most recent session"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -8681,7 +8668,10 @@ mod remote_core_loader_tests {
             .as_ref()
             .expect("Fork should result in a session being attached");
         // The most-recent session after a fork is the new fork, not the parent.
-        assert_ne!(sess.id, parent_id, "Fork should attach the new fork, not the parent");
+        assert_ne!(
+            sess.id, parent_id,
+            "Fork should attach the new fork, not the parent"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -8729,7 +8719,8 @@ mod remote_core_loader_tests {
             session_id: "any".into(),
         })
         .await;
-        app.load_initial_session_via_core(InitialSessionRequest::None).await;
+        app.load_initial_session_via_core(InitialSessionRequest::None)
+            .await;
 
         assert!(app.session_state.session.is_none());
     }

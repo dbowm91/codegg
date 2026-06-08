@@ -1151,7 +1151,7 @@ pub struct SearchProviderConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderConfig, SearchConfig, SearchBackendConfig, EggsearchConfig, Config};
+    use super::{Config, EggsearchConfig, ProviderConfig, SearchBackendConfig, SearchConfig};
 
     #[test]
     fn test_provider_api_key_supports_master_key_for_decryption() {

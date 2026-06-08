@@ -264,7 +264,11 @@ impl Widget for &ConnectDialog {
                     format!("> {}_", " ".repeat(60))
                 } else {
                     let display_key = if self.api_key_input.len() > 60 {
-                        format!("{}...{}", &self.api_key_input[..10], &self.api_key_input[self.api_key_input.len() - 47..])
+                        format!(
+                            "{}...{}",
+                            &self.api_key_input[..10],
+                            &self.api_key_input[self.api_key_input.len() - 47..]
+                        )
                     } else {
                         self.api_key_input.clone()
                     };
@@ -528,7 +532,11 @@ impl Component for ConnectDialog {
                     format!("> {}_", " ".repeat(60))
                 } else {
                     let display_key = if self.api_key_input.len() > 60 {
-                        format!("{}...{}", &self.api_key_input[..10], &self.api_key_input[self.api_key_input.len() - 47..])
+                        format!(
+                            "{}...{}",
+                            &self.api_key_input[..10],
+                            &self.api_key_input[self.api_key_input.len() - 47..]
+                        )
                     } else {
                         self.api_key_input.clone()
                     };

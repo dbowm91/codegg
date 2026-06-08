@@ -8,9 +8,7 @@ use codegg::tui::components::component::Component;
 use codegg::tui::components::dialogs::command::CommandPalette;
 use codegg::tui::components::dialogs::question::{QuestionDialog, QuestionSpec};
 use codegg::tui::components::dialogs::theme::ThemePickerDialog;
-use codegg::tui::components::messages::{
-    highlight_code, MessageRole, MessagesWidget, MsgPart,
-};
+use codegg::tui::components::messages::{highlight_code, MessageRole, MessagesWidget, MsgPart};
 use codegg::tui::components::prompt::PromptWidget;
 use codegg::tui::layout::{LayoutConfig, TuiLayout};
 use codegg::tui::theme::{all_themes, find_theme, theme_names, Theme};
@@ -1424,7 +1422,11 @@ fn test_status_bar_widget_set_undo_message() {
 
     widget.set_undo_message("Session deleted");
     assert!(widget.undo_message.is_some());
-    assert!(widget.undo_message.as_ref().unwrap().contains("Session deleted"));
+    assert!(widget
+        .undo_message
+        .as_ref()
+        .unwrap()
+        .contains("Session deleted"));
 }
 
 #[test]
@@ -1494,9 +1496,9 @@ fn test_permission_dialog_cursor_navigation() {
 
 #[test]
 fn test_permission_dialog_persistent_confirmation_flow() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use codegg::permission::PermissionRequest;
     use codegg::tui::components::dialogs::permission::PermissionDialog;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     let request = PermissionRequest {
         tool: "bash".to_string(),
@@ -1562,9 +1564,9 @@ fn test_permission_dialog_non_ascii_args() {
 
 #[test]
 fn test_session_dialog_delete_requires_empty_filter() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use codegg::session::Session;
     use codegg::tui::components::dialogs::session::SessionDialog;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     let theme = Arc::new(Theme::dark());
     let mut dialog = SessionDialog::new(theme.clone());
@@ -1612,9 +1614,9 @@ fn test_session_dialog_delete_requires_empty_filter() {
 
 #[test]
 fn test_session_dialog_archive_requires_empty_filter() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use codegg::session::Session;
     use codegg::tui::components::dialogs::session::SessionDialog;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     let theme = Arc::new(Theme::dark());
     let mut dialog = SessionDialog::new(theme.clone());
@@ -1664,14 +1666,13 @@ fn test_session_dialog_archive_requires_empty_filter() {
 // Packet 3: App-level prompt input tests
 // ============================================================================
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use codegg::tui::app::App;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
 fn test_prompt_widget_insert_char() {
     let theme = codegg::tui::theme::Theme::dark();
-    let mut widget =
-        codegg::tui::components::prompt::PromptWidget::new(std::sync::Arc::new(theme));
+    let mut widget = codegg::tui::components::prompt::PromptWidget::new(std::sync::Arc::new(theme));
 
     widget.insert_char('A');
     assert_eq!(widget.get_text(), "A");
@@ -1685,8 +1686,7 @@ fn test_prompt_widget_insert_char() {
 #[test]
 fn test_prompt_widget_paste_at_empty() {
     let theme = codegg::tui::theme::Theme::dark();
-    let mut widget =
-        codegg::tui::components::prompt::PromptWidget::new(std::sync::Arc::new(theme));
+    let mut widget = codegg::tui::components::prompt::PromptWidget::new(std::sync::Arc::new(theme));
 
     widget.paste("hello\nWorld".to_string());
     assert_eq!(widget.get_text(), "hello\nWorld");
@@ -1696,8 +1696,7 @@ fn test_prompt_widget_paste_at_empty() {
 #[test]
 fn test_prompt_widget_paste_at_cursor() {
     let theme = codegg::tui::theme::Theme::dark();
-    let mut widget =
-        codegg::tui::components::prompt::PromptWidget::new(std::sync::Arc::new(theme));
+    let mut widget = codegg::tui::components::prompt::PromptWidget::new(std::sync::Arc::new(theme));
 
     widget.set_text("a".to_string());
     widget.set_cursor(1);
@@ -1709,8 +1708,7 @@ fn test_prompt_widget_paste_at_cursor() {
 #[test]
 fn test_prompt_widget_paste_multiline() {
     let theme = codegg::tui::theme::Theme::dark();
-    let mut widget =
-        codegg::tui::components::prompt::PromptWidget::new(std::sync::Arc::new(theme));
+    let mut widget = codegg::tui::components::prompt::PromptWidget::new(std::sync::Arc::new(theme));
 
     widget.paste("line1\nline2\nline3".to_string());
     assert_eq!(widget.get_text(), "line1\nline2\nline3");
@@ -1944,8 +1942,8 @@ fn test_app_set_models_syncs_current_model() {
 
 #[test]
 fn test_cycle_model_forward_syncs_dialog_state() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use codegg::tui::app::App;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     let mut app = App::new_for_testing("/tmp/test".to_string());
     let models = vec![
@@ -1969,8 +1967,8 @@ fn test_cycle_model_forward_syncs_dialog_state() {
 
 #[test]
 fn test_cycle_model_backward_syncs_dialog_state() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use codegg::tui::app::App;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     let mut app = App::new_for_testing("/tmp/test".to_string());
     let models = vec![
@@ -2076,9 +2074,9 @@ fn test_mouse_click_out_of_bounds() {
 
 #[test]
 fn test_app_mouse_click_selects_model() {
-    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use codegg::tui::app::App;
     use codegg::tui::Dialog;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
     let mut app = App::new_for_testing("/tmp/test".to_string());
@@ -2113,9 +2111,9 @@ fn test_app_mouse_click_selects_model() {
 
 #[test]
 fn test_app_mouse_click_selects_second_model() {
-    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use codegg::tui::app::App;
     use codegg::tui::Dialog;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
     let mut app = App::new_for_testing("/tmp/test".to_string());
@@ -2149,9 +2147,9 @@ fn test_app_mouse_click_selects_second_model() {
 
 #[test]
 fn test_app_mouse_click_with_filter() {
-    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use codegg::tui::app::App;
     use codegg::tui::Dialog;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use ratatui::layout::Rect;
 
     let mut app = App::new_for_testing("/tmp/test".to_string());

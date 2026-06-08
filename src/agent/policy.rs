@@ -58,10 +58,9 @@ impl ExecutionPolicy {
         let max_tool_result_tokens = default_max_tool_result_tokens(profile);
 
         let initial_tool_mode = default_tool_exposure(profile);
-        let allow_bootstrap_tool = matches!(
-            initial_tool_mode,
-            ToolExposureMode::MinimalWithDiscovery
-        ) || profile.requires_explicit_tool_contract;
+        let allow_bootstrap_tool =
+            matches!(initial_tool_mode, ToolExposureMode::MinimalWithDiscovery)
+                || profile.requires_explicit_tool_contract;
         let allow_post_tool_continue_nudge = profile.requires_post_tool_continue_nudge;
 
         ExecutionPolicy {
@@ -206,7 +205,10 @@ mod tests {
         assert_eq!(policy.reserved_output_tokens, 8_000);
         assert_eq!(policy.max_tool_result_tokens, 4_000);
         assert!(policy.max_parallel_tools <= 2);
-        assert_eq!(policy.initial_tool_mode, ToolExposureMode::MinimalWithDiscovery);
+        assert_eq!(
+            policy.initial_tool_mode,
+            ToolExposureMode::MinimalWithDiscovery
+        );
         assert!(policy.allow_bootstrap_tool);
         assert!(policy.allow_post_tool_continue_nudge);
         assert!(!policy.supports_late_system_messages);
@@ -223,7 +225,10 @@ mod tests {
         assert_eq!(policy.reserved_output_tokens, 4_000);
         assert_eq!(policy.max_tool_result_tokens, 2_000);
         assert_eq!(policy.max_parallel_tools, 1);
-        assert_eq!(policy.initial_tool_mode, ToolExposureMode::MinimalWithDiscovery);
+        assert_eq!(
+            policy.initial_tool_mode,
+            ToolExposureMode::MinimalWithDiscovery
+        );
     }
 
     #[test]
@@ -276,9 +281,24 @@ mod tests {
         use crate::provider::ToolDefinition;
 
         let defs = vec![
-            ToolDefinition { name: "bash".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
-            ToolDefinition { name: "read".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
-            ToolDefinition { name: "write".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+            ToolDefinition {
+                name: "bash".into(),
+                description: "".into(),
+                parameters: serde_json::json!({}),
+                defer_loading: None,
+            },
+            ToolDefinition {
+                name: "read".into(),
+                description: "".into(),
+                parameters: serde_json::json!({}),
+                defer_loading: None,
+            },
+            ToolDefinition {
+                name: "write".into(),
+                description: "".into(),
+                parameters: serde_json::json!({}),
+                defer_loading: None,
+            },
         ];
 
         let mut profile = infer_builtin_profile("claude-sonnet-4-20250514");
@@ -294,8 +314,18 @@ mod tests {
         use crate::provider::ToolDefinition;
 
         let defs = vec![
-            ToolDefinition { name: "bash".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
-            ToolDefinition { name: "read".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+            ToolDefinition {
+                name: "bash".into(),
+                description: "".into(),
+                parameters: serde_json::json!({}),
+                defer_loading: None,
+            },
+            ToolDefinition {
+                name: "read".into(),
+                description: "".into(),
+                parameters: serde_json::json!({}),
+                defer_loading: None,
+            },
         ];
 
         let mut profile = infer_builtin_profile("claude-sonnet-4-20250514");
@@ -310,8 +340,18 @@ mod tests {
         use crate::provider::ToolDefinition;
 
         let defs = vec![
-            ToolDefinition { name: "bash".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
-            ToolDefinition { name: "read".into(), description: "".into(), parameters: serde_json::json!({}), defer_loading: None },
+            ToolDefinition {
+                name: "bash".into(),
+                description: "".into(),
+                parameters: serde_json::json!({}),
+                defer_loading: None,
+            },
+            ToolDefinition {
+                name: "read".into(),
+                description: "".into(),
+                parameters: serde_json::json!({}),
+                defer_loading: None,
+            },
         ];
 
         let mut profile = infer_builtin_profile("claude-sonnet-4-20250514");

@@ -26,8 +26,7 @@ static TITLE_HREF: Lazy<Regex> = Lazy::new(|| {
 });
 
 static SNIPPET: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?s)<p[^>]*class="[^"]*\bs\b[^"]*"[^>]*>(.*?)</p>"#)
-        .expect("SNIPPET regex")
+    Regex::new(r#"(?s)<p[^>]*class="[^"]*\bs\b[^"]*"[^>]*>(.*?)</p>"#).expect("SNIPPET regex")
 });
 
 static TAG_STRIP: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").expect("TAG_STRIP regex"));
@@ -102,12 +101,22 @@ pub fn parse_mojeek_html(html: &str, limit: usize) -> Result<Vec<SearchHit>, Sea
         let Some(href_cap) = TITLE_HREF.captures(block) else {
             continue;
         };
-        let url = href_cap.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
+        let url = href_cap
+            .get(1)
+            .map(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
         if url.is_empty() {
             continue;
         }
-        let title = href_cap.get(2).map(|m| clean(m.as_str())).unwrap_or_default();
-        let snippet = SNIPPET.captures(block).and_then(|c| c.get(1).map(|m| clean(m.as_str()))).unwrap_or_default();
+        let title = href_cap
+            .get(2)
+            .map(|m| clean(m.as_str()))
+            .unwrap_or_default();
+        let snippet = SNIPPET
+            .captures(block)
+            .and_then(|c| c.get(1).map(|m| clean(m.as_str())))
+            .unwrap_or_default();
         out.push(SearchHit {
             title,
             url,

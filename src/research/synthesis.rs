@@ -113,8 +113,7 @@ pub fn render_human_full_report(
                 for claim in group {
                     let sid = short_id(&claim.id);
                     let conf = format!("{:?}", claim.confidence);
-                    writeln!(out, "- **[{sid}]** {} (confidence: {conf})", claim.text)
-                        .unwrap();
+                    writeln!(out, "- **[{sid}]** {} (confidence: {conf})", claim.text).unwrap();
                     if !claim.evidence_ids.is_empty() {
                         let refs: Vec<String> = claim
                             .evidence_ids
@@ -144,8 +143,13 @@ pub fn render_human_full_report(
         writeln!(out).unwrap();
         for claim in &risks {
             let sid = short_id(&claim.id);
-            writeln!(out, "- **[{sid}]** {} ({})", claim.text, claim.claim_type.as_str())
-                .unwrap();
+            writeln!(
+                out,
+                "- **[{sid}]** {} ({})",
+                claim.text,
+                claim.claim_type.as_str()
+            )
+            .unwrap();
         }
         writeln!(out).unwrap();
     }
@@ -266,8 +270,11 @@ pub fn render_human_brief(
     // Contradiction count
     if !contradictions.is_empty() {
         let count = contradictions.len();
-        writeln!(out, "**{count} contradiction(s) detected** — see full report.")
-            .unwrap();
+        writeln!(
+            out,
+            "**{count} contradiction(s) detected** — see full report."
+        )
+        .unwrap();
     }
 
     out
@@ -461,13 +468,7 @@ pub fn render_agent_handoff(
         writeln!(out).unwrap();
         for c in &relevant {
             let sid = short_id(&c.id);
-            writeln!(
-                out,
-                "- **[{sid}]** ({}) {}",
-                c.claim_type.as_str(),
-                c.text
-            )
-            .unwrap();
+            writeln!(out, "- **[{sid}]** ({}) {}", c.claim_type.as_str(), c.text).unwrap();
         }
         writeln!(out).unwrap();
     }

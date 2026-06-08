@@ -150,7 +150,9 @@ pub fn parse_halloy_theme(
         toml::from_str(input).map_err(|e| ThemeError::TomlParse(e.to_string()))?;
 
     let source = match source_path {
-        Some(p) => ThemeSource::HalloyFile { path: p.to_path_buf() },
+        Some(p) => ThemeSource::HalloyFile {
+            path: p.to_path_buf(),
+        },
         None => ThemeSource::Inline,
     };
 
@@ -166,15 +168,15 @@ pub fn parse_halloy_theme(
     theme.name = id.clone();
     theme.source = source;
 
-    if let Some(bg) = parse_color(&file.general.background, &mut diagnostics, &id, "general.background") {
-        theme.base.background = bg;
-    }
-    if let Some(fg) = parse_text_color(
-        &file.text.primary,
+    if let Some(bg) = parse_color(
+        &file.general.background,
         &mut diagnostics,
         &id,
-        "text.primary",
+        "general.background",
     ) {
+        theme.base.background = bg;
+    }
+    if let Some(fg) = parse_text_color(&file.text.primary, &mut diagnostics, &id, "text.primary") {
         theme.base.foreground = fg;
         // `text.primary` is the canonical "default text" color. Use it for
         // user / assistant / system message text so chat reads consistently
@@ -188,12 +190,9 @@ pub fn parse_halloy_theme(
     // slot for "muted / secondary text". `text.secondary` would be
     // redundant — its value is usually a darker shade of the theme's
     // accent and clashing when used as a muted foreground.
-    if let Some(muted) = parse_text_color(
-        &file.text.tertiary,
-        &mut diagnostics,
-        &id,
-        "text.tertiary",
-    ) {
+    if let Some(muted) =
+        parse_text_color(&file.text.tertiary, &mut diagnostics, &id, "text.tertiary")
+    {
         theme.text.muted = muted;
     }
     // Uniform border: pick one source and use it for both `ui.border` and
@@ -279,12 +278,7 @@ pub fn parse_halloy_theme(
         theme.status.success = c;
         theme.diff.added = c;
     }
-    if let Some(c) = parse_text_color(
-        &file.text.warning,
-        &mut diagnostics,
-        &id,
-        "text.warning",
-    ) {
+    if let Some(c) = parse_text_color(&file.text.warning, &mut diagnostics, &id, "text.warning") {
         theme.status.warning = c;
         theme.diff.modified = c;
     }
@@ -349,7 +343,12 @@ pub fn parse_halloy_theme(
         theme.agents.coder = c;
     }
 
-    if let Some(c) = parse_color(&file.formatting.highlight, &mut diagnostics, &id, "formatting.highlight") {
+    if let Some(c) = parse_color(
+        &file.formatting.highlight,
+        &mut diagnostics,
+        &id,
+        "formatting.highlight",
+    ) {
         theme.agents.coder = c;
     }
 
@@ -526,7 +525,9 @@ mod tests {
         "###;
         let (theme, diags) = parse_halloy_theme(input, None, &fallback()).unwrap();
         assert_eq!(theme.base.foreground, Rgb::new(0xab, 0xcd, 0xef));
-        assert!(diags.iter().all(|d| d.field.as_deref() != Some("text.primary")));
+        assert!(diags
+            .iter()
+            .all(|d| d.field.as_deref() != Some("text.primary")));
     }
 
     #[test]

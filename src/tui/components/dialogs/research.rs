@@ -329,7 +329,10 @@ impl ResearchBrowserDialog {
                 };
 
                 let line = Line::from(vec![
-                    Span::styled(format!(" {} ", status_icon.0), Style::default().fg(status_icon.1)),
+                    Span::styled(
+                        format!(" {} ", status_icon.0),
+                        Style::default().fg(status_icon.1),
+                    ),
                     Span::styled(short_id.clone(), Style::default().fg(self.theme.muted)),
                     Span::styled("  ", Style::default()),
                     Span::styled(question_display, style),
@@ -482,7 +485,11 @@ impl ResearchBrowserDialog {
                     Confidence::Low => self.theme.error,
                 };
                 let display = if claim.text.len() > 60 {
-                    format!("    [{}] {}...", claim.claim_type.as_str(), &claim.text[..60])
+                    format!(
+                        "    [{}] {}...",
+                        claim.claim_type.as_str(),
+                        &claim.text[..60]
+                    )
                 } else {
                     format!("    [{}] {}", claim.claim_type.as_str(), claim.text)
                 };

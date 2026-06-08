@@ -232,7 +232,13 @@ mod tests {
 
         let created = manager.create(input).await.unwrap();
         let result = manager
-            .resize(&created.id, ShellResize { cols: 120, rows: 40 })
+            .resize(
+                &created.id,
+                ShellResize {
+                    cols: 120,
+                    rows: 40,
+                },
+            )
             .await;
 
         assert!(result.is_ok());
@@ -245,7 +251,13 @@ mod tests {
     async fn test_resize_not_found() {
         let manager = create_test_manager();
         let result = manager
-            .resize("nonexistent-id", ShellResize { cols: 120, rows: 40 })
+            .resize(
+                "nonexistent-id",
+                ShellResize {
+                    cols: 120,
+                    rows: 40,
+                },
+            )
             .await;
 
         assert!(result.is_err());

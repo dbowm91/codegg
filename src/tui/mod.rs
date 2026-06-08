@@ -135,8 +135,8 @@ use std::io::{self, stdout};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::tui::app::SessionStatus;
 use crate::tui::app::state::AppMode;
+use crate::tui::app::SessionStatus;
 use md5;
 use rand;
 use std::fs::OpenOptions;
@@ -148,7 +148,11 @@ struct SidebarDiffStats {
     deletions: usize,
 }
 
-fn sidebar_diff_stats(project_dir: &str, path: &str, old_content: Option<&str>) -> SidebarDiffStats {
+fn sidebar_diff_stats(
+    project_dir: &str,
+    path: &str,
+    old_content: Option<&str>,
+) -> SidebarDiffStats {
     let abs_path = if std::path::Path::new(path).is_absolute() {
         std::path::PathBuf::from(path)
     } else {
@@ -1884,9 +1888,9 @@ async fn handle_goal_budget(app: &mut app::App, session_id: String, subcommand: 
         let axis = parts.next().unwrap_or("").to_string();
         let value_str = parts.next().unwrap_or("").trim();
         if axis.is_empty() || value_str.is_empty() {
-            app.messages_state.toasts.warning(
-                "Usage: /goal budget raise <tokens|turns|tool-calls|wallclock> <n>",
-            );
+            app.messages_state
+                .toasts
+                .warning("Usage: /goal budget raise <tokens|turns|tool-calls|wallclock> <n>");
             return;
         }
         let value: i64 = match value_str.parse() {
@@ -1939,10 +1943,7 @@ async fn handle_goal_budget(app: &mut app::App, session_id: String, subcommand: 
             .await;
         match response {
             Ok(CoreResponse::Json { data }) => {
-                let status = data
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("ok");
+                let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("ok");
                 app.messages_state.toasts.info(&format!(
                     "Goal budget: {} = {} (status: {})",
                     label, value, status
@@ -1963,9 +1964,9 @@ async fn handle_goal_budget(app: &mut app::App, session_id: String, subcommand: 
         return;
     }
 
-    app.messages_state.toasts.warning(
-        "Usage: /goal budget [show | raise <axis> <n>]",
-    );
+    app.messages_state
+        .toasts
+        .warning("Usage: /goal budget [show | raise <axis> <n>]");
 }
 
 async fn handle_task_schedule(app: &mut app::App, interval_secs: u64, message: String) {
@@ -2206,7 +2207,10 @@ async fn handle_research_load_section(app: &mut app::App, run_id: String, sectio
                         plan.stopping_conditions.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
                         plan.expected_outputs.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
                     );
-                    Some((crate::tui::components::dialogs::research::ReportSection::Report, content))
+                    Some((
+                        crate::tui::components::dialogs::research::ReportSection::Report,
+                        content,
+                    ))
                 } else {
                     None
                 }
@@ -2217,14 +2221,30 @@ async fn handle_research_load_section(app: &mut app::App, run_id: String, sectio
         "Sources" => {
             if let Ok(bundle) = service.load_run(&run_id).await {
                 if bundle.sources.is_empty() {
-                    Some((crate::tui::components::dialogs::research::ReportSection::Brief, "No sources collected.".to_string()))
+                    Some((
+                        crate::tui::components::dialogs::research::ReportSection::Brief,
+                        "No sources collected.".to_string(),
+                    ))
                 } else {
-                    let lines: Vec<String> = bundle.sources.iter().enumerate().map(|(i, src)| {
-                        let title = src.title.as_deref().unwrap_or(&src.uri);
-                        format!("{}. {} [{:?}]\n   URI: {}",
-                            i + 1, title, src.source_type, src.uri)
-                    }).collect();
-                    Some((crate::tui::components::dialogs::research::ReportSection::Brief, lines.join("\n\n")))
+                    let lines: Vec<String> = bundle
+                        .sources
+                        .iter()
+                        .enumerate()
+                        .map(|(i, src)| {
+                            let title = src.title.as_deref().unwrap_or(&src.uri);
+                            format!(
+                                "{}. {} [{:?}]\n   URI: {}",
+                                i + 1,
+                                title,
+                                src.source_type,
+                                src.uri
+                            )
+                        })
+                        .collect();
+                    Some((
+                        crate::tui::components::dialogs::research::ReportSection::Brief,
+                        lines.join("\n\n"),
+                    ))
                 }
             } else {
                 None
@@ -2233,7 +2253,10 @@ async fn handle_research_load_section(app: &mut app::App, run_id: String, sectio
         "Claims" => {
             if let Ok(bundle) = service.load_run(&run_id).await {
                 if bundle.claims.is_empty() {
-                    Some((crate::tui::components::dialogs::research::ReportSection::AgentAnswer, "No claims derived.".to_string()))
+                    Some((
+                        crate::tui::components::dialogs::research::ReportSection::AgentAnswer,
+                        "No claims derived.".to_string(),
+                    ))
                 } else {
                     let lines: Vec<String> = bundle.claims.iter().map(|claim| {
                         format!("[{}] {} (confidence: {:?})\n   Evidence: {} sources\n   Caveats: {}",
@@ -2241,7 +2264,10 @@ async fn handle_research_load_section(app: &mut app::App, run_id: String, sectio
                             claim.evidence_ids.len(),
                             if claim.caveats.is_empty() { "none".to_string() } else { claim.caveats.join("; ") })
                     }).collect();
-                    Some((crate::tui::components::dialogs::research::ReportSection::AgentAnswer, lines.join("\n\n")))
+                    Some((
+                        crate::tui::components::dialogs::research::ReportSection::AgentAnswer,
+                        lines.join("\n\n"),
+                    ))
                 }
             } else {
                 None
@@ -2250,13 +2276,27 @@ async fn handle_research_load_section(app: &mut app::App, run_id: String, sectio
         "Contradictions" => {
             if let Ok(bundle) = service.load_run(&run_id).await {
                 if bundle.contradictions.is_empty() {
-                    Some((crate::tui::components::dialogs::research::ReportSection::Handoff, "No contradictions detected.".to_string()))
+                    Some((
+                        crate::tui::components::dialogs::research::ReportSection::Handoff,
+                        "No contradictions detected.".to_string(),
+                    ))
                 } else {
-                    let lines: Vec<String> = bundle.contradictions.iter().map(|c| {
-                        format!("[{:?}] {}\n   Claims: {}",
-                            c.severity, c.description, c.claim_ids.join(", "))
-                    }).collect();
-                    Some((crate::tui::components::dialogs::research::ReportSection::Handoff, lines.join("\n\n")))
+                    let lines: Vec<String> = bundle
+                        .contradictions
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "[{:?}] {}\n   Claims: {}",
+                                c.severity,
+                                c.description,
+                                c.claim_ids.join(", ")
+                            )
+                        })
+                        .collect();
+                    Some((
+                        crate::tui::components::dialogs::research::ReportSection::Handoff,
+                        lines.join("\n\n"),
+                    ))
                 }
             } else {
                 None
@@ -2269,7 +2309,9 @@ async fn handle_research_load_section(app: &mut app::App, run_id: String, sectio
         if let Some((section, content)) = result {
             browser.set_report_content(section, content);
         } else {
-            app.messages_state.toasts.warning("Could not load section content");
+            app.messages_state
+                .toasts
+                .warning("Could not load section content");
         }
     }
 }
@@ -2362,7 +2404,8 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
             }
         }
 
-        if !matches!(app.ui_state.mode, AppMode::RemoteCore { .. }) && app.prompt_state.pending_send {
+        if !matches!(app.ui_state.mode, AppMode::RemoteCore { .. }) && app.prompt_state.pending_send
+        {
             debug_log!("Event loop: pending_send=true, submitting through core facade");
             let Some(_) = app.core_client else {
                 app.prompt_state.pending_send = false;

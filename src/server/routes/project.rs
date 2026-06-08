@@ -104,8 +104,7 @@ pub async fn create_project(
             .map_err(AppError::Io)?;
     }
 
-    let git_root = crate::worktree::find_git_root(&full)
-        .map(|p| p.to_string_lossy().to_string());
+    let git_root = crate::worktree::find_git_root(&full).map(|p| p.to_string_lossy().to_string());
     let abs = full
         .canonicalize()
         .ok()
@@ -122,5 +121,3 @@ pub async fn create_project(
 
     Ok((StatusCode::CREATED, Json(info)))
 }
-
-

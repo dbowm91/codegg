@@ -250,10 +250,7 @@ impl ResearchStore {
     }
 
     /// Load research run metadata from SQLite.
-    pub async fn load_metadata(
-        &self,
-        run_id: &str,
-    ) -> Result<Option<ResearchMetadata>> {
+    pub async fn load_metadata(&self, run_id: &str) -> Result<Option<ResearchMetadata>> {
         let Some(pool) = &self.db_pool else {
             return Ok(None);
         };
@@ -521,8 +518,9 @@ mod tests {
         };
         store.append_source(&source).await.unwrap();
 
-        let sources: Vec<SourceRecord> =
-            read_jsonl(&tmp.path().join("run-src/sources.jsonl")).await.unwrap();
+        let sources: Vec<SourceRecord> = read_jsonl(&tmp.path().join("run-src/sources.jsonl"))
+            .await
+            .unwrap();
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].id, "src-1");
     }
@@ -547,8 +545,9 @@ mod tests {
         };
         store.append_evidence(&evidence).await.unwrap();
 
-        let evs: Vec<EvidenceSpan> =
-            read_jsonl(&tmp.path().join("run-ev/evidence.jsonl")).await.unwrap();
+        let evs: Vec<EvidenceSpan> = read_jsonl(&tmp.path().join("run-ev/evidence.jsonl"))
+            .await
+            .unwrap();
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].text, "some evidence");
     }
@@ -572,8 +571,9 @@ mod tests {
         };
         store.append_claim(&claim).await.unwrap();
 
-        let claims: Vec<ClaimRecord> =
-            read_jsonl(&tmp.path().join("run-cl/claims.jsonl")).await.unwrap();
+        let claims: Vec<ClaimRecord> = read_jsonl(&tmp.path().join("run-cl/claims.jsonl"))
+            .await
+            .unwrap();
         assert_eq!(claims.len(), 1);
         assert_eq!(claims[0].text, "a claim");
     }
@@ -586,7 +586,11 @@ mod tests {
         store.create_run(&request).await.unwrap();
 
         let path = store
-            .write_report("run-rpt", &ResearchOutputProfile::HumanFullReport, "# Report\nHello")
+            .write_report(
+                "run-rpt",
+                &ResearchOutputProfile::HumanFullReport,
+                "# Report\nHello",
+            )
             .await
             .unwrap();
         assert!(path.exists());

@@ -257,11 +257,7 @@ impl QuestionRegistry {
     /// by a different session.
     ///
     /// The check-and-remove is atomic via [`DashMap::remove_if`].
-    pub fn answer_question_scoped(
-        session_id: &str,
-        question_id: &str,
-        answers: String,
-    ) -> bool {
+    pub fn answer_question_scoped(session_id: &str, question_id: &str, answers: String) -> bool {
         let removed = QUESTION_REGISTRY
             .senders
             .remove_if(question_id, |_key, val| val.session_id == session_id);

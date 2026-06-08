@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-use tracing::{debug, warn};
 use crate::config::schema::CommandConfig;
+use tracing::{debug, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Command {
@@ -83,14 +83,14 @@ pub async fn load_command_from_file(path: &Path) -> Result<Command, String> {
 }
 
 pub fn load_command_from_file_sync(path: &Path) -> Result<Command, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read file: {}", e))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("failed to read file: {}", e))?;
     parse_command_content(path, &content)
 }
 
 fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> {
-    let (frontmatter, body) = parse_frontmatter(content)
-        .ok_or_else(|| "missing frontmatter".to_string())?;
+    let (frontmatter, body) =
+        parse_frontmatter(content).ok_or_else(|| "missing frontmatter".to_string())?;
 
     let name = path
         .file_stem()
@@ -112,7 +112,9 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
             )
         } else if let Ok(cfg) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) {
             (
-                cfg.get("description").and_then(|v| v.as_str()).map(String::from),
+                cfg.get("description")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 cfg.get("template")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
@@ -163,7 +165,7 @@ pub fn execute_command_template(template: &str, variables: &HashMap<String, Stri
     sorted_keys.sort();
     for key in sorted_keys {
         let value = variables.get(key).unwrap();
-        result = result.replace(&format!("{{{{{key}}}}}", ), value);
+        result = result.replace(&format!("{{{{{key}}}}}",), value);
         result = result.replace(&format!("{{{key}}}"), value);
     }
     result
@@ -227,8 +229,12 @@ mod tests {
     async fn test_load_command_from_file() {
         let tmp = tempfile::tempdir().unwrap();
         let content = "---\ndescription: A test command\nagent: build\ntemplate: \"Review the file: {file}\"\n---\nFallback body\n";
-        tokio::fs::write(tmp.path().join("mycommand.md"), content).await.unwrap();
-        let cmd = load_command_from_file(&tmp.path().join("mycommand.md")).await.unwrap();
+        tokio::fs::write(tmp.path().join("mycommand.md"), content)
+            .await
+            .unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("mycommand.md"))
+            .await
+            .unwrap();
         assert_eq!(cmd.name, "mycommand");
         assert_eq!(cmd.description, Some("A test command".to_string()));
         assert_eq!(cmd.agent, Some("build".to_string()));
@@ -238,16 +244,27 @@ mod tests {
     #[tokio::test]
     async fn test_load_command_uses_filename() {
         let tmp = tempfile::tempdir().unwrap();
-        tokio::fs::write(tmp.path().join("review.md"), "---\n---\nbody").await.unwrap();
-        let cmd = load_command_from_file(&tmp.path().join("review.md")).await.unwrap();
+        tokio::fs::write(tmp.path().join("review.md"), "---\n---\nbody")
+            .await
+            .unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("review.md"))
+            .await
+            .unwrap();
         assert_eq!(cmd.name, "review");
     }
 
     #[tokio::test]
     async fn test_load_command_fallback_to_body() {
         let tmp = tempfile::tempdir().unwrap();
-        tokio::fs::write(tmp.path().join("testcmd.md"), "---\ndescription: just desc\n---\nBody template here").await.unwrap();
-        let cmd = load_command_from_file(&tmp.path().join("testcmd.md")).await.unwrap();
+        tokio::fs::write(
+            tmp.path().join("testcmd.md"),
+            "---\ndescription: just desc\n---\nBody template here",
+        )
+        .await
+        .unwrap();
+        let cmd = load_command_from_file(&tmp.path().join("testcmd.md"))
+            .await
+            .unwrap();
         assert_eq!(cmd.template, "Body template here");
     }
 
@@ -262,7 +279,11 @@ mod tests {
     #[tokio::test]
     async fn test_load_command_missing_frontmatter() {
         let tmp = tempfile::tempdir().unwrap();
-        tokio::fs::write(tmp.path().join("nocfm.md"), "no frontmatter").await.unwrap();
-        assert!(load_command_from_file(&tmp.path().join("nocfm.md")).await.is_err());
+        tokio::fs::write(tmp.path().join("nocfm.md"), "no frontmatter")
+            .await
+            .unwrap();
+        assert!(load_command_from_file(&tmp.path().join("nocfm.md"))
+            .await
+            .is_err());
     }
 }

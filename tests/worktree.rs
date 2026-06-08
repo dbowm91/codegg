@@ -83,7 +83,10 @@ fn test_list_worktrees_parses_current_and_detached() {
     git(&["commit", "-m", "initial"], &repo_dir);
 
     let wt_dir_str = wt_dir.to_string_lossy().to_string();
-    git(&["worktree", "add", "-b", "feature/test", &wt_dir_str], &repo_dir);
+    git(
+        &["worktree", "add", "-b", "feature/test", &wt_dir_str],
+        &repo_dir,
+    );
     git(&["checkout", "HEAD^0"], &wt_dir);
 
     let trees = list_worktrees(&repo_dir).expect("list_worktrees failed");
@@ -125,7 +128,9 @@ fn test_create_and_remove_worktree() {
 
     let trees_after_create = list_worktrees(&repo_dir).expect("list_worktrees after create failed");
     assert!(
-        trees_after_create.iter().any(|t| t.path.ends_with("/wt-create-remove")),
+        trees_after_create
+            .iter()
+            .any(|t| t.path.ends_with("/wt-create-remove")),
         "created worktree not found in list"
     );
 
@@ -146,7 +151,10 @@ fn test_is_git_worktree_with_git_dir() {
     std::fs::create_dir_all(&git_dir).expect("failed to create .git dir");
 
     let result = codegg::worktree::is_git_worktree(temp_dir.path());
-    assert!(!result, "regular .git directory should not be detected as worktree");
+    assert!(
+        !result,
+        "regular .git directory should not be detected as worktree"
+    );
 }
 
 #[test]
@@ -156,7 +164,10 @@ fn test_is_git_worktree_with_git_file() {
     std::fs::write(&git_file, "gitdir: /tmp/fake-gitdir\n").expect("failed to create .git file");
 
     let result = codegg::worktree::is_git_worktree(temp_dir.path());
-    assert!(result, ".git file with gitdir: prefix should be detected as worktree");
+    assert!(
+        result,
+        ".git file with gitdir: prefix should be detected as worktree"
+    );
 }
 
 #[test]
@@ -164,7 +175,10 @@ fn test_is_git_worktree_non_git_dir() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
 
     let result = codegg::worktree::is_git_worktree(temp_dir.path());
-    assert!(!result, "non-git directory should not be detected as worktree");
+    assert!(
+        !result,
+        "non-git directory should not be detected as worktree"
+    );
 }
 
 #[test]
@@ -235,7 +249,10 @@ fn test_list_worktrees_symlink_worktree_path() {
 
     // Create worktree
     let wt_dir_str = wt_dir.to_string_lossy().to_string();
-    git(&["worktree", "add", "-b", "feature/test", &wt_dir_str], &repo_dir);
+    git(
+        &["worktree", "add", "-b", "feature/test", &wt_dir_str],
+        &repo_dir,
+    );
 
     // Create symlink to worktree
     #[cfg(unix)]
@@ -244,7 +261,10 @@ fn test_list_worktrees_symlink_worktree_path() {
     // Create another worktree that uses the symlink as its path
     let wt2_dir = temp_dir.path().join("wt2");
     let wt2_dir_str = wt2_dir.to_string_lossy().to_string();
-    git(&["worktree", "add", "-b", "feature/two", &wt2_dir_str], &repo_dir);
+    git(
+        &["worktree", "add", "-b", "feature/two", &wt2_dir_str],
+        &repo_dir,
+    );
 
     // List worktrees and verify detection works with symlinks
     let trees = list_worktrees(&repo_dir).expect("list_worktrees failed");

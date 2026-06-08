@@ -1,5 +1,20 @@
 # Codegg → Eggsearch Native Web Tool Replacement Handoff Plan
 
+> **Status: COMPLETED (Phases 1-11)**
+>
+> This plan was the original handoff for the eggsearch integration.
+> All 11 phases have been implemented and the integration is live
+> as of commit `c6dbb4b` (search_backend: complete phases 9 and
+> 10 (tests, docs, aliases)).
+>
+> For ongoing maintenance of the integration, see:
+>
+> - `architecture/search_backend.md` — current architecture
+> - `.opencode/skills/search_backend/SKILL.md` — current skill guide
+> - `plans/tighten_up.md` — follow-up tightening plan
+>
+> The body of this plan is preserved below as a historical record.
+
 ## Purpose
 
 Replace Codegg's current built-in `websearch` and `webfetch` implementations with thin native Codegg tool wrappers backed by the external `eggsearch` MCP server/crate. From the agent/model perspective, the tools should remain the familiar native Codegg tools:

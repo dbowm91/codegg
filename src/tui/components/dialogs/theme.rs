@@ -67,10 +67,7 @@ impl ThemePickerDialog {
                     .position(|t| t.name == crate::theme::registry::DEFAULT_THEME_ID)
             })
             .unwrap_or(0);
-        let preview = themes
-            .get(default_idx)
-            .cloned()
-            .unwrap_or_else(Theme::dark);
+        let preview = themes.get(default_idx).cloned().unwrap_or_else(Theme::dark);
         Self {
             theme: Arc::clone(&theme),
             themes,
@@ -463,10 +460,8 @@ mod tests {
 
     #[test]
     fn starts_in_inactive_preview_state() {
-        let picker = ThemePickerDialog::with_themes(
-            Arc::new(Theme::dark()),
-            make_themes(&["a", "b", "c"]),
-        );
+        let picker =
+            ThemePickerDialog::with_themes(Arc::new(Theme::dark()), make_themes(&["a", "b", "c"]));
         assert!(!picker.is_previewing());
         assert_eq!(picker.preview_original_id(), None);
     }
@@ -540,9 +535,13 @@ mod tests {
             make_themes(&["dark", "b", "c"]),
         );
         let msg = picker.handle_key(key(KeyCode::Down));
-        assert!(matches!(msg, Some(TuiMsg::ThemePreviewChanged { ref theme_id }) if theme_id == "b"));
+        assert!(
+            matches!(msg, Some(TuiMsg::ThemePreviewChanged { ref theme_id }) if theme_id == "b")
+        );
         let msg = picker.handle_key(key(KeyCode::Up));
-        assert!(matches!(msg, Some(TuiMsg::ThemePreviewChanged { ref theme_id }) if theme_id == "dark"));
+        assert!(
+            matches!(msg, Some(TuiMsg::ThemePreviewChanged { ref theme_id }) if theme_id == "dark")
+        );
     }
 
     #[test]
@@ -557,11 +556,7 @@ mod tests {
             }),
             make_themes(&["dark", "dracula", "midnight", "cyber-red"]),
         );
-        let names: Vec<&str> = picker
-            .themes
-            .iter()
-            .map(|t| t.name.as_str())
-            .collect();
+        let names: Vec<&str> = picker.themes.iter().map(|t| t.name.as_str()).collect();
         let highlighted = &names[picker.selected];
         assert_eq!(*highlighted, "dracula");
     }

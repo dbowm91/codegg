@@ -157,7 +157,8 @@ impl GitHubSource {
 
         // Extract github URLs from the question
         for word in question.split_whitespace() {
-            let w = word.trim_matches(|c: char| c == '<' || c == '>' || c == '\'' || c == '"' || c == '`');
+            let w = word
+                .trim_matches(|c: char| c == '<' || c == '>' || c == '\'' || c == '"' || c == '`');
             if w.starts_with("https://github.com/") || w.starts_with("github.com/") {
                 let url = if w.starts_with("https://") {
                     w.to_string()
@@ -181,8 +182,12 @@ impl GitHubSource {
             if parts.len() == 2
                 && !parts[0].is_empty()
                 && !parts[1].is_empty()
-                && parts[0].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                && parts[1].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                && parts[0]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                && parts[1]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             {
                 return Some((parts[0].to_string(), parts[1].to_string()));
             }
@@ -239,9 +244,7 @@ impl GitHubSource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "HTTP {status} for {url}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("HTTP {status} for {url}")));
         }
 
         let gh_repo: GitHubRepo = response
@@ -292,7 +295,11 @@ impl GitHubSource {
             id: uuid::Uuid::new_v4().to_string(),
             run_id: String::new(),
             uri: gh_repo.html_url.clone(),
-            title: Some(format!("{} - {}", gh_repo.full_name, gh_repo.description.as_deref().unwrap_or(""))),
+            title: Some(format!(
+                "{} - {}",
+                gh_repo.full_name,
+                gh_repo.description.as_deref().unwrap_or("")
+            )),
             source_type: SourceType::GitHubFile,
             source_quality: SourceQuality::SourceCode,
             retrieved_at: Utc::now(),
@@ -337,9 +344,7 @@ impl GitHubSource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "HTTP {status} for {url}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("HTTP {status} for {url}")));
         }
 
         let file: GitHubFile = response
@@ -391,12 +396,7 @@ impl GitHubSource {
         })
     }
 
-    async fn fetch_issue(
-        &self,
-        owner: &str,
-        repo: &str,
-        number: u64,
-    ) -> Result<SourceRecord> {
+    async fn fetch_issue(&self, owner: &str, repo: &str, number: u64) -> Result<SourceRecord> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/issues/{}",
             owner, repo, number
@@ -422,9 +422,7 @@ impl GitHubSource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "HTTP {status} for {url}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("HTTP {status} for {url}")));
         }
 
         let issue: GitHubIssue = response
@@ -442,10 +440,7 @@ impl GitHubSource {
             }
         }
         if let Some(ref labels) = issue.labels {
-            let label_names: Vec<String> = labels
-                .iter()
-                .filter_map(|l| l.name.clone())
-                .collect();
+            let label_names: Vec<String> = labels.iter().filter_map(|l| l.name.clone()).collect();
             if !label_names.is_empty() {
                 notes.push(format!("labels: {}", label_names.join(", ")));
             }
@@ -471,10 +466,7 @@ impl GitHubSource {
         Ok(SourceRecord {
             id: uuid::Uuid::new_v4().to_string(),
             run_id: String::new(),
-            uri: format!(
-                "https://github.com/{}/{}/issues/{}",
-                owner, repo, number
-            ),
+            uri: format!("https://github.com/{}/{}/issues/{}", owner, repo, number),
             title: Some(format!("#{} - {}", issue.number, issue.title)),
             source_type: SourceType::GitHubIssue,
             source_quality: SourceQuality::MaintainerComment,
@@ -482,10 +474,7 @@ impl GitHubSource {
             published_at,
             content_hash: None,
             locator: SourceLocator::Url {
-                url: format!(
-                    "https://github.com/{}/{}/issues/{}",
-                    owner, repo, number
-                ),
+                url: format!("https://github.com/{}/{}/issues/{}", owner, repo, number),
                 heading: None,
             },
             notes,
@@ -565,10 +554,7 @@ impl ResearchSourceAdapter for GitHubSource {
                             }
                         }
                     } else {
-                        match self
-                            .fetch_repo_metadata(&parsed.owner, &parsed.repo)
-                            .await
-                        {
+                        match self.fetch_repo_metadata(&parsed.owner, &parsed.repo).await {
                             Ok(source) => sources.push(source),
                             Err(e) => {
                                 eprintln!("Warning: failed to fetch repo metadata: {}", e);
@@ -621,8 +607,9 @@ mod tests {
 
     #[test]
     fn test_parse_github_url_file() {
-        let parsed =
-            GitHubSource::parse_github_url("https://github.com/rust-lang/rust/blob/main/src/lib.rs");
+        let parsed = GitHubSource::parse_github_url(
+            "https://github.com/rust-lang/rust/blob/main/src/lib.rs",
+        );
         assert!(parsed.is_some());
         let p = parsed.unwrap();
         assert_eq!(p.owner, "rust-lang");

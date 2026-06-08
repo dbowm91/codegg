@@ -97,7 +97,11 @@ impl McpConnectionManager {
         let state = Arc::clone(&self.state);
         let reconnect_needed = Arc::clone(&self.reconnect_needed);
 
-        let old_cancel = self.heartbeat_cancellation.lock().await.replace(cancel_token);
+        let old_cancel = self
+            .heartbeat_cancellation
+            .lock()
+            .await
+            .replace(cancel_token);
         if let Some(old) = old_cancel {
             old.cancel();
         }
@@ -829,7 +833,9 @@ impl RemoteClient {
                 let ips = ips.clone();
                 tokio::task::spawn_blocking(move || revalidate_dns(&host, port, &ips))
                     .await
-                    .map_err(|e| McpError::Connection(format!("DNS revalidation task failed: {}", e)))?
+                    .map_err(|e| {
+                        McpError::Connection(format!("DNS revalidation task failed: {}", e))
+                    })?
                     .map_err(McpError::Connection)?;
             }
 

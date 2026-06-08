@@ -152,9 +152,7 @@ pub enum SourceLocator {
         heading: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
-    TextSpan {
-        label: String,
-    },
+    TextSpan { label: String },
 }
 
 // -- Evidence --

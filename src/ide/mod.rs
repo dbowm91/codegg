@@ -29,7 +29,10 @@ fn run_command_with_timeout(program: &str, args: &[&str]) -> Result<(), String> 
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    return Err(format!("{} timed out after {:?}", program, IDE_COMMAND_TIMEOUT));
+                    return Err(format!(
+                        "{} timed out after {:?}",
+                        program, IDE_COMMAND_TIMEOUT
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -146,7 +149,9 @@ fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<()
         original_file
             .write_all(original_content.as_bytes())
             .map_err(|e| format!("failed to write temp original: {}", e))?;
-        original_file.flush().map_err(|e| format!("failed to flush temp original: {}", e))?;
+        original_file
+            .flush()
+            .map_err(|e| format!("failed to flush temp original: {}", e))?;
     }
 
     {
@@ -168,11 +173,14 @@ fn open_diff_vscode(original_content: &str, modified_content: &str) -> Result<()
     drop(original_temp);
     drop(modified_temp);
 
-    run_command_with_timeout("code", &[
-        "--diff",
-        original_path.to_string_lossy().as_ref(),
-        modified_path.to_string_lossy().as_ref(),
-    ])?;
+    run_command_with_timeout(
+        "code",
+        &[
+            "--diff",
+            original_path.to_string_lossy().as_ref(),
+            modified_path.to_string_lossy().as_ref(),
+        ],
+    )?;
 
     Ok(())
 }
@@ -234,7 +242,9 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
                 .ok()
                 .and_then(|entries| entries.filter_map(|e| e.ok()).find(|e| e.path().is_dir()))
                 .map(|e| e.path().join("bin\\idea.bat"));
-            tool_path.and_then(|p| p.exists().then_some(p)).map(|p| p.to_string_lossy().to_string())
+            tool_path
+                .and_then(|p| p.exists().then_some(p))
+                .map(|p| p.to_string_lossy().to_string())
         } else {
             None
         }
@@ -244,11 +254,14 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
 
     let tool = tool.unwrap_or_else(|| "idea".to_string());
 
-    run_command_with_timeout(&tool, &[
-        "diff",
-        original_path.to_string_lossy().as_ref(),
-        modified_path.to_string_lossy().as_ref(),
-    ])?;
+    run_command_with_timeout(
+        &tool,
+        &[
+            "diff",
+            original_path.to_string_lossy().as_ref(),
+            modified_path.to_string_lossy().as_ref(),
+        ],
+    )?;
 
     drop(guard);
     Ok(())
@@ -257,8 +270,9 @@ fn open_diff_jetbrains(original: &str, modified: &str) -> Result<(), String> {
 fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(), String> {
     register_panic_cleanup();
     let mut guard = TempFilesGuard::new();
-    let has_code = std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
-        .any(|p| p.join("code").exists() || p.join("code.exe").exists() || p.join("code.cmd").exists());
+    let has_code = std::env::split_paths(&std::env::var("PATH").unwrap_or_default()).any(|p| {
+        p.join("code").exists() || p.join("code.exe").exists() || p.join("code.cmd").exists()
+    });
 
     if has_code {
         let original_temp = Builder::new()
@@ -299,20 +313,24 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
         drop(original_temp);
         drop(modified_temp);
 
-    let _output = run_command_with_timeout("code", &[
-            "--diff",
-            original_path.to_string_lossy().as_ref(),
-            modified_path.to_string_lossy().as_ref(),
-        ]);
+        let _output = run_command_with_timeout(
+            "code",
+            &[
+                "--diff",
+                original_path.to_string_lossy().as_ref(),
+                modified_path.to_string_lossy().as_ref(),
+            ],
+        );
 
-    if _output.is_ok() {
+        if _output.is_ok() {
             drop(guard);
             return Ok(());
         }
     }
 
-    let has_idea = std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
-        .any(|p| p.join("idea").exists() || p.join("idea.bat").exists() || p.join("idea.cmd").exists());
+    let has_idea = std::env::split_paths(&std::env::var("PATH").unwrap_or_default()).any(|p| {
+        p.join("idea").exists() || p.join("idea.bat").exists() || p.join("idea.cmd").exists()
+    });
 
     if has_idea {
         let original_temp = Builder::new()
@@ -353,11 +371,14 @@ fn open_diff_generic(original_content: &str, modified_content: &str) -> Result<(
         drop(original_temp);
         drop(modified_temp);
 
-        let output = run_command_with_timeout("idea", &[
-            "diff",
-            original_path.to_string_lossy().as_ref(),
-            modified_path.to_string_lossy().as_ref(),
-        ]);
+        let output = run_command_with_timeout(
+            "idea",
+            &[
+                "diff",
+                original_path.to_string_lossy().as_ref(),
+                modified_path.to_string_lossy().as_ref(),
+            ],
+        );
 
         if output.is_ok() {
             drop(guard);

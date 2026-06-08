@@ -54,9 +54,7 @@ pub async fn bootstrap_search_backend(
 ///
 /// Returns a summary of what happened so the doctor command can
 /// surface it.
-pub async fn bootstrap_eggsearch(
-    config: &Config,
-) -> BootstrapReport {
+pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
     let mut report = BootstrapReport::default();
 
     // Step 1: resolve the effective search config.
@@ -76,13 +74,7 @@ pub async fn bootstrap_eggsearch(
         return report;
     }
 
-    let egg_cfg = match effective.eggsearch.as_ref() {
-        Some(cfg) => cfg,
-        None => {
-            report.note = Some("no [search.eggsearch] section configured".to_string());
-            return report;
-        }
-    };
+    let egg_cfg = effective.eggsearch.clone().unwrap_or_default();
     if egg_cfg.enabled == Some(false) {
         report.note = Some("[search.eggsearch] enabled = false".to_string());
         return report;
@@ -99,7 +91,7 @@ pub async fn bootstrap_eggsearch(
         let args = egg_cfg.args();
         let env = egg_cfg.env();
         let timeout = egg_cfg.timeout_ms();
-        report.command = Some(format!("{} {}", command, args.join(" ")));
+        report.command = Some(egg_cfg.command().to_string());
 
         match mcp_service
             .connect_stdio(&server_name, &command, &args, env.clone(), timeout)
@@ -265,6 +257,7 @@ impl BootstrapReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::schema::EggsearchConfig;
 
     #[test]
     fn effective_search_config_returns_default_when_unset() {
@@ -308,5 +301,71 @@ mod tests {
         let joined = lines.join("\n");
         assert!(joined.contains("unavailable"));
         assert!(joined.contains("spawn failed"));
+    }
+
+    #[test]
+    fn default_search_config_uses_default_eggsearch_config() {
+        let cfg = Config::default();
+        let effective = effective_search_config(&cfg);
+        assert_eq!(effective.backend(), SearchBackendConfig::Eggsearch);
+        let egg = effective.eggsearch.clone().unwrap_or_default();
+        assert_eq!(egg.server_name(), "eggsearch");
+        assert_eq!(egg.command(), "eggsearch");
+        assert_eq!(egg.args(), vec!["mcp".to_string(), "stdio".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_with_missing_binary_reports_command_and_error() {
+        // Ensure a clean baseline so the bootstrap actually runs.
+        state::reset_for_tests();
+
+        // Build a Config with a deliberately missing command
+        let mut cfg = Config::default();
+        let egg_cfg = EggsearchConfig {
+            command: Some("definitely-missing-eggsearch-test-binary".to_string()),
+            ..Default::default()
+        };
+        cfg.search = Some(SearchConfig {
+            backend: Some(SearchBackendConfig::Eggsearch),
+            eggsearch: Some(egg_cfg),
+            ..Default::default()
+        });
+
+        // Ensure a clean baseline so the bootstrap actually runs.
+        state::install_search_config(SearchConfig::default());
+
+        let (_svc, report) = bootstrap_search_backend(&cfg).await;
+        assert_eq!(report.search_backend.as_deref(), Some("eggsearch"));
+        assert!(report.command.is_some());
+        assert_eq!(
+            report.command.as_deref(),
+            Some("definitely-missing-eggsearch-test-binary")
+        );
+        assert!(!report.connected);
+        assert!(
+            report.connection_error.is_some(),
+            "expected connection_error to be set, got report: {:#?}",
+            report
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_with_default_config_attempts_eggsearch() {
+        // Ensure a clean baseline so the bootstrap actually runs.
+        state::reset_for_tests();
+
+        let cfg = Config::default();
+
+        // Ensure a clean baseline so the bootstrap actually runs.
+        state::install_search_config(SearchConfig::default());
+
+        let (_svc, report) = bootstrap_search_backend(&cfg).await;
+        assert_eq!(report.search_backend.as_deref(), Some("eggsearch"));
+        assert_eq!(report.command.as_deref(), Some("eggsearch"));
+        assert_eq!(report.server_name.as_deref(), Some("eggsearch"));
+        // report.connected may be true or false depending on whether the eggsearch binary is installed,
+        // but report.note should NOT be "no [search.eggsearch] section configured" anymore.
+        let note = report.note.as_deref().unwrap_or("");
+        assert!(!note.contains("no [search.eggsearch]"), "report.note should not be 'no [search.eggsearch] section configured' when default config is used. Got: {note}");
     }
 }

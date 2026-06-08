@@ -26,7 +26,10 @@ pub struct PermissionDialog {
 
 impl PermissionDialog {
     pub fn new(request: PermissionRequest, theme: Arc<Theme>) -> Self {
-        let risk = classify_tool_risk(&request.tool, request.args.as_ref().unwrap_or(&serde_json::Value::Null));
+        let risk = classify_tool_risk(
+            &request.tool,
+            request.args.as_ref().unwrap_or(&serde_json::Value::Null),
+        );
         Self {
             request,
             selected_option: 0,
@@ -153,7 +156,8 @@ impl PermissionDialog {
         }
         if let Some(ref args) = self.request.args {
             // Extract command preview for bash-like tools
-            let command_preview = if self.request.tool == "bash" || self.request.tool == "terminal" {
+            let command_preview = if self.request.tool == "bash" || self.request.tool == "terminal"
+            {
                 args.get("command")
                     .or_else(|| args.get("cmd"))
                     .and_then(|v| v.as_str())
@@ -273,9 +277,7 @@ impl PermissionDialog {
                     }
                 } else {
                     if i == self.selected_option {
-                        Style::default()
-                            .fg(theme.background)
-                            .bg(theme.primary)
+                        Style::default().fg(theme.background).bg(theme.primary)
                     } else {
                         Style::default().fg(theme.foreground)
                     }

@@ -1,9 +1,9 @@
 use async_trait::async_trait;
+use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
-use dashmap::DashMap;
 
 use crate::core::CoreClient;
 use crate::error::AppError;
@@ -27,15 +27,18 @@ impl SocketCoreClient {
     pub async fn connect(endpoint: &str) -> Result<Self, AppError> {
         let path = endpoint.strip_prefix("unix://").unwrap_or(endpoint);
         let stream = UnixStream::connect(path).await.map_err(|e| {
-            AppError::Other(anyhow::anyhow!("failed to connect socket core '{}': {}", path, e))
+            AppError::Other(anyhow::anyhow!(
+                "failed to connect socket core '{}': {}",
+                path,
+                e
+            ))
         })?;
 
         let (read_half, write_half) = stream.into_split();
         let reader = BufReader::new(read_half);
 
         let (event_bus, _) = broadcast::channel(256);
-        let pending: Arc<DashMap<String, oneshot::Sender<CoreResponse>>> =
-            Arc::new(DashMap::new());
+        let pending: Arc<DashMap<String, oneshot::Sender<CoreResponse>>> = Arc::new(DashMap::new());
 
         let client = Self {
             endpoint: endpoint.to_string(),
@@ -74,10 +77,13 @@ impl SocketCoreClient {
     }
 
     pub async fn reconnect(&self) -> Result<(), AppError> {
-        let path = self.endpoint.strip_prefix("unix://").unwrap_or(&self.endpoint);
-        let stream = UnixStream::connect(path).await.map_err(|e| {
-            AppError::Other(anyhow::anyhow!("failed to reconnect: {}", e))
-        })?;
+        let path = self
+            .endpoint
+            .strip_prefix("unix://")
+            .unwrap_or(&self.endpoint);
+        let stream = UnixStream::connect(path)
+            .await
+            .map_err(|e| AppError::Other(anyhow::anyhow!("failed to reconnect: {}", e)))?;
 
         let (read_half, write_half) = stream.into_split();
         *self.write_stream.lock().await = Some(write_half);
@@ -124,9 +130,9 @@ impl SocketCoreClient {
     async fn send_frame(&self, frame: &CoreFrame) -> Result<(), AppError> {
         let json = serde_json::to_string(frame).map_err(AppError::Json)?;
         let mut guard = self.write_stream.lock().await;
-        let stream = guard.as_mut().ok_or_else(|| {
-            AppError::Other(anyhow::anyhow!("socket core stream unavailable"))
-        })?;
+        let stream = guard
+            .as_mut()
+            .ok_or_else(|| AppError::Other(anyhow::anyhow!("socket core stream unavailable")))?;
         stream
             .write_all(json.as_bytes())
             .await
@@ -189,8 +195,7 @@ impl SocketCoreClient {
                                     // Record the negotiated id so callers can
                                     // correlate the connection in the daemon's
                                     // `ClientRegistry`.
-                                    *client_id_slot.lock().await =
-                                        Some(hello.client_id.clone());
+                                    *client_id_slot.lock().await = Some(hello.client_id.clone());
 
                                     // Default global subscription: a TUI
                                     // client typically wants to see global
@@ -247,33 +252,41 @@ impl CoreClient for SocketCoreClient {
 
         {
             let mut guard = self.write_stream.lock().await;
-            let stream = guard
-                .as_mut()
-                .ok_or_else(|| AppError::Other(anyhow::anyhow!("socket core stream unavailable")))?;
-            if let Err(e) = stream
-                .write_all(payload.as_bytes())
-                .await
-            {
+            let stream = guard.as_mut().ok_or_else(|| {
+                AppError::Other(anyhow::anyhow!("socket core stream unavailable"))
+            })?;
+            if let Err(e) = stream.write_all(payload.as_bytes()).await {
                 drop(guard);
                 if self.reconnect().await.is_ok() {
                     let mut guard = self.write_stream.lock().await;
-                    let stream = guard
-                        .as_mut()
-                        .ok_or_else(|| AppError::Other(anyhow::anyhow!("socket core stream unavailable after reconnect")))?;
-                    stream
-                        .write_all(payload.as_bytes())
-                        .await
-                        .map_err(|e| AppError::Other(anyhow::anyhow!("socket write failed after reconnect: {}", e)))?;
-                    stream
-                        .write_all(b"\n")
-                        .await
-                        .map_err(|e| AppError::Other(anyhow::anyhow!("socket write failed after reconnect: {}", e)))?;
-                    stream
-                        .flush()
-                        .await
-                        .map_err(|e| AppError::Other(anyhow::anyhow!("socket flush failed after reconnect: {}", e)))?;
+                    let stream = guard.as_mut().ok_or_else(|| {
+                        AppError::Other(anyhow::anyhow!(
+                            "socket core stream unavailable after reconnect"
+                        ))
+                    })?;
+                    stream.write_all(payload.as_bytes()).await.map_err(|e| {
+                        AppError::Other(anyhow::anyhow!(
+                            "socket write failed after reconnect: {}",
+                            e
+                        ))
+                    })?;
+                    stream.write_all(b"\n").await.map_err(|e| {
+                        AppError::Other(anyhow::anyhow!(
+                            "socket write failed after reconnect: {}",
+                            e
+                        ))
+                    })?;
+                    stream.flush().await.map_err(|e| {
+                        AppError::Other(anyhow::anyhow!(
+                            "socket flush failed after reconnect: {}",
+                            e
+                        ))
+                    })?;
                 } else {
-                    return Err(AppError::Other(anyhow::anyhow!("socket write failed and reconnect failed: {}", e)));
+                    return Err(AppError::Other(anyhow::anyhow!(
+                        "socket write failed and reconnect failed: {}",
+                        e
+                    )));
                 }
             } else {
                 stream

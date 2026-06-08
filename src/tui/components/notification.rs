@@ -132,7 +132,9 @@ impl NotificationManager {
         let cfg = self.config.blocking_read();
         let enabled = match notification_type {
             NotificationType::Error => cfg.on_error.unwrap_or(true),
-            NotificationType::Info | NotificationType::Success => cfg.on_task_complete.unwrap_or(true),
+            NotificationType::Info | NotificationType::Success => {
+                cfg.on_task_complete.unwrap_or(true)
+            }
             NotificationType::Warning => true,
         };
         if !enabled {

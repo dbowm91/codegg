@@ -64,7 +64,10 @@ impl FocusManager {
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
         if key.code == crossterm::event::KeyCode::Tab {
-            return self.handle_tab(key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT));
+            return self.handle_tab(
+                key.modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT),
+            );
         }
         if let Some(top) = self.stack.back_mut() {
             if let Some(msg) = top.handle_key(key) {

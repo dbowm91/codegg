@@ -116,10 +116,7 @@ impl MemoryStore {
             let entry = entry?;
             let path = entry.path();
             if path.is_dir() {
-                let dir_name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
                 if !is_safe_namespace_single_component(dir_name) {
                     continue;
@@ -226,15 +223,18 @@ impl MemoryStore {
         let existing_by_topic: HashMap<String, &Memory> = existing
             .iter()
             .map(|m| {
-                let key = m.title
+                let key = m
+                    .title
                     .as_deref()
-                    .map(|t| t.replace("Preference: ", "")
-                        .replace("Convention: ", "")
-                        .replace("Naming: ", "")
-                        .replace("Architecture: ", "")
-                        .replace("Deprecated: ", "")
-                        .replace("Tool: ", "")
-                        .to_lowercase())
+                    .map(|t| {
+                        t.replace("Preference: ", "")
+                            .replace("Convention: ", "")
+                            .replace("Naming: ", "")
+                            .replace("Architecture: ", "")
+                            .replace("Deprecated: ", "")
+                            .replace("Tool: ", "")
+                            .to_lowercase()
+                    })
                     .unwrap_or_else(|| m.content.to_lowercase());
                 (key, m)
             })
@@ -247,7 +247,11 @@ impl MemoryStore {
                 continue;
             }
 
-            let topic_key = format!("{}:{}", scored_mem.pattern_type, scored_mem.matched_text.to_lowercase());
+            let topic_key = format!(
+                "{}:{}",
+                scored_mem.pattern_type,
+                scored_mem.matched_text.to_lowercase()
+            );
 
             if let Some(existing_mem) = existing_by_topic.get(&topic_key) {
                 if existing_mem.importance > scored_mem.score / 20.0 {
@@ -256,11 +260,15 @@ impl MemoryStore {
 
                 let mut updated = scored_mem.to_memory(&namespace);
                 updated.superseded_by = Some(existing_mem.id.clone());
-                self.memories.lock().insert(updated.id.clone(), updated.clone());
+                self.memories
+                    .lock()
+                    .insert(updated.id.clone(), updated.clone());
                 new_memories.push(updated);
             } else {
                 let memory = scored_mem.to_memory(&namespace);
-                self.memories.lock().insert(memory.id.clone(), memory.clone());
+                self.memories
+                    .lock()
+                    .insert(memory.id.clone(), memory.clone());
                 new_memories.push(memory);
             }
         }
@@ -282,7 +290,11 @@ impl MemoryStore {
             .into_iter()
             .filter(|m| m.superseded_by.is_none())
             .collect();
-        sorted.sort_by(|a, b| b.importance.partial_cmp(&a.importance).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let summary: Vec<_> = sorted
             .into_iter()
@@ -373,7 +385,11 @@ impl MemoryStore {
 }
 
 fn is_safe_namespace_single_component(component: &str) -> bool {
-    !component.is_empty() && !component.contains('/') && !component.contains('\\') && component != "." && component != ".."
+    !component.is_empty()
+        && !component.contains('/')
+        && !component.contains('\\')
+        && component != "."
+        && component != ".."
 }
 
 fn parse_memories_file(content: &str, default_namespace: &str) -> Vec<Memory> {
@@ -392,7 +408,9 @@ fn parse_memories_file(content: &str, default_namespace: &str) -> Vec<Memory> {
         };
         let frontmatter_end = block_start + frontmatter_end;
 
-        let next_delim = content[frontmatter_end..].find("\n\n---\n").map(|o| frontmatter_end + o);
+        let next_delim = content[frontmatter_end..]
+            .find("\n\n---\n")
+            .map(|o| frontmatter_end + o);
         let content_end = next_delim.unwrap_or(content_len);
 
         let frontmatter = &content[block_start..frontmatter_end];

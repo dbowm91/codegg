@@ -17,7 +17,8 @@ const ENDPOINT: &str = "https://news.google.com/rss/search";
 static ITEM: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<item>(.*?)</item>").expect("ITEM"));
 static TITLE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<title>(.*?)</title>").expect("TITLE"));
 static LINK: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<link>([^<]+)</link>").expect("LINK"));
-static PUBDATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)<pubDate>([^<]+)</pubDate>").expect("PUBDATE"));
+static PUBDATE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)<pubDate>([^<]+)</pubDate>").expect("PUBDATE"));
 
 pub struct GoogleNewsProvider {
     client: Client,
@@ -57,7 +58,12 @@ impl SearchProvider for GoogleNewsProvider {
         let resp = self
             .client
             .get(ENDPOINT)
-            .query(&[("q", query), ("hl", "en-US"), ("gl", "US"), ("ceid", "US:en")])
+            .query(&[
+                ("q", query),
+                ("hl", "en-US"),
+                ("gl", "US"),
+                ("ceid", "US:en"),
+            ])
             .send()
             .await?;
         let status = resp.status();
@@ -77,9 +83,21 @@ pub fn parse_google_news_rss(xml: &str, limit: usize) -> Result<Vec<SearchHit>, 
     let mut out = Vec::new();
     for cap in ITEM.captures_iter(xml) {
         let block = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-        let title = TITLE.captures(block).and_then(|c| c.get(1)).map(|m| clean(m.as_str())).unwrap_or_default();
-        let link = LINK.captures(block).and_then(|c| c.get(1)).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
-        let pubdate = PUBDATE.captures(block).and_then(|c| c.get(1)).map(|m| clean(m.as_str())).unwrap_or_default();
+        let title = TITLE
+            .captures(block)
+            .and_then(|c| c.get(1))
+            .map(|m| clean(m.as_str()))
+            .unwrap_or_default();
+        let link = LINK
+            .captures(block)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        let pubdate = PUBDATE
+            .captures(block)
+            .and_then(|c| c.get(1))
+            .map(|m| clean(m.as_str()))
+            .unwrap_or_default();
         if title.is_empty() || link.is_empty() {
             continue;
         }

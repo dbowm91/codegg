@@ -108,14 +108,18 @@ impl Widget for &StatusBarWidget {
         };
         left_spans.push(Span::styled(
             format!(" {} ", status_label),
-            Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(status_color)
+                .add_modifier(Modifier::BOLD),
         ));
 
         if let Some(ref msg) = self.undo_message {
             middle_spans.push(Span::styled("  ", Style::default()));
             middle_spans.push(Span::styled(
                 format!("{} (press U to undo)", msg),
-                Style::default().fg(self.theme.warning).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(self.theme.warning)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
 
@@ -124,7 +128,9 @@ impl Widget for &StatusBarWidget {
             middle_spans.push(Span::styled("  ", Style::default()));
             middle_spans.push(Span::styled(
                 format!("◌ {label}"),
-                Style::default().fg(self.theme.warning).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(self.theme.warning)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
 
@@ -133,7 +139,9 @@ impl Widget for &StatusBarWidget {
             middle_spans.push(Span::styled("  ", Style::default()));
             middle_spans.push(Span::styled(
                 format!("⟳ {label}"),
-                Style::default().fg(self.theme.primary).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(self.theme.primary)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
 
@@ -187,9 +195,8 @@ impl Widget for &StatusBarWidget {
 
         let pad1 = total_width.saturating_sub(left_width + middle_width + right_width);
 
-        let mut all_spans: Vec<Span<'_>> = Vec::with_capacity(
-            left_spans.len() + middle_spans.len() + right_spans.len() + 2,
-        );
+        let mut all_spans: Vec<Span<'_>> =
+            Vec::with_capacity(left_spans.len() + middle_spans.len() + right_spans.len() + 2);
         all_spans.extend(left_spans);
         all_spans.extend(middle_spans);
         all_spans.push(Span::raw(" ".repeat(pad1)));
@@ -197,8 +204,7 @@ impl Widget for &StatusBarWidget {
 
         let line = Line::from(all_spans);
         if area.height <= 1 {
-            let paragraph =
-                Paragraph::new(line).style(Style::default().bg(self.theme.background));
+            let paragraph = Paragraph::new(line).style(Style::default().bg(self.theme.background));
             paragraph.render(area, buf);
             return;
         }
@@ -219,9 +225,7 @@ mod tests {
     use ratatui::buffer::Buffer;
 
     fn rendered_line(buf: &Buffer, width: u16) -> String {
-        (0..width)
-            .map(|x| buf[(x, 0)].symbol())
-            .collect::<String>()
+        (0..width).map(|x| buf[(x, 0)].symbol()).collect::<String>()
     }
 
     #[test]

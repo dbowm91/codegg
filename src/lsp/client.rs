@@ -498,7 +498,8 @@ impl LspClient {
                     warn!(error = %e, "failed to send notification to channel");
                 }
             }
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(inner) => inner,

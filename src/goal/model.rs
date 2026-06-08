@@ -171,10 +171,7 @@ impl Goal {
                 Self::format_token_count(snap.usage.input_tokens + snap.usage.output_tokens),
                 Self::format_token_count(t)
             ),
-            (None, Some(c), _) => format!(
-                " {} / {} tool calls",
-                snap.usage.tool_calls, c
-            ),
+            (None, Some(c), _) => format!(" {} / {} tool calls", snap.usage.tool_calls, c),
             (None, None, Some(s)) => format!(
                 " {} / {} wall",
                 Self::format_duration(snap.usage.wallclock_secs),
@@ -204,10 +201,7 @@ impl Goal {
                 Self::format_token_count(self.usage.input_tokens + self.usage.output_tokens),
                 Self::format_token_count(t)
             ),
-            (None, Some(c), _) => format!(
-                " {} / {} tool calls",
-                self.usage.tool_calls, c
-            ),
+            (None, Some(c), _) => format!(" {} / {} tool calls", self.usage.tool_calls, c),
             (None, None, Some(s)) => format!(
                 " {} / {} wall",
                 Self::format_duration(self.usage.wallclock_secs),
@@ -244,4 +238,3 @@ impl Goal {
         }
     }
 }
-

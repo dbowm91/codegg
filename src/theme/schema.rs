@@ -31,8 +31,12 @@ pub struct SemanticTheme {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeSource {
     Builtin,
-    NativeFile { path: PathBuf },
-    HalloyFile { path: PathBuf },
+    NativeFile {
+        path: PathBuf,
+    },
+    HalloyFile {
+        path: PathBuf,
+    },
     #[default]
     Inline,
 }

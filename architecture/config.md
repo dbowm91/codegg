@@ -271,7 +271,29 @@ Validated fields:
 
 The `[search]` section selects the backend for the native
 `websearch` and `webfetch` tools. The default backend is the
-external `eggsearch` MCP server.
+external `eggsearch` MCP server, and the in-tree
+`SearchProviderRegistry` is retained only as a legacy
+compatibility fallback.
+
+### Minimal config
+
+```toml
+# No [search] section is required if eggsearch is installed on PATH.
+# Codegg defaults to spawning: eggsearch mcp stdio
+```
+
+When `eggsearch` is on `PATH`, Codegg will:
+
+- resolve the search backend to `eggsearch` (the default),
+- spawn `eggsearch mcp stdio` as an MCP subprocess,
+- route `websearch` and `webfetch` through it, and
+- hide the raw `mcp__eggsearch__*` tools from the model.
+
+The `[search]` block only needs to be present to override a
+default, point at a custom binary/args, forward provider API
+keys, or change the fallback / cap behavior.
+
+### Full schema
 
 ```toml
 [search]
@@ -282,11 +304,11 @@ max_search_output_chars = 12000 # cap on websearch output
 max_fetch_output_chars = 20000  # cap on webfetch output
 
 [search.eggsearch]
-enabled = true
-server_name = "eggsearch"
-command = "eggsearch"
-args = ["mcp", "stdio"]
-timeout_ms = 60000
+enabled = true                  # if false, behaves as backend = "disabled"
+server_name = "eggsearch"       # MCP server name; default "eggsearch"
+command = "eggsearch"           # binary to spawn
+args = ["mcp", "stdio"]         # default args
+timeout_ms = 60000              # call timeout
 
 [search.eggsearch.env]
 # Optional provider keys passed only to the eggsearch subprocess.
@@ -300,7 +322,23 @@ and the native `websearch`/`webfetch` tools call
 internally. Setting `backend = "builtin"` forces the legacy
 in-tree `SearchProviderRegistry` path. Setting
 `backend = "disabled"` makes both tools return a clear disabled
-error. See
+error.
+
+`fallback_to_builtin` defaults to `false`. When `true`, a failed
+eggsearch call falls through to the legacy implementation; the
+built-in fetch path is not considered the preferred security
+boundary (it exists for compatibility, not for defense in depth),
+so leave this off in production unless you have a specific reason
+to fall back.
+
+### Adding new search providers
+
+New providers belong in eggsearch, not in Codegg's built-in
+registry (`src/search/`). The built-in registry is legacy fallback
+only and should not grow. Eggsearch owns the provider list, the
+fetching path, and any provider-specific extraction logic.
+
+See
 [`search_backend.md`](search_backend.md) and
 [`.opencode/skills/search_backend/SKILL.md`](../.opencode/skills/search_backend/SKILL.md)
 for the full schema and dispatch details.

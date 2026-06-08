@@ -107,7 +107,11 @@ fn landlock_is_supported() -> bool {
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-fn enforce_landlock(allowed_paths: &[String], deny_paths: &[String], mode: &SandboxMode) -> Result<(), ToolError> {
+fn enforce_landlock(
+    allowed_paths: &[String],
+    deny_paths: &[String],
+    mode: &SandboxMode,
+) -> Result<(), ToolError> {
     use std::ffi::CString;
 
     const LANDLOCK_RULE_PATH_FD: u32 = 1;
@@ -256,12 +260,14 @@ struct CachedPaths {
     timestamp: Instant,
 }
 
-static CANONICAL_PATHS_CACHE: Mutex<Option<(HashMap<Vec<String>, CachedPaths>, VecDeque<Vec<String>>)>> = Mutex::new(None);
+static CANONICAL_PATHS_CACHE: Mutex<
+    Option<(HashMap<Vec<String>, CachedPaths>, VecDeque<Vec<String>>)>,
+> = Mutex::new(None);
 
 const MAX_CACHE_ENTRIES: usize = 100;
 const CACHE_TTL: Duration = Duration::from_secs(300);
 
-fn get_canonical_paths(allowed_paths: &[String])                           -> Vec<PathBuf> {
+fn get_canonical_paths(allowed_paths: &[String]) -> Vec<PathBuf> {
     let mut cache = CANONICAL_PATHS_CACHE.lock().unwrap();
     if cache.is_none() {
         *cache = Some((HashMap::new(), VecDeque::new()));
@@ -294,13 +300,23 @@ fn get_canonical_paths(allowed_paths: &[String])                           -> Ve
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .collect();
 
-    cache_map.insert(allowed_paths.to_vec(), CachedPaths { paths: canonical.clone(), timestamp: Instant::now() });
+    cache_map.insert(
+        allowed_paths.to_vec(),
+        CachedPaths {
+            paths: canonical.clone(),
+            timestamp: Instant::now(),
+        },
+    );
     cache_order.push_back(allowed_paths.to_vec());
     canonical
 }
 
 pub fn validate_path_safety(path: &Path, allowed_paths: &[String]) -> Result<(), ToolError> {
-    if path.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+    if path
+        .symlink_metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
         return Err(ToolError::Permission(format!(
             "path '{}' is a symlink",
             path.display()
@@ -385,7 +401,11 @@ mod tests {
             "/home/user/project".to_string(),
         ];
         let result = validate_path_safety(&temp_path, &allowed);
-        assert!(result.is_ok(), "path inside temp_dir should be allowed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "path inside temp_dir should be allowed: {:?}",
+            result
+        );
 
         let result = validate_path_safety(Path::new("/etc/passwd"), &allowed);
         assert!(result.is_err(), "path outside allowed should be rejected");

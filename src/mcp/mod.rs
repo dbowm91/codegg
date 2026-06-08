@@ -84,7 +84,13 @@ pub enum McpClientType {
     /// un-compiled-out so the helper can be reached from integration
     /// test binaries that don't share the library's `cfg(test)`
     /// configuration.
-    Mock(Arc<std::sync::Mutex<Box<dyn Fn(&str, serde_json::Value) -> Result<String, McpError> + Send + Sync>>>),
+    Mock(
+        Arc<
+            std::sync::Mutex<
+                Box<dyn Fn(&str, serde_json::Value) -> Result<String, McpError> + Send + Sync>,
+            >,
+        >,
+    ),
 }
 
 pub struct McpService {

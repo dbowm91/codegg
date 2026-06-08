@@ -248,10 +248,7 @@ impl Widget for &ToolOutputWidget {
                             } else if l.starts_with('-') && !l.starts_with("---") {
                                 (ratatui::style::Color::Rgb(255, 100, 100), Modifier::empty())
                             } else if l.starts_with("@@") {
-                                (
-                                    ratatui::style::Color::Rgb(100, 150, 255),
-                                    Modifier::BOLD,
-                                )
+                                (ratatui::style::Color::Rgb(100, 150, 255), Modifier::BOLD)
                             } else if l.starts_with("diff --")
                                 || l.starts_with("index ")
                                 || l.starts_with("---")

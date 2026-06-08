@@ -21,13 +21,11 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::bus::events::{
-    AppEvent, GoalBudgetSnapshot, GoalSnapshot, GoalUsageSnapshot,
-};
+use crate::bus::events::{AppEvent, GoalBudgetSnapshot, GoalSnapshot, GoalUsageSnapshot};
 use crate::bus::global::GlobalEventBus;
 use crate::error::AppError;
-use crate::goal::store::GoalStore;
 use crate::goal::model::Goal;
+use crate::goal::store::GoalStore;
 use serde::{Deserialize, Serialize};
 
 /// Tracks wall-clock time for the active goal. Reset when a new active
@@ -174,7 +172,12 @@ pub fn build_continuation_prompt(goal: &Goal) -> String {
     ) {
         (Some(t), _, _, _) => {
             let used = goal.usage.input_tokens + goal.usage.output_tokens;
-            format!("Tokens used: {} / {} ({} remaining)", used, t, t.saturating_sub(used))
+            format!(
+                "Tokens used: {} / {} ({} remaining)",
+                used,
+                t,
+                t.saturating_sub(used)
+            )
         }
         (None, Some(c), _, _) => {
             format!(
@@ -214,10 +217,7 @@ pub fn build_continuation_prompt(goal: &Goal) -> String {
             .join("\n")
     };
 
-    let phase = goal
-        .current_phase
-        .as_deref()
-        .unwrap_or("(not yet started)");
+    let phase = goal.current_phase.as_deref().unwrap_or("(not yet started)");
 
     format!(
         r#"## Goal Continuation
@@ -272,10 +272,7 @@ absent evidence does not count as completion.
         } else {
             goal.progress_summary.clone()
         },
-        next = goal
-            .next_action
-            .as_deref()
-            .unwrap_or("(none recorded)"),
+        next = goal.next_action.as_deref().unwrap_or("(none recorded)"),
         budget = budget_section,
         criteria = criteria,
     )

@@ -151,46 +151,62 @@ mod tests {
     #[test]
     fn test_is_internal_ip_loopback() {
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(127, 255, 255, 255))));
-        assert!(is_internal_ip(&IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
+            127, 255, 255, 255
+        ))));
+        assert!(is_internal_ip(&IpAddr::V6(Ipv6Addr::new(
+            0, 0, 0, 0, 0, 0, 0, 1
+        ))));
     }
 
     #[test]
     fn test_is_internal_ip_private_class_a() {
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(10, 255, 255, 255))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
+            10, 255, 255, 255
+        ))));
     }
 
     #[test]
     fn test_is_internal_ip_private_class_b() {
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
+            172, 31, 255, 255
+        ))));
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(172, 20, 0, 0))));
     }
 
     #[test]
     fn test_is_internal_ip_private_class_c() {
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(192, 168, 255, 255))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
+            192, 168, 255, 255
+        ))));
     }
 
     #[test]
     fn test_is_internal_ip_link_local() {
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(169, 254, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(169, 254, 255, 255))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
+            169, 254, 255, 255
+        ))));
         assert!(is_internal_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
     }
 
     #[test]
     fn test_is_internal_ip_multicast() {
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(224, 0, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(239, 255, 255, 255))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
+            239, 255, 255, 255
+        ))));
     }
 
     #[test]
     fn test_is_internal_ip_cgnat() {
         assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0))));
-        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255))));
+        assert!(is_internal_ip(&IpAddr::V4(Ipv4Addr::new(
+            100, 127, 255, 255
+        ))));
     }
 
     #[test]
@@ -215,16 +231,24 @@ mod tests {
     fn test_is_internal_ip_public() {
         assert!(!is_internal_ip(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
         assert!(!is_internal_ip(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
-        assert!(!is_internal_ip(&IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0, 0x2000, 0, 0, 0, 0))));
+        assert!(!is_internal_ip(&IpAddr::V6(Ipv6Addr::new(
+            0x2001, 0x4860, 0, 0x2000, 0, 0, 0, 0
+        ))));
     }
 
     #[test]
     fn test_ipv6_segments_to_ipv4() {
         let ipv4_mapped = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0001);
-        assert_eq!(ipv6_segments_to_ipv4(&ipv4_mapped), Some(Ipv4Addr::new(192, 168, 0, 1)));
+        assert_eq!(
+            ipv6_segments_to_ipv4(&ipv4_mapped),
+            Some(Ipv4Addr::new(192, 168, 0, 1))
+        );
 
         let ipv4_compatible = Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0xc0a8, 0x0001);
-        assert_eq!(ipv6_segments_to_ipv4(&ipv4_compatible), Some(Ipv4Addr::new(192, 168, 0, 1)));
+        assert_eq!(
+            ipv6_segments_to_ipv4(&ipv4_compatible),
+            Some(Ipv4Addr::new(192, 168, 0, 1))
+        );
 
         let regular_ipv6 = Ipv6Addr::new(0x2001, 0x4860, 0, 0x2000, 0, 0, 0, 0);
         assert_eq!(ipv6_segments_to_ipv4(&regular_ipv6), None);
@@ -243,7 +267,10 @@ mod tests {
 
     #[test]
     fn test_validate_url_host_with_port() {
-        assert_eq!(validate_url_host("https://8.8.8.8:8443").unwrap(), "8.8.8.8");
+        assert_eq!(
+            validate_url_host("https://8.8.8.8:8443").unwrap(),
+            "8.8.8.8"
+        );
     }
 
     #[test]

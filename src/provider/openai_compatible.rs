@@ -151,9 +151,10 @@ impl OpenAiCompatibleProvider {
             }
         }
 
-        let tools_json = request.tools.as_ref().map(|tools| {
-            tools.iter().map(|t| t.to_openai()).collect::<Vec<_>>()
-        });
+        let tools_json = request
+            .tools
+            .as_ref()
+            .map(|tools| tools.iter().map(|t| t.to_openai()).collect::<Vec<_>>());
 
         let mut body = json!({
             "model": request.model,

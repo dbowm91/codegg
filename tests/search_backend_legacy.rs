@@ -10,9 +10,7 @@
 //! path requires a real network round-trip and is left to manual
 //! smoke tests; we assert the dispatch wiring here.
 
-use codegg::config::schema::{
-    EggsearchConfig, SearchBackendConfig, SearchConfig,
-};
+use codegg::config::schema::{EggsearchConfig, SearchBackendConfig, SearchConfig};
 use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::search_backend::state;
@@ -43,6 +41,7 @@ fn eggsearch_config_with_fallback() -> SearchConfig {
 /// the *assertion* is that the MCP service is untouched.
 #[tokio::test]
 async fn builtin_backend_does_not_touch_mcp_service() {
+    state::reset_for_tests();
     let _g = TEST_LOCK.lock().await;
     let calls = Arc::new(Mutex::new(Vec::<(String, serde_json::Value)>::new()));
     let mut svc = McpService::new();
@@ -89,6 +88,7 @@ async fn builtin_backend_does_not_touch_mcp_service() {
 /// unavailable" message.
 #[tokio::test]
 async fn fallback_to_builtin_avoids_eggsearch_unavailable_error() {
+    state::reset_for_tests();
     let _g = TEST_LOCK.lock().await;
     let calls = Arc::new(Mutex::new(Vec::<(String, serde_json::Value)>::new()));
     let mut svc = McpService::new();
@@ -130,6 +130,7 @@ async fn fallback_to_builtin_avoids_eggsearch_unavailable_error() {
 /// return the clear eggsearch-unavailable error.
 #[tokio::test]
 async fn no_fallback_surfaces_eggsearch_error() {
+    state::reset_for_tests();
     let _g = TEST_LOCK.lock().await;
     let svc = McpService::new();
     // No eggsearch server registered -> the service is installed
@@ -159,6 +160,7 @@ async fn no_fallback_surfaces_eggsearch_error() {
 /// and does not require the network.
 #[test]
 fn legacy_format_hits_includes_header_and_url() {
+    state::reset_for_tests();
     use codegg::search::SearchHit;
     use codegg::search_backend::legacy::format_hits;
 

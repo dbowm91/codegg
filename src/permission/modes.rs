@@ -152,7 +152,8 @@ impl BuiltinModes {
     pub fn debug() -> ModeDefinition {
         ModeDefinition {
             name: "debug".to_string(),
-            description: "Debug mode - bash and edit allowed, destructive shell requires approval".to_string(),
+            description: "Debug mode - bash and edit allowed, destructive shell requires approval"
+                .to_string(),
             default: PermissionLevel::Allow,
             allowed_tools: vec![
                 "read".to_string(),

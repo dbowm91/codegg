@@ -148,14 +148,18 @@ impl Tool for ResearchTool {
             .ok_or_else(|| ToolError::Execution("missing 'question' parameter".to_string()))?
             .trim();
         if question.is_empty() {
-            return Err(ToolError::Execution("'question' must not be empty".to_string()));
+            return Err(ToolError::Execution(
+                "'question' must not be empty".to_string(),
+            ));
         }
         let mode = match input["mode"].as_str() {
-            Some(s) => crate::research::service::parse_mode(s).map_err(|e| ToolError::Execution(e.to_string()))?,
+            Some(s) => crate::research::service::parse_mode(s)
+                .map_err(|e| ToolError::Execution(e.to_string()))?,
             None => ResearchMode::NarrowAnswer,
         };
         let depth = match input["depth"].as_str() {
-            Some(s) => crate::research::service::parse_depth(s).map_err(|e| ToolError::Execution(e.to_string()))?,
+            Some(s) => crate::research::service::parse_depth(s)
+                .map_err(|e| ToolError::Execution(e.to_string()))?,
             None => ResearchDepth::Medium,
         };
         // Use the AgentCoder audience so the synthesized answer is
@@ -194,7 +198,10 @@ mod tests {
     #[test]
     fn empty_question_rejected() {
         let t = ResearchTool::with_default_service();
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let res = rt.block_on(t.execute(json!({"question": "  "})));
         assert!(matches!(res, Err(ToolError::Execution(_))));
     }

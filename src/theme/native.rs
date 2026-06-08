@@ -121,11 +121,7 @@ pub fn parse_native_theme(
     Ok(resolve(file, source, fallback))
 }
 
-fn resolve(
-    file: NativeThemeFile,
-    source: ThemeSource,
-    fallback: &SemanticTheme,
-) -> SemanticTheme {
+fn resolve(file: NativeThemeFile, source: ThemeSource, fallback: &SemanticTheme) -> SemanticTheme {
     let id = file
         .meta
         .id
@@ -133,9 +129,11 @@ fn resolve(
         .map(SemanticTheme::normalize_id)
         .or_else(|| {
             if let ThemeSource::NativeFile { path } = &source {
-                path.file_stem().map(|s| SemanticTheme::normalize_id(&s.to_string_lossy()))
+                path.file_stem()
+                    .map(|s| SemanticTheme::normalize_id(&s.to_string_lossy()))
             } else if let ThemeSource::HalloyFile { path } = &source {
-                path.file_stem().map(|s| SemanticTheme::normalize_id(&s.to_string_lossy()))
+                path.file_stem()
+                    .map(|s| SemanticTheme::normalize_id(&s.to_string_lossy()))
             } else {
                 None
             }
@@ -159,10 +157,7 @@ fn resolve(
             border_focused: pick(file.ui.border_focused, fallback.ui.border_focused),
             selection: pick(file.ui.selection, fallback.ui.selection),
             selection_dim: pick(file.ui.selection_dim, fallback.ui.selection_dim),
-            panel_background: pick(
-                file.ui.panel_background,
-                fallback.ui.panel_background,
-            ),
+            panel_background: pick(file.ui.panel_background, fallback.ui.panel_background),
             input_background: pick(file.ui.input_background, fallback.ui.input_background),
             title_background: pick(file.ui.title_background, fallback.ui.title_background),
         },
@@ -191,7 +186,10 @@ fn resolve(
         },
         code: CodeColors {
             foreground: pick(file.code.foreground, fallback.code.foreground),
-            syntect_theme: file.code.syntect_theme.or_else(|| fallback.code.syntect_theme.clone()),
+            syntect_theme: file
+                .code
+                .syntect_theme
+                .or_else(|| fallback.code.syntect_theme.clone()),
         },
         diff: DiffColors {
             added: pick(file.diff.added, fallback.diff.added),
@@ -327,15 +325,11 @@ mod tests {
                     Some(std::path::Path::new(&format!("{}.toml", entry.name))),
                     &fallback,
                 )
-                .unwrap_or_else(|e| {
-                    panic!("failed to parse built-in {}: {}", entry.id, e)
-                });
+                .unwrap_or_else(|e| panic!("failed to parse built-in {}: {}", entry.id, e));
                 assert_eq!(theme.id, entry.id, "id mismatch for built-in {}", entry.id);
             } else {
                 let theme = parse_native_theme(entry.content, ThemeSource::Builtin, &fallback)
-                    .unwrap_or_else(|e| {
-                        panic!("failed to parse built-in {}: {}", entry.id, e)
-                    });
+                    .unwrap_or_else(|e| panic!("failed to parse built-in {}: {}", entry.id, e));
                 assert_eq!(&theme.id, entry.id, "id mismatch for built-in {}", entry.id);
             }
         }

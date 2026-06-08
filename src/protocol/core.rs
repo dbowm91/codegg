@@ -259,9 +259,13 @@ pub enum CoreRequest {
     },
     /// Load the persisted todo list for a session so the TUI can render
     /// it without keeping a separate `Arc<Mutex<TodoState>>` in sync.
-    TodoList { session_id: String },
+    TodoList {
+        session_id: String,
+    },
     /// Load the active goal snapshot (and progress) for a session.
-    ActiveGoalLoad { session_id: String },
+    ActiveGoalLoad {
+        session_id: String,
+    },
     /// Set or replace the goal budget. The store revives a
     /// `BudgetLimited` goal to `Active` if the new budget is high
     /// enough to satisfy the existing usage.
@@ -272,8 +276,12 @@ pub enum CoreRequest {
         max_tool_calls: Option<i64>,
         max_wallclock_secs: Option<i64>,
     },
-    SnapshotSession { session_id: String },
-    SnapshotWorkspace { project_dir: String },
+    SnapshotSession {
+        session_id: String,
+    },
+    SnapshotWorkspace {
+        project_dir: String,
+    },
     SnapshotModels,
     SnapshotDaemon,
     /// Route a TTS speak request through the daemon's `NotificationRouter`
@@ -469,7 +477,10 @@ mod tests {
         assert!(json.contains("\"event_seq\":7"));
         let back: CoreResponse = serde_json::from_str(&json).unwrap();
         match back {
-            CoreResponse::Events { events, current_seq } => {
+            CoreResponse::Events {
+                events,
+                current_seq,
+            } => {
                 assert_eq!(events.len(), 1);
                 assert_eq!(events[0].event_seq, 7);
                 assert_eq!(current_seq, 7);

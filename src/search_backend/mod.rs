@@ -117,6 +117,7 @@ mod tests {
 
     #[test]
     fn dispatch_disabled_backend_errors() {
+        state::reset_for_tests();
         let mut cfg = SearchConfig::default();
         cfg.backend = Some(SearchBackendConfig::Disabled);
         state::install_search_config(cfg);
@@ -130,6 +131,7 @@ mod tests {
 
     #[test]
     fn dispatch_disabled_backend_errors_for_fetch() {
+        state::reset_for_tests();
         let mut cfg = SearchConfig::default();
         cfg.backend = Some(SearchBackendConfig::Disabled);
         state::install_search_config(cfg);

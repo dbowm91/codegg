@@ -99,8 +99,7 @@ fn bm25_score(query: &str, document: &str, avg_dl: f64, idf: &HashMap<String, f6
         if let Some(&term_tf) = tf.get(term) {
             let idf_val = idf.get(term).copied().unwrap_or(0.0);
             let numerator = term_tf as f64 * (k1 + 1.0);
-            let denominator =
-                term_tf as f64 + k1 * (1.0 - b + b * doc_len / avg_dl);
+            let denominator = term_tf as f64 + k1 * (1.0 - b + b * doc_len / avg_dl);
             score += idf_val * numerator / denominator;
         }
     }
@@ -243,10 +242,7 @@ impl ToolCatalog {
             .filter(|(_, score)| *score > 0.0)
             .collect();
 
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.into_iter().map(|(tool, _)| tool).collect()
     }
 
@@ -410,14 +406,8 @@ mod tests {
             "validate_json",
             "Validate JSON format and structure",
         ));
-        catalog.register(&MockTool::new(
-            "read_file",
-            "Read file contents from disk",
-        ));
-        catalog.register(&MockTool::new(
-            "parse_config",
-            "Parse configuration files",
-        ));
+        catalog.register(&MockTool::new("read_file", "Read file contents from disk"));
+        catalog.register(&MockTool::new("parse_config", "Parse configuration files"));
 
         // "json validate" should match validate_json
         let results = catalog.search("json validate");
@@ -476,8 +466,7 @@ mod tests {
     fn deferred_tools_tracked() {
         let mut catalog = ToolCatalog::new();
         catalog.register(&MockTool::new("bash", "Execute shell commands"));
-        catalog
-            .register(&MockTool::deferred("special_tool", "A special tool"));
+        catalog.register(&MockTool::deferred("special_tool", "A special tool"));
 
         let deferred = catalog.deferred_tools();
         assert_eq!(deferred.len(), 1);
@@ -529,12 +518,7 @@ mod tests {
         idf.insert("bash".to_string(), 1.0);
         idf.insert("shell".to_string(), 1.0);
 
-        let score = bm25_score(
-            "bash",
-            "execute bash shell commands",
-            4.0,
-            &idf,
-        );
+        let score = bm25_score("bash", "execute bash shell commands", 4.0, &idf);
         assert!(score > 0.0);
     }
 
@@ -548,10 +532,7 @@ mod tests {
     #[test]
     fn tokenize_basic() {
         let tokens = tokenize("Hello, World! This is a test.");
-        assert_eq!(
-            tokens,
-            vec!["hello", "world", "this", "is", "a", "test"]
-        );
+        assert_eq!(tokens, vec!["hello", "world", "this", "is", "a", "test"]);
     }
 
     #[test]

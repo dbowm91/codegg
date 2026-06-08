@@ -1,6 +1,6 @@
 use codegg::plugin::{
-    install_from_path, ApiVersion, HookContext, HookResult, HookType, PluginManifest,
-    Stability, API_VERSION,
+    install_from_path, ApiVersion, HookContext, HookResult, HookType, PluginManifest, Stability,
+    API_VERSION,
 };
 use std::path::PathBuf;
 
@@ -29,8 +29,14 @@ fn test_hook_type_variants() {
     assert!(matches!(HookType::Auth, HookType::Auth));
     assert!(matches!(HookType::Provider, HookType::Provider));
     assert!(matches!(HookType::ToolDefinition, HookType::ToolDefinition));
-    assert!(matches!(HookType::ToolExecuteBefore, HookType::ToolExecuteBefore));
-    assert!(matches!(HookType::ToolExecuteAfter, HookType::ToolExecuteAfter));
+    assert!(matches!(
+        HookType::ToolExecuteBefore,
+        HookType::ToolExecuteBefore
+    ));
+    assert!(matches!(
+        HookType::ToolExecuteAfter,
+        HookType::ToolExecuteAfter
+    ));
 }
 
 #[test]

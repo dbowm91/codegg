@@ -158,10 +158,7 @@ fn chunk_url_text(
             let chunk_text = content[prev..pos].trim();
             if !chunk_text.is_empty() {
                 let label = format!("chars {}-{}", prev, pos);
-                chunks.push((
-                    chunk_text.to_string(),
-                    SourceLocator::TextSpan { label },
-                ));
+                chunks.push((chunk_text.to_string(), SourceLocator::TextSpan { label }));
             }
             prev = pos;
         }
@@ -170,10 +167,7 @@ fn chunk_url_text(
             let remaining = content[prev..].trim();
             if !remaining.is_empty() {
                 let label = format!("chars {}-{}", prev, content.len());
-                chunks.push((
-                    remaining.to_string(),
-                    SourceLocator::TextSpan { label },
-                ));
+                chunks.push((remaining.to_string(), SourceLocator::TextSpan { label }));
             }
         }
     } else {
@@ -202,10 +196,7 @@ fn chunk_url_text(
             let chunk_text = remaining[..split_at].trim().to_string();
             if !chunk_text.is_empty() {
                 let label = format!("chars {}-{}", offset, offset + split_at);
-                chunks.push((
-                    chunk_text,
-                    SourceLocator::TextSpan { label },
-                ));
+                chunks.push((chunk_text, SourceLocator::TextSpan { label }));
             }
 
             remaining = &remaining[split_at..];
@@ -296,12 +287,11 @@ async fn model_evidence_for_chunk(
         chunk_text.to_string()
     };
 
-    let user_msg = format!(
-        "{}\n\n--- Source Content ---\n{}",
-        prompt, truncated_chunk
-    );
+    let user_msg = format!("{}\n\n--- Source Content ---\n{}", prompt, truncated_chunk);
 
-    let json_val = llm::call_llm_json(provider, model, None, &user_msg, Some(2048)).await.ok()?;
+    let json_val = llm::call_llm_json(provider, model, None, &user_msg, Some(2048))
+        .await
+        .ok()?;
 
     let items: Vec<ModelEvidenceItem> = serde_json::from_value(json_val).ok()?;
 
@@ -427,7 +417,10 @@ mod tests {
     #[test]
     fn chunk_local_file_basic() {
         let source = make_source(SourceType::LocalFile, "foo.rs");
-        let content: String = (1..=50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let content: String = (1..=50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let chunks = chunk_local_file(&source, &content, 10);
         assert_eq!(chunks.len(), 1);
         match &chunks[0].1 {
@@ -446,7 +439,10 @@ mod tests {
     #[test]
     fn chunk_local_file_with_overlap() {
         let source = make_source(SourceType::LocalFile, "foo.rs");
-        let content: String = (1..=150).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let content: String = (1..=150)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let chunks = chunk_local_file(&source, &content, 10);
         assert_eq!(chunks.len(), 2);
         // Second chunk should start at line 91 (100 - 10 overlap + 1)
@@ -508,8 +504,18 @@ mod tests {
     fn deterministic_evidence_creates_spans() {
         let source = make_source(SourceType::LocalFile, "foo.rs");
         let chunks = vec![
-            ("chunk one".to_string(), SourceLocator::TextSpan { label: "a".to_string() }),
-            ("chunk two".to_string(), SourceLocator::TextSpan { label: "b".to_string() }),
+            (
+                "chunk one".to_string(),
+                SourceLocator::TextSpan {
+                    label: "a".to_string(),
+                },
+            ),
+            (
+                "chunk two".to_string(),
+                SourceLocator::TextSpan {
+                    label: "b".to_string(),
+                },
+            ),
         ];
         let spans = deterministic_evidence("run-1", &source, &chunks);
         assert_eq!(spans.len(), 2);
@@ -534,7 +540,12 @@ mod tests {
             max_output_tokens: None,
             allow_network: false,
         };
-        let evidence = extract_evidence("run-1", &[source], &[("src-1".to_string(), content)], &budget);
+        let evidence = extract_evidence(
+            "run-1",
+            &[source],
+            &[("src-1".to_string(), content)],
+            &budget,
+        );
         assert_eq!(evidence.len(), 3);
     }
 

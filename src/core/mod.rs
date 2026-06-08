@@ -59,12 +59,10 @@ impl InprocCoreClient {
 /// successful goal store write.
 fn publish_goal_updated(session_id: &str, goal: Option<crate::goal::model::Goal>) {
     let snap = goal.map(|g| g.to_snapshot());
-    crate::bus::global::GlobalEventBus::publish(
-        crate::bus::events::AppEvent::GoalUpdated {
-            session_id: session_id.to_string(),
-            goal: snap,
-        },
-    );
+    crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::GoalUpdated {
+        session_id: session_id.to_string(),
+        goal: snap,
+    });
 }
 
 #[async_trait]
@@ -103,33 +101,51 @@ impl CoreClient for InprocCoreClient {
                         Ok(event) => {
                             if let Some(core_event) = map_app_event_to_core_event(event) {
                                 let (env_session_id, env_turn_id) = match &core_event {
-                                    CoreEvent::PermissionPending { session_id, turn_id, .. } => {
-                                        (Some(session_id.clone()), turn_id.clone())
-                                    }
-                                    CoreEvent::QuestionPending { session_id, turn_id, .. } => {
-                                        (Some(session_id.clone()), turn_id.clone())
-                                    }
-                                    CoreEvent::TurnStarted { session_id, turn_id, .. } => {
-                                        (Some(session_id.clone()), Some(turn_id.clone()))
-                                    }
-                                    CoreEvent::TurnTextDelta { session_id, turn_id, .. } => {
-                                        (Some(session_id.clone()), Some(turn_id.clone()))
-                                    }
-                                    CoreEvent::TurnReasoningDelta { session_id, turn_id, .. } => {
-                                        (Some(session_id.clone()), Some(turn_id.clone()))
-                                    }
-                                    CoreEvent::ToolStarted { session_id, turn_id, .. } => {
-                                        (Some(session_id.clone()), turn_id.clone())
-                                    }
-                                    CoreEvent::ToolCompleted { session_id, turn_id, .. } => {
-                                        (Some(session_id.clone()), turn_id.clone())
-                                    }
-                                    CoreEvent::TurnCompleted { session_id, turn_id, .. } => {
-                                        (Some(session_id.clone()), Some(turn_id.clone()))
-                                    }
-                                    CoreEvent::TurnFailed { session_id, turn_id, .. } => {
-                                        (Some(session_id.clone()), turn_id.clone())
-                                    }
+                                    CoreEvent::PermissionPending {
+                                        session_id,
+                                        turn_id,
+                                        ..
+                                    } => (Some(session_id.clone()), turn_id.clone()),
+                                    CoreEvent::QuestionPending {
+                                        session_id,
+                                        turn_id,
+                                        ..
+                                    } => (Some(session_id.clone()), turn_id.clone()),
+                                    CoreEvent::TurnStarted {
+                                        session_id,
+                                        turn_id,
+                                        ..
+                                    } => (Some(session_id.clone()), Some(turn_id.clone())),
+                                    CoreEvent::TurnTextDelta {
+                                        session_id,
+                                        turn_id,
+                                        ..
+                                    } => (Some(session_id.clone()), Some(turn_id.clone())),
+                                    CoreEvent::TurnReasoningDelta {
+                                        session_id,
+                                        turn_id,
+                                        ..
+                                    } => (Some(session_id.clone()), Some(turn_id.clone())),
+                                    CoreEvent::ToolStarted {
+                                        session_id,
+                                        turn_id,
+                                        ..
+                                    } => (Some(session_id.clone()), turn_id.clone()),
+                                    CoreEvent::ToolCompleted {
+                                        session_id,
+                                        turn_id,
+                                        ..
+                                    } => (Some(session_id.clone()), turn_id.clone()),
+                                    CoreEvent::TurnCompleted {
+                                        session_id,
+                                        turn_id,
+                                        ..
+                                    } => (Some(session_id.clone()), Some(turn_id.clone())),
+                                    CoreEvent::TurnFailed {
+                                        session_id,
+                                        turn_id,
+                                        ..
+                                    } => (Some(session_id.clone()), turn_id.clone()),
                                     _ => (None, None),
                                 };
                                 let envelope = EventEnvelope {
@@ -166,42 +182,55 @@ pub(crate) fn core_event_metadata(
 ) -> (Option<String>, Option<String>) {
     use crate::protocol::core::CoreEvent;
     match event {
-        CoreEvent::TurnStarted { session_id, turn_id } => {
-            (Some(session_id.clone()), Some(turn_id.clone()))
-        }
-        CoreEvent::TurnTextDelta { session_id, turn_id, .. } => {
-            (Some(session_id.clone()), Some(turn_id.clone()))
-        }
-        CoreEvent::TurnReasoningDelta { session_id, turn_id, .. } => {
-            (Some(session_id.clone()), Some(turn_id.clone()))
-        }
-        CoreEvent::ToolStarted { session_id, turn_id, .. } => {
-            (Some(session_id.clone()), turn_id.clone())
-        }
-        CoreEvent::ToolCompleted { session_id, turn_id, .. } => {
-            (Some(session_id.clone()), turn_id.clone())
-        }
-        CoreEvent::PermissionPending { session_id, turn_id, .. } => {
-            (Some(session_id.clone()), turn_id.clone())
-        }
-        CoreEvent::QuestionPending { session_id, turn_id, .. } => {
-            (Some(session_id.clone()), turn_id.clone())
-        }
-        CoreEvent::TurnCompleted { session_id, turn_id, .. } => {
-            (Some(session_id.clone()), Some(turn_id.clone()))
-        }
-        CoreEvent::TurnFailed { session_id, turn_id, .. } => {
-            (Some(session_id.clone()), turn_id.clone())
-        }
-        CoreEvent::SessionUpdated { session_id } => {
-            (Some(session_id.clone()), None)
-        }
+        CoreEvent::TurnStarted {
+            session_id,
+            turn_id,
+        } => (Some(session_id.clone()), Some(turn_id.clone())),
+        CoreEvent::TurnTextDelta {
+            session_id,
+            turn_id,
+            ..
+        } => (Some(session_id.clone()), Some(turn_id.clone())),
+        CoreEvent::TurnReasoningDelta {
+            session_id,
+            turn_id,
+            ..
+        } => (Some(session_id.clone()), Some(turn_id.clone())),
+        CoreEvent::ToolStarted {
+            session_id,
+            turn_id,
+            ..
+        } => (Some(session_id.clone()), turn_id.clone()),
+        CoreEvent::ToolCompleted {
+            session_id,
+            turn_id,
+            ..
+        } => (Some(session_id.clone()), turn_id.clone()),
+        CoreEvent::PermissionPending {
+            session_id,
+            turn_id,
+            ..
+        } => (Some(session_id.clone()), turn_id.clone()),
+        CoreEvent::QuestionPending {
+            session_id,
+            turn_id,
+            ..
+        } => (Some(session_id.clone()), turn_id.clone()),
+        CoreEvent::TurnCompleted {
+            session_id,
+            turn_id,
+            ..
+        } => (Some(session_id.clone()), Some(turn_id.clone())),
+        CoreEvent::TurnFailed {
+            session_id,
+            turn_id,
+            ..
+        } => (Some(session_id.clone()), turn_id.clone()),
+        CoreEvent::SessionUpdated { session_id } => (Some(session_id.clone()), None),
         CoreEvent::SubagentStarted { session_id, .. }
         | CoreEvent::SubagentProgress { session_id, .. }
         | CoreEvent::SubagentCompleted { session_id, .. }
-        | CoreEvent::SubagentFailed { session_id, .. } => {
-            (Some(session_id.clone()), None)
-        }
+        | CoreEvent::SubagentFailed { session_id, .. } => (Some(session_id.clone()), None),
         _ => (None, None),
     }
 }
@@ -223,22 +252,34 @@ pub(crate) fn set_turn_id_on_event(
             session_id,
             turn_id,
         },
-        CoreEvent::TurnTextDelta { session_id, delta, .. } => CoreEvent::TurnTextDelta {
+        CoreEvent::TurnTextDelta {
+            session_id, delta, ..
+        } => CoreEvent::TurnTextDelta {
             session_id,
             turn_id,
             delta,
         },
-        CoreEvent::TurnReasoningDelta { session_id, delta, .. } => CoreEvent::TurnReasoningDelta {
+        CoreEvent::TurnReasoningDelta {
+            session_id, delta, ..
+        } => CoreEvent::TurnReasoningDelta {
             session_id,
             turn_id,
             delta,
         },
-        CoreEvent::TurnCompleted { session_id, stop_reason, .. } => CoreEvent::TurnCompleted {
+        CoreEvent::TurnCompleted {
+            session_id,
+            stop_reason,
+            ..
+        } => CoreEvent::TurnCompleted {
             session_id,
             turn_id,
             stop_reason,
         },
-        CoreEvent::TurnFailed { session_id, message, .. } => CoreEvent::TurnFailed {
+        CoreEvent::TurnFailed {
+            session_id,
+            message,
+            ..
+        } => CoreEvent::TurnFailed {
             session_id,
             turn_id: Some(turn_id),
             message,
@@ -292,7 +333,9 @@ pub fn core_event_type(event: &crate::protocol::core::CoreEvent) -> &'static str
     }
 }
 
-pub(crate) fn map_app_event_to_core_event(event: crate::bus::events::AppEvent) -> Option<CoreEvent> {
+pub(crate) fn map_app_event_to_core_event(
+    event: crate::bus::events::AppEvent,
+) -> Option<CoreEvent> {
     match event {
         crate::bus::events::AppEvent::TextDelta { delta, session_id } => {
             Some(CoreEvent::TurnTextDelta {

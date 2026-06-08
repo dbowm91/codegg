@@ -1,8 +1,8 @@
-use codegg::snapshot::{FileSnapshot, SnapshotView, SnapshotManager};
-use std::collections::HashMap;
-use std::fs;
+use codegg::snapshot::{FileSnapshot, SnapshotManager, SnapshotView};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
+use std::fs;
 
 async fn create_test_pool() -> SqlitePool {
     SqlitePoolOptions::new()
@@ -15,7 +15,7 @@ async fn create_test_pool() -> SqlitePool {
 #[tokio::test]
 async fn test_snapshot_capture_empty_dir() {
     let (mut manager, pool) = create_test_manager_with_pool().await;
-    
+
     // Create project and session
     sqlx::query("INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, ?, ?, ?, ?)")
         .bind("test-project")
@@ -40,7 +40,9 @@ async fn test_snapshot_capture_empty_dir() {
         .await
         .unwrap();
 
-    let result = manager.capture("test-session", Some("test-label".to_string())).await;
+    let result = manager
+        .capture("test-session", Some("test-label".to_string()))
+        .await;
     assert!(result.is_ok(), "Capture failed: {:?}", result.err());
 
     let snapshot = result.unwrap();
@@ -52,10 +54,15 @@ async fn test_snapshot_capture_empty_dir() {
 async fn create_test_manager_with_pool() -> (SnapshotManager, SqlitePool) {
     let pool = create_test_pool().await;
     // Run migrations
-    codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
-    
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("failed to run migrations");
+
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
-    (SnapshotManager::new(pool.clone(), temp_dir.path().to_path_buf()), pool)
+    (
+        SnapshotManager::new(pool.clone(), temp_dir.path().to_path_buf()),
+        pool,
+    )
 }
 
 async fn insert_test_project_and_session(pool: &SqlitePool) {
@@ -125,7 +132,9 @@ fn test_snapshot_view_creation() {
 #[tokio::test]
 async fn test_capture_incremental_uses_old_content() {
     let pool = create_test_pool().await;
-    codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("failed to run migrations");
     insert_test_project_and_session(&pool).await;
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -153,7 +162,9 @@ async fn test_capture_incremental_uses_old_content() {
 #[tokio::test]
 async fn test_capture_skips_binary_and_large_files() {
     let pool = create_test_pool().await;
-    codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("failed to run migrations");
     insert_test_project_and_session(&pool).await;
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -165,7 +176,10 @@ async fn test_capture_skips_binary_and_large_files() {
     fs::write(root.join("src").join("big.txt"), vec![b'a'; 1_000_001]).unwrap();
 
     let mut manager = SnapshotManager::new(pool, root.to_path_buf());
-    let snapshot = manager.capture("test-session", Some("full".to_string())).await.unwrap();
+    let snapshot = manager
+        .capture("test-session", Some("full".to_string()))
+        .await
+        .unwrap();
 
     assert!(snapshot.files.contains_key("src/ok.txt"));
     assert!(!snapshot.files.contains_key("src/bin.dat"));
@@ -175,7 +189,9 @@ async fn test_capture_skips_binary_and_large_files() {
 #[tokio::test]
 async fn test_capture_file_count_limit() {
     let pool = create_test_pool().await;
-    codegg::session::schema::migrate(&pool).await.expect("failed to run migrations");
+    codegg::session::schema::migrate(&pool)
+        .await
+        .expect("failed to run migrations");
     insert_test_project_and_session(&pool).await;
 
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -187,7 +203,10 @@ async fn test_capture_file_count_limit() {
     }
 
     let mut manager = SnapshotManager::new(pool, root.to_path_buf());
-    let snapshot = manager.capture("test-session", Some("full".to_string())).await.unwrap();
+    let snapshot = manager
+        .capture("test-session", Some("full".to_string()))
+        .await
+        .unwrap();
 
     assert!(snapshot.files.len() <= 5_000);
 }

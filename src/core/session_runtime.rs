@@ -1,7 +1,7 @@
-use std::path::PathBuf;
-use std::sync::atomic::AtomicUsize;
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
+use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
 use tokio::sync::{mpsc, watch, RwLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +81,9 @@ impl SessionRuntimeRegistry {
     }
 
     pub fn get(&self, session_id: &str) -> Option<std::sync::Arc<SessionRuntime>> {
-        self.sessions.get(session_id).map(|r| std::sync::Arc::clone(&r))
+        self.sessions
+            .get(session_id)
+            .map(|r| std::sync::Arc::clone(&r))
     }
 
     #[allow(dead_code)]

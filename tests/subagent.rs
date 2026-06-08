@@ -974,10 +974,10 @@ mod tests {
                 agent: "test-agent".to_string(),
                 parent_id: None,
                 denied_tools: vec![],
-            allowed_paths: vec![],
+                allowed_paths: vec![],
                 description: format!("Task {}", i),
                 depth: 0,
-            max_tool_calls: None,
+                max_tool_calls: None,
             };
             let result = spawner.send_async(request).await;
             assert!(result.is_ok(), "send_async should succeed for task {}", i);
@@ -1227,10 +1227,10 @@ mod tests {
                     agent: "nonexistent".to_string(),
                     parent_id: None,
                     denied_tools: vec![],
-            allowed_paths: vec![],
+                    allowed_paths: vec![],
                     description: "task 1".to_string(),
                     depth: 0,
-            max_tool_calls: None,
+                    max_tool_calls: None,
                 };
                 let _ = spawner.send_async(req).await;
                 barrier.wait().await;
@@ -1247,10 +1247,10 @@ mod tests {
                     agent: "nonexistent".to_string(),
                     parent_id: None,
                     denied_tools: vec![],
-            allowed_paths: vec![],
+                    allowed_paths: vec![],
                     description: "task 2".to_string(),
                     depth: 0,
-            max_tool_calls: None,
+                    max_tool_calls: None,
                 };
                 let _ = spawner.send_async(req).await;
                 barrier.wait().await;

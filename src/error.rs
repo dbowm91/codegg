@@ -244,9 +244,8 @@ impl IntoResponse for AppError {
             AppError::Agent(AgentError::Invalid(_)) => StatusCode::BAD_REQUEST,
 
             AppError::Tool(ToolError::NotFound(_)) => StatusCode::NOT_FOUND,
-            AppError::Tool(ToolError::Permission(_)) | AppError::Permission(PermissionError::Denied { .. }) => {
-                StatusCode::FORBIDDEN
-            }
+            AppError::Tool(ToolError::Permission(_))
+            | AppError::Permission(PermissionError::Denied { .. }) => StatusCode::FORBIDDEN,
             AppError::Tool(ToolError::Timeout(_)) => StatusCode::GATEWAY_TIMEOUT,
             AppError::Tool(ToolError::Disabled(_)) => StatusCode::FORBIDDEN,
             AppError::Tool(ToolError::Execution(_))
@@ -392,7 +391,11 @@ impl McpError {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            McpError::Connection(_) | McpError::Server(_) | McpError::ToolCall(_) | McpError::OAuth(_) | McpError::Timeout(_)
+            McpError::Connection(_)
+                | McpError::Server(_)
+                | McpError::ToolCall(_)
+                | McpError::OAuth(_)
+                | McpError::Timeout(_)
         )
     }
 }
@@ -431,7 +434,11 @@ impl LspError {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            LspError::DownloadFailed(_) | LspError::LaunchFailed(_) | LspError::RequestFailed(_) | LspError::RequestTimeout(_) | LspError::Io(_)
+            LspError::DownloadFailed(_)
+                | LspError::LaunchFailed(_)
+                | LspError::RequestFailed(_)
+                | LspError::RequestTimeout(_)
+                | LspError::Io(_)
         )
     }
 }
@@ -608,7 +615,10 @@ mod tests {
         let response =
             AppError::Provider(ProviderError::Auth("super-secret-token".into())).into_response();
         let body = response_json(response);
-        assert_eq!(body.get("error").and_then(Value::as_str), Some("Unauthorized"));
+        assert_eq!(
+            body.get("error").and_then(Value::as_str),
+            Some("Unauthorized")
+        );
         assert_eq!(body.get("code").and_then(Value::as_u64), Some(401));
         assert!(!body.to_string().contains("super-secret-token"));
     }

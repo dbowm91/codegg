@@ -32,35 +32,87 @@ impl QueryKind {
 }
 
 const ACADEMIC_HINTS: &[&str] = &[
-    "arxiv", "paper", "preprint", "study", "research", "literature",
-    "academic", "scholar", "doi", "citation", "journal",
+    "arxiv",
+    "paper",
+    "preprint",
+    "study",
+    "research",
+    "literature",
+    "academic",
+    "scholar",
+    "doi",
+    "citation",
+    "journal",
 ];
 
 const BIOMEDICAL_HINTS: &[&str] = &[
-    "pubmed", "biomedical", "clinical", "patient", "drug", "disease",
-    "treatment", "diagnosis", "trial", "fda", "pharma", "genomic", "protein",
-    "side effect", "vaccine", "antibody", "symptom", "pathology", "oncology",
-    "cardiology", "neurology",
+    "pubmed",
+    "biomedical",
+    "clinical",
+    "patient",
+    "drug",
+    "disease",
+    "treatment",
+    "diagnosis",
+    "trial",
+    "fda",
+    "pharma",
+    "genomic",
+    "protein",
+    "side effect",
+    "vaccine",
+    "antibody",
+    "symptom",
+    "pathology",
+    "oncology",
+    "cardiology",
+    "neurology",
 ];
 
 const NEWS_HINTS: &[&str] = &[
-    "news", "breaking", "latest", "today", "this week", "headline",
-    "announced", "released", "report says", "according to",
+    "news",
+    "breaking",
+    "latest",
+    "today",
+    "this week",
+    "headline",
+    "announced",
+    "released",
+    "report says",
+    "according to",
 ];
 
 const TECH_DISCOURSE_HINTS: &[&str] = &[
-    "hacker news", "hn", "discussion", "reddit", "lobsters", "show hn",
-    "ask hn", "launch hn", "community",
+    "hacker news",
+    "hn",
+    "discussion",
+    "reddit",
+    "lobsters",
+    "show hn",
+    "ask hn",
+    "launch hn",
+    "community",
 ];
 
 const CODE_HINTS: &[&str] = &[
-    "github", "repo", "repository", "source code", "implementation of",
-    "library on github", "crate on",
+    "github",
+    "repo",
+    "repository",
+    "source code",
+    "implementation of",
+    "library on github",
+    "crate on",
 ];
 
 const ENTITY_HINTS: &[&str] = &[
-    "what is", "who is", "define", "definition of", "meaning of",
-    "history of", "biography of", "explain",
+    "what is",
+    "who is",
+    "define",
+    "definition of",
+    "meaning of",
+    "history of",
+    "biography of",
+    "explain",
 ];
 
 /// Heuristic, lowercase, substring-based. Cheap and obvious on purpose.
@@ -114,12 +166,18 @@ mod tests {
 
     #[test]
     fn classifies_news() {
-        assert_eq!(classify_query("breaking news: rust 1.85 release"), QueryKind::News);
+        assert_eq!(
+            classify_query("breaking news: rust 1.85 release"),
+            QueryKind::News
+        );
     }
 
     #[test]
     fn classifies_entity() {
-        assert_eq!(classify_query("what is a tokio runtime"), QueryKind::Encyclopedic);
+        assert_eq!(
+            classify_query("what is a tokio runtime"),
+            QueryKind::Encyclopedic
+        );
     }
 
     #[test]

@@ -32,17 +32,17 @@ const DESTRUCTIVE_BASH_PATTERNS: &[(&str, &str)] = &[
         "rm -rf /",
         r"rm\s+(-[a-zA-Z]*[rR][fF]|-[a-zA-Z]*f[a-zA-Z]*r|-rf|-fr)\s+/\s*$",
     ),
-    (
-        "rm -rf /*",
-        r"rm\s+(-[a-zA-Z]*[rR][fF]|-rf|-fr)\s+/\*",
-    ),
+    ("rm -rf /*", r"rm\s+(-[a-zA-Z]*[rR][fF]|-rf|-fr)\s+/\*"),
     (
         "rm -rf ~ or $HOME",
         r"rm\s+(-[a-zA-Z]*[rR][fF]|-rf|-fr)\s+(\~|\$HOME)",
     ),
     // Disk / filesystem destruction
     ("mkfs on /dev", r"mkfs(\.\w+)?\s+/dev/"),
-    ("dd from /dev", r"\bdd\s+[^|;&]*\bif=/dev/(zero|urandom|random)"),
+    (
+        "dd from /dev",
+        r"\bdd\s+[^|;&]*\bif=/dev/(zero|urandom|random)",
+    ),
     // Fork bombs
     (
         "fork bomb (:(){:...|:})",
@@ -54,9 +54,15 @@ const DESTRUCTIVE_BASH_PATTERNS: &[(&str, &str)] = &[
         r"\b(shutdown|reboot|halt|poweroff|telinit\s+0|init\s+0|systemctl\s+(poweroff|reboot|halt))\b",
     ),
     // Direct writes to raw block devices
-    ("write to /dev/sd or /dev/nvme", r">\s*/dev/(sd|nvme|hd|vd)[a-z]"),
+    (
+        "write to /dev/sd or /dev/nvme",
+        r">\s*/dev/(sd|nvme|hd|vd)[a-z]",
+    ),
     // Partition tools (mutate disk layout)
-    ("partition tool (fdisk/parted/mklabel)", r"\b(fdisk|parted|sfdisk|sgdisk|mklabel)\b"),
+    (
+        "partition tool (fdisk/parted/mklabel)",
+        r"\b(fdisk|parted|sfdisk|sgdisk|mklabel)\b",
+    ),
     // Pipe from internet to shell
     (
         "curl ... | sh or wget ... | sh",
@@ -67,7 +73,12 @@ const DESTRUCTIVE_BASH_PATTERNS: &[(&str, &str)] = &[
 static DESTRUCTIVE_BASH_REGEXES: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
     DESTRUCTIVE_BASH_PATTERNS
         .iter()
-        .map(|(name, pat)| (*name, Regex::new(pat).expect("invalid destructive bash pattern regex")))
+        .map(|(name, pat)| {
+            (
+                *name,
+                Regex::new(pat).expect("invalid destructive bash pattern regex"),
+            )
+        })
         .collect()
 });
 
@@ -104,13 +115,22 @@ mod tests {
     #[test]
     fn matches_mkfs() {
         assert_eq!(destructive_match("mkfs /dev/sda1"), Some("mkfs on /dev"));
-        assert_eq!(destructive_match("mkfs.ext4 /dev/nvme0n1"), Some("mkfs on /dev"));
+        assert_eq!(
+            destructive_match("mkfs.ext4 /dev/nvme0n1"),
+            Some("mkfs on /dev")
+        );
     }
 
     #[test]
     fn matches_shutdown() {
-        assert_eq!(destructive_match("shutdown now"), Some("system shutdown or reboot"));
-        assert_eq!(destructive_match("reboot"), Some("system shutdown or reboot"));
+        assert_eq!(
+            destructive_match("shutdown now"),
+            Some("system shutdown or reboot")
+        );
+        assert_eq!(
+            destructive_match("reboot"),
+            Some("system shutdown or reboot")
+        );
         assert_eq!(
             destructive_match("systemctl poweroff"),
             Some("system shutdown or reboot")

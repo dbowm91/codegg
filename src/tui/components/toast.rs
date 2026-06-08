@@ -141,7 +141,7 @@ impl ToastManager {
             // Total height: title line (inside border) + wrap_lines + progress bar + 2 for top/bottom borders
             // Actually Paragraph with wrap does this, but we need to know the height for Layout
             // Title is in the block, so we need 1 for message lines + 1 for progress bar + 2 for borders
-            let toast_height = (wrap_lines as u16) + 3; 
+            let toast_height = (wrap_lines as u16) + 3;
 
             if current_y + toast_height > area.y + area.height {
                 break;
@@ -162,8 +162,8 @@ impl ToastManager {
                 remaining.as_secs_f64() / toast.duration.as_secs_f64()
             };
             let bar_len = (progress * (max_width as f64 - 4.0)) as usize;
-            let bar = "█".repeat(bar_len)
-                + &"░".repeat((max_width as usize - 4).saturating_sub(bar_len));
+            let bar =
+                "█".repeat(bar_len) + &"░".repeat((max_width as usize - 4).saturating_sub(bar_len));
 
             let lines = vec![
                 Line::from(Span::styled(

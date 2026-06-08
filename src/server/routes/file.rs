@@ -20,9 +20,9 @@ pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError> {
             .map_err(AppError::Io)?
             .join(root_clone);
     }
-    let root_canonicalized = root_clone.canonicalize().map_err(|_| {
-        AppError::Storage(StorageError::NotFound("root path not found".into()))
-    })?;
+    let root_canonicalized = root_clone
+        .canonicalize()
+        .map_err(|_| AppError::Storage(StorageError::NotFound("root path not found".into())))?;
 
     check_path_for_symlinks(&joined).map_err(|e| {
         AppError::Storage(StorageError::NotFound(format!(

@@ -1,10 +1,7 @@
 use crate::model_profile::types::ResolvedModelProfile;
 use crate::provider::{ContentPart, Message};
 
-pub fn apply_startup_profile_policy(
-    messages: &mut Vec<Message>,
-    profile: &ResolvedModelProfile,
-) {
+pub fn apply_startup_profile_policy(messages: &mut Vec<Message>, profile: &ResolvedModelProfile) {
     if profile.requires_explicit_tool_contract {
         inject_tool_contract(messages, profile);
     }
@@ -62,11 +59,7 @@ fn content_already_present(messages: &[Message], text: &str) -> bool {
     false
 }
 
-fn inject_control_text(
-    messages: &mut Vec<Message>,
-    profile: &ResolvedModelProfile,
-    text: &str,
-) {
+fn inject_control_text(messages: &mut Vec<Message>, profile: &ResolvedModelProfile, text: &str) {
     if content_already_present(messages, text) {
         return;
     }
@@ -166,7 +159,10 @@ mod tests {
         let has_tool_contract = messages.iter().any(|m| {
             matches!(m, Message::User { content } if content.iter().any(|p| matches!(p, ContentPart::Text { text } if text.contains("Tool-use contract"))))
         });
-        assert!(has_tool_contract, "Expected a user message with Tool-use contract");
+        assert!(
+            has_tool_contract,
+            "Expected a user message with Tool-use contract"
+        );
     }
 
     #[test]
@@ -321,9 +317,15 @@ mod tests {
         match &messages[0] {
             Message::System { content } => {
                 let tool_count = content.matches("Tool-use contract").count();
-                assert_eq!(tool_count, 1, "Tool-use contract should appear exactly once");
+                assert_eq!(
+                    tool_count, 1,
+                    "Tool-use contract should appear exactly once"
+                );
                 let patch_count = content.matches("Patch discipline").count();
-                assert_eq!(patch_count, 1, "Patch discipline should appear exactly once");
+                assert_eq!(
+                    patch_count, 1,
+                    "Patch discipline should appear exactly once"
+                );
             }
             _ => panic!("Expected system message"),
         }

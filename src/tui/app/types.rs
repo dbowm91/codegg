@@ -50,11 +50,11 @@ impl Dialog {
                 | Self::Usage
                 | Self::Stats
                 | Self::Goto
-            | Self::Plan
-            | Self::Diff
-            | Self::Confirm
-            | Self::Review
-            | Self::ResearchBrowser
+                | Self::Plan
+                | Self::Diff
+                | Self::Confirm
+                | Self::Review
+                | Self::ResearchBrowser
         )
     }
 }

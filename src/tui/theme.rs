@@ -95,11 +95,7 @@ impl ThemeData {
                 self.alternate_bg.1,
                 self.alternate_bg.2,
             ),
-            input_bg: Color::Rgb(
-                self.input_bg.0,
-                self.input_bg.1,
-                self.input_bg.2,
-            ),
+            input_bg: Color::Rgb(self.input_bg.0, self.input_bg.1, self.input_bg.2),
             code_theme: self.code_theme.to_string(),
             link: Color::Rgb(self.link.0, self.link.1, self.link.2),
         }

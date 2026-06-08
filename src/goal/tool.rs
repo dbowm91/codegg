@@ -163,12 +163,10 @@ impl Tool for GoalUpdateProgressTool {
             let _ = crate::goal::checkpoint::append_checkpoint_update(cp_path, &update).await;
         }
 
-        crate::bus::global::GlobalEventBus::publish(
-            crate::bus::events::AppEvent::GoalUpdated {
-                session_id: self.session_id.clone(),
-                goal: Some(updated_goal.to_snapshot()),
-            },
-        );
+        crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::GoalUpdated {
+            session_id: self.session_id.clone(),
+            goal: Some(updated_goal.to_snapshot()),
+        });
 
         Ok(serde_json::json!({
             "id": updated_goal.id,

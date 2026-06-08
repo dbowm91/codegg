@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 
+use super::arxiv::ArxivProvider;
 use super::duckduckgo::DuckDuckGoProvider;
 use super::github::GitHubProvider;
 use super::google_news::GoogleNewsProvider;
@@ -30,7 +31,6 @@ use super::pubmed::PubMedProvider;
 use super::routing::{classify_query, QueryKind};
 use super::types::{Domain, SearchError, SearchHit, SearchProvider, Specificity};
 use super::wikipedia::WikipediaProvider;
-use super::arxiv::ArxivProvider;
 
 pub struct SearchProviderRegistry {
     general: Vec<Arc<dyn SearchProvider>>,
@@ -66,7 +66,11 @@ impl SearchProviderRegistry {
             Arc::new(GoogleNewsProvider::new()),
             Arc::new(GitHubProvider::new()),
         ];
-        Self { general, fallbacks, domain }
+        Self {
+            general,
+            fallbacks,
+            domain,
+        }
     }
 
     /// Build a registry with a custom set of providers. Useful in
@@ -76,7 +80,11 @@ impl SearchProviderRegistry {
         fallbacks: Vec<Arc<dyn SearchProvider>>,
         domain: Vec<Arc<dyn SearchProvider>>,
     ) -> Self {
-        Self { general, fallbacks, domain }
+        Self {
+            general,
+            fallbacks,
+            domain,
+        }
     }
 
     /// True if at least one provider is configured (key or no-key).
@@ -180,7 +188,10 @@ impl SearchProviderRegistry {
     }
 }
 
-fn pick_one(providers: &[Arc<dyn SearchProvider>], hint: Option<&str>) -> Option<Arc<dyn SearchProvider>> {
+fn pick_one(
+    providers: &[Arc<dyn SearchProvider>],
+    hint: Option<&str>,
+) -> Option<Arc<dyn SearchProvider>> {
     let hint = hint?;
     providers.iter().find(|p| p.name() == hint).cloned()
 }
@@ -256,7 +267,10 @@ mod tests {
     #[test]
     fn empty_registry_returns_empty() {
         let reg = SearchProviderRegistry::with_providers(vec![], vec![], vec![]);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let res = rt.block_on(reg.search("test", 5, None));
         assert!(matches!(res, Err(SearchError::Empty)));
     }
@@ -269,7 +283,10 @@ mod tests {
             specificity: Specificity::General,
         });
         let reg = SearchProviderRegistry::with_providers(vec![p], vec![], vec![]);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let res = rt.block_on(reg.search("test", 5, None)).expect("ok");
         assert_eq!(res.len(), 2);
         assert_eq!(res[0].title, "a");
@@ -288,8 +305,13 @@ mod tests {
             specificity: Specificity::Domain(Domain::Encyclopedic),
         });
         let reg = SearchProviderRegistry::with_providers(vec![], vec![], vec![wiki]);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let res = rt.block_on(reg.search("what is rust", 5, None)).expect("ok");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let res = rt
+            .block_on(reg.search("what is rust", 5, None))
+            .expect("ok");
         // Domain provider should be queried because result is thin AND
         // query shape matches Encyclopedic.
         assert!(res.iter().any(|h| h.title == "entity"));

@@ -23,10 +23,7 @@ pub fn first_budget_breach(budget: &GoalBudget, usage: &GoalUsage) -> Option<Str
     if let Some(max) = budget.max_model_tokens {
         let total = usage.input_tokens.saturating_add(usage.output_tokens);
         if total >= max {
-            return Some(format!(
-                "token budget exceeded: {} used of {}",
-                total, max
-            ));
+            return Some(format!("token budget exceeded: {} used of {}", total, max));
         }
     }
     if let Some(max) = budget.max_tool_calls {
@@ -375,7 +372,9 @@ impl GoalStore {
         usage.output_tokens = usage.output_tokens.saturating_add(output_tokens.max(0));
         usage.tool_calls = usage.tool_calls.saturating_add(tool_calls.max(0));
         usage.turns_used = usage.turns_used.saturating_add(turns_delta.max(0));
-        usage.wallclock_secs = usage.wallclock_secs.saturating_add(wallclock_delta_secs.max(0));
+        usage.wallclock_secs = usage
+            .wallclock_secs
+            .saturating_add(wallclock_delta_secs.max(0));
 
         let usage_json = serde_json::to_string(&usage)
             .map_err(|e| StorageError::Database(format!("serialize usage: {}", e)))?;
@@ -411,10 +410,7 @@ impl GoalStore {
 
     /// Convenience: enforce the budget on a goal without advancing the
     /// counters. Returns the new status if a transition occurred.
-    pub async fn enforce_budget(
-        &self,
-        goal_id: &str,
-    ) -> Result<Option<Goal>, StorageError> {
+    pub async fn enforce_budget(&self, goal_id: &str) -> Result<Option<Goal>, StorageError> {
         let goal = self.get(goal_id).await?;
         let Some(goal) = goal else {
             return Ok(None);

@@ -281,7 +281,10 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::NONE, KeyCode::PageDown),
         InputAction::PageDown,
     );
-    map.insert((KeyModifiers::NONE, KeyCode::Char('g')), InputAction::GoToTop);
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('g')),
+        InputAction::GoToTop,
+    );
     map.insert(
         (KeyModifiers::SHIFT, KeyCode::Char('G')),
         InputAction::GoToBottom,
@@ -365,7 +368,10 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         InputAction::Command,
     );
 
-    map.insert((KeyModifiers::NONE, KeyCode::Char('g')), InputAction::GoToTop);
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('g')),
+        InputAction::GoToTop,
+    );
     map.insert(
         (KeyModifiers::SHIFT, KeyCode::Char('G')),
         InputAction::GoToBottom,

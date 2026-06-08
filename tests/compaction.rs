@@ -477,12 +477,11 @@ mod tests {
     // ========================================================================
 
     use codegg::agent::compaction::{
-        CompactionInput, CompactionMode, CompactionPolicy,
-        ResolvedCompactionConfig, compact_with_policy, collect_tool_pairs,
-        build_programmatic_state, prune_tool_outputs_rich,
-        validate_message_invariants, emergency_pair_safe_compaction,
-        CompactionInvariantError, extract_commands, extract_file_paths,
-        extract_test_and_error_state, extract_user_constraints,
+        build_programmatic_state, collect_tool_pairs, compact_with_policy,
+        emergency_pair_safe_compaction, extract_commands, extract_file_paths,
+        extract_test_and_error_state, extract_user_constraints, prune_tool_outputs_rich,
+        validate_message_invariants, CompactionInput, CompactionInvariantError, CompactionMode,
+        CompactionPolicy, ResolvedCompactionConfig,
     };
     use codegg::config::schema::{CompactionConfig, CompactionModeConfig, CompactionPolicyConfig};
 
@@ -548,7 +547,10 @@ mod tests {
     fn test_config_parse_old_summarize_model_without_model() {
         let json = r#"{"summarize_model": "openai/gpt-4o-mini"}"#;
         let config: CompactionConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.summarize_model.as_deref(), Some("openai/gpt-4o-mini"));
+        assert_eq!(
+            config.summarize_model.as_deref(),
+            Some("openai/gpt-4o-mini")
+        );
         assert!(config.model.is_none());
     }
 
@@ -557,7 +559,10 @@ mod tests {
         let json = r#"{"model": "google/gemini-flash", "summarize_model": "openai/gpt-4o-mini"}"#;
         let config: CompactionConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.model.as_deref(), Some("google/gemini-flash"));
-        assert_eq!(config.summarize_model.as_deref(), Some("openai/gpt-4o-mini"));
+        assert_eq!(
+            config.summarize_model.as_deref(),
+            Some("openai/gpt-4o-mini")
+        );
     }
 
     #[test]
@@ -578,7 +583,10 @@ mod tests {
         let config: CompactionConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.mode, Some(CompactionModeConfig::Hybrid));
         assert_eq!(config.policy, Some(CompactionPolicyConfig::Balanced));
-        assert_eq!(config.model.as_deref(), Some("google/gemini-2.5-flash-lite"));
+        assert_eq!(
+            config.model.as_deref(),
+            Some("google/gemini-2.5-flash-lite")
+        );
         assert_eq!(config.threshold, Some(0.60));
         assert_eq!(config.reserved, Some(16000));
         assert_eq!(config.validate, Some(true));
@@ -605,7 +613,8 @@ mod tests {
             mode: Some(CompactionModeConfig::Hybrid),
             ..Default::default()
         };
-        let resolved = ResolvedCompactionConfig::from_config(&config, 128_000, Some("openai/gpt-5.5"));
+        let resolved =
+            ResolvedCompactionConfig::from_config(&config, 128_000, Some("openai/gpt-5.5"));
         assert_eq!(resolved.compaction_model.as_deref(), Some("openai/gpt-5.5"));
     }
 
@@ -615,8 +624,12 @@ mod tests {
             summarize_model: Some("openai/gpt-5-mini".to_string()),
             ..Default::default()
         };
-        let resolved = ResolvedCompactionConfig::from_config(&config, 128_000, Some("openai/gpt-5.5"));
-        assert_eq!(resolved.compaction_model.as_deref(), Some("openai/gpt-5-mini"));
+        let resolved =
+            ResolvedCompactionConfig::from_config(&config, 128_000, Some("openai/gpt-5.5"));
+        assert_eq!(
+            resolved.compaction_model.as_deref(),
+            Some("openai/gpt-5-mini")
+        );
     }
 
     #[test]
@@ -626,8 +639,12 @@ mod tests {
             summarize_model: Some("openai/gpt-5-mini".to_string()),
             ..Default::default()
         };
-        let resolved = ResolvedCompactionConfig::from_config(&config, 128_000, Some("openai/gpt-5.5"));
-        assert_eq!(resolved.compaction_model.as_deref(), Some("google/gemini-flash"));
+        let resolved =
+            ResolvedCompactionConfig::from_config(&config, 128_000, Some("openai/gpt-5.5"));
+        assert_eq!(
+            resolved.compaction_model.as_deref(),
+            Some("google/gemini-flash")
+        );
     }
 
     #[test]
@@ -751,10 +768,18 @@ mod tests {
     #[test]
     fn test_programmatic_mode_no_provider_call() {
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("hello".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".to_string()),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("world".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("world".to_string()),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -779,8 +804,14 @@ mod tests {
     #[test]
     fn test_programmatic_compaction_preserves_tool_pairs() {
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("run the test".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("run the test".to_string()),
+                }],
+            },
             Message::Assistant {
                 content: vec![],
                 tool_calls: vec![codegg::provider::ToolCall {
@@ -794,7 +825,9 @@ mod tests {
                 content: Arc::new("test result: 5 passed".to_string()),
             },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("All tests passed".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("All tests passed".to_string()),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -819,7 +852,11 @@ mod tests {
         // Check no orphan tools
         let tool_pairs = collect_tool_pairs(&result.messages);
         for pair in &tool_pairs {
-            assert!(pair.result.is_some(), "Tool pair {} should have result", pair.tool_call_id);
+            assert!(
+                pair.result.is_some(),
+                "Tool pair {} should have result",
+                pair.tool_call_id
+            );
         }
     }
 
@@ -828,7 +865,11 @@ mod tests {
     #[test]
     fn test_invariant_valid_history_passes() {
         let messages = vec![
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("hello".to_string()) }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".to_string()),
+                }],
+            },
             Message::Assistant {
                 content: vec![],
                 tool_calls: vec![codegg::provider::ToolCall {
@@ -842,7 +883,9 @@ mod tests {
                 content: Arc::new("result".to_string()),
             },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("done".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("done".to_string()),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -852,13 +895,19 @@ mod tests {
     #[test]
     fn test_invariant_orphan_tool_detected() {
         let messages = vec![
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("hello".to_string()) }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".to_string()),
+                }],
+            },
             Message::Tool {
                 tool_call_id: Arc::new("orphan".to_string()),
                 content: Arc::new("output".to_string()),
             },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("done".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("done".to_string()),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -872,7 +921,11 @@ mod tests {
     #[test]
     fn test_invariant_missing_tool_result_detected() {
         let messages = vec![
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("hello".to_string()) }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".to_string()),
+                }],
+            },
             Message::Assistant {
                 content: vec![],
                 tool_calls: vec![codegg::provider::ToolCall {
@@ -882,7 +935,9 @@ mod tests {
                 }],
             },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("no result".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("no result".to_string()),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -896,8 +951,14 @@ mod tests {
     #[test]
     fn test_emergency_fallback_preserves_pairs() {
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("msg1".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("msg1".to_string()),
+                }],
+            },
             Message::Assistant {
                 content: vec![],
                 tool_calls: vec![codegg::provider::ToolCall {
@@ -910,14 +971,26 @@ mod tests {
                 tool_call_id: Arc::new("tc1".to_string()),
                 content: Arc::new("output1".to_string()),
             },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("msg2".to_string()) }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("msg2".to_string()),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("resp1".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("resp1".to_string()),
+                }],
                 tool_calls: vec![],
             },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("msg3".to_string()) }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("msg3".to_string()),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("resp2".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("resp2".to_string()),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -926,7 +999,11 @@ mod tests {
         assert!(result.iter().any(|m| matches!(m, Message::System { .. })));
         let tool_pairs = collect_tool_pairs(&result);
         for pair in &tool_pairs {
-            assert!(pair.result.is_some(), "Tool pair {} should have result", pair.tool_call_id);
+            assert!(
+                pair.result.is_some(),
+                "Tool pair {} should have result",
+                pair.tool_call_id
+            );
         }
     }
 
@@ -937,7 +1014,10 @@ mod tests {
         let mut lines = Vec::new();
         for i in 0..1000 {
             if i % 100 == 0 {
-                lines.push(format!("error[E0425]: cannot find value `foo` at line {}", i));
+                lines.push(format!(
+                    "error[E0425]: cannot find value `foo` at line {}",
+                    i
+                ));
             } else {
                 lines.push(format!("normal output line {} with some content", i));
             }
@@ -1007,14 +1087,28 @@ mod tests {
     #[test]
     fn test_extract_user_constraints() {
         let messages = vec![
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("You must use Rust for this project.".to_string()) }] },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("Do not use unwrap in production code.".to_string()) }] },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("Prefer functional programming style.".to_string()) }] },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("You must use Rust for this project.".to_string()),
+                }],
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("Do not use unwrap in production code.".to_string()),
+                }],
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("Prefer functional programming style.".to_string()),
+                }],
+            },
         ];
         let constraints = extract_user_constraints(&messages);
         assert!(constraints.len() >= 2);
         assert!(constraints.iter().any(|c| c.contains("must")));
-        assert!(constraints.iter().any(|c| c.contains("Do not") || c.contains("do not")));
+        assert!(constraints
+            .iter()
+            .any(|c| c.contains("Do not") || c.contains("do not")));
     }
 
     // --- Test and Error Extraction Tests ---
@@ -1045,10 +1139,18 @@ mod tests {
     #[test]
     fn test_build_programmatic_state_populates_frame() {
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("implement the feature".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("implement the feature".to_string()),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("I'll implement the feature".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("I'll implement the feature".to_string()),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -1098,8 +1200,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl codegg::provider::Provider for MockProvider {
-        fn id(&self) -> &str { "mock" }
-        fn name(&self) -> &str { "Mock Provider" }
+        fn id(&self) -> &str {
+            "mock"
+        }
+        fn name(&self) -> &str {
+            "Mock Provider"
+        }
         fn clone_box(&self) -> Box<dyn codegg::provider::Provider> {
             Box::new(MockProvider {
                 response_text: self.response_text.clone(),
@@ -1119,7 +1225,9 @@ mod tests {
             ]);
             Ok(Box::pin(stream))
         }
-        async fn models(&self) -> Result<Vec<codegg::provider::ModelInfo>, codegg::provider::ProviderError> {
+        async fn models(
+            &self,
+        ) -> Result<Vec<codegg::provider::ModelInfo>, codegg::provider::ProviderError> {
             Ok(vec![])
         }
     }
@@ -1132,10 +1240,18 @@ mod tests {
         let provider = MockProvider::new(mock_response);
 
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("implement the feature".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("implement the feature".to_string()),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("I'll implement it".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("I'll implement it".to_string()),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -1166,26 +1282,42 @@ mod tests {
 
         #[async_trait::async_trait]
         impl codegg::provider::Provider for FailingProvider {
-            fn id(&self) -> &str { "failing" }
-            fn name(&self) -> &str { "Failing Provider" }
+            fn id(&self) -> &str {
+                "failing"
+            }
+            fn name(&self) -> &str {
+                "Failing Provider"
+            }
             fn clone_box(&self) -> Box<dyn codegg::provider::Provider> {
                 Box::new(FailingProvider)
             }
             async fn stream(
                 &self,
                 _request: &codegg::provider::ChatRequest,
-            ) -> Result<codegg::provider::EventStream, codegg::provider::ProviderError> {
-                Err(codegg::provider::ProviderError::Stream("connection failed".into()))
+            ) -> Result<codegg::provider::EventStream, codegg::provider::ProviderError>
+            {
+                Err(codegg::provider::ProviderError::Stream(
+                    "connection failed".into(),
+                ))
             }
-            async fn models(&self) -> Result<Vec<codegg::provider::ModelInfo>, codegg::provider::ProviderError> {
+            async fn models(
+                &self,
+            ) -> Result<Vec<codegg::provider::ModelInfo>, codegg::provider::ProviderError>
+            {
                 Ok(vec![])
             }
         }
 
         let provider = FailingProvider;
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("hello".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".to_string()),
+                }],
+            },
         ];
         let config = CompactionConfig {
             mode: Some(CompactionModeConfig::Hybrid),
@@ -1208,8 +1340,14 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_mode_without_model_skips_semantic() {
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("hello".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".to_string()),
+                }],
+            },
         ];
         let config = CompactionConfig {
             mode: Some(CompactionModeConfig::Hybrid),
@@ -1237,10 +1375,18 @@ mod tests {
         let provider = MockProvider::new(mock_response);
 
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("use async for the HTTP client".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("use async for the HTTP client".to_string()),
+                }],
+            },
             Message::Assistant {
-                content: vec![ContentPart::Text { text: Arc::new("I'll use async".to_string()) }],
+                content: vec![ContentPart::Text {
+                    text: Arc::new("I'll use async".to_string()),
+                }],
                 tool_calls: vec![],
             },
         ];
@@ -1264,8 +1410,14 @@ mod tests {
     #[tokio::test]
     async fn test_agent_mode_falls_back_without_provider() {
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("hello".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".to_string()),
+                }],
+            },
         ];
         let config = CompactionConfig {
             mode: Some(CompactionModeConfig::Agent),
@@ -1292,8 +1444,14 @@ mod tests {
         // Create messages that would result in invalid state after compaction
         // The emergency fallback should fix this
         let messages = vec![
-            Message::System { content: Arc::new("system".to_string()) },
-            Message::User { content: vec![ContentPart::Text { text: Arc::new("hello".to_string()) }] },
+            Message::System {
+                content: Arc::new("system".to_string()),
+            },
+            Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".to_string()),
+                }],
+            },
             Message::Assistant {
                 content: vec![],
                 tool_calls: vec![codegg::provider::ToolCall {

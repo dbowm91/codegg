@@ -51,7 +51,11 @@ impl SearchProvider for HnAlgoliaProvider {
         let resp = self
             .client
             .get(ENDPOINT)
-            .query(&[("query", query), ("tags", "story"), ("hitsPerPage", &limit.to_string())])
+            .query(&[
+                ("query", query),
+                ("tags", "story"),
+                ("hitsPerPage", &limit.to_string()),
+            ])
             .send()
             .await?;
         let status = resp.status();
@@ -77,17 +81,19 @@ impl SearchProvider for HnAlgoliaProvider {
             #[serde(default, rename = "objectID")]
             object_id: String,
         }
-        let r: R = resp.json().await.map_err(|e| SearchError::Parse(e.to_string()))?;
+        let r: R = resp
+            .json()
+            .await
+            .map_err(|e| SearchError::Parse(e.to_string()))?;
         if r.hits.is_empty() {
             return Err(SearchError::Empty);
         }
         Ok(r.hits
             .into_iter()
             .map(|h| {
-                let url = h
-                    .url
-                    .clone()
-                    .unwrap_or_else(|| format!("https://news.ycombinator.com/item?id={}", h.object_id));
+                let url = h.url.clone().unwrap_or_else(|| {
+                    format!("https://news.ycombinator.com/item?id={}", h.object_id)
+                });
                 SearchHit {
                     title: h.title.unwrap_or_else(|| format!("HN: {}", h.object_id)),
                     url,

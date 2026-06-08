@@ -1,14 +1,14 @@
 use futures::{SinkExt, StreamExt};
 use std::time::Duration;
-use tokio::time::timeout;
 use tokio::time::sleep;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::http::Request;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
-use crate::protocol::tui::TuiMessage;
 use crate::client::sdk::RemoteClient;
 use crate::error::ClientError;
+use crate::protocol::tui::TuiMessage;
 use crate::tui;
 
 pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientError> {
@@ -49,7 +49,11 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
                             ws_url, max_attempts, e
                         )));
                     }
-                    warn!("WebSocket attempt {} failed: {}, retrying...", attempt + 1, e);
+                    warn!(
+                        "WebSocket attempt {} failed: {}, retrying...",
+                        attempt + 1,
+                        e
+                    );
                 }
                 Err(_) => {
                     if attempt >= max_attempts {
@@ -85,19 +89,17 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
     let event_task = tokio::spawn(async move {
         while let Some(msg) = ws_rx.next().await {
             match msg {
-                Ok(Message::Text(text)) => {
-                    match serde_json::from_str::<serde_json::Value>(&text) {
-                        Ok(event) => {
-                            if event_tx.send(event).is_err() {
-                                tracing::debug!("event_tx closed, stopping event_task");
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("failed to parse WebSocket message: {}", e);
+                Ok(Message::Text(text)) => match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(event) => {
+                        if event_tx.send(event).is_err() {
+                            tracing::debug!("event_tx closed, stopping event_task");
+                            break;
                         }
                     }
-                }
+                    Err(e) => {
+                        tracing::warn!("failed to parse WebSocket message: {}", e);
+                    }
+                },
                 Ok(Message::Close(_)) => {
                     info!("Server closed connection");
                     break;

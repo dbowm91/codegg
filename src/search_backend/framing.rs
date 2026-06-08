@@ -57,11 +57,34 @@ pub fn clamp_output(content: &str, max_chars: usize, label: &str) -> String {
         return content.to_string();
     }
     let mut truncated = String::with_capacity(max_chars + 64);
-    truncated.push_str(&content[..max_chars]);
+    truncated.push_str(truncate_utf8_boundary(content, max_chars));
     truncated.push_str(&format!(
         "\n\n[truncated by Codegg: output exceeded {label}={max_chars}]"
     ));
     truncated
+}
+
+/// Truncate `content` so that the returned slice contains the longest
+/// UTF-8-valid prefix whose length in bytes does not exceed `max_bytes`.
+///
+/// Returns the full `content` if it already fits. Returns `""` if even the
+/// first character would exceed `max_bytes`.
+///
+/// This is safe to call at any byte offset, including offsets that land
+/// inside a multi-byte character.
+pub fn truncate_utf8_boundary(content: &str, max_bytes: usize) -> &str {
+    if content.len() <= max_bytes {
+        return content;
+    }
+    let mut end = 0;
+    for (idx, ch) in content.char_indices() {
+        let next = idx + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    &content[..end]
 }
 
 #[cfg(test)]
@@ -97,5 +120,55 @@ mod tests {
         assert!(out.starts_with("xxxxxxxxxx"));
         assert!(out.contains("[truncated by Codegg"));
         assert!(out.contains("max_fetch_output_chars=10"));
+    }
+
+    #[test]
+    fn clamp_output_handles_multibyte_boundary() {
+        let s = "abcé日本語";
+        let out = clamp_output(s, 4, "cap");
+        assert!(
+            out.contains("abc"),
+            "expected output to contain 'abc', got: {out}"
+        );
+        assert!(
+            out.contains("[truncated by Codegg"),
+            "expected output to contain truncation marker, got: {out}"
+        );
+    }
+
+    #[test]
+    fn truncate_utf8_boundary_never_panics_on_emoji() {
+        let s = "hello \u{1F680} world";
+        for n in 0..=s.len() {
+            let _ = truncate_utf8_boundary(s, n);
+        }
+    }
+
+    #[test]
+    fn truncate_utf8_boundary_keeps_full_text_when_fits() {
+        let s = "abc";
+        assert_eq!(truncate_utf8_boundary(s, 10), "abc");
+    }
+
+    #[test]
+    fn truncate_utf8_boundary_truncates_at_character_boundary() {
+        let s = "abc\u{00e9}"; // 5 bytes: 'a','b','c', 2-byte é
+                               // 3 bytes is exactly 'abc' (a char boundary)
+        assert_eq!(truncate_utf8_boundary(s, 3), "abc");
+        // 4 bytes would land inside the é — must not panic, must return "abc"
+        let out = truncate_utf8_boundary(s, 4);
+        assert_eq!(out, "abc");
+        // 5 bytes is the full string
+        assert_eq!(truncate_utf8_boundary(s, 5), s);
+    }
+
+    #[test]
+    fn truncate_utf8_boundary_returns_empty_for_zero_or_insufficient() {
+        // The first character is multi-byte, max_bytes=1 cannot fit it.
+        let s = "\u{00e9}abc";
+        assert_eq!(truncate_utf8_boundary(s, 0), "");
+        assert_eq!(truncate_utf8_boundary(s, 1), "");
+        // 2 bytes fits the é
+        assert_eq!(truncate_utf8_boundary(s, 2), "\u{00e9}");
     }
 }

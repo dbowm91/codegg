@@ -229,8 +229,8 @@ impl ApplyPatchTool {
             let original = std::fs::read_to_string(&validated_path)
                 .map_err(|e| ToolError::Execution(format!("failed to read file: {e}")))?;
 
-            let result = apply_unified_diff_result(&original, &patch_owned)
-                .map_err(ToolError::Execution)?;
+            let result =
+                apply_unified_diff_result(&original, &patch_owned).map_err(ToolError::Execution)?;
 
             let preview = generate_diff_preview(&original, &result, &path_owned);
 
@@ -264,15 +264,12 @@ fn apply_unified_diff_result(original: &str, patch: &str) -> Result<String, Stri
         }
 
         saw_hunk = true;
-        let old_start = parse_hunk_old_start(line)
-            .ok_or_else(|| format!("invalid hunk header: {}", line))?;
+        let old_start =
+            parse_hunk_old_start(line).ok_or_else(|| format!("invalid hunk header: {}", line))?;
 
         let target_idx = old_start.saturating_sub(1);
         if target_idx < orig_idx {
-            return Err(format!(
-                "overlapping hunk at original line {}",
-                old_start
-            ));
+            return Err(format!("overlapping hunk at original line {}", old_start));
         }
         while orig_idx < target_idx && orig_idx < original_lines.len() {
             output.push(original_lines[orig_idx].to_string());
@@ -312,10 +309,7 @@ fn apply_unified_diff_result(original: &str, patch: &str) -> Result<String, Stri
                 }
                 "-" => {
                     if orig_idx >= original_lines.len() || original_lines[orig_idx] != content {
-                        return Err(format!(
-                            "delete mismatch at original line {}",
-                            orig_idx + 1
-                        ));
+                        return Err(format!("delete mismatch at original line {}", orig_idx + 1));
                     }
                     orig_idx += 1;
                 }
@@ -413,9 +407,9 @@ fn validate_target_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, Too
         .parent()
         .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
     check_path_for_symlinks(parent)?;
-    let parent_canonical = parent.canonicalize().map_err(|_| {
-        ToolError::Execution(format!("invalid path: {}", parent.display()))
-    })?;
+    let parent_canonical = parent
+        .canonicalize()
+        .map_err(|_| ToolError::Execution(format!("invalid path: {}", parent.display())))?;
     if !parent_canonical.starts_with(&root_canonical) {
         return Err(ToolError::Permission(format!(
             "path '{}' is outside allowed directory",
@@ -435,9 +429,9 @@ fn validate_target_path_unrestricted(path: &Path) -> Result<PathBuf, ToolError> 
         .parent()
         .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
     check_path_for_symlinks(parent)?;
-    let parent_canonical = parent.canonicalize().map_err(|_| {
-        ToolError::Execution(format!("invalid path: {}", parent.display()))
-    })?;
+    let parent_canonical = parent
+        .canonicalize()
+        .map_err(|_| ToolError::Execution(format!("invalid path: {}", parent.display())))?;
     let file_name = path
         .file_name()
         .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
@@ -490,10 +484,7 @@ mod tests {
  c";
 
         let err = apply_unified_diff_result(original, patch).expect_err("must fail");
-        assert!(
-            err.contains("context mismatch"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("context mismatch"), "unexpected error: {err}");
     }
 
     #[test]

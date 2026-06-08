@@ -2,9 +2,9 @@ pub mod diff;
 
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
+use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use sqlx::SqlitePool;
 
 #[derive(Debug, Clone)]
 pub struct SnapshotOptions {
@@ -64,7 +64,11 @@ impl SnapshotManager {
         }
     }
 
-    pub fn new_with_options(pool: SqlitePool, project_root: PathBuf, options: SnapshotOptions) -> Self {
+    pub fn new_with_options(
+        pool: SqlitePool,
+        project_root: PathBuf,
+        options: SnapshotOptions,
+    ) -> Self {
         let mut options = options;
         if options.max_files == 0 {
             tracing::warn!("SnapshotOptions: max_files is 0, clamping to 1");
@@ -94,14 +98,15 @@ impl SnapshotManager {
         let now = chrono::Utc::now().timestamp_millis();
         let project_root = self.project_root.clone();
         let options = self.options.clone();
-        let files = tokio::task::spawn_blocking(move || collect_files_sync(&project_root, &options))
-            .await
-            .map_err(|e| format!("snapshot collection join error: {e}"))?;
+        let files =
+            tokio::task::spawn_blocking(move || collect_files_sync(&project_root, &options))
+                .await
+                .map_err(|e| format!("snapshot collection join error: {e}"))?;
 
         let data = serde_json::to_string(&files).map_err(|e| e.to_string())?;
 
         sqlx::query(
-            "INSERT INTO snapshot (id, session_id, created_at, label, data) VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO snapshot (id, session_id, created_at, label, data) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(session_id)
@@ -163,7 +168,7 @@ impl SnapshotManager {
         let id = uuid::Uuid::new_v4().to_string();
         let data = serde_json::to_string(&files).map_err(|e| e.to_string())?;
         sqlx::query(
-            "INSERT INTO snapshot (id, session_id, created_at, label, data) VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO snapshot (id, session_id, created_at, label, data) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(session_id)
@@ -185,7 +190,7 @@ impl SnapshotManager {
 
     pub async fn get(&self, id: &str) -> Result<Option<SnapshotView>, String> {
         let snapshot = sqlx::query_as::<_, Snapshot>(
-            "SELECT id, session_id, created_at, label, data FROM snapshot WHERE id = ?"
+            "SELECT id, session_id, created_at, label, data FROM snapshot WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -271,26 +276,38 @@ impl SnapshotManager {
 
     pub async fn restore(&self, snapshot: &SnapshotView) -> Result<(), String> {
         let project_root = self.project_root.clone();
-        let files: Vec<(String, FileSnapshot)> = snapshot.files.iter()
+        let files: Vec<(String, FileSnapshot)> = snapshot
+            .files
+            .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let canonical_project_root = project_root.canonicalize()
-            .map_err(|e| format!("failed to canonicalize project root {}: {}", project_root.display(), e))?;
+        let canonical_project_root = project_root.canonicalize().map_err(|e| {
+            format!(
+                "failed to canonicalize project root {}: {}",
+                project_root.display(),
+                e
+            )
+        })?;
         tokio::task::spawn_blocking(move || {
             let result: Result<(), String> = (|| {
                 for (rel_path, file_snapshot) in files {
                     let full_path = project_root.join(&rel_path);
-                    let canonical_path = full_path.canonicalize()
+                    let canonical_path = full_path
+                        .canonicalize()
                         .unwrap_or_else(|_| full_path.clone());
                     if !canonical_path.starts_with(&canonical_project_root) {
-                        return Err(format!("path traversal attempt detected: {}", full_path.display()));
+                        return Err(format!(
+                            "path traversal attempt detected: {}",
+                            full_path.display()
+                        ));
                     }
                     if let Some(parent) = full_path.parent() {
                         if !parent.exists() {
-                            std::fs::create_dir_all(parent)
-                                .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                format!("failed to create directory {}: {}", parent.display(), e)
+                            })?;
                         }
                     }
                     let temp_path = full_path.with_extension("tmp");
@@ -304,7 +321,9 @@ impl SnapshotManager {
                 Ok(())
             })();
             let _ = tx.send(result);
-        }).await.map_err(|e| e.to_string())?;
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         rx.await.map_err(|e| e.to_string())?
     }
 
@@ -313,27 +332,35 @@ impl SnapshotManager {
         snapshot: &SnapshotView,
         target_path: &Path,
     ) -> Result<(), String> {
-        let files: Vec<(String, FileSnapshot)> = snapshot.files.iter()
+        let files: Vec<(String, FileSnapshot)> = snapshot
+            .files
+            .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let target = target_path.to_path_buf();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let canonical_target = target.canonicalize()
+        let canonical_target = target
+            .canonicalize()
             .map_err(|e| format!("failed to canonicalize target {}: {}", target.display(), e))?;
         tokio::task::spawn_blocking(move || {
             let result: Result<(), String> = (|| {
                 for (rel_path, file_snapshot) in files {
                     let full_path = target.join(&rel_path);
-                    let canonical_path = full_path.canonicalize()
+                    let canonical_path = full_path
+                        .canonicalize()
                         .unwrap_or_else(|_| full_path.clone());
                     if !canonical_path.starts_with(&canonical_target) {
-                        return Err(format!("path traversal attempt detected: {}", full_path.display()));
+                        return Err(format!(
+                            "path traversal attempt detected: {}",
+                            full_path.display()
+                        ));
                     }
                     if let Some(parent) = full_path.parent() {
                         if !parent.exists() {
-                            std::fs::create_dir_all(parent)
-                                .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                format!("failed to create directory {}: {}", parent.display(), e)
+                            })?;
                         }
                     }
                     let temp_path = full_path.with_extension("tmp");
@@ -345,7 +372,9 @@ impl SnapshotManager {
                 Ok(())
             })();
             let _ = tx.send(result);
-        }).await.map_err(|e| e.to_string())?;
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         rx.await.map_err(|e| e.to_string())?
     }
 
@@ -368,7 +397,10 @@ impl SnapshotManager {
     }
 }
 
-fn collect_files_sync(project_root: &Path, options: &SnapshotOptions) -> HashMap<String, FileSnapshot> {
+fn collect_files_sync(
+    project_root: &Path,
+    options: &SnapshotOptions,
+) -> HashMap<String, FileSnapshot> {
     let mut files = HashMap::new();
     let mut stack = vec![project_root.to_path_buf()];
     let mut total_bytes = 0_u64;
@@ -390,7 +422,8 @@ fn collect_files_sync(project_root: &Path, options: &SnapshotOptions) -> HashMap
                     .file_name()
                     .map(|n| n.to_string_lossy())
                     .unwrap_or_default();
-                if name == ".git" || name == "node_modules" || name == "target" || name == ".codegg" {
+                if name == ".git" || name == "node_modules" || name == "target" || name == ".codegg"
+                {
                     continue;
                 }
                 stack.push(path);

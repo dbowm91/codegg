@@ -349,10 +349,7 @@ impl Tool for EchoArgsTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: serde_json::Value,
-    ) -> Result<String, codegg::error::ToolError> {
+    async fn execute(&self, input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
         Ok(input.to_string())
     }
 }
@@ -391,10 +388,7 @@ impl Tool for SlowEchoTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: serde_json::Value,
-    ) -> Result<String, codegg::error::ToolError> {
+    async fn execute(&self, input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
         let _guard = self.barrier.lock().await;
         Ok(input.to_string())
     }
@@ -441,10 +435,7 @@ impl Tool for ParallelTool {
         })
     }
 
-    async fn execute(
-        &self,
-        _input: serde_json::Value,
-    ) -> Result<String, codegg::error::ToolError> {
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
         // Increment current concurrent count
         let prev = self.current.fetch_add(1, Ordering::SeqCst);
 
@@ -516,10 +507,7 @@ impl Tool for QuestionTool {
         })
     }
 
-    async fn execute(
-        &self,
-        input: serde_json::Value,
-    ) -> Result<String, codegg::error::ToolError> {
+    async fn execute(&self, input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
         Ok(input.to_string())
     }
 }
@@ -2470,7 +2458,12 @@ async fn test_follow_up_with_tool_call() {
             )
         })
         .expect("Expected assistant message containing tool call call_1");
-    assert_assistant_has_tool_call(assistant_with_call, "call_1", "echo_args", Some("follow-up tool"));
+    assert_assistant_has_tool_call(
+        assistant_with_call,
+        "call_1",
+        "echo_args",
+        Some("follow-up tool"),
+    );
 
     // Verify tool result exists with correct ID and is after assistant
     let tool_result_msg = req3
@@ -3097,7 +3090,7 @@ async fn test_task_tool_integration_with_subagent() {
             color: None,
             steps: None,
             system_prompt: None,
-permissions: std::collections::HashMap::new(),
+            permissions: std::collections::HashMap::new(),
             hidden: false,
             thinking_budget: None,
             reasoning_effort: None,
@@ -3687,7 +3680,8 @@ async fn test_missing_structured_tool_calls_emits_diagnostic_error_event() {
     loop {
         match rx.try_recv() {
             Ok(AppEvent::Error { message }) => {
-                if message.contains("stop_reason=tool_calls without parseable structured tool calls")
+                if message
+                    .contains("stop_reason=tool_calls without parseable structured tool calls")
                 {
                     saw_diagnostic = true;
                     break;

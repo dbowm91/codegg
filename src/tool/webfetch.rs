@@ -117,8 +117,8 @@ pub async fn execute_builtin(
 
     let host = validate_url_host(url).map_err(ToolError::Execution)?;
 
-    let parsed_url = reqwest::Url::parse(url)
-        .map_err(|_| ToolError::Execution("invalid URL".to_string()))?;
+    let parsed_url =
+        reqwest::Url::parse(url).map_err(|_| ToolError::Execution("invalid URL".to_string()))?;
     let port = parsed_url.port().unwrap_or_else(|| {
         if parsed_url.scheme() == "https" {
             443
@@ -239,7 +239,8 @@ impl WebFetchTool {
         };
 
         if result.len() > max_length {
-            Ok(format!("{}... [truncated]", &result[..max_length]))
+            let safe = crate::search_backend::framing::truncate_utf8_boundary(&result, max_length);
+            Ok(format!("{}... [truncated]", safe))
         } else {
             Ok(result)
         }

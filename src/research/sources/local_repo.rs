@@ -71,11 +71,7 @@ impl LocalRepoSource {
             locator: SourceLocator::FileRange {
                 path: resolved,
                 start_line: 1,
-                end_line: content
-                    .iter()
-                    .filter(|&&b| b == b'\n')
-                    .count()
-                    + 1,
+                end_line: content.iter().filter(|&&b| b == b'\n').count() + 1,
             },
             notes: Vec::new(),
         })
@@ -106,12 +102,7 @@ impl LocalRepoSource {
             .follow_links(false)
             .into_iter()
             .filter_entry(|e| {
-                e.file_type().is_dir()
-                    || !SKIP_DIRS.contains(
-                        &e.file_name()
-                            .to_str()
-                            .unwrap_or(""),
-                    )
+                e.file_type().is_dir() || !SKIP_DIRS.contains(&e.file_name().to_str().unwrap_or(""))
             })
             .filter_map(|e| e.ok())
         {
@@ -155,9 +146,7 @@ impl LocalRepoSource {
 
             let source_quality = match path.extension().and_then(|e| e.to_str()) {
                 Some("rs") => SourceQuality::SourceCode,
-                Some("toml") | Some("json") | Some("yaml") | Some("yml") => {
-                    SourceQuality::Primary
-                }
+                Some("toml") | Some("json") | Some("yaml") | Some("yml") => SourceQuality::Primary,
                 _ => SourceQuality::Secondary,
             };
 
@@ -177,10 +166,7 @@ impl LocalRepoSource {
                 locator: SourceLocator::TextSpan {
                     label: format!("matched: {}", matched_keywords.join(", ")),
                 },
-                notes: vec![format!(
-                    "matched keywords: {}",
-                    matched_keywords.join(", ")
-                )],
+                notes: vec![format!("matched keywords: {}", matched_keywords.join(", "))],
             });
         }
 

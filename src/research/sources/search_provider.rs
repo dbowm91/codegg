@@ -50,9 +50,10 @@ impl SearchProviderSource {
     }
 
     async fn search_tavily(&self, query: &str) -> Result<Vec<SourceRecord>> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            ResearchError::Config("Tavily API key not configured".to_string())
-        })?;
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or_else(|| ResearchError::Config("Tavily API key not configured".to_string()))?;
 
         let body = serde_json::json!({
             "query": query,
@@ -72,9 +73,7 @@ impl SearchProviderSource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "Tavily HTTP {status}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("Tavily HTTP {status}")));
         }
 
         #[derive(Deserialize)]
@@ -117,9 +116,10 @@ impl SearchProviderSource {
     }
 
     async fn search_brave(&self, query: &str) -> Result<Vec<SourceRecord>> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            ResearchError::Config("Brave API key not configured".to_string())
-        })?;
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or_else(|| ResearchError::Config("Brave API key not configured".to_string()))?;
 
         let response = self
             .client
@@ -133,9 +133,7 @@ impl SearchProviderSource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "Brave HTTP {status}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("Brave HTTP {status}")));
         }
 
         #[derive(Deserialize)]
@@ -184,9 +182,10 @@ impl SearchProviderSource {
     }
 
     async fn search_serpapi(&self, query: &str) -> Result<Vec<SourceRecord>> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            ResearchError::Config("SerpAPI key not configured".to_string())
-        })?;
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or_else(|| ResearchError::Config("SerpAPI key not configured".to_string()))?;
 
         let response = self
             .client
@@ -203,9 +202,7 @@ impl SearchProviderSource {
 
         let status = response.status();
         if !status.is_success() {
-            return Err(ResearchError::UrlFetch(format!(
-                "SerpAPI HTTP {status}"
-            )));
+            return Err(ResearchError::UrlFetch(format!("SerpAPI HTTP {status}")));
         }
 
         #[derive(Deserialize)]
@@ -249,9 +246,10 @@ impl SearchProviderSource {
     }
 
     async fn search_kagi(&self, query: &str) -> Result<Vec<SourceRecord>> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            ResearchError::Config("Kagi API key not configured".to_string())
-        })?;
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or_else(|| ResearchError::Config("Kagi API key not configured".to_string()))?;
 
         let response = self
             .client
@@ -348,10 +346,7 @@ impl ResearchSourceAdapter for SearchProviderSource {
                     Ok(sources)
                 }
                 Err(e) => {
-                    eprintln!(
-                        "Warning: {:?} search failed: {}",
-                        self.provider, e
-                    );
+                    eprintln!("Warning: {:?} search failed: {}", self.provider, e);
                     Ok(Vec::new())
                 }
             }
@@ -371,18 +366,30 @@ mod tests {
 
     #[test]
     fn provider_from_str_tavily() {
-        assert_eq!(SearchProvider::from_str("tavily"), Some(SearchProvider::Tavily));
+        assert_eq!(
+            SearchProvider::from_str("tavily"),
+            Some(SearchProvider::Tavily)
+        );
     }
 
     #[test]
     fn provider_from_str_brave() {
-        assert_eq!(SearchProvider::from_str("brave"), Some(SearchProvider::Brave));
+        assert_eq!(
+            SearchProvider::from_str("brave"),
+            Some(SearchProvider::Brave)
+        );
     }
 
     #[test]
     fn provider_from_str_serpapi() {
-        assert_eq!(SearchProvider::from_str("serpapi"), Some(SearchProvider::SerpApi));
-        assert_eq!(SearchProvider::from_str("serp_api"), Some(SearchProvider::SerpApi));
+        assert_eq!(
+            SearchProvider::from_str("serpapi"),
+            Some(SearchProvider::SerpApi)
+        );
+        assert_eq!(
+            SearchProvider::from_str("serp_api"),
+            Some(SearchProvider::SerpApi)
+        );
     }
 
     #[test]

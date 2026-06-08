@@ -207,7 +207,11 @@ pub struct TaskEnvelope {
     pub requested_subagent: Option<String>,
 }
 
-pub fn classify_envelope(prompt: &str, active_agent: Option<&str>, _tools: Option<&[String]>) -> TaskEnvelope {
+pub fn classify_envelope(
+    prompt: &str,
+    active_agent: Option<&str>,
+    _tools: Option<&[String]>,
+) -> TaskEnvelope {
     let p = prompt.to_lowercase();
 
     let mutation_risk = if (p.contains("read ") || p.ends_with("read"))
@@ -469,7 +473,12 @@ mod tests {
 
     #[test]
     fn test_route_from_envelope() {
-        let router = ModelRouter::new(true, Some("small".to_string()), Some("medium".to_string()), Some("large".to_string()));
+        let router = ModelRouter::new(
+            true,
+            Some("small".to_string()),
+            Some("medium".to_string()),
+            Some("large".to_string()),
+        );
         let env = TaskEnvelope {
             complexity: TaskComplexity::Simple,
             ..Default::default()

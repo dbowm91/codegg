@@ -1,12 +1,12 @@
 #![deny(unsafe_code)]
 
 pub mod agent;
-pub mod model_profile;
 pub mod crypto;
 pub mod exec;
 pub mod hooks;
 pub mod ide;
 pub mod memory;
+pub mod model_profile;
 pub mod security;
 pub mod tts;
 
@@ -16,6 +16,7 @@ pub mod bus;
 pub mod client;
 pub mod command;
 pub mod config;
+pub mod core;
 pub mod error;
 pub mod goal;
 pub mod lsp;
@@ -23,23 +24,22 @@ pub mod mcp;
 pub mod permission;
 pub mod plugin;
 pub mod protocol;
-pub mod core;
 pub mod provider;
-pub mod shell_session;
+pub mod research;
 pub mod resilience;
 pub mod search;
 pub mod search_backend;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod session;
+pub mod shell_session;
 pub mod skills;
 pub mod snapshot;
 pub mod storage;
+pub mod task_state;
+pub mod theme;
 pub mod tool;
 pub mod tui;
 pub mod upgrade;
 pub mod util;
 pub mod worktree;
-pub mod research;
-pub mod task_state;
-pub mod theme;

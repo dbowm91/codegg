@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use futures::StreamExt;
 use codegg::provider::{
     ChatEvent, ChatRequest, EventStream, ModelInfo, Provider, ProviderError, ProviderRegistry,
     TokenUsage,
 };
+use futures::StreamExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct MockProvider {
@@ -266,12 +266,12 @@ async fn test_mock_provider_streams_text() {
         temperature: None,
         top_p: None,
         max_tokens: None,
-response_format: None,
-            thinking_budget: None,
-            reasoning_effort: None,
-        };
+        response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+    };
 
-        let mut stream = provider.stream(&request).await.unwrap();
+    let mut stream = provider.stream(&request).await.unwrap();
     let mut collected = Vec::new();
 
     while let Some(event) = futures::StreamExt::next(&mut stream).await {
@@ -307,12 +307,12 @@ async fn test_mock_provider_error_stream() {
         temperature: None,
         top_p: None,
         max_tokens: None,
-response_format: None,
-            thinking_budget: None,
-            reasoning_effort: None,
-        };
+        response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+    };
 
-        let mut stream = provider.stream(&request).await.unwrap();
+    let mut stream = provider.stream(&request).await.unwrap();
     let event = futures::StreamExt::next(&mut stream).await.unwrap();
     assert!(event.is_err());
 }
@@ -395,12 +395,12 @@ async fn test_mock_provider_with_tool_call_events() {
         temperature: None,
         top_p: None,
         max_tokens: None,
-response_format: None,
-            thinking_budget: None,
-            reasoning_effort: None,
-        };
+        response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+    };
 
-        let mut stream = provider.stream(&request).await.unwrap();
+    let mut stream = provider.stream(&request).await.unwrap();
     let mut events = Vec::new();
 
     while let Some(event) = futures::StreamExt::next(&mut stream).await {
@@ -463,12 +463,12 @@ async fn test_mock_provider_reasoning_delta() {
         temperature: None,
         top_p: None,
         max_tokens: None,
-response_format: None,
-            thinking_budget: None,
-            reasoning_effort: None,
-        };
+        response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+    };
 
-        let mut stream = provider.stream(&request).await.unwrap();
+    let mut stream = provider.stream(&request).await.unwrap();
     let mut events = Vec::new();
 
     while let Some(event) = futures::StreamExt::next(&mut stream).await {
