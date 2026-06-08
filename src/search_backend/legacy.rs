@@ -40,6 +40,7 @@ pub async fn call_web_search_legacy(
     }
     let num_results = input
         .get("num_results")
+        .or_else(|| input.get("max_results"))
         .and_then(Value::as_u64)
         .unwrap_or(8)
         .min(30) as usize;

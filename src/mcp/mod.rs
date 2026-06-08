@@ -78,6 +78,13 @@ pub struct McpServer {
 pub enum McpClientType {
     Local(Arc<RwLock<LocalClient>>),
     Remote(Arc<RwLock<McpConnectionManager>>),
+    /// In-process mock used by integration tests. Production code never
+    /// constructs this variant; the `register_mock_server` helper
+    /// (test-only) is the single entry point. The variant is left
+    /// un-compiled-out so the helper can be reached from integration
+    /// test binaries that don't share the library's `cfg(test)`
+    /// configuration.
+    Mock(Arc<std::sync::Mutex<Box<dyn Fn(&str, serde_json::Value) -> Result<String, McpError> + Send + Sync>>>),
 }
 
 pub struct McpService {
@@ -183,6 +190,9 @@ impl McpService {
             McpClientType::Remote(client) => {
                 client.write().await.disconnect().await?;
             }
+            McpClientType::Mock(_) => {
+                // Nothing to do; mock has no real connection.
+            }
         }
         server.status = McpServerStatus::Disconnected;
         server.tools.clear();
@@ -203,6 +213,7 @@ impl McpService {
         match &srv.client {
             McpClientType::Local(client) => client.write().await.call_tool(tool, arguments).await,
             McpClientType::Remote(client) => client.write().await.call_tool(tool, arguments).await,
+            McpClientType::Mock(handler) => (handler.lock().expect("mock lock"))(tool, arguments),
         }
     }
 
@@ -247,6 +258,11 @@ impl McpService {
             let tools = match &server_ref.client {
                 McpClientType::Local(client) => client.write().await.discover_tools().await?,
                 McpClientType::Remote(client) => client.write().await.discover_tools().await?,
+                McpClientType::Mock(_) => {
+                    return Err(McpError::Server(
+                        "handle_tool_list_changed is not supported on mock servers".into(),
+                    ));
+                }
             };
 
             tools
@@ -316,6 +332,27 @@ impl McpService {
         }
     }
 
+    /// Test-only helper: register a server with pre-built tools and a
+    /// mock call handler. Returns the registered server name.
+    ///
+    /// Production code never calls this method; it exists so that
+    /// integration tests can wire up a fake MCP server without
+    /// spawning a real subprocess.
+    pub fn register_mock_server(
+        &mut self,
+        name: &str,
+        tools: Vec<McpTool>,
+        handler: Box<dyn Fn(&str, serde_json::Value) -> Result<String, McpError> + Send + Sync>,
+    ) {
+        let server = McpServer {
+            name: name.to_string(),
+            status: McpServerStatus::Connected,
+            tools,
+            client: McpClientType::Mock(Arc::new(std::sync::Mutex::new(handler))),
+        };
+        self.servers.insert(name.to_string(), server);
+    }
+
     pub fn oauth_manager(&self) -> &OAuthManager {
         &self.oauth
     }
@@ -333,6 +370,7 @@ impl McpService {
         match &srv.client {
             McpClientType::Local(client) => client.write().await.list_prompts().await,
             McpClientType::Remote(client) => client.write().await.list_prompts().await,
+            McpClientType::Mock(_) => Ok(Vec::new()),
         }
     }
 
@@ -350,6 +388,9 @@ impl McpService {
         match &srv.client {
             McpClientType::Local(client) => client.write().await.get_prompt(name, arguments).await,
             McpClientType::Remote(client) => client.write().await.get_prompt(name, arguments).await,
+            McpClientType::Mock(_) => Err(McpError::Server(
+                "get_prompt is not supported on mock servers".into(),
+            )),
         }
     }
 
@@ -362,6 +403,7 @@ impl McpService {
         match &srv.client {
             McpClientType::Local(client) => client.write().await.list_resources().await,
             McpClientType::Remote(client) => client.write().await.list_resources().await,
+            McpClientType::Mock(_) => Ok(Vec::new()),
         }
     }
 
@@ -378,6 +420,9 @@ impl McpService {
         match &srv.client {
             McpClientType::Local(client) => client.write().await.read_resource(uri).await,
             McpClientType::Remote(client) => client.write().await.read_resource(uri).await,
+            McpClientType::Mock(_) => Err(McpError::Server(
+                "read_resource is not supported on mock servers".into(),
+            )),
         }
     }
 }

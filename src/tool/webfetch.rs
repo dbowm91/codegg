@@ -108,7 +108,11 @@ pub async fn execute_builtin(
         .as_str()
         .ok_or_else(|| ToolError::Execution("missing 'url' parameter".to_string()))?;
 
-    let max_length = input["max_length"].as_u64().unwrap_or(10_000) as usize;
+    let max_length = input
+        .get("max_length")
+        .or_else(|| input.get("max_chars"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(10_000) as usize;
     let effective_max = max_length.min(max_output_chars.max(max_length));
 
     let host = validate_url_host(url).map_err(ToolError::Execution)?;

@@ -101,11 +101,18 @@ pub struct ToolResult {
 
 | Tool | File | Description |
 |------|------|-------------|
-| **webfetch** | `webfetch.rs` | Fetch URLs and return as markdown. Handles Cloudflare challenges, images as base64, 5MB size limit. SSRF protection via `validate_host_ip` and `revalidate_dns`. |
-| **websearch** | `websearch.rs` | Search web using Exa AI API. Returns titled results with URLs and snippets. Uses EXA_API_KEY environment variable. |
+| **webfetch** | `webfetch.rs` | Native wrapper. Dispatches to the configured backend via `search_backend::dispatch_web_fetch`. Default backend is the external `eggsearch` MCP server's `web_fetch` tool; legacy reqwest/html2text implementation is retained as the `builtin` fallback. |
+| **websearch** | `websearch.rs` | Native wrapper. Dispatches to the configured backend via `search_backend::dispatch_web_search`. Default backend is the external `eggsearch` MCP server's `web_search` tool; the in-tree `SearchProviderRegistry` is the `builtin` fallback. |
 | **codesearch** | `codesearch.rs` | Search for code examples, library docs, SDK patterns using Exa Code API. Uses EXA_API_KEY or EXA_CODE_API_KEY. |
-| **research** | `research.rs` | Deep research tool using Exa for comprehensive web research with citation extraction. |
+| **research** | `research.rs` | Deep research tool. May invoke `websearch` and `webfetch` internally. |
 | **image** | `image.rs` | Generate images using OpenAI's DALL-E model. Supports dall-e-3, size, quality parameters. Requires OPENAI_API_KEY. |
+
+`websearch` and `webfetch` always present the stable native tool
+names to the model. The raw `mcp__eggsearch__*` tools are hidden
+from the model by default (`expose_raw_mcp_tools = false`). Set
+that flag to `true` to expose them. See
+[`search_backend/`](../.opencode/skills/search_backend/SKILL.md) for
+the dispatch logic, config schema, and trust framing.
 
 ### Task Management
 

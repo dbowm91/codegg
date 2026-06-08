@@ -36,6 +36,8 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `protocol/` | Shared `CoreRequest`/`CoreResponse` and `TuiMessage` protocol envelopes |
 | `shell_session/` | Shell session metadata management (in-memory, no actual PTY) |
 | `resilience/` | Circuit breaker, retry mechanisms, and rate limiting |
+| `search/` | Legacy in-tree web search providers (used as `builtin` fallback) |
+| `search_backend/` | Pluggable backend layer for the native `websearch`/`webfetch` tools. Default backend is the external `eggsearch` MCP server; legacy in-tree providers are retained as an explicit fallback. |
 | `security/` | SSRF protection, internal IP validation, Landlock sandboxing |
 | `server/` | HTTP server (Axum) with WebSocket support for remote TUIs and replay buffering |
 | `session/` | Session storage, message history, and checkpointing (SQLite) |
@@ -243,6 +245,8 @@ These items were verified during review sessions:
 ├── resilience/          # Circuit breaker, FallbackProvider
 ├── router/             # Model auto-routing
 ├── sandbox/            # Landlock filesystem sandboxing
+├── search/             # Legacy in-tree web search providers (builtin fallback)
+├── search_backend/     # Pluggable backend for `websearch`/`webfetch` (eggsearch MCP)
 ├── security/           # SSRF, symlink protection, Landlock
 ├── server/             # HTTP/WebSocket server for remote TUI
 ├── session/            # Session storage, database schema
@@ -289,6 +293,7 @@ When adding guidance for a new module:
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
 | TUI (keyboard shortcuts, FocusManager, Component trait) | `.opencode/skills/tui/SKILL.md` |
 | Core (CoreClient facade, transports, protocol envelopes) | `.opencode/skills/core/SKILL.md` |
+| Search Backend (eggsearch MCP, `websearch`/`webfetch`, trust framing) | `.opencode/skills/search_backend/SKILL.md` |
 | Security (SSRF, symlinks, Landlock) | `.opencode/skills/security/SKILL.md` |
 | WASM plugins | `.opencode/skills/plugin/SKILL.md` |
 | MCP (Model Context Protocol) | `.opencode/skills/mcp/SKILL.md` |

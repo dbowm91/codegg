@@ -267,7 +267,46 @@ Validated fields:
 **Bug**: `find_tui_config()` and `load_tui_config()` were exported but never used anywhere in the codebase.
 **Fix**: Removed from `paths.rs` and `mod.rs` to clean up dead code.
 
+## Search Backend Config
+
+The `[search]` section selects the backend for the native
+`websearch` and `webfetch` tools. The default backend is the
+external `eggsearch` MCP server.
+
+```toml
+[search]
+backend = "eggsearch"           # "eggsearch" | "builtin" | "disabled"
+expose_raw_mcp_tools = false    # default false; set true to expose mcp__eggsearch__*
+fallback_to_builtin = false     # default false
+max_search_output_chars = 12000 # cap on websearch output
+max_fetch_output_chars = 20000  # cap on webfetch output
+
+[search.eggsearch]
+enabled = true
+server_name = "eggsearch"
+command = "eggsearch"
+args = ["mcp", "stdio"]
+timeout_ms = 60000
+
+[search.eggsearch.env]
+# Optional provider keys passed only to the eggsearch subprocess.
+BRAVE_SEARCH_API_KEY = "$BRAVE_SEARCH_API_KEY"
+```
+
+When `backend = "eggsearch"` the agent loop connects the
+eggsearch MCP server at startup (`bootstrap::bootstrap_search_backend`)
+and the native `websearch`/`webfetch` tools call
+`mcp__<server>__web_search` / `mcp__<server>__web_fetch`
+internally. Setting `backend = "builtin"` forces the legacy
+in-tree `SearchProviderRegistry` path. Setting
+`backend = "disabled"` makes both tools return a clear disabled
+error. See
+[`search_backend.md`](search_backend.md) and
+[`.opencode/skills/search_backend/SKILL.md`](../.opencode/skills/search_backend/SKILL.md)
+for the full schema and dispatch details.
+
 ## See Also
 
 - [crypto.md](crypto.md) - AES-256-GCM encryption details
+- [search_backend.md](search_backend.md) - search/fetch backend dispatch
 - [agent.md](agent.md) - Uses config

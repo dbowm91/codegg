@@ -1,0 +1,163 @@
+# Search Backend Module
+
+The `search_backend` module is the wrapper layer between Codegg's
+agent-facing `websearch` and `webfetch` tools and the underlying
+provider. The default backend is the external `eggsearch` MCP
+server; the legacy in-tree implementation under `src/search/*` is
+retained as an explicit fallback.
+
+## Module layout
+
+```
+src/search_backend/
+├── mod.rs           # Public dispatch entry points
+├── state.rs         # Process-global McpService + SearchConfig slots
+├── bootstrap.rs     # Connect eggsearch at startup; emit BootstrapReport
+├── eggsearch.rs     # Adapter: native args -> eggsearch MCP args
+├── legacy.rs        # Adapter: native args -> in-tree SearchProviderRegistry
+└── framing.rs       # external_untrusted framing + clamp_output
+```
+
+## Public surface
+
+```rust
+// src/search_backend/mod.rs
+pub async fn dispatch_web_search(input: &Value) -> Result<String, ToolError>;
+pub async fn dispatch_web_fetch(input: &Value) -> Result<String, ToolError>;
+```
+
+The two native tools at `src/tool/websearch.rs` and
+`src/tool/webfetch.rs` call these directly. The dispatch resolves
+the configured `SearchConfig` from `state::search_config()` and
+forwards to the right adapter.
+
+## State management
+
+`src/search_backend/state.rs` exposes two `OnceLock`-style slots:
+
+```rust
+pub fn install_mcp_service(svc: Arc<RwLock<McpService>>);
+pub fn mcp_service() -> Option<Arc<RwLock<McpService>>>;
+pub fn install_search_config(cfg: SearchConfig);
+pub fn search_config() -> SearchConfig;
+```
+
+The slots are populated once at startup by
+`bootstrap::bootstrap_search_backend`. Tool execution reads them
+later. The values are read-only after startup; tests can override
+the config explicitly via the install methods. Production code
+must not mutate state at runtime.
+
+## Bootstrap
+
+`bootstrap::bootstrap_search_backend(config)` is called from
+`main.rs`, `tui/mod.rs`, `exec.rs`, and `core/daemon.rs`. It:
+
+1. Returns the existing service if one is already installed
+   (idempotent for re-entry).
+2. Calls `bootstrap_eggsearch(config)` which:
+   - Resolves the effective `SearchConfig`.
+   - Installs it into the state slot.
+   - Skips MCP setup unless `backend = "eggsearch"`.
+   - If the user has an explicit `[mcp.eggsearch]` block, uses
+     `connect_from_config` to honor it.
+   - Otherwise spawns `eggsearch` via `McpService::connect_stdio`.
+   - Lists the tools it advertises for the `BootstrapReport`.
+
+The returned `BootstrapReport` is consumed by the doctor command
+(`codegg doctor search`).
+
+## Adapter contracts
+
+### `eggsearch::call_web_search(server, input, max_chars)`
+
+- Reads `query` (required, non-empty).
+- Reads `num_results` (or alias `max_results`); default 8, capped
+  at 30.
+- Reads `provider` and maps known hints to a `providers` list
+  (see `translate_provider_hint`). Unknown hints let eggsearch
+  auto-pick.
+- Calls `McpService::call_tool(server, "web_search", args)` with a
+  60s timeout.
+- Clamps output to `max_search_output_chars` and wraps in
+  `frame_search_results`.
+
+### `eggsearch::call_web_fetch(server, input, max_chars)`
+
+- Reads `url` (required).
+- Reads `max_length` (or alias `max_chars`); default 10_000.
+- Always sends `extract_mode = "text"`, `include_links = false`.
+- Calls `McpService::call_tool(server, "web_fetch", args)`.
+- Clamps output to `max_fetch_output_chars` and wraps in
+  `frame_fetched_page`.
+
+### `legacy::call_web_search_legacy(registry, input, max_chars, timeout)`
+
+- Uses `SearchProviderRegistry::from_env()` to pick a provider.
+- Errors with a clear "no websearch provider configured" message
+  if no providers are configured in env.
+- Returns a formatted hit list, capped at `max_chars`.
+
+## Hiding raw MCP tools
+
+The agent loop at `src/agent/loop.rs:1724-1740` filters out tools
+whose name starts with `mcp__<server_name>__` from the model
+prompt when `expose_raw_mcp_tools = false` (the default). The
+server name is resolved from the `SearchConfig` so custom names
+are honored.
+
+## Trust framing
+
+Every eggsearch result is wrapped before returning to the model.
+See `framing.rs`:
+
+```text
+[external_web_content trust=external_untrusted source=eggsearch tool=websearch]
+<result>
+[/external_web_content]
+```
+
+The fetch frame is stronger and includes an explicit
+"EXTERNAL, UNTRUSTED DATA" warning since fetched pages can
+contain arbitrary attacker-controlled text. Codegg's framing is
+redundant with any internal eggsearch labeling; the redundancy
+keeps the trust boundary stable even if eggsearch changes its
+output format.
+
+## Config
+
+```toml
+[search]
+backend = "eggsearch"           # "eggsearch" | "builtin" | "disabled"
+expose_raw_mcp_tools = false
+fallback_to_builtin = false
+max_search_output_chars = 12000
+max_fetch_output_chars = 20000
+
+[search.eggsearch]
+enabled = true
+server_name = "eggsearch"
+command = "eggsearch"
+args = ["mcp", "stdio"]
+timeout_ms = 60000
+
+[search.eggsearch.env]
+BRAVE_SEARCH_API_KEY = "$BRAVE_SEARCH_API_KEY"
+```
+
+## Doctor
+
+```bash
+codegg doctor search
+```
+
+Output is a `BootstrapReport::summary_lines()` dump covering:
+backend, command, MCP connection status, advertised tools,
+`expose_raw_mcp_tools`, `fallback_to_builtin`, and output caps.
+
+## See also
+
+- [tool.md](tool.md) – the `websearch` and `webfetch` tools
+- [mcp.md](mcp.md) – the `McpService` plumbing
+- [config.md](config.md) – config loading and validation
+- [security.md](security.md) – SSRF protection
