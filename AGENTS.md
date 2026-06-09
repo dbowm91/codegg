@@ -29,7 +29,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
 | `lsp/` | Language Server Protocol support (diagnostics, code operations) — egglsp crate is authoritative implementation, src/lsp/ is thin shim |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
-| `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation — `src/core/` is the transport layer; domain modules (bus, error, goal, memory, session, storage, snapshot, worktree, resilience, task_state, model_profile, protocol_conversions) live in `crates/codegg-core` |
+| `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation — `src/core/` is the transport layer; domain modules (bus, error, goal, memory, session, storage, snapshot, worktree, resilience, task_state, model_profile, protocol_conversions) live in `crates/codegg-core`. Also contains `runtime_deps` (`CoreRuntimeDeps`) for bundling runtime dependencies. |
 | `memory/` | Persistent memory system for session learning and namespace management — now in `crates/codegg-core` (`codegg-core` crate) |
 | `permission/` | Access control, path restrictions, DoomLoop detection, mode system |
 | `plugin/` | WASM plugin system with hooks and TUI extensions |
@@ -85,6 +85,12 @@ These items are important for future agents to know when working with the codeba
 - **Tool factory**: `src/tool/factory.rs` provides `build_session_tool_registry()` which consolidates tool construction (base registry + task tool + goal tools). Used by `core/daemon.rs` to reduce direct tool module coupling.
 
 - **Agent runtime factory**: `src/agent/runtime_factory.rs` provides `build_agent_loop()` which consolidates agent loop construction (permission checker + AgentLoop::new + session/subagent configuration). Used by `core/daemon.rs` to reduce direct agent/permission module coupling.
+
+- **CoreRuntimeDeps**: `CoreDaemon` stores a single `deps: CoreRuntimeDeps` field instead of separate `subagent_pool`, `memory_store`, `bg_scheduler` fields. Legacy `new()` constructor kept for backward compat; new code should use `with_deps()`.
+
+- **AgentRuntimeProvider**: Daemon calls `DefaultAgentRuntimeProvider.build_agent_loop(AgentLoopBuildInput)` instead of importing `crate::agent::runtime_factory::build_agent_loop` directly. The trait enables future alternative implementations.
+
+- **TaskToolRuntime**: `tool::factory::build_session_tool_registry` takes `Option<&TaskToolRuntime>` instead of `Option<&Arc<SubAgentPool>>`. This breaks the tool factory's direct dependency on `SubAgentPool`.
 
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
 
@@ -171,6 +177,9 @@ These items were verified during review sessions:
 | Tool backend contract | `src/tool/backend.rs` | `ToolBackendKind`, `ToolProvenance`, `StructuredToolResult`, `build_report()` for `/tool-backends` |
 | `/tool-backends` slash command | `src/tui/command.rs`, handler in `src/tui/app/mod.rs` | aliases: `/tools`, `/backends` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` except pool which is `Option<SqlitePool>` | `src/core/mod.rs:22-28` |
+| CoreRuntimeDeps | Bundles pool, memory_store, subagent_pool, bg_scheduler | `src/core/runtime_deps.rs` |
+| AgentRuntimeProvider | Trait for agent loop construction seam | `src/agent/runtime_provider.rs` |
+| TaskToolRuntime | Narrow DTO for task tool construction | `src/agent/task_tool_runtime.rs` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |

@@ -6,14 +6,14 @@ use crate::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope};
 use chrono::Utc;
 
 use super::event_log::EventFilter;
+use super::runtime_deps::CoreRuntimeDeps;
+use crate::agent::runtime_provider::AgentRuntimeProvider;
 use crate::core::session_runtime::RuntimeSessionStatus;
 
 pub struct CoreDaemon {
     pub daemon_id: String,
     pub pool: Option<sqlx::SqlitePool>,
-    pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
-    pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
-    pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
+    pub deps: CoreRuntimeDeps,
     pub event_log: Arc<super::event_log::EventLog>,
     pub sessions: Arc<crate::core::session_runtime::SessionRuntimeRegistry>,
     pub clients: Arc<super::client_registry::ClientRegistry>,
@@ -23,12 +23,8 @@ pub struct CoreDaemon {
 }
 
 impl CoreDaemon {
-    pub fn new(
-        pool: Option<sqlx::SqlitePool>,
-        subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
-        memory_store: Option<Arc<crate::memory::MemoryStore>>,
-        bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
-    ) -> Self {
+    /// Construct a `CoreDaemon` from a bundled [`CoreRuntimeDeps`].
+    pub fn with_deps(deps: CoreRuntimeDeps) -> Self {
         let daemon_id = format!("codegg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let config = crate::config::schema::Config::load().unwrap_or_default();
         let capacity = config
@@ -36,7 +32,7 @@ impl CoreDaemon {
             .as_ref()
             .and_then(|d| d.event_log_capacity)
             .unwrap_or(4096);
-        let event_log = match pool {
+        let event_log = match deps.pool {
             Some(ref p) => Arc::new(super::event_log::EventLog::new_with_pool(
                 capacity,
                 p.clone(),
@@ -57,10 +53,8 @@ impl CoreDaemon {
         };
         Self {
             daemon_id,
-            pool,
-            subagent_pool,
-            memory_store,
-            bg_scheduler,
+            pool: deps.pool.clone(),
+            deps,
             event_log,
             sessions: Arc::new(crate::core::session_runtime::SessionRuntimeRegistry::new()),
             clients: Arc::new(super::client_registry::ClientRegistry::new()),
@@ -68,6 +62,16 @@ impl CoreDaemon {
             audio_arbiter,
             started_at: Instant::now(),
         }
+    }
+
+    /// Legacy constructor for backward compatibility. Prefer `with_deps`.
+    pub fn new(
+        pool: Option<sqlx::SqlitePool>,
+        subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+        memory_store: Option<Arc<crate::memory::MemoryStore>>,
+        bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
+    ) -> Self {
+        Self::with_deps(CoreRuntimeDeps::new(pool, subagent_pool, memory_store, bg_scheduler))
     }
 
     pub fn subscribe(
@@ -496,15 +500,20 @@ impl CoreDaemon {
                 let model_profile =
                     crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
                 let task_state_policy = model_profile.task_state_policy;
+                let task_tool_runtime = self
+                    .deps
+                    .subagent_pool
+                    .as_ref()
+                    .map(crate::agent::task_tool_runtime::TaskToolRuntime::from_subagent_pool);
                 let tool_registry = crate::tool::factory::build_session_tool_registry(
                     &config,
                     self.pool.clone(),
                     &session_id,
-                    self.subagent_pool.as_ref(),
+                    task_tool_runtime.as_ref(),
                     task_state_policy.clone(),
                 );
                 let memory_context = self
-                    .memory_store
+                    .deps.memory_store
                     .as_ref()
                     .map(|store| {
                         let all_memories = store.list("user/preferences");
@@ -567,17 +576,20 @@ impl CoreDaemon {
                 // loop starts. Idempotent if already bootstrapped.
                 let (mcp_service, _report) =
                     crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
-                let mut agent_loop = crate::agent::runtime_factory::build_agent_loop(
-                    crate::protocol_conversions::dtos_to_agents(agents),
+                let agent_loop_input = crate::agent::runtime_provider::AgentLoopBuildInput {
+                    agents: crate::protocol_conversions::dtos_to_agents(agents),
                     provider,
                     config,
                     tool_registry,
-                    self.pool.clone(),
-                    &session_id,
-                    self.subagent_pool.as_ref(),
+                    pool: self.pool.clone(),
+                    session_id: session_id.clone(),
+                    subagent_pool: self.deps.subagent_pool.clone(),
                     task_state_policy,
                     mcp_service,
-                );
+                };
+                let runtime_provider =
+                    crate::agent::runtime_provider::DefaultAgentRuntimeProvider;
+                let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);
                 agent_loop.load_persisted_todos().await;
                 let request = crate::provider::ChatRequest {
                     messages: crate::protocol_conversions::dtos_to_provider_messages(messages),
@@ -1203,7 +1215,7 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::TaskList => {
-                let Some(scheduler) = self.bg_scheduler.clone() else {
+                let Some(scheduler) = self.deps.bg_scheduler.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_scheduler".to_string(),
                         message: "Core client missing background scheduler".to_string(),
@@ -1224,7 +1236,7 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::TaskDelete { id } => {
-                let Some(scheduler) = self.bg_scheduler.clone() else {
+                let Some(scheduler) = self.deps.bg_scheduler.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_scheduler".to_string(),
                         message: "Core client missing background scheduler".to_string(),
@@ -1245,7 +1257,7 @@ impl CoreDaemon {
                 interval_secs,
                 message,
             } => {
-                let Some(scheduler) = self.bg_scheduler.clone() else {
+                let Some(scheduler) = self.deps.bg_scheduler.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_scheduler".to_string(),
                         message: "Core client missing background scheduler".to_string(),
@@ -1259,7 +1271,7 @@ impl CoreDaemon {
                 let task_id = task.id.clone();
                 match scheduler.add(task).await {
                     Ok(_) => {
-                        if let Some(pool) = self.subagent_pool.clone() {
+                        if let Some(pool) = self.deps.subagent_pool.clone() {
                             let request = crate::agent::worker::SubAgentRequest {
                                 task_id: 0,
                                 prompt: format!("[Background] {}", message),
@@ -1306,7 +1318,7 @@ impl CoreDaemon {
                 }
             }
             CoreRequest::MemoryList { namespace } => {
-                let Some(memory_store) = self.memory_store.clone() else {
+                let Some(memory_store) = self.deps.memory_store.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_memory_store".to_string(),
                         message: "Core client missing memory store".to_string(),
@@ -1318,7 +1330,7 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::MemorySearch { query } => {
-                let Some(memory_store) = self.memory_store.clone() else {
+                let Some(memory_store) = self.deps.memory_store.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_memory_store".to_string(),
                         message: "Core client missing memory store".to_string(),
@@ -1330,7 +1342,7 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::MemoryRemember { text, namespace } => {
-                let Some(memory_store) = self.memory_store.clone() else {
+                let Some(memory_store) = self.deps.memory_store.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_memory_store".to_string(),
                         message: "Core client missing memory store".to_string(),
@@ -1344,7 +1356,7 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::MemoryForget { id } => {
-                let Some(memory_store) = self.memory_store.clone() else {
+                let Some(memory_store) = self.deps.memory_store.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_memory_store".to_string(),
                         message: "Core client missing memory store".to_string(),

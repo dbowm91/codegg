@@ -7,7 +7,7 @@ use crate::model_profile::types::TaskStatePolicy;
 use crate::tool::{ToolRegistry, ToolRegistryOptions};
 
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
-/// and the optional task tool (when a subagent pool is available).
+/// and the optional task tool (when a task tool runtime is available).
 ///
 /// This function consolidates tool construction that was previously inline
 /// in `CoreDaemon`. It serves as a seam so that `core/daemon.rs` does not
@@ -16,7 +16,7 @@ pub fn build_session_tool_registry(
     config: &Config,
     pool: Option<SqlitePool>,
     session_id: &str,
-    subagent_pool: Option<&Arc<crate::agent::worker::SubAgentPool>>,
+    task_tool_runtime: Option<&crate::agent::task_tool_runtime::TaskToolRuntime>,
     task_state_policy: TaskStatePolicy,
 ) -> ToolRegistry {
     let todo_state = Arc::new(tokio::sync::Mutex::new(
@@ -31,11 +31,11 @@ pub fn build_session_tool_registry(
         tool_backends: crate::tool::ToolBackendConfig::from_config(config),
     });
 
-    // Register the task/subagent tool when a pool is available.
-    if let Some(spool) = subagent_pool {
+    // Register the task/subagent tool when a runtime is available.
+    if let Some(runtime) = task_tool_runtime {
         let task_tool = crate::tool::task::TaskTool::new(
-            spool.task_store(),
-            Some(spool.spawner()),
+            runtime.store(),
+            runtime.spawner(),
             Some(session_id.to_string()),
             Vec::new(),
         );

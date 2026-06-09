@@ -11,6 +11,7 @@ pub mod client_registry;
 pub mod daemon;
 pub mod event_log;
 pub mod notification;
+pub mod runtime_deps;
 pub mod session_runtime;
 pub mod transport;
 
@@ -33,6 +34,17 @@ pub struct InprocCoreClient {
 }
 
 impl InprocCoreClient {
+    /// Construct from a bundled [`runtime_deps::CoreRuntimeDeps`].
+    pub fn with_deps(deps: runtime_deps::CoreRuntimeDeps, _config: crate::config::schema::Config) -> Self {
+        let pool = deps.pool.clone();
+        let daemon = Arc::new(daemon::CoreDaemon::with_deps(deps));
+        Self {
+            daemon: Some(daemon),
+            pool,
+        }
+    }
+
+    /// Legacy constructor for backward compatibility. Prefer `with_deps`.
     pub fn new(
         subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
         memory_store: Option<Arc<crate::memory::MemoryStore>>,
@@ -40,17 +52,10 @@ impl InprocCoreClient {
         pool: Option<sqlx::SqlitePool>,
         config: crate::config::schema::Config,
     ) -> Self {
-        let _ = config;
-        let daemon = Arc::new(daemon::CoreDaemon::new(
-            pool.clone(),
-            subagent_pool,
-            memory_store,
-            bg_scheduler,
-        ));
-        Self {
-            daemon: Some(daemon),
-            pool,
-        }
+        Self::with_deps(
+            runtime_deps::CoreRuntimeDeps::new(pool.clone(), subagent_pool, memory_store, bg_scheduler),
+            config,
+        )
     }
 }
 
