@@ -51,10 +51,10 @@ async fn list_through_execute_capture_returns_legacy_provenance() {
 }
 
 /// `security` overrides `execute_structured` to attach
-/// `eggsec` provenance when the native security wrapper is the
+/// `eggsentry` provenance when the native security wrapper is the
 /// live path.
 #[tokio::test]
-async fn security_through_execute_capture_reports_eggsec_provenance() {
+async fn security_through_execute_capture_reports_eggsentry_provenance() {
     let registry = ToolRegistry::with_defaults();
     let result = registry
         .execute_capture(
@@ -69,7 +69,7 @@ async fn security_through_execute_capture_reports_eggsec_provenance() {
         .as_ref()
         .expect("security attaches structured provenance");
     assert_eq!(
-        p.implementation, "eggsec",
+        p.implementation, "eggsentry",
         "native security tool reports its real implementation"
     );
     assert_eq!(p.backend, "native");
@@ -117,7 +117,7 @@ async fn mcp_fallback_true_registers_native_security() {
     let mut backends = ToolBackendConfig::all_native();
     backends.security = Some(ExternalToolBackendConfig {
         backend: Some(ToolImplementationBackend::Mcp),
-        server_name: Some("eggsec".to_string()),
+        server_name: Some("eggsentry".to_string()),
         fallback_to_native: Some(true),
         ..Default::default()
     });
@@ -141,7 +141,7 @@ async fn mcp_fallback_true_registers_native_security() {
         .provenance
         .as_ref()
         .expect("native security attaches structured provenance");
-    assert_eq!(p.implementation, "eggsec");
+    assert_eq!(p.implementation, "eggsentry");
     assert_eq!(p.backend, "native");
 }
 
@@ -152,7 +152,7 @@ async fn mcp_fallback_false_hides_security_from_model() {
     let mut backends = ToolBackendConfig::all_native();
     backends.security = Some(ExternalToolBackendConfig {
         backend: Some(ToolImplementationBackend::Mcp),
-        server_name: Some("eggsec".to_string()),
+        server_name: Some("eggsentry".to_string()),
         fallback_to_native: Some(false),
         ..Default::default()
     });
@@ -221,7 +221,7 @@ fn mcp_no_fallback_consistent_across_lsp_and_security() {
     });
     backends.security = Some(ExternalToolBackendConfig {
         backend: Some(ToolImplementationBackend::Mcp),
-        server_name: Some("eggsec".to_string()),
+        server_name: Some("eggsentry".to_string()),
         fallback_to_native: Some(false),
         ..Default::default()
     });

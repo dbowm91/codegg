@@ -16,7 +16,7 @@ boundaries. See `plans/native_tool_crates.md` for the full plan and
 crates/
   egglsp/       Language Server Protocol client/service/operations
   egggit/       Read-only git facts: status, diff, changed files, worktrees
-  eggsec/       Deterministic security scanning: secrets, commands, deps, profiles
+  eggsentry/       Deterministic security scanning: secrets, commands, deps, profiles
   eggcontext/   Token counting + context utilities (tiktoken)
 ```
 
@@ -205,7 +205,7 @@ by name for diagnostics and `/tool-backends` reports.
 ## Raw MCP exposure policy
 
 Codegg-owned backend MCPs (the default for `eggsearch`, and any
-future `egglsp`/`eggsec` MCP adapters) are hidden by default. The
+future `egglsp`/`eggsentry` MCP adapters) are hidden by default. The
 `McpService::list_filtered_tools(policy)` API takes an
 `McpExposurePolicy { show_raw, hidden_servers }` and returns either
 all `mcp__*` tools, or only the non-managed subset. The agent loop
@@ -228,7 +228,7 @@ Tool         Backend   Implementation    Status       Raw MCP exposed
 websearch    MCP       eggsearch          ready        no
 webfetch     MCP       eggsearch          ready        no
 lsp          Native    egglsp             ready        n/a
-security     Native    eggsec             ready        n/a
+security     Native    eggsentry             ready        n/a
 git          Native    codegg/egggit      ready        n/a
 ```
 
@@ -243,7 +243,7 @@ There are now two report sources:
 
 ## Per-crate public APIs
 
-### `eggsec`
+### `eggsentry`
 
 - `command::classify_bash_command`, `classify_git_subcommand`, `classify_tool_call`
 - `command::CommandClassification`, `CommandRisk`
@@ -302,10 +302,10 @@ relevant module (no glob-re-exports across the boundary). For example:
   bridges `egglsp::LspError` → `crate::error::LspError`. New code
   should prefer direct `egglsp::...` imports.
 - `src/security/mod.rs` keeps policy, sandboxing, SSRF, and
-  sensitive-path matching in Codegg; the `eggsec` re-exports under
+  sensitive-path matching in Codegg; the `eggsentry` re-exports under
   the `command`, `dependency`, `finding`, `profile`, and `scanner`
   submodules are kept for backward compatibility but new code
-  should import directly from `eggsec::...`.
+  should import directly from `eggsentry::...`.
 - `src/worktree/mod.rs` keeps the mutating worktree operations
   (`create_worktree`, `remove_worktree`) and re-exports
   `list_worktrees` from `egggit` after wrapping the result in the
@@ -325,7 +325,7 @@ relevant module (no glob-re-exports across the boundary). For example:
   correctness pass) locks down the structured execution and
   definition-visibility contracts: legacy tools return
   `ToolProvenance::legacy`; `security` returns
-  `implementation = "eggsec"`; disabled `security` is filtered from
+  `implementation = "eggsentry"`; disabled `security` is filtered from
   definitions; `mcp + fallback_to_native = true` registers the
   native wrapper and reports `fallback-native`;
   `mcp + fallback_to_native = false` exposes nothing and reports

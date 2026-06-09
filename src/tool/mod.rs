@@ -802,7 +802,7 @@ mod backend_report_tests {
         let mut backends = ToolBackendConfig::all_native();
         backends.security = Some(ExternalToolBackendConfig {
             backend: Some(ToolImplementationBackend::Mcp),
-            server_name: Some("eggsec".to_string()),
+            server_name: Some("eggsentry".to_string()),
             fallback_to_native: Some(true),
             ..Default::default()
         });
@@ -972,7 +972,7 @@ mod backend_report_tests {
         let mut backends = ToolBackendConfig::all_native();
         backends.security = Some(ExternalToolBackendConfig {
             backend: Some(ToolImplementationBackend::Mcp),
-            server_name: Some("eggsec".to_string()),
+            server_name: Some("eggsentry".to_string()),
             fallback_to_native: Some(true),
             ..Default::default()
         });
@@ -993,7 +993,7 @@ mod backend_report_tests {
         let mut backends = ToolBackendConfig::all_native();
         backends.security = Some(ExternalToolBackendConfig {
             backend: Some(ToolImplementationBackend::Mcp),
-            server_name: Some("eggsec".to_string()),
+            server_name: Some("eggsentry".to_string()),
             fallback_to_native: Some(false),
             ..Default::default()
         });

@@ -32,7 +32,7 @@ CodeGG is a high-performance AI coding agent built in Rust, designed for termina
 │  │  └────────┘ └───────┘ │ └───────┘ └──────┘ │ Crates │       │  │
 │  │                                         ┌─── egglsp        │  │
 │  │                                         │    egggit        │  │
-│  │                                         │    eggsec        │  │
+│  │                                         │    eggsentry        │  │
 │  │                                         │    eggcontext    │  │
 │  │                                         └──────────────────┘  │
 │  └──────────────────────┴───────────────────────────────────────┘  │
@@ -51,7 +51,7 @@ binaries without changing the model-facing tool names.
 |-------|---------|-----------|
 | `crates/egglsp` | Language Server Protocol client/server management | `service.rs`, `client.rs`, `operations.rs`, `server.rs` |
 | `crates/egggit` | Read-only git facts (status, diff, changed files, worktrees) | `status.rs`, `diff.rs`, `worktree.rs` |
-| `crates/eggsec` | Deterministic security scanning (secrets, commands, deps, unsafe code) | `scanner.rs`, `command.rs`, `finding.rs`, `profile.rs` |
+| `crates/eggsentry` | Deterministic security scanning (secrets, commands, deps, unsafe code) | `scanner.rs`, `command.rs`, `finding.rs`, `profile.rs` |
 | `crates/eggcontext` | Token counting and context utilities (tiktoken-based) | `lib.rs` |
 
 Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`,
@@ -98,7 +98,7 @@ hidden by default — see [MCP](mcp.md)).
 | [provider/](provider.md) | LLM providers (Anthropic, OpenAI, Google, etc.) | `mod.rs`, `anthropic.rs`, `fallback.rs` |
 | [protocol/](protocol.md) | Shared request/response envelopes and message types | `core.rs`, `tui.rs` |
 | [resilience/](resilience.md) | Circuit breaker, retry mechanisms | `circuit.rs` |
-| [security/](security.md) | SSRF protection, Landlock sandboxing; scanning core in `crates/eggsec` | `ssrf.rs`, `sandbox.rs` |
+| [security/](security.md) | SSRF protection, Landlock sandboxing; scanning core in `crates/eggsentry` | `ssrf.rs`, `sandbox.rs` |
 | [server/](server.md) | HTTP/WebSocket server for remote TUI | `http.rs`, `ws.rs`, `routes/` |
 | [session/](session.md) | SQLite session storage, message history | `store.rs`, `schema.rs`, `message.rs` |
 | [shell_session/](shell_session.md) | Shell session metadata (no PTY) | `mod.rs` |
@@ -158,7 +158,7 @@ hidden by default — see [MCP](mcp.md)).
 |------|-------|----------|
 | Tools (default registry) | 27 | `tool/mod.rs:90-122` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` (moved from `lsp/server.rs`) |
-| Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsec`, `crates/eggcontext` |
+| Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` |
 | UiState fields | 26 | `tui/app/state/ui.rs:27-76` |
 | AppEvent variants | 36 | `bus/events.rs:5-147` |
 | Built-in commands | 46 | `tui/command.rs:79-182` |
@@ -241,7 +241,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [LSP](lsp.md) - Language Server Protocol
 - [MCP](mcp.md) - Model Context Protocol
 - [Memory](memory.md) - Persistent memory system
-- [Native Crates](native_crates.md) - Workspace crates (egglsp, egggit, eggsec, eggcontext) and native/MCP backend contract
+- [Native Crates](native_crates.md) - Workspace crates (egglsp, egggit, eggsentry, eggcontext) and native/MCP backend contract
 - [Permission](permission.md) - Access control and modes
 - [Plugin](plugin.md) - WASM plugin system
 - [Protocol](protocol.md) - Shared request/response envelopes

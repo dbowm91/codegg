@@ -52,7 +52,7 @@ highlights:
 
 Tighten the first native-tool-crate extraction pass.
 
-The previous pass created the right structural direction: Codegg now has workspace crates for `egglsp`, `egggit`, `eggcontext`, and `eggsec`, plus an additive backend-aware tool contract in `src/tool/backend.rs`. This follow-up pass should make those boundaries operationally reliable rather than continuing to extract more domains.
+The previous pass created the right structural direction: Codegg now has workspace crates for `egglsp`, `egggit`, `eggcontext`, and `eggsentry`, plus an additive backend-aware tool contract in `src/tool/backend.rs`. This follow-up pass should make those boundaries operationally reliable rather than continuing to extract more domains.
 
 The main goal is to make the new crates authoritative substrates where they already exist, ensure runtime behavior matches diagnostics/config, reduce compatibility leakage, and prove the workspace builds/tests cleanly.
 
@@ -64,7 +64,7 @@ Codegg now has:
 crates/egglsp
 crates/egggit
 crates/eggcontext
-crates/eggsec
+crates/eggsentry
 ```
 
 Root `Cargo.toml` includes them as workspace members and direct path dependencies.
@@ -87,7 +87,7 @@ ToolBackendReport
 
 `ToolRegistry` now has `ToolRegistryOptions` and `with_options()`, which is a good single registration path. It also supports injected LSP service construction.
 
-`egglsp` and `eggsec` are real extractions, but Codegg still uses compatibility re-export modules under `src/lsp/mod.rs` and `src/security/mod.rs`.
+`egglsp` and `eggsentry` are real extractions, but Codegg still uses compatibility re-export modules under `src/lsp/mod.rs` and `src/security/mod.rs`.
 
 `eggcontext` is currently mostly token estimation.
 
@@ -284,9 +284,9 @@ Recommended first-pass behavior:
 
 For `[tool_backends.security]`:
 
-- `native`: register `SecurityTool` backed by `eggsec`.
+- `native`: register `SecurityTool` backed by `eggsentry`.
 - `disabled`: do not register `security`, or register clear disabled error.
-- `mcp`: placeholder clear error unless an actual `eggsec` MCP adapter exists.
+- `mcp`: placeholder clear error unless an actual `eggsentry` MCP adapter exists.
 - `builtin`: same as `native` only if documented.
 
 A small generic disabled wrapper can be useful:
@@ -344,7 +344,7 @@ For `websearch` / `webfetch`, provenance should show whether backend was `eggsea
 
 For `lsp`, provenance should show `Native` + `egglsp`.
 
-For `security`, provenance should show `Native` + `eggsec`.
+For `security`, provenance should show `Native` + `eggsentry`.
 
 Acceptance criteria:
 
@@ -434,9 +434,9 @@ Acceptance criteria:
 - Codegg LSP tool continues to expose the same model-facing schema.
 - Compatibility shim is documented as temporary or boundary-only.
 
-## Phase 8: Tighten `eggsec` Boundary and Dependency Ownership
+## Phase 8: Tighten `eggsentry` Boundary and Dependency Ownership
 
-`eggsec` should own deterministic scan/classification logic. Codegg should own policy, sandboxing, SSRF, sensitive paths, and enforcement.
+`eggsentry` should own deterministic scan/classification logic. Codegg should own policy, sandboxing, SSRF, sensitive paths, and enforcement.
 
 Tasks:
 
@@ -451,7 +451,7 @@ sensitive path matching
 permission escalation
 ```
 
-2. Ensure these live in `eggsec`:
+2. Ensure these live in `eggsentry`:
 
 ```text
 command classification
@@ -461,20 +461,20 @@ profile runner if deterministic and policy-neutral
 finding types
 ```
 
-3. Add conversion from `eggsec::EggsecError` to `ToolError` or `AppError` in one place.
+3. Add conversion from `eggsentry::EggsecError` to `ToolError` or `AppError` in one place.
 
-4. Make `SecurityTool` imports prefer `eggsec::...` directly or keep the re-export shim, but do not mix both styles across new code.
+4. Make `SecurityTool` imports prefer `eggsentry::...` directly or keep the re-export shim, but do not mix both styles across new code.
 
 5. Add tests in both places:
 
-- `eggsec` unit tests for findings;
+- `eggsentry` unit tests for findings;
 - Codegg wrapper tests for tool schema and output shape.
 
 Acceptance criteria:
 
-- `cargo test -p eggsec` passes.
+- `cargo test -p eggsentry` passes.
 - Codegg security tool remains read-only.
-- No Codegg policy/enforcement logic moved into `eggsec`.
+- No Codegg policy/enforcement logic moved into `eggsentry`.
 - `SecurityTool` clearly describes deterministic scanning, not LLM security review.
 
 ## Phase 9: Stabilize `eggcontext` Without Expanding Scope Too Far
@@ -598,7 +598,7 @@ Docs should clearly state:
 
 - Codegg is library-first and MCP-second.
 - `egglsp` owns LSP implementation; `src/lsp` is a compatibility/boundary shim.
-- `eggsec` owns deterministic scanning; Codegg owns policy/enforcement/sandboxing.
+- `eggsentry` owns deterministic scanning; Codegg owns policy/enforcement/sandboxing.
 - `egggit` owns read-only git facts; Codegg owns mutating git operations and permission flow.
 - `eggcontext` currently owns token estimation only; repo maps/ranking are future work.
 - Raw MCP tools for Codegg-managed backend servers are hidden by default.
@@ -619,7 +619,7 @@ Do this in order:
 4. Diagnostics aligned with actual registration.
 5. Structured execution path wired into central tool execution.
 6. `egggit` consumed by review/commit/worktree read-only paths.
-7. Dependency ownership cleanup for `egglsp` and `eggsec`.
+7. Dependency ownership cleanup for `egglsp` and `eggsentry`.
 8. `eggcontext` token-estimate stabilization.
 9. MCP raw exposure policy applied at the actual provider/tool-definition merge point.
 10. Tool registry/schema tests.

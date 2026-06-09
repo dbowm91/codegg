@@ -35,7 +35,7 @@ Do not rewrite the agent loop.
 
 Do not change MCP tool execution semantics beyond optional provenance wrapping at the boundary if trivial.
 
-Do not add MCP adapters for `egglsp`, `eggsec`, `egggit`, or `eggcontext`.
+Do not add MCP adapters for `egglsp`, `eggsentry`, `egggit`, or `eggcontext`.
 
 Do not expose provenance JSON to the model by default.
 

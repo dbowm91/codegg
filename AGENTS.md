@@ -60,7 +60,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
-- `architecture/native_crates.md`: Workspace crates (egglsp, egggit, eggsec, eggcontext), backend contract, raw MCP exposure policy, diagnostics
+- `architecture/native_crates.md`: Workspace crates (egglsp, egggit, eggsentry, eggcontext), backend contract, raw MCP exposure policy, diagnostics
 - `architecture/git.md`: Git session management, git info injection, worktree per session (now in `crates/egggit` + `src/worktree`)
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`)
@@ -153,7 +153,7 @@ These items were verified during review sessions:
 |------|-------|----------|
 | Tool count | 27 | `src/tool/mod.rs:90-122` (27 registrations in with_defaults()) |
 | LSP server count | 39 | `crates/egglsp/src/server.rs` (moved from `src/lsp/server.rs:27-383`) |
-| Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsec`, `crates/eggcontext` — see `architecture/native_crates.md` |
+| Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` — see `architecture/native_crates.md` |
 | Tool backend contract | `src/tool/backend.rs` | `ToolBackendKind`, `ToolProvenance`, `StructuredToolResult`, `build_report()` for `/tool-backends` |
 | `/tool-backends` slash command | `src/tui/command.rs`, handler in `src/tui/app/mod.rs` | aliases: `/tools`, `/backends` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` except pool which is `Option<SqlitePool>` | `src/core/mod.rs:22-28` |
@@ -375,7 +375,7 @@ cargo test messages
 cargo test --package codegg -- <module>_test_pattern
 
 # Test the native tool crates
-cargo test -p eggsec
+cargo test -p eggsentry
 cargo test -p eggcontext
 cargo test -p egggit
 cargo test -p egglsp

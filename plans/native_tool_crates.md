@@ -67,7 +67,7 @@ From Codegg's perspective, implementation can be native or external:
 ```text
 websearch -> Native wrapper -> eggsearch backend -> native crate or MCP adapter
 lsp       -> Native wrapper -> egglsp crate
-security  -> Native wrapper -> eggsec crate
+security  -> Native wrapper -> eggsentry crate
 repo_map  -> Native wrapper -> eggcontext crate
 ```
 
@@ -508,14 +508,14 @@ Acceptance criteria:
 - Token counting and context packing are testable without booting Codegg.
 - Context bundle output includes provenance: source files, byte ranges, token estimates, truncation.
 
-## Phase 7: Extract Deterministic Security Checks (`eggsec` Candidate)
+## Phase 7: Extract Deterministic Security Checks (`eggsentry` Candidate)
 
 Current `security` tool should become a native wrapper over a deterministic security crate. Keep any LLM-based security review as a higher-level Codegg workflow, not as the core scanner.
 
 Target crate:
 
 ```text
-crates/eggsec/
+crates/eggsentry/
   Cargo.toml
   src/lib.rs
   src/secrets.rs
@@ -643,7 +643,7 @@ Tool         Backend   Implementation    Status       Raw MCP exposed
 websearch    MCP       eggsearch          ready        no
 webfetch     MCP       eggsearch          ready        no
 lsp          Native    egglsp             ready        n/a
-security     Native    eggsec             ready        n/a
+security     Native    eggsentry             ready        n/a
 git          Native    codegg/egggit      ready        n/a
 ```
 
@@ -674,7 +674,7 @@ Examples:
 ```text
 eggcontext: chunking, token counting, repo map ranking
 egggit: parse status/diff fixtures, validate patch fixtures
-eggsec: scan fixtures with expected rule IDs
+eggsentry: scan fixtures with expected rule IDs
 egglsp: language/root/server selection tests; mock LSP client tests
 ```
 
@@ -717,7 +717,7 @@ Recommended sequence:
 4. Extract `egglsp` as an internal workspace crate.
 5. Extract `egggit` read-only facts.
 6. Extract `eggcontext` deterministic token/context utilities.
-7. Extract `eggsec` deterministic scanning.
+7. Extract `eggsentry` deterministic scanning.
 8. Revisit MCP adapters for each extracted crate after native usage is stable.
 
 Each phase should compile and preserve the existing model-facing tool surface.

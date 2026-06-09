@@ -1781,7 +1781,7 @@ impl AgentLoop {
         // Build an MCP exposure policy from the resolved
         // `[search]` and `[tool_backends.*]` config so raw
         // Codegg-managed backends (eggsearch today, future
-        // egglsp/eggsec MCP adapters) are hidden by default while
+        // egglsp/eggsentry MCP adapters) are hidden by default while
         // user-configured third-party MCP servers stay visible.
         let search_cfg = crate::search_backend::state::search_config();
         let tool_backends = self.tool_registry.tool_backends();
@@ -1800,7 +1800,7 @@ impl AgentLoop {
         // Per-domain backend config: when the user has set
         // `expose_raw_mcp_tools = true` for a managed backend,
         // unhide that server. This is the forward-compatible hook
-        // for the future `egglsp` and `eggsec` MCP adapters.
+        // for the future `egglsp` and `eggsentry` MCP adapters.
         for domain_cfg in [
             tool_backends.lsp.as_ref(),
             tool_backends.security.as_ref(),

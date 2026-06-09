@@ -1005,7 +1005,7 @@ dependencies = [
  "eggcontext",
  "egggit",
  "egglsp",
- "eggsec",
+ "eggsentry",
  "flate2",
  "futures",
  "globset",
@@ -1748,7 +1748,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "eggsec"
+name = "eggsentry"
 version = "0.1.0"
 dependencies = [
  "regex",

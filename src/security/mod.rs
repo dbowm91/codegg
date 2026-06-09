@@ -1,4 +1,4 @@
-//! Security module — boundary between Codegg and the `eggsec` crate.
+//! Security module — boundary between Codegg and the `eggsentry` crate.
 //!
 //! ## Codegg owns (this crate)
 //!
@@ -8,7 +8,7 @@
 //! - `ssrf` — SSRF protection (URL allow-listing, DNS re-validation)
 //! - sensitive path matching
 //!
-//! ## `eggsec` crate owns
+//! ## `eggsentry` crate owns
 //!
 //! - command classification (`classify_bash_command`,
 //!   `classify_git_subcommand`, `classify_tool_call`)
@@ -20,7 +20,7 @@
 //!
 //! The re-exports below preserve the old `crate::security::finding::...`
 //! path for any call site that has not yet been migrated. New code
-//! should prefer direct `eggsec::...` imports. See
+//! should prefer direct `eggsentry::...` imports. See
 //! `plans/native_tool_crates_hardening.md` Phase 8.
 
 pub mod policy;
@@ -29,19 +29,19 @@ pub mod service;
 pub mod ssrf;
 
 pub mod command {
-    pub use eggsec::command::*;
+    pub use eggsentry::command::*;
 }
 pub mod dependency {
-    pub use eggsec::dependency::*;
+    pub use eggsentry::dependency::*;
 }
 pub mod finding {
-    pub use eggsec::finding::*;
+    pub use eggsentry::finding::*;
 }
 pub mod profile {
-    pub use eggsec::profile::*;
+    pub use eggsentry::profile::*;
 }
 pub mod scanner {
-    pub use eggsec::scanner::*;
+    pub use eggsentry::scanner::*;
 }
 
 pub use sandbox::{

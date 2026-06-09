@@ -159,7 +159,7 @@ impl Tool for SecurityTool {
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let provenance = ToolProvenance {
             backend: ToolBackendKind::Native.label().to_lowercase(),
-            implementation: "eggsec".to_string(),
+            implementation: "eggsentry".to_string(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             elapsed_ms: Some(elapsed_ms),
             truncated: false,
@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_structured_attaches_eggsec_provenance() {
+    async fn execute_structured_attaches_eggsentry_provenance() {
         use crate::tool::Tool;
         let tool = SecurityTool;
         let result = tool
@@ -589,7 +589,7 @@ mod tests {
             .unwrap();
         let provenance = result.provenance.expect("provenance present");
         assert_eq!(provenance.backend, "native");
-        assert_eq!(provenance.implementation, "eggsec");
+        assert_eq!(provenance.implementation, "eggsentry");
         assert!(provenance.elapsed_ms.is_some());
     }
 }

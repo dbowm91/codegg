@@ -357,14 +357,14 @@ impl ToolError {
     }
 }
 
-impl From<eggsec::EggsecError> for ToolError {
-    fn from(err: eggsec::EggsecError) -> Self {
+impl From<eggsentry::EggsecError> for ToolError {
+    fn from(err: eggsentry::EggsecError) -> Self {
         match err {
-            eggsec::EggsecError::Io(msg) => ToolError::Io(msg),
-            eggsec::EggsecError::FileTooLarge(size, max) => {
+            eggsentry::EggsecError::Io(msg) => ToolError::Io(msg),
+            eggsentry::EggsecError::FileTooLarge(size, max) => {
                 ToolError::Execution(format!("file too large: {} bytes (max {})", size, max))
             }
-            eggsec::EggsecError::Join(msg) => ToolError::Execution(msg),
+            eggsentry::EggsecError::Join(msg) => ToolError::Execution(msg),
         }
     }
 }

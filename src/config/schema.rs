@@ -1125,7 +1125,7 @@ pub struct ResearchConfig {
 /// generic selector that the `ToolRegistry` resolves into the
 /// actual implementation. Today, no domain uses the non-native
 /// option; the schema is in place so future wrappers (egglsp,
-/// eggsec, eggcontext) can opt into the same pattern without
+/// eggsentry, eggcontext) can opt into the same pattern without
 /// re-inventing config types.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]

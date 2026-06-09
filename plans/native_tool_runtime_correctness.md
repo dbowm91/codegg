@@ -30,7 +30,7 @@ src/tool/disabled.rs             disabled placeholder tool
 crates/egglsp                    LSP implementation crate
 crates/egggit                    read-only git/worktree facts
 crates/eggcontext                token estimation
-crates/eggsec                    deterministic security scanning
+crates/eggsentry                    deterministic security scanning
 ```
 
 Good progress already completed:
@@ -53,7 +53,7 @@ Remaining risks:
 
 ## Non-Goals
 
-Do not add MCP server binaries for `egglsp`, `eggsec`, `egggit`, or `eggcontext`.
+Do not add MCP server binaries for `egglsp`, `eggsentry`, `egggit`, or `eggcontext`.
 
 Do not add new crates.
 
@@ -163,7 +163,7 @@ five required cases without network or external MCP servers:
 1. `read` / `list` through `execute_capture()` return
    `ToolProvenance::legacy(...)` provenance.
 2. `security` through `execute_capture()` returns
-   `implementation = "eggsec"`.
+   `implementation = "eggsentry"`.
 3. Disabled `security` is filtered from
    `ToolRegistry::definitions()` and `build_tool_definitions()`.
 4. `mcp + fallback_to_native = true` registers the native

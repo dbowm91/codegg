@@ -243,7 +243,7 @@ construction is now injectable instead of hardcoded in two places.
 ### Native tool execution path
 
 Native tool wrappers (e.g. `lsp`, `security`, `git`, `review`) call
-into the corresponding workspace crate (`egglsp`, `eggsec`, `egggit`)
+into the corresponding workspace crate (`egglsp`, `eggsentry`, `egggit`)
 for actual work. Crate local config types are converted from Codegg's
 `crate::config::schema::*` types at the bridge site. See
 `architecture/native_crates.md` for the full boundary, public APIs,
@@ -502,7 +502,7 @@ Tool         Backend   Implementation    Status       Raw MCP exposed
 websearch    MCP       eggsearch          ready        no
 webfetch     MCP       eggsearch          ready        no
 lsp          Native    egglsp             ready        n/a
-security     Native    eggsec             ready        n/a
+security     Native    eggsentry             ready        n/a
 git          Native    codegg/egggit      ready        n/a
 ```
 
@@ -550,7 +550,7 @@ src/tool/
 ├── image.rs        # DALL-E image generation
 ├── tool_search.rs  # On-demand tool discovery
 ├── lsp.rs          # LSP client tools (wraps egglsp::LspService)
-├── security.rs     # Security scanning (wraps eggsec)
+├── security.rs     # Security scanning (wraps eggsentry)
 ├── teams.rs        # Team operation tools
 ├── formatter.rs    # Auto-formatting support
 └── ...

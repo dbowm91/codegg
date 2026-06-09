@@ -29,7 +29,7 @@ impl SecurityProfile {
 
 /// Crate-local placeholder for the subset of `codegg::SecurityConfig` that
 /// `ProfileRunner` needs. Codegg converts its own config into this type at
-/// the boundary so that `eggsec` does not depend on Codegg config types.
+/// the boundary so that `eggsentry` does not depend on Codegg config types.
 #[derive(Debug, Clone, Default)]
 pub struct ProfileConfig {
     pub max_bytes: Option<usize>,

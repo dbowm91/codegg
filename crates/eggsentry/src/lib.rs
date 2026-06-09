@@ -25,7 +25,7 @@ pub use scanner::{inspect_file, inspect_text};
 
 use thiserror::Error;
 
-/// Errors returned by the `eggsec` API. Converted to `ToolError` at the
+/// Errors returned by the `eggsentry` API. Converted to `ToolError` at the
 /// Codegg boundary.
 #[derive(Debug, Error)]
 pub enum EggsecError {

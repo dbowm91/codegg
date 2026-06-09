@@ -4,14 +4,14 @@ The `security` module provides security features for URL validation, IP checking
 
 ## Overview
 
-**Location**: `src/security/` (SSRF, sandbox, sensitive-path policy) and `crates/eggsec/` (deterministic security scanning — see [native_crates.md](native_crates.md))
+**Location**: `src/security/` (SSRF, sandbox, sensitive-path policy) and `crates/eggsentry/` (deterministic security scanning — see [native_crates.md](native_crates.md))
 
 **Key Responsibilities**:
 - SSRF protection (Server-Side Request Forgery)
 - Internal IP validation (IPv4 and IPv6 including IPv4-mapped)
 - Symlink detection for path safety
 - Landlock sandboxing (Linux)
-- Codegg-side re-exports of `eggsec::{command, dependency, finding, profile, scanner}` for backward-compatible `crate::security::finding::Severity` style paths used by other modules
+- Codegg-side re-exports of `eggsentry::{command, dependency, finding, profile, scanner}` for backward-compatible `crate::security::finding::Severity` style paths used by other modules
 - Permission policy: `crate::security::policy` (decides Observe/Ask/Deny based on Codegg `SecurityConfig`) — kept in codegg core because it depends on codegg config types
 
 ## Key Functions
@@ -246,14 +246,14 @@ Check against allowed_paths
 
 ## Tool Backend (MCP fallback semantics)
 
-`SecurityTool` (`src/tool/security.rs`) wraps `eggsec` and is
+`SecurityTool` (`src/tool/security.rs`) wraps `eggsentry` and is
 registered by `ToolRegistry::with_options` based on
 `[tool_backends.security]` in the loaded `Config`. The matrix mirrors
 LSP and is reflected exactly in `ToolRegistry::backend_report(...)`:
 
 | `[tool_backends.security]` setting | Registered tool | `backend_report` status |
 |-------------------------------------|-----------------|-------------------------|
-| `backend = "native"` (default) or `"builtin"` | real `SecurityTool` wrapper around `eggsec` | `ready` |
+| `backend = "native"` (default) or `"builtin"` | real `SecurityTool` wrapper around `eggsentry` | `ready` |
 | `backend = "mcp", fallback_to_native = true` (default for `mcp`) | real `SecurityTool` wrapper (the live path is the native crate, not an MCP server) | `fallback-native` |
 | `backend = "mcp", fallback_to_native = false` | hidden `DisabledTool` stub — model never sees `security` | `unavailable` (`ConfiguredButUnavailable`) regardless of MCP server connectivity |
 | `backend = "disabled"` | hidden `DisabledTool` stub — model never sees `security` | `disabled` |
@@ -262,5 +262,5 @@ LSP and is reflected exactly in `ToolRegistry::backend_report(...)`:
 so the stub is registered (callable by name for `/tool-backends`
 diagnostics and tests) but filtered from the model-facing tool
 definitions. `SecurityTool::execute_structured()` reports provenance
-with `backend = "native"`, `implementation = "eggsec"` when called
+with `backend = "native"`, `implementation = "eggsentry"` when called
 through `ToolRegistry::execute_capture` from the agent loop.
