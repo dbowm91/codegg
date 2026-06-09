@@ -1,82 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptProfileKind {
-    FrontierReasoning,
-    FrontierExecutor,
-    FastExecutor,
-    LocalStrict,
-    ToolFragile,
-    LongContextPlanner,
-    Reviewer,
-    Summarizer,
-    #[default]
-    Default,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ReliabilityTier {
-    Low,
-    #[default]
-    Medium,
-    High,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ModelProfileConfig {
-    pub prompt_profile: Option<PromptProfileKind>,
-    pub family: Option<String>,
-
-    pub context_window: Option<usize>,
-    pub max_output_tokens: Option<usize>,
-
-    pub tool_call_reliability: Option<ReliabilityTier>,
-    pub instruction_adherence: Option<ReliabilityTier>,
-    pub patch_reliability: Option<ReliabilityTier>,
-
-    pub supports_late_system_messages: Option<bool>,
-    pub prefers_user_control_messages: Option<bool>,
-    pub prefers_small_patches: Option<bool>,
-    pub requires_explicit_tool_contract: Option<bool>,
-    pub requires_post_tool_continue_nudge: Option<bool>,
-
-    pub default_reasoning_effort: Option<String>,
-    pub default_thinking_budget: Option<usize>,
-
-    pub max_parallel_tools: Option<usize>,
-    pub preferred_tools: Option<Vec<String>>,
-    pub disabled_tools: Option<Vec<String>>,
-
-    pub task_state_policy: Option<TaskStatePolicyConfig>,
-}
-
-impl Default for ModelProfileConfig {
-    fn default() -> Self {
-        Self {
-            prompt_profile: None,
-            family: None,
-            context_window: None,
-            max_output_tokens: None,
-            tool_call_reliability: None,
-            instruction_adherence: None,
-            patch_reliability: None,
-            supports_late_system_messages: None,
-            prefers_user_control_messages: None,
-            prefers_small_patches: None,
-            requires_explicit_tool_contract: None,
-            requires_post_tool_continue_nudge: None,
-            default_reasoning_effort: None,
-            default_thinking_budget: None,
-            max_parallel_tools: None,
-            preferred_tools: None,
-            disabled_tools: None,
-            task_state_policy: None,
-        }
-    }
-}
+pub use codegg_config::schema::{
+    CompletedTodoExposure, ModelProfileConfig, PromptProfileKind, ReliabilityTier,
+    SubagentTodoAccess, TaskStatePolicyConfig, TodoMode, TodoUpdateFrequency,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedModelProfile {
@@ -105,81 +32,6 @@ pub struct ResolvedModelProfile {
     pub disabled_tools: Option<Vec<String>>,
 
     pub task_state_policy: TaskStatePolicy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TodoMode {
-    Disabled,
-    SparsePlan,
-    #[default]
-    ExplicitTodo,
-    GuidedCurrentTask,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TodoUpdateFrequency {
-    Never,
-    MilestonesOnly,
-    #[default]
-    MilestonesAndTaskSwitches,
-    HarnessManaged,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum CompletedTodoExposure {
-    #[default]
-    NoneUnlessAsked,
-    SummaryOnly,
-    Full,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SubagentTodoAccess {
-    #[default]
-    None,
-    ReadOnlyScoped,
-    NoMutation,
-    Full,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct TaskStatePolicyConfig {
-    pub mode: Option<TodoMode>,
-    pub update_frequency: Option<TodoUpdateFrequency>,
-    pub max_total_items: Option<usize>,
-    pub expose_completed_items: Option<CompletedTodoExposure>,
-    pub allow_model_todo_read: Option<bool>,
-    pub allow_model_todo_write: Option<bool>,
-    pub require_single_in_progress: Option<bool>,
-    pub require_blocker_reason: Option<bool>,
-    pub inject_after_tool_calls: Option<usize>,
-    pub inject_on_resume: Option<bool>,
-    pub inject_after_compaction: Option<bool>,
-    pub subagent_todo_access: Option<SubagentTodoAccess>,
-}
-
-impl Default for TaskStatePolicyConfig {
-    fn default() -> Self {
-        Self {
-            mode: None,
-            update_frequency: None,
-            max_total_items: None,
-            expose_completed_items: None,
-            allow_model_todo_read: None,
-            allow_model_todo_write: None,
-            require_single_in_progress: None,
-            require_blocker_reason: None,
-            inject_after_tool_calls: None,
-            inject_on_resume: None,
-            inject_after_compaction: None,
-            subagent_todo_access: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

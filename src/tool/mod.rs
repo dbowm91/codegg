@@ -283,7 +283,7 @@ impl ToolRegistry {
             ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
                 let lsp_service = options.lsp_service.unwrap_or_else(|| {
                     Arc::new(crate::lsp::service::LspService::new(
-                        crate::config::schema::LspConfig::default().into(),
+                        crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
                     ))
                 });
                 registry.register(crate::tool::lsp::LspTool::new(lsp_service));
@@ -292,7 +292,7 @@ impl ToolRegistry {
                 registry.register(crate::tool::disabled::DisabledTool::new(
                     "lsp",
                     crate::tool::lsp::LspTool::new(Arc::new(crate::lsp::service::LspService::new(
-                        crate::config::schema::LspConfig::default().into(),
+                        crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
                     )))
                     .description(),
                     "lsp backend is configured as 'disabled' ([tool_backends.lsp].backend = \"disabled\")",
@@ -305,7 +305,7 @@ impl ToolRegistry {
                     // report this row as `fallback-native`.
                     let lsp_service = options.lsp_service.clone().unwrap_or_else(|| {
                         Arc::new(crate::lsp::service::LspService::new(
-                            crate::config::schema::LspConfig::default().into(),
+                            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
                         ))
                     });
                     registry.register(crate::tool::lsp::LspTool::new(lsp_service));

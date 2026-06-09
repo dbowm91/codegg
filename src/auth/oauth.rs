@@ -7,7 +7,7 @@
 //!
 //! All entry points return [`AuthError::Unsupported`].
 
-use crate::auth::error::AuthError;
+use crate::auth::AuthError;
 use crate::auth::AuthConfig;
 use crate::auth::Credential;
 

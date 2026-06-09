@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn lsp_tool_name() {
         let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
-            crate::config::schema::LspConfig::default().into(),
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
         )));
         assert_eq!(tool.name(), "lsp");
         assert!(!tool.description().is_empty());
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn lsp_parameters_schema_snapshot() {
         let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
-            crate::config::schema::LspConfig::default().into(),
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
         )));
         let params = tool.parameters();
         let expected = json!({
@@ -622,7 +622,7 @@ mod tests {
     async fn lsp_execute_structured_attaches_native_provenance() {
         use crate::tool::Tool;
         let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
-            crate::config::schema::LspConfig::default().into(),
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
         )));
         let res = tool
             .execute_structured(json!({"operation": "no_such_op"}), None)

@@ -13,6 +13,11 @@ device-flow scaffolding (typed but unimplemented in this pass), and a
 `cli` sub-module that wires the credential store into
 `codegg auth status | set-key | logout`.
 
+> **Note:** Auth types (`AuthConfig`, `Credential`, `AuthResolver`,
+> `CredentialStore`, `AuthError`, etc.) now live in the `codegg-providers`
+> crate (`crates/codegg-providers/`). The root `src/auth/mod.rs` re-exports
+> them from `codegg_providers::auth_types` for backwards compatibility.
+
 ## Sub-modules
 
 | Sub-module | Public types | Purpose |
@@ -181,7 +186,7 @@ arbitrary user input.
 
 ## Provider integration
 
-Provider registration goes through `src/provider/mod.rs`. The three
+Provider registration goes through `crates/codegg-providers/src/provider/mod.rs`. The three
 helpers in that file are:
 
 - `register_credential_provider` — factories that accept a full

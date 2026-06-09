@@ -18,7 +18,7 @@
 //! `tokio::process::Command` with `tokio::time::timeout`), this arm can
 //! be re-enabled.
 
-use crate::auth::error::AuthError;
+use crate::auth::AuthError;
 use crate::auth::Credential;
 
 #[derive(Debug, Clone)]

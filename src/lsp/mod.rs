@@ -53,11 +53,9 @@ pub use egglsp::service::LspService;
 
 pub use egglsp::lsp_types;
 
-impl From<crate::config::schema::LspConfig> for egglsp::LspConfig {
-    fn from(c: crate::config::schema::LspConfig) -> Self {
-        // The shapes are intentionally identical; serde round-trips both.
-        serde_json::from_value(serde_json::to_value(c).unwrap_or_default()).unwrap_or_default()
-    }
+pub fn config_lsp_to_egglsp(c: crate::config::schema::LspConfig) -> egglsp::LspConfig {
+    // The shapes are intentionally identical; serde round-trips both.
+    serde_json::from_value(serde_json::to_value(c).unwrap_or_default()).unwrap_or_default()
 }
 
 pub struct Lsp {

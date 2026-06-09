@@ -79,7 +79,7 @@ pub async fn get_config(
 ) -> Result<Json<ConfigResponse>, AppError> {
     let config = Config::load().map_err(|e| {
         tracing::error!("get_config failed: {e}");
-        AppError::Config(e)
+        AppError::Config(e.into())
     })?;
     let value = serde_json::to_value(&config).map_err(|e| {
         tracing::error!("get_config serialize failed: {e}");

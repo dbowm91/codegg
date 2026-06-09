@@ -80,7 +80,7 @@ impl ExecMode {
             eprintln!("Starting exec mode...");
         }
 
-        let config = Config::load().map_err(|e| AppError::Config(e))?;
+        let config = Config::load().map_err(|e| AppError::Config(e.into()))?;
         let mut registry = crate::provider::ProviderRegistry::new();
         crate::provider::register_builtin_with_config(&mut registry, &config);
 

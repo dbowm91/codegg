@@ -16,7 +16,7 @@ pub mod bus;
 #[cfg(feature = "server")]
 pub mod client;
 pub mod command;
-pub mod config;
+pub use codegg_config as config;
 pub mod core;
 pub mod error;
 pub mod goal;
@@ -25,7 +25,7 @@ pub mod mcp;
 pub mod permission;
 pub mod plugin;
 pub mod protocol;
-pub mod provider;
+pub use codegg_providers as provider;
 pub mod research;
 pub mod resilience;
 pub mod search;

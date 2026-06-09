@@ -49,6 +49,9 @@ binaries without changing the model-facing tool names.
 
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
+| `crates/codegg-config` | Configuration schema, paths, loading, validation, watching | `schema.rs`, `paths.rs`, `watcher.rs` |
+| `crates/codegg-protocol` | Core protocol types (CoreRequest, CoreResponse, CoreEvent, TuiMessage) | `core.rs`, `tui.rs` |
+| `crates/codegg-providers` | LLM provider implementations, auth types, CircuitBreaker | `provider/mod.rs`, `auth/`, `circuit.rs` |
 | `crates/egglsp` | Language Server Protocol client/server management | `service.rs`, `client.rs`, `operations.rs`, `server.rs` |
 | `crates/egggit` | Read-only git facts (status, diff, changed files, worktrees) | `status.rs`, `diff.rs`, `worktree.rs` |
 | `crates/eggsentry` | Deterministic security scanning (secrets, commands, deps, unsafe code) | `scanner.rs`, `command.rs`, `finding.rs`, `profile.rs` |
@@ -83,7 +86,7 @@ hidden by default — see [MCP](mcp.md)).
 | [bus/](bus.md) | Event bus publish/subscribe, permission/question registries | `global.rs`, `events.rs`, `mod.rs` |
 | [client/](client.md) | Remote TUI WebSocket client with resume/replay | `attach.rs` |
 | [command/](command.md) | Slash command registry from markdown files | `mod.rs` |
-| [config/](config.md) | Configuration loading, validation, file watching | `schema.rs`, `paths.rs`, `watcher.rs` |
+| [config/](config.md) | Configuration loading, validation, file watching — in `crates/codegg-config` | `schema.rs`, `paths.rs`, `watcher.rs` |
 | [core/](core.md) | Core facade, transport adapters, request handling | `mod.rs`, `transport/` |
 | [crypto/](crypto.md) | AES-256-GCM encryption, Argon2id key derivation | `mod.rs` |
 | [error/](error.md) | Centralized AppError enum with error classification | `mod.rs` |
@@ -95,8 +98,8 @@ hidden by default — see [MCP](mcp.md)).
 | [memory/](memory.md) | Persistent memory across sessions | `mod.rs` |
 | [permission/](permission.md) | Access control, DoomLoop detection, mode system | `mod.rs`, `modes.rs` |
 | [plugin/](plugin.md) | WASM plugin system with hooks and fuel tracking | `loader.rs`, `service.rs`, `manifest.rs` |
-| [provider/](provider.md) | LLM providers (Anthropic, OpenAI, Google, etc.) | `mod.rs`, `anthropic.rs`, `fallback.rs` |
-| [protocol/](protocol.md) | Shared request/response envelopes and message types | `core.rs`, `tui.rs` |
+| [provider/](provider.md) | LLM providers — in `crates/codegg-providers` | `mod.rs`, `anthropic.rs`, `fallback.rs` |
+| [protocol/](protocol.md) | Shared request/response envelopes — in `crates/codegg-protocol` | `core.rs`, `tui.rs` |
 | [resilience/](resilience.md) | Circuit breaker, retry mechanisms | `circuit.rs` |
 | [security/](security.md) | SSRF protection, Landlock sandboxing; scanning core in `crates/eggsentry` | `ssrf.rs`, `sandbox.rs` |
 | [server/](server.md) | HTTP/WebSocket server for remote TUI | `http.rs`, `ws.rs`, `routes/` |
@@ -241,7 +244,7 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
 - [LSP](lsp.md) - Language Server Protocol
 - [MCP](mcp.md) - Model Context Protocol
 - [Memory](memory.md) - Persistent memory system
-- [Native Crates](native_crates.md) - Workspace crates (egglsp, egggit, eggsentry, eggcontext) and native/MCP backend contract
+- [Native Crates](native_crates.md) — Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers), backend contract, raw MCP exposure policy, diagnostics
 - [Permission](permission.md) - Access control and modes
 - [Plugin](plugin.md) - WASM plugin system
 - [Protocol](protocol.md) - Shared request/response envelopes

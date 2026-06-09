@@ -14,6 +14,9 @@ boundaries. See `plans/native_tool_crates.md` for the full plan and
 
 ```
 crates/
+  codegg-config/     Configuration schema, paths, loading, validation, watching
+  codegg-protocol/   Core protocol types (CoreRequest, CoreResponse, CoreEvent, TuiMessage)
+  codegg-providers/  LLM provider implementations, auth types, CircuitBreaker
   egglsp/       Language Server Protocol client/service/operations
   egggit/       Read-only git facts: status, diff, changed files, worktrees
   eggsentry/       Deterministic security scanning: secrets, commands, deps, profiles
@@ -21,7 +24,9 @@ crates/
 ```
 
 The top-level `codegg` package is a workspace member and depends on
-each of these crates.
+each of these crates. The three `codegg-*` crates are re-exported
+from `src/lib.rs` as `codegg::config`, `codegg::protocol`, and
+`codegg::provider`.
 
 ## Codegg ↔ crate boundary
 

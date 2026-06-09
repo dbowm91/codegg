@@ -4,7 +4,9 @@ The `config` module handles configuration loading, validation, and hot-reloading
 
 ## Overview
 
-**Location**: `src/config/`
+**Location**: `crates/codegg-config/` (the `codegg-config` crate)
+
+**Re-export**: `codegg::config` via `pub use codegg_config as config` in `src/lib.rs`
 
 **Key Responsibilities**:
 - Configuration file discovery and loading

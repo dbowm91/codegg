@@ -12,6 +12,9 @@ The `error` module provides centralized error handling using `thiserror`.
 - HTTP status mapping for server responses
 - Retryability determination for resilience patterns
 
+> **Note:** `ProviderError` and `StorageError` are re-exported from
+> `codegg_providers::error` in `src/error.rs`.
+
 ## AppError Enum
 
 ```rust

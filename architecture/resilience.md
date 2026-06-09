@@ -4,10 +4,14 @@ The `resilience` module provides fault tolerance patterns.
 
 ## Overview
 
-**Location**: `src/resilience/`
+**Location**: `src/resilience/` (re-exports `CircuitBreaker` from `codegg_providers::circuit`)
 
 **Key Responsibilities**:
 - Circuit breaker pattern for provider fault tolerance
+
+> **Note:** `CircuitBreaker` now lives in the `codegg-providers` crate
+> (`crates/codegg-providers/src/circuit.rs`). The root `src/resilience/mod.rs`
+> re-exports it for backwards compatibility.
 
 ## Circuit Breaker
 

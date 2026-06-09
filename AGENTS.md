@@ -19,7 +19,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `bus/` | Event bus system (GlobalEventBus, PermissionRegistry, QuestionRegistry) |
 | `client/` | Remote TUI client for WebSocket connections with resume/replay support |
 | `command/` | Slash command registry and routing from markdown files |
-| `config/` | Configuration loading, validation, and file watcher |
+| `config/` | Configuration loading, validation, and file watcher — now in `crates/codegg-config` (`codegg-config` crate), re-exported as `codegg::config` |
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
@@ -33,8 +33,8 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `memory/` | Persistent memory system for session learning and namespace management |
 | `permission/` | Access control, path restrictions, DoomLoop detection, mode system |
 | `plugin/` | WASM plugin system with hooks and TUI extensions |
-| `provider/` | LLM provider implementations (Anthropic, OpenAI, Google, etc.) |
-| `protocol/` | Shared `CoreRequest`/`CoreResponse` and `TuiMessage` protocol envelopes |
+| `provider/` | LLM provider implementations (Anthropic, OpenAI, Google, etc.) — now in `crates/codegg-providers` (`codegg-providers` crate), re-exported as `codegg::provider` |
+| `protocol/` | Shared `CoreRequest`/`CoreResponse` and `TuiMessage` protocol envelopes — now in `crates/codegg-protocol` (`codegg-protocol` crate), re-exported as `codegg::protocol` |
 | `shell_session/` | Shell session metadata management (in-memory, no actual PTY) |
 | `resilience/` | Circuit breaker, retry mechanisms, and rate limiting |
 | `search/` | Legacy in-tree web search providers (used as `builtin` fallback) |
@@ -60,10 +60,10 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
-- `architecture/native_crates.md`: Workspace crates (egglsp, egggit, eggsentry, eggcontext), backend contract, raw MCP exposure policy, diagnostics
+- `architecture/native_crates.md`: Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers), backend contract, raw MCP exposure policy, diagnostics
 - `architecture/git.md`: Git session management, git info injection, worktree per session (now in `crates/egggit` + `src/worktree`)
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
-- `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`)
+- `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
 
 ## Critical Implementation Notes
 
@@ -166,9 +166,9 @@ These items were verified during review sessions:
 | map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
 | SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1216-1220` |
 | hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
-| Backoff formula | `2^i` (no jitter) | `src/provider/fallback.rs:107` |
+| Backoff formula | `2^i` (no jitter) | `crates/codegg-providers/src/provider/fallback.rs:107` |
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
-| Protocol version | 1 | `src/protocol/core.rs:3` |
+| Protocol version | 1 | `crates/codegg-protocol/src/protocol/core.rs:3` |
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
 | Built-in command count | 46 (includes /tts, /pr, /issue, /checkpoint) | `src/tui/command.rs:79-182` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
@@ -185,13 +185,13 @@ These items were verified during review sessions:
 | Structured execution smoke test | `tests/tool_structured_execution.rs` locks down `ToolProvenance` shape, disabled/MCP-fallback semantics, and definition visibility | `tests/tool_structured_execution.rs` |
 | Live dispatcher wiring tests | `test_live_dispatcher_uses_execute_capture`, `test_live_dispatcher_passes_native_backend_in_context`, `test_live_dispatcher_model_output_shape_is_plain_string` prove the agent loop routes native calls through `execute_capture` and the model-facing tool content is a plain string (no provenance JSON) | `tests/agent_loop_harness.rs` |
 | Dialog::Stats | EXISTS in Dialog enum | `src/tui/app/types.rs:21` |
-| Provider auth resolver | `AuthResolver::resolve` is sync; `register_builtin_with_config` threads a shared `Arc<CredentialStore>` through `register_credential_provider` / `register_api_key_provider` / `register_config_provider`. All three helpers go through the centralized `resolve_provider_credential` helper. | `src/provider/mod.rs`, `src/auth/resolver.rs` |
-| OpenAI-compatible factories | `create_xai`, `create_mistral`, `create_groq`, `create_deepinfra`, `create_cerebras`, `create_cohere`, `create_together`, `create_perplexity`, `create_venice`, `create_generalcompute`, `create_opencode_go` all take `Credential`; `create_minimax` takes `String` (Anthropic-compatible). Backed by `OpenAiCompatibleProvider::simple_with_credential`; the legacy `simple(id, name, api_key, base_url)` is a backwards-compatible shim. | `src/provider/additional.rs`, `src/provider/openai_compatible.rs` |
-| ExternalCommand in resolver | Disabled in the synchronous resolver. Returns `AuthError::Unsupported("ExternalCommand")` because the existing `std::process::Command`-based `ExternalCommandProvider::fetch` does not enforce its timeout. Async timeout plumbing is a follow-up. | `src/auth/resolver.rs`, `src/auth/external.rs` |
-| ExternalCommandProvider::fetch | Returns `AuthError::Unsupported("ExternalCommand requires async timeout plumbing")` for any non-empty command; an empty command yields `AuthError::Invalid`. The previous `std::process::Command` shell-out path has been removed; no safe code path can accidentally execute a configured command. | `src/auth/external.rs` |
-| Provider credential resolution path | Single resolution path: every helper in `src/provider/mod.rs` (`register_credential_provider`, `register_api_key_provider`, `register_config_provider`) goes through `resolve_provider_credential()` → `AuthResolver::resolve()`. Legacy `cfg.api_key` is honored by the resolver via `ctx.legacy_api_key`; no helper reads `cfg.api_key` directly. | `src/provider/mod.rs`, `src/auth/resolver.rs` |
+| Provider auth resolver | `AuthResolver::resolve` is sync; `register_builtin_with_config` threads a shared `Arc<CredentialStore>` through `register_credential_provider` / `register_api_key_provider` / `register_config_provider`. All three helpers go through the centralized `resolve_provider_credential` helper. | `crates/codegg-providers/src/provider/mod.rs`, `crates/codegg-providers/src/auth/resolver.rs` |
+| OpenAI-compatible factories | `create_xai`, `create_mistral`, `create_groq`, `create_deepinfra`, `create_cerebras`, `create_cohere`, `create_together`, `create_perplexity`, `create_venice`, `create_generalcompute`, `create_opencode_go` all take `Credential`; `create_minimax` takes `String` (Anthropic-compatible). Backed by `OpenAiCompatibleProvider::simple_with_credential`; the legacy `simple(id, name, api_key, base_url)` is a backwards-compatible shim. | `crates/codegg-providers/src/provider/additional.rs`, `crates/codegg-providers/src/provider/openai_compatible.rs` |
+| ExternalCommand in resolver | Disabled in the synchronous resolver. Returns `AuthError::Unsupported("ExternalCommand")` because the existing `std::process::Command`-based `ExternalCommandProvider::fetch` does not enforce its timeout. Async timeout plumbing is a follow-up. | `crates/codegg-providers/src/auth/resolver.rs`, `crates/codegg-providers/src/auth/external.rs` |
+| ExternalCommandProvider::fetch | Returns `AuthError::Unsupported("ExternalCommand requires async timeout plumbing")` for any non-empty command; an empty command yields `AuthError::Invalid`. The previous `std::process::Command` shell-out path has been removed; no safe code path can accidentally execute a configured command. | `crates/codegg-providers/src/auth/external.rs` |
+| Provider credential resolution path | Single resolution path: every helper in `src/provider/mod.rs` (`register_credential_provider`, `register_api_key_provider`, `register_config_provider`) goes through `resolve_provider_credential()` → `AuthResolver::resolve()`. Legacy `cfg.api_key` is honored by the resolver via `ctx.legacy_api_key`; no helper reads `cfg.api_key` directly. | `crates/codegg-providers/src/provider/mod.rs`, `crates/codegg-providers/src/auth/resolver.rs` |
 | `codegg providers` and `codegg models` | Both commands now use `register_builtin_with_config`, so they see the same set of providers (including those backed by the user credential store). | `src/main.rs` |
-| Stored bearer-token policy | `AuthConfig::Stored` and the no-auth fallback's store lookup both filter to `CredentialKind::ApiKey`. A future OAuth/bearer-token refresh flow will need a separate `kind` selector or policy module. `codegg auth set-key` only writes `ApiKey` records. | `src/auth/resolver.rs` |
+| Stored bearer-token policy | `AuthConfig::Stored` and the no-auth fallback's store lookup both filter to `CredentialKind::ApiKey`. A future OAuth/bearer-token refresh flow will need a separate `kind` selector or policy module. `codegg auth set-key` only writes `ApiKey` records. | `crates/codegg-providers/src/auth/resolver.rs` |
 | `codegg auth` CLI validation | `AuthCli::set_key` and `AuthCli::logout` validate provider and account ids up-front to contain only `[A-Za-z0-9_-]`. The wildcard `*` is accepted **only** by `logout`. `set_key` never echoes the key, key length, or any prefix/suffix. `status` never prints ciphertext, plaintext, or secret-derived fingerprints. | `src/auth/cli.rs` |
 | `codegg auth` CLI | `codegg auth status`, `codegg auth set-key <provider>` (stdin), `codegg auth logout <provider>` are wired in `src/main.rs` and backed by `auth::cli::AuthCli`. | `src/main.rs`, `src/auth/cli.rs` |
 | Goal module | Goal, GoalStatus, GoalBudget, GoalUsage, GoalStore, runtime | `src/goal/` |
@@ -215,19 +215,19 @@ These items were verified during review sessions:
 
 - **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
 - **WebSocket auth is consistent with HTTP**: Both `src/server/ws.rs:103-106` and `middleware/auth.rs:37-39` return Ok when no token is configured.
-- **ExternalCommand is disabled in the synchronous resolver**: `AuthConfig::ExternalCommand` is recognized but `AuthResolver::resolve` returns `AuthError::Unsupported("ExternalCommand")` because the underlying `ExternalCommandProvider::fetch` uses `std::process::Command` and does not enforce its timeout. Re-enable only when async timeout plumbing is in place. See `src/auth/resolver.rs:173-181`.
+- **ExternalCommand is disabled in the synchronous resolver**: `AuthConfig::ExternalCommand` is recognized but `AuthResolver::resolve` returns `AuthError::Unsupported("ExternalCommand")` because the underlying `ExternalCommandProvider::fetch` uses `std::process::Command` and does not enforce its timeout. Re-enable only when async timeout plumbing is in place. See `crates/codegg-providers/src/auth/resolver.rs:173-181`.
 - **Provider registration logging policy**: `register_credential_provider` / `register_api_key_provider` / `register_config_provider` log only `ResolvedAuthSource::as_str()` and the env var name. They never log secret prefix / suffix / length. New log lines that touch auth must follow the same rule.
 
 ### CoreRequest Handler Attention Points
 
-- `CoreRequest` enum in `src/protocol/core.rs:50-175`
+- `CoreRequest` enum in `crates/codegg-protocol/src/protocol/core.rs:50-175`
 - InprocCoreClient handlers at `src/core/mod.rs:52-355` handle: TurnSubmit, SessionMessagesLoad, SessionMessageCounts, SessionCreate, SessionLoad, SessionAttach, etc.
 - Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - verify if TUI actually sends these before implementing meaningful responses.
 
 ## Helpful Patterns for Future Agents
 
 ### Provider Auto-Registration
-- `register_builtin_with_config()` at `src/provider/mod.rs:501` registers providers via env vars, the typed `auth` block, and the user credential store. It builds a single `Arc<CredentialStore>` and threads it into the per-provider helpers.
+- `register_builtin_with_config()` at `crates/codegg-providers/src/provider/mod.rs:501` registers providers via env vars, the typed `auth` block, and the user credential store. It builds a single `Arc<CredentialStore>` and threads it into the per-provider helpers.
 - Per-provider helpers:
   - `register_credential_provider` — OpenAI-compatible providers that accept a full `Credential` envelope (mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, opencode_go, generalcompute).
   - `register_api_key_provider` — providers that genuinely need a static API-key string (opencode_zen, minimax). Rejects `CredentialKind::BearerToken` with a `tracing::warn!`.
@@ -235,7 +235,7 @@ These items were verified during review sessions:
 - All three go through the centralized `resolve_provider_credential(provider_id, cfg, env_var, store)` helper.
 - Adding ANY provider via config disables all env-var auto-registration (intentional design)
 - SAP AI Core, Zenmux, Kilo, Vercel AI Gateway are config-only, NOT auto-registered
-- Check `src/provider/mod.rs:register_builtin_with_config()` for details
+- Check `crates/codegg-providers/src/provider/mod.rs:register_builtin_with_config()` for details
 
 ## Documentation Structure
 
@@ -327,6 +327,9 @@ When adding guidance for a new module:
 | WASM plugins | `.opencode/skills/plugin/SKILL.md` |
 | MCP (Model Context Protocol) | `.opencode/skills/mcp/SKILL.md` |
 | Provider (LLM providers, Arc<String> types, FallbackProvider) | `.opencode/skills/provider/SKILL.md` |
+| Codegg Config (Config, paths, validation, watching) | `crates/codegg-config/` |
+| Codegg Protocol (CoreRequest, CoreResponse, CoreEvent, TuiMessage) | `crates/codegg-protocol/` |
+| Codegg Providers (Provider trait, ProviderRegistry, auth types, CircuitBreaker) | `crates/codegg-providers/` |
 | Auth (AuthConfig, Credential, AuthResolver, CredentialStore, mask_secret, `codegg auth ...` CLI) | `.opencode/skills/auth/SKILL.md`, `architecture/auth.md` |
 | Crypto (API key encryption, Argon2id key derivation) | [architecture/crypto.md](architecture/crypto.md) |
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
@@ -379,6 +382,11 @@ cargo test -p eggsentry
 cargo test -p eggcontext
 cargo test -p egggit
 cargo test -p egglsp
+
+# Test the extracted workspace crates
+cargo test -p codegg-config
+cargo test -p codegg-protocol
+cargo test -p codegg-providers
 ```
 
 ## Security Reminders

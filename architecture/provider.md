@@ -2,7 +2,9 @@
 
 ## Overview
 
-The provider module (`src/provider/`) provides the interface and implementations for interacting with various LLM (Large Language Model) backends. It offers a unified `Provider` trait that abstracts over different API providers (Anthropic, OpenAI, Google, Azure, etc.), handling authentication, request formatting, streaming responses, and error handling.
+The provider module (`crates/codegg-providers/`) provides the interface and implementations for interacting with various LLM (Large Language Model) backends. It offers a unified `Provider` trait that abstracts over different API providers (Anthropic, OpenAI, Google, Azure, etc.), handling authentication, request formatting, streaming responses, and error handling.
+
+**Re-export**: `codegg::provider` via `pub use codegg_providers as provider` in `src/lib.rs`
 
 ## Provider Trait and Core Types
 
@@ -728,25 +730,25 @@ Key methods:
 
 | File | Purpose |
 |------|---------|
-| `src/provider/mod.rs` | Provider trait, registry, core types, registration |
-| `src/provider/anthropic.rs` | Anthropic API implementation |
-| `src/provider/openai.rs` | OpenAI API implementation |
-| `src/provider/google.rs` | Google Generative AI implementation |
-| `src/provider/azure.rs` | Azure OpenAI implementation |
-| `src/provider/vertex.rs` | Google Vertex AI (wraps OpenAiCompatible) |
-| `src/provider/bedrock.rs` | AWS Bedrock with SigV4 signing |
-| `src/provider/openrouter.rs` | OpenRouter aggregator |
-| `src/provider/openai_compatible.rs` | Generic OpenAI-compatible provider |
-| `src/provider/copilot.rs` | GitHub Copilot |
-| `src/provider/cloudflare.rs` | Cloudflare Workers AI |
-| `src/provider/gitlab.rs` | GitLab AI |
-| `src/provider/opencode_zen.rs` | Codegg Zen service |
-| `src/provider/additional.rs` | Additional provider factories |
-| `src/provider/fallback.rs` | Fallback provider with circuit breaker |
-| `src/provider/catalog.rs` | Model catalog with live fetch |
-| `src/provider/discovery.rs` | Model discovery service with DB cache |
-| `src/provider/models.rs` | Embedded model definitions |
-| `src/provider/sse_parser.rs` | SSE parsing for streaming responses |
-| `src/provider/text_tool_parser.rs` | Text-based tool call parsing |
-| `src/provider/cache.rs` | Provider response cache |
-| `src/resilience/circuit.rs` | Circuit breaker implementation |
+| `crates/codegg-providers/src/provider/mod.rs` | Provider trait, registry, core types, registration |
+| `crates/codegg-providers/src/provider/anthropic.rs` | Anthropic API implementation |
+| `crates/codegg-providers/src/provider/openai.rs` | OpenAI API implementation |
+| `crates/codegg-providers/src/provider/google.rs` | Google Generative AI implementation |
+| `crates/codegg-providers/src/provider/azure.rs` | Azure OpenAI implementation |
+| `crates/codegg-providers/src/provider/vertex.rs` | Google Vertex AI (wraps OpenAiCompatible) |
+| `crates/codegg-providers/src/provider/bedrock.rs` | AWS Bedrock with SigV4 signing |
+| `crates/codegg-providers/src/provider/openrouter.rs` | OpenRouter aggregator |
+| `crates/codegg-providers/src/provider/openai_compatible.rs` | Generic OpenAI-compatible provider |
+| `crates/codegg-providers/src/provider/copilot.rs` | GitHub Copilot |
+| `crates/codegg-providers/src/provider/cloudflare.rs` | Cloudflare Workers AI |
+| `crates/codegg-providers/src/provider/gitlab.rs` | GitLab AI |
+| `crates/codegg-providers/src/provider/opencode_zen.rs` | Codegg Zen service |
+| `crates/codegg-providers/src/provider/additional.rs` | Additional provider factories |
+| `crates/codegg-providers/src/provider/fallback.rs` | Fallback provider with circuit breaker |
+| `crates/codegg-providers/src/provider/catalog.rs` | Model catalog with live fetch |
+| `crates/codegg-providers/src/provider/discovery.rs` | Model discovery service with DB cache |
+| `crates/codegg-providers/src/provider/models.rs` | Embedded model definitions |
+| `crates/codegg-providers/src/provider/sse_parser.rs` | SSE parsing for streaming responses |
+| `crates/codegg-providers/src/provider/text_tool_parser.rs` | Text-based tool call parsing |
+| `crates/codegg-providers/src/provider/cache.rs` | Provider response cache |
+| `crates/codegg-providers/src/circuit.rs` | Circuit breaker implementation |

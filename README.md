@@ -75,7 +75,7 @@ The tool supports multiple LLM providers:
 #### Auth & Credentials
 
 Beyond environment variables, providers can be configured through a typed
-`auth` block on each `provider.<id>` entry, resolved by `src/auth/`'s
+`auth` block on each `provider.<id>` entry, resolved by `codegg-providers`'s
 `AuthResolver`:
 
 ```json
@@ -769,16 +769,16 @@ Control specific bash commands with patterns:
 ```
 src/
 ├── agent/        # Agent loop and state management
-├── auth/         # AuthConfig, Credential, AuthResolver, user credential store
+├── auth/         # AuthConfig, Credential, AuthResolver, user credential store (re-exports from codegg-providers)
 ├── bus/          # Event bus for internal messaging
 ├── client/       # Client for server mode
 ├── command/      # CLI command implementations
-├── config/       # Configuration loading and validation
+├── config/       # Configuration (re-exports from codegg-config)
 ├── lsp/          # Language Server Protocol support
 ├── mcp/          # Model Context Protocol client
 ├── permission/   # Permission checking
 ├── plugin/       # WASM plugin system
-├── provider/     # LLM provider implementations
+├── provider/     # LLM providers (re-exports from codegg-providers)
 ├── pty/          # Pseudo-terminal support
 ├── server/       # HTTP server
 ├── session/      # Session management and storage
@@ -790,6 +790,15 @@ src/
 ├── upgrade/      # Self-upgrade functionality
 ├── util/         # Utilities
 └── worktree/     # Git worktree support
+
+crates/
+├── codegg-config/      # Configuration schema, paths, loading, validation, watching
+├── codegg-protocol/    # Core protocol types (CoreRequest, CoreResponse, CoreEvent, TuiMessage)
+├── codegg-providers/   # LLM provider implementations, auth types, CircuitBreaker
+├── eggsentry/          # Security scanning (secrets, commands, deps, profiles)
+├── eggcontext/         # Token counting and context utilities
+├── egggit/             # Read-only git facts (status, diff, changed files)
+└── egglsp/             # Language Server Protocol client/service/operations
 ```
 
 ## Security

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp"]
+members = [".", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp"]
 resolver = "2"
 
 [package]
@@ -175,6 +175,9 @@ image = { version = "0.25", optional = true, features = ["png", "jpeg", "gif", "
 num-traits = "0.2.19"
 
 # Extracted tool crates
+codegg-config = { path = "crates/codegg-config" }
+codegg-protocol = { path = "crates/codegg-protocol" }
+codegg-providers = { path = "crates/codegg-providers" }
 eggsentry = { path = "crates/eggsentry" }
 eggcontext = { path = "crates/eggcontext" }
 egggit = { path = "crates/egggit" }

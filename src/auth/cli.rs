@@ -20,8 +20,8 @@
 
 use std::io::{self, Read};
 
-use crate::auth::credential::CredentialKind;
-use crate::auth::store::CredentialStore;
+use crate::auth::CredentialKind;
+use crate::auth::CredentialStore;
 use crate::auth::AuthError;
 use crate::error::AppError;
 

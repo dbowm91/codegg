@@ -4,7 +4,9 @@ The `protocol` module defines the shared request/response envelopes and message 
 
 ## Overview
 
-**Location**: `src/protocol/`
+**Location**: `crates/codegg-protocol/` (the `codegg-protocol` crate)
+
+**Re-export**: `codegg::protocol` via `pub use codegg_protocol as protocol` in `src/lib.rs`
 
 **Key Responsibilities**:
 - Define `CoreRequest` and `CoreResponse` for TUI/Core communication

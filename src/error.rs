@@ -80,134 +80,32 @@ pub enum ConfigError {
     Watch(String),
 }
 
-#[derive(Error, Debug)]
-pub enum StorageError {
-    #[error("database error: {0}")]
-    Database(String),
-
-    #[error("migration error: {0}")]
-    Migration(String),
-
-    #[error("not found: {0}")]
-    NotFound(String),
-
-    #[error("llm operation failed: {operation}: {message}")]
-    LlmOperation { operation: String, message: String },
-
-    #[error("import error: {0}")]
-    Import(String),
-
-    #[error("export error: {0}")]
-    Export(String),
-}
-
-impl From<sqlx::Error> for StorageError {
-    fn from(e: sqlx::Error) -> Self {
-        StorageError::Database(e.to_string())
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum ProviderError {
-    #[error("provider not found: {0}")]
-    NotFound(String),
-
-    #[error("api error: {code}: {message}")]
-    Api {
-        code: String,
-        message: String,
-        url: String,
-    },
-
-    #[error("stream error: {0}")]
-    Stream(String),
-
-    #[error("rate limit exceeded")]
-    RateLimit,
-
-    #[error("authentication failed: {0}")]
-    Auth(String),
-
-    #[error("model not found: {0}")]
-    ModelNotFound(String),
-
-    #[error("timeout: {0}")]
-    Timeout(String),
-
-    #[error("circuit breaker open: {0}")]
-    CircuitOpen(String),
-}
-
-impl ProviderError {
-    pub fn api(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::Api {
-            code: code.into(),
-            message: message.into(),
-            url: String::new(),
-        }
-    }
-
-    pub fn api_with_url(
-        code: impl Into<String>,
-        message: impl Into<String>,
-        url: impl Into<String>,
-    ) -> Self {
-        Self::Api {
-            code: code.into(),
-            message: message.into(),
-            url: url.into(),
-        }
-    }
-
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            ProviderError::RateLimit
-                | ProviderError::Timeout(_)
-                | ProviderError::Stream(_)
-                | ProviderError::CircuitOpen(_)
-                | ProviderError::Auth(_)
-        )
-    }
-}
-
-impl From<String> for ProviderError {
-    fn from(s: String) -> Self {
-        Self::Api {
-            code: "unknown".to_string(),
-            message: s,
-            url: String::new(),
-        }
-    }
-}
-
-impl From<&str> for ProviderError {
-    fn from(s: &str) -> Self {
-        Self::Api {
-            code: "unknown".to_string(),
-            message: s.to_string(),
-            url: String::new(),
-        }
-    }
-}
-
-impl From<reqwest::Error> for ProviderError {
-    fn from(e: reqwest::Error) -> Self {
-        let url = e.url().map(|u| u.to_string()).unwrap_or_default();
-        Self::Api {
-            code: "request_error".to_string(),
-            message: e.to_string(),
-            url,
-        }
-    }
-}
-
-impl From<crate::resilience::circuit::CircuitError> for ProviderError {
-    fn from(e: crate::resilience::circuit::CircuitError) -> Self {
+impl From<codegg_config::ConfigError> for ConfigError {
+    fn from(e: codegg_config::ConfigError) -> Self {
         match e {
-            crate::resilience::circuit::CircuitError::Open(name) => {
-                ProviderError::CircuitOpen(name)
-            }
+            codegg_config::ConfigError::NotFound(s) => ConfigError::NotFound(s),
+            codegg_config::ConfigError::Invalid(s) => ConfigError::Invalid(s),
+            codegg_config::ConfigError::Parse(s) => ConfigError::Parse(s),
+            codegg_config::ConfigError::Merge(s) => ConfigError::Merge(s),
+            codegg_config::ConfigError::Watch(s) => ConfigError::Watch(s),
+        }
+    }
+}
+
+pub use codegg_providers::error::{ProviderError, StorageError};
+
+impl From<codegg_config::ConfigError> for AppError {
+    fn from(e: codegg_config::ConfigError) -> Self {
+        AppError::Config(e.into())
+    }
+}
+
+impl From<codegg_config::AppError> for AppError {
+    fn from(e: codegg_config::AppError) -> Self {
+        match e {
+            codegg_config::AppError::Config(c) => AppError::Config(c.into()),
+            codegg_config::AppError::Io(e) => AppError::Io(e),
+            codegg_config::AppError::Other(e) => AppError::Other(e),
         }
     }
 }
