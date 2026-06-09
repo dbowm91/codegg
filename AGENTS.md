@@ -81,6 +81,8 @@ These items are important for future agents to know when working with the codeba
 
 - **MCP ensure_connected()**: Clones all fields before `tokio::spawn` to avoid borrow-after-spawn issues
 
+- **Protocol is now a re-export**: `src/protocol/` has been deleted. `src/lib.rs` uses `pub use codegg_protocol as protocol;`. The `codegg-protocol` crate is the single source of truth for `CoreRequest`, `CoreResponse`, `CoreEvent`, `TuiMessage`, and frame types. Root code uses DTO types from `codegg_protocol::dto` when constructing protocol messages; conversions between domain types and DTOs are in `src/protocol_conversions.rs`.
+
 - **TUI render.rs doesn't exist**: Only `mod.rs`, `types.rs`, and `commands.rs` exist in `src/tui/app/`
 
 - **Component trait**: All dialogs implement `Component` trait with `handle_key`, `update`, `render` methods
@@ -162,13 +164,13 @@ These items were verified during review sessions:
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
 | UiState fields | 26 fields | `src/tui/app/state/ui.rs:27-76` |
 | Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
-| CoreEvent has subagent variants | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/protocol/core.rs:244-268` |
+| CoreEvent has subagent variants | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `crates/codegg-protocol/src/core.rs:244-268` |
 | map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
 | SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1216-1220` |
 | hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
 | Backoff formula | `2^i` (no jitter) | `crates/codegg-providers/src/provider/fallback.rs:107` |
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
-| Protocol version | 1 | `crates/codegg-protocol/src/protocol/core.rs:3` |
+| Protocol version | 1 | `crates/codegg-protocol/src/core.rs:3` |
 | AppEvent count | 36 | `src/bus/events.rs:5-147` |
 | Built-in command count | 46 (includes /tts, /pr, /issue, /checkpoint) | `src/tui/command.rs:79-182` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
@@ -220,7 +222,7 @@ These items were verified during review sessions:
 
 ### CoreRequest Handler Attention Points
 
-- `CoreRequest` enum in `crates/codegg-protocol/src/protocol/core.rs:50-175`
+- `CoreRequest` enum in `crates/codegg-protocol/src/core.rs:50-175`
 - InprocCoreClient handlers at `src/core/mod.rs:52-355` handle: TurnSubmit, SessionMessagesLoad, SessionMessageCounts, SessionCreate, SessionLoad, SessionAttach, etc.
 - Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - verify if TUI actually sends these before implementing meaningful responses.
 
@@ -387,6 +389,14 @@ cargo test -p egglsp
 cargo test -p codegg-config
 cargo test -p codegg-protocol
 cargo test -p codegg-providers
+
+# Quick cargo aliases (defined in .cargo/config.toml)
+cargo ck           # check --workspace --all-targets
+cargo ckroot       # check -p codegg
+cargo ckprotocol   # check -p codegg-protocol
+cargo ckconfig     # check -p codegg-config
+cargo ckproviders  # check -p codegg-providers
+cargo cksplit      # check all split crates + root
 ```
 
 ## Security Reminders

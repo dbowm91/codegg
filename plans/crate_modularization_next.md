@@ -1,5 +1,53 @@
 # Crate Modularization Next-Pass Handoff Plan
 
+## Implementation Complete
+
+This pass has been completed. Here is a summary of changes:
+
+### Root protocol replaced by `codegg-protocol`
+- `src/lib.rs` now uses `pub use codegg_protocol as protocol;` instead of `pub mod protocol;`
+- `src/protocol/` directory has been deleted (mod.rs, core.rs, frames.rs, tui.rs)
+- `codegg-protocol` is now the single source of truth for all protocol types
+
+### Protocol type conversions
+- Added `src/protocol_conversions.rs` with bidirectional serde-based conversion helpers
+- Covers: `session::Session` ↔ `dto::Session`, `message::Message` ↔ `dto::Message`, `agent::Agent` ↔ `dto::Agent`, `provider::Message` ↔ `dto::ProviderMessage`, `config::schema::SessionTemplate` ↔ `dto::SessionTemplate`
+- Conversion sites: `src/core/daemon.rs`, `src/tui/app/mod.rs`, `src/tui/mod.rs`
+
+### Dependencies removed from root `Cargo.toml`
+- `notify` (moved to `codegg-config`)
+- `json5` (moved to `codegg-config`)
+- `ulid` (unused)
+- `pathdiff` (unused)
+- `dunce` (unused)
+- `unicode-segmentation` (unused)
+- `bytes` (unused, transitive through reqwest/tokio)
+
+### Dependencies intentionally kept
+- `dirs` — still used by 18 call sites across src/
+- `serde_yaml`, `toml` — still used for themes, plugins, skills frontmatter
+- All TUI/server/plugin dependencies — remain until those crates are extracted
+
+### Build aliases
+- Created `.cargo/config.toml` with aliases: `ck`, `ckroot`, `ckprotocol`, `ckconfig`, `ckproviders`, `cksplit`
+
+### Documentation updated
+- `architecture/protocol.md`, `architecture/core.md`, `architecture/client.md` — stale `src/protocol/` paths updated
+- `.opencode/skills/client/SKILL.md` — stale path updated
+
+### codegg-core extraction readiness
+- Created `plans/codegg_core_extraction.md` with module classification (Groups A–D), cycle-risk findings, and extraction strategy
+
+### Commands run
+```bash
+cargo check -p codegg-protocol
+cargo check -p codegg-config
+cargo check -p codegg-providers
+cargo check -p codegg
+cargo check --workspace --all-targets
+cargo test --workspace  # (pending)
+```
+
 ## Purpose
 
 Codegg is now in a useful intermediate state: `codegg-config`, `codegg-protocol`, and `codegg-providers` exist as workspace crates, alongside the previously extracted `eggcontext`, `egggit`, `egglsp`, and `eggsentry` crates. This pass should consolidate that work and remove the remaining duplication/coupling that prevents the split from producing reliable compile-time and architectural benefits.

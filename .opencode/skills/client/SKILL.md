@@ -123,7 +123,7 @@ impl RemoteClient {
 
 ## TuiMessage Protocol
 
-Defined in `src/protocol/tui.rs`:
+Defined in `crates/codegg-protocol/src/tui.rs`:
 
 ### Client → Server (Input)
 | Variant | Fields | Purpose |

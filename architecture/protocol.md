@@ -17,7 +17,7 @@ The `protocol` module defines the shared request/response envelopes and message 
 ## Module Structure
 
 ```
-protocol/
+crates/codegg-protocol/src/
 ├── mod.rs     # Module exports
 ├── core.rs    # CoreRequest, CoreResponse, CoreEvent, envelopes
 └── tui.rs     # TuiMessage, QuestionSpec
@@ -60,7 +60,7 @@ Wraps events with sequence number, timestamp, and optional session/turn context 
 
 ## CoreRequest Enum
 
-Located in `src/protocol/core.rs`. Variant count: **35**.
+Located in `crates/codegg-protocol/src/core.rs`. Variant count: **35**.
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,7 +119,7 @@ pub enum CoreRequest { ... }
 
 ## CoreResponse Enum
 
-Located in `src/protocol/core.rs` (CoreResponse section).
+Located in `crates/codegg-protocol/src/core.rs` (CoreResponse section).
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,7 +139,7 @@ pub enum CoreResponse { ... }
 
 ## CoreEvent Enum
 
-Located in `src/protocol/core.rs` (CoreEvent section).
+Located in `crates/codegg-protocol/src/core.rs` (CoreEvent section).
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,7 +180,7 @@ pub enum CoreEvent { ... }
 
 ## TuiMessage Enum
 
-Located in `src/protocol/tui.rs`.
+Located in `crates/codegg-protocol/src/tui.rs`.
 
 ```rust
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -279,7 +279,7 @@ Server (Axum)
 
 ## Versioning
 
-The protocol uses explicit versioning via `PROTOCOL_VERSION = 1` in `src/protocol/core.rs`. Envelopes include `protocol_version` to detect mismatches between client and server.
+The protocol uses explicit versioning via `PROTOCOL_VERSION = 1` in `crates/codegg-protocol/src/core.rs`. Envelopes include `protocol_version` to detect mismatches between client and server.
 
 ## Implementation Notes
 

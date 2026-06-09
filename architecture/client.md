@@ -75,7 +75,7 @@ impl RemoteClient {
 
 ## Protocol
 
-The client uses `TuiMessage` enum (from `src/protocol/tui.rs`) with `#[serde(tag = "type")]` for JSON serialization.
+The client uses `TuiMessage` enum (from `crates/codegg-protocol/src/tui.rs`) with `#[serde(tag = "type")]` for JSON serialization.
 
 ### Client → Server Messages (Input/Control)
 
@@ -122,5 +122,5 @@ pub enum ClientError {
 ## See Also
 
 - [server.md](server.md) - Server that accepts connections
-- `src/protocol/tui.rs` - TuiMessage protocol definitions
+- `crates/codegg-protocol/src/tui.rs` - TuiMessage protocol definitions
 - `.skills/client/SKILL.md` - Detailed implementation guide
