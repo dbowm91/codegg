@@ -176,14 +176,12 @@ pub struct LspProcess {
 
 pub async fn spawn_server(command: &str, args: &[&str], env: &[(String, String)], cwd: Option<&Path>) -> Result<LspProcess, LspError>
 pub async fn send_request(process: &mut LspProcess, msg: &str) -> Result<(), LspError>
-pub async fn read_response(process: &mut LspProcess) -> Result<String, LspError>
-pub async fn read_notification(process: &mut LspProcess) -> Result<Option<String>, LspError>
 pub fn spawn_stderr_drain(server_id: &str, stderr: tokio::process::ChildStderr)
 pub async fn terminate(process: &mut LspProcess)
 fn parse_content_length(header: &str) -> Option<usize>
 ```
 
-Uses Content-Length headers for LSP message framing. Preserves user's PATH from environment. Stderr is drained in a background task (capped at 64KB) to prevent blocking initialization.
+Uses Content-Length headers for LSP message framing. Preserves user's PATH from environment. Stderr is drained in a background task (capped at 64KB) to prevent blocking initialization. `read_response` and `read_notification` have been removed; stdout is exclusively owned by the background reader task in `client.rs`.
 
 ### language.rs - Language Detection
 

@@ -2,16 +2,17 @@
 //!
 //! Handles low-level process management:
 //! - Spawns servers with proper stdin/stdout/stderr
-//! - Sends JSON-RPC requests and reads responses
-//! - Manages Content-Length headers for framing
+//! - Sends JSON-RPC requests via Content-Length framing
+//! - Background stderr drain (capped at 64KB)
 //! - Provides graceful termination via kill()
+//!
+//! stdout is exclusively owned by the background reader task in `client.rs`;
+//! this module does not read responses or notifications.
 
 use std::path::Path;
 use std::process::Stdio;
 
-use std::io::ErrorKind;
-
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, error, info};
 
@@ -97,100 +98,6 @@ pub async fn send_request(process: &mut LspProcess, msg: &str) -> Result<(), Lsp
         .map_err(|e| LspError::RequestFailed(format!("flush failed: {}", e)))?;
     debug!(msg_len = msg.len(), "sent LSP request");
     Ok(())
-}
-
-pub async fn read_response(process: &mut LspProcess) -> Result<String, LspError> {
-    let stdout = process
-        .stdout
-        .as_mut()
-        .ok_or_else(|| LspError::RequestFailed("stdout not available".to_string()))?;
-
-    let mut header_buf = Vec::new();
-    let mut byte = [0u8; 1];
-
-    loop {
-        stdout
-            .read_exact(&mut byte)
-            .await
-            .map_err(|e| LspError::RequestFailed(format!("read header failed: {}", e)))?;
-        header_buf.push(byte[0]);
-
-        if header_buf.ends_with(b"\r\n\r\n") {
-            break;
-        }
-    }
-
-    let header_str = String::from_utf8_lossy(&header_buf);
-    let content_length = parse_content_length(&header_str)
-        .ok_or_else(|| LspError::RequestFailed("missing Content-Length header".to_string()))?;
-
-    let mut body = vec![0u8; content_length];
-    stdout
-        .read_exact(&mut body)
-        .await
-        .map_err(|e| LspError::RequestFailed(format!("read body failed: {}", e)))?;
-
-    let body_str = String::from_utf8(body)
-        .map_err(|e| LspError::RequestFailed(format!("invalid utf8 in response: {}", e)))?;
-
-    debug!(body_len = body_str.len(), "read LSP response");
-    Ok(body_str)
-}
-
-pub async fn read_notification(process: &mut LspProcess) -> Result<Option<String>, LspError> {
-    let stdout = process
-        .stdout
-        .as_mut()
-        .ok_or_else(|| LspError::RequestFailed("stdout not available".to_string()))?;
-
-    let mut buf = [0u8; 1];
-    match stdout.read_exact(&mut buf).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => {
-            return Err(LspError::RequestFailed(format!(
-                "read notification failed: {}",
-                e
-            )))
-        }
-    }
-
-    let mut header_buf = vec![buf[0]];
-    loop {
-        stdout
-            .read_exact(&mut buf)
-            .await
-            .map_err(|e| LspError::RequestFailed(format!("read header failed: {}", e)))?;
-        header_buf.push(buf[0]);
-
-        if header_buf.ends_with(b"\r\n\r\n") {
-            break;
-        }
-    }
-
-    let header_str = String::from_utf8_lossy(&header_buf);
-    let content_length = parse_content_length(&header_str)
-        .ok_or_else(|| LspError::RequestFailed("missing Content-Length header".to_string()))?;
-
-    let mut body = vec![0u8; content_length];
-    stdout
-        .read_exact(&mut body)
-        .await
-        .map_err(|e| LspError::RequestFailed(format!("read body failed: {}", e)))?;
-
-    let body_str = String::from_utf8(body)
-        .map_err(|e| LspError::RequestFailed(format!("invalid utf8 in response: {}", e)))?;
-
-    Ok(Some(body_str))
-}
-
-fn parse_content_length(header: &str) -> Option<usize> {
-    for line in header.lines() {
-        if let Some(val) = line.strip_prefix("Content-Length: ") {
-            return val.trim().parse().ok();
-        }
-    }
-    None
 }
 
 pub fn spawn_stderr_drain(server_id: &str, stderr: tokio::process::ChildStderr) {

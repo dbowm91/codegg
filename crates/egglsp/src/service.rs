@@ -283,6 +283,44 @@ impl LspService {
         clients.clear();
     }
 
+    pub async fn is_file_open(&self, key: &str, uri_str: &str) -> Result<bool, LspError> {
+        let clients = self.clients.read().await;
+        let entry = clients
+            .get(key)
+            .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?;
+        let result = entry.client.opened_files.lock().await.contains_key(uri_str);
+        Ok(result)
+    }
+
+    pub async fn ensure_file_open_from_disk(
+        &self,
+        file_path: &Path,
+    ) -> Result<(String, String), LspError> {
+        let (key, _root) = self.get_or_create_client(file_path).await?;
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+        let uri_str = uri.to_string();
+
+        let text = tokio::fs::read_to_string(file_path).await.map_err(|e| {
+            LspError::RequestFailed(format!(
+                "failed to read file {}: {}",
+                file_path.display(),
+                e
+            ))
+        })?;
+
+        let is_open = self.is_file_open(&key, &uri_str).await?;
+
+        if is_open {
+            self.update_file(file_path, &text).await?;
+        } else {
+            self.open_file(file_path, &text).await?;
+        }
+
+        Ok((key, uri_str))
+    }
+
     pub async fn get_diagnostics_for_key(
         &self,
         key: &str,

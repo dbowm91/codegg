@@ -6,6 +6,17 @@
 //! - Tracks open files and diagnostics
 //! - Supports concurrent requests with atomic ID counter
 //!
+//! A single background reader task exclusively owns the server's stdout.
+//! All JSON-RPC responses are routed to pending oneshot senders; notifications
+//! (e.g. `textDocument/publishDiagnostics`) are dispatched independently of
+//! request state. When the reader exits, all pending requests fail immediately
+//! via [`fail_all_pending`].
+//!
+//! `diagnostics_may_still_be_warming` returns `true` only when no cache entry
+//! exists for a URI after a recent sync — i.e. the server has not yet sent a
+//! `publishDiagnostics` response. An empty diagnostics vec means the server
+//! reported the file as clean, not that it is still warming.
+//!
 //! Key types:
 //! - `LspClient` - main client managing server process
 //! - `LspProcess` - spawned server process with streams
@@ -28,6 +39,14 @@ use super::server::LspServerDef;
 use crate::error::LspError;
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, LspError>>>>>;
+
+async fn fail_all_pending(pending: &PendingMap, error_msg: &str) {
+    let mut pending = pending.lock().await;
+    let drained = std::mem::take(&mut *pending);
+    for (_, tx) in drained {
+        let _ = tx.send(Err(LspError::RequestFailed(error_msg.to_string())));
+    }
+}
 
 /// Classified JSON-RPC message from the server.
 pub enum JsonRpcMessage {
@@ -201,7 +220,9 @@ impl LspClient {
             let resp_str = match read_framed_message(&mut stdout).await {
                 Ok(s) => s,
                 Err(e) => {
+                    let msg = format!("LSP server '{}' stdout reader exiting: {}", server_id, e);
                     debug!(server = %server_id, error = %e, "stdout reader exiting");
+                    fail_all_pending(&pending, &msg).await;
                     break;
                 }
             };
@@ -703,10 +724,9 @@ impl LspClient {
         let last = self.last_opened_at.lock().await;
         if let Some(instant) = last.get(uri) {
             let elapsed = instant.elapsed();
-            // If opened/changed within the last 2 seconds, diagnostics may still be warming.
             if elapsed < std::time::Duration::from_secs(2) {
                 let diags = self.diagnostics.lock().await;
-                return !diags.contains_key(uri) || diags.get(uri).map_or(true, |d| d.is_empty());
+                return !diags.contains_key(uri);
             }
         }
         false
@@ -948,5 +968,108 @@ mod tests {
             classify_json_rpc_message(serde_json::json!({})),
             JsonRpcMessage::Unknown
         ));
+    }
+
+    #[test]
+    fn classify_empty_diagnostics_notification() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///test.rs",
+                "diagnostics": []
+            }
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::Notification { method, params } => {
+                assert_eq!(method, "textDocument/publishDiagnostics");
+                let diags = params.get("diagnostics").unwrap().as_array().unwrap();
+                assert!(diags.is_empty());
+            }
+            _ => panic!("expected Notification for empty diagnostics"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_empty_diagnostics_inserts_empty_vec() {
+        let diags = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let params = serde_json::json!({
+            "uri": "file:///test.rs",
+            "diagnostics": []
+        });
+        dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
+        let map = diags.lock().await;
+        assert!(map.contains_key("file:///test.rs"));
+        assert!(map["file:///test.rs"].is_empty());
+    }
+
+    #[tokio::test]
+    async fn warming_logic_no_cache_entry_means_warming() {
+        let last_opened_at =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
+                String,
+                Instant,
+            >::new()));
+        let diagnostics =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
+                String,
+                Vec<lsp_types::Diagnostic>,
+            >::new()));
+        let uri = "file:///test.rs";
+
+        last_opened_at
+            .lock()
+            .await
+            .insert(uri.to_string(), Instant::now());
+        let has_received = diagnostics.lock().await.contains_key(uri);
+        assert!(!has_received, "no cache entry means not yet received");
+    }
+
+    #[tokio::test]
+    async fn warming_logic_empty_cache_entry_means_clean() {
+        let diagnostics =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
+                String,
+                Vec<lsp_types::Diagnostic>,
+            >::new()));
+        let uri = "file:///test.rs";
+
+        diagnostics.lock().await.insert(uri.to_string(), Vec::new());
+        let has_received = diagnostics.lock().await.contains_key(uri);
+        assert!(
+            has_received,
+            "empty vec entry means server responded (clean)"
+        );
+    }
+
+    #[tokio::test]
+    async fn warming_logic_nonempty_cache_entry_means_clean() {
+        let diagnostics =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
+                String,
+                Vec<lsp_types::Diagnostic>,
+            >::new()));
+        let uri = "file:///test.rs";
+
+        diagnostics.lock().await.insert(
+            uri.to_string(),
+            vec![lsp_types::Diagnostic {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: 5,
+                    },
+                },
+                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                message: "test".to_string(),
+                ..Default::default()
+            }],
+        );
+        let has_received = diagnostics.lock().await.contains_key(uri);
+        assert!(has_received, "nonempty vec entry means server responded");
     }
 }

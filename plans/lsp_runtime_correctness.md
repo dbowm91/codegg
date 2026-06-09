@@ -95,6 +95,8 @@ pub struct LspClient {
 
 You do not have to use exactly this shape, but separate stdout from request execution. `send_request` should no longer call `launch::read_response` directly.
 
+> **Note (2026-06-09):** `launch::read_response` and `launch::read_notification` have been removed. stdout is exclusively owned by the background reader task; `send_request` only writes to stdin and awaits a oneshot response.
+
 Implementation steps:
 
 1. In `launch.rs`, keep low-level JSON-RPC framing helpers, but make them usable on split stdin/stdout handles.

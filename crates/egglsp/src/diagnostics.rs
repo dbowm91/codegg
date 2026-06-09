@@ -7,7 +7,6 @@ use lsp_types::*;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tracing::debug;
-use url::Url;
 
 use crate::error::LspError;
 use crate::service::LspService;
@@ -72,11 +71,7 @@ impl DiagnosticsCollector {
         &self,
         file_path: &Path,
     ) -> Result<DiagnosticsOutput, LspError> {
-        let uri = Url::from_file_path(file_path).map_err(|_| {
-            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
-        })?;
-
-        let uri_str = uri.to_string();
+        let (key, uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
 
         if self.should_debounce(&uri_str).await {
             debug!(uri = %uri_str, "debouncing diagnostics");
@@ -85,8 +80,6 @@ impl DiagnosticsCollector {
                 diagnostics: Vec::new(),
             });
         }
-
-        let (key, _root) = self.service.get_or_create_client(file_path).await?;
 
         let warming = self
             .service

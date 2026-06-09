@@ -280,11 +280,14 @@ There are now two report sources:
 - `LspConfig { Disabled, Rules(HashMap<String, LspRule>) }`
 - `LspRule { Disabled, Active { command, extensions, env, initialization } }`
 - `LspService::new(config)`, `open_file`, `update_file`, `close_file`, `save_file`, `shutdown_all`
+- `LspService::is_file_open`, `ensure_file_open_from_disk` — sync-before-read: sends `didOpen`/`didChange` before reading diagnostics cache
 - `LspOperations::go_to_definition`, `find_references`, `hover`, `document_symbols`, `code_actions`, `code_lens`
 - `DiagnosticsCollector`, `DiagnosticsOutput` (includes `diagnostics_may_still_be_warming: bool`)
+- `diagnostics_may_still_be_warming` returns `true` only when no cache entry exists (server hasn't responded yet), NOT when cache has empty vec (which means server said "clean")
 - `classify_json_rpc_message(value) -> JsonRpcMessage` — classifies raw JSON-RPC into Response/ErrorResponse/Notification/Unknown
 - `dispatch_notification(diagnostics, method, params)` — notification-driven diagnostics (no request ownership required)
-- Background stdout dispatcher: `LspClient._reader_task` continuously reads framed messages and routes responses to pending senders or dispatches notifications
+- Background stdout dispatcher: `LspClient._reader_task` continuously reads framed messages and routes responses to pending senders or dispatches notifications; `fail_all_pending` drains the pending map when the reader exits
+- `launch::read_response` / `launch::read_notification` have been removed — stdout is exclusively owned by the background reader
 - `LspError { ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json }`
 
 ## Codegg-side bridge files

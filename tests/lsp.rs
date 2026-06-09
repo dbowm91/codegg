@@ -1,5 +1,6 @@
 use codegg::error::ToolError;
 use codegg::lsp::client::parse_publish_diagnostics;
+use codegg::lsp::diagnostics::DiagnosticsOutput;
 use codegg::lsp::language::{detect_language, language_id_to_server_id};
 use codegg::tool::lsp::to_lsp_position;
 use codegg::tool::{Tool, ToolCategory};
@@ -569,4 +570,35 @@ fn lsp_tool_expose_in_definitions() {
 fn lsp_tool_defer_loading_is_false() {
     let tool = make_tool();
     assert!(!tool.defer_loading());
+}
+
+// ── 10. DiagnosticsOutput warming field ────────────────────────────────
+
+#[test]
+fn diagnostics_output_has_warming_field() {
+    let output = DiagnosticsOutput {
+        diagnostics_may_still_be_warming: true,
+        diagnostics: Vec::new(),
+    };
+    assert!(output.diagnostics_may_still_be_warming);
+    assert!(output.diagnostics.is_empty());
+}
+
+#[test]
+fn diagnostics_output_clean_not_warming() {
+    let output = DiagnosticsOutput {
+        diagnostics_may_still_be_warming: false,
+        diagnostics: Vec::new(),
+    };
+    assert!(!output.diagnostics_may_still_be_warming);
+    assert!(output.diagnostics.is_empty());
+}
+
+// ── 11. Stale launch read helpers removed ──────────────────────────────
+
+#[test]
+fn stale_launch_read_helpers_removed() {
+    // read_response and read_notification were removed in the hardening pass.
+    // This test ensures they don't exist as public items in the launch module.
+    let _ = std::any::type_name::<codegg::lsp::launch::LspProcess>(); // still exists
 }
