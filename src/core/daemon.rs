@@ -496,31 +496,13 @@ impl CoreDaemon {
                 let model_profile =
                     crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
                 let task_state_policy = model_profile.task_state_policy;
-                let todo_state = std::sync::Arc::new(tokio::sync::Mutex::new(
-                    crate::task_state::TodoState::new(),
-                ));
-                let tool_backends = crate::tool::ToolBackendConfig::from_config(&config);
-                let mut tool_registry =
-                    crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
-                        todo_state: Some(todo_state.clone()),
-                        todo_policy: Some(task_state_policy.clone()),
-                        pool: self.pool.clone(),
-                        session_id: Some(session_id.clone()),
-                        lsp_service: None,
-                        tool_backends,
-                    });
-                if let Some(pool) = self.subagent_pool.clone() {
-                    let task_tool = crate::tool::task::TaskTool::new(
-                        pool.task_store(),
-                        Some(pool.spawner()),
-                        Some(session_id.clone()),
-                        Vec::new(),
-                    );
-                    tool_registry.register(task_tool);
-                }
-                let permission_checker =
-                    crate::permission::PermissionChecker::new(Some(&config), None)
-                        .with_active_mode(&config);
+                let tool_registry = crate::tool::factory::build_session_tool_registry(
+                    &config,
+                    self.pool.clone(),
+                    &session_id,
+                    self.subagent_pool.as_ref(),
+                    task_state_policy.clone(),
+                );
                 let memory_context = self
                     .memory_store
                     .as_ref()
@@ -581,38 +563,21 @@ impl CoreDaemon {
                     system.push_str(crate::agent::prompt::plan_mode_contract());
                 }
 
-                if let Some(pool) = self.pool.clone() {
-                    tool_registry.register(crate::goal::tool::GoalGetTool::new(
-                        pool.clone(),
-                        session_id.clone(),
-                    ));
-                    tool_registry.register(crate::goal::tool::GoalUpdateProgressTool::new(
-                        pool.clone(),
-                        session_id.clone(),
-                    ));
-                    tool_registry.register(crate::goal::tool::GoalRequestCompletionTool::new(
-                        pool,
-                        session_id.clone(),
-                    ));
-                }
                 // Bootstraps the search backend (eggsearch by default) before the agent
                 // loop starts. Idempotent if already bootstrapped.
                 let (mcp_service, _report) =
                     crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
-                let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
+                let mut agent_loop = crate::agent::runtime_factory::build_agent_loop(
                     crate::protocol_conversions::dtos_to_agents(agents),
                     provider,
-                    permission_checker,
-                    tool_registry,
                     config,
-                    mcp_service,
+                    tool_registry,
                     self.pool.clone(),
+                    &session_id,
+                    self.subagent_pool.as_ref(),
+                    task_state_policy,
+                    mcp_service,
                 );
-                agent_loop.set_session_id(&session_id);
-                if let Some(ref pool) = self.subagent_pool {
-                    agent_loop.set_subagent_pool(Arc::clone(pool));
-                }
-                agent_loop.set_task_state_policy(task_state_policy);
                 agent_loop.load_persisted_todos().await;
                 let request = crate::provider::ChatRequest {
                     messages: crate::protocol_conversions::dtos_to_provider_messages(messages),
@@ -1108,10 +1073,10 @@ impl CoreDaemon {
             }
             CoreRequest::PermissionRespond { id, choice } => {
                 let parsed = match choice.as_str() {
-                    "allow" => crate::permission::PermissionChoice::AllowOnce,
-                    "always_allow" => crate::permission::PermissionChoice::AlwaysAllow,
-                    "deny" => crate::permission::PermissionChoice::DenyOnce,
-                    "always_deny" => crate::permission::PermissionChoice::AlwaysDeny,
+                    "allow" => crate::bus::PermissionDecision::AllowOnce,
+                    "always_allow" => crate::bus::PermissionDecision::AlwaysAllow,
+                    "deny" => crate::bus::PermissionDecision::DenyOnce,
+                    "always_deny" => crate::bus::PermissionDecision::AlwaysDeny,
                     _ => {
                         return Ok(CoreResponse::Error {
                             code: "invalid_permission_choice".to_string(),

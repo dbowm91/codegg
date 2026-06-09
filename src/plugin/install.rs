@@ -20,6 +20,12 @@ pub enum InstallError {
     Io(#[from] std::io::Error),
 }
 
+impl From<InstallError> for crate::error::PluginError {
+    fn from(err: InstallError) -> Self {
+        crate::error::PluginError::InstallFailed(err.to_string())
+    }
+}
+
 pub fn plugins_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))

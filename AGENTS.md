@@ -75,6 +75,12 @@ These items are important for future agents to know when working with the codeba
 
 - **Registry Limitations**: `PermissionRegistry` and `QuestionRegistry` do NOT store `session_id` in their keys. Permission IDs are in format `{tool_call_id}-{tool_name}`, not `{session_id}-...`. This means `get_pending_permissions_for_session()` and `get_pending_questions_for_session()` cannot properly filter by session_id without code changes.
 
+- **PermissionDecision vs PermissionChoice**: `PermissionDecision` is the bus-owned DTO in `src/bus/mod.rs`. `PermissionChoice` is the domain type in `src/permission/mod.rs`. Bidirectional `From` impls allow conversion. The `PermissionRegistry` API uses `PermissionDecision`; use it when calling `respond()` or registering permissions through the bus.
+
+- **Tool factory**: `src/tool/factory.rs` provides `build_session_tool_registry()` which consolidates tool construction (base registry + task tool + goal tools). Used by `core/daemon.rs` to reduce direct tool module coupling.
+
+- **Agent runtime factory**: `src/agent/runtime_factory.rs` provides `build_agent_loop()` which consolidates agent loop construction (permission checker + AgentLoop::new + session/subagent configuration). Used by `core/daemon.rs` to reduce direct agent/permission module coupling.
+
 - **MCP reconnect wired up**: Heartbeat failures now trigger reconnect via `reconnect_needed` Notify mechanism
 
 - **MCP DNS re-validation**: `RemoteClient::initialize()` re-validates DNS on each call (connect/reconnect), keeping `validated_ips` current

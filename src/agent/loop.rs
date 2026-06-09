@@ -23,11 +23,11 @@ use crate::agent::router::ModelRouter;
 use crate::agent::worker::SubAgentRequest;
 use crate::agent::Agent;
 use crate::bus::events::AppEvent;
-use crate::bus::{PermissionRegistry, QuestionRegistry};
+use crate::bus::{PermissionDecision, PermissionRegistry, QuestionRegistry};
 use crate::config::schema::Config;
 use crate::error::{AgentError, AppError, ProviderError, ToolError};
 use crate::model_profile::policy::push_control_instruction;
-use crate::permission::{DoomLoopDetector, PermissionChecker, PermissionChoice, PermissionResult};
+use crate::permission::{DoomLoopDetector, PermissionChecker, PermissionResult};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
 use crate::provider::text_tool_parser::parse_text_as_tool_calls;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
@@ -602,7 +602,7 @@ impl AgentLoop {
                     let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await
                     {
                         Ok(Ok(choice)) => choice,
-                        _ => PermissionChoice::DenyOnce,
+                        _ => PermissionDecision::DenyOnce,
                     };
                     PermissionRegistry::unregister(&perm_id);
                     if choice.allowed() {
@@ -658,7 +658,7 @@ impl AgentLoop {
                     let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await
                     {
                         Ok(Ok(choice)) => choice,
-                        _ => PermissionChoice::DenyOnce,
+                        _ => PermissionDecision::DenyOnce,
                     };
                     PermissionRegistry::unregister(&perm_id);
                     if choice.allowed() {
@@ -720,7 +720,7 @@ impl AgentLoop {
                 });
                 let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await {
                     Ok(Ok(choice)) => choice,
-                    _ => PermissionChoice::DenyOnce,
+                    _ => PermissionDecision::DenyOnce,
                 };
                 PermissionRegistry::unregister(&perm_id);
                 let allowed = choice.allowed();

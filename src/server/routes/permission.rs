@@ -25,10 +25,10 @@ pub async fn submit_permission(
     Json(req): Json<SubmitPermissionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let choice = match req.decision.as_str() {
-        "allow" => crate::permission::PermissionChoice::AllowOnce,
-        "deny" => crate::permission::PermissionChoice::DenyOnce,
-        "always_allow" => crate::permission::PermissionChoice::AlwaysAllow,
-        "always_deny" => crate::permission::PermissionChoice::AlwaysDeny,
+        "allow" => crate::bus::PermissionDecision::AllowOnce,
+        "deny" => crate::bus::PermissionDecision::DenyOnce,
+        "always_allow" => crate::bus::PermissionDecision::AlwaysAllow,
+        "always_deny" => crate::bus::PermissionDecision::AlwaysDeny,
         _ => {
             return Err(AppError::Tool(ToolError::Execution(
                 "invalid decision, must be 'allow', 'deny', 'always_allow', or 'always_deny'"

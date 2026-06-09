@@ -184,18 +184,33 @@ impl PermissionChoice {
 }
 ```
 
+## PermissionDecision vs PermissionChoice
+
+`PermissionDecision` is the bus-owned DTO defined in `src/bus/mod.rs`. It has the same variants (`AllowOnce`, `AlwaysAllow`, `DenyOnce`, `AlwaysDeny`) and identical `allowed()` / `persist()` methods as `PermissionChoice`.
+
+`PermissionChoice` is the domain type defined in `src/permission/mod.rs`.
+
+Bidirectional `From` impls allow conversion between the two:
+
+```rust
+impl From<PermissionChoice> for PermissionDecision { ... }
+impl From<PermissionDecision> for PermissionChoice { ... }
+```
+
+The bus layer uses `PermissionDecision` to avoid depending on the `permission` domain module. The `PermissionRegistry` stores `Sender<PermissionDecision>`.
+
 ## PermissionRegistry Usage
 
 The `PermissionRegistry` in `src/bus/mod.rs` manages pending permission requests:
 
 ```rust
 pub struct PermissionRegistry {
-    senders: DashMap<String, (tokio::sync::oneshot::Sender<PermissionChoice>, Instant)>,
+    senders: DashMap<String, PendingPermission>,
 }
 
 impl PermissionRegistry {
-    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>);
-    pub fn respond(perm_id: String, choice: PermissionChoice) -> bool;
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionDecision>);
+    pub fn respond(perm_id: String, choice: PermissionDecision) -> bool;
     pub fn unregister(perm_id: &str);
     pub fn is_registered(perm_id: &str) -> bool;
     pub fn pending_permission_ids() -> Vec<String>;
@@ -216,7 +231,7 @@ PermissionRegistry::register("test-perm-1".to_string(), tx);
 assert!(PermissionRegistry::is_registered("test-perm-1"));
 
 // Respond with AllowOnce
-PermissionRegistry::respond("test-perm-1".to_string(), PermissionChoice::AllowOnce);
+PermissionRegistry::respond("test-perm-1".to_string(), PermissionDecision::AllowOnce);
 
 // Verify response received
 let response = rx.await.unwrap();
@@ -229,15 +244,15 @@ let (tx, rx) = tokio::sync::oneshot::channel();
 PermissionRegistry::register("test-perm-2".to_string(), tx);
 
 // Respond with DenyOnce
-PermissionRegistry::respond("test-perm-2".to_string(), PermissionChoice::DenyOnce);
+PermissionRegistry::respond("test-perm-2".to_string(), PermissionDecision::DenyOnce);
 
 let response = rx.await.unwrap();
-assert!(matches!(response, PermissionChoice::DenyOnce));
+assert!(matches!(response, PermissionDecision::DenyOnce));
 ```
 
 **Always Allow Pattern** (persists decision):
 ```rust
-PermissionRegistry::respond("test-perm".to_string(), PermissionChoice::AlwaysAllow);
+PermissionRegistry::respond("test-perm".to_string(), PermissionDecision::AlwaysAllow);
 // Decision is persisted - future calls to same tool/path will auto-allow
 ```
 

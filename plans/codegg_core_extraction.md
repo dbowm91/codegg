@@ -103,21 +103,21 @@ must be resolved before or during extraction.
 
 | Source | Target | Severity | Details |
 |--------|--------|----------|---------|
-| `src/core/daemon.rs` | `crate::agent::*` | **High** | `SubAgentPool`, `BackgroundScheduler`, `AgentLoop`, `prompt::load_agent_prompt` — 12 references |
-| `src/core/daemon.rs` | `crate::permission::*` | **High** | `PermissionChecker`, `PermissionChoice` — 5 references |
-| `src/core/daemon.rs` | `crate::tool::*` | **High** | `ToolBackendConfig`, `ToolRegistry`, `TaskTool` — 5 references |
+| `src/core/daemon.rs` | `crate::agent::*` | **High** | `SubAgentPool`, `BackgroundScheduler`, `AgentLoop`, `prompt::load_agent_prompt` — reduced via `agent/runtime_factory.rs` |
+| `src/core/daemon.rs` | `crate::permission::*` | **High** | Reduced — `crate::permission` imports removed from daemon.rs entirely |
+| `src/core/daemon.rs` | `crate::tool::*` | **High** | Reduced via `tool/factory.rs` — down to 1 reference |
 | `src/core/mod.rs` | `crate::agent::*` | **High** | `SubAgentPool`, `BackgroundScheduler` — 2 references |
-| `src/error.rs` | `crate::plugin::*` | **High** | `LoadError`, `InstallError` — 2 `From` impls |
+| `src/error.rs` | `crate::plugin::*` | **Resolved** | `PluginError::LoadFailed`/`InstallFailed` now string-backed; `From` impls moved to `plugin/loader.rs` and `plugin/install.rs` |
 | `src/error.rs` | `crate::permission` | **Medium** | `PermissionError` — enum variant only |
 | `src/error.rs` | `crate::mcp` | **Medium** | `McpError` — enum variant only |
 | `src/error.rs` | `crate::lsp` | **Medium** | `LspError` — enum variant only |
-| `src/bus/mod.rs` | `crate::permission` | **Medium** | `PermissionChoice` import — 1 reference |
+| `src/bus/mod.rs` | `crate::permission` | **Resolved** | `PermissionDecision` enum now owned by bus; bidirectional `From` impls with `PermissionChoice` in permission module |
 
 ### Low Risk (may resolve with minor refactoring)
 
 | Source | Target | Severity | Details |
 |--------|--------|----------|---------|
-| `src/goal/tool.rs` | `crate::tool::Tool` | **Low** | `Tool` trait impl for goal tools — move `goal/tool.rs` to Group B or extract trait |
+| `src/goal/tool.rs` | `crate::tool::Tool` | **Resolved** | `goal/tool.rs` moved to `src/tool/goal.rs`; goal module no longer imports from tool |
 | `src/protocol_conversions.rs` | `crate::agent::Agent` | **Low** | 2 conversion functions (`agent_to_dto`, `dto_to_agent`) |
 | `src/task_state/mod.rs` | `crate::model_profile::types` | **Low** | `CompletedTodoExposure`, `TaskStatePolicy`, `TodoMode` |
 
@@ -130,7 +130,7 @@ These Group A modules have zero imports from Group B/C modules:
 | `src/session/**` | `crate::error`, `crate::config` (extracted) |
 | `src/storage/**` | `crate::error`, `crate::session` |
 | `src/memory/**` | `crate::session`, `crate::memory` (internal) |
-| `src/goal/**` (excl. `tool.rs`) | `crate::error`, `crate::bus`, `crate::session` |
+| `src/goal/**` | `crate::error`, `crate::bus`, `crate::session` |
 | `src/task_state/**` | `crate::model_profile`, `crate::session`, `crate::bus` |
 | `src/snapshot/**` | `crate::error` only |
 | `src/resilience/**` | No `crate::` imports |
@@ -144,18 +144,15 @@ These Group A modules have zero imports from Group B/C modules:
 
 Move these first — they have no or minimal Group B/C dependencies:
 
-1. `src/error.rs` — **with care**: extract `AppError` but keep
-   `PluginError`/`McpError`/`LspError` variants as feature-gated or boxed
+1. `src/error.rs` — plugin `From` impls moved out; string-backed variants for plugin errors. Permission/MCP/LSP variants remain as enum variants (medium risk, acceptable).
 2. `src/resilience/**` — standalone
 3. `src/snapshot/**` — depends only on `error`
 4. `src/worktree/**` — depends only on `error`
 5. `src/session/**` — depends on `error` and `config` (extracted)
 6. `src/storage/**` — depends on `error` and `session`
-7. `src/bus/**` — break `permission::PermissionChoice` import (use enum copy
-   or extract `PermissionChoice` into core)
+7. `src/bus/**` — now owns `PermissionDecision` enum; no permission module imports
 8. `src/memory/**` — depends on `session`
-9. `src/goal/**` — break `tool::Tool` import by moving `goal/tool.rs` to
-   agent or tool module
+9. `src/goal/**` — tool adapter moved to `src/tool/goal.rs`; goal module is clean
 10. `src/task_state/**` — resolve `model_profile` dependency
 11. `src/model_profile/**` — already clean (only extracted-crate deps)
 12. `src/exec/**` — empty, move trivially
@@ -170,39 +167,46 @@ in root.
 
 ### Phase A3: Core Facade (highest risk in Group A)
 
-`src/core/**` is the hardest Group A module due to its 17+ references into
-Group B (`agent`, `permission`, `tool`). Options:
+`src/core/**` is the hardest Group A module due to its references into
+Group B (`agent`, `permission`, `tool`). Cycle-breaking work has introduced
+factory seams that reduce this coupling:
+
+- `src/tool/factory.rs` — `build_session_tool_registry()` handles tool
+  construction; daemon.rs `crate::tool` references reduced from ~10 to 1.
+- `src/agent/runtime_factory.rs` — `build_agent_loop()` handles agent and
+  permission construction; `crate::permission` removed from daemon.rs entirely,
+  `crate::agent` reduced to struct types + prompt assembly.
+
+Options for extraction:
 
 1. **Extract `core` last in Group A** — after Group B modules are decoupled
 2. **Keep `core/daemon.rs` in root** — only extract `core/mod.rs`, `core/transport`,
    `core/client_registry`, `core/notification`, `core/session_runtime`
 3. **Define trait boundaries** — `CoreDaemon` depends on `AgentLoop` via trait,
-   not concrete type
+   not concrete type (factory functions are a step toward this)
 
 ## Recommended Next Steps
 
-1. **Break `bus → permission` cycle**: Copy `PermissionChoice` enum into `bus`
-   module or extract into a shared `codegg-core` types module.
+1. ~~**Break `bus → permission` cycle**~~ **RESOLVED.** `PermissionDecision` enum
+   now owned by `src/bus/mod.rs`. Bidirectional `From` impls with `PermissionChoice`
+   in permission module.
 
-2. **Break `goal → tool` cycle**: Move `goal/tool.rs` into `src/tool/goal.rs`
-   (or keep goal tools registered by the tool module, not the goal module).
+2. ~~**Break `goal → tool` cycle**~~ **RESOLVED.** `goal/tool.rs` moved to
+   `src/tool/goal.rs`. Goal module no longer imports from tool module.
 
-3. **Break `core → agent` cycle**: Define `AgentExecutor` trait in core that
-   `AgentLoop` implements. `CoreDaemon` depends on trait, not concrete type.
+3. **Break `core → agent` cycle**: Factory seam (`agent/runtime_factory.rs`)
+   reduces coupling but `core/mod.rs` still imports `SubAgentPool` and
+   `BackgroundScheduler`. Consider trait boundary during extraction.
 
-4. **Break `core → permission` cycle**: `PermissionChecker` and `PermissionChoice`
-   are needed by `CoreDaemon` for request routing. Extract permission types into
-   core or a shared types module.
+4. ~~**Break `core → permission` cycle**~~ **RESOLVED.** `crate::permission`
+   imports removed from `daemon.rs` entirely via `agent/runtime_factory.rs`.
 
-5. **Break `core → tool` cycle**: `ToolBackendConfig` and `ToolRegistry` are
-   constructed in `daemon.rs`. Either move construction to root or define
-   tool-registry-as-trait.
+5. ~~**Break `core → tool` cycle**~~ **REDUCED.** `tool/factory.rs` handles
+   construction; daemon.rs has 1 `crate::tool` reference remaining (down from ~10).
 
-6. **Handle `error.rs` plugin/mcp/lsp variants**: These error types reference
-   Group C modules. Options:
-   - Feature-gate the variants (`#[cfg(feature = "plugin")]`)
-   - Box the error types to break compile-time dependency
-   - Move error types for plugin/mcp/lsp into their respective modules
+6. **Handle `error.rs` plugin/mcp/lsp variants**: Plugin `From` impls resolved
+   (string-backed). Permission/MCP/LSP variants remain as enum variants —
+   acceptable if those modules move into core or remain as lightweight deps.
 
 7. **Verify `task_state → model_profile` path**: Ensure `model_profile` is
    classified as Group A (it should be, given its dependencies are only
@@ -220,10 +224,23 @@ cargo test --workspace
 
 | Category | Count | Status |
 |----------|-------|--------|
-| Group A modules | 14 (+1 unlisted) | 9 have zero Group B/C cycles |
+| Group A modules | 14 (+1 unlisted) | 11 have zero Group B/C cycles |
 | Group B modules | 8 | Move after Group A |
 | Group C modules | 14 | Keep root or later crates |
 | Group D crates | 7 | Already extracted |
-| High-risk cycles | 6 | Must break before extraction |
+| High-risk cycles | 3 resolved, 3 remaining | `bus→permission`, `goal→tool`, `error→plugin` resolved; `core→agent/permission/tool` reduced via factory seams |
 | Low-risk cycles | 3 | Minor refactoring needed |
 | TUI dependencies | 0 | Clean — no terminal UI coupling |
+
+### Factory Seams Created
+
+Two factory modules were introduced to reduce `core/daemon.rs` coupling:
+
+- **`src/tool/factory.rs`** — `build_session_tool_registry()` encapsulates tool
+  registry construction. Reduces `crate::tool` references in daemon.rs from ~10 to 1.
+- **`src/agent/runtime_factory.rs`** — `build_agent_loop()` encapsulates agent loop
+  and permission checker construction. Removes `crate::permission` from daemon.rs
+  entirely; reduces `crate::agent` to struct types and prompt assembly.
+
+These seams are stepping stones toward trait-based boundaries during `codegg-core`
+extraction. They do not change runtime behavior.

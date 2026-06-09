@@ -29,6 +29,12 @@ pub enum LoadError {
     Install(#[from] InstallError),
 }
 
+impl From<LoadError> for crate::error::PluginError {
+    fn from(err: LoadError) -> Self {
+        crate::error::PluginError::LoadFailed(err.to_string())
+    }
+}
+
 pub struct LoadedPlugin {
     pub manifest: PluginManifest,
     pub wasm_path: PathBuf,

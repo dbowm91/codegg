@@ -701,11 +701,11 @@ async fn handle_tui_message(
         }
         TuiMessage::PermissionResponse { id, choice } => {
             let perm_choice = match choice.as_str() {
-                "allow" => PermissionChoice::AllowOnce,
-                "deny" => PermissionChoice::DenyOnce,
-                "always_allow" => PermissionChoice::AlwaysAllow,
-                "always_deny" => PermissionChoice::AlwaysDeny,
-                _ => PermissionChoice::DenyOnce,
+                "allow" => crate::bus::PermissionDecision::AllowOnce,
+                "deny" => crate::bus::PermissionDecision::DenyOnce,
+                "always_allow" => crate::bus::PermissionDecision::AlwaysAllow,
+                "always_deny" => crate::bus::PermissionDecision::AlwaysDeny,
+                _ => crate::bus::PermissionDecision::DenyOnce,
             };
             let id = id.clone();
             tokio::spawn(async move {
@@ -935,5 +935,3 @@ async fn handle_core_frame(
     }
     responses
 }
-
-use crate::permission::PermissionChoice;

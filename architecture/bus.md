@@ -99,17 +99,19 @@ ReasoningDelta { session_id: Arc<str>, delta: String }
 
 **IMPORTANT**: All methods are `fn` (synchronous), NOT `async fn`.
 
+The registry uses `PermissionDecision`, a bus-owned DTO for permission responses. This is distinct from `PermissionChoice` (the domain type in `src/permission/mod.rs`). Bidirectional `From` impls connect the two.
+
 ```rust
 static PERMISSION_REGISTRY: Lazy<PermissionRegistry> = Lazy::new(PermissionRegistry::new);
 
 pub struct PermissionRegistry {
-    senders: DashMap<String, (tokio::sync::oneshot::Sender<PermissionChoice>, Instant)>,
+    senders: DashMap<String, (tokio::sync::oneshot::Sender<PermissionDecision>, Instant)>,
 }
 
 impl PermissionRegistry {
     // Synchronous methods - do NOT use await
-    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>)
-    pub fn respond(perm_id: String, choice: PermissionChoice) -> bool
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionDecision>)
+    pub fn respond(perm_id: String, choice: PermissionDecision) -> bool
     pub fn unregister(perm_id: &str)
     pub fn is_registered(perm_id: &str) -> bool
     pub fn pending_permission_ids() -> Vec<String>
@@ -146,27 +148,29 @@ GlobalEventBus::publish(AppEvent::PermissionPending {
 // 4. Wait for response with timeout (agent loop waits 300s; registry TTL is 310s)
 let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await {
     Ok(Ok(choice)) => choice,
-    _ => PermissionChoice::DenyOnce,  // timeout defaults to deny
+    _ => PermissionDecision::DenyOnce,  // timeout defaults to deny
 };
 
 // 5. Unregister after response or timeout
 PermissionRegistry::unregister(&perm_id);
 ```
 
-**PermissionChoice Enum** (`src/permission/mod.rs`):
+**PermissionDecision** (`src/bus/mod.rs`):
 ```rust
-pub enum PermissionChoice {
+pub enum PermissionDecision {
     AllowOnce,
     AlwaysAllow,
     DenyOnce,
     AlwaysDeny,
 }
 
-impl PermissionChoice {
+impl PermissionDecision {
     pub fn allowed(&self) -> bool
     pub fn persist(&self) -> bool
 }
 ```
+
+`PermissionDecision` is the bus-owned DTO. It has bidirectional `From` impls with `PermissionChoice` (`src/permission/mod.rs`), which is the domain type used elsewhere in the permission module. The registry API uses `PermissionDecision` so the bus module does not depend on the permission module.
 
 ### QuestionRegistry (`src/bus/mod.rs`)
 
@@ -390,10 +394,10 @@ while let Ok(event) = rx.recv().await {
 
 ```rust
 use crate::bus::PermissionRegistry;
-use crate::permission::PermissionChoice;
+use crate::bus::PermissionDecision;
 
 // In server handler or TUI
-if PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce) {
+if PermissionRegistry::respond(perm_id.clone(), PermissionDecision::AllowOnce) {
     // Success
 } else {
     // No pending permission found

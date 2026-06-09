@@ -9,6 +9,7 @@ pub mod compaction;
 pub mod context_frame;
 pub mod r#loop;
 pub mod mention;
+pub mod runtime_factory;
 pub mod policy;
 pub mod processor;
 pub mod prompt;

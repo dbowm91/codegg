@@ -175,6 +175,28 @@ impl PermissionChoice {
     }
 }
 
+impl From<PermissionChoice> for crate::bus::PermissionDecision {
+    fn from(choice: PermissionChoice) -> Self {
+        match choice {
+            PermissionChoice::AllowOnce => crate::bus::PermissionDecision::AllowOnce,
+            PermissionChoice::AlwaysAllow => crate::bus::PermissionDecision::AlwaysAllow,
+            PermissionChoice::DenyOnce => crate::bus::PermissionDecision::DenyOnce,
+            PermissionChoice::AlwaysDeny => crate::bus::PermissionDecision::AlwaysDeny,
+        }
+    }
+}
+
+impl From<crate::bus::PermissionDecision> for PermissionChoice {
+    fn from(decision: crate::bus::PermissionDecision) -> Self {
+        match decision {
+            crate::bus::PermissionDecision::AllowOnce => PermissionChoice::AllowOnce,
+            crate::bus::PermissionDecision::AlwaysAllow => PermissionChoice::AlwaysAllow,
+            crate::bus::PermissionDecision::DenyOnce => PermissionChoice::DenyOnce,
+            crate::bus::PermissionDecision::AlwaysDeny => PermissionChoice::AlwaysDeny,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolRule {
     pub tool: String,

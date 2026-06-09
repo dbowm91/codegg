@@ -290,17 +290,19 @@ For handling permission responses from TUI:
 
 ```rust
 // In src/bus/mod.rs
+use crate::bus::PermissionDecision;
+
 pub struct PermissionRegistry {
-    senders: DashMap<String, tokio::sync::oneshot::Sender<PermissionChoice>>,
+    senders: DashMap<String, tokio::sync::oneshot::Sender<PermissionDecision>>,
 }
 
 impl PermissionRegistry {
     // Note: These are synchronous functions (NOT async)
-    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>) {
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionDecision>) {
         PERMISSION_REGISTRY.senders.insert(perm_id, tx);
     }
 
-    pub fn respond(perm_id: String, choice: PermissionChoice) -> bool {
+    pub fn respond(perm_id: String, choice: PermissionDecision) -> bool {
         if let Some((_, tx)) = PERMISSION_REGISTRY.senders.remove(&perm_id) {
             let _ = tx.send(choice);
             true
@@ -321,8 +323,8 @@ pub fn submit_permission_response(&mut self, allowed: bool) {
         PermissionRegistry::respond(
             perm_id,
             match allowed {
-                true => PermissionChoice::AllowOnce,
-                false => PermissionChoice::DenyOnce,
+                true => PermissionDecision::AllowOnce,
+                false => PermissionDecision::DenyOnce,
             },
         );
     }
@@ -835,6 +837,6 @@ subagent_provider.wait_for_request(100, 20).await
 ## Related Skills
 
 - See `.opencode/skills/tui/SKILL.md` for TUI development overview
-- See `.opencode/skills/permission/SKILL.md` for PermissionChoice and registry usage
+- See `.opencode/skills/permission/SKILL.md` for PermissionDecision (bus-owned type) and registry usage
 - See `.opencode/skills/provider/SKILL.md` for ScriptedProvider and transcript tests
 - See `AGENTS.md` for project-wide patterns

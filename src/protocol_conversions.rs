@@ -1,9 +1,11 @@
-/// Helper functions for converting between root domain types and protocol DTOs.
+/// Transitional protocol conversion helpers.
 ///
-/// The protocol crate (`codegg_protocol`) uses self-contained DTO types
-/// that mirror the wire format of root domain types. These helpers bridge
-/// the two worlds via serde round-trips, which is safe because the wire
-/// format is identical.
+/// These conversions intentionally live outside `codegg-protocol` so the
+/// protocol crate stays free of root domain dependencies. The current
+/// implementations use serde round-trips and `expect()` — that is
+/// acceptable as a temporary bridge. Replace serde round-trips with
+/// explicit field-by-field mappings before moving this module into
+/// `codegg-core`.
 
 // ── Domain → DTO (for constructing protocol responses / requests) ───────
 

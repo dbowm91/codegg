@@ -298,7 +298,7 @@ PermissionRegistry::register(perm_id.clone(), tx);
 GlobalEventBus::publish(AppEvent::PermissionPending { ... });
 let choice = match tokio::time::timeout(Duration::from_secs(300), rx).await {
     Ok(Ok(choice)) => choice,
-    _ => PermissionChoice::DenyOnce,
+    _ => PermissionDecision::DenyOnce,
 };
 PermissionRegistry::unregister(&perm_id);
 ```
@@ -359,14 +359,27 @@ Security utility that checks if a path is within a project root directory. Retur
 
 ## PermissionRegistry (in bus/mod.rs)
 
+The `PermissionRegistry` uses `PermissionDecision` (the bus-owned DTO type),
+not `PermissionChoice` (the domain type in the permission module). This keeps
+the bus layer decoupled from the permission domain. Bidirectional `From` impls
+in `src/permission/mod.rs` allow lossless conversion between the two:
+
 ```rust
+// PermissionDecision is owned by bus/mod.rs
+pub enum PermissionDecision {
+    AllowOnce,
+    AlwaysAllow,
+    DenyOnce,
+    AlwaysDeny,
+}
+
 pub struct PermissionRegistry {
-    senders: DashMap<String, (tokio::sync::oneshot::Sender<PermissionChoice>, Instant)>,
+    senders: DashMap<String, PendingPermission>,
 }
 
 impl PermissionRegistry {
-    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>);
-    pub fn respond(perm_id: String, choice: PermissionChoice) -> bool;
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionDecision>);
+    pub fn respond(perm_id: String, choice: PermissionDecision) -> bool;
     pub fn unregister(perm_id: &str);
     pub fn is_registered(perm_id: &str) -> bool;
     pub fn pending_permission_ids() -> Vec<String>;

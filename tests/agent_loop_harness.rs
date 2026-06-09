@@ -1633,8 +1633,8 @@ async fn test_question_tool_answer_immediately() {
 
 #[tokio::test]
 async fn test_permission_ask_answer_immediately() {
-    use codegg::bus::PermissionRegistry;
-    use codegg::permission::{PermissionChoice, PermissionLevel, PermissionRuleset, ToolRule};
+    use codegg::bus::{PermissionDecision, PermissionRegistry};
+    use codegg::permission::{PermissionLevel, PermissionRuleset, ToolRule};
 
     let permission_checker =
         PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
@@ -1695,7 +1695,7 @@ async fn test_permission_ask_answer_immediately() {
         "PermissionRegistry should have permission registered BEFORE answering"
     );
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce);
+    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionDecision::AllowOnce);
     assert!(
         responded,
         "Permission should be responded to immediately after registration"
@@ -2504,8 +2504,8 @@ async fn test_follow_up_with_tool_call() {
 
 #[tokio::test]
 async fn test_permission_ask_allow_once() {
-    use codegg::bus::PermissionRegistry;
-    use codegg::permission::{PermissionChoice, PermissionLevel, PermissionRuleset, ToolRule};
+    use codegg::bus::{PermissionDecision, PermissionRegistry};
+    use codegg::permission::{PermissionLevel, PermissionRuleset, ToolRule};
 
     // Configure permission checker: echo_args requires Ask (user approval)
     let permission_checker =
@@ -2562,7 +2562,7 @@ async fn test_permission_ask_allow_once() {
         .await
         .unwrap();
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce);
+    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionDecision::AllowOnce);
     assert!(responded, "Permission should be responded to");
 
     let result = handle.await.unwrap();
@@ -2589,7 +2589,7 @@ async fn test_permission_ask_allow_once() {
     // Verify PermissionRegistry is cleaned up
     let cleaned_up = PermissionRegistry::respond(
         "perm-test-ask-allow".to_string(),
-        PermissionChoice::AllowOnce,
+        PermissionDecision::AllowOnce,
     );
 
     assert!(
@@ -2600,8 +2600,8 @@ async fn test_permission_ask_allow_once() {
 
 #[tokio::test]
 async fn test_permission_ask_deny_once() {
-    use codegg::bus::PermissionRegistry;
-    use codegg::permission::{PermissionChoice, PermissionLevel, PermissionRuleset, ToolRule};
+    use codegg::bus::{PermissionDecision, PermissionRegistry};
+    use codegg::permission::{PermissionLevel, PermissionRuleset, ToolRule};
 
     // Configure permission checker: echo_args requires Ask
     let permission_checker =
@@ -2658,7 +2658,7 @@ async fn test_permission_ask_deny_once() {
         .await
         .unwrap();
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::DenyOnce);
+    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionDecision::DenyOnce);
     assert!(responded, "Permission should be responded to");
 
     let result = handle.await.unwrap();
@@ -3508,11 +3508,10 @@ async fn test_question_http_route_wakes_waiting_receiver() {
 
 #[tokio::test]
 async fn test_permission_http_route_no_pending_permission() {
-    use codegg::bus::PermissionRegistry;
-    use codegg::permission::PermissionChoice;
+    use codegg::bus::{PermissionDecision, PermissionRegistry};
 
     let responded =
-        PermissionRegistry::respond("nonexistent-perm".to_string(), PermissionChoice::AllowOnce);
+        PermissionRegistry::respond("nonexistent-perm".to_string(), PermissionDecision::AllowOnce);
     assert!(
         !responded,
         "respond should return false when no permission is pending"
@@ -3521,8 +3520,7 @@ async fn test_permission_http_route_no_pending_permission() {
 
 #[tokio::test]
 async fn test_permission_http_route_wakes_waiting_receiver() {
-    use codegg::bus::PermissionRegistry;
-    use codegg::permission::PermissionChoice;
+    use codegg::bus::{PermissionDecision, PermissionRegistry};
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let perm_id = "test-perm-http-wake".to_string();
@@ -3535,7 +3533,7 @@ async fn test_permission_http_route_wakes_waiting_receiver() {
         "Permission should be registered before responding"
     );
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce);
+    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionDecision::AllowOnce);
     assert!(
         responded,
         "respond should return true when permission is pending"
@@ -3544,15 +3542,14 @@ async fn test_permission_http_route_wakes_waiting_receiver() {
     let received = rx.await;
     assert!(received.is_ok(), "Receiver should get the choice");
     assert!(
-        matches!(received.unwrap(), PermissionChoice::AllowOnce),
+        matches!(received.unwrap(), PermissionDecision::AllowOnce),
         "Choice should match"
     );
 }
 
 #[tokio::test]
 async fn test_registry_recovery_after_missed_event() {
-    use codegg::bus::{PermissionRegistry, QuestionRegistry};
-    use codegg::permission::PermissionChoice;
+    use codegg::bus::{PermissionDecision, PermissionRegistry, QuestionRegistry};
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let perm_id = "test-recovery-perm".to_string();
@@ -3564,7 +3561,7 @@ async fn test_registry_recovery_after_missed_event() {
         "Should be able to recover pending permission from registry"
     );
 
-    PermissionRegistry::respond(perm_id.clone(), PermissionChoice::AllowOnce);
+    PermissionRegistry::respond(perm_id.clone(), PermissionDecision::AllowOnce);
     let _ = rx.await;
 
     let pending_perms_after = PermissionRegistry::pending_permission_ids();

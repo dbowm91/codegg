@@ -1,10 +1,35 @@
 pub mod events;
 pub mod global;
 
-use crate::permission::PermissionChoice;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::time::{Duration, Instant};
+
+/// User-facing permission decision, owned by the bus layer so that the
+/// low-level bus module does not depend on the `permission` domain module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDecision {
+    AllowOnce,
+    AlwaysAllow,
+    DenyOnce,
+    AlwaysDeny,
+}
+
+impl PermissionDecision {
+    pub fn allowed(&self) -> bool {
+        matches!(
+            self,
+            PermissionDecision::AllowOnce | PermissionDecision::AlwaysAllow
+        )
+    }
+
+    pub fn persist(&self) -> bool {
+        matches!(
+            self,
+            PermissionDecision::AlwaysAllow | PermissionDecision::AlwaysDeny
+        )
+    }
+}
 
 /// Sentinel `session_id` used by the backward-compatible
 /// `PermissionRegistry::register(perm_id, tx)` and
@@ -20,7 +45,7 @@ pub const DEFAULT_SESSION_ID: &str = "default";
 pub struct PendingPermission {
     pub session_id: String,
     pub turn_id: Option<String>,
-    pub tx: tokio::sync::oneshot::Sender<PermissionChoice>,
+    pub tx: tokio::sync::oneshot::Sender<PermissionDecision>,
     pub created_at: Instant,
 }
 
@@ -73,7 +98,7 @@ impl PermissionRegistry {
     /// Backward-compatible registration. Assigns `session_id = "default"`
     /// and `turn_id = None`. New call sites should prefer
     /// [`Self::register_with_session`].
-    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionChoice>) {
+    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionDecision>) {
         Self::register_with_session(DEFAULT_SESSION_ID.to_string(), None, perm_id, tx);
     }
 
@@ -86,7 +111,7 @@ impl PermissionRegistry {
         session_id: String,
         turn_id: Option<String>,
         perm_id: String,
-        tx: tokio::sync::oneshot::Sender<PermissionChoice>,
+        tx: tokio::sync::oneshot::Sender<PermissionDecision>,
     ) {
         Self::cleanup();
         let pending = PendingPermission {
@@ -101,7 +126,7 @@ impl PermissionRegistry {
     /// Backward-compatible respond. Looks up by `perm_id` only, treating
     /// the registration as belonging to `session_id = "default"`. New call
     /// sites should prefer [`Self::respond_scoped`].
-    pub fn respond(perm_id: String, choice: PermissionChoice) -> bool {
+    pub fn respond(perm_id: String, choice: PermissionDecision) -> bool {
         Self::respond_scoped(DEFAULT_SESSION_ID, &perm_id, choice)
     }
 
@@ -112,7 +137,7 @@ impl PermissionRegistry {
     /// The check-and-remove is atomic via [`DashMap::remove_if`], so
     /// concurrent responders from another session cannot cause a
     /// double-respond.
-    pub fn respond_scoped(session_id: &str, perm_id: &str, choice: PermissionChoice) -> bool {
+    pub fn respond_scoped(session_id: &str, perm_id: &str, choice: PermissionDecision) -> bool {
         let removed = PERMISSION_REGISTRY
             .senders
             .remove_if(perm_id, |_key, val| val.session_id == session_id);

@@ -122,12 +122,12 @@ enum TuiMessage {
 
 // Handling:
 TuiMessage::PermissionResponse { id, choice } => {
-    let perm_choice = match choice.as_str() {
-        "allow" => PermissionChoice::AllowOnce,
-        "deny" => PermissionChoice::DenyOnce,
+    let perm_decision = match choice.as_str() {
+        "allow" => PermissionDecision::AllowOnce,
+        "deny" => PermissionDecision::DenyOnce,
         _ => return,
     };
-    let _ = crate::bus::PermissionRegistry::respond(id, perm_choice);
+    let _ = crate::bus::PermissionRegistry::respond(id, perm_decision);
 }
 ```
 

@@ -359,13 +359,13 @@ pub enum PluginError {
     NotFound(String),
 
     #[error("plugin load failed: {0}")]
-    LoadFailed(#[from] crate::plugin::loader::LoadError),
+    LoadFailed(String),
 
     #[error("plugin hook failed: {0}")]
     HookFailed(String),
 
     #[error("plugin install failed: {0}")]
-    InstallFailed(#[from] crate::plugin::install::InstallError),
+    InstallFailed(String),
 
     #[error("plugin manifest invalid: {0}")]
     InvalidManifest(String),
