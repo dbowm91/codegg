@@ -52,7 +52,6 @@ unicode-width = "0.2"
 
 # HTTP / Streaming
 reqwest = { version = "0.12", default-features = false, features = ["stream", "json", "rustls-tls"] }
-bytes = "1"
 
 # Async / Streams
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -68,8 +67,6 @@ tokio-util = { version = "0.7", features = ["io"] }
 walkdir = "2"
 globset = "0.4"
 ignore = "0.4"
-pathdiff = "0.2"
-dunce = "1"
 tempfile = "3"
 
 # Search
@@ -81,19 +78,16 @@ grep-searcher = "0.1"
 # Text processing
 comrak = "0.35"
 syntect = "5"
-unicode-segmentation = "1"
 strsim = "0.11"
 shell-words = "1"
 tiktoken = "3.1"
 
-# Config
-json5 = "0.4"
+# Config parsing (serde_yaml, toml still used for themes/plugins/skills)
 serde_yaml = "0.9"
 toml = "0.8"
 
 # UUID / IDs
 uuid = { version = "1", features = ["v4", "serde"] }
-ulid = { version = "1", features = ["serde"] }
 semver = "1"
 
 # MCP
@@ -144,11 +138,8 @@ html2text = "0.13"
 flate2 = "1"
 tar = "0.4"
 
-# Root-crate direct use: config-file watcher
-# (`src/config/watcher.rs`). The `egglsp` crate does not depend
-# on `notify`; this stays at the root because the watcher watches
-# the user's `~/.config/codegg` files, not LSP server installs.
-notify = "7"
+# Note: `notify` was previously used for config-file watching but has
+# moved to the `codegg-config` crate. Do not re-add here.
 
 # Server (feature-gated)
 axum = { version = "0.8", features = ["ws"], optional = true }
