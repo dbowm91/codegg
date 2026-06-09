@@ -5,8 +5,9 @@ use crate::provider::openai_compatible::{
 };
 use crate::provider::{ModelInfo, Provider};
 
-pub fn create_xai(api_key: String) -> impl Provider {
-    let models = vec![ModelInfo {
+/// xAI models exposed by the OpenAI-compatible endpoint.
+fn xai_models() -> Vec<ModelInfo> {
+    vec![ModelInfo {
         id: "grok-build-0.1".to_string(),
         name: "Grok Build 0.1".to_string(),
         provider: "xai".to_string(),
@@ -15,83 +16,101 @@ pub fn create_xai(api_key: String) -> impl Provider {
         supports_tools: true,
         supports_vision: false,
         variants: vec![],
-    }];
+    }]
+}
+
+pub fn create_xai(credential: Credential) -> impl Provider {
     OpenAiCompatibleProvider::new(
         "xai",
         "xAI",
         OpenAiCompatibleConfig {
-            credential: Credential::api_key(&api_key),
+            credential,
             base_url: "https://api.x.ai/v1".to_string(),
             auth_header: "Authorization".to_string(),
             extra_headers: Vec::new(),
-            models,
+            models: xai_models(),
             tool_choice: ToolChoice::Auto,
         },
     )
 }
 
-pub fn create_mistral(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple("mistral", "Mistral", &api_key, "https://api.mistral.ai/v1")
+pub fn create_mistral(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
+        "mistral",
+        "Mistral",
+        credential,
+        "https://api.mistral.ai/v1",
+    )
 }
 
-pub fn create_groq(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple("groq", "Groq", &api_key, "https://api.groq.com/openai/v1")
+pub fn create_groq(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
+        "groq",
+        "Groq",
+        credential,
+        "https://api.groq.com/openai/v1",
+    )
 }
 
-pub fn create_deepinfra(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple(
+pub fn create_deepinfra(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
         "deepinfra",
         "DeepInfra",
-        &api_key,
+        credential,
         "https://api.deepinfra.com/v1/openai",
     )
 }
 
-pub fn create_cerebras(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple(
+pub fn create_cerebras(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
         "cerebras",
         "Cerebras",
-        &api_key,
+        credential,
         "https://api.cerebras.ai/v1",
     )
 }
 
-pub fn create_cohere(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple(
+pub fn create_cohere(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
         "cohere",
         "Cohere",
-        &api_key,
+        credential,
         "https://api.cohere.ai/compatibility/v1",
     )
 }
 
-pub fn create_together(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple(
+pub fn create_together(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
         "together",
         "Together AI",
-        &api_key,
+        credential,
         "https://api.together.xyz/v1",
     )
 }
 
-pub fn create_perplexity(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple(
+pub fn create_perplexity(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
         "perplexity",
         "Perplexity",
-        &api_key,
+        credential,
         "https://api.perplexity.ai",
     )
 }
 
-pub fn create_venice(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple("venice", "Venice", &api_key, "https://api.venice.ai/api/v1")
+pub fn create_venice(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
+        "venice",
+        "Venice",
+        credential,
+        "https://api.venice.ai/api/v1",
+    )
 }
 
-pub fn create_generalcompute(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple(
+pub fn create_generalcompute(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
         "generalcompute",
         "GeneralCompute",
-        &api_key,
+        credential,
         "https://api.generalcompute.com/v1",
     )
 }
@@ -190,11 +209,11 @@ pub fn create_vercel_ai_gateway(api_key: String, base_url: String) -> impl Provi
     )
 }
 
-pub fn create_opencode_go(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple(
+pub fn create_opencode_go(credential: Credential) -> impl Provider {
+    OpenAiCompatibleProvider::simple_with_credential(
         "opencode_go",
         "OpenCode Go",
-        &api_key,
+        credential,
         "https://opencode.ai/go/v1",
     )
 }

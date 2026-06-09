@@ -68,9 +68,9 @@ pub struct Config {
 
 ```rust
 pub struct ProviderConfig {
-    pub api_key: Option<String>,
-    pub encrypted_api_key: Option<String>,
-    pub encrypted: Option<bool>,
+    pub api_key: Option<String>,                    // legacy inline API key
+    pub encrypted_api_key: Option<String>,          // legacy ciphertext
+    pub encrypted: Option<bool>,                    // legacy "is encrypted?" flag
     pub base_url: Option<String>,
     pub enterprise_url: Option<String>,
     pub set_cache_key: Option<bool>,
@@ -80,16 +80,55 @@ pub struct ProviderConfig {
     pub blacklist: Option<Vec<String>>,
     pub models: Option<HashMap<String, ModelConfig>>,
     pub options: Option<HashMap<String, serde_json::Value>>,
+    /// New typed auth descriptor. When present, takes precedence over
+    /// `api_key` / `encrypted_api_key` during credential resolution (see
+    /// `crate::auth::resolver::AuthResolver`).
+    pub auth: Option<AuthConfig>,
+    /// Optional account id used to disambiguate multiple accounts in the
+    /// user-level credential store.
+    pub account_id: Option<String>,
 }
 ```
 
-ProviderConfig has a `merge()` method for field-by-field merging and an `api_key()` method that checks environment variables first.
+`AuthConfig` is the typed auth descriptor from `src/auth/`:
+
+```rust
+pub enum AuthConfig {
+    ApiKey        { env: Option<String>, value: Option<String>, encrypted_value: Option<String> },
+    Stored        { account_id: Option<String> },
+    ExternalCommand { command: String, args: Vec<String>, timeout_ms: Option<u64> },
+    OAuthDevice   { client_id: String, scopes: Vec<String>, auth_url: String, token_url: String },
+    None,
+}
+```
+
+`ProviderConfig` has a `merge()` method for field-by-field merging and an
+`api_key()` method that checks environment variables first. The `auth`
+field and `account_id` are merged like any other optional field; if a
+project config sets `auth: { type: "stored" }` it overrides the global
+`api_key` path.
 
 ```rust
 pub fn api_key(&self, prefix: &str) -> Option<String>
 ```
 
-The method checks environment variables first (e.g., `ANTHROPIC_API_KEY`), then `api_key` field, then encrypted `encrypted_api_key` field.
+The method checks environment variables first (e.g., `ANTHROPIC_API_KEY`),
+then `api_key` field, then encrypted `encrypted_api_key` field.
+
+**Resolution order at registration time** (see
+`register_builtin_with_config` in `src/provider/mod.rs`):
+
+1. Explicit `auth.env` env var
+2. Conventional `{PROVIDER}_API_KEY`
+3. Inline `auth.value`
+4. Decrypted `auth.encrypted_value` (requires `CODEGG_MASTER_KEY`)
+5. User-level `CredentialStore` lookup (matched by `account_id` /
+   `auth.account_id`)
+6. Legacy `api_key` / `encrypted_api_key` fields (backwards compat)
+
+If `auth` is `None`, the resolver falls back to conventional env, then
+legacy `api_key`, then the user store. If `auth` is `Some(AuthConfig::None)`,
+all lookups are skipped (explicit "no auth" marker).
 
 ### ProviderConfig merge() behavior
 

@@ -86,17 +86,29 @@ Beyond environment variables, providers can be configured through a typed
     },
     "anthropic": {
       "auth": { "type": "api_key" }
+    },
+    "xai": {
+      "auth": { "type": "stored", "account_id": "default" }
     }
   }
 }
 ```
 
-Supported `auth.type` values include `api_key` (env, inline, or
-`encrypted_value`), `stored` (a reference into the user-level credential
-store), `external_command` (shell out to an officially-supported CLI), and
-`oauth_device` (scaffolding only — not yet implemented). Resolution order is:
-explicit env, conventional `{PROVIDER}_API_KEY`, inline `value`, decrypted
-`encrypted_value`, the user store, and finally the legacy `api_key` field.
+Supported `auth.type` values:
+
+| Type               | Status      | Notes |
+|--------------------|-------------|-------|
+| `api_key`          | Supported   | `env`, inline `value`, or `encrypted_value` |
+| `stored`           | Supported   | Reference into the user-level credential store |
+| `external_command` | Recognized  | Currently returns `AuthError::Unsupported` from the synchronous resolver; the underlying `ExternalCommandProvider` does not yet enforce its timeout, so it is intentionally disabled. Async timeout plumbing is a follow-up. |
+| `oauth_device`     | Scaffolded  | Typed parsing only; resolution returns `AuthError::Unsupported` |
+| `none`             | Supported   | Explicit "no auth" marker; bypasses env / store lookups |
+
+Resolution order is: explicit `auth.env`, conventional `{PROVIDER}_API_KEY`,
+inline `value`, decrypted `encrypted_value`, the user store, and finally the
+legacy `api_key` field. A `Credential` carries `CredentialKind` (`ApiKey` or
+`BearerToken`) and an optional `expires_at` so OpenAI-compatible providers
+can preserve metadata across registration.
 
 A user-level encrypted credential store lives at
 `~/.config/codegg/credentials.json` (or the platform config-dir equivalent).
@@ -106,11 +118,26 @@ plaintext still works without a master key for env / config-backed paths;
 **storing** a new credential requires a master key and returns
 `AuthError::MasterKeyMissing` if none is configured.
 
+Manage stored credentials from the CLI:
+
+```bash
+codegg auth status                    # list stored credentials (no plaintext)
+codegg auth set-key openai            # read key from stdin, store under default account
+codegg auth set-key openai --account work   # multi-account
+codegg auth logout openai             # remove default-account record
+codegg auth logout openai --account '*'    # remove all accounts for a provider
+```
+
 The `auth::mask_secret` helper renders any secret as a fixed 16-bullet
 mask (`••••••••••••••••`) and never returns prefix or suffix of the input.
 API keys entered into the TUI (e.g. in `/connect`) are rendered as this
 fixed mask while typing, with a non-secret length hint (e.g. `(42 chars)`)
 appended so users can still confirm the value was entered correctly.
+
+> **Intentionally not implemented:** SuperGrok, Claude, ChatGPT, Copilot and
+> other consumer-session / app-token flows. They require account-token reuse
+> that is not part of any provider's documented public third-party API
+> surface, and the CLI / TUI refuse to model them.
 
 ### Configuration Options
 
@@ -145,6 +172,11 @@ codegg attach http://localhost:8080 --token TOKEN
 
 # Other
 codegg upgrade             # Upgrade to latest version
+
+# Credential store management
+codegg auth status
+codegg auth set-key <provider>
+codegg auth logout <provider>
 ```
 
 ## TUI Slash Commands

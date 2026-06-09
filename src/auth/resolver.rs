@@ -13,15 +13,22 @@
 //!    `ProviderConfig::encrypted_api_key` (already decrypted by config
 //!    loading when a master key is present).
 //!
-//! OAuth and external-command variants follow their own paths. OAuth is
-//! recognized but returns [`AuthError::Unsupported`].
+//! OAuth and external-command variants are recognized but currently return
+//! [`AuthError::Unsupported`] from [`AuthResolver::resolve`]. External
+//! command resolution is intentionally disabled in the synchronous
+//! resolution path because the existing `std::process::Command` based
+//! implementation does not enforce its timeout and could hang provider
+//! registration indefinitely. The [`ExternalCommandProvider`] type is
+//! retained for future async work; see the follow-up notes in
+//! `plans/oauth_provider_auth_followup.md` for the planned async timeout
+//! plumbing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::auth::credential::CredentialKind;
 use crate::auth::error::AuthError;
-use crate::auth::external::{ExternalCommandProvider, ExternalCredential};
+use crate::auth::external::ExternalCommandProvider;
 use crate::auth::store::CredentialStore;
 use crate::auth::{AuthConfig, Credential};
 
@@ -85,6 +92,13 @@ impl ResolvedAuthSource {
 
 #[derive(Debug, Clone, Default)]
 pub struct AuthResolver {
+    /// Held for future async external-command support. The current
+    /// synchronous resolution path returns
+    /// [`AuthError::Unsupported`] for
+    /// [`crate::auth::AuthConfig::ExternalCommand`] because the
+    /// existing `std::process::Command` implementation does not
+    /// enforce its timeout.
+    #[allow(dead_code)]
     external: ExternalCommandProvider,
 }
 
@@ -170,18 +184,16 @@ impl AuthResolver {
                     }
                     return Err(AuthError::NotFound(ctx.provider_id.clone()));
                 }
-                AuthConfig::ExternalCommand {
-                    command,
-                    args,
-                    timeout_ms,
-                } => {
-                    let cred = ExternalCredential {
-                        command: command.clone(),
-                        args: args.clone(),
-                        timeout_ms: *timeout_ms,
-                    };
-                    let got = self.external.fetch(&cred)?;
-                    return Ok(Some(resolved(got, ResolvedAuthSource::ExternalCommand)));
+                AuthConfig::ExternalCommand { .. } => {
+                    // External commands are recognized but currently
+                    // unsupported in the synchronous resolution path.
+                    // The current `ExternalCommandProvider` uses
+                    // `std::process::Command` and does not enforce its
+                    // timeout, which would let a hanging command stall
+                    // provider registration indefinitely. Future work
+                    // can re-enable this once async timeout plumbing is
+                    // available.
+                    return Err(AuthError::Unsupported("ExternalCommand".to_string()));
                 }
                 AuthConfig::OAuthDevice { .. } => {
                     return Err(AuthError::Unsupported("OAuthDevice".to_string()));
@@ -386,6 +398,30 @@ mod tests {
         };
         let err = resolver.resolve(Some(&cfg), &ctx).unwrap_err();
         assert!(matches!(err, AuthError::Unsupported(_)));
+    }
+
+    #[test]
+    fn external_command_returns_unsupported() {
+        let resolver = AuthResolver::new();
+        let ctx = ResolverContext {
+            provider_id: "openai".to_string(),
+            ..Default::default()
+        };
+        let cfg = AuthConfig::ExternalCommand {
+            command: "true".to_string(),
+            args: vec![],
+            timeout_ms: Some(1_000),
+        };
+        let err = resolver.resolve(Some(&cfg), &ctx).unwrap_err();
+        match err {
+            AuthError::Unsupported(reason) => {
+                assert!(
+                    reason.contains("ExternalCommand"),
+                    "expected ExternalCommand reason, got: {reason}"
+                );
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
     }
 
     #[test]

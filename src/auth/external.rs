@@ -96,6 +96,23 @@ mod tests {
     }
 
     #[test]
+    fn fetch_spawn_error_is_reported() {
+        // A path that almost certainly does not exist on any platform.
+        let provider = ExternalCommandProvider::new();
+        let cred = ExternalCredential {
+            command: "codegg_definitely_does_not_exist_binary_xyz".to_string(),
+            args: vec![],
+            timeout_ms: Some(1_000),
+        };
+        let err = provider.fetch(&cred).unwrap_err();
+        match err {
+            AuthError::ExternalCommand { .. } => {}
+            other => panic!("expected ExternalCommand error, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn fetch_uses_trimmed_stdout() {
         // `printf` is widely available on macOS and Linux.
         let provider = ExternalCommandProvider::new();
@@ -109,6 +126,7 @@ mod tests {
         assert_eq!(got.kind, CredentialKind::BearerToken);
     }
 
+    #[cfg(unix)]
     #[test]
     fn fetch_returns_error_on_nonzero_exit() {
         let provider = ExternalCommandProvider::new();

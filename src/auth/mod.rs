@@ -5,12 +5,14 @@
 //! secret + metadata used to build an `Authorization` header), the
 //! [`AuthResolver`] (which performs env → config → store priority), a
 //! user-level encrypted [`credential_store::CredentialStore`], an
-//! `ExternalCommandProvider` that shells out to an official CLI, and OAuth
+//! `ExternalCommandProvider` (typed but currently disabled in the
+//! synchronous resolution path; see [`crate::auth::resolver`]), and OAuth
 //! scaffolding (typed but unimplemented in this pass).
 //!
 //! Providers should not log secret material. The [`mask_secret`] helper
 //! returns a fixed-length mask that never exposes prefix or suffix of a key.
 
+pub mod cli;
 pub mod credential;
 pub mod error;
 pub mod external;
@@ -18,10 +20,11 @@ pub mod oauth;
 pub mod resolver;
 pub mod store;
 
+pub use cli::AuthCli;
 pub use credential::{mask_secret, Credential, CredentialKind};
 pub use error::AuthError;
 pub use external::{ExternalCommandProvider, ExternalCredential};
-pub use resolver::{AuthResolver, ResolvedAuth, ResolverContext};
+pub use resolver::{AuthResolver, ResolvedAuth, ResolvedAuthSource, ResolverContext};
 pub use store::{CredentialStore, StoredCredentialRecord};
 
 /// Test-only utilities shared across modules. The exported
@@ -110,14 +113,16 @@ impl AuthConfig {
         matches!(self, AuthConfig::ApiKey { .. })
     }
 
-    /// Returns true if this variant is currently resolvable by the
-    /// first-pass [`AuthResolver`].
+    /// Returns true if this variant is currently resolvable by
+    /// [`AuthResolver::resolve`].
+    ///
+    /// As of the oauth_provider_auth_followup pass,
+    /// [`AuthConfig::ExternalCommand`] is recognized but the synchronous
+    /// resolver returns [`AuthError::Unsupported`] for it because the
+    /// existing [`crate::auth::external::ExternalCommandProvider`]
+    /// implementation does not enforce its timeout and could otherwise
+    /// hang provider registration. Future async work can re-enable it.
     pub fn is_supported(&self) -> bool {
-        matches!(
-            self,
-            AuthConfig::ApiKey { .. }
-                | AuthConfig::Stored { .. }
-                | AuthConfig::ExternalCommand { .. }
-        )
+        matches!(self, AuthConfig::ApiKey { .. } | AuthConfig::Stored { .. })
     }
 }

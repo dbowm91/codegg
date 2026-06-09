@@ -324,12 +324,15 @@ pub struct OpenAiCompatibleConfig {
 ```
 
 Note: `OpenAiCompatibleConfig` no longer has an `api_key: String` field; it
-holds a `auth::Credential` (kind / secret / expires_at). The legacy
-`OpenAiCompatibleProvider::simple(id, name, api_key, base_url)` factory
-remains as a thin wrapper that calls `Credential::api_key(api_key)` and
-constructs the config — most call sites can stay on `simple()`, but
-anything that needs bearer tokens, refresh, or short-lived creds should
-build a `Credential` directly.
+holds a `auth::Credential` (kind / secret / expires_at). Two factory
+methods exist:
+
+- `OpenAiCompatibleProvider::simple(id, name, api_key, base_url)` — wraps
+  the API key in `Credential::api_key(api_key)`. Backwards compatible.
+- `OpenAiCompatibleProvider::simple_with_credential(id, name, credential, base_url)`
+  — accepts a full `Credential` envelope so the registered provider
+  preserves `CredentialKind` (api key vs. bearer) and any `expires_at`
+  metadata.
 
 **Key features:**
 - Includes debug logging for request details (model, tool count, first tool arg shape)
@@ -337,20 +340,46 @@ build a `Credential` directly.
 - Dynamic model discovery via `/models` endpoint
 
 **Factory methods:**
-- `OpenAiCompatibleProvider::simple(id, name, api_key, base_url)` - Simple setup; wraps the API key in `Credential::api_key(...)`.
+- `OpenAiCompatibleProvider::simple(id, name, api_key, base_url)` - Simple
+  setup; wraps the API key in `Credential::api_key(...)`.
+- `OpenAiCompatibleProvider::simple_with_credential(id, name, credential, base_url)`
+  - Same, but accepts a full `Credential` so bearer tokens and other
+  `CredentialKind` variants are preserved.
 
 #### Auth path through the resolver
 
-Both `register_config_provider` (`src/provider/mod.rs:382`) and
-`register_env_fallback_provider` (`src/provider/mod.rs:422`) now route
-every provider registration through `auth::AuthResolver`. They build a
-`ResolverContext` carrying the provider id, optional account id, and
-legacy `api_key`, and pass the typed `cfg.auth` descriptor
+`register_builtin_with_config` (`src/provider/mod.rs:501`) wires the user
+credential store into registration by calling
+`CredentialStore::at_default_location()` once and threading
+`Arc<CredentialStore>` into each registration helper. The helpers are:
+
+- `resolve_provider_credential(provider_id, cfg, env_var, store)` — a single
+  helper in `src/provider/mod.rs` that builds a `ResolverContext` and calls
+  `AuthResolver::resolve`. Returns the full `ResolvedAuth` (not just the
+  secret) so the caller can inspect the source.
+- `register_credential_provider(...)` — factories that accept a `Credential`
+  directly. Used for all OpenAI-compatible providers (mistral, groq,
+  deepinfra, cerebras, cohere, together, perplexity, xai, venice,
+  opencode_go, generalcompute). `CredentialKind::BearerToken` is preserved
+  so an external command or future OAuth flow can land here without
+  re-flattening to a string.
+- `register_api_key_provider(...)` — factories that take only the secret
+  string. Used for `minimax` (Anthropic-compatible) and any provider that
+  cannot accept a bearer credential. Rejects `CredentialKind::BearerToken`
+  with a `tracing::warn!` and skips registration.
+- `register_config_provider(...)` — base-URL-aware variant for Anthropic,
+  OpenAI native, Google, and OpenRouter. Threads the resolved secret
+  through to the factory closure along with `cfg.base_url`.
+
+The typed `cfg.auth` descriptor
 (`AuthConfig::ApiKey { env, value, encrypted_value }`, `Stored { .. }`,
-`ExternalCommand { .. }`, or `OAuthDevice { .. }`) into
-`AuthResolver::resolve`. The resolved `Credential.secret` is what
-`factory()` receives. The `OAuthDevice` variant is recognized but
-returns `AuthError::Unsupported` in this pass.
+`ExternalCommand { .. }`, or `OAuthDevice { .. }`) is passed into
+`AuthResolver::resolve`. The `OAuthDevice` and `ExternalCommand` variants
+are recognized but return `AuthError::Unsupported` from the synchronous
+resolver. `ExternalCommand` is intentionally disabled because the
+underlying `ExternalCommandProvider` uses `std::process::Command` without
+enforcing its timeout, which could otherwise hang provider registration
+indefinitely. Async timeout plumbing is a follow-up.
 
 These `tracing::debug!` / `tracing::warn!` lines log only
 `ResolvedAuthSource::as_str()` (a stable label like `env(explicit)`,
@@ -413,27 +442,35 @@ Codegg's own Zen service implementation. Not based on OpenAiCompatible.
 
 ### 13. Additional Providers (`src/provider/additional.rs`)
 
-Factory functions for additional OpenAI-compatible providers:
+Factory functions for additional OpenAI-compatible providers. All
+OpenAI-compatible factories take a `Credential` (preserving
+`CredentialKind` and `expires_at`); `create_minimax` takes a `String`
+because the MiniMax endpoint is Anthropic-compatible and uses a different
+auth header. The legacy `create_xai(api_key: String)` /
+`create_opencode_go(api_key: String)` wrappers are kept as
+backwards-compatible shims.
 
-| Function | ID | Name | Base URL |
-|----------|-----|------|----------|
-| `create_xai()` | xai | xAI | https://api.x.ai/v1 |
-| `create_mistral()` | mistral | Mistral | https://api.mistral.ai/v1 |
-| `create_groq()` | groq | Groq | https://api.groq.com/openai/v1 |
-| `create_deepinfra()` | deepinfra | DeepInfra | https://api.deepinfra.com/v1/openai |
-| `create_cerebras()` | cerebras | Cerebras | https://api.cerebras.ai/v1 |
-| `create_cohere()` | cohere | Cohere | https://api.cohere.ai/compatibility/v1 |
-| `create_together()` | together | Together AI | https://api.together.xyz/v1 |
-| `create_perplexity()` | perplexity | Perplexity | https://api.perplexity.ai |
-| `create_venice()` | venice | Venice | https://api.venice.ai/api/v1 |
-| `create_minimax()` | minimax | MiniMax | https://api.minimax.io/v1 |
-| `create_sap_ai_core()` | sap_ai_core | SAP AI Core | (config-only) |
-| `create_zenmux()` | zenmux | Zenmux | (config-only) |
-| `create_kilo()` | kilo | Kilo | (config-only) |
-| `create_vercel_ai_gateway()` | vercel_ai_gateway | Vercel AI Gateway | (config-only) |
-| `create_opencode_go()` | opencode_go | OpenCode Go | https://opencode.ai/go/v1 |
+| Function | ID | Name | Base URL | Auth |
+|----------|-----|------|----------|------|
+| `create_xai(credential)` | xai | xAI | https://api.x.ai/v1 | `Credential` |
+| `create_mistral(credential)` | mistral | Mistral | https://api.mistral.ai/v1 | `Credential` |
+| `create_groq(credential)` | groq | Groq | https://api.groq.com/openai/v1 | `Credential` |
+| `create_deepinfra(credential)` | deepinfra | DeepInfra | https://api.deepinfra.com/v1/openai | `Credential` |
+| `create_cerebras(credential)` | cerebras | Cerebras | https://api.cerebras.ai/v1 | `Credential` |
+| `create_cohere(credential)` | cohere | Cohere | https://api.cohere.ai/compatibility/v1 | `Credential` |
+| `create_together(credential)` | together | Together AI | https://api.together.xyz/v1 | `Credential` |
+| `create_perplexity(credential)` | perplexity | Perplexity | https://api.perplexity.ai | `Credential` |
+| `create_venice(credential)` | venice | Venice | https://api.venice.ai/api/v1 | `Credential` |
+| `create_generalcompute(credential)` | generalcompute | GeneralCompute | https://api.generalcompute.com/v1 | `Credential` |
+| `create_minimax(api_key)` | minimax | MiniMax | https://api.minimax.io/anthropic | `String` (Anthropic-compatible) |
+| `create_sap_ai_core(api_key, base_url)` | sap_ai_core | SAP AI Core | (config-only) | `String` |
+| `create_zenmux(api_key, base_url)` | zenmux | Zenmux | (config-only) | `String` |
+| `create_kilo(api_key, base_url)` | kilo | Kilo | (config-only) | `String` |
+| `create_vercel_ai_gateway(api_key, base_url)` | vercel_ai_gateway | Vercel AI Gateway | (config-only) | `String` |
+| `create_opencode_go(credential)` | opencode_go | OpenCode Go | https://opencode.ai/go/v1 | `Credential` |
 
-Note: `create_minimax()` includes embedded model definitions for MiniMax-M2.7 series.
+Note: `create_minimax()` includes embedded model definitions for the
+minimax-M2.7 / 2.5 / 2.1 series.
 
 ## FallbackProvider with Circuit Breaker
 

@@ -1,13 +1,14 @@
 ---
 name: provider
 description: Provider system architecture and registration patterns in opencode-rs
-version: 1.1.0
+version: 1.2.0
 tags:
   - provider
   - llm
   - registration
   - anthropic
   - openai
+  - auth
 ---
 
 # Provider System Guide
@@ -52,68 +53,104 @@ Registers providers from environment variables (no config required). Called auto
 pub fn register_builtin(registry: &mut ProviderRegistry);
 ```
 
-Providers registered: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, CODEGG_ZEN_API_KEY, MISTRAL_API_KEY, GROQ_API_KEY, DEEPINFRA_API_KEY, CEREBRAS_API_KEY, COHERE_API_KEY, TOGETHERAI_API_KEY, PERPLEXITY_API_KEY, XAI_API_KEY, VENICE_API_KEY, MINIMAX_API_KEY
+Providers registered: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, CODEGG_ZEN_API_KEY, MISTRAL_API_KEY, GROQ_API_KEY, DEEPINFRA_API_KEY, CEREBRAS_API_KEY, COHERE_API_KEY, TOGETHERAI_API_KEY, PERPLEXITY_API_KEY, XAI_API_KEY, VENICE_API_KEY, MINIMAX_API_KEY, OPENCODE_GO_API_KEY, GENERALCOMPUTE_API_KEY. `register_builtin` wraps the env-var key in `Credential::api_key(...)` so the OpenAI-compatible factories (which now accept a `Credential`) get a uniform envelope.
 
-### register_config_provider
+### register_builtin_with_config
 
-For providers that read API key and optional base URL from config:
-
-```rust
-fn register_config_provider<F>(registry: &mut ProviderRegistry, name: &str, cfg: &ProviderConfig, factory: F)
-where
-    F: FnOnce(String, Option<String>) -> Box<dyn Provider>,
-```
-
-**Usage:**
-```rust
-let anthropic_cfg = providers.and_then(|p| p.get("anthropic"));
-if disabled.map(|d| !d.contains(&"anthropic".to_string())).unwrap_or(true) {
-    if let Some(cfg) = anthropic_cfg {
-        if let Some(ref key) = cfg.api_key {
-            register_config_provider(
-                registry,
-                "anthropic",
-                cfg,
-                |key, url| {
-                    let mut p = AnthropicProvider::new(key);
-                    if let Some(u) = url {
-                        p = p.with_base_url(u);
-                    }
-                    Box::new(p)
-                },
-            );
-        }
-    }
-}
-```
-
-### register_env_fallback_provider
-
-For providers that fall back to environment variables when no config API key is provided:
+The main public entry point. Builds a single
+`Arc<CredentialStore>` at the top (warns and continues if it cannot be
+opened) and threads it into every per-provider helper. The
+`CredentialStore` is what makes `AuthConfig::Stored` actually resolvable
+during registration.
 
 ```rust
-fn register_env_fallback_provider<F>(
+pub fn register_builtin_with_config(
     registry: &mut ProviderRegistry,
+    config: &crate::config::schema::Config,
+);
+```
+
+If no providers are registered (because nothing was configured), it
+falls back to `register_builtin(registry)`.
+
+### Centralized credential resolution
+
+```rust
+pub(crate) fn resolve_provider_credential(
+    provider_id: &str,
+    cfg: Option<&ProviderConfig>,
+    env_var: Option<&str>,
+    store: Option<&Arc<CredentialStore>>,
+) -> Result<Option<ResolvedAuth>, AuthError>;
+```
+
+Builds a `ResolverContext` from the legacy `ProviderConfig` fields and
+the shared credential store, then calls `AuthResolver::resolve`. The
+full `ResolvedAuth` is returned (not just the secret) so the caller can
+inspect `CredentialKind` and `source`.
+
+### register_credential_provider
+
+For OpenAI-compatible providers that accept a full `Credential` envelope
+(preserves `CredentialKind` and `expires_at`):
+
+```rust
+fn register_credential_provider<F>(
+    registry: &mut ProviderRegistry,
+    providers: Option<&HashMap<String, ProviderConfig>>,
+    disabled: Option<&Vec<String>>,
     name: &str,
-    cfg: &ProviderConfig,
-    env_key: &str,
+    env_var: &str,
+    store: Option<&Arc<CredentialStore>>,
+    factory: F,
+) where
+    F: FnOnce(Credential) -> Box<dyn Provider>,
+```
+
+Used for `mistral`, `groq`, `deepinfra`, `cerebras`, `cohere`, `together`,
+`perplexity`, `xai`, `venice`, `opencode_go`, `generalcompute`.
+
+### register_api_key_provider
+
+For providers that genuinely need a static API-key string. Resolves a
+credential through `resolve_provider_credential` and rejects
+`CredentialKind::BearerToken` with a `tracing::warn!` (the provider is
+skipped because callers of this path cannot accept a bearer token):
+
+```rust
+fn register_api_key_provider<F>(
+    registry: &mut ProviderRegistry,
+    providers: Option<&HashMap<String, ProviderConfig>>,
+    disabled: Option<&Vec<String>>,
+    name: &str,
+    env_var: &str,
+    store: Option<&Arc<CredentialStore>>,
     factory: F,
 ) where
     F: FnOnce(String) -> Box<dyn Provider>,
 ```
 
-**Usage:**
+Used for `opencode_zen` and `minimax` (Anthropic-compatible, different
+auth header).
+
+### register_config_provider
+
+For providers with a configurable `base_url`. Resolves a credential and
+threads the (possibly absent) `base_url` through to the factory:
+
 ```rust
-if disabled.map(|d| !d.contains(&"mistral".to_string())).unwrap_or(true) {
-    register_env_fallback_provider(
-        registry,
-        "mistral",
-        cfg,
-        "MISTRAL_API_KEY",
-        |key| crate::provider::additional::create_mistral(key),
-    );
-}
+fn register_config_provider<F>(
+    registry: &mut ProviderRegistry,
+    providers: Option<&HashMap<String, ProviderConfig>>,
+    disabled: Option<&Vec<String>>,
+    name: &str,
+    store: Option<&Arc<CredentialStore>>,
+    factory: F,
+) where
+    F: FnOnce(String, Option<String>) -> Box<dyn Provider>,
 ```
+
+Used for `anthropic`, `openai` (native), `google`, `openrouter`.
 
 ## Provider Module Structure
 
@@ -189,12 +226,40 @@ Some providers require custom base URLs configured in config:
 }
 ```
 
+### OpenAI-compatible factory functions
+
+`src/provider/additional.rs` factory functions take a `Credential` (not
+a raw `String`) so the registered provider can preserve the credential
+kind / `expires_at` metadata:
+
+```rust
+pub fn create_mistral(credential: Credential) -> impl Provider
+pub fn create_groq(credential: Credential) -> impl Provider
+pub fn create_xai(credential: Credential) -> impl Provider
+// ... etc.
+```
+
+`create_minimax` is the exception — it returns an Anthropic-compatible
+provider and takes an `api_key: String` because the MiniMax endpoint
+uses a different auth header.
+
+`OpenAiCompatibleProvider::simple_with_credential(id, name, credential, base_url)`
+is the underlying constructor. The legacy
+`OpenAiCompatibleProvider::simple(id, name, api_key, base_url)` is kept
+as a backwards-compatible shim that wraps the API key in
+`Credential::api_key(...)`. New code should prefer
+`simple_with_credential`.
+
 ## Adding a New Provider
 
 1. Create provider module (e.g., `src/provider/newprovider.rs`)
 2. Implement `Provider` trait with `clone_box()`
 3. Add module declaration to `src/provider/mod.rs`
-4. Add registration using `register_config_provider` or `register_env_fallback_provider`
+4. Add registration using `register_credential_provider` (for
+   OpenAI-compatible providers), `register_api_key_provider` (for
+   providers that need a static API key string), or
+   `register_config_provider` (for providers with a configurable
+   `base_url`).
 5. If using config-based pattern, ensure `ProviderConfig` handling is complete
 
 ## Provider Implementation Best Practices

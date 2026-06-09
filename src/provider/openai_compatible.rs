@@ -49,11 +49,26 @@ impl OpenAiCompatibleProvider {
     }
 
     pub fn simple(id: &str, name: &str, api_key: &str, base_url: &str) -> Self {
+        Self::simple_with_credential(id, name, Credential::api_key(api_key), base_url)
+    }
+
+    /// Construct a provider that accepts a full [`Credential`] envelope.
+    ///
+    /// This preserves the [`crate::auth::CredentialKind`] (and any future
+    /// metadata such as `expires_at`) so the registered provider can be
+    /// used as-is by code that wants to inspect the credential type, not
+    /// just the secret.
+    pub fn simple_with_credential(
+        id: &str,
+        name: &str,
+        credential: Credential,
+        base_url: &str,
+    ) -> Self {
         Self::new(
             id,
             name,
             OpenAiCompatibleConfig {
-                credential: Credential::api_key(api_key),
+                credential,
                 base_url: base_url.to_string(),
                 auth_header: "Authorization".to_string(),
                 extra_headers: Vec::new(),
@@ -439,5 +454,53 @@ impl Provider for OpenAiCompatibleProvider {
 
     fn clone_box(&self) -> Box<dyn Provider> {
         Box::new(self.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::CredentialKind;
+
+    #[test]
+    fn simple_with_credential_preserves_bearer_kind() {
+        let cred = Credential::bearer("short-lived-token", None);
+        let provider = OpenAiCompatibleProvider::simple_with_credential(
+            "openai",
+            "OpenAI",
+            cred.clone(),
+            "https://api.example.test/v1",
+        );
+        assert_eq!(provider.config.credential.kind, CredentialKind::BearerToken);
+        assert_eq!(
+            provider.config.credential.authorization_header_value(),
+            "Bearer short-lived-token"
+        );
+    }
+
+    #[test]
+    fn simple_with_credential_preserves_api_key_kind() {
+        let cred = Credential::api_key("sk-test-1234");
+        let provider = OpenAiCompatibleProvider::simple_with_credential(
+            "openai",
+            "OpenAI",
+            cred,
+            "https://api.example.test/v1",
+        );
+        assert_eq!(provider.config.credential.kind, CredentialKind::ApiKey);
+        assert_eq!(
+            provider.config.credential.authorization_header_value(),
+            "Bearer sk-test-1234"
+        );
+    }
+
+    #[test]
+    fn simple_wraps_api_key() {
+        // Backwards-compat: `simple` should build a Credential::api_key under
+        // the hood so existing callers see the same behavior.
+        let provider =
+            OpenAiCompatibleProvider::simple("xai", "xAI", "sk-x", "https://api.x.ai/v1");
+        assert_eq!(provider.config.credential.kind, CredentialKind::ApiKey);
+        assert_eq!(provider.config.credential.secret, "sk-x");
     }
 }

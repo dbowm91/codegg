@@ -1,6 +1,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 use codegg::agent;
+use codegg::auth::AuthCli;
 use codegg::config::paths;
 use codegg::config::schema::Config;
 use codegg::core::CoreClient;
@@ -255,6 +256,33 @@ enum Commands {
         #[arg(long, value_enum)]
         subsystem: Option<DoctorSubsystem>,
     },
+    /// Manage the user-level credential store (status, set-key, logout).
+    Auth {
+        #[command(subcommand)]
+        command: AuthSubcommand,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+enum AuthSubcommand {
+    /// List stored credentials (no plaintext).
+    Status,
+    /// Store an API key for a provider. Reads the key from stdin.
+    SetKey {
+        /// Provider id (e.g. openai, anthropic, xai).
+        provider: String,
+        /// Optional account id for multi-account stores.
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Remove stored credentials for a provider.
+    Logout {
+        /// Provider id (e.g. openai, anthropic, xai).
+        provider: String,
+        /// Optional account id. Pass "*" to remove all accounts.
+        #[arg(long)]
+        account: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -422,6 +450,9 @@ async fn main() -> Result<(), AppError> {
             }
             Commands::Doctor { subsystem } => {
                 cmd_doctor(subsystem.unwrap_or(DoctorSubsystem::All)).await?;
+            }
+            Commands::Auth { command } => {
+                cmd_auth(command.clone())?;
             }
             Commands::Validate { config } => {
                 cmd_validate(config.as_deref()).await?;
@@ -925,6 +956,23 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn cmd_auth(command: AuthSubcommand) -> Result<(), AppError> {
+    let cli = AuthCli::new();
+    match command {
+        AuthSubcommand::Status => cli.status(),
+        AuthSubcommand::SetKey { provider, account } => {
+            let key = codegg::auth::cli::read_key_from_stdin()?;
+            if key.is_empty() {
+                return Err(AppError::Config(ConfigError::Invalid(
+                    "no key provided on stdin".to_string(),
+                )));
+            }
+            cli.set_key(&provider, account.as_deref(), &key)
+        }
+        AuthSubcommand::Logout { provider, account } => cli.logout(&provider, account.as_deref()),
+    }
 }
 
 fn list_mcp_servers(config: &Config) {

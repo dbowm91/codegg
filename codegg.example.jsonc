@@ -95,6 +95,28 @@
       "auth": { "type": "api_key", "env": "XAI_API_KEY" }
     }
   },
+
+  // Provider auth modes
+  //
+  // Each `provider.<id>.auth` block uses one of:
+  //
+  //   { "type": "api_key", "env": "VENDOR_API_KEY" }      - read from env (default fallback {VENDOR}_API_KEY)
+  //   { "type": "api_key", "value": "sk-..." }           - inline (avoid; prefer env or store)
+  //   { "type": "api_key", "encrypted_value": "v2:..." } - encrypted at rest
+  //   { "type": "stored", "account_id": "default" }      - resolve from user credential store
+  //   { "type": "external_command", "command": "...", "args": ["..."], "timeout_ms": 5000 }
+  //                                                      - shells out (recognized; currently unsupported
+  //                                                        in the synchronous resolver, see ARCHITECTURE)
+  //   { "type": "oauth_device", "client_id": "...", "auth_url": "...", "token_url": "..." }
+  //                                                      - typed but not yet implemented
+  //   { "type": "none" }                                  - explicit no-auth marker
+  //
+  // Legacy: the original `api_key` and `encrypted_api_key` fields on the
+  // provider object are still honored as a fallback. Stored credentials
+  // live in `~/.config/codegg/credentials.json` and require
+  // `CODEGG_MASTER_KEY` to be set. Use `codegg auth status`,
+  // `codegg auth set-key <provider>`, and `codegg auth logout <provider>`
+  // to manage them.
   
   "mcp": {
     "filesystem": {

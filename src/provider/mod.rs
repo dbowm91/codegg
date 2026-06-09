@@ -39,7 +39,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::auth::resolver::{AuthResolver, ResolverContext};
+use crate::auth::resolver::{AuthResolver, ResolvedAuth, ResolverContext};
+use crate::auth::{Credential, CredentialKind, CredentialStore};
 pub use crate::error::ProviderError;
 
 pub const MAX_BUFFER_SIZE: usize = 1024 * 1024;
@@ -348,83 +349,172 @@ pub fn register_builtin(registry: &mut ProviderRegistry) {
         registry.register(crate::provider::opencode_zen::OpencodeZenProvider::new(key));
     }
     if let Ok(key) = std::env::var("MISTRAL_API_KEY") {
-        registry.register(crate::provider::additional::create_mistral(key));
+        registry.register(crate::provider::additional::create_mistral(
+            crate::auth::Credential::api_key(key),
+        ));
     }
     if let Ok(key) = std::env::var("GROQ_API_KEY") {
-        registry.register(crate::provider::additional::create_groq(key));
+        registry.register(crate::provider::additional::create_groq(
+            crate::auth::Credential::api_key(key),
+        ));
     }
     if let Ok(key) = std::env::var("DEEPINFRA_API_KEY") {
-        registry.register(crate::provider::additional::create_deepinfra(key));
+        registry.register(crate::provider::additional::create_deepinfra(
+            crate::auth::Credential::api_key(key),
+        ));
     }
     if let Ok(key) = std::env::var("CEREBRAS_API_KEY") {
-        registry.register(crate::provider::additional::create_cerebras(key));
+        registry.register(crate::provider::additional::create_cerebras(
+            crate::auth::Credential::api_key(key),
+        ));
     }
     if let Ok(key) = std::env::var("COHERE_API_KEY") {
-        registry.register(crate::provider::additional::create_cohere(key));
+        registry.register(crate::provider::additional::create_cohere(
+            crate::auth::Credential::api_key(key),
+        ));
     }
     if let Ok(key) = std::env::var("TOGETHERAI_API_KEY") {
-        registry.register(crate::provider::additional::create_together(key));
+        registry.register(crate::provider::additional::create_together(
+            crate::auth::Credential::api_key(key),
+        ));
     }
     if let Ok(key) = std::env::var("PERPLEXITY_API_KEY") {
-        registry.register(crate::provider::additional::create_perplexity(key));
+        registry.register(crate::provider::additional::create_perplexity(
+            crate::auth::Credential::api_key(key),
+        ));
     }
     if let Ok(key) = std::env::var("XAI_API_KEY") {
-        registry.register(crate::provider::additional::create_xai(key));
+        registry.register(crate::provider::additional::create_xai(
+            crate::auth::Credential::api_key(key),
+        ));
     }
     if let Ok(key) = std::env::var("VENICE_API_KEY") {
-        registry.register(crate::provider::additional::create_venice(key));
+        registry.register(crate::provider::additional::create_venice(
+            crate::auth::Credential::api_key(key),
+        ));
     }
     if let Ok(key) = std::env::var("MINIMAX_API_KEY") {
         registry.register(crate::provider::additional::create_minimax(key));
     }
 }
 
-fn register_config_provider<F>(
-    registry: &mut ProviderRegistry,
-    providers: Option<&std::collections::HashMap<String, crate::config::schema::ProviderConfig>>,
-    disabled: Option<&Vec<String>>,
-    name: &str,
-    factory: F,
-) where
-    F: FnOnce(String, Option<String>) -> Box<dyn Provider>,
-{
-    if disabled
-        .map(|d| !d.contains(&name.to_string()))
-        .unwrap_or(true)
-    {
-        if let Some(cfg) = providers.and_then(|p| p.get(name)) {
-            // Resolve through the typed `auth` descriptor first; fall back
-            // to the legacy `api_key` field for backward compatibility.
-            let resolver = AuthResolver::new();
-            let ctx = ResolverContext {
-                provider_id: name.to_string(),
-                account_id: cfg.account_id.clone(),
-                legacy_api_key: cfg.api_key.clone(),
-                ..Default::default()
-            };
-            let resolved = resolver.resolve(cfg.auth.as_ref(), &ctx).ok().flatten();
-            if let Some(resolved) = resolved {
-                if !resolved.credential.secret.is_empty() {
-                    tracing::debug!(
-                        "register_config_provider: provider '{}' resolved via {}",
-                        name,
-                        resolved.source.as_str()
-                    );
-                    registry.register(factory(resolved.credential.secret, cfg.base_url.clone()));
-                }
-            } else if let Some(ref key) = cfg.api_key {
-                registry.register(factory(key.clone(), cfg.base_url.clone()));
-            }
+/// Centralized credential resolution for provider registration.
+///
+/// Builds a [`ResolverContext`] from the legacy [`ProviderConfig`] fields
+/// and a shared [`CredentialStore`], then calls
+/// [`AuthResolver::resolve`]. The full [`ResolvedAuth`] is returned so the
+/// caller can inspect the [`CredentialKind`] / `expires_at` metadata, not
+/// just the secret.
+pub(crate) fn resolve_provider_credential(
+    provider_id: &str,
+    cfg: Option<&crate::config::schema::ProviderConfig>,
+    env_var: Option<&str>,
+    store: Option<&std::sync::Arc<CredentialStore>>,
+) -> Result<Option<ResolvedAuth>, crate::auth::AuthError> {
+    let resolver = AuthResolver::new();
+    let ctx = ResolverContext {
+        provider_id: provider_id.to_string(),
+        account_id: cfg.and_then(|c| c.account_id.clone()),
+        legacy_api_key: cfg.and_then(|c| c.api_key.clone()),
+        legacy_decrypted: None,
+        env_override: env_var.map(|s| s.to_string()),
+        store: store.cloned(),
+    };
+    resolver.resolve(cfg.and_then(|c| c.auth.as_ref()), &ctx)
+}
+
+/// Convert a [`ResolvedAuth`] into a [`Credential::api_key`] credential,
+/// warning if a bearer-style credential was supplied to a path that only
+/// supports static API keys.
+fn ensure_api_key_credential(name: &str, resolved: &ResolvedAuth) -> Option<Credential> {
+    if resolved.credential.secret.is_empty() {
+        return None;
+    }
+    match resolved.credential.kind {
+        CredentialKind::ApiKey => Some(resolved.credential.clone()),
+        CredentialKind::BearerToken => {
+            tracing::warn!(
+                "register_api_key_provider: provider '{}' resolved a bearer token but this provider path only supports API-key credentials; skipping",
+                name
+            );
+            None
         }
     }
 }
 
-fn register_env_fallback_provider<F>(
+/// Register a provider that accepts a full [`Credential`] envelope.
+///
+/// This is the preferred path for OpenAI-compatible providers. It
+/// preserves `CredentialKind` (api key vs. bearer token) and any
+/// `expires_at` metadata at construction time.
+fn register_credential_provider<F>(
     registry: &mut ProviderRegistry,
     providers: Option<&std::collections::HashMap<String, crate::config::schema::ProviderConfig>>,
     disabled: Option<&Vec<String>>,
     name: &str,
     env_var: &str,
+    store: Option<&std::sync::Arc<CredentialStore>>,
+    factory: F,
+) where
+    F: FnOnce(Credential) -> Box<dyn Provider>,
+{
+    if disabled
+        .map(|d| !d.contains(&name.to_string()))
+        .unwrap_or(true)
+    {
+        let cfg_opt = providers.and_then(|p| p.get(name));
+        match resolve_provider_credential(name, cfg_opt, Some(env_var), store) {
+            Ok(Some(resolved)) => {
+                if !resolved.credential.secret.is_empty() {
+                    tracing::debug!(
+                        "register_credential_provider: registering provider '{}' via {}",
+                        name,
+                        resolved.source.as_str()
+                    );
+                    registry.register(factory(resolved.credential));
+                } else {
+                    tracing::warn!(
+                        "register_credential_provider: NO KEY for provider '{}', env_var='{}' (empty resolved key)",
+                        name,
+                        env_var
+                    );
+                }
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    "register_credential_provider: NO KEY for provider '{}', env_var='{}' (no credential configured)",
+                    name,
+                    env_var
+                );
+            }
+            Err(e) => {
+                // Recognize-but-unimplemented auth modes (e.g. OAuthDevice,
+                // ExternalCommand) should not prevent other providers from
+                // loading. Log and skip.
+                tracing::warn!(
+                    "register_credential_provider: provider '{}' could not be resolved: {}",
+                    name,
+                    e
+                );
+            }
+        }
+    }
+}
+
+/// Register a provider that only accepts a static API-key secret.
+///
+/// Resolves a credential through [`resolve_provider_credential`], then
+/// collapses it to a `String` for the factory. Bearer-style credentials
+/// produce a warning and the provider is skipped, since callers of this
+/// helper genuinely need a static API key (e.g. they use a non-Bearer
+/// auth header like `x-api-key`).
+fn register_api_key_provider<F>(
+    registry: &mut ProviderRegistry,
+    providers: Option<&std::collections::HashMap<String, crate::config::schema::ProviderConfig>>,
+    disabled: Option<&Vec<String>>,
+    name: &str,
+    env_var: &str,
+    store: Option<&std::sync::Arc<CredentialStore>>,
     factory: F,
 ) where
     F: FnOnce(String) -> Box<dyn Provider>,
@@ -434,44 +524,79 @@ fn register_env_fallback_provider<F>(
         .unwrap_or(true)
     {
         let cfg_opt = providers.and_then(|p| p.get(name));
-        let resolver = AuthResolver::new();
-        let ctx = ResolverContext {
-            provider_id: name.to_string(),
-            account_id: cfg_opt.and_then(|c| c.account_id.clone()),
-            legacy_api_key: cfg_opt.and_then(|c| c.api_key.clone()),
-            env_override: Some(env_var.to_string()),
-            ..Default::default()
-        };
-        match resolver.resolve(cfg_opt.and_then(|c| c.auth.as_ref()), &ctx) {
+        match resolve_provider_credential(name, cfg_opt, Some(env_var), store) {
             Ok(Some(resolved)) => {
-                if !resolved.credential.secret.is_empty() {
+                if let Some(cred) = ensure_api_key_credential(name, &resolved) {
                     tracing::debug!(
-                        "register_env_fallback_provider: registering provider '{}' via {}",
+                        "register_api_key_provider: registering provider '{}' via {}",
                         name,
                         resolved.source.as_str()
                     );
-                    registry.register(factory(resolved.credential.secret));
-                } else {
-                    tracing::warn!(
-                        "register_env_fallback_provider: NO KEY for provider '{}', env_var='{}' (empty resolved key)",
-                        name,
-                        env_var
-                    );
+                    registry.register(factory(cred.secret));
                 }
             }
             Ok(None) => {
                 tracing::warn!(
-                    "register_env_fallback_provider: NO KEY for provider '{}', env_var='{}' (empty key)",
+                    "register_api_key_provider: NO KEY for provider '{}', env_var='{}' (no credential configured)",
                     name,
                     env_var
                 );
             }
             Err(e) => {
-                // Recognize-but-unimplemented auth modes (e.g. OAuthDevice)
-                // should not prevent other providers from loading. Log and
-                // skip.
                 tracing::warn!(
-                    "register_env_fallback_provider: provider '{}' could not be resolved: {}",
+                    "register_api_key_provider: provider '{}' could not be resolved: {}",
+                    name,
+                    e
+                );
+            }
+        }
+    }
+}
+
+/// Backwards-compatible registration helper for config-driven providers
+/// that have a `base_url` override. Resolves a credential and threads the
+/// (possibly absent) `base_url` through to the factory. Uses the
+/// [`register_api_key_provider`] path because all current callers
+/// (Anthropic, OpenAI native, Google, OpenRouter) use static API keys.
+fn register_config_provider<F>(
+    registry: &mut ProviderRegistry,
+    providers: Option<&std::collections::HashMap<String, crate::config::schema::ProviderConfig>>,
+    disabled: Option<&Vec<String>>,
+    name: &str,
+    store: Option<&std::sync::Arc<CredentialStore>>,
+    factory: F,
+) where
+    F: FnOnce(String, Option<String>) -> Box<dyn Provider>,
+{
+    if disabled
+        .map(|d| !d.contains(&name.to_string()))
+        .unwrap_or(true)
+    {
+        let cfg_opt = providers.and_then(|p| p.get(name));
+        match resolve_provider_credential(name, cfg_opt, None, store) {
+            Ok(Some(resolved)) => {
+                if let Some(cred) = ensure_api_key_credential(name, &resolved) {
+                    tracing::debug!(
+                        "register_config_provider: provider '{}' resolved via {}",
+                        name,
+                        resolved.source.as_str()
+                    );
+                    let base_url = cfg_opt.and_then(|c| c.base_url.clone());
+                    registry.register(factory(cred.secret, base_url));
+                }
+            }
+            Ok(None) => {
+                if let Some(cfg) = cfg_opt {
+                    if let Some(ref key) = cfg.api_key {
+                        if !key.is_empty() {
+                            registry.register(factory(key.clone(), cfg.base_url.clone()));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "register_config_provider: provider '{}' could not be resolved: {}",
                     name,
                     e
                 );
@@ -487,11 +612,25 @@ pub fn register_builtin_with_config(
     let providers = config.provider.as_ref();
     let disabled = config.disabled_providers.as_ref();
 
+    // Build a single, shared credential store. A failure to construct the
+    // store does not abort registration: env-var and inline API-key paths
+    // still work without it; only `AuthConfig::Stored` becomes unavailable.
+    let store: Option<std::sync::Arc<CredentialStore>> = CredentialStore::at_default_location()
+        .map(std::sync::Arc::new)
+        .map_err(|e| {
+            tracing::warn!(
+                "register_builtin_with_config: could not open user credential store: {e}"
+            );
+            e
+        })
+        .ok();
+
     register_config_provider(
         registry,
         providers,
         disabled,
         "anthropic",
+        store.as_ref(),
         |key, base_url| {
             let mut p = crate::provider::anthropic::AnthropicProvider::new(key);
             if let Some(url) = base_url {
@@ -501,136 +640,167 @@ pub fn register_builtin_with_config(
         },
     );
 
-    register_config_provider(registry, providers, disabled, "openai", |key, base_url| {
-        let mut cfg = crate::provider::openai::OpenAiConfig::default_with_key(key);
-        if let Some(url) = base_url {
-            cfg.base_url = url;
-        }
-        Box::new(crate::provider::openai::OpenAiProvider::new(cfg))
-    });
+    register_config_provider(
+        registry,
+        providers,
+        disabled,
+        "openai",
+        store.as_ref(),
+        |key, base_url| {
+            let mut cfg = crate::provider::openai::OpenAiConfig::default_with_key(key);
+            if let Some(url) = base_url {
+                cfg.base_url = url;
+            }
+            Box::new(crate::provider::openai::OpenAiProvider::new(cfg))
+        },
+    );
 
-    register_config_provider(registry, providers, disabled, "google", |key, _base_url| {
-        Box::new(crate::provider::google::GoogleProvider::new(key))
-    });
+    register_config_provider(
+        registry,
+        providers,
+        disabled,
+        "google",
+        store.as_ref(),
+        |key, _base_url| Box::new(crate::provider::google::GoogleProvider::new(key)),
+    );
 
     register_config_provider(
         registry,
         providers,
         disabled,
         "openrouter",
+        store.as_ref(),
         |key, _base_url| Box::new(crate::provider::openrouter::OpenRouterProvider::new(key)),
     );
 
-    register_env_fallback_provider(
+    register_api_key_provider(
         registry,
         providers,
         disabled,
         "opencode_zen",
         "OPENCODE_ZEN_API_KEY",
+        store.as_ref(),
         |key| Box::new(crate::provider::opencode_zen::OpencodeZenProvider::new(key)),
     );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "mistral",
         "MISTRAL_API_KEY",
-        |key| Box::new(crate::provider::additional::create_mistral(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_mistral(cred)),
     );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "groq",
         "GROQ_API_KEY",
-        |key| Box::new(crate::provider::additional::create_groq(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_groq(cred)),
     );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "deepinfra",
         "DEEPINFRA_API_KEY",
-        |key| Box::new(crate::provider::additional::create_deepinfra(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_deepinfra(cred)),
     );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "cerebras",
         "CEREBRAS_API_KEY",
-        |key| Box::new(crate::provider::additional::create_cerebras(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_cerebras(cred)),
     );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "cohere",
         "COHERE_API_KEY",
-        |key| Box::new(crate::provider::additional::create_cohere(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_cohere(cred)),
     );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "together",
         "TOGETHERAI_API_KEY",
-        |key| Box::new(crate::provider::additional::create_together(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_together(cred)),
     );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "perplexity",
         "PERPLEXITY_API_KEY",
-        |key| Box::new(crate::provider::additional::create_perplexity(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_perplexity(cred)),
     );
 
-    register_env_fallback_provider(registry, providers, disabled, "xai", "XAI_API_KEY", |key| {
-        Box::new(crate::provider::additional::create_xai(key))
-    });
+    register_credential_provider(
+        registry,
+        providers,
+        disabled,
+        "xai",
+        "XAI_API_KEY",
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_xai(cred)),
+    );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "venice",
         "VENICE_API_KEY",
-        |key| Box::new(crate::provider::additional::create_venice(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_venice(cred)),
     );
 
-    register_env_fallback_provider(
+    register_api_key_provider(
         registry,
         providers,
         disabled,
         "minimax",
         "MINIMAX_API_KEY",
+        store.as_ref(),
         |key| Box::new(crate::provider::additional::create_minimax(key)),
     );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "opencode_go",
         "OPENCODE_GO_API_KEY",
-        |key| Box::new(crate::provider::additional::create_opencode_go(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_opencode_go(cred)),
     );
 
-    register_env_fallback_provider(
+    register_credential_provider(
         registry,
         providers,
         disabled,
         "generalcompute",
         "GENERALCOMPUTE_API_KEY",
-        |key| Box::new(crate::provider::additional::create_generalcompute(key)),
+        store.as_ref(),
+        |cred| Box::new(crate::provider::additional::create_generalcompute(cred)),
     );
 
     if registry.list().is_empty() {
@@ -803,6 +973,244 @@ mod tests {
         }
         async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
             Ok(vec![])
+        }
+    }
+
+    // ---- Credential resolution tests ----
+
+    use crate::auth::store::CredentialStore;
+    use crate::auth::{AuthConfig, ResolvedAuthSource};
+    use crate::config::schema::{Config, ProviderConfig};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn make_provider_config() -> ProviderConfig {
+        ProviderConfig {
+            auth: Some(AuthConfig::ApiKey {
+                env: None,
+                value: Some("inline-key".to_string()),
+                encrypted_value: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_provider_credential_reads_inline_value() {
+        let _guard = crate::auth::test_support::lock_env();
+        let prev = std::env::var("RESOLVE_TEST_PROVIDER_API_KEY").ok();
+        std::env::remove_var("RESOLVE_TEST_PROVIDER_API_KEY");
+        let cfg = make_provider_config();
+        let resolved = resolve_provider_credential("resolve_test_provider", Some(&cfg), None, None)
+            .expect("ok")
+            .expect("some");
+        assert_eq!(resolved.credential.secret, "inline-key");
+        assert_eq!(resolved.credential.kind, CredentialKind::ApiKey);
+        if let Some(v) = prev {
+            std::env::set_var("RESOLVE_TEST_PROVIDER_API_KEY", v);
+        }
+    }
+
+    #[test]
+    fn resolve_provider_credential_reads_from_store_when_stored() {
+        let _guard = crate::auth::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        let prev_enc = std::env::var("CODEGG_ENCRYPTION_KEY").ok();
+        let prev_opencode = std::env::var("OPENCODE_ENCRYPTION_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "resolve-store-test-master");
+        std::env::remove_var("RESOLVE_TEST_PROVIDER_API_KEY");
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let store =
+            Arc::new(CredentialStore::at_path(tmp.path().join("credentials.json")).expect("store"));
+        store
+            .put(
+                "resolve_test_provider",
+                Some("acct-1"),
+                CredentialKind::ApiKey,
+                "stored-key",
+                None,
+                vec![],
+            )
+            .expect("put");
+
+        let cfg = ProviderConfig {
+            auth: Some(AuthConfig::Stored {
+                account_id: Some("acct-1".to_string()),
+            }),
+            ..Default::default()
+        };
+        let resolved =
+            resolve_provider_credential("resolve_test_provider", Some(&cfg), None, Some(&store))
+                .expect("ok")
+                .expect("some");
+        assert_eq!(resolved.credential.secret, "stored-key");
+        assert_eq!(resolved.credential.kind, CredentialKind::ApiKey);
+        assert_eq!(resolved.source, ResolvedAuthSource::UserStore);
+
+        // Restore env
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+        if let Some(v) = prev_enc {
+            std::env::set_var("CODEGG_ENCRYPTION_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_ENCRYPTION_KEY");
+        }
+        if let Some(v) = prev_opencode {
+            std::env::set_var("OPENCODE_ENCRYPTION_KEY", v);
+        } else {
+            std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
+        }
+    }
+
+    #[test]
+    fn register_builtin_with_config_registers_via_env_var() {
+        let _guard = crate::auth::test_support::lock_env();
+        // Use a unique env var so the test does not depend on the host's
+        // existing XAI_API_KEY / OPENAI_API_KEY.
+        let prev_xai = std::env::var("XAI_API_KEY").ok();
+        std::env::set_var("XAI_API_KEY", "xai-env-key");
+
+        let config = Config::default();
+        let mut registry = ProviderRegistry::new();
+        register_builtin_with_config(&mut registry, &config);
+        assert!(
+            registry.get("xai").is_some(),
+            "xai should be registered from XAI_API_KEY"
+        );
+
+        if let Some(v) = prev_xai {
+            std::env::set_var("XAI_API_KEY", v);
+        } else {
+            std::env::remove_var("XAI_API_KEY");
+        }
+    }
+
+    #[test]
+    fn register_builtin_with_config_uses_typed_auth_inline() {
+        let _guard = crate::auth::test_support::lock_env();
+        let prev_xai = std::env::var("XAI_API_KEY").ok();
+        std::env::remove_var("XAI_API_KEY");
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "xai".to_string(),
+            ProviderConfig {
+                auth: Some(AuthConfig::ApiKey {
+                    env: None,
+                    value: Some("inline-xai-key".to_string()),
+                    encrypted_value: None,
+                }),
+                ..Default::default()
+            },
+        );
+        let config = Config {
+            provider: Some(providers),
+            ..Default::default()
+        };
+        let mut registry = ProviderRegistry::new();
+        register_builtin_with_config(&mut registry, &config);
+        assert!(
+            registry.get("xai").is_some(),
+            "xai should be registered from typed auth descriptor"
+        );
+
+        if let Some(v) = prev_xai {
+            std::env::set_var("XAI_API_KEY", v);
+        }
+    }
+
+    #[test]
+    fn register_builtin_with_config_stored_credential_works() {
+        let _guard = crate::auth::test_support::lock_env();
+        let prev_xai = std::env::var("XAI_API_KEY").ok();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        std::env::remove_var("XAI_API_KEY");
+        std::env::set_var("CODEGG_MASTER_KEY", "stored-xai-test-master");
+
+        // Use HOME to point at a temp config dir so the production
+        // credential-store path is hermetic.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let prev_home = std::env::var("HOME").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+
+        // Seed the store directly via the in-process API.
+        let store_path = dirs::config_dir()
+            .map(|d| d.join("codegg").join("credentials.json"))
+            .expect("config dir");
+        let store = CredentialStore::at_path(store_path.clone()).expect("store");
+        store
+            .put(
+                "xai",
+                Some("default"),
+                CredentialKind::ApiKey,
+                "stored-xai-key",
+                None,
+                vec![],
+            )
+            .expect("put");
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "xai".to_string(),
+            ProviderConfig {
+                auth: Some(AuthConfig::Stored {
+                    account_id: Some("default".to_string()),
+                }),
+                ..Default::default()
+            },
+        );
+        let config = Config {
+            provider: Some(providers),
+            ..Default::default()
+        };
+        let mut registry = ProviderRegistry::new();
+        register_builtin_with_config(&mut registry, &config);
+        assert!(
+            registry.get("xai").is_some(),
+            "xai should be registered from a Stored credential"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_file(&store_path);
+        if let Some(v) = prev_xai {
+            std::env::set_var("XAI_API_KEY", v);
+        }
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+        if let Some(v) = prev_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(v) = prev_xdg {
+            std::env::set_var("XDG_CONFIG_HOME", v);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+    }
+
+    #[test]
+    fn register_api_key_provider_rejects_bearer_credentials() {
+        let _guard = crate::auth::test_support::lock_env();
+        let prev_xai = std::env::var("XAI_API_KEY").ok();
+        std::env::remove_var("XAI_API_KEY");
+        // No env, no config: resolution should not find a key at all,
+        // and the provider should not be registered.
+        let config = Config::default();
+        let mut registry = ProviderRegistry::new();
+        register_builtin_with_config(&mut registry, &config);
+        assert!(registry.get("minimax").is_none());
+        if let Some(v) = prev_xai {
+            std::env::set_var("XAI_API_KEY", v);
         }
     }
 }
