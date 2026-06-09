@@ -1,0 +1,7 @@
+[alias]
+ck = "check --workspace --all-targets"
+ckroot = "check -p codegg"
+ckprotocol = "check -p codegg-protocol"
+ckconfig = "check -p codegg-config"
+ckproviders = "check -p codegg-providers"
+cksplit = "check -p codegg-protocol -p codegg-config -p codegg-providers -p codegg"
