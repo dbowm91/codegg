@@ -166,6 +166,7 @@ Post-loop:
    - Semaphore-controlled concurrency (default max 100)
    - Per-tool timeout via `get_tool_timeout()`
    - Hook dispatch: plugin hook → ToolExecuteBefore → tool execution → ToolExecuteAfter
+   - Native tools execute through `ToolRegistry::execute_capture(name, input, ctx)` (which calls `Tool::execute_structured` internally). The `ToolExecutionContext` is built by `AgentLoop::build_tool_execution_context(tc, timeout_ms)`; the `ToolBackendKind` is resolved by `AgentLoop::resolve_native_backend(name)` (most tools → `Native`, `websearch`/`webfetch` → `Mcp` when `[search].backend = eggsearch`, otherwise `BuiltinLegacy`). After the call returns, a `tracing::debug!` line summarises the `ToolProvenance` (backend, implementation, elapsed_ms, trust). MCP tools (`mcp__server__tool`) are dispatched separately through `McpService::call_tool` and never go through `execute_capture`.
 
 5. **Question Handling**:
    - Wait for question_rx (300s timeout)

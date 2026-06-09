@@ -85,6 +85,34 @@ elapsed time and trust metadata. MCP tools (`mcp__server__tool`)
 continue to dispatch through `McpService::call_tool` and are not
 funnelled through `execute_capture` in this pass.
 
+The `ToolExecutionContext` passed to `execute_capture` is built by
+`AgentLoop::build_tool_execution_context(tc, timeout_ms)`
+(`src/agent/loop.rs`). The helper fills in `session_id`, `cwd`, and
+`timeout_ms` from live state. The `backend` field is resolved by
+`AgentLoop::resolve_native_backend(name)`: most tools resolve to
+`ToolBackendKind::Native`; `websearch` / `webfetch` resolve to
+`Mcp` when `[search].backend = eggsearch` and to `BuiltinLegacy` for
+the `builtin` or `disabled` configurations (so the structured
+metadata reflects the real backend the wrapper delegates to).
+
+Live-dispatcher regression tests live in
+`tests/agent_loop_harness.rs`:
+
+- `test_live_dispatcher_uses_execute_capture` proves the agent-loop
+  dispatcher routes native calls through `execute_capture` (and
+  therefore `execute_structured`). A mock tool records the call
+  inside its own `execute_structured` override; bypassing the
+  structured path would fail the assertion.
+- `test_live_dispatcher_passes_native_backend_in_context` proves the
+  helper resolves non-search tools to `ToolBackendKind::Native`.
+- `test_live_dispatcher_model_output_shape_is_plain_string` locks
+  down the model-facing `Message::Tool` content (no provenance JSON
+  envelope leaks to the model).
+
+Together with the registry-level smoke tests in
+`tests/tool_structured_execution.rs`, these cover both the unit-level
+contract and the live dispatch path.
+
 ## Backend selection config
 
 Per-domain backend configuration is parsed from TOML/JSON via

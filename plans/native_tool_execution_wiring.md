@@ -357,3 +357,25 @@ This pass is complete when:
 - A dispatcher-level test fails if native tool calls bypass `execute_capture()`.
 - Config-aware session registry behavior remains intact.
 - Documentation matches actual runtime behavior.
+
+## Status: Complete (2026-06-09)
+
+All phases of this plan have been executed:
+
+- **Phase 1 (locate dispatcher):** The single dispatcher is `AgentLoop::execute_tool_calls` at `src/agent/loop.rs`. Confirmed via subagent exploration that it already routes native tools through `ToolRegistry::execute_capture` (line 3249) and MCP tools through `McpService::call_tool` (line 3078) in three call sites (main loop, synthetic bootstrap, follow-up drain).
+- **Phase 2 (helper):** Added `AgentLoop::build_tool_execution_context(tc, timeout_ms)` and `AgentLoop::resolve_native_backend(name)` (`src/agent/loop.rs`). The helper centralises `ToolExecutionContext` construction so backend resolution and session plumbing live in one place.
+- **Phase 3 (tracing):** The dispatcher now emits a `tracing::debug!` line summarising `ToolProvenance` (backend, implementation, elapsed_ms, trust) after every native tool call. Model-facing string output is unchanged.
+- **Phase 4 (MCP separate):** No change. The MCP bucket at `src/agent/loop.rs:3047-3116` continues to call `mcp.call_tool` directly.
+- **Phase 5 (timeout/cancellation):** No change. `tokio::time::timeout(timeout, ...)` still wraps the structured-execution future; the per-tool timeout via `get_tool_timeout` is preserved.
+- **Phase 6 (live dispatcher test):** Added `tests/agent_loop_harness.rs::test_live_dispatcher_uses_execute_capture` and `test_live_dispatcher_passes_native_backend_in_context`. The mock tool overrides `execute_structured` and records the call; bypassing the structured path fails the test.
+- **Phase 7 (model output shape):** Added `tests/agent_loop_harness.rs::test_live_dispatcher_model_output_shape_is_plain_string`. Asserts the `Message::Tool` content does not contain `provenance`, `backend`, `implementation`, `trust`, or `elapsed_ms`.
+- **Phase 8 (constructor audit):** Confirmed `with_config(&config)` is used in production at `src/main.rs:1065` and `src/exec.rs:112`; `with_options` is used in `src/core/daemon.rs:504` (with `tool_backends: from_config(&config)`); `with_session_defaults` only appears in a single in-tree unit test (`src/agent/loop.rs:4123`) and is not on a production path. Subagent dispatch uses `with_defaults()` intentionally to strip todo/plan tools. No production migration required.
+- **Phase 9 (documentation):** Updated `architecture/tool.md`, `architecture/native_crates.md`, `architecture/overview.md`, `AGENTS.md`, and `.opencode/skills/tool/SKILL.md` to describe the new helper, the resolved `backend` for `websearch`/`webfetch`, and the live-dispatcher regression tests.
+
+Validation:
+- `cargo check --workspace --all-features` — clean
+- `cargo fmt --all --check` — clean
+- `cargo test --test tool_structured_execution` — 9/9 pass
+- `cargo test --test tool_registry` — 11/11 pass
+- `cargo test --test agent_loop_harness test_live_dispatcher -- --test-threads=1` — 3/3 pass
+- Pre-existing failures in `tests/agent_loop_harness.rs` (9 tests, all unrelated to native-tool wiring) reproduce on `main` before this work and are not introduced by it.

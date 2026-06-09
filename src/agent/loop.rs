@@ -314,6 +314,53 @@ impl AgentLoop {
             .map(Duration::from_secs)
             .unwrap_or(default)
     }
+
+    /// Build the `ToolExecutionContext` passed alongside every
+    /// native tool call dispatched via
+    /// `ToolRegistry::execute_capture()`.
+    ///
+    /// Centralising this helper keeps the structured-execution
+    /// envelope consistent across all native dispatch sites and
+    /// makes it trivial to enrich the context (e.g. resolve the
+    /// real `backend` for `websearch`/`webfetch`) in a single
+    /// place.
+    fn build_tool_execution_context(
+        &self,
+        tc: &ToolCall,
+        timeout_ms: Option<u64>,
+    ) -> crate::tool::backend::ToolExecutionContext {
+        let backend = self.resolve_native_backend(&tc.name);
+        crate::tool::backend::ToolExecutionContext {
+            backend,
+            session_id: Some(self.session_id.clone()),
+            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            permission_mode: None,
+            timeout_ms,
+        }
+    }
+
+    /// Resolve the `ToolBackendKind` for a native tool name.
+    ///
+    /// The vast majority of codegg tools are in-process `Native`
+    /// wrappers; the live exception is `websearch`/`webfetch` which
+    /// may be backed by the external `eggsearch` MCP server. For
+    /// those, we read the resolved `SearchConfig` so the
+    /// `ToolExecutionContext::backend` field reflects the real
+    /// backend the wrapper will eventually delegate to.
+    fn resolve_native_backend(&self, tool_name: &str) -> crate::tool::backend::ToolBackendKind {
+        use crate::config::schema::SearchBackendConfig;
+        use crate::tool::backend::ToolBackendKind;
+        if matches!(tool_name, "websearch" | "webfetch") {
+            match crate::search_backend::state::search_config().backend() {
+                SearchBackendConfig::Eggsearch => ToolBackendKind::Mcp,
+                SearchBackendConfig::Builtin | SearchBackendConfig::Disabled => {
+                    ToolBackendKind::BuiltinLegacy
+                }
+            }
+        } else {
+            ToolBackendKind::Native
+        }
+    }
 }
 
 fn extract_path_from_tool_call(tc: &ToolCall) -> Option<String> {
@@ -3122,11 +3169,17 @@ impl AgentLoop {
         let plugin_service = self.plugin_service.as_ref().map(Arc::clone);
         let event_store = self.event_store.clone();
         for (orig_idx, tc) in regular_tools {
+            // Build the structured-execution context here (before
+            // `tc` is moved into an Arc) so the helper, which takes
+            // `&self`, can read live state without forcing the
+            // `async move` closure to capture `self` by move.
+            let tool_name_for_ctx = tc.name.clone();
+            let timeout = self.get_tool_timeout(&tool_name_for_ctx);
+            let exec_ctx = self.build_tool_execution_context(&tc, Some(timeout.as_millis() as u64));
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);
             let id = tc_arc.id.clone();
             let tool_name = tc_arc.name.clone();
-            let timeout = self.get_tool_timeout(&tool_name);
             let hook_registry = hook_registry.clone();
             let plugin_service = plugin_service.clone();
             let session_id = self.session_id.clone();
@@ -3227,31 +3280,25 @@ impl AgentLoop {
                                     attempt + 1
                                 );
                             }
-                            // Use the registry's structured
-                            // execution path so wrappers can
-                            // record provenance/trust framing and
-                            // disabled/MCP stub tools surface
-                            // their configured reason. The
-                            // model-facing string output is
-                            // identical to what the legacy
-                            // `t.execute(...)` would have
-                            // returned.
-                            let exec_ctx = Some(crate::tool::backend::ToolExecutionContext {
-                                backend: crate::tool::backend::ToolBackendKind::Native,
-                                session_id: Some(session_id.clone()),
-                                cwd: std::env::current_dir()
-                                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                                permission_mode: None,
-                                timeout_ms: Some(timeout.as_millis() as u64),
-                            });
+                            let exec_ctx = exec_ctx.clone();
                             let exec_fut = async {
                                 let structured = registry
                                     .execute_capture(
                                         &tc_inner.name,
                                         tc_inner.arguments.clone(),
-                                        exec_ctx,
+                                        Some(exec_ctx),
                                     )
                                     .await?;
+                                if let Some(ref p) = structured.provenance {
+                                    tracing::debug!(
+                                        tool = %tc_inner.name,
+                                        backend = %p.backend,
+                                        implementation = %p.implementation,
+                                        elapsed_ms = ?p.elapsed_ms,
+                                        trust = ?p.trust,
+                                        "native tool completed with provenance"
+                                    );
+                                }
                                 Ok::<String, ToolError>(structured.output)
                             };
                             match tokio::time::timeout(timeout, exec_fut).await {

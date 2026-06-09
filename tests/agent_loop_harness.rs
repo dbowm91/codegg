@@ -3708,3 +3708,363 @@ fn test_default_registry_includes_lsp_tool() {
         "Default tool registry should include lsp tool"
     );
 }
+
+// =============================================================================
+// Live-dispatcher wiring tests
+// =============================================================================
+//
+// These tests prove that the live agent-loop dispatcher routes native
+// tool calls through `ToolRegistry::execute_capture()` (which in turn
+// calls `Tool::execute_structured`) rather than the legacy
+// `Tool::execute` path. The recording tool overrides
+// `execute_structured`; if the loop ever bypasses the structured path
+// and calls `execute` directly, the counter will not increment and the
+// test will fail.
+//
+// They also lock down the model-facing shape of the tool result:
+// `Message::Tool::content` is the raw tool output string with no
+// provenance JSON envelope.
+//
+// No network, providers, MCP servers, or LSP servers are required.
+
+use codegg::tool::{
+    StructuredToolResult, ToolBackendKind, ToolExecutionContext, ToolProvenance, ToolTrust,
+};
+
+/// Test tool that overrides `execute_structured` to record that the
+/// structured path was taken. The counter only increments inside
+/// `execute_structured`, so a live dispatcher that bypasses
+/// `execute_capture` and goes through `execute` directly will not
+/// trigger the recording.
+struct ProvenanceRecordingTool {
+    counter: Arc<AtomicUsize>,
+    last_args: Arc<Mutex<serde_json::Value>>,
+    last_ctx_backend: Arc<Mutex<Option<ToolBackendKind>>>,
+}
+
+impl ProvenanceRecordingTool {
+    fn new(
+        counter: Arc<AtomicUsize>,
+        last_args: Arc<Mutex<serde_json::Value>>,
+        last_ctx_backend: Arc<Mutex<Option<ToolBackendKind>>>,
+    ) -> Self {
+        Self {
+            counter,
+            last_args,
+            last_ctx_backend,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for ProvenanceRecordingTool {
+    fn name(&self) -> &str {
+        "record_provenance"
+    }
+
+    fn description(&self) -> &str {
+        "Test tool that records every call through execute_structured"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": "string" }
+            },
+            "required": ["value"]
+        })
+    }
+
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        // The legacy path should never be reached by the live
+        // dispatcher; if it is, the test will fail because the
+        // counter does not increment.
+        Err(codegg::error::ToolError::Execution(
+            "legacy execute() should not be called by the live dispatcher".to_string(),
+        ))
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, codegg::error::ToolError> {
+        self.counter.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut last = self.last_args.lock().await;
+            *last = input.clone();
+        }
+        if let Some(c) = ctx {
+            let mut last = self.last_ctx_backend.lock().await;
+            *last = Some(c.backend);
+        }
+        Ok(StructuredToolResult::with_provenance(
+            input.to_string(),
+            true,
+            ToolProvenance {
+                backend: ToolBackendKind::Native.label().to_lowercase(),
+                implementation: "record_provenance".to_string(),
+                version: Some("test".to_string()),
+                elapsed_ms: Some(0),
+                truncated: false,
+                trust: ToolTrust::LocalTrusted,
+            },
+        ))
+    }
+}
+
+#[tokio::test]
+async fn test_live_dispatcher_uses_execute_capture() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let last_args: Arc<Mutex<serde_json::Value>> = Arc::new(Mutex::new(serde_json::json!({})));
+    let last_ctx_backend: Arc<Mutex<Option<ToolBackendKind>>> = Arc::new(Mutex::new(None));
+
+    let tool =
+        ProvenanceRecordingTool::new(counter.clone(), last_args.clone(), last_ctx_backend.clone());
+
+    let tool_call = ToolCall {
+        id: "call_1".to_string().into(),
+        name: "record_provenance".to_string().into(),
+        arguments: serde_json::json!({"value": "hello"}),
+    };
+
+    let response1 = vec![
+        ChatEvent::ToolCall(tool_call),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+
+    let response2 = vec![
+        ChatEvent::TextDelta("done".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(tool);
+
+    let permission_checker =
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![codegg::permission::ToolRule {
+                tool: "record_provenance".to_string(),
+                level: PermissionLevel::Allow,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: vec![],
+        });
+
+    let mut agent_loop = build_test_agent_loop_with_permissions(
+        scripted_provider.clone(),
+        registry,
+        permission_checker,
+    );
+    let session_id = "test-live-dispatcher-uses-execute-capture".to_string();
+    agent_loop.set_session_id(&session_id);
+
+    let result = agent_loop.run(make_chat_request("do a thing")).await;
+    assert!(
+        result.is_ok(),
+        "agent loop should succeed: {:?}",
+        result.err()
+    );
+
+    // The counter only increments inside `execute_structured`. If
+    // the live dispatcher ever calls `Tool::execute` directly
+    // instead of routing through `ToolRegistry::execute_capture`,
+    // this assertion fails.
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "Tool was called {} time(s); expected exactly 1 via execute_capture",
+        counter.load(Ordering::SeqCst)
+    );
+
+    let recorded_args = last_args.lock().await.clone();
+    assert_eq!(
+        recorded_args,
+        serde_json::json!({"value": "hello"}),
+        "Tool arguments recorded in execute_structured should match the tool call"
+    );
+
+    let ctx_backend = *last_ctx_backend.lock().await;
+    assert_eq!(
+        ctx_backend,
+        Some(ToolBackendKind::Native),
+        "ToolExecutionContext::backend should be resolved by the dispatcher"
+    );
+
+    // The model-facing tool result must be the raw string output
+    // (not a structured JSON envelope containing provenance).
+    let requests = scripted_provider.get_requests().await;
+    assert!(requests.len() >= 2, "expected at least 2 provider calls");
+    let tool_message = requests[1]
+        .messages
+        .iter()
+        .find_map(|m| match m {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } if tool_call_id.as_ref() == "call_1" => Some(content.as_ref().clone()),
+            _ => None,
+        })
+        .expect("expected Message::Tool with tool_call_id=call_1 in second request");
+    assert_eq!(tool_message, r#"{"value":"hello"}"#.to_string());
+    for forbidden in ["provenance", "backend", "implementation", "trust"] {
+        assert!(
+            !tool_message.contains(forbidden),
+            "Model-facing tool result must not contain '{}' envelope; got: {}",
+            forbidden,
+            tool_message
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_live_dispatcher_passes_native_backend_in_context() {
+    // Verifies the new `build_tool_execution_context` helper
+    // resolves non-search tools to `ToolBackendKind::Native`.
+    let counter = Arc::new(AtomicUsize::new(0));
+    let last_args: Arc<Mutex<serde_json::Value>> = Arc::new(Mutex::new(serde_json::json!({})));
+    let last_ctx_backend: Arc<Mutex<Option<ToolBackendKind>>> = Arc::new(Mutex::new(None));
+
+    let tool =
+        ProvenanceRecordingTool::new(counter.clone(), last_args.clone(), last_ctx_backend.clone());
+
+    let tool_call = ToolCall {
+        id: "call_native".to_string().into(),
+        name: "record_provenance".to_string().into(),
+        arguments: serde_json::json!({"k": "v"}),
+    };
+
+    let response1 = vec![
+        ChatEvent::ToolCall(tool_call),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![ChatEvent::Finish {
+        stop_reason: "stop".to_string().into(),
+        usage: TokenUsage::default(),
+    }];
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+
+    let mut registry = ToolRegistry::new();
+    registry.register(tool);
+
+    let permission_checker =
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![codegg::permission::ToolRule {
+                tool: "record_provenance".to_string(),
+                level: PermissionLevel::Allow,
+                paths: None,
+                bash_patterns: None,
+            }],
+            path_rules: vec![],
+        });
+
+    let mut agent_loop = build_test_agent_loop_with_permissions(
+        scripted_provider.clone(),
+        registry,
+        permission_checker,
+    );
+    let session_id = "test-live-dispatcher-native-backend".to_string();
+    agent_loop.set_session_id(&session_id);
+
+    let result = agent_loop.run(make_chat_request("ping")).await;
+    assert!(
+        result.is_ok(),
+        "agent loop should succeed: {:?}",
+        result.err()
+    );
+
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    let backend = *last_ctx_backend.lock().await;
+    assert_eq!(
+        backend,
+        Some(ToolBackendKind::Native),
+        "Non-search native tools should resolve to ToolBackendKind::Native"
+    );
+}
+
+#[tokio::test]
+async fn test_live_dispatcher_model_output_shape_is_plain_string() {
+    // Phase 7 regression: the Message::Tool content returned to the
+    // provider must not contain provenance JSON. Use a legacy tool
+    // that does NOT override execute_structured, so the result is
+    // exactly what `execute()` returns.
+    let counter = Arc::new(AtomicUsize::new(0));
+    let tool_call = ToolCall {
+        id: "call_plain".to_string().into(),
+        name: "echo_args".to_string().into(),
+        arguments: serde_json::json!({"value": "alpha"}),
+    };
+
+    let response1 = vec![
+        ChatEvent::ToolCall(tool_call),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![ChatEvent::Finish {
+        stop_reason: "stop".to_string().into(),
+        usage: TokenUsage::default(),
+    }];
+
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+
+    let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
+    let session_id = "test-live-dispatcher-model-output-shape".to_string();
+    agent_loop.set_session_id(&session_id);
+
+    let result = agent_loop.run(make_chat_request("echo please")).await;
+    assert!(
+        result.is_ok(),
+        "agent loop should succeed: {:?}",
+        result.err()
+    );
+
+    let requests = scripted_provider.get_requests().await;
+    assert!(requests.len() >= 2);
+    let tool_content = requests[1]
+        .messages
+        .iter()
+        .find_map(|m| match m {
+            Message::Tool {
+                tool_call_id,
+                content,
+            } if tool_call_id.as_ref() == "call_plain" => Some(content.as_ref().clone()),
+            _ => None,
+        })
+        .expect("expected Message::Tool with tool_call_id=call_plain");
+
+    for forbidden in [
+        "provenance",
+        "backend",
+        "implementation",
+        "trust",
+        "elapsed_ms",
+    ] {
+        assert!(
+            !tool_content.contains(forbidden),
+            "Tool result must not leak provenance JSON (found '{}'): {}",
+            forbidden,
+            tool_content
+        );
+    }
+    let _ = counter; // silence unused warning if assertions are elided
+}

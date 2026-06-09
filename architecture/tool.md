@@ -262,6 +262,34 @@ identical to the legacy `execute()` path. MCP tools
 `McpService::call_tool` and are not funnelled through
 `execute_capture`.
 
+The `ToolExecutionContext` passed to `execute_capture` is built by the
+small helper `AgentLoop::build_tool_execution_context(tc, timeout_ms)`
+(`src/agent/loop.rs`). It fills in `session_id`, `cwd`, `timeout_ms`,
+and the resolved `ToolBackendKind`. Backend resolution is delegated
+to `AgentLoop::resolve_native_backend(name)`: most tools resolve to
+`Native`, while `websearch` / `webfetch` resolve to `Mcp` when
+`[search].backend = eggsearch` and to `BuiltinLegacy` for the
+`builtin` or `disabled` configurations. After the call returns, the
+dispatcher emits a `tracing::debug!` line summarising the
+`ToolProvenance` (backend, implementation, elapsed_ms, trust) so the
+structured metadata stays internal and never reaches the model.
+
+Regression coverage:
+
+- `tests/tool_structured_execution.rs` — locks down the
+  `ToolRegistry::execute_capture` contract (provenance shape,
+  disabled/MCP-fallback semantics, definition visibility).
+- `tests/agent_loop_harness.rs::test_live_dispatcher_uses_execute_capture`
+  — proves the live agent-loop dispatcher routes native calls through
+  `execute_capture`. The mock tool overrides `execute_structured`
+  to record the call; if the dispatcher ever bypassed the structured
+  path the recording would not fire and the test would fail.
+- `tests/agent_loop_harness.rs::test_live_dispatcher_model_output_shape_is_plain_string`
+  — locks down the model-facing `Message::Tool` content: it must
+  match the raw tool output string and contain no provenance
+  envelope (`provenance`, `backend`, `implementation`, `trust`,
+  `elapsed_ms`).
+
 ### `expose_in_definitions` filtering
 
 `Tool::expose_in_definitions()` (default `true`) is the model-facing

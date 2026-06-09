@@ -152,6 +152,12 @@ impl ToolRegistry {
     /// loop. Calls `execute_structured()` internally, falls back
     /// to `ToolProvenance::legacy(name)` for tools that do not
     /// override it, and records provenance via `tracing::debug!`.
+    /// `AgentLoop::build_tool_execution_context(tc, timeout_ms)`
+    /// builds the `ToolExecutionContext`; the dispatcher
+    /// (`AgentLoop::execute_tool_calls` in `src/agent/loop.rs`)
+    /// calls this for every non-MCP native tool. MCP tools
+    /// (`mcp__server__tool`) continue to dispatch through
+    /// `McpService::call_tool`.
     pub async fn execute_capture(
         &self,
         name: &str,
