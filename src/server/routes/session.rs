@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use super::super::state::ServerState;
-use crate::error::{AppError, StorageError};
+use crate::error::{AppError, AxumAppError, StorageError};
 use crate::session::{CreateSession, Session, SessionStore};
 
 #[derive(Deserialize)]
@@ -33,7 +33,7 @@ pub struct CreateSessionRequest {
 
 pub async fn list_sessions(
     State(state): State<ServerState>,
-) -> Result<Json<SessionListResponse>, AppError> {
+) -> Result<Json<SessionListResponse>, AxumAppError> {
     let store = SessionStore::new(state.pool);
     let sessions = store.list(&state.project_dir, 50).await.map_err(|e| {
         tracing::error!("list_sessions failed: {e}");
@@ -45,7 +45,7 @@ pub async fn list_sessions(
 pub async fn get_session(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-) -> Result<Json<Session>, AppError> {
+) -> Result<Json<Session>, AxumAppError> {
     let store = SessionStore::new(state.pool);
     let session = store
         .get(&id)
@@ -54,7 +54,8 @@ pub async fn get_session(
     if session.project_id != state.project_dir {
         return Err(AppError::Storage(StorageError::NotFound(
             "session not found".into(),
-        )));
+        ))
+        .into());
     }
     Ok(Json(session))
 }
@@ -62,7 +63,7 @@ pub async fn get_session(
 pub async fn create_session(
     State(state): State<ServerState>,
     Json(req): Json<CreateSessionRequest>,
-) -> Result<(StatusCode, Json<Session>), AppError> {
+) -> Result<(StatusCode, Json<Session>), AxumAppError> {
     let store = SessionStore::new(state.pool);
     let input = CreateSession {
         project_id: state.project_dir.clone(),
@@ -81,7 +82,7 @@ pub async fn create_session(
 pub async fn archive_session(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-) -> Result<StatusCode, AppError> {
+) -> Result<StatusCode, AxumAppError> {
     let store = SessionStore::new(state.pool);
     let session = store
         .get(&id)
@@ -90,7 +91,8 @@ pub async fn archive_session(
     if session.project_id != state.project_dir {
         return Err(AppError::Storage(StorageError::NotFound(
             "session not found".into(),
-        )));
+        ))
+        .into());
     }
     store.archive(&session.id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -99,7 +101,7 @@ pub async fn archive_session(
 pub async fn fork_session(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-) -> Result<(StatusCode, Json<Session>), AppError> {
+) -> Result<(StatusCode, Json<Session>), AxumAppError> {
     let store = SessionStore::new(state.pool);
     let existing = store
         .get(&id)
@@ -108,7 +110,8 @@ pub async fn fork_session(
     if existing.project_id != state.project_dir {
         return Err(AppError::Storage(StorageError::NotFound(
             "session not found".into(),
-        )));
+        ))
+        .into());
     }
     let forked = store.fork(&id).await?;
     Ok((StatusCode::CREATED, Json(forked)))
@@ -117,7 +120,7 @@ pub async fn fork_session(
 pub async fn share_session(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-) -> Result<Json<Session>, AppError> {
+) -> Result<Json<Session>, AxumAppError> {
     let store = SessionStore::new(state.pool);
     let existing = store
         .get(&id)
@@ -126,7 +129,8 @@ pub async fn share_session(
     if existing.project_id != state.project_dir {
         return Err(AppError::Storage(StorageError::NotFound(
             "session not found".into(),
-        )));
+        ))
+        .into());
     }
     let session = store.share_session(&id).await?;
     Ok(Json(session))
@@ -135,7 +139,7 @@ pub async fn share_session(
 pub async fn unshare_session(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-) -> Result<Json<Session>, AppError> {
+) -> Result<Json<Session>, AxumAppError> {
     let store = SessionStore::new(state.pool);
     let existing = store
         .get(&id)
@@ -144,7 +148,8 @@ pub async fn unshare_session(
     if existing.project_id != state.project_dir {
         return Err(AppError::Storage(StorageError::NotFound(
             "session not found".into(),
-        )));
+        ))
+        .into());
     }
     let session = store.unshare_session(&id).await?;
     Ok(Json(session))
@@ -154,7 +159,7 @@ pub async fn revert_session(
     State(state): State<ServerState>,
     Path(id): Path<String>,
     Json(req): Json<RevertToMessageRequest>,
-) -> Result<Json<Session>, AppError> {
+) -> Result<Json<Session>, AxumAppError> {
     let store = SessionStore::new(state.pool);
     let existing = store
         .get(&id)
@@ -163,7 +168,8 @@ pub async fn revert_session(
     if existing.project_id != state.project_dir {
         return Err(AppError::Storage(StorageError::NotFound(
             "session not found".into(),
-        )));
+        ))
+        .into());
     }
     let session = store.revert_to_message(&id, &req.message_id).await?;
     Ok(Json(session))
@@ -172,7 +178,7 @@ pub async fn revert_session(
 pub async fn unrevert_session(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-) -> Result<Json<Session>, AppError> {
+) -> Result<Json<Session>, AxumAppError> {
     let store = SessionStore::new(state.pool);
     let existing = store
         .get(&id)
@@ -181,7 +187,8 @@ pub async fn unrevert_session(
     if existing.project_id != state.project_dir {
         return Err(AppError::Storage(StorageError::NotFound(
             "session not found".into(),
-        )));
+        ))
+        .into());
     }
     let session = store.unrevert_session(&id).await?;
     Ok(Json(session))

@@ -11,7 +11,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::error::ServerRuntimeError;
+use crate::error::AxumServerRuntimeError;
 use crate::protocol::core::CoreRequest;
 use crate::protocol::frames::CoreFrame;
 use crate::protocol::tui::TuiMessage;
@@ -26,7 +26,7 @@ impl<S> FromRequestParts<S> for WebSocketAuth
 where
     S: Send + Sync,
 {
-    type Rejection = ServerRuntimeError;
+    type Rejection = AxumServerRuntimeError;
 
     async fn from_request_parts(
         parts: &mut axum::http::request::Parts,

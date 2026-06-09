@@ -11,6 +11,8 @@ tags: [error, exception, provider, tool]
 
 Error handling in this codebase uses `thiserror` for derive-based error enums with `AppError` as the central unifying type.
 
+> Error enums now live in `crates/codegg-core/src/error.rs`. Root `src/error.rs` re-exports from codegg-core plus `AxumAppError`/`AxumServerRuntimeError` wrappers behind `#[cfg(feature = "server")]`.
+
 ## AppError Structure
 
 `AppError` is a root error enum that wraps domain-specific errors:

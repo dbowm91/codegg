@@ -1,7 +1,7 @@
 use axum::Json;
 use serde::Serialize;
 
-use crate::error::AppError;
+use crate::error::AxumAppError;
 use crate::tool::ToolRegistry;
 
 #[derive(Serialize)]
@@ -15,7 +15,7 @@ pub struct ToolListResponse {
     pub tools: Vec<ToolInfo>,
 }
 
-pub async fn list_tools() -> Result<Json<ToolListResponse>, AppError> {
+pub async fn list_tools() -> Result<Json<ToolListResponse>, AxumAppError> {
     let registry = ToolRegistry::default();
     let tools = registry
         .list()

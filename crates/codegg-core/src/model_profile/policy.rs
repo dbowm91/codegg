@@ -1,5 +1,5 @@
 use crate::model_profile::types::ResolvedModelProfile;
-use crate::provider::{ContentPart, Message};
+use codegg_providers::{ContentPart, Message};
 
 pub fn apply_startup_profile_policy(messages: &mut Vec<Message>, profile: &ResolvedModelProfile) {
     if profile.requires_explicit_tool_contract {

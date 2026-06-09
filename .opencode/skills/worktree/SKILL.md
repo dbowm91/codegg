@@ -16,7 +16,9 @@ This skill covers the worktree module in opencode-rs for Git worktree management
 
 The `worktree` module provides Git worktree operations. It wraps `git worktree` CLI commands.
 
-**Location**: `src/worktree/`
+**Location**: `src/worktree/` (root) and `crates/codegg-core/src/worktree.rs` (core crate)
+
+> Module now lives in `crates/codegg-core/`. Root `src/worktree/` is a re-export shim.
 
 ## Key Types
 

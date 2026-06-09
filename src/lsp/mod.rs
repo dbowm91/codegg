@@ -119,20 +119,3 @@ impl Lsp {
     }
 }
 
-impl From<egglsp::LspError> for crate::error::LspError {
-    fn from(e: egglsp::LspError) -> Self {
-        match e {
-            egglsp::LspError::ServerNotFound(s) => crate::error::LspError::ServerNotFound(s),
-            egglsp::LspError::DownloadFailed(s) => crate::error::LspError::DownloadFailed(s),
-            egglsp::LspError::LaunchFailed(s) => crate::error::LspError::LaunchFailed(s),
-            egglsp::LspError::NotInitialized(s) => crate::error::LspError::NotInitialized(s),
-            egglsp::LspError::RequestFailed(s) => crate::error::LspError::RequestFailed(s),
-            egglsp::LspError::RequestTimeout(s) => crate::error::LspError::RequestTimeout(s),
-            egglsp::LspError::UnsupportedLanguage(s) => {
-                crate::error::LspError::UnsupportedLanguage(s)
-            }
-            egglsp::LspError::Io(e) => crate::error::LspError::Io(e),
-            egglsp::LspError::Json(e) => crate::error::LspError::Json(e),
-        }
-    }
-}

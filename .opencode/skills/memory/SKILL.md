@@ -199,5 +199,5 @@ let new_memories = store.consolidate_session(&messages, "project_hash");
 ## See Also
 
 - [architecture/memory.md](../../architecture/memory.md) - Module architecture documentation
-- [src/memory/mod.rs](../../../src/memory/mod.rs) - MemoryStore implementation
+- [src/memory/mod.rs](../../../src/memory/mod.rs) - MemoryStore implementation (now in `crates/codegg-core/src/memory/`)
 - [src/memory/patterns.rs](../../../src/memory/patterns.rs) - PatternDetector implementation

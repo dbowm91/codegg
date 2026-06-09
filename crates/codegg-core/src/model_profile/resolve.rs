@@ -1,4 +1,4 @@
-use crate::config::schema::Config;
+use codegg_config::schema::Config;
 use crate::model_profile::types::{
     ModelProfileConfig, PromptProfileKind, ReliabilityTier, ResolvedModelProfile, TaskStatePolicy,
 };

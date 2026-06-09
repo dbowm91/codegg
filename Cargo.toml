@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp"]
+members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp"]
 resolver = "2"
 
 [package]
@@ -173,6 +173,7 @@ eggsentry = { path = "crates/eggsentry" }
 eggcontext = { path = "crates/eggcontext" }
 egggit = { path = "crates/egggit" }
 egglsp = { path = "crates/egglsp" }
+codegg-core = { path = "crates/codegg-core" }
 
 [dev-dependencies]
 proptest = "1"

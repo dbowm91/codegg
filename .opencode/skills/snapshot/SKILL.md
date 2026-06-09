@@ -23,6 +23,8 @@ The `snapshot/` module provides:
 
 ### Snapshot Manager (`src/snapshot/mod.rs`)
 
+> Module now lives in `crates/codegg-core/src/snapshot/`. Root `src/snapshot/` is a re-export shim.
+
 ```rust
 pub struct SnapshotManager {
     pool: SqlitePool,

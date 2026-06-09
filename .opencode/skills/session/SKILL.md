@@ -12,6 +12,8 @@ tags:
 
 # Session System Guide
 
+> Module now lives in `crates/codegg-core/src/session/`. Root `src/session/` is a re-export shim.
+
 This skill covers the session storage and persistence system in opencode-rs.
 
 ## Architecture Overview

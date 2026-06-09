@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::error::AppError;
+use crate::error::AxumAppError;
 use crate::mcp::McpService;
 
 #[derive(Serialize)]
@@ -16,7 +16,7 @@ pub struct McpServerStatusResponse {
 
 pub async fn list_mcp_servers(
     State(mcp_service): State<Arc<RwLock<McpService>>>,
-) -> Result<Json<Vec<McpServerStatusResponse>>, AppError> {
+) -> Result<Json<Vec<McpServerStatusResponse>>, AxumAppError> {
     let service = mcp_service.read().await;
     let statuses: Vec<McpServerStatusResponse> = service
         .server_status()

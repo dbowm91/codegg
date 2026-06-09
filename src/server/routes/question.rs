@@ -2,7 +2,7 @@ use axum::{extract::Path, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::bus::QuestionRegistry;
-use crate::error::{AppError, StorageError};
+use crate::error::{AppError, AxumAppError, StorageError};
 
 #[derive(Deserialize)]
 pub struct SubmitQuestionRequest {
@@ -19,11 +19,12 @@ pub struct QuestionResponse {
 pub async fn submit_question(
     Path(session_id): Path<String>,
     Json(req): Json<SubmitQuestionRequest>,
-) -> Result<Json<QuestionResponse>, AppError> {
+) -> Result<Json<QuestionResponse>, AxumAppError> {
     if req.session_id != session_id {
         return Err(AppError::Storage(StorageError::NotFound(
             "session id mismatch".to_string(),
-        )));
+        ))
+        .into());
     }
 
     // Normalize answers to consistent JSON string format
@@ -40,7 +41,8 @@ pub async fn submit_question(
     if !answered {
         return Err(AppError::Storage(StorageError::NotFound(
             "no pending question for this session".to_string(),
-        )));
+        ))
+        .into());
     }
 
     Ok(Json(QuestionResponse {
@@ -51,7 +53,7 @@ pub async fn submit_question(
 
 pub async fn get_pending_questions(
     Path(session_id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<serde_json::Value>, AxumAppError> {
     Ok(Json(get_pending_questions_for_session(&session_id)))
 }
 

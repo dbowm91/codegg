@@ -7,7 +7,7 @@ use tracing::warn;
 
 use super::super::state::ServerState;
 use crate::config::schema::Config;
-use crate::error::AppError;
+use crate::error::{AppError, AxumAppError};
 use crate::session::{message::MessageData, redact_for_export, MessageStore, SessionStore};
 
 fn jsonify_message(data: &MessageData) -> serde_json::Value {
@@ -76,7 +76,7 @@ pub struct ConfigResponse {
 
 pub async fn get_config(
     State(_state): State<ServerState>,
-) -> Result<Json<ConfigResponse>, AppError> {
+) -> Result<Json<ConfigResponse>, AxumAppError> {
     let config = Config::load().map_err(|e| {
         tracing::error!("get_config failed: {e}");
         AppError::Config(e.into())
@@ -100,7 +100,7 @@ pub struct MessageListResponse {
 pub async fn list_messages(
     State(state): State<ServerState>,
     Path(id): Path<String>,
-) -> Result<Json<MessageListResponse>, AppError> {
+) -> Result<Json<MessageListResponse>, AxumAppError> {
     let store = SessionStore::new(state.pool.clone());
     let _session = store.get(&id).await?.ok_or_else(|| {
         AppError::Storage(crate::error::StorageError::NotFound(

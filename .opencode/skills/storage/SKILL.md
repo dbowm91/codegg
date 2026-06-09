@@ -16,7 +16,9 @@ This skill covers the storage module in opencode-rs for SQLite database initiali
 
 ## Overview
 
-**Location**: `src/storage/mod.rs`
+**Location**: `src/storage/mod.rs` (root) and `crates/codegg-core/src/storage/` (core crate)
+
+> Module now lives in `crates/codegg-core/`. Root `src/storage/` is a re-export shim.
 
 **Key Responsibilities**:
 - Database path resolution

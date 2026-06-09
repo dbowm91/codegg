@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::super::state::ServerState;
 use super::file::sanitize_path;
-use crate::error::AppError;
+use crate::error::{AppError, AxumAppError};
 
 #[derive(Serialize)]
 pub struct WorkspaceInfo {
@@ -26,7 +26,7 @@ pub struct CreateWorkspaceRequest {
 
 pub async fn get_workspace(
     State(state): State<ServerState>,
-) -> Result<Json<WorkspaceInfo>, AppError> {
+) -> Result<Json<WorkspaceInfo>, AxumAppError> {
     let name = std::path::Path::new(&state.project_dir)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -45,7 +45,7 @@ pub async fn get_workspace(
 
 pub async fn list_workspaces(
     State(state): State<ServerState>,
-) -> Result<Json<WorkspaceListResponse>, AppError> {
+) -> Result<Json<WorkspaceListResponse>, AxumAppError> {
     let current = WorkspaceInfo {
         id: state.project_dir.clone(),
         name: std::path::Path::new(&state.project_dir)
@@ -83,7 +83,7 @@ pub async fn list_workspaces(
 pub async fn create_workspace(
     State(state): State<ServerState>,
     Json(req): Json<CreateWorkspaceRequest>,
-) -> Result<(StatusCode, Json<WorkspaceInfo>), AppError> {
+) -> Result<(StatusCode, Json<WorkspaceInfo>), AxumAppError> {
     let validated = sanitize_path(&state.project_dir, &req.path)?;
 
     if !validated.exists() {

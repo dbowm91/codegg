@@ -16,7 +16,7 @@ use super::row::{MessageRow, PartRow, SessionRow, TodoRow};
 use super::{
     parse_json_field, MESSAGE_QUERY, PART_QUERY, SESSION_COLUMNS, SESSION_COLUMNS_QUALIFIED,
 };
-use crate::config::schema::SessionTemplate;
+use codegg_config::schema::SessionTemplate;
 use crate::error::StorageError;
 
 pub fn escape_sql_like(s: &str) -> String {

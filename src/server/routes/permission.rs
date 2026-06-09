@@ -1,7 +1,7 @@
 use axum::{extract::Path, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{AppError, ToolError};
+use crate::error::{AppError, AxumAppError, ToolError};
 
 #[derive(Deserialize, Serialize)]
 pub struct PermissionResponse {
@@ -23,7 +23,7 @@ pub struct SubmitPermissionRequest {
 pub async fn submit_permission(
     Path(perm_id): Path<String>,
     Json(req): Json<SubmitPermissionRequest>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<impl IntoResponse, AxumAppError> {
     let choice = match req.decision.as_str() {
         "allow" => crate::bus::PermissionDecision::AllowOnce,
         "deny" => crate::bus::PermissionDecision::DenyOnce,
@@ -33,7 +33,8 @@ pub async fn submit_permission(
             return Err(AppError::Tool(ToolError::Execution(
                 "invalid decision, must be 'allow', 'deny', 'always_allow', or 'always_deny'"
                     .to_string(),
-            )));
+            ))
+            .into());
         }
     };
 
@@ -51,7 +52,7 @@ pub async fn submit_permission(
 
 pub async fn get_pending_permissions(
     Path(session_id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<serde_json::Value>, AxumAppError> {
     Ok(Json(get_pending_permissions_for_session(&session_id)))
 }
 

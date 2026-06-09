@@ -16,46 +16,47 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 |--------|---------|
 | `agent/` | Main agent loop, message processing, subagent pool, prompt templates, compaction, routing, team coordination |
 | `auth/` | Typed `AuthConfig` (api_key / stored / external_command / oauth_device), `Credential`, `AuthResolver` (env → config → store priority), `CredentialStore` at `~/.config/codegg/credentials.json`, `ExternalCommandProvider` (typed but disabled — both `AuthResolver::resolve` and `ExternalCommandProvider::fetch` return `AuthError::Unsupported` for any non-empty command until async timeout plumbing exists), OAuth device-flow scaffolding, `mask_secret`, `cli::AuthCli` for `codegg auth status | set-key | logout`. CLI validates provider/account ids (`[A-Za-z0-9_-]`, with `*` allowed for `logout` only) and never echoes key material. |
-| `bus/` | Event bus system (GlobalEventBus, PermissionRegistry, QuestionRegistry) |
+| `bus/` | Event bus system (GlobalEventBus, PermissionRegistry, QuestionRegistry) — now in `crates/codegg-core` (`codegg-core` crate) |
 | `client/` | Remote TUI client for WebSocket connections with resume/replay support |
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher — now in `crates/codegg-config` (`codegg-config` crate), re-exported as `codegg::config` |
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
-| `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion |
+| `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion — error enums now in `crates/codegg-core` (`codegg-core` crate), axum wrappers stay root-side |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
 | `git/` | **Removed** in 2026 native crate extraction. Read-only git facts now in `crates/egggit/` (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`); mutating worktree operations in `src/worktree/`. The `git` tool wrapper still lives at `src/tool/git.rs` |
-| `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering |
+| `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering — now in `crates/codegg-core` (`codegg-core` crate) |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
 | `lsp/` | Language Server Protocol support (diagnostics, code operations) — egglsp crate is authoritative implementation, src/lsp/ is thin shim |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
 | `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation |
-| `memory/` | Persistent memory system for session learning and namespace management |
+| `memory/` | Persistent memory system for session learning and namespace management — now in `crates/codegg-core` (`codegg-core` crate) |
 | `permission/` | Access control, path restrictions, DoomLoop detection, mode system |
 | `plugin/` | WASM plugin system with hooks and TUI extensions |
 | `provider/` | LLM provider implementations (Anthropic, OpenAI, Google, etc.) — now in `crates/codegg-providers` (`codegg-providers` crate), re-exported as `codegg::provider` |
 | `protocol/` | Shared `CoreRequest`/`CoreResponse` and `TuiMessage` protocol envelopes — now in `crates/codegg-protocol` (`codegg-protocol` crate), re-exported as `codegg::protocol` |
 | `shell_session/` | Shell session metadata management (in-memory, no actual PTY) |
-| `resilience/` | Circuit breaker, retry mechanisms, and rate limiting |
+| `resilience/` | Circuit breaker, retry mechanisms, and rate limiting — now in `crates/codegg-core` (`codegg-core` crate) |
 | `search/` | Legacy in-tree web search providers (used as `builtin` fallback) |
 | `search_backend/` | Pluggable backend layer for the native `websearch`/`webfetch` tools. Default backend is the external `eggsearch` MCP server; legacy in-tree providers are retained as an explicit fallback. |
 | `security/` | SSRF protection, internal IP validation, Landlock sandboxing |
 | `server/` | HTTP server (Axum) with WebSocket support for remote TUIs and replay buffering |
-| `session/` | Session storage, message history, and checkpointing (SQLite) |
+| `session/` | Session storage, message history, and checkpointing (SQLite) — now in `crates/codegg-core` (`codegg-core` crate) |
 | `skills/` | Skill system for specialized capabilities (git, research, etc.) |
-| `snapshot/` | Snapshot support for file state capture and restore |
-| `storage/` | SQLite database storage layer and initialization |
+| `snapshot/` | Snapshot support for file state capture and restore — now in `crates/codegg-core` (`codegg-core` crate) |
+| `storage/` | SQLite database storage layer and initialization — now in `crates/codegg-core` (`codegg-core` crate) |
 | `theme/` | Frontend-neutral theme system, registry, Halloy compat, validation, projections |
 | `tool/` | Built-in tools (bash, read, edit, task, webfetch, image, etc.) |
 | `tts/` | Text-to-speech module with provider support |
 | `tui/` | Terminal user interface (widgets, handlers, input processing, diff viewer, notifications, image support, CoreClient-backed flows) |
 | `upgrade/` | Self-upgrade functionality via GitHub releases |
 | `util/` | Utility functions (clipboard, fuzzy search, pricing, etc.) |
-| `worktree/` | Git worktree support for project management |
+| `worktree/` | Git worktree support for project management — now in `crates/codegg-core` (`codegg-core` crate) |
 
 ## Architecture Index
 
 - `architecture/core.md`: Core facade, transport adapters, request envelopes, and protocol boundaries
+- `architecture/codegg_core.md`: codegg-core workspace crate (bus, error, goal, memory, session, storage, snapshot, worktree, task_state, model_profile, resilience, protocol_conversions)
 - `architecture/tui.md`: TUI state, dialog/component maintenance, and CoreClient-backed flows
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
@@ -74,6 +75,10 @@ These items are important for future agents to know when working with the codeba
 - **PermissionRegistry/QuestionRegistry are synchronous**: `register()`, `respond()`, `answer_question()` are `fn`, not `async fn`. Do NOT use `await` when calling these.
 
 - **Registry Limitations**: `PermissionRegistry` and `QuestionRegistry` do NOT store `session_id` in their keys. Permission IDs are in format `{tool_call_id}-{tool_name}`, not `{session_id}-...`. This means `get_pending_permissions_for_session()` and `get_pending_questions_for_session()` cannot properly filter by session_id without code changes.
+
+- **Error module split**: Pure error enums live in `crates/codegg-core/src/error.rs`. Root `src/error.rs` re-exports from codegg-core plus `AxumAppError`/`AxumServerRuntimeError` wrappers behind `#[cfg(feature = "server")]`.
+
+- **protocol_conversions split**: Core conversions (session, message, provider, config) live in `crates/codegg-core/src/protocol_conversions.rs`. Agent-specific conversions remain in root `src/protocol_conversions.rs`. Root re-exports core conversions via `pub use codegg_core::protocol_conversions::*;`.
 
 - **PermissionDecision vs PermissionChoice**: `PermissionDecision` is the bus-owned DTO in `src/bus/mod.rs`. `PermissionChoice` is the domain type in `src/permission/mod.rs`. Bidirectional `From` impls allow conversion. The `PermissionRegistry` API uses `PermissionDecision`; use it when calling `respond()` or registering permissions through the bus.
 
@@ -162,6 +167,7 @@ These items were verified during review sessions:
 | Tool count | 27 | `src/tool/mod.rs:90-122` (27 registrations in with_defaults()) |
 | LSP server count | 39 | `crates/egglsp/src/server.rs` (moved from `src/lsp/server.rs:27-383`) |
 | Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` — see `architecture/native_crates.md` |
+| Extracted workspace crates | 4 (+1 new) | `crates/codegg-config`, `crates/codegg-protocol`, `crates/codegg-providers`, `crates/codegg-core` |
 | Tool backend contract | `src/tool/backend.rs` | `ToolBackendKind`, `ToolProvenance`, `StructuredToolResult`, `build_report()` for `/tool-backends` |
 | `/tool-backends` slash command | `src/tui/command.rs`, handler in `src/tui/app/mod.rs` | aliases: `/tools`, `/backends` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` except pool which is `Option<SqlitePool>` | `src/core/mod.rs:22-28` |
@@ -169,7 +175,7 @@ These items were verified during review sessions:
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
 | CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
 | UiState fields | 26 fields | `src/tui/app/state/ui.rs:27-76` |
-| Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `src/bus/events.rs:120-141` |
+| Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `crates/codegg-core/src/bus/events.rs:120-141` |
 | CoreEvent has subagent variants | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `crates/codegg-protocol/src/core.rs:244-268` |
 | map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
 | SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1216-1220` |
@@ -177,11 +183,11 @@ These items were verified during review sessions:
 | Backoff formula | `2^i` (no jitter) | `crates/codegg-providers/src/provider/fallback.rs:107` |
 | Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
 | Protocol version | 1 | `crates/codegg-protocol/src/core.rs:3` |
-| AppEvent count | 36 | `src/bus/events.rs:5-147` |
+| AppEvent count | 36 | `crates/codegg-core/src/bus/events.rs:5-147` |
 | Built-in command count | 46 (includes /tts, /pr, /issue, /checkpoint) | `src/tui/command.rs:79-182` |
 | ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct | `src/tui/app/state/ui.rs:62-63` |
-| Snapshot hash | Uses SHA256 consistently | `src/snapshot/mod.rs` |
+| Snapshot hash | Uses SHA256 consistently | `crates/codegg-core/src/snapshot/mod.rs` |
 | Git module | removed in 2026 native crate extraction; read-only facts now in `crates/egggit/` (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`). Mutating worktree operations remain in `src/worktree/` (sync `create_worktree`/`remove_worktree`) | `crates/egggit/src/{lib,status,diff,worktree}.rs`, `src/worktree/mod.rs` |
 | Pricing service | `src/util/pricing.rs` - ModelPricing, calculate_cost | `src/util/pricing.rs` |
 | Auto-compact wrapper | Both `auto_compact()` and `auto_compact_sync()` exist | `src/agent/compaction.rs:550,594` |
@@ -202,9 +208,9 @@ These items were verified during review sessions:
 | Stored bearer-token policy | `AuthConfig::Stored` and the no-auth fallback's store lookup both filter to `CredentialKind::ApiKey`. A future OAuth/bearer-token refresh flow will need a separate `kind` selector or policy module. `codegg auth set-key` only writes `ApiKey` records. | `crates/codegg-providers/src/auth/resolver.rs` |
 | `codegg auth` CLI validation | `AuthCli::set_key` and `AuthCli::logout` validate provider and account ids up-front to contain only `[A-Za-z0-9_-]`. The wildcard `*` is accepted **only** by `logout`. `set_key` never echoes the key, key length, or any prefix/suffix. `status` never prints ciphertext, plaintext, or secret-derived fingerprints. | `src/auth/cli.rs` |
 | `codegg auth` CLI | `codegg auth status`, `codegg auth set-key <provider>` (stdin), `codegg auth logout <provider>` are wired in `src/main.rs` and backed by `auth::cli::AuthCli`. | `src/main.rs`, `src/auth/cli.rs` |
-| Goal module | Goal, GoalStatus, GoalBudget, GoalUsage, GoalStore, runtime | `src/goal/` |
-| Goal budget axes | 4 axes: max_turns, max_model_tokens, max_tool_calls, max_wallclock_secs | `src/goal/model.rs` |
-| Goal wall-clock durability | wallclock_secs persisted in SQLite, survives session restarts | `src/goal/model.rs`, `src/goal/store.rs` |
+| Goal module | Goal, GoalStatus, GoalBudget, GoalUsage, GoalStore, runtime | `crates/codegg-core/src/goal/` |
+| Goal budget axes | 4 axes: max_turns, max_model_tokens, max_tool_calls, max_wallclock_secs | `crates/codegg-core/src/goal/model.rs` |
+| Goal wall-clock durability | wallclock_secs persisted in SQLite, survives session restarts | `crates/codegg-core/src/goal/model.rs`, `crates/codegg-core/src/goal/store.rs` |
 | AgentLoop goal fields | goal_store, goal_wall_clock | `src/agent/loop.rs` |
 | Per-turn token tracking | last_turn_input_tokens, last_turn_output_tokens | `src/agent/loop.rs` |
 | TUI goal status bar | format_goal_status_line, set_goal on StatusBarWidget | `src/tui/app/mod.rs`, `src/tui/components/status_bar.rs` |
@@ -338,6 +344,7 @@ When adding guidance for a new module:
 | Codegg Config (Config, paths, validation, watching) | `crates/codegg-config/` |
 | Codegg Protocol (CoreRequest, CoreResponse, CoreEvent, TuiMessage) | `crates/codegg-protocol/` |
 | Codegg Providers (Provider trait, ProviderRegistry, auth types, CircuitBreaker) | `crates/codegg-providers/` |
+| Codegg Core (bus, error, goal, memory, session, storage, snapshot, worktree, task_state, model_profile, resilience, protocol_conversions) | `crates/codegg-core/` |
 | Auth (AuthConfig, Credential, AuthResolver, CredentialStore, mask_secret, `codegg auth ...` CLI) | `.opencode/skills/auth/SKILL.md`, `architecture/auth.md` |
 | Crypto (API key encryption, Argon2id key derivation) | [architecture/crypto.md](architecture/crypto.md) |
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
@@ -395,6 +402,7 @@ cargo test -p egglsp
 cargo test -p codegg-config
 cargo test -p codegg-protocol
 cargo test -p codegg-providers
+cargo test -p codegg-core
 
 # Quick cargo aliases (defined in .cargo/config.toml)
 cargo ck           # check --workspace --all-targets
@@ -402,6 +410,7 @@ cargo ckroot       # check -p codegg
 cargo ckprotocol   # check -p codegg-protocol
 cargo ckconfig     # check -p codegg-config
 cargo ckproviders  # check -p codegg-providers
+cargo ckcore        # check -p codegg-core
 cargo cksplit      # check all split crates + root
 ```
 

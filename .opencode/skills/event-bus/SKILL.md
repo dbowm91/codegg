@@ -11,6 +11,8 @@ This skill covers the GlobalEventBus and event types used for pub/sub communicat
 
 ## GlobalEventBus (`src/bus/global.rs`)
 
+> Module now lives in `crates/codegg-core/`. Root `src/bus/` is a re-export shim.
+
 Singleton event bus using tokio broadcast channel (capacity 2048):
 
 ```rust

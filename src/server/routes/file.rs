@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path as StdPath, PathBuf};
 
 use super::super::state::ServerState;
-use crate::error::{AppError, StorageError};
+use crate::error::{AppError, AxumAppError, StorageError};
 use crate::tool::util::check_path_for_symlinks;
 
 pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError> {
@@ -102,7 +102,7 @@ pub struct DeleteFileRequest {
 pub async fn read_file(
     State(state): State<ServerState>,
     Query(query): Query<ReadFileQuery>,
-) -> Result<Json<FileReadResponse>, AppError> {
+) -> Result<Json<FileReadResponse>, AxumAppError> {
     let full = sanitize_path(&state.project_dir, &query.path)?;
     let content = tokio::fs::read_to_string(&full)
         .await
@@ -118,7 +118,7 @@ pub async fn read_file(
 pub async fn list_files(
     State(state): State<ServerState>,
     Query(query): Query<ReadFileQuery>,
-) -> Result<Json<FileListResponse>, AppError> {
+) -> Result<Json<FileListResponse>, AxumAppError> {
     let dir = sanitize_path(&state.project_dir, &query.path)?;
     let mut entries = Vec::new();
     let mut rd = tokio::fs::read_dir(&dir).await.map_err(AppError::Io)?;
@@ -140,7 +140,7 @@ pub async fn list_files(
 pub async fn write_file(
     State(state): State<ServerState>,
     Json(req): Json<WriteFileRequest>,
-) -> Result<Json<FileInfo>, AppError> {
+) -> Result<Json<FileInfo>, AxumAppError> {
     let full = sanitize_path(&state.project_dir, &req.path)?;
     if let Some(parent) = full.parent() {
         tokio::fs::create_dir_all(parent)
@@ -167,7 +167,7 @@ pub async fn write_file(
 pub async fn delete_file(
     State(state): State<ServerState>,
     Json(req): Json<DeleteFileRequest>,
-) -> Result<StatusCode, AppError> {
+) -> Result<StatusCode, AxumAppError> {
     let full = sanitize_path(&state.project_dir, &req.path)?;
     tokio::fs::remove_file(&full).await.map_err(AppError::Io)?;
     Ok(StatusCode::NO_CONTENT)

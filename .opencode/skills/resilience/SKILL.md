@@ -21,6 +21,8 @@ The resilience module provides:
 
 ## Circuit Breaker (`src/resilience/circuit.rs`)
 
+> Module now lives in `crates/codegg-core/src/resilience.rs` (re-export from `codegg-providers`).
+
 ### States
 
 - **Closed**: Requests pass through. Track failures. On `failure_threshold`, transition to Open.

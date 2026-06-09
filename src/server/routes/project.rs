@@ -2,7 +2,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 
 use super::super::state::ServerState;
-use crate::error::{AppError, StorageError};
+use crate::error::{AppError, AxumAppError, StorageError};
 
 #[derive(Serialize)]
 pub struct ProjectInfo {
@@ -24,7 +24,7 @@ pub struct CreateProjectRequest {
     pub path: String,
 }
 
-pub async fn get_project(State(state): State<ServerState>) -> Result<Json<ProjectInfo>, AppError> {
+pub async fn get_project(State(state): State<ServerState>) -> Result<Json<ProjectInfo>, AxumAppError> {
     let store = crate::session::SessionStore::new(state.pool);
     let session_count = store
         .list(&state.project_dir, 1)
@@ -50,7 +50,7 @@ pub async fn get_project(State(state): State<ServerState>) -> Result<Json<Projec
 
 pub async fn list_projects(
     State(state): State<ServerState>,
-) -> Result<Json<ProjectListResponse>, AppError> {
+) -> Result<Json<ProjectListResponse>, AxumAppError> {
     let store = crate::session::SessionStore::new(state.pool);
     let all = store.list(&state.project_dir, 1000).await?;
 
@@ -84,7 +84,7 @@ pub async fn list_projects(
 pub async fn create_project(
     State(state): State<ServerState>,
     Json(req): Json<CreateProjectRequest>,
-) -> Result<(StatusCode, Json<ProjectInfo>), AppError> {
+) -> Result<(StatusCode, Json<ProjectInfo>), AxumAppError> {
     let requested_path = std::path::Path::new(&req.path);
     let project_root = std::path::Path::new(&state.project_dir);
 
@@ -94,7 +94,8 @@ pub async fn create_project(
     if !canonical_requested.starts_with(&canonical_root) {
         return Err(AppError::Storage(StorageError::NotFound(
             "path not allowed".into(),
-        )));
+        ))
+        .into());
     }
 
     let full = std::path::Path::new(&req.path);

@@ -1,7 +1,7 @@
 use axum::Json;
 use serde::Serialize;
 
-use crate::error::AppError;
+use crate::error::AxumAppError;
 use crate::provider::ProviderRegistry;
 
 #[derive(Serialize)]
@@ -15,7 +15,7 @@ pub struct ProviderListResponse {
     pub providers: Vec<ProviderInfo>,
 }
 
-pub async fn list_providers() -> Result<Json<ProviderListResponse>, AppError> {
+pub async fn list_providers() -> Result<Json<ProviderListResponse>, AxumAppError> {
     let mut registry = ProviderRegistry::new();
     crate::provider::register_builtin(&mut registry);
 
