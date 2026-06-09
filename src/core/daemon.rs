@@ -546,7 +546,7 @@ impl CoreDaemon {
                     })
                     .unwrap_or_default();
                 let mut system = crate::agent::prompt::load_agent_prompt(
-                    &agents[current_agent_idx],
+                    &crate::protocol_conversions::dto_to_agent(agents[current_agent_idx].clone()),
                     &config,
                     &model_name,
                 );
@@ -600,7 +600,7 @@ impl CoreDaemon {
                 let (mcp_service, _report) =
                     crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
                 let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
-                    agents,
+                    crate::protocol_conversions::dtos_to_agents(agents),
                     provider,
                     permission_checker,
                     tool_registry,
@@ -615,7 +615,7 @@ impl CoreDaemon {
                 agent_loop.set_task_state_policy(task_state_policy);
                 agent_loop.load_persisted_todos().await;
                 let request = crate::provider::ChatRequest {
-                    messages,
+                    messages: crate::protocol_conversions::dtos_to_provider_messages(messages),
                     model: model_name,
                     tools: None,
                     system: Some(system),
@@ -776,7 +776,7 @@ impl CoreDaemon {
                 match store.list(&session_id).await {
                     Ok(messages) => Ok(CoreResponse::SessionMessages {
                         session_id,
-                        messages,
+                        messages: crate::protocol_conversions::messages_to_dtos(messages),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_messages_load_failed".to_string(),
@@ -821,7 +821,9 @@ impl CoreDaemon {
                     })
                     .await
                 {
-                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Ok(session) => Ok(CoreResponse::Session {
+                        session: crate::protocol_conversions::session_to_dto(session),
+                    }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_create_failed".to_string(),
                         message: e.to_string(),
@@ -843,7 +845,9 @@ impl CoreDaemon {
                             &session.project_id,
                             std::path::PathBuf::from(&session.directory),
                         );
-                        Ok(CoreResponse::Session { session })
+                        Ok(CoreResponse::Session {
+                            session: crate::protocol_conversions::session_to_dto(session),
+                        })
                     }
                     Ok(None) => Ok(CoreResponse::Error {
                         code: "session_not_found".to_string(),
@@ -873,7 +877,9 @@ impl CoreDaemon {
                     store.list(&project_id, limit).await
                 };
                 match sessions {
-                    Ok(sessions) => Ok(CoreResponse::SessionList { sessions }),
+                    Ok(sessions) => Ok(CoreResponse::SessionList {
+                        sessions: crate::protocol_conversions::sessions_to_dtos(sessions),
+                    }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_list_failed".to_string(),
                         message: e.to_string(),
@@ -953,7 +959,9 @@ impl CoreDaemon {
                 };
                 let store = crate::session::SessionStore::new(pool);
                 match store.restore(&session_id).await {
-                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Ok(session) => Ok(CoreResponse::Session {
+                        session: crate::protocol_conversions::session_to_dto(session),
+                    }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_restore_failed".to_string(),
                         message: e.to_string(),
@@ -969,7 +977,9 @@ impl CoreDaemon {
                 };
                 let store = crate::session::SessionStore::new(pool);
                 match store.share_session(&session_id).await {
-                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Ok(session) => Ok(CoreResponse::Session {
+                        session: crate::protocol_conversions::session_to_dto(session),
+                    }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_share_failed".to_string(),
                         message: e.to_string(),
@@ -985,7 +995,9 @@ impl CoreDaemon {
                 };
                 let store = crate::session::SessionStore::new(pool);
                 match store.unshare_session(&session_id).await {
-                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Ok(session) => Ok(CoreResponse::Session {
+                        session: crate::protocol_conversions::session_to_dto(session),
+                    }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_unshare_failed".to_string(),
                         message: e.to_string(),
@@ -1022,7 +1034,9 @@ impl CoreDaemon {
                     )
                     .await
                 {
-                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Ok(session) => Ok(CoreResponse::Session {
+                        session: crate::protocol_conversions::session_to_dto(session),
+                    }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_rename_failed".to_string(),
                         message: e.to_string(),
@@ -1054,7 +1068,9 @@ impl CoreDaemon {
                 };
                 let store = crate::session::SessionStore::new(pool);
                 match store.import_session(data, None).await {
-                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Ok(session) => Ok(CoreResponse::Session {
+                        session: crate::protocol_conversions::session_to_dto(session),
+                    }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_import_failed".to_string(),
                         message: e.to_string(),
@@ -1074,10 +1090,16 @@ impl CoreDaemon {
                 };
                 let store = crate::session::SessionStore::new(pool);
                 match store
-                    .create_from_template(&template, &project_id, &directory)
+                    .create_from_template(
+                        &crate::protocol_conversions::dto_to_session_template(template),
+                        &project_id,
+                        &directory,
+                    )
                     .await
                 {
-                    Ok(session) => Ok(CoreResponse::Session { session }),
+                    Ok(session) => Ok(CoreResponse::Session {
+                        session: crate::protocol_conversions::session_to_dto(session),
+                    }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_create_from_template_failed".to_string(),
                         message: e.to_string(),
@@ -2146,8 +2168,8 @@ impl CoreDaemon {
 
                 Ok(CoreResponse::SnapshotSession {
                     event_seq,
-                    session,
-                    messages,
+                    session: crate::protocol_conversions::session_to_dto(session),
+                    messages: crate::protocol_conversions::messages_to_dtos(messages),
                     status,
                     selected_model,
                     selected_agent,
@@ -3025,7 +3047,7 @@ mod tests {
                 text: "hello".into(),
                 plan_mode: false,
                 model: "openai/gpt-4o".into(),
-                agents: vec![agent],
+                agents: vec![crate::protocol_conversions::agent_to_dto(agent)],
                 current_agent_idx: 0,
                 messages: vec![],
             },

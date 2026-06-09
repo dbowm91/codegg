@@ -999,9 +999,9 @@ impl App {
                 text,
                 plan_mode: self.agent_state.plan_mode,
                 model: self.agent_state.current_model.clone(),
-                agents: self.agent_state.agents.clone(),
+                agents: crate::protocol_conversions::agents_to_dtos(self.agent_state.agents.clone()),
                 current_agent_idx: self.agent_state.current_agent,
-                messages,
+                messages: crate::protocol_conversions::provider_messages_to_dtos(messages),
             },
         );
         tokio::spawn(async move {
@@ -5880,7 +5880,7 @@ impl App {
                                 Ok(crate::protocol::core::CoreResponse::SessionMessages {
                                     messages,
                                     ..
-                                }) => messages,
+                                }) => crate::protocol_conversions::dtos_to_messages(messages),
                                 _ => Vec::new(),
                             }
                         } else if let (Some(sid), Some(store)) =
@@ -6669,7 +6669,9 @@ impl App {
             },
         );
         match core_client.request(request).await {
-            Ok(crate::protocol::core::CoreResponse::SessionList { sessions }) => Ok(sessions),
+            Ok(crate::protocol::core::CoreResponse::SessionList { sessions }) => {
+                Ok(crate::protocol_conversions::dtos_to_sessions(sessions))
+            }
             Ok(crate::protocol::core::CoreResponse::Error { code, message }) => Err(AppError::Tui(
                 format!("core session list failed ({}): {}", code, message),
             )),
@@ -6700,7 +6702,7 @@ impl App {
         );
         match core_client.request(request).await {
             Ok(crate::protocol::core::CoreResponse::SessionMessages { messages, .. }) => {
-                Ok(messages)
+                Ok(crate::protocol_conversions::dtos_to_messages(messages))
             }
             Ok(crate::protocol::core::CoreResponse::Error { code, message }) => Err(AppError::Tui(
                 format!("core session messages load failed ({}): {}", code, message),
@@ -6796,7 +6798,7 @@ impl App {
                 );
                 match core_client.request(req).await {
                     Ok(CoreResponse::Session { session }) => {
-                        self.set_session(session);
+                        self.set_session(crate::protocol_conversions::dto_to_session(session));
                     }
                     Ok(CoreResponse::Error { code, message }) => {
                         tracing::warn!(
@@ -6831,7 +6833,7 @@ impl App {
                 match core_client.request(req).await {
                     Ok(CoreResponse::SessionList { mut sessions }) => {
                         if let Some(sess) = sessions.pop() {
-                            self.set_session(sess);
+                            self.set_session(crate::protocol_conversions::dto_to_session(sess));
                         }
                     }
                     Ok(CoreResponse::Error { code, message }) => {
@@ -6862,7 +6864,7 @@ impl App {
                 );
                 match core_client.request(req).await {
                     Ok(CoreResponse::Session { session }) => {
-                        self.set_session(session);
+                        self.set_session(crate::protocol_conversions::dto_to_session(session));
                     }
                     Ok(CoreResponse::Error { code, message }) => {
                         tracing::warn!(
@@ -6906,7 +6908,7 @@ impl App {
                 match core_client.request(list_req).await {
                     Ok(CoreResponse::SessionList { mut sessions }) => {
                         if let Some(sess) = sessions.pop() {
-                            self.set_session(sess);
+                            self.set_session(crate::protocol_conversions::dto_to_session(sess));
                         } else {
                             tracing::warn!(
                                 "load_initial_session_via_core(Fork): SessionList returned no sessions"

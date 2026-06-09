@@ -264,7 +264,7 @@ async fn ensure_local_session(app: &mut app::App) {
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => {
                 let session_id = session.id.clone();
-                app.session_state.session = Some(session);
+                app.session_state.session = Some(crate::protocol_conversions::dto_to_session(session));
                 debug_log!(
                     "Event loop: session created via core with id={}",
                     session_id
@@ -366,7 +366,7 @@ async fn reload_sessions(app: &mut app::App) {
         HashMap::new()
     };
 
-    app.dialog_state.session_dialog.load_sessions(sessions);
+    app.dialog_state.session_dialog.load_sessions(crate::protocol_conversions::dtos_to_sessions(sessions));
     for (id, count) in message_counts {
         app.dialog_state
             .session_dialog
@@ -597,7 +597,7 @@ async fn handle_share_session(app: &mut app::App, session_id: String) {
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session: shared }) => {
-                app.session_state.session = Some(shared.clone());
+                app.session_state.session = Some(crate::protocol_conversions::dto_to_session(shared.clone()));
                 let url = shared.share_url.unwrap_or_default();
                 let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(
                     Arc::clone(&app.ui_state.theme),
@@ -636,7 +636,7 @@ async fn handle_unshare_session(app: &mut app::App, session_id: String) {
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => {
-                app.session_state.session = Some(session);
+                app.session_state.session = Some(crate::protocol_conversions::dto_to_session(session));
                 app.messages_state.toasts.info("Session unshared");
             }
             Ok(CoreResponse::Error { message, .. }) => {
@@ -714,7 +714,7 @@ async fn handle_rename_session(app: &mut app::App, session_id: String, new_title
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => {
-                app.session_state.session = Some(session);
+                app.session_state.session = Some(crate::protocol_conversions::dto_to_session(session));
                 app.messages_state.toasts.info("Session renamed");
             }
             Ok(CoreResponse::Error { message, .. }) => {
@@ -784,7 +784,7 @@ async fn handle_open_tree_dialog(app: &mut app::App) {
     let by_id: HashMap<String, crate::session::Session> = sessions
         .iter()
         .cloned()
-        .map(|s| (s.id.clone(), s))
+        .map(|s| (s.id.clone(), crate::protocol_conversions::dto_to_session(s)))
         .collect();
     let mut root_id = current_session.id.clone();
     while let Some(parent_id) = by_id.get(&root_id).and_then(|s| s.parent_id.clone()) {
@@ -800,7 +800,7 @@ async fn handle_open_tree_dialog(app: &mut app::App) {
             children_map
                 .entry(parent_id.clone())
                 .or_default()
-                .push(session.clone());
+                .push(crate::protocol_conversions::dto_to_session(session.clone()));
         }
     }
 
@@ -883,7 +883,7 @@ async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
                     ) => {
                         let msg_count = counts.get(&id).copied().unwrap_or(0);
                         if let Some(ref mut import) = app.dialog_state.import_dialog {
-                            import.set_preview(session, msg_count);
+                            import.set_preview(crate::protocol_conversions::dto_to_session(session), msg_count);
                         }
                     }
                     (Ok(CoreResponse::Error { message, .. }), _)
@@ -927,7 +927,7 @@ async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
                                     _ => 0,
                                 };
                                 if let Some(ref mut import) = app.dialog_state.import_dialog {
-                                    import.set_preview(session, msg_count);
+                                    import.set_preview(crate::protocol_conversions::dto_to_session(session), msg_count);
                                 }
                             }
                             Ok(CoreResponse::Error { message, .. }) => {
@@ -982,7 +982,7 @@ async fn handle_confirm_import(app: &mut app::App, source: ImportSource) {
                 match core_client.request(request).await {
                     Ok(CoreResponse::Session { session }) => {
                         if let Some(ref mut import) = app.dialog_state.import_dialog {
-                            import.set_done(session);
+                            import.set_done(crate::protocol_conversions::dto_to_session(session));
                         }
                     }
                     Ok(CoreResponse::Error { message, .. }) => {
@@ -1029,7 +1029,7 @@ async fn handle_create_from_template(
         let request = crate::core::new_request(
             format!("session-create-template-{}", uuid::Uuid::new_v4()),
             CoreRequest::SessionCreateFromTemplate {
-                template: template.clone(),
+                template: crate::protocol_conversions::session_template_to_dto(template.clone()),
                 project_id: project_dir.clone(),
                 directory: project_dir.clone(),
             },
@@ -1045,7 +1045,7 @@ async fn handle_create_from_template(
     };
     match created {
         Ok(session) => {
-            app.session_state.session = Some(session.clone());
+            app.session_state.session = Some(crate::protocol_conversions::dto_to_session(session.clone()));
             app.ui_state
                 .routes
                 .navigate_to(crate::tui::Route::Session(session.id.clone()));
@@ -1164,7 +1164,7 @@ async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
             },
         );
         match client.request(request).await {
-            Ok(CoreResponse::SessionMessages { messages, .. }) => Some(messages),
+            Ok(CoreResponse::SessionMessages { messages, .. }) => Some(crate::protocol_conversions::dtos_to_messages(messages)),
             Ok(CoreResponse::Error { message, .. }) => {
                 app.messages_state
                     .toasts
@@ -2600,7 +2600,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                                                 CoreRequest::SessionMessagesLoad { session_id: sid },
                                             );
                                             match client.request(request).await {
-                                                Ok(CoreResponse::SessionMessages { messages, .. }) => messages,
+                                                Ok(CoreResponse::SessionMessages { messages, .. }) => crate::protocol_conversions::dtos_to_messages(messages),
                                                 _ => Vec::new(),
                                             }
                                         } else if let (Some(sid), Some(store)) = (session_id, message_store) {
