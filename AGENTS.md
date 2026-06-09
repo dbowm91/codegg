@@ -14,7 +14,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 
 | Module | Purpose |
 |--------|---------|
-| `agent/` | Main agent loop, message processing, subagent pool, prompt templates, compaction, routing, team coordination |
+| `agent/` | AgentLoop, compaction, routing, team, turn_runtime |
 | `auth/` | Typed `AuthConfig` (api_key / stored / external_command / oauth_device), `Credential`, `AuthResolver` (env → config → store priority), `CredentialStore` at `~/.config/codegg/credentials.json`, `ExternalCommandProvider` (typed but disabled — both `AuthResolver::resolve` and `ExternalCommandProvider::fetch` return `AuthError::Unsupported` for any non-empty command until async timeout plumbing exists), OAuth device-flow scaffolding, `mask_secret`, `cli::AuthCli` for `codegg auth status | set-key | logout`. CLI validates provider/account ids (`[A-Za-z0-9_-]`, with `*` allowed for `logout` only) and never echoes key material. |
 | `bus/` | Event bus system (GlobalEventBus, PermissionRegistry, QuestionRegistry) — now in `crates/codegg-core` (`codegg-core` crate) |
 | `client/` | Remote TUI client for WebSocket connections with resume/replay support |
@@ -88,7 +88,8 @@ These items are important for future agents to know when working with the codeba
 
 - **CoreRuntimeDeps**: `CoreDaemon` stores a single `deps: CoreRuntimeDeps` field instead of separate `subagent_pool`, `memory_store`, `bg_scheduler` fields. Legacy `new()` constructor kept for backward compat; new code should use `with_deps()`.
 
-- **AgentRuntimeProvider**: Daemon calls `DefaultAgentRuntimeProvider.build_agent_loop(AgentLoopBuildInput)` instead of importing `crate::agent::runtime_factory::build_agent_loop` directly. The trait enables future alternative implementations.
+- **TurnRuntime**: Daemon calls `DefaultTurnRuntime.run_turn(TurnRunInput)` instead of building tool registries, permission checkers, and agent loops inline. `TurnRuntime` owns the full turn lifecycle: provider resolution, tool registry construction, system prompt assembly, agent loop construction, and background spawning. `AgentRuntimeProvider` (build-only) is kept as a transitional internal detail.
+- **Daemon TurnSubmit ownership**: Daemon still owns request validation, session_id/turn_id management, active-turn bookkeeping, and TurnStarted event publishing. Runtime owns everything else.
 
 - **TaskToolRuntime**: `tool::factory::build_session_tool_registry` takes `Option<&TaskToolRuntime>` instead of `Option<&Arc<SubAgentPool>>`. This breaks the tool factory's direct dependency on `SubAgentPool`.
 
@@ -179,6 +180,9 @@ These items were verified during review sessions:
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` except pool which is `Option<SqlitePool>` | `src/core/mod.rs:22-28` |
 | CoreRuntimeDeps | Bundles pool, memory_store, subagent_pool, bg_scheduler | `src/core/runtime_deps.rs` |
 | AgentRuntimeProvider | Trait for agent loop construction seam | `src/agent/runtime_provider.rs` |
+| TurnRuntime | Execution-oriented trait for turn lifecycle | `src/agent/turn_runtime.rs` |
+| DefaultTurnRuntime | Default implementation building tools, permissions, prompt, agent loop | `src/agent/turn_runtime.rs` |
+| Daemon direct agent refs | **0** (zero) | `src/core/daemon.rs` — acceptance target met |
 | TaskToolRuntime | Narrow DTO for task tool construction | `src/agent/task_tool_runtime.rs` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
@@ -343,7 +347,7 @@ When adding guidance for a new module:
 | Topic | Location |
 |-------|----------|
 | Shell Session (shell session metadata) | `.opencode/skills/shell_session/SKILL.md` |
-| Agent (AgentLoop, compaction, router, team) | `.opencode/skills/agent-loop/SKILL.md` |
+| Agent (AgentLoop, compaction, router, team, turn runtime) | `.opencode/skills/agent-loop/SKILL.md` |
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
 | TUI (keyboard shortcuts, FocusManager, Component trait) | `.opencode/skills/tui/SKILL.md` |
 | Core (CoreClient facade, transports, protocol envelopes) | `.opencode/skills/core/SKILL.md` |

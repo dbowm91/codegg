@@ -7,7 +7,7 @@ use chrono::Utc;
 
 use super::event_log::EventFilter;
 use super::runtime_deps::CoreRuntimeDeps;
-use crate::agent::runtime_provider::AgentRuntimeProvider;
+use crate::agent::turn_runtime::TurnRuntime;
 use crate::core::session_runtime::RuntimeSessionStatus;
 
 pub struct CoreDaemon {
@@ -481,8 +481,8 @@ impl CoreDaemon {
                 let config = crate::config::schema::Config::load().unwrap_or_default();
                 crate::provider::register_builtin_with_config(&mut registry, &config);
                 let provider_name = model.split('/').next().unwrap_or("openai").to_string();
-                let model_name = model.split('/').next_back().unwrap_or(&model).to_string();
-                let Some(base_provider) = registry.get(&provider_name) else {
+                let _model_name = model.split('/').next_back().unwrap_or(&model).to_string();
+                let Some(_base_provider) = registry.get(&provider_name) else {
                     crate::bus::global::GlobalEventBus::publish(
                         crate::bus::events::AppEvent::Error {
                             message: format!(
@@ -496,124 +496,12 @@ impl CoreDaemon {
                         message: format!("Provider not found: {}", provider_name),
                     });
                 };
-                let provider = base_provider.clone_box();
-                let model_profile =
-                    crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
-                let task_state_policy = model_profile.task_state_policy;
-                let task_tool_runtime = self
-                    .deps
-                    .subagent_pool
-                    .as_ref()
-                    .map(crate::agent::task_tool_runtime::TaskToolRuntime::from_subagent_pool);
-                let tool_registry = crate::tool::factory::build_session_tool_registry(
-                    &config,
-                    self.pool.clone(),
-                    &session_id,
-                    task_tool_runtime.as_ref(),
-                    task_state_policy.clone(),
-                );
-                let memory_context = self
-                    .deps.memory_store
-                    .as_ref()
-                    .map(|store| {
-                        let all_memories = store.list("user/preferences");
-                        if all_memories.is_empty() {
-                            String::new()
-                        } else {
-                            let summary: String = all_memories
-                                .iter()
-                                .take(10)
-                                .map(|m| {
-                                    format!(
-                                        "- [{}] {}",
-                                        m.id,
-                                        m.title.as_deref().unwrap_or("(untitled)")
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            format!("\n\n## Learned Preferences\n{}\n", summary)
-                        }
-                    })
-                    .unwrap_or_default();
-                let mut system = crate::agent::prompt::load_agent_prompt(
-                    &crate::protocol_conversions::dto_to_agent(agents[current_agent_idx].clone()),
-                    &config,
-                    &model_name,
-                );
-                system.push_str(&memory_context);
 
-                let goal_context = if let Some(pool) = self.pool.clone() {
-                    let goal_store = crate::goal::GoalStore::new(pool.clone());
-                    match goal_store.active_for_session(&session_id).await {
-                        Ok(Some(goal)) if goal.status == crate::goal::GoalStatus::Active => {
-                            let checkpoint_excerpt = if let Some(ref path) = goal.checkpoint_path {
-                                crate::goal::checkpoint::read_checkpoint_excerpt(path, 4000)
-                                    .await
-                                    .ok()
-                                    .flatten()
-                            } else {
-                                None
-                            };
-                            crate::goal::render::render_goal_context(
-                                &goal,
-                                checkpoint_excerpt.as_deref(),
-                            )
-                        }
-                        _ => String::new(),
-                    }
-                } else {
-                    String::new()
-                };
-                system.push_str(&goal_context);
-
-                if plan_mode {
-                    system.push_str("\n\n");
-                    system.push_str(crate::agent::prompt::plan_mode_contract());
-                }
-
-                // Bootstraps the search backend (eggsearch by default) before the agent
-                // loop starts. Idempotent if already bootstrapped.
-                let (mcp_service, _report) =
-                    crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
-                let agent_loop_input = crate::agent::runtime_provider::AgentLoopBuildInput {
-                    agents: crate::protocol_conversions::dtos_to_agents(agents),
-                    provider,
-                    config,
-                    tool_registry,
-                    pool: self.pool.clone(),
-                    session_id: session_id.clone(),
-                    subagent_pool: self.deps.subagent_pool.clone(),
-                    task_state_policy,
-                    mcp_service,
-                };
-                let runtime_provider =
-                    crate::agent::runtime_provider::DefaultAgentRuntimeProvider;
-                let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);
-                agent_loop.load_persisted_todos().await;
-                let request = crate::provider::ChatRequest {
-                    messages: crate::protocol_conversions::dtos_to_provider_messages(messages),
-                    model: model_name,
-                    tools: None,
-                    system: Some(system),
-                    temperature: None,
-                    top_p: None,
-                    max_tokens: None,
-                    response_format: None,
-                    thinking_budget: None,
-                    reasoning_effort: None,
-                };
                 let runtime = self.sessions.get_or_create(
                     &session_id,
                     &session_id,
                     std::path::PathBuf::from("."),
                 );
-
-                let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-                agent_loop.set_cancel_receiver(cancel_rx);
-
-                let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
-                agent_loop.set_steer_receiver(steer_rx);
 
                 let turn_id = {
                     let mut active = runtime.active_turn.write().await;
@@ -626,8 +514,8 @@ impl CoreDaemon {
                     let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
                     *active = Some(crate::core::session_runtime::TurnHandle {
                         turn_id: turn_id.clone(),
-                        cancel_tx,
-                        steer_tx: Some(steer_tx),
+                        cancel_tx: tokio::sync::watch::channel(false).0,
+                        steer_tx: None,
                         started_at: chrono::Utc::now(),
                     });
                     turn_id
@@ -651,95 +539,34 @@ impl CoreDaemon {
                     )
                     .await;
 
-                let runtime_for_spawn = Arc::clone(&runtime);
-                let session_id_for_spawn = session_id.clone();
-                // Capture the event log and the captured turn_id so the
-                // spawned task can publish `TurnCompleted` / `TurnFailed`
-                // directly with the correct identity -- without going
-                // through the bridge's lookup of `runtime.active_turn`,
-                // which may have been cleared by the time the bridge
-                // processes the bus event.
-                let event_log_for_spawn = Arc::clone(&self.event_log);
-                let turn_id_for_spawn = turn_id.clone();
-                tokio::spawn(async move {
-                    let result = agent_loop.run(request).await;
-                    if let Err(e) = result {
-                        tracing::error!("Agent loop error: {}", e);
-                        // Direct TurnFailed with the captured turn_id.
-                        // Ordering invariant: this CoreEvent MUST be
-                        // published before we clear `runtime.active_turn`
-                        // and before the bridge can process any subsequent
-                        // bus event for this turn.
-                        event_log_for_spawn
-                            .publish(
-                                Some(session_id_for_spawn.clone()),
-                                Some(turn_id_for_spawn.clone()),
-                                crate::protocol::core::CoreEvent::TurnFailed {
-                                    session_id: session_id_for_spawn.clone(),
-                                    turn_id: Some(turn_id_for_spawn.clone()),
-                                    message: format!("Agent error: {}", e),
-                                },
-                            )
-                            .await;
-                        // Publish an Error on the bus for legacy consumers
-                        // (notifications, log surfaces) -- it does NOT get
-                        // translated into another turn lifecycle event.
-                        crate::bus::global::GlobalEventBus::publish(
-                            crate::bus::events::AppEvent::Error {
-                                message: format!("Agent error: {}", e),
-                            },
-                        );
-                        // Also publish AgentFinished so the bridge can
-                        // update token counts (None) and emit a
-                        // TurnFailed notification; the bridge no longer
-                        // maps this into a CoreEvent::TurnFailed.
-                        crate::bus::global::GlobalEventBus::publish(
-                            crate::bus::events::AppEvent::AgentFinished {
-                                session_id: session_id_for_spawn.clone(),
-                                stop_reason: "error".to_string(),
-                                input_tokens: None,
-                                output_tokens: None,
-                                cached_tokens: None,
-                                reasoning_tokens: None,
-                            },
-                        );
-                    } else {
-                        // Direct TurnCompleted with the captured turn_id.
-                        event_log_for_spawn
-                            .publish(
-                                Some(session_id_for_spawn.clone()),
-                                Some(turn_id_for_spawn.clone()),
-                                crate::protocol::core::CoreEvent::TurnCompleted {
-                                    session_id: session_id_for_spawn.clone(),
-                                    turn_id: turn_id_for_spawn.clone(),
-                                    stop_reason: "completed".to_string(),
-                                },
-                            )
-                            .await;
-                        // Publish AgentFinished so the bridge can still
-                        // update token counts and emit a TurnCompleted
-                        // notification. The bridge no longer maps this
-                        // into a CoreEvent::TurnCompleted.
-                        crate::bus::global::GlobalEventBus::publish(
-                            crate::bus::events::AppEvent::AgentFinished {
-                                session_id: session_id_for_spawn.clone(),
-                                stop_reason: "completed".to_string(),
-                                input_tokens: None,
-                                output_tokens: None,
-                                cached_tokens: None,
-                                reasoning_tokens: None,
-                            },
-                        );
+                // Delegate to the turn runtime which handles tool registry,
+                // agent loop construction, and background spawning.
+                let turn_runtime = crate::agent::turn_runtime::DefaultTurnRuntime;
+                let turn_input = crate::agent::turn_runtime::TurnRunInput {
+                    session_id: session_id.clone(),
+                    agents_dto: agents,
+                    current_agent_idx,
+                    model,
+                    messages_dto: messages,
+                    plan_mode,
+                    config,
+                    pool: self.pool.clone(),
+                    subagent_pool: self.deps.subagent_pool.clone(),
+                    memory_store: self.deps.memory_store.clone(),
+                    event_log: Arc::clone(&self.event_log),
+                    turn_id: turn_id.clone(),
+                };
+                let turn_output = turn_runtime.run_turn(turn_input).await?;
+
+                // Update the TurnHandle with the runtime's cancel/steer channels.
+                {
+                    let mut active = runtime.active_turn.write().await;
+                    if let Some(handle) = active.as_mut() {
+                        handle.cancel_tx = turn_output.cancel_tx;
+                        handle.steer_tx = Some(turn_output.steer_tx);
                     }
-                    {
-                        let mut active = runtime_for_spawn.active_turn.write().await;
-                        *active = None;
-                    }
-                    {
-                        let mut status = runtime_for_spawn.status.write().await;
-                        *status = crate::core::session_runtime::RuntimeSessionStatus::Idle;
-                    }
-                });
+                }
+
                 Ok(CoreResponse::Ack)
             }
             CoreRequest::SessionMessagesLoad { session_id } => {

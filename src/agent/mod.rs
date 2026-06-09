@@ -12,6 +12,7 @@ pub mod mention;
 pub mod runtime_factory;
 pub mod runtime_provider;
 pub mod task_tool_runtime;
+pub mod turn_runtime;
 pub mod policy;
 pub mod processor;
 pub mod prompt;

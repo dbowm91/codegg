@@ -135,8 +135,9 @@ The `core` module is the request/response facade that separates TUI transport fr
 
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
-| `core::runtime_deps` | `CoreRuntimeDeps` | Bundles optional runtime dependencies (pool, memory_store, subagent_pool, bg_scheduler) so `CoreDaemon` doesn't import concrete agent/tool types directly |
-| `agent::runtime_provider` | `AgentRuntimeProvider`, `AgentLoopBuildInput`, `DefaultAgentRuntimeProvider` | Trait + DTO that abstracts agent loop construction; daemon calls `runtime_provider.build_agent_loop(input)` instead of importing agent internals |
+| `core::runtime_deps` | `CoreRuntimeDeps` | Bundles optional runtime dependencies (pool, memory_store, subagent_pool, bg_scheduler, agent_runtime) so `CoreDaemon` doesn't import concrete agent/tool types directly |
+| `agent::runtime_provider` | `AgentRuntimeProvider`, `AgentLoopBuildInput`, `DefaultAgentRuntimeProvider` | Build-only trait + DTO for agent loop construction (transitional; used internally by `DefaultTurnRuntime`) |
+| `agent::turn_runtime` | `TurnRuntime`, `TurnRunInput`, `TurnRunOutput`, `DefaultTurnRuntime` | Execution-oriented trait that owns tool registry, permission checker, agent loop construction, system prompt assembly, and turn execution. Daemon delegates to this instead of building tools/permissions inline |
 | `agent::task_tool_runtime` | `TaskToolRuntime` | Narrow DTO extracting task/subagent tool construction from `SubAgentPool` |
 
 ### `CoreClient`
@@ -216,5 +217,7 @@ Selection: `--core-transport` flag → `CODEGG_CORE_TRANSPORT` env → default `
 - Local TUI flows should prefer `CoreClient` over direct store access when a request already exists in `CoreRequest`.
 - The in-process client subscribes to the GlobalEventBus and forwards events to the channel receiver. Actual event publishing happens inside `tokio::spawn` within turn execution handlers.
 - `CoreDaemon` uses `CoreRuntimeDeps` to bundle runtime dependencies. The legacy `new(pool, subagent_pool, memory_store, bg_scheduler)` constructor is retained for backward compatibility.
-- Agent loop construction goes through `AgentRuntimeProvider` trait, keeping daemon decoupled from concrete `AgentLoop` internals.
-- Tool registry construction goes through `tool::factory::build_session_tool_registry` with `TaskToolRuntime` instead of `SubAgentPool` directly.
+- Turn execution goes through `TurnRuntime` trait (`agent::turn_runtime`). The daemon constructs a `TurnRunInput` and calls `runtime.run_turn(input)`, receiving `TurnRunOutput` containing cancel/steer channels. The runtime owns tool registry construction, permission checker construction, agent loop construction, system prompt assembly, and background spawning.
+- `AgentRuntimeProvider` (build-only trait) is kept as a transitional internal detail used by `DefaultTurnRuntime`. New code should prefer `TurnRuntime`.
+- `src/core/daemon.rs` has zero direct references to `AgentLoop`, `ToolRegistry`, `PermissionChecker`, `TaskToolRuntime`, or `build_session_tool_registry`.
+- Daemon still owns: request validation, session_id/turn_id management, active-turn bookkeeping, TurnStarted event publishing, and CoreResponse return.
