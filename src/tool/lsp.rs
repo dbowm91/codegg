@@ -4,10 +4,63 @@ use crate::tool::{
     ToolProvenance, ToolTrust,
 };
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+
+const MAX_REFERENCES: usize = 100;
+const MAX_SYMBOLS: usize = 300;
+const MAX_HOVER_CHARS: usize = 2000;
+const MAX_OUTPUT_CHARS: usize = 30_000;
+
+#[derive(Serialize)]
+struct LspToolOutput<T> {
+    operation: String,
+    file_path: Option<String>,
+    result_count: usize,
+    truncated: bool,
+    results: T,
+}
+
+#[derive(Serialize)]
+struct DiagnosticSummary {
+    file: String,
+    line: u32,
+    column: u32,
+    severity: String,
+    source: Option<String>,
+    code: Option<String>,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct LocationSummary {
+    file: String,
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+}
+
+#[derive(Serialize)]
+struct SymbolSummary {
+    name: String,
+    kind: String,
+    file: String,
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+}
+
+#[derive(Serialize)]
+struct HoverSummary {
+    file: String,
+    line: u32,
+    column: u32,
+    contents: String,
+}
 
 #[derive(Debug, Deserialize)]
 struct LspInput {
@@ -19,11 +72,69 @@ struct LspInput {
     #[serde(default)]
     column: Option<u32>,
     #[serde(default)]
-    end_line: Option<u32>,
-    #[serde(default)]
-    end_column: Option<u32>,
-    #[serde(default)]
     symbol: Option<String>,
+}
+
+pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
+    crate::lsp::lsp_types::Position {
+        line: line.saturating_sub(1),
+        character: column.saturating_sub(1),
+    }
+}
+
+fn uri_to_path(uri: &crate::lsp::lsp_types::Uri) -> String {
+    let s = uri.to_string();
+    if let Ok(p) = std::path::Path::new(s.as_str()).strip_prefix("file://") {
+        p.to_string_lossy().to_string()
+    } else if let Some(path) = s.strip_prefix("file:") {
+        path.to_string()
+    } else {
+        s
+    }
+}
+
+fn symbol_kind_to_string(kind: crate::lsp::lsp_types::SymbolKind) -> String {
+    match kind {
+        crate::lsp::lsp_types::SymbolKind::FILE => "file",
+        crate::lsp::lsp_types::SymbolKind::MODULE => "module",
+        crate::lsp::lsp_types::SymbolKind::NAMESPACE => "namespace",
+        crate::lsp::lsp_types::SymbolKind::PACKAGE => "package",
+        crate::lsp::lsp_types::SymbolKind::CLASS => "class",
+        crate::lsp::lsp_types::SymbolKind::METHOD => "method",
+        crate::lsp::lsp_types::SymbolKind::PROPERTY => "property",
+        crate::lsp::lsp_types::SymbolKind::FIELD => "field",
+        crate::lsp::lsp_types::SymbolKind::CONSTRUCTOR => "constructor",
+        crate::lsp::lsp_types::SymbolKind::ENUM => "enum",
+        crate::lsp::lsp_types::SymbolKind::INTERFACE => "interface",
+        crate::lsp::lsp_types::SymbolKind::FUNCTION => "function",
+        crate::lsp::lsp_types::SymbolKind::VARIABLE => "variable",
+        crate::lsp::lsp_types::SymbolKind::CONSTANT => "constant",
+        crate::lsp::lsp_types::SymbolKind::STRING => "string",
+        crate::lsp::lsp_types::SymbolKind::NUMBER => "number",
+        crate::lsp::lsp_types::SymbolKind::BOOLEAN => "boolean",
+        crate::lsp::lsp_types::SymbolKind::ARRAY => "array",
+        crate::lsp::lsp_types::SymbolKind::OBJECT => "object",
+        crate::lsp::lsp_types::SymbolKind::KEY => "key",
+        crate::lsp::lsp_types::SymbolKind::NULL => "null",
+        crate::lsp::lsp_types::SymbolKind::ENUM_MEMBER => "enum_member",
+        crate::lsp::lsp_types::SymbolKind::STRUCT => "struct",
+        crate::lsp::lsp_types::SymbolKind::EVENT => "event",
+        crate::lsp::lsp_types::SymbolKind::OPERATOR => "operator",
+        crate::lsp::lsp_types::SymbolKind::TYPE_PARAMETER => "type_parameter",
+        _ => "unknown",
+    }
+    .to_string()
+}
+
+fn severity_to_string(severity: crate::lsp::lsp_types::DiagnosticSeverity) -> String {
+    match severity {
+        crate::lsp::lsp_types::DiagnosticSeverity::ERROR => "error",
+        crate::lsp::lsp_types::DiagnosticSeverity::WARNING => "warning",
+        crate::lsp::lsp_types::DiagnosticSeverity::INFORMATION => "info",
+        crate::lsp::lsp_types::DiagnosticSeverity::HINT => "hint",
+        _ => "unknown",
+    }
+    .to_string()
 }
 
 pub struct LspTool {
@@ -56,6 +167,45 @@ impl LspTool {
         crate::tool::util::validate_path(&original, &self.allowed_root)
             .map_err(|e| ToolError::Execution(e.to_string()))
     }
+
+    fn require_line_col(
+        &self,
+        line: &Option<u32>,
+        column: &Option<u32>,
+    ) -> Result<(u32, u32), ToolError> {
+        let l =
+            line.ok_or_else(|| ToolError::Execution("line is required (1-indexed)".to_string()))?;
+        let c = column
+            .ok_or_else(|| ToolError::Execution("column is required (1-indexed)".to_string()))?;
+        Ok((l, c))
+    }
+
+    fn flatten_symbols(
+        symbols: &[crate::lsp::lsp_types::DocumentSymbol],
+        file: &str,
+        output: &mut Vec<SymbolSummary>,
+        remaining: &mut usize,
+    ) {
+        for sym in symbols {
+            if *remaining == 0 {
+                return;
+            }
+            let range = sym.range;
+            output.push(SymbolSummary {
+                name: sym.name.clone(),
+                kind: symbol_kind_to_string(sym.kind),
+                file: file.to_string(),
+                start_line: range.start.line + 1,
+                start_column: range.start.character + 1,
+                end_line: range.end.line + 1,
+                end_column: range.end.character + 1,
+            });
+            *remaining -= 1;
+            if let Some(children) = &sym.children {
+                Self::flatten_symbols(children, file, output, remaining);
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -65,7 +215,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Experimental: Query LSP server for code intelligence. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls, codeAction, codeLens."
+        "Experimental: Query LSP server for code intelligence. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, codeLens."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -76,9 +226,7 @@ impl Tool for LspTool {
                     "type": "string",
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
-                        "documentSymbol", "workspaceSymbol", "goToImplementation",
-                        "prepareCallHierarchy", "incomingCalls", "outgoingCalls",
-                        "codeAction", "codeLens"
+                        "documentSymbol", "workspaceSymbol", "diagnostics", "codeLens"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -92,19 +240,11 @@ impl Tool for LspTool {
                 },
                 "column": {
                     "type": "number",
-                    "description": "Column number"
-                },
-                "end_line": {
-                    "type": "number",
-                    "description": "End line number for codeAction range (1-indexed)"
-                },
-                "end_column": {
-                    "type": "number",
-                    "description": "End column number for codeAction range"
+                    "description": "Column number (1-indexed)"
                 },
                 "symbol": {
                     "type": "string",
-                    "description": "Symbol name for symbol-based operations"
+                    "description": "Symbol name for workspaceSymbol operation"
                 }
             },
             "required": ["operation"]
@@ -120,39 +260,102 @@ impl Tool for LspTool {
             .map_err(|e| ToolError::Execution(format!("invalid lsp input: {e}")))?;
 
         let ops = crate::lsp::operations::LspOperations::new(self.service.clone());
+        let file_path_str = parsed.file_path.clone();
 
         let result = match parsed.operation.as_str() {
             "goToDefinition" => {
                 let file = self.resolve_file(&parsed.file_path)?;
-                let line = parsed.line.unwrap_or(0);
-                let col = parsed.column.unwrap_or(0);
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let pos = to_lsp_position(line, col);
                 let locs = ops
-                    .go_to_definition(&file, line, col)
+                    .go_to_definition(&file, pos.line, pos.character)
                     .await
                     .map_err(|e| ToolError::Execution(format!("goToDefinition: {e}")))?;
-                serde_json::to_string_pretty(&locs)
+                let summaries: Vec<LocationSummary> = locs
+                    .iter()
+                    .map(|loc| {
+                        let range = loc.target_range;
+                        LocationSummary {
+                            file: uri_to_path(&loc.target_uri),
+                            start_line: range.start.line + 1,
+                            start_column: range.start.character + 1,
+                            end_line: range.end.line + 1,
+                            end_column: range.end.character + 1,
+                        }
+                    })
+                    .collect();
+                let output = LspToolOutput {
+                    operation: "goToDefinition".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated: false,
+                    results: summaries,
+                };
+                serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
             "findReferences" => {
                 let file = self.resolve_file(&parsed.file_path)?;
-                let line = parsed.line.unwrap_or(0);
-                let col = parsed.column.unwrap_or(0);
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let pos = to_lsp_position(line, col);
                 let refs = ops
-                    .find_references(&file, line, col)
+                    .find_references(&file, pos.line, pos.character)
                     .await
                     .map_err(|e| ToolError::Execution(format!("findReferences: {e}")))?;
-                serde_json::to_string_pretty(&refs)
+                let truncated = refs.len() > MAX_REFERENCES;
+                let capped: Vec<_> = refs.into_iter().take(MAX_REFERENCES).collect();
+                let summaries: Vec<LocationSummary> = capped
+                    .iter()
+                    .map(|loc| {
+                        let range = loc.range;
+                        LocationSummary {
+                            file: uri_to_path(&loc.uri),
+                            start_line: range.start.line + 1,
+                            start_column: range.start.character + 1,
+                            end_line: range.end.line + 1,
+                            end_column: range.end.character + 1,
+                        }
+                    })
+                    .collect();
+                let output = LspToolOutput {
+                    operation: "findReferences".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated,
+                    results: summaries,
+                };
+                serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
             "hover" => {
                 let file = self.resolve_file(&parsed.file_path)?;
-                let line = parsed.line.unwrap_or(0);
-                let col = parsed.column.unwrap_or(0);
-                let hover = ops
-                    .hover(&file, line, col)
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let pos = to_lsp_position(line, col);
+                let hover_text = ops
+                    .hover(&file, pos.line, pos.character)
                     .await
                     .map_err(|e| ToolError::Execution(format!("hover: {e}")))?;
-                serde_json::to_string_pretty(&hover)
+                let contents = hover_text.unwrap_or_default();
+                let truncated = contents.len() > MAX_HOVER_CHARS;
+                let display = if truncated {
+                    &contents[..MAX_HOVER_CHARS]
+                } else {
+                    &contents
+                };
+                let summary = HoverSummary {
+                    file: file_path_str.clone().unwrap_or_default(),
+                    line,
+                    column: col,
+                    contents: display.to_string(),
+                };
+                let output = LspToolOutput {
+                    operation: "hover".to_string(),
+                    file_path: file_path_str,
+                    result_count: if summary.contents.is_empty() { 0 } else { 1 },
+                    truncated,
+                    results: summary,
+                };
+                serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
             "documentSymbol" => {
@@ -161,7 +364,48 @@ impl Tool for LspTool {
                     .document_symbols(&file)
                     .await
                     .map_err(|e| ToolError::Execution(format!("documentSymbol: {e}")))?;
-                serde_json::to_string_pretty(&syms)
+                let file_str = file.to_string_lossy().to_string();
+                let mut remaining = MAX_SYMBOLS;
+                let mut summaries = Vec::new();
+                Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
+                let output = LspToolOutput {
+                    operation: "documentSymbol".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated: remaining == 0,
+                    results: summaries,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "diagnostics" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let collector =
+                    crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
+                let file_diags = collector
+                    .get_diagnostics_for_file(&file)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("diagnostics: {e}")))?;
+                let summaries: Vec<DiagnosticSummary> = file_diags
+                    .iter()
+                    .map(|d| DiagnosticSummary {
+                        file: d.file.clone(),
+                        line: d.line + 1,
+                        column: d.column + 1,
+                        severity: severity_to_string(d.severity),
+                        source: d.source.clone(),
+                        code: d.code.clone(),
+                        message: d.message.clone(),
+                    })
+                    .collect();
+                let output = LspToolOutput {
+                    operation: "diagnostics".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated: false,
+                    results: summaries,
+                };
+                serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
             "workspaceSymbol" => {
@@ -173,143 +417,35 @@ impl Tool for LspTool {
                     "workDoneToken": null,
                     "partialResultToken": null,
                 });
-                let keys = self.service.client_keys().await;
-                let key = keys
-                    .first()
-                    .ok_or_else(|| ToolError::Execution("no LSP client available".to_string()))?;
+                let key = if parsed.file_path.is_some() {
+                    let file = self.resolve_file(&parsed.file_path)?;
+                    let (k, _) = self
+                        .service
+                        .get_or_create_client_for_file(&file)
+                        .await
+                        .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?;
+                    k
+                } else {
+                    let root = std::env::current_dir().unwrap_or_default();
+                    self.service
+                        .get_or_create_client_for_root_hint(Some(&root), None)
+                        .await
+                        .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?
+                        .0
+                };
                 let resp = self
                     .service
-                    .send_request(key, "workspace/symbol", params)
+                    .send_request(&key, "workspace/symbol", params)
                     .await
                     .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?;
-                serde_json::to_string_pretty(&resp)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "goToImplementation" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let uri_str = url::Url::from_file_path(&file)
-                    .map(|u| u.to_string())
-                    .unwrap_or_default();
-                let params = serde_json::json!({
-                    "textDocument": { "uri": uri_str },
-                    "position": {
-                        "line": parsed.line.unwrap_or(0),
-                        "character": parsed.column.unwrap_or(0),
-                    },
-                });
-                let keys = self.service.client_keys().await;
-                let key = keys
-                    .first()
-                    .ok_or_else(|| ToolError::Execution("no LSP client available".to_string()))?;
-                let resp = self
-                    .service
-                    .send_request(key, "textDocument/implementation", params)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("goToImplementation: {e}")))?;
-                serde_json::to_string_pretty(&resp)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "prepareCallHierarchy" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let uri_str = url::Url::from_file_path(&file)
-                    .map(|u| u.to_string())
-                    .unwrap_or_default();
-                let params = serde_json::json!({
-                    "textDocument": { "uri": uri_str },
-                    "position": {
-                        "line": parsed.line.unwrap_or(0),
-                        "character": parsed.column.unwrap_or(0),
-                    },
-                    "workDoneToken": null,
-                    "partialResultToken": null,
-                });
-                let keys = self.service.client_keys().await;
-                let key = keys
-                    .first()
-                    .ok_or_else(|| ToolError::Execution("no LSP client available".to_string()))?;
-                let resp = self
-                    .service
-                    .send_request(key, "textDocument/prepareCallHierarchy", params)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("prepareCallHierarchy: {e}")))?;
-                serde_json::to_string_pretty(&resp)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "incomingCalls" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let uri_str = url::Url::from_file_path(&file)
-                    .map(|u| u.to_string())
-                    .unwrap_or_default();
-                let params = serde_json::json!({
-                    "item": {
-                        "uri": uri_str,
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 0 },
-                        },
-                    },
-                    "workDoneToken": null,
-                    "partialResultToken": null,
-                });
-                let keys = self.service.client_keys().await;
-                let key = keys
-                    .first()
-                    .ok_or_else(|| ToolError::Execution("no LSP client available".to_string()))?;
-                let resp = self
-                    .service
-                    .send_request(key, "callHierarchy/incomingCalls", params)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("incomingCalls: {e}")))?;
-                serde_json::to_string_pretty(&resp)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "outgoingCalls" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let uri_str = url::Url::from_file_path(&file)
-                    .map(|u| u.to_string())
-                    .unwrap_or_default();
-                let params = serde_json::json!({
-                    "item": {
-                        "uri": uri_str,
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 0 },
-                        },
-                    },
-                    "workDoneToken": null,
-                    "partialResultToken": null,
-                });
-                let keys = self.service.client_keys().await;
-                let key = keys
-                    .first()
-                    .ok_or_else(|| ToolError::Execution("no LSP client available".to_string()))?;
-                let resp = self
-                    .service
-                    .send_request(key, "callHierarchy/outgoingCalls", params)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("outgoingCalls: {e}")))?;
-                serde_json::to_string_pretty(&resp)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "codeAction" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let start_line = parsed.line.unwrap_or(0);
-                let start_col = parsed.column.unwrap_or(0);
-                let end_line = parsed.end_line.unwrap_or(start_line);
-                let end_col = parsed.end_column.unwrap_or(0);
-                let actions = ops
-                    .code_actions(
-                        &file,
-                        start_line,
-                        start_col,
-                        end_line,
-                        end_col,
-                        Vec::new(),
-                        None,
-                    )
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("codeAction: {e}")))?;
-                serde_json::to_string_pretty(&actions)
+                let output = LspToolOutput {
+                    operation: "workspaceSymbol".to_string(),
+                    file_path: file_path_str,
+                    result_count: resp.as_array().map(|a| a.len()).unwrap_or(0),
+                    truncated: false,
+                    results: resp,
+                };
+                serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
             "codeLens" => {
@@ -318,8 +454,28 @@ impl Tool for LspTool {
                     .code_lens(&file)
                     .await
                     .map_err(|e| ToolError::Execution(format!("codeLens: {e}")))?;
-                serde_json::to_string_pretty(&lenses)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+                let output = LspToolOutput {
+                    operation: "codeLens".to_string(),
+                    file_path: file_path_str,
+                    result_count: lenses.len(),
+                    truncated: false,
+                    results: lenses,
+                };
+                let serialized = serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?;
+                if serialized.len() > MAX_OUTPUT_CHARS {
+                    let output = LspToolOutput {
+                        operation: "codeLens".to_string(),
+                        file_path: output.file_path,
+                        result_count: output.result_count,
+                        truncated: true,
+                        results: serde_json::Value::Array(Vec::new()),
+                    };
+                    serde_json::to_string_pretty(&output)
+                        .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+                } else {
+                    serialized
+                }
             }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
@@ -376,9 +532,7 @@ mod tests {
                     "type": "string",
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
-                        "documentSymbol", "workspaceSymbol", "goToImplementation",
-                        "prepareCallHierarchy", "incomingCalls", "outgoingCalls",
-                        "codeAction", "codeLens"
+                        "documentSymbol", "workspaceSymbol", "diagnostics", "codeLens"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -392,19 +546,11 @@ mod tests {
                 },
                 "column": {
                     "type": "number",
-                    "description": "Column number"
-                },
-                "end_line": {
-                    "type": "number",
-                    "description": "End line number for codeAction range (1-indexed)"
-                },
-                "end_column": {
-                    "type": "number",
-                    "description": "End column number for codeAction range"
+                    "description": "Column number (1-indexed)"
                 },
                 "symbol": {
                     "type": "string",
-                    "description": "Symbol name for symbol-based operations"
+                    "description": "Symbol name for workspaceSymbol operation"
                 }
             },
             "required": ["operation"]
@@ -418,8 +564,6 @@ mod tests {
         let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
             crate::config::schema::LspConfig::default().into(),
         )));
-        // Use an unknown operation: this still exercises the
-        // structured path and produces the configured error.
         let res = tool
             .execute_structured(json!({"operation": "no_such_op"}), None)
             .await;

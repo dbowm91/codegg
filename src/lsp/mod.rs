@@ -51,6 +51,8 @@ pub use egglsp::error::LspError;
 pub use egglsp::operations::LspOperations;
 pub use egglsp::service::LspService;
 
+pub use egglsp::lsp_types;
+
 impl From<crate::config::schema::LspConfig> for egglsp::LspConfig {
     fn from(c: crate::config::schema::LspConfig) -> Self {
         // The shapes are intentionally identical; serde round-trips both.

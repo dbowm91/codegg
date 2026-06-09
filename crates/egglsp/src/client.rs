@@ -63,9 +63,8 @@ impl LspClient {
         })?;
         let mut process = launch::spawn_server(binary_str, &args, env, Some(root)).await?;
 
-        let stderr_output = launch::drain_stderr(&mut process).await;
-        if !stderr_output.is_empty() {
-            info!(server = server.id, stderr = %stderr_output, "LSP server stderr");
+        if let Some(stderr) = process.stderr.take() {
+            launch::spawn_stderr_drain(server.id, stderr.into_inner());
         }
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -167,10 +166,15 @@ impl LspClient {
 
         let notif_rx = self.notif_rx.lock().await.take();
         if let Some(mut rx) = notif_rx {
+            let diagnostics = self.diagnostics.clone();
             let server_id = self.server_id.clone();
             tokio::spawn(async move {
                 while let Some(msg) = rx.recv().await {
-                    tracing::debug!(server = %server_id, "LSP notification: {}", msg);
+                    if let Some((uri, diags)) = parse_publish_diagnostics(&msg) {
+                        let count = diags.len();
+                        diagnostics.lock().await.insert(uri.clone(), diags);
+                        debug!(server = %server_id, uri, count, "received diagnostics via notification");
+                    }
                 }
             });
         }
@@ -551,35 +555,97 @@ impl LspClient {
     }
 
     pub async fn process_notification(&self, notification: &str) {
-        let val: serde_json::Value = match serde_json::from_str(notification) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(error = %e, "failed to parse LSP notification");
-                return;
-            }
-        };
-
-        let method = val.get("method").and_then(|m| m.as_str()).unwrap_or("");
-
-        if method == "textDocument/publishDiagnostics" {
-            if let Some(params) = val.get("params") {
-                if let Some(uri) = params.get("uri").and_then(|u| u.as_str()) {
-                    if let Some(diags) = params.get("diagnostics") {
-                        let parse_result: Result<Vec<lsp_types::Diagnostic>, _> =
-                            serde_json::from_value(diags.clone());
-                        match parse_result {
-                            Ok(diags) => {
-                                let count = diags.len();
-                                self.diagnostics.lock().await.insert(uri.to_string(), diags);
-                                debug!(uri, count, "received diagnostics");
-                            }
-                            Err(e) => {
-                                warn!("Failed to parse diagnostics for {}: {}", uri, e);
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(diags) = parse_publish_diagnostics(notification) {
+            let uri = diags.0;
+            let diagnostics = diags.1;
+            let count = diagnostics.len();
+            self.diagnostics
+                .lock()
+                .await
+                .insert(uri.clone(), diagnostics);
+            debug!(uri, count, "received diagnostics");
         }
+    }
+}
+
+/// Parse a `textDocument/publishDiagnostics` notification from raw JSON-RPC.
+/// Returns `(uri, diagnostics)` if valid, `None` otherwise.
+/// Unknown notifications or malformed payloads return `None` without error.
+pub fn parse_publish_diagnostics(
+    notification: &str,
+) -> Option<(String, Vec<lsp_types::Diagnostic>)> {
+    let val: serde_json::Value = serde_json::from_str(notification).ok()?;
+    let method = val.get("method").and_then(|m| m.as_str())?;
+    if method != "textDocument/publishDiagnostics" {
+        return None;
+    }
+    let params = val.get("params")?;
+    let uri = params.get("uri")?.as_str()?;
+    let diags_value = params.get("diagnostics")?;
+    let diagnostics: Vec<lsp_types::Diagnostic> =
+        serde_json::from_value(diags_value.clone()).ok()?;
+    Some((uri.to_string(), diagnostics))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_publish_diagnostics_valid() {
+        let json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///src/main.rs",
+                "diagnostics": [
+                    {
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 10 }
+                        },
+                        "message": "unused variable",
+                        "severity": 2
+                    }
+                ]
+            }
+        });
+        let result = parse_publish_diagnostics(&json.to_string());
+        assert!(result.is_some());
+        let (uri, diags) = result.unwrap();
+        assert_eq!(uri, "file:///src/main.rs");
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, "unused variable");
+    }
+
+    #[test]
+    fn parse_publish_diagnostics_unknown_notification() {
+        let json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/completion",
+            "params": {}
+        });
+        assert!(parse_publish_diagnostics(&json.to_string()).is_none());
+    }
+
+    #[test]
+    fn parse_publish_diagnostics_malformed_json() {
+        assert!(parse_publish_diagnostics("not json").is_none());
+    }
+
+    #[test]
+    fn parse_publish_diagnostics_empty_diagnostics() {
+        let json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///src/main.rs",
+                "diagnostics": []
+            }
+        });
+        let result = parse_publish_diagnostics(&json.to_string());
+        assert!(result.is_some());
+        let (_, diags) = result.unwrap();
+        assert!(diags.is_empty());
     }
 }

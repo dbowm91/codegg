@@ -20,7 +20,7 @@ use crate::error::LspError;
 pub struct LspProcess {
     pub stdin: tokio::process::ChildStdin,
     pub stdout: tokio::process::ChildStdout,
-    pub stderr: BufReader<tokio::process::ChildStderr>,
+    pub stderr: Option<BufReader<tokio::process::ChildStderr>>,
     pub child: tokio::process::Child,
 }
 
@@ -78,7 +78,7 @@ pub async fn spawn_server(
     Ok(LspProcess {
         stdin,
         stdout,
-        stderr: stderr_reader,
+        stderr: Some(stderr_reader),
         child,
     })
 }
@@ -187,13 +187,28 @@ fn parse_content_length(header: &str) -> Option<usize> {
     None
 }
 
-pub async fn drain_stderr(process: &mut LspProcess) -> String {
-    let mut buf = String::new();
-    let _ = process.stderr.read_to_string(&mut buf).await;
-    if !buf.is_empty() {
-        debug!(stderr = %buf, "LSP server stderr");
-    }
-    buf
+pub fn spawn_stderr_drain(server_id: &str, stderr: tokio::process::ChildStderr) {
+    let server_id = server_id.to_string();
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut reader = BufReader::new(stderr);
+        let mut buf = vec![0u8; 8192];
+        let mut total_bytes: usize = 0;
+        const MAX_STDERR_BYTES: usize = 64 * 1024;
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    total_bytes += n;
+                    if total_bytes <= MAX_STDERR_BYTES {
+                        let chunk = String::from_utf8_lossy(&buf[..n]);
+                        debug!(server = %server_id, "LSP stderr: {}", chunk.trim());
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
 }
 
 pub async fn terminate(process: &mut LspProcess) {

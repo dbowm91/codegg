@@ -27,7 +27,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
-| `lsp/` | Language Server Protocol support (diagnostics, code operations) |
+| `lsp/` | Language Server Protocol support (diagnostics, code operations) — egglsp crate is authoritative implementation, src/lsp/ is thin shim |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
 | `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation |
 | `memory/` | Persistent memory system for session learning and namespace management |

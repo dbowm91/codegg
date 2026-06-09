@@ -7,10 +7,11 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 ## Key Responsibilities
 
 - LSP server lifecycle management (download, launch, initialize)
-- Diagnostics collection with debouncing
-- Code operations (goto definition, find references, hover, completion)
+- Diagnostics collection via publishDiagnostics notifications
+- Code operations (goto definition, find references, hover, document symbols, workspace symbols, diagnostics, code lens)
 - Language detection from file extensions
 - Project root detection
+- Compact agent-facing output DTOs (not raw LSP JSON)
 
 ## Architecture
 
@@ -53,6 +54,8 @@ pub struct LspService {
 
 impl LspService {
     pub async fn get_or_create_client(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
+    pub async fn get_or_create_client_for_file(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
+    pub async fn get_or_create_client_for_root_hint(&self, root_hint: Option<&Path>, server_id: Option<&str>) -> Result<(String, PathBuf), LspError>
     pub async fn open_file(&self, file_path: &Path, text: &str) -> Result<(), LspError>
     pub async fn update_file(&self, file_path: &Path, text: &str) -> Result<(), LspError>
     pub async fn close_file(&self, file_path: &Path) -> Result<(), LspError>
@@ -167,7 +170,7 @@ fn extract_tar_xz(data: &[u8], dest: &Path, binary_name: &str) -> Result<PathBuf
 pub struct LspProcess {
     pub stdin: tokio::process::ChildStdin,
     pub stdout: tokio::process::ChildStdout,
-    pub stderr: BufReader<tokio::process::ChildStderr>,
+    pub stderr: Option<BufReader<tokio::process::ChildStderr>>,
     pub child: tokio::process::Child,
 }
 
@@ -175,12 +178,12 @@ pub async fn spawn_server(command: &str, args: &[&str], env: &[(String, String)]
 pub async fn send_request(process: &mut LspProcess, msg: &str) -> Result<(), LspError>
 pub async fn read_response(process: &mut LspProcess) -> Result<String, LspError>
 pub async fn read_notification(process: &mut LspProcess) -> Result<Option<String>, LspError>
-pub async fn drain_stderr(process: &mut LspProcess) -> String
+pub fn spawn_stderr_drain(server_id: &str, stderr: tokio::process::ChildStderr)
 pub async fn terminate(process: &mut LspProcess)
 fn parse_content_length(header: &str) -> Option<usize>
 ```
 
-Uses Content-Length headers for LSP message framing. Preserves user's PATH from environment.
+Uses Content-Length headers for LSP message framing. Preserves user's PATH from environment. Stderr is drained in a background task (capped at 64KB) to prevent blocking initialization.
 
 ### language.rs - Language Detection
 
@@ -261,7 +264,35 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
 
 ## Tool Integration
 
-LSP is exposed via `LspTool` in `src/tool/lsp.rs` when `experimental.lsp_tool` config is enabled.
+LSP is exposed via `LspTool` in `src/tool/lsp.rs`. The tool returns compact agent-facing summaries, not raw LSP JSON.
+
+### Exposed Operations
+
+Only these operations are model-facing (Phase 7 narrow set):
+
+| Operation | LSP Request | Output Shape |
+|-----------|-------------|--------------|
+| `goToDefinition` | `textDocument/definition` | `Vec<LocationSummary>` |
+| `findReferences` | `textDocument/references` | `Vec<LocationSummary>` (capped at 100) |
+| `hover` | `textDocument/hover` | `HoverSummary` (capped at 2000 chars) |
+| `documentSymbol` | `textDocument/documentSymbol` | `Vec<SymbolSummary>` (capped at 300) |
+| `workspaceSymbol` | `workspace/symbol` | Raw JSON wrapped in `LspToolOutput` |
+| `diagnostics` | (via DiagnosticsCollector) | `Vec<DiagnosticSummary>` |
+| `codeLens` | `textDocument/codeLens` | Raw JSON wrapped in `LspToolOutput` |
+
+Hidden operations (in `egglsp::operations` for future use): `completion`, `signatureHelp`, `codeAction`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `goToImplementation`.
+
+### Position Convention
+
+Model-facing line and column are **1-indexed**. The wrapper converts to LSP 0-indexed via `to_lsp_position()`. Missing required fields return clear `ToolError::Execution` messages.
+
+### Compact DTOs
+
+All output is wrapped in `LspToolOutput<T>` with `operation`, `file_path`, `result_count`, `truncated`, and `results` fields. Individual results use `LocationSummary`, `DiagnosticSummary`, `SymbolSummary`, or `HoverSummary` with 1-indexed positions and file paths (not URIs).
+
+### Diagnostics
+
+The `diagnostics` operation is first-class. It reads from the shared diagnostics cache populated by `publishDiagnostics` notifications. Diagnostics use 1-indexed line/column in output. If no diagnostics have arrived yet, an empty list is returned.
 
 ### Backend config (MCP fallback semantics)
 
@@ -302,16 +333,17 @@ pub enum LspError {
 
 ## Implementation Notes
 
-All documented design notes have been addressed in the current implementation:
-
 - **PATH parsing**: Uses `std::env::split_paths()` for correct cross-platform PATH handling
-- **PHP mapping**: Correctly maps to `php-language-server` (was incorrectly listed as intelephense)
+- **PHP mapping**: Correctly maps to `php-language-server`
 - **Request timeout**: 30-second timeout in `send_request()` with `LspError::RequestTimeout`
 - **Hardcoded PATH**: Preserves user's actual PATH from environment
-- **Stderr logging**: Server stderr is drained and logged during initialization
-- **Notification loop**: Clean notification handling in `send_request()`
-- **close_file race condition**: Fixed with single write lock pattern
-- **save_file race condition**: Fixed with single write lock pattern
+- **Stderr handling**: Background task drains stderr (capped at 64KB) to prevent blocking initialization
+- **Notification handling**: Notifications received during request/response matching are parsed through `parse_publish_diagnostics` and update the shared diagnostics cache
+- **Diagnostics parser**: `parse_publish_diagnostics` is a pure function that parses `publishDiagnostics` JSON-RPC notifications, testable without a real LSP server
+- **Compact output**: Model-facing output uses DTOs (`LocationSummary`, `DiagnosticSummary`, etc.) with 1-indexed positions, not raw LSP JSON
+- **Position conversion**: `to_lsp_position()` converts 1-indexed model input to 0-indexed LSP positions exactly once at the wrapper boundary
+- **Client routing**: `workspaceSymbol` resolves client via `get_or_create_client_for_file` or `get_or_create_client_for_root_hint`, not arbitrary first-key selection
+- **Doctor subsystem**: `codegg doctor --subsystem lsp` provides non-mutating LSP diagnostics
 
 ## See Also
 

@@ -323,4 +323,57 @@ impl LspService {
         let clients = self.clients.read().await;
         clients.keys().cloned().collect()
     }
+
+    pub async fn get_or_create_client_for_file(
+        &self,
+        file_path: &Path,
+    ) -> Result<(String, PathBuf), LspError> {
+        self.get_or_create_client(file_path).await
+    }
+
+    pub async fn get_or_create_client_for_root_hint(
+        &self,
+        root_hint: Option<&Path>,
+        server_id: Option<&str>,
+    ) -> Result<(String, PathBuf), LspError> {
+        let root = root_hint
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        let keys = self.client_keys().await;
+
+        if let Some(sid) = server_id {
+            let key = format!("{}:{}", root.display(), sid);
+            if keys.contains(&key) {
+                return Ok((key, root));
+            }
+            return Err(LspError::ServerNotFound(format!(
+                "no LSP client for server '{}' at root {}",
+                sid,
+                root.display()
+            )));
+        }
+
+        let matching: Vec<_> = keys
+            .iter()
+            .filter(|k| k.starts_with(&format!("{}:", root.display())))
+            .cloned()
+            .collect();
+
+        if matching.len() == 1 {
+            return Ok((matching.into_iter().next().unwrap(), root));
+        }
+
+        if matching.is_empty() {
+            return Err(LspError::ServerNotFound(format!(
+                "no LSP client for root {}",
+                root.display()
+            )));
+        }
+
+        Err(LspError::ServerNotFound(format!(
+            "multiple LSP clients for root {}; specify server_id to disambiguate",
+            root.display()
+        )))
+    }
 }

@@ -21,3 +21,5 @@ pub use diagnostics::DiagnosticsCollector;
 pub use error::LspError;
 pub use operations::LspOperations;
 pub use service::LspService;
+
+pub use lsp_types;

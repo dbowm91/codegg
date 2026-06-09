@@ -16,22 +16,28 @@ This skill covers the LSP module for language server integration in opencode-rs.
 
 ## Overview
 
-The LSP module (`src/lsp/`) implements a **client-side LSP integration** - it spawns and manages external LSP server processes, communicating via JSON-RPC over stdin/stdout. It does NOT implement an LSP server itself.
+The LSP implementation lives in the `egglsp` workspace crate (`crates/egglsp/`). `src/lsp/mod.rs` is a thin compatibility shim that re-exports `egglsp::*` and bridges config/error types. The model-facing tool is at `src/tool/lsp.rs`.
+
+LSP is exposed as a native tool via `LspTool`, returning compact agent-facing summaries (not raw LSP JSON). Model-facing line and column are 1-indexed; the wrapper converts to LSP 0-indexed.
 
 ## Directory Structure
 
 ```
-src/lsp/
-├── mod.rs           # Main Lsp struct
-├── client.rs        # LspClient - JSON-RPC communication, process I/O
-├── service.rs       # LspService - manages clients per project root
-├── server.rs        # LspServerDef - 30+ server definitions
-├── operations.rs    # LspOperations - goto definition, hover, completion, etc.
-├── diagnostics.rs   # DiagnosticsCollector with debouncing
-├── language.rs      # Language detection from file extensions
-├── root.rs          # Project root detection
-├── launch.rs        # Process spawning with Content-Length framing
-└── download.rs      # Binary download and caching
+crates/egglsp/src/          # Authoritative LSP implementation
+├── client.rs               # LspClient - JSON-RPC, diagnostics cache, notification parser
+├── config.rs               # LspConfig, LspRule types
+├── diagnostics.rs          # DiagnosticsCollector
+├── download.rs             # Binary download/cache
+├── error.rs                # LspError
+├── language.rs             # Language detection from file extensions
+├── launch.rs               # Process spawning, Content-Length framing, background stderr drain
+├── operations.rs           # LspOperations - goto definition, hover, etc.
+├── root.rs                 # Project root detection
+├── server.rs               # 39 server definitions
+├── service.rs              # LspService - client management, file-based routing
+
+src/lsp/mod.rs              # Thin re-export shim (compatibility only)
+src/tool/lsp.rs             # Model-facing LSP tool with compact DTOs
 ```
 
 ## Key Types

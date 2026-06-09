@@ -303,6 +303,8 @@ pub enum DoctorSubsystem {
     Search,
     /// Configured MCP servers.
     Mcp,
+    /// Language Server Protocol subsystem.
+    Lsp,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, clap::ValueEnum)]
@@ -967,6 +969,12 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
         return Ok(());
     }
 
+    if matches!(subsystem, DoctorSubsystem::Lsp) {
+        println!("\n== LSP ==");
+        list_lsp_diagnostics(&config);
+        return Ok(());
+    }
+
     if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Search) {
         println!("\n== Search backend ==");
         let (_svc, report) = bootstrap::bootstrap_search_backend(&config).await;
@@ -978,6 +986,11 @@ async fn cmd_doctor(subsystem: DoctorSubsystem) -> Result<(), AppError> {
     if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Mcp) {
         println!("\n== MCP ==");
         list_mcp_servers(&config);
+    }
+
+    if matches!(subsystem, DoctorSubsystem::All | DoctorSubsystem::Lsp) {
+        println!("\n== LSP ==");
+        list_lsp_diagnostics(&config);
     }
 
     Ok(())
@@ -1031,6 +1044,71 @@ fn list_mcp_servers(config: &Config) {
             "  - {} [{}] enabled={} {}",
             name, server_type, enabled, detail
         );
+    }
+}
+
+fn list_lsp_diagnostics(config: &Config) {
+    use codegg::config::schema::LspConfig;
+
+    match &config.lsp {
+        Some(LspConfig::Disabled(true)) => {
+            println!("config: disabled");
+            return;
+        }
+        Some(LspConfig::Disabled(false)) | Some(LspConfig::Rules(_)) | None => {}
+    }
+    println!("config: enabled");
+
+    let root = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string());
+    println!("root: {root}");
+
+    if let Some(LspConfig::Rules(rules)) = &config.lsp {
+        let disabled: Vec<&str> = rules
+            .iter()
+            .filter(|(_, rule)| match rule {
+                codegg::config::schema::LspRule::Disabled { disabled } => *disabled,
+                codegg::config::schema::LspRule::Active {
+                    disabled: Some(true),
+                    ..
+                } => true,
+                _ => false,
+            })
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if !disabled.is_empty() {
+            println!("disabled by config: {}", disabled.join(", "));
+        }
+    }
+
+    let servers = ["rust-analyzer", "pyright", "typescript-language-server"];
+    for name in servers {
+        let found = std::process::Command::new("which")
+            .arg(name)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if found {
+            println!("{name}: found in PATH");
+        } else {
+            println!("{name}: not found in PATH");
+        }
+    }
+
+    println!("requests: timeout 30000ms");
+
+    let expose_lsp_tool = config
+        .experimental
+        .as_ref()
+        .and_then(|e| e.lsp_tool)
+        .unwrap_or(false);
+    if expose_lsp_tool {
+        println!("model tool: exposed as native lsp");
+    } else {
+        println!("model tool: not exposed as native lsp");
     }
 }
 
