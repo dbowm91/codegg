@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use std::pin::Pin;
 
+use crate::auth::Credential;
 use crate::error::ProviderError;
 use crate::provider::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
 use crate::provider::{ChatEvent, ChatRequest, ModelInfo, Provider};
@@ -19,7 +20,7 @@ impl CloudflareProvider {
                 "cloudflare",
                 "Cloudflare Workers AI",
                 OpenAiCompatibleConfig {
-                    api_key: api_token.clone(),
+                    credential: Credential::api_key(api_token),
                     base_url,
                     auth_header: "Authorization".to_string(),
                     extra_headers: Vec::new(),

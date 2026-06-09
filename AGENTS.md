@@ -10,11 +10,12 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - **Axum** for HTTP server (feature-gated)
 - **Wasmtime** for WASM plugins (feature-gated)
 
-## Module Reference (35 Modules)
+## Module Reference (36 Modules)
 
 | Module | Purpose |
 |--------|---------|
 | `agent/` | Main agent loop, message processing, subagent pool, prompt templates, compaction, routing, team coordination |
+| `auth/` | Typed `AuthConfig` (api_key / stored / external_command / oauth_device), `Credential`, `AuthResolver` (env → config → store priority), `CredentialStore` at `~/.config/codegg/credentials.json`, `ExternalCommandProvider`, OAuth device-flow scaffolding, `mask_secret` |
 | `bus/` | Event bus system (GlobalEventBus, PermissionRegistry, QuestionRegistry) |
 | `client/` | Remote TUI client for WebSocket connections with resume/replay support |
 | `command/` | Slash command registry and routing from markdown files |
@@ -226,6 +227,7 @@ These items were verified during review sessions:
 ```
 .opencode/skills/
 ├── agent-loop/          # AgentLoop, TuiCommand, TuiMsg, compaction, router, team
+├── auth/               # AuthConfig, Credential, AuthResolver, CredentialStore, mask_secret
 ├── caching/            # Provider response caching (not yet wired in)
 ├── client/             # Remote TUI client, WebSocket
 ├── command/            # Slash commands, templates, execution
@@ -308,6 +310,7 @@ When adding guidance for a new module:
 | WASM plugins | `.opencode/skills/plugin/SKILL.md` |
 | MCP (Model Context Protocol) | `.opencode/skills/mcp/SKILL.md` |
 | Provider (LLM providers, Arc<String> types, FallbackProvider) | `.opencode/skills/provider/SKILL.md` |
+| Auth (AuthConfig, Credential, AuthResolver, CredentialStore, mask_secret) | `.opencode/skills/auth/SKILL.md` |
 | Crypto (API key encryption, Argon2id key derivation) | [architecture/crypto.md](architecture/crypto.md) |
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `.opencode/skills/resilience/SKILL.md` |

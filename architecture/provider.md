@@ -314,7 +314,7 @@ Generic OpenAI-compatible API provider. Used as base for many providers.
 **OpenAiCompatibleConfig:**
 ```rust
 pub struct OpenAiCompatibleConfig {
-    pub api_key: String,
+    pub credential: Credential,                          // from crate::auth
     pub base_url: String,
     pub auth_header: String,
     pub extra_headers: Vec<(String, String)>,
@@ -323,13 +323,41 @@ pub struct OpenAiCompatibleConfig {
 }
 ```
 
+Note: `OpenAiCompatibleConfig` no longer has an `api_key: String` field; it
+holds a `auth::Credential` (kind / secret / expires_at). The legacy
+`OpenAiCompatibleProvider::simple(id, name, api_key, base_url)` factory
+remains as a thin wrapper that calls `Credential::api_key(api_key)` and
+constructs the config — most call sites can stay on `simple()`, but
+anything that needs bearer tokens, refresh, or short-lived creds should
+build a `Credential` directly.
+
 **Key features:**
 - Includes debug logging for request details (model, tool count, first tool arg shape)
 - 30-second timeout per chunk to prevent hanging
 - Dynamic model discovery via `/models` endpoint
 
 **Factory methods:**
-- `OpenAiCompatibleProvider::simple(id, name, api_key, base_url)` - Simple setup
+- `OpenAiCompatibleProvider::simple(id, name, api_key, base_url)` - Simple setup; wraps the API key in `Credential::api_key(...)`.
+
+#### Auth path through the resolver
+
+Both `register_config_provider` (`src/provider/mod.rs:382`) and
+`register_env_fallback_provider` (`src/provider/mod.rs:422`) now route
+every provider registration through `auth::AuthResolver`. They build a
+`ResolverContext` carrying the provider id, optional account id, and
+legacy `api_key`, and pass the typed `cfg.auth` descriptor
+(`AuthConfig::ApiKey { env, value, encrypted_value }`, `Stored { .. }`,
+`ExternalCommand { .. }`, or `OAuthDevice { .. }`) into
+`AuthResolver::resolve`. The resolved `Credential.secret` is what
+`factory()` receives. The `OAuthDevice` variant is recognized but
+returns `AuthError::Unsupported` in this pass.
+
+These `tracing::debug!` / `tracing::warn!` lines log only
+`ResolvedAuthSource::as_str()` (a stable label like `env(explicit)`,
+`config(encrypted)`, `user_store`, ...) and the env var name; they
+**never** log secret prefix or suffix of the resolved key. New log
+lines that touch auth must follow the same rule — see
+`.opencode/skills/auth/SKILL.md` for the security policy.
 
 ### 9. Copilot (`src/provider/copilot.rs`)
 

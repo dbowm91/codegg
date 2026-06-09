@@ -1829,6 +1829,7 @@ fn test_connect_dialog_handle_paste() {
         name: "Test Provider".to_string(),
         description: "Test".to_string(),
         requires_api_key: true,
+        auth_modes: vec![codegg::tui::components::dialogs::connect::ProviderAuthMode::ApiKey],
         env_var_name: None,
         base_url_example: None,
     }];

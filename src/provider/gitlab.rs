@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use std::pin::Pin;
 
+use crate::auth::Credential;
 use crate::error::ProviderError;
 use crate::provider::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
 use crate::provider::{ChatEvent, ChatRequest, ModelInfo, Provider};
@@ -18,7 +19,7 @@ impl GitLabProvider {
                 "gitlab",
                 "GitLab",
                 OpenAiCompatibleConfig {
-                    api_key: api_key.clone(),
+                    credential: Credential::api_key(api_key),
                     base_url: "https://gitlab.com/api/v4/ai/chat".to_string(),
                     auth_header: "Authorization".to_string(),
                     extra_headers: Vec::new(),
@@ -56,7 +57,7 @@ impl GitLabProvider {
                 "gitlab",
                 "GitLab",
                 OpenAiCompatibleConfig {
-                    api_key,
+                    credential: Credential::api_key(api_key),
                     base_url,
                     auth_header: "Authorization".to_string(),
                     extra_headers: Vec::new(),

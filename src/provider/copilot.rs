@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use std::pin::Pin;
 
+use crate::auth::Credential;
 use crate::error::ProviderError;
 use crate::provider::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
 use crate::provider::{ChatEvent, ChatRequest, ModelInfo, Provider};
@@ -18,7 +19,7 @@ impl CopilotProvider {
                 "copilot",
                 "GitHub Copilot",
                 OpenAiCompatibleConfig {
-                    api_key: token.clone(),
+                    credential: Credential::api_key(token),
                     base_url: "https://api.githubcopilot.com".to_string(),
                     auth_header: "Authorization".to_string(),
                     extra_headers: vec![("Editor-Version".to_string(), "codegg/1.0".to_string())],

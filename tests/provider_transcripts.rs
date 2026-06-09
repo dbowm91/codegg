@@ -553,7 +553,7 @@ mod tests {
             "minimax",
             "MiniMax",
             OpenAiCompatibleConfig {
-                api_key: "test-key".to_string(),
+                credential: codegg::auth::Credential::api_key("test-key"),
                 base_url: "https://api.minimax.io/v1".to_string(),
                 auth_header: "Authorization".to_string(),
                 extra_headers: Vec::new(),

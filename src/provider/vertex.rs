@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use std::pin::Pin;
 
+use crate::auth::Credential;
 use crate::error::ProviderError;
 use crate::provider::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider};
 use crate::provider::{ChatEvent, ChatRequest, ModelInfo, Provider};
@@ -21,7 +22,7 @@ impl VertexProvider {
                 "vertex",
                 "Google Vertex",
                 OpenAiCompatibleConfig {
-                    api_key: access_token,
+                    credential: Credential::bearer(access_token, None),
                     base_url,
                     auth_header: "Bearer".to_string(),
                     extra_headers: Vec::new(),

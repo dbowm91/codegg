@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::auth::AuthConfig;
+
 pub const CONFIG_VERSION: &str = "1";
 pub const MIN_SUPPORTED_VERSION: &str = "1";
 
@@ -292,6 +294,13 @@ pub struct ProviderConfig {
     pub blacklist: Option<Vec<String>>,
     pub models: Option<HashMap<String, ModelConfig>>,
     pub options: Option<HashMap<String, serde_json::Value>>,
+    /// New typed auth descriptor. When present, takes precedence over
+    /// `api_key` / `encrypted_api_key` during credential resolution
+    /// (see `crate::auth::resolver::AuthResolver`).
+    pub auth: Option<AuthConfig>,
+    /// Optional account id used to disambiguate multiple accounts in the
+    /// user-level credential store.
+    pub account_id: Option<String>,
 }
 
 impl ProviderConfig {
@@ -355,6 +364,12 @@ impl ProviderConfig {
         }
         if other.options.is_some() {
             self.options.clone_from(&other.options);
+        }
+        if other.auth.is_some() {
+            self.auth.clone_from(&other.auth);
+        }
+        if other.account_id.is_some() {
+            self.account_id.clone_from(&other.account_id);
         }
     }
 }
@@ -1251,6 +1266,12 @@ mod tests {
 
     #[test]
     fn test_provider_api_key_supports_master_key_for_decryption() {
+        // Serialize against other tests that flip `CODEGG_MASTER_KEY`
+        // (e.g. `auth::store::tests::*` and `auth::resolver::tests::*`).
+        let _guard = crate::auth::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         std::env::set_var("CODEGG_MASTER_KEY", "test-master-key");
         std::env::remove_var("CODEGG_ENCRYPTION_KEY");
 
@@ -1266,6 +1287,82 @@ mod tests {
         assert_eq!(key.as_deref(), Some("decrypted-value"));
 
         std::env::remove_var("CODEGG_MASTER_KEY");
+    }
+
+    #[test]
+    fn provider_config_parses_typed_auth_descriptor() {
+        let raw = r#"{
+            "provider": {
+                "xai": {
+                    "auth": { "type": "api_key", "env": "XAI_API_KEY" }
+                },
+                "anthropic": {
+                    "api_key": "sk-ant-legacy"
+                }
+            }
+        }"#;
+        let cfg: Config = json5::from_str(raw).expect("parses");
+        let providers = cfg.provider.as_ref().expect("provider");
+        let xai = providers.get("xai").expect("xai");
+        match xai.auth.as_ref().expect("auth") {
+            crate::auth::AuthConfig::ApiKey {
+                env,
+                value,
+                encrypted_value,
+            } => {
+                assert_eq!(env.as_deref(), Some("XAI_API_KEY"));
+                assert!(value.is_none());
+                assert!(encrypted_value.is_none());
+            }
+            other => panic!("expected ApiKey auth, got {other:?}"),
+        }
+        let anthropic = providers.get("anthropic").expect("anthropic");
+        assert!(anthropic.auth.is_none());
+        assert_eq!(anthropic.api_key.as_deref(), Some("sk-ant-legacy"));
+    }
+
+    #[test]
+    fn provider_config_merge_preserves_and_overrides_auth() {
+        let mut base = ProviderConfig {
+            api_key: Some("base-key".to_string()),
+            auth: Some(crate::auth::AuthConfig::ApiKey {
+                env: Some("BASE_ENV".to_string()),
+                value: None,
+                encrypted_value: None,
+            }),
+            account_id: Some("acct-base".to_string()),
+            ..Default::default()
+        };
+        let other = ProviderConfig {
+            api_key: Some("override-key".to_string()),
+            auth: Some(crate::auth::AuthConfig::Stored {
+                account_id: Some("acct-override".to_string()),
+            }),
+            account_id: Some("acct-override".to_string()),
+            ..Default::default()
+        };
+        base.merge(&other);
+        // Fields are overridden by the second provider.
+        assert_eq!(base.api_key.as_deref(), Some("override-key"));
+        match base.auth.as_ref().expect("auth") {
+            crate::auth::AuthConfig::Stored { account_id } => {
+                assert_eq!(account_id.as_deref(), Some("acct-override"));
+            }
+            other => panic!("expected Stored, got {other:?}"),
+        }
+        assert_eq!(base.account_id.as_deref(), Some("acct-override"));
+
+        // When `other` doesn't specify auth, the base auth is preserved.
+        let mut base2 = ProviderConfig {
+            auth: Some(crate::auth::AuthConfig::ApiKey {
+                env: Some("BASE_ENV".to_string()),
+                value: None,
+                encrypted_value: None,
+            }),
+            ..Default::default()
+        };
+        base2.merge(&ProviderConfig::default());
+        assert!(base2.auth.is_some());
     }
 
     #[test]

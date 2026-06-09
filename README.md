@@ -72,6 +72,46 @@ The tool supports multiple LLM providers:
 | GitLab                | `GITLAB_TOKEN`                      |                              |
 | Copilot               | `GITHUB_TOKEN`                      |                              |
 
+#### Auth & Credentials
+
+Beyond environment variables, providers can be configured through a typed
+`auth` block on each `provider.<id>` entry, resolved by `src/auth/`'s
+`AuthResolver`:
+
+```json
+{
+  "provider": {
+    "openai": {
+      "auth": { "type": "api_key", "env": "OPENAI_API_KEY" }
+    },
+    "anthropic": {
+      "auth": { "type": "api_key" }
+    }
+  }
+}
+```
+
+Supported `auth.type` values include `api_key` (env, inline, or
+`encrypted_value`), `stored` (a reference into the user-level credential
+store), `external_command` (shell out to an officially-supported CLI), and
+`oauth_device` (scaffolding only — not yet implemented). Resolution order is:
+explicit env, conventional `{PROVIDER}_API_KEY`, inline `value`, decrypted
+`encrypted_value`, the user store, and finally the legacy `api_key` field.
+
+A user-level encrypted credential store lives at
+`~/.config/codegg/credentials.json` (or the platform config-dir equivalent).
+Each `StoredCredentialRecord`'s `encrypted_secret` is encrypted with the
+existing `CODEGG_MASTER_KEY` / `CODEGG_ENCRYPTION_KEY` master key. Reading
+plaintext still works without a master key for env / config-backed paths;
+**storing** a new credential requires a master key and returns
+`AuthError::MasterKeyMissing` if none is configured.
+
+The `auth::mask_secret` helper renders any secret as a fixed 16-bullet
+mask (`••••••••••••••••`) and never returns prefix or suffix of the input.
+API keys entered into the TUI (e.g. in `/connect`) are rendered as this
+fixed mask while typing, with a non-secret length hint (e.g. `(42 chars)`)
+appended so users can still confirm the value was entered correctly.
+
 ### Configuration Options
 
 - `model` - Model ID (e.g., `anthropic/claude-sonnet-4-20250514`)
@@ -568,6 +608,7 @@ The tool uses various environment variables for configuration beyond provider AP
 
 | Variable | Description |
 |---------|-------------|
+| `CODEGG_MASTER_KEY` / `CODEGG_ENCRYPTION_KEY` / `OPENCODE_ENCRYPTION_KEY` | Master key for the user-level credential store at `~/.config/codegg/credentials.json` and for any `provider.<id>.auth.encrypted_value` field. Required to **store** new credentials; not required to read env / config-backed keys. |
 | `CODEGG_TOKEN_KEY` | Encryption key for MCP OAuth tokens |
 | `CODEGG_PERM_KEY` | Permission signature key |
 
@@ -686,6 +727,7 @@ Control specific bash commands with patterns:
 ```
 src/
 ├── agent/        # Agent loop and state management
+├── auth/         # AuthConfig, Credential, AuthResolver, user credential store
 ├── bus/          # Event bus for internal messaging
 ├── client/       # Client for server mode
 ├── command/      # CLI command implementations

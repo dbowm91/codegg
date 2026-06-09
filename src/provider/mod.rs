@@ -39,6 +39,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::auth::resolver::{AuthResolver, ResolverContext};
 pub use crate::error::ProviderError;
 
 pub const MAX_BUFFER_SIZE: usize = 1024 * 1024;
@@ -392,7 +393,26 @@ fn register_config_provider<F>(
         .unwrap_or(true)
     {
         if let Some(cfg) = providers.and_then(|p| p.get(name)) {
-            if let Some(ref key) = cfg.api_key {
+            // Resolve through the typed `auth` descriptor first; fall back
+            // to the legacy `api_key` field for backward compatibility.
+            let resolver = AuthResolver::new();
+            let ctx = ResolverContext {
+                provider_id: name.to_string(),
+                account_id: cfg.account_id.clone(),
+                legacy_api_key: cfg.api_key.clone(),
+                ..Default::default()
+            };
+            let resolved = resolver.resolve(cfg.auth.as_ref(), &ctx).ok().flatten();
+            if let Some(resolved) = resolved {
+                if !resolved.credential.secret.is_empty() {
+                    tracing::debug!(
+                        "register_config_provider: provider '{}' resolved via {}",
+                        name,
+                        resolved.source.as_str()
+                    );
+                    registry.register(factory(resolved.credential.secret, cfg.base_url.clone()));
+                }
+            } else if let Some(ref key) = cfg.api_key {
                 registry.register(factory(key.clone(), cfg.base_url.clone()));
             }
         }
@@ -413,29 +433,49 @@ fn register_env_fallback_provider<F>(
         .map(|d| !d.contains(&name.to_string()))
         .unwrap_or(true)
     {
-        let key = providers
-            .and_then(|p| p.get(name))
-            .and_then(|c| c.api_key.clone())
-            .unwrap_or_else(|| std::env::var(env_var).unwrap_or_default());
-        if !key.is_empty() {
-            let key_len = key.len();
-            let key_prefix = if key_len > 4 { &key[..4] } else { "short" };
-            let key_suffix = if key_len > 4 { &key[key_len - 4..] } else { "" };
-            debug_log!(
-                "register_env_fallback_provider: registering provider '{}', env_var='{}', key_len={}, key_prefix={}...{}",
-                name,
-                env_var,
-                key_len,
-                key_prefix,
-                key_suffix
-            );
-            registry.register(factory(key));
-        } else {
-            tracing::warn!(
-                "register_env_fallback_provider: NO KEY for provider '{}', env_var='{}' (empty key)",
-                name,
-                env_var
-            );
+        let cfg_opt = providers.and_then(|p| p.get(name));
+        let resolver = AuthResolver::new();
+        let ctx = ResolverContext {
+            provider_id: name.to_string(),
+            account_id: cfg_opt.and_then(|c| c.account_id.clone()),
+            legacy_api_key: cfg_opt.and_then(|c| c.api_key.clone()),
+            env_override: Some(env_var.to_string()),
+            ..Default::default()
+        };
+        match resolver.resolve(cfg_opt.and_then(|c| c.auth.as_ref()), &ctx) {
+            Ok(Some(resolved)) => {
+                if !resolved.credential.secret.is_empty() {
+                    tracing::debug!(
+                        "register_env_fallback_provider: registering provider '{}' via {}",
+                        name,
+                        resolved.source.as_str()
+                    );
+                    registry.register(factory(resolved.credential.secret));
+                } else {
+                    tracing::warn!(
+                        "register_env_fallback_provider: NO KEY for provider '{}', env_var='{}' (empty resolved key)",
+                        name,
+                        env_var
+                    );
+                }
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    "register_env_fallback_provider: NO KEY for provider '{}', env_var='{}' (empty key)",
+                    name,
+                    env_var
+                );
+            }
+            Err(e) => {
+                // Recognize-but-unimplemented auth modes (e.g. OAuthDevice)
+                // should not prevent other providers from loading. Log and
+                // skip.
+                tracing::warn!(
+                    "register_env_fallback_provider: provider '{}' could not be resolved: {}",
+                    name,
+                    e
+                );
+            }
         }
     }
 }

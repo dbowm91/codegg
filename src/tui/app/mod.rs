@@ -6085,138 +6085,136 @@ impl App {
     }
 
     fn open_connect_dialog(&mut self) {
-        use crate::tui::components::dialogs::connect::ProviderInfo;
+        use crate::tui::components::dialogs::connect::{ProviderAuthMode, ProviderInfo};
+
+        let mk = |id: &str, name: &str, desc: &str, env: Option<&str>, url: Option<&str>| {
+            let mut info = if env.is_some() {
+                ProviderInfo::api_key(id, name, desc, env.map(|s| s.to_string()))
+            } else {
+                ProviderInfo::no_auth(id, name, desc)
+            };
+            info.base_url_example = url.map(|s| s.to_string());
+            info
+        };
 
         let providers = vec![
-            ProviderInfo {
-                id: "openai".to_string(),
-                name: "OpenAI".to_string(),
-                description: "GPT-4, GPT-4o, and other OpenAI models".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("OPENAI_API_KEY".to_string()),
-                base_url_example: Some("https://api.openai.com/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "anthropic".to_string(),
-                name: "Anthropic".to_string(),
-                description: "Claude models (Note: API access restricted)".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("ANTHROPIC_API_KEY".to_string()),
-                base_url_example: Some("https://api.anthropic.com".to_string()),
-            },
-            ProviderInfo {
-                id: "google".to_string(),
-                name: "Google".to_string(),
-                description: "Gemini models".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("GOOGLE_API_KEY".to_string()),
-                base_url_example: Some("https://generativelanguage.googleapis.com/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "ollama".to_string(),
-                name: "Ollama".to_string(),
-                description: "Local and self-hosted models".to_string(),
-                requires_api_key: false,
-                env_var_name: None,
-                base_url_example: Some("http://localhost:11434".to_string()),
-            },
-            ProviderInfo {
-                id: "openrouter".to_string(),
-                name: "OpenRouter".to_string(),
-                description: "Unified API for 100+ models".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("OPENROUTER_API_KEY".to_string()),
-                base_url_example: Some("https://openrouter.ai/api/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "lmstudio".to_string(),
-                name: "LM Studio".to_string(),
-                description: "Local models via LM Studio".to_string(),
-                requires_api_key: false,
-                env_var_name: None,
-                base_url_example: Some("http://localhost:1234/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "deepseek".to_string(),
-                name: "DeepSeek".to_string(),
-                description: "DeepSeek models".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("DEEPSEEK_API_KEY".to_string()),
-                base_url_example: Some("https://api.deepseek.com/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "xai".to_string(),
-                name: "xAI".to_string(),
-                description: "xAI (Grok)".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("XAI_API_KEY".to_string()),
-                base_url_example: Some("https://api.x.ai/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "cohere".to_string(),
-                name: "Cohere".to_string(),
-                description: "Command R models".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("COHERE_API_KEY".to_string()),
-                base_url_example: Some("https://api.cohere.ai/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "fireworks".to_string(),
-                name: "Fireworks".to_string(),
-                description: "Fireworks AI models".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("FIREWORKS_API_KEY".to_string()),
-                base_url_example: Some("https://api.fireworks.ai/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "novai".to_string(),
-                name: "Novae".to_string(),
-                description: "Novae AI models".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("NOVAI_API_KEY".to_string()),
-                base_url_example: Some("https://api.novai.ai/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "opencode_zen".to_string(),
-                name: "Codegg Zen".to_string(),
-                description: "Free models from Codegg".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("OPENCODE_ZEN_API_KEY".to_string()),
-                base_url_example: Some("https://opencode.ai/zen/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "opencode_go".to_string(),
-                name: "OpenCode Go".to_string(),
-                description: "Enterprise models from OpenCode".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("OPENCODE_GO_API_KEY".to_string()),
-                base_url_example: Some("https://opencode.ai/go/v1".to_string()),
-            },
-            ProviderInfo {
-                id: "minimax".to_string(),
-                name: "MiniMax".to_string(),
-                description: "Chinese LLM provider".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("MINIMAX_API_KEY".to_string()),
-                base_url_example: Some("https://api.minimax.chat".to_string()),
-            },
-            ProviderInfo {
-                id: "zai".to_string(),
-                name: "Z.ai".to_string(),
-                description: "Z.ai provider".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("ZAI_API_KEY".to_string()),
-                base_url_example: Some("https://api.z.ai".to_string()),
-            },
-            ProviderInfo {
-                id: "generalcompute".to_string(),
-                name: "GeneralCompute".to_string(),
-                description: "GeneralCompute.com LLM provider".to_string(),
-                requires_api_key: true,
-                env_var_name: Some("GENERALCOMPUTE_API_KEY".to_string()),
-                base_url_example: Some("https://api.generalcompute.com/v1".to_string()),
-            },
+            mk(
+                "openai",
+                "OpenAI",
+                "GPT-4, GPT-4o, and other OpenAI models",
+                Some("OPENAI_API_KEY"),
+                Some("https://api.openai.com/v1"),
+            ),
+            mk(
+                "anthropic",
+                "Anthropic",
+                "Claude models (Note: API access restricted)",
+                Some("ANTHROPIC_API_KEY"),
+                Some("https://api.anthropic.com"),
+            ),
+            mk(
+                "google",
+                "Google",
+                "Gemini models",
+                Some("GOOGLE_API_KEY"),
+                Some("https://generativelanguage.googleapis.com/v1"),
+            ),
+            mk(
+                "ollama",
+                "Ollama",
+                "Local and self-hosted models",
+                None,
+                Some("http://localhost:11434"),
+            ),
+            mk(
+                "openrouter",
+                "OpenRouter",
+                "Unified API for 100+ models",
+                Some("OPENROUTER_API_KEY"),
+                Some("https://openrouter.ai/api/v1"),
+            ),
+            mk(
+                "lmstudio",
+                "LM Studio",
+                "Local models via LM Studio",
+                None,
+                Some("http://localhost:1234/v1"),
+            ),
+            mk(
+                "deepseek",
+                "DeepSeek",
+                "DeepSeek models",
+                Some("DEEPSEEK_API_KEY"),
+                Some("https://api.deepseek.com/v1"),
+            ),
+            mk(
+                "xai",
+                "xAI",
+                "xAI (Grok)",
+                Some("XAI_API_KEY"),
+                Some("https://api.x.ai/v1"),
+            ),
+            mk(
+                "cohere",
+                "Cohere",
+                "Command R models",
+                Some("COHERE_API_KEY"),
+                Some("https://api.cohere.ai/v1"),
+            ),
+            mk(
+                "fireworks",
+                "Fireworks",
+                "Fireworks AI models",
+                Some("FIREWORKS_API_KEY"),
+                Some("https://api.fireworks.ai/v1"),
+            ),
+            mk(
+                "novai",
+                "Novae",
+                "Novae AI models",
+                Some("NOVAI_API_KEY"),
+                Some("https://api.novai.ai/v1"),
+            ),
+            mk(
+                "opencode_zen",
+                "Codegg Zen",
+                "Free models from Codegg",
+                Some("OPENCODE_ZEN_API_KEY"),
+                Some("https://opencode.ai/zen/v1"),
+            ),
+            mk(
+                "opencode_go",
+                "OpenCode Go",
+                "Enterprise models from OpenCode",
+                Some("OPENCODE_GO_API_KEY"),
+                Some("https://opencode.ai/go/v1"),
+            ),
+            mk(
+                "minimax",
+                "MiniMax",
+                "Chinese LLM provider",
+                Some("MINIMAX_API_KEY"),
+                Some("https://api.minimax.chat"),
+            ),
+            mk(
+                "zai",
+                "Z.ai",
+                "Z.ai provider",
+                Some("ZAI_API_KEY"),
+                Some("https://api.z.ai"),
+            ),
+            mk(
+                "generalcompute",
+                "GeneralCompute",
+                "GeneralCompute.com LLM provider",
+                Some("GENERALCOMPUTE_API_KEY"),
+                Some("https://api.generalcompute.com/v1"),
+            ),
         ];
+        // First pass: every provider supports API-key entry. Future
+        // officially-supported OAuth / external-command providers can be
+        // added by extending `auth_modes` here.
+        let _ = ProviderAuthMode::ApiKey; // anchor the import for future use
 
         let connect_dialog = crate::tui::components::dialogs::connect::ConnectDialog::new(
             providers,

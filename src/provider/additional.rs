@@ -1,9 +1,33 @@
+use crate::auth::Credential;
 use crate::provider::anthropic::AnthropicProvider;
-use crate::provider::openai_compatible::OpenAiCompatibleProvider;
+use crate::provider::openai_compatible::{
+    OpenAiCompatibleConfig, OpenAiCompatibleProvider, ToolChoice,
+};
 use crate::provider::{ModelInfo, Provider};
 
 pub fn create_xai(api_key: String) -> impl Provider {
-    OpenAiCompatibleProvider::simple("xai", "xAI", &api_key, "https://api.x.ai/v1")
+    let models = vec![ModelInfo {
+        id: "grok-build-0.1".to_string(),
+        name: "Grok Build 0.1".to_string(),
+        provider: "xai".to_string(),
+        context_window: 256_000,
+        max_output_tokens: None,
+        supports_tools: true,
+        supports_vision: false,
+        variants: vec![],
+    }];
+    OpenAiCompatibleProvider::new(
+        "xai",
+        "xAI",
+        OpenAiCompatibleConfig {
+            credential: Credential::api_key(&api_key),
+            base_url: "https://api.x.ai/v1".to_string(),
+            auth_header: "Authorization".to_string(),
+            extra_headers: Vec::new(),
+            models,
+            tool_choice: ToolChoice::Auto,
+        },
+    )
 }
 
 pub fn create_mistral(api_key: String) -> impl Provider {
@@ -73,19 +97,6 @@ pub fn create_generalcompute(api_key: String) -> impl Provider {
 }
 
 pub fn create_minimax(api_key: String) -> impl Provider {
-    let key_len = api_key.len();
-    let key_prefix = if key_len > 4 { &api_key[..4] } else { "short" };
-    let key_suffix = if key_len > 4 {
-        &api_key[key_len - 4..]
-    } else {
-        ""
-    };
-    debug_log!(
-        "create_minimax: called with key_len={}, key_prefix={}...{}",
-        key_len,
-        key_prefix,
-        key_suffix
-    );
     debug_log!(
         "create_minimax: using Anthropic-compatible endpoint at https://api.minimax.io/anthropic"
     );

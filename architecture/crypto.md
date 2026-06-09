@@ -145,6 +145,16 @@ let api_key = decrypt_from_string(&encrypted, &master_key)?;
 
 - `config/encryption.rs` - Encrypting config secrets (provider API keys)
 - `config/schema.rs` - `ProviderConfig::api_key(prefix)` method for on-demand decryption
+- `auth/store.rs` - `auth::CredentialStore` uses `crypto::encrypt_to_string` /
+  `decrypt_from_string` to back the user-level encrypted credential store at
+  `~/.config/codegg/credentials.json`. Each `StoredCredentialRecord`'s
+  `encrypted_secret` is a `v2:`-prefixed ciphertext under the same master
+  key (`CODEGG_MASTER_KEY` / `CODEGG_ENCRYPTION_KEY` /
+  `OPENCODE_ENCRYPTION_KEY`). The same primitives are also used by
+  `auth::resolver::AuthResolver` to decrypt
+  `AuthConfig::ApiKey.encrypted_value` from the provider config. See
+  `.opencode/skills/auth/SKILL.md` for the resolution order and security
+  rules around the master key.
 
 ## Dependencies
 

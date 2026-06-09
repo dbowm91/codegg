@@ -149,6 +149,13 @@ mod tests {
 
     #[test]
     fn test_encrypt_provider_keys_migrates_legacy_ciphertext_to_v2() {
+        // Serialize against other tests that flip `CODEGG_MASTER_KEY`
+        // (e.g. `auth::store::tests::*` and `auth::resolver::tests::*`)
+        // so the master-key env is stable for the duration of this test.
+        let _guard = crate::auth::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         std::env::set_var("CODEGG_MASTER_KEY", "migration-test-master-key");
         std::env::remove_var("CODEGG_ENCRYPTION_KEY");
         std::env::remove_var("OPENCODE_ENCRYPTION_KEY");

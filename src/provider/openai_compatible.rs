@@ -1,3 +1,4 @@
+use crate::auth::Credential;
 use crate::error::ProviderError;
 use crate::provider::sse_parser::parse_openai_buffer;
 use crate::provider::{
@@ -21,7 +22,7 @@ pub enum ToolChoice {
 
 #[derive(Clone)]
 pub struct OpenAiCompatibleConfig {
-    pub api_key: String,
+    pub credential: Credential,
     pub base_url: String,
     pub auth_header: String,
     pub extra_headers: Vec<(String, String)>,
@@ -52,7 +53,7 @@ impl OpenAiCompatibleProvider {
             id,
             name,
             OpenAiCompatibleConfig {
-                api_key: api_key.to_string(),
+                credential: Credential::api_key(api_key),
                 base_url: base_url.to_string(),
                 auth_header: "Authorization".to_string(),
                 extra_headers: Vec::new(),
@@ -269,32 +270,18 @@ impl Provider for OpenAiCompatibleProvider {
         );
 
         let resp = {
-            let key_len = self.config.api_key.len();
-            let key_prefix = if key_len > 4 {
-                &self.config.api_key[..4]
-            } else {
-                "short"
-            };
-            let key_suffix = if key_len > 4 {
-                &self.config.api_key[key_len - 4..]
-            } else {
-                ""
-            };
             tracing::debug!(
-                "OpenAiCompatible({}): sending request to {}, auth_header={}, key_len={}, key_prefix={}...{}, model={}",
+                "OpenAiCompatible({}): sending request to {}, auth_header={}, model={}",
                 self.name,
                 url,
                 self.config.auth_header,
-                key_len,
-                key_prefix,
-                key_suffix,
                 request.model
             );
             self.client
                 .post(&url)
                 .header(
                     &self.config.auth_header,
-                    format!("Bearer {}", self.config.api_key),
+                    self.config.credential.authorization_header_value(),
                 )
                 .header("Content-Type", "application/json")
                 .json(&body)
@@ -406,7 +393,7 @@ impl Provider for OpenAiCompatibleProvider {
             .get(&url)
             .header(
                 &self.config.auth_header,
-                format!("Bearer {}", self.config.api_key),
+                self.config.credential.authorization_header_value(),
             )
             .send()
             .await

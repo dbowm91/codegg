@@ -9,14 +9,74 @@ use super::super::component::{Component, DialogType};
 use crate::tui::app::TuiMsg;
 use crate::tui::theme::Theme;
 
-#[derive(Clone)]
+/// Auth modes a provider can support. The first pass keeps all providers
+/// in `ApiKey` mode; `OAuthDevice` and `ExternalCommand` are reserved for
+/// future, officially-supported flows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderAuthMode {
+    ApiKey,
+    OAuthDevice,
+    ExternalCommand,
+    None,
+}
+
+#[derive(Clone, Default)]
 pub struct ProviderInfo {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Kept for backward compatibility. New code should consult
+    /// `auth_modes` instead.
     pub requires_api_key: bool,
+    /// Auth modes the provider supports. The first pass defaults this to
+    /// `[ApiKey]` (or `[None]`) to match `requires_api_key`.
+    pub auth_modes: Vec<ProviderAuthMode>,
     pub env_var_name: Option<String>,
     pub base_url_example: Option<String>,
+}
+
+impl ProviderInfo {
+    /// Build a provider that supports the API-key flow.
+    pub fn api_key(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        env_var_name: Option<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            requires_api_key: true,
+            auth_modes: vec![ProviderAuthMode::ApiKey],
+            env_var_name,
+            base_url_example: None,
+        }
+    }
+
+    /// Build a provider that does not require auth (e.g. local).
+    pub fn no_auth(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            requires_api_key: false,
+            auth_modes: vec![ProviderAuthMode::None],
+            env_var_name: None,
+            base_url_example: None,
+        }
+    }
+
+    /// True if the provider's auth modes include API-key entry.
+    pub fn supports_api_key(&self) -> bool {
+        self.auth_modes
+            .iter()
+            .any(|m| matches!(m, ProviderAuthMode::ApiKey))
+    }
 }
 
 #[derive(Clone)]
@@ -263,20 +323,11 @@ impl Widget for &ConnectDialog {
                 let input_text = if self.api_key_input.is_empty() {
                     format!("> {}_", " ".repeat(60))
                 } else {
-                    let display_key = if self.api_key_input.len() > 60 {
-                        format!(
-                            "{}...{}",
-                            &self.api_key_input[..10],
-                            &self.api_key_input[self.api_key_input.len() - 47..]
-                        )
-                    } else {
-                        self.api_key_input.clone()
-                    };
-                    format!(
-                        "> {}{}",
-                        display_key,
-                        " ".repeat(60usize.saturating_sub(display_key.len()))
-                    )
+                    // Never display the secret in plaintext. Render a fixed
+                    // mask while typing, plus a non-secret length hint.
+                    let mask = crate::auth::mask_secret(&self.api_key_input);
+                    let length_hint = format!(" ({} chars)", self.api_key_input.chars().count());
+                    format!("> {}{}{}", mask, length_hint, " ".repeat(8))
                 };
 
                 lines.push(Line::from(Span::styled(
@@ -531,20 +582,11 @@ impl Component for ConnectDialog {
                 let input_text = if self.api_key_input.is_empty() {
                     format!("> {}_", " ".repeat(60))
                 } else {
-                    let display_key = if self.api_key_input.len() > 60 {
-                        format!(
-                            "{}...{}",
-                            &self.api_key_input[..10],
-                            &self.api_key_input[self.api_key_input.len() - 47..]
-                        )
-                    } else {
-                        self.api_key_input.clone()
-                    };
-                    format!(
-                        "> {}{}",
-                        display_key,
-                        " ".repeat(60usize.saturating_sub(display_key.len()))
-                    )
+                    // Never display the secret in plaintext. Render a fixed
+                    // mask plus a non-secret length hint.
+                    let mask = crate::auth::mask_secret(&self.api_key_input);
+                    let length_hint = format!(" ({} chars)", self.api_key_input.chars().count());
+                    format!("> {}{}{}", mask, length_hint, " ".repeat(8))
                 };
 
                 lines.push(Line::from(Span::styled(
