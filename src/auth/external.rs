@@ -1,18 +1,25 @@
 //! External-command credential provider.
 //!
 //! Some providers document an officially-supported CLI for issuing
-//! short-lived credentials. The `ExternalCommandProvider` shells out to that
-//! command and treats the trimmed stdout as the credential value.
+//! short-lived credentials. The `ExternalCommandProvider` is the typed
+//! home for that future path. The synchronous resolution path is
+//! intentionally disabled: the original `std::process::Command`-based
+//! implementation did not enforce its timeout, which would let a
+//! hanging command stall provider registration indefinitely.
 //!
-//! This is intentionally minimal. Provider-specific format handling (JSON
-//! output, `token:` line, etc.) should be added when an actual
-//! officially-supported external credential command is wired in.
-
-use std::process::Command;
-use std::time::Duration;
+//! [`AuthResolver::resolve`](crate::auth::resolver::AuthResolver::resolve)
+//! returns
+//! [`AuthError::Unsupported("ExternalCommand")`](crate::auth::error::AuthError::Unsupported)
+//! for `AuthConfig::ExternalCommand`. This module's
+//! [`ExternalCommandProvider::fetch`] entry point mirrors that policy:
+//! it validates the command is non-empty and otherwise returns the
+//! same `Unsupported` error so no safe path can accidentally shell
+//! out. When async timeout plumbing is in place (using
+//! `tokio::process::Command` with `tokio::time::timeout`), this arm can
+//! be re-enabled.
 
 use crate::auth::error::AuthError;
-use crate::auth::{Credential, CredentialKind};
+use crate::auth::Credential;
 
 #[derive(Debug, Clone)]
 pub struct ExternalCredential {
@@ -29,50 +36,22 @@ impl ExternalCommandProvider {
         Self
     }
 
-    /// Run the configured command and return the trimmed stdout as a
-    /// bearer-style credential. Returns an [`AuthError::ExternalCommand`] on
-    /// any non-zero exit or timeout.
+    /// Resolve a credential from an external command.
+    ///
+    /// The current implementation always returns
+    /// [`AuthError::Unsupported`] for a non-empty command. An empty
+    /// command is rejected up-front with
+    /// [`AuthError::Invalid`]. The synchronous shell-out path is
+    /// disabled because it did not enforce its timeout and could
+    /// otherwise hang provider registration indefinitely. The async
+    /// re-implementation is tracked as a follow-up.
     pub fn fetch(&self, cred: &ExternalCredential) -> Result<Credential, AuthError> {
         if cred.command.trim().is_empty() {
             return Err(AuthError::Invalid("external command is empty".to_string()));
         }
-        let timeout = Duration::from_millis(cred.timeout_ms.unwrap_or(15_000));
-        let output = match Command::new(&cred.command).args(&cred.args).output() {
-            Ok(out) => out,
-            Err(e) => {
-                return Err(AuthError::ExternalCommand {
-                    command: cred.command.clone(),
-                    message: format!("spawn failed: {e}"),
-                });
-            }
-        };
-        // Best-effort: enforce timeout via a watchdog-less run. Real wall-clock
-        // timeouts would require `tokio::process`; the first pass keeps the
-        // synchronous `Command` and uses the configured hint as documented
-        // behavior (it is not enforced strictly).
-        let _ = timeout;
-        if !output.status.success() {
-            return Err(AuthError::ExternalCommand {
-                command: cred.command.clone(),
-                message: format!(
-                    "exit {:?}: {}",
-                    output.status.code(),
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
-            });
-        }
-        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if value.is_empty() {
-            return Err(AuthError::ExternalCommand {
-                command: cred.command.clone(),
-                message: "command produced empty stdout".to_string(),
-            });
-        }
-        Ok(Credential {
-            kind: CredentialKind::BearerToken,
-            secret: value,
-            expires_at: None,
-        })
+        Err(AuthError::Unsupported(
+            "ExternalCommand requires async timeout plumbing".to_string(),
+        ))
     }
 }
 
@@ -96,49 +75,24 @@ mod tests {
     }
 
     #[test]
-    fn fetch_spawn_error_is_reported() {
-        // A path that almost certainly does not exist on any platform.
+    fn fetch_returns_unsupported_for_non_empty_command() {
+        // A non-empty command must not execute. The fetch path is
+        // intentionally disabled until async timeout plumbing lands.
         let provider = ExternalCommandProvider::new();
         let cred = ExternalCredential {
-            command: "codegg_definitely_does_not_exist_binary_xyz".to_string(),
+            command: "true".to_string(),
             args: vec![],
             timeout_ms: Some(1_000),
         };
         let err = provider.fetch(&cred).unwrap_err();
         match err {
-            AuthError::ExternalCommand { .. } => {}
-            other => panic!("expected ExternalCommand error, got {other:?}"),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fetch_uses_trimmed_stdout() {
-        // `printf` is widely available on macOS and Linux.
-        let provider = ExternalCommandProvider::new();
-        let cred = ExternalCredential {
-            command: "printf".to_string(),
-            args: vec!["  hello-token  ".to_string()],
-            timeout_ms: Some(2_000),
-        };
-        let got = provider.fetch(&cred).expect("printf should succeed");
-        assert_eq!(got.secret, "hello-token");
-        assert_eq!(got.kind, CredentialKind::BearerToken);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fetch_returns_error_on_nonzero_exit() {
-        let provider = ExternalCommandProvider::new();
-        let cred = ExternalCredential {
-            command: "false".to_string(),
-            args: vec![],
-            timeout_ms: Some(2_000),
-        };
-        let err = provider.fetch(&cred).unwrap_err();
-        match err {
-            AuthError::ExternalCommand { .. } => {}
-            other => panic!("expected ExternalCommand error, got {other:?}"),
+            AuthError::Unsupported(reason) => {
+                assert!(
+                    reason.contains("ExternalCommand") || reason.contains("async timeout plumbing"),
+                    "expected unsupported reason mentioning ExternalCommand/async, got: {reason}"
+                );
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
         }
     }
 }

@@ -123,12 +123,21 @@ then `api_key` field, then encrypted `encrypted_api_key` field.
 3. Inline `auth.value`
 4. Decrypted `auth.encrypted_value` (requires `CODEGG_MASTER_KEY`)
 5. User-level `CredentialStore` lookup (matched by `account_id` /
-   `auth.account_id`)
+   `auth.account_id`, filtered to `CredentialKind::ApiKey`)
 6. Legacy `api_key` / `encrypted_api_key` fields (backwards compat)
 
 If `auth` is `None`, the resolver falls back to conventional env, then
 legacy `api_key`, then the user store. If `auth` is `Some(AuthConfig::None)`,
-all lookups are skipped (explicit "no auth" marker).
+all lookups are skipped (explicit "no auth" marker). The user store
+lookup is filtered to `CredentialKind::ApiKey` for both the
+`AuthConfig::Stored` arm and the no-auth fallback, so a stored OAuth /
+bearer-token record is treated as a miss today. Future OAuth refresh
+support will need a separate `kind` selector or policy module.
+
+Provider registration has a **single resolution path** that runs
+through `resolve_provider_credential(...)`. `register_config_provider`
+does not read `cfg.api_key` directly anymore; the legacy field is
+honored by `AuthResolver` via `ctx.legacy_api_key`.
 
 ### ProviderConfig merge() behavior
 

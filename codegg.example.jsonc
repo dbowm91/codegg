@@ -104,19 +104,28 @@
   //   { "type": "api_key", "value": "sk-..." }           - inline (avoid; prefer env or store)
   //   { "type": "api_key", "encrypted_value": "v2:..." } - encrypted at rest
   //   { "type": "stored", "account_id": "default" }      - resolve from user credential store
+  //                                                      (currently resolves stored API keys only;
+  //                                                       a future OAuth/bearer-token policy will
+  //                                                       gate stored `BearerToken` records)
   //   { "type": "external_command", "command": "...", "args": ["..."], "timeout_ms": 5000 }
-  //                                                      - shells out (recognized; currently unsupported
-  //                                                        in the synchronous resolver, see ARCHITECTURE)
+  //                                                      - parsed; the synchronous resolver and
+  //                                                        ExternalCommandProvider::fetch both
+  //                                                        return AuthError::Unsupported until
+  //                                                        async timeout plumbing is in place
   //   { "type": "oauth_device", "client_id": "...", "auth_url": "...", "token_url": "..." }
   //                                                      - typed but not yet implemented
   //   { "type": "none" }                                  - explicit no-auth marker
   //
   // Legacy: the original `api_key` and `encrypted_api_key` fields on the
-  // provider object are still honored as a fallback. Stored credentials
-  // live in `~/.config/codegg/credentials.json` and require
-  // `CODEGG_MASTER_KEY` to be set. Use `codegg auth status`,
-  // `codegg auth set-key <provider>`, and `codegg auth logout <provider>`
-  // to manage them.
+  // provider object are still honored as a fallback. They are read by
+  // `AuthResolver` (single resolution path), not by the registration
+  // helper directly. Stored credentials live in
+  // `~/.config/codegg/credentials.json` and require `CODEGG_MASTER_KEY`
+  // (or `CODEGG_ENCRYPTION_KEY` / `OPENCODE_ENCRYPTION_KEY`) to be set.
+  // Use `codegg auth status`, `codegg auth set-key <provider>`, and
+  // `codegg auth logout <provider>` to manage them. The CLI validates
+  // provider and account ids (`[A-Za-z0-9_-]`, with `*` allowed for
+  // `logout` only) and never echoes key material.
   
   "mcp": {
     "filesystem": {

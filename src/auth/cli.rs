@@ -1,13 +1,22 @@
 //! CLI commands for managing the user-level credential store.
 //!
 //! Provides:
-//! - `auth status` — list stored credentials (no plaintext).
+//! - `auth status` — list stored credentials (no plaintext, no ciphertext, no fingerprint).
 //! - `auth set-key <provider>` — store an API key for a provider.
 //! - `auth logout <provider>` — remove stored credentials for a provider.
 //!
 //! The CLI is intentionally minimal. Interactive `/connect`-style flows in
 //! the TUI can build on the same `CredentialStore` API for richer
 //! behavior.
+//!
+//! ## Identifier validation
+//!
+//! Provider and account ids must be non-empty and contain only
+//! conservative characters: `[A-Za-z0-9_-]`. Account ids additionally
+//! allow `*` for `logout` so callers can wipe every account for a
+//! provider in one call. Validation is enforced up-front to keep log
+//! and error messages secret-free and to prevent store-file corruption
+//! from arbitrary user input.
 
 use std::io::{self, Read};
 
@@ -15,6 +24,33 @@ use crate::auth::credential::CredentialKind;
 use crate::auth::store::CredentialStore;
 use crate::auth::AuthError;
 use crate::error::AppError;
+
+const VALID_ID_CHARS: &str = "provider/account id must contain only [A-Za-z0-9_-] characters";
+
+fn validate_id(id: &str, label: &str) -> Result<(), AppError> {
+    if id.is_empty() {
+        return Err(AppError::Config(crate::error::ConfigError::Invalid(
+            format!("{label} id must not be empty"),
+        )));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(AppError::Config(crate::error::ConfigError::Invalid(
+            format!("{label} {VALID_ID_CHARS}"),
+        )));
+    }
+    Ok(())
+}
+
+fn validate_provider_id(provider_id: &str) -> Result<(), AppError> {
+    validate_id(provider_id, "provider")
+}
+
+fn validate_account_id(account_id: &str) -> Result<(), AppError> {
+    validate_id(account_id, "account")
+}
 
 #[derive(Debug, Clone)]
 pub struct AuthCli {
@@ -52,7 +88,8 @@ impl AuthCli {
         Ok(store)
     }
 
-    /// List stored credentials (metadata only — no plaintext).
+    /// List stored credentials (metadata only — no plaintext, no
+    /// ciphertext, no secret-derived fingerprint).
     pub fn status(&self) -> Result<(), AppError> {
         let store = self.open_store()?;
         let records = store.list();
@@ -83,12 +120,22 @@ impl AuthCli {
     ///
     /// `key` is passed in directly so callers can decide whether to read
     /// from stdin, a hidden input prompt, or an environment variable.
+    /// The key is never echoed to stdout/stderr.
     pub fn set_key(
         &self,
         provider_id: &str,
         account_id: Option<&str>,
         key: &str,
     ) -> Result<(), AppError> {
+        validate_provider_id(provider_id)?;
+        if let Some(acct) = account_id {
+            validate_account_id(acct)?;
+        }
+        if key.is_empty() {
+            return Err(AppError::Config(crate::error::ConfigError::Invalid(
+                "key must not be empty".to_string(),
+            )));
+        }
         let store = self.open_store()?;
         store
             .put(
@@ -100,7 +147,11 @@ impl AuthCli {
                 Vec::new(),
             )
             .map_err(auth_error_to_app_error)?;
-        println!("Stored API key for provider '{}'.", provider_id);
+        // Avoid echoing any key material; use a generic confirmation.
+        let account_note = account_id
+            .map(|a| format!(" (account={a})"))
+            .unwrap_or_default();
+        println!("Stored API key for provider '{provider_id}'{account_note}.");
         Ok(())
     }
 
@@ -108,12 +159,22 @@ impl AuthCli {
     /// `account_id` is `None`, the default-account record is removed.
     /// Pass `Some("*")` to remove all records for the provider.
     pub fn logout(&self, provider_id: &str, account_id: Option<&str>) -> Result<(), AppError> {
+        validate_provider_id(provider_id)?;
+        if let Some(acct) = account_id {
+            // The wildcard `*` is a documented logout-only escape hatch.
+            if acct != "*" {
+                validate_account_id(acct)?;
+            }
+        }
         let store = self.open_store()?;
         let removed = store
             .remove(provider_id, account_id)
             .map_err(auth_error_to_app_error)?;
         if removed {
-            println!("Removed credentials for provider '{}'.", provider_id);
+            let account_note = account_id
+                .map(|a| format!(" (account={a})"))
+                .unwrap_or_default();
+            println!("Removed credentials for provider '{provider_id}'{account_note}.");
         } else {
             println!(
                 "No stored credentials for provider '{}' (account={}).",
@@ -221,6 +282,56 @@ mod tests {
         let (_tmp, cli) = make_cli();
         cli.set_key("xai", None, "sk-test").expect("set_key");
         cli.logout("xai", None).expect("logout");
+        let store = cli.open_store().expect("open");
+        assert!(store.list().is_empty());
+        if let Some(v) = prev {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        }
+    }
+
+    #[test]
+    fn set_key_rejects_invalid_provider_id() {
+        let (_tmp, cli) = make_cli();
+        let err = cli.set_key("open ai", None, "sk-test").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("provider"),
+            "expected provider error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn set_key_rejects_empty_key() {
+        let (_tmp, cli) = make_cli();
+        let err = cli.set_key("openai", None, "").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("key"), "expected key error, got: {msg}");
+    }
+
+    #[test]
+    fn set_key_rejects_invalid_account_id() {
+        let (_tmp, cli) = make_cli();
+        let err = cli
+            .set_key("openai", Some("work account"), "sk-test")
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("account"),
+            "expected account error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn logout_wildcard_is_accepted() {
+        let _guard = crate::auth::test_support::lock_env();
+        let prev = std::env::var("CODEGG_MASTER_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "cli-wildcard-master-key");
+        let (_tmp, cli) = make_cli();
+        cli.set_key("openai", Some("work"), "sk-test")
+            .expect("set_key work");
+        cli.set_key("openai", Some("home"), "sk-test")
+            .expect("set_key home");
+        cli.logout("openai", Some("*")).expect("wildcard logout");
         let store = cli.open_store().expect("open");
         assert!(store.list().is_empty());
         if let Some(v) = prev {

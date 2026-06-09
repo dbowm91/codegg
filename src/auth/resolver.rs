@@ -172,6 +172,13 @@ impl AuthResolver {
                         .as_ref()
                         .ok_or_else(|| AuthError::NotFound(ctx.provider_id.clone()))?;
                     let account = account_id.clone().or_else(|| ctx.account_id.clone());
+                    // Stored lookup currently resolves API-key-shaped
+                    // credentials only. OAuth device-code / bearer-token
+                    // refresh sets will need a future policy (e.g. an
+                    // explicit `kind` field on `AuthConfig::Stored`, a
+                    // refresh-token flow, etc.). Until that lands, a
+                    // stored `BearerToken` record is treated as a miss
+                    // for `AuthConfig::Stored`.
                     if let Some(plain) =
                         store.get_plaintext(&ctx.provider_id, account.as_deref(), |s| {
                             s.kind == CredentialKind::ApiKey
@@ -235,6 +242,9 @@ impl AuthResolver {
             }
         }
         if let Some(store) = ctx.store.as_ref() {
+            // Same OAuth/bearer-token policy as the `AuthConfig::Stored`
+            // arm: today we only resolve stored API keys. Future
+            // OAuth refresh support will need a separate policy.
             if let Some(plain) =
                 store.get_plaintext(&ctx.provider_id, ctx.account_id.as_deref(), |s| {
                     s.kind == CredentialKind::ApiKey

@@ -361,8 +361,7 @@ credential store into registration by calling
   directly. Used for all OpenAI-compatible providers (mistral, groq,
   deepinfra, cerebras, cohere, together, perplexity, xai, venice,
   opencode_go, generalcompute). `CredentialKind::BearerToken` is preserved
-  so an external command or future OAuth flow can land here without
-  re-flattening to a string.
+  so a future OAuth flow can land here without re-flattening to a string.
 - `register_api_key_provider(...)` — factories that take only the secret
   string. Used for `minimax` (Anthropic-compatible) and any provider that
   cannot accept a bearer credential. Rejects `CredentialKind::BearerToken`
@@ -371,15 +370,23 @@ credential store into registration by calling
   OpenAI native, Google, and OpenRouter. Threads the resolved secret
   through to the factory closure along with `cfg.base_url`.
 
+This is the **single resolution path** for provider registration. No
+helper reads `cfg.api_key` directly; legacy `provider.<id>.api_key`
+fields are honored by `AuthResolver` via `ctx.legacy_api_key`. New
+auth modes should be added to `AuthResolver` and reflected in
+`ResolvedAuthSource`; they will then be available to all three
+registration helpers automatically.
+
 The typed `cfg.auth` descriptor
 (`AuthConfig::ApiKey { env, value, encrypted_value }`, `Stored { .. }`,
 `ExternalCommand { .. }`, or `OAuthDevice { .. }`) is passed into
 `AuthResolver::resolve`. The `OAuthDevice` and `ExternalCommand` variants
 are recognized but return `AuthError::Unsupported` from the synchronous
-resolver. `ExternalCommand` is intentionally disabled because the
-underlying `ExternalCommandProvider` uses `std::process::Command` without
-enforcing its timeout, which could otherwise hang provider registration
-indefinitely. Async timeout plumbing is a follow-up.
+resolver. `ExternalCommand` is intentionally disabled: both
+`AuthResolver::resolve` and `ExternalCommandProvider::fetch` return
+`Unsupported` for a non-empty command (an empty command yields
+`Invalid`), and the previous `std::process::Command`-based shell-out
+path has been removed. Async timeout plumbing is a follow-up.
 
 These `tracing::debug!` / `tracing::warn!` lines log only
 `ResolvedAuthSource::as_str()` (a stable label like `env(explicit)`,

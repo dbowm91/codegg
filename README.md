@@ -99,34 +99,44 @@ Supported `auth.type` values:
 | Type               | Status      | Notes |
 |--------------------|-------------|-------|
 | `api_key`          | Supported   | `env`, inline `value`, or `encrypted_value` |
-| `stored`           | Supported   | Reference into the user-level credential store |
-| `external_command` | Recognized  | Currently returns `AuthError::Unsupported` from the synchronous resolver; the underlying `ExternalCommandProvider` does not yet enforce its timeout, so it is intentionally disabled. Async timeout plumbing is a follow-up. |
+| `stored`           | Supported (API keys) | Reference into the user-level credential store. Today this resolves stored API keys only; a future OAuth/bearer-token policy will gate stored `BearerToken` records. |
+| `external_command` | Recognized  | Parsed; both `AuthResolver::resolve` and `ExternalCommandProvider::fetch` return `AuthError::Unsupported("ExternalCommand")` for any non-empty command. The previous `std::process::Command` shell-out path has been removed. Async timeout plumbing is a follow-up. |
 | `oauth_device`     | Scaffolded  | Typed parsing only; resolution returns `AuthError::Unsupported` |
 | `none`             | Supported   | Explicit "no auth" marker; bypasses env / store lookups |
 
 Resolution order is: explicit `auth.env`, conventional `{PROVIDER}_API_KEY`,
 inline `value`, decrypted `encrypted_value`, the user store, and finally the
-legacy `api_key` field. A `Credential` carries `CredentialKind` (`ApiKey` or
-`BearerToken`) and an optional `expires_at` so OpenAI-compatible providers
-can preserve metadata across registration.
+legacy `api_key` field. Provider registration has a **single resolution
+path** that runs through `resolve_provider_credential(...)`; no helper
+reads `cfg.api_key` directly anymore. A `Credential` carries
+`CredentialKind` (`ApiKey` or `BearerToken`) and an optional `expires_at`
+so OpenAI-compatible providers can preserve metadata across registration.
 
 A user-level encrypted credential store lives at
 `~/.config/codegg/credentials.json` (or the platform config-dir equivalent).
 Each `StoredCredentialRecord`'s `encrypted_secret` is encrypted with the
-existing `CODEGG_MASTER_KEY` / `CODEGG_ENCRYPTION_KEY` master key. Reading
-plaintext still works without a master key for env / config-backed paths;
-**storing** a new credential requires a master key and returns
-`AuthError::MasterKeyMissing` if none is configured.
+existing `CODEGG_MASTER_KEY` / `CODEGG_ENCRYPTION_KEY` /
+`OPENCODE_ENCRYPTION_KEY` master key. Reading plaintext still works
+without a master key for env / config-backed paths; **storing** a new
+credential requires a master key and returns `AuthError::MasterKeyMissing`
+if none is configured.
 
 Manage stored credentials from the CLI:
 
 ```bash
-codegg auth status                    # list stored credentials (no plaintext)
-codegg auth set-key openai            # read key from stdin, store under default account
-codegg auth set-key openai --account work   # multi-account
+codegg auth status                    # list stored credentials (metadata only)
+printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai
+                                       # read key from stdin, store under default account
+printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai --account work
+                                       # multi-account
 codegg auth logout openai             # remove default-account record
 codegg auth logout openai --account '*'    # remove all accounts for a provider
 ```
+
+The `codegg auth` CLI validates provider and account ids
+(`[A-Za-z0-9_-]`, with `*` allowed for `logout` only) and never echoes
+key material in success or error messages. `status` never prints
+encrypted ciphertext, raw secrets, or secret-derived fingerprints.
 
 The `auth::mask_secret` helper renders any secret as a fixed 16-bullet
 mask (`••••••••••••••••`) and never returns prefix or suffix of the input.
@@ -162,7 +172,7 @@ codegg export <id> -o file  # Export to JSON
 codegg import <file>        # Import from JSON
 
 # Model discovery
-codegg providers            # List providers
+codegg providers            # List providers (config-aware; same as `models`)
 codegg models              # List all models
 codegg models -p anthropic  # List provider models
 

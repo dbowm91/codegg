@@ -558,6 +558,11 @@ fn register_api_key_provider<F>(
 /// (possibly absent) `base_url` through to the factory. Uses the
 /// [`register_api_key_provider`] path because all current callers
 /// (Anthropic, OpenAI native, Google, OpenRouter) use static API keys.
+///
+/// All credential lookups flow through
+/// [`resolve_provider_credential`]; the resolver itself is responsible
+/// for honoring `ctx.legacy_api_key`. This helper does **not** read
+/// `cfg.api_key` directly so there is a single resolution path.
 fn register_config_provider<F>(
     registry: &mut ProviderRegistry,
     providers: Option<&std::collections::HashMap<String, crate::config::schema::ProviderConfig>>,
@@ -586,13 +591,10 @@ fn register_config_provider<F>(
                 }
             }
             Ok(None) => {
-                if let Some(cfg) = cfg_opt {
-                    if let Some(ref key) = cfg.api_key {
-                        if !key.is_empty() {
-                            registry.register(factory(key.clone(), cfg.base_url.clone()));
-                        }
-                    }
-                }
+                tracing::debug!(
+                    "register_config_provider: provider '{}' had no credential configured",
+                    name
+                );
             }
             Err(e) => {
                 tracing::warn!(
@@ -1212,5 +1214,118 @@ mod tests {
         if let Some(v) = prev_xai {
             std::env::set_var("XAI_API_KEY", v);
         }
+    }
+
+    #[test]
+    fn ensure_api_key_credential_rejects_bearer_token() {
+        let _guard = crate::auth::test_support::lock_env();
+        let prev = std::env::var("ENSURE_BEARER_TEST_API_KEY").ok();
+        std::env::remove_var("ENSURE_BEARER_TEST_API_KEY");
+        let prev_openai = std::env::var("OPENAI_API_KEY").ok();
+        std::env::remove_var("OPENAI_API_KEY");
+
+        let resolved = ResolvedAuth {
+            credential: Credential::bearer("a-bearer", None),
+            source: ResolvedAuthSource::UserStore,
+        };
+        // The helper must NOT collapse a bearer credential to a string
+        // for API-key-only providers.
+        assert!(ensure_api_key_credential("bearer_only_provider", &resolved).is_none());
+
+        let resolved_api = ResolvedAuth {
+            credential: Credential::api_key("an-api-key"),
+            source: ResolvedAuthSource::EnvConventional,
+        };
+        let got = ensure_api_key_credential("api_key_provider", &resolved_api)
+            .expect("api-key credential must pass through");
+        assert_eq!(got.secret, "an-api-key");
+        assert_eq!(got.kind, CredentialKind::ApiKey);
+
+        if let Some(v) = prev {
+            std::env::set_var("ENSURE_BEARER_TEST_API_KEY", v);
+        }
+        if let Some(v) = prev_openai {
+            std::env::set_var("OPENAI_API_KEY", v);
+        }
+    }
+
+    #[test]
+    fn register_builtin_with_config_uses_legacy_api_key_through_resolver() {
+        // Phase 1: register_config_provider no longer reads
+        // `cfg.api_key` directly. The legacy field must still register
+        // providers via the resolver path (which inspects
+        // `ctx.legacy_api_key`). Use the `anthropic` slot, which is
+        // one of the providers routed through register_config_provider.
+        let _guard = crate::auth::test_support::lock_env();
+        let prev_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
+        let prev_xai = std::env::var("XAI_API_KEY").ok();
+        let prev_openai = std::env::var("OPENAI_API_KEY").ok();
+        let prev_google = std::env::var("GOOGLE_API_KEY").ok();
+        let prev_openrouter = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("XAI_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("GOOGLE_API_KEY");
+        std::env::remove_var("OPENROUTER_API_KEY");
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "anthropic".to_string(),
+            ProviderConfig {
+                api_key: Some("legacy-anthropic-key".to_string()),
+                ..Default::default()
+            },
+        );
+        let config = Config {
+            provider: Some(providers),
+            ..Default::default()
+        };
+        let mut registry = ProviderRegistry::new();
+        register_builtin_with_config(&mut registry, &config);
+        assert!(
+            registry.get("anthropic").is_some(),
+            "legacy api_key must still register through the resolver"
+        );
+
+        if let Some(v) = prev_anthropic {
+            std::env::set_var("ANTHROPIC_API_KEY", v);
+        }
+        if let Some(v) = prev_xai {
+            std::env::set_var("XAI_API_KEY", v);
+        }
+        if let Some(v) = prev_openai {
+            std::env::set_var("OPENAI_API_KEY", v);
+        }
+        if let Some(v) = prev_google {
+            std::env::set_var("GOOGLE_API_KEY", v);
+        }
+        if let Some(v) = prev_openrouter {
+            std::env::set_var("OPENROUTER_API_KEY", v);
+        }
+    }
+
+    #[test]
+    fn openai_compatible_factory_preserves_bearer_kind() {
+        use crate::provider::openai_compatible::OpenAiCompatibleProvider;
+
+        let cred = Credential::bearer("short-lived-token", None);
+        let provider = OpenAiCompatibleProvider::simple_with_credential(
+            "bearer_kind_test",
+            "Bearer Kind Test",
+            cred,
+            "https://example.invalid/v1",
+        );
+        assert_eq!(provider.config.credential.kind, CredentialKind::BearerToken);
+        assert_eq!(provider.config.credential.secret, "short-lived-token");
+
+        let cred2 = Credential::api_key("sk-static-key");
+        let provider2 = OpenAiCompatibleProvider::simple_with_credential(
+            "api_key_kind_test",
+            "ApiKey Kind Test",
+            cred2,
+            "https://example.invalid/v1",
+        );
+        assert_eq!(provider2.config.credential.kind, CredentialKind::ApiKey);
+        assert_eq!(provider2.config.credential.secret, "sk-static-key");
     }
 }

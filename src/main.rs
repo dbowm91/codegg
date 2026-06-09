@@ -265,21 +265,31 @@ enum Commands {
 
 #[derive(Subcommand, Clone, Debug)]
 enum AuthSubcommand {
-    /// List stored credentials (no plaintext).
+    /// List stored credentials (no plaintext, no ciphertext, no fingerprint).
     Status,
     /// Store an API key for a provider. Reads the key from stdin.
+    ///
+    /// Example:
+    ///   printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai
+    ///   printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai --account work
     SetKey {
-        /// Provider id (e.g. openai, anthropic, xai).
+        /// Provider id (e.g. openai, anthropic, xai). Must contain only
+        /// `[A-Za-z0-9_-]`.
         provider: String,
-        /// Optional account id for multi-account stores.
+        /// Optional account id for multi-account stores. Must contain
+        /// only `[A-Za-z0-9_-]`.
         #[arg(long)]
         account: Option<String>,
     },
     /// Remove stored credentials for a provider.
+    ///
+    /// Pass `--account '*'` to remove every account for the provider.
     Logout {
-        /// Provider id (e.g. openai, anthropic, xai).
+        /// Provider id (e.g. openai, anthropic, xai). Must contain only
+        /// `[A-Za-z0-9_-]`.
         provider: String,
-        /// Optional account id. Pass "*" to remove all accounts.
+        /// Optional account id. Use `'*'` to remove all accounts. Must
+        /// otherwise contain only `[A-Za-z0-9_-]`.
         #[arg(long)]
         account: Option<String>,
     },
@@ -644,8 +654,21 @@ async fn main() -> Result<(), AppError> {
 }
 
 async fn cmd_providers() -> Result<(), AppError> {
+    // Load config so the same config-aware path used by `cmd_models` and
+    // the TUI (`register_builtin_with_config`) takes effect here. This
+    // ensures `codegg providers` and `codegg models` agree on which
+    // providers are visible, including those sourced from the user
+    // credential store.
+    let config = Config::load().unwrap_or_default();
     let mut registry = ProviderRegistry::new();
-    provider::register_builtin(&mut registry);
+    provider::register_builtin_with_config(&mut registry, &config);
+
+    if registry.list().is_empty() {
+        println!(
+            "No providers configured. Set API keys, configure provider auth, or store a key with `codegg auth set-key <provider>`."
+        );
+        return Ok(());
+    }
 
     println!("Available providers:\n");
     for p in registry.list() {
@@ -671,7 +694,9 @@ async fn cmd_models(provider_filter: Option<String>) -> Result<(), AppError> {
             println!("Provider not found: {}", f);
             return Ok(());
         }
-        println!("No providers configured. Set API keys in your config.");
+        println!(
+            "No providers configured. Set API keys, configure provider auth, or store a key with `codegg auth set-key <provider>`."
+        );
         return Ok(());
     }
 

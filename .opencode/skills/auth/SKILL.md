@@ -1,7 +1,7 @@
 ---
 name: auth
 description: Typed AuthConfig, Credential, AuthResolver, user-level credential store, external-command provider, and OAuth scaffolding
-version: 1.1.0
+version: 1.2.0
 tags:
   - auth
   - credentials
@@ -20,14 +20,14 @@ configuration shape that lives in `provider.<id>.auth`), the resolved
 `Credential` (a `kind`/`secret`/`expires_at` triple used to build an
 `Authorization` header), the `AuthResolver` (which performs the env →
 config → store priority lookup), a user-level encrypted
-`CredentialStore`, an `ExternalCommandProvider` for shelling out to an
-officially-supported CLI (currently disabled in the synchronous resolver
-because the underlying `std::process::Command` does not enforce its
-timeout), OAuth device-flow scaffolding (typed but unimplemented in this
-pass), and a `cli` sub-module that wires the credential store into
-`codegg auth status | set-key | logout`.
+`CredentialStore`, an `ExternalCommandProvider` typed for future
+short-lived creds (currently disabled: both `AuthResolver::resolve` and
+`ExternalCommandProvider::fetch` return `AuthError::Unsupported` for
+any non-empty command), OAuth device-flow scaffolding (typed but
+unimplemented in this pass), and a `cli` sub-module that wires the
+credential store into `codegg auth status | set-key | logout`.
 
-A detailed architecture document at `architecture/auth.md` is forthcoming.
+A detailed architecture document lives at `architecture/auth.md`.
 
 ## What `auth/` owns
 
@@ -36,7 +36,7 @@ A detailed architecture document at `architecture/auth.md` is forthcoming.
 | `auth::credential` | `Credential`, `CredentialKind`, `mask_secret` | Resolved secret + metadata; fixed-length `mask_secret` helper. |
 | `auth::resolver` | `AuthResolver`, `ResolverContext`, `ResolvedAuth`, `ResolvedAuthSource`, `conventional_env_map` | Priority-based lookup. |
 | `auth::store` | `CredentialStore`, `StoredCredentialRecord` | User-level encrypted store at `~/.config/codegg/credentials.json`. |
-| `auth::external` | `ExternalCommandProvider`, `ExternalCredential` | Shells out to an external CLI for short-lived creds. Synchronous execution does NOT enforce its timeout, so the resolver currently returns `Unsupported` for `ExternalCommand`. |
+| `auth::external` | `ExternalCommandProvider`, `ExternalCredential` | Typed home for future short-lived creds. Both `AuthResolver::resolve` and `ExternalCommandProvider::fetch` return `AuthError::Unsupported("ExternalCommand")` for a non-empty command; an empty command yields `AuthError::Invalid`. The previous `std::process::Command` shell-out path has been removed. |
 | `auth::oauth` | `OAuthDeviceProvider`, `OAuthDeviceSpec`, `DeviceCode` | Typed scaffolding; entry points return `AuthError::Unsupported`. |
 | `auth::cli` | `AuthCli`, `read_key_from_stdin` | Minimal CLI for `codegg auth status | set-key | logout`. |
 | `auth::error` | `AuthError` | `NotFound`, `Expired`, `MasterKeyMissing`, `Crypto`, `Io`, `Json`, `Unsupported`, `Invalid`, `ExternalCommand { command, message }`. |
@@ -70,16 +70,26 @@ resolver tries each step in order and returns the first hit:
 7. Legacy `ProviderConfig::encrypted_api_key` already decrypted → `ResolvedAuthSource::LegacyDecrypted`
 
 `AuthConfig::Stored { account_id }` skips straight to step 5
-(`ResolvedAuthSource::UserStore`). `AuthConfig::ExternalCommand` is
-recognized but the synchronous resolver returns
-`AuthError::Unsupported("ExternalCommand")` because the underlying
-`std::process::Command`-based provider does not enforce its timeout
-and could otherwise hang provider registration indefinitely. Async
-timeout plumbing is a follow-up — see
-`plans/oauth_provider_auth_followup.md`.
-`AuthConfig::OAuthDevice` is recognized but returns
-`AuthError::Unsupported("OAuthDevice")`. `AuthConfig::None` returns
-`Ok(None)` regardless of legacy fields.
+(`ResolvedAuthSource::UserStore`).
+
+> **Stored bearer tokens are not yet supported.** Both the
+> `AuthConfig::Stored` arm and the no-auth fallback's store lookup
+> filter to `CredentialKind::ApiKey`. A future OAuth/bearer-token
+> refresh flow will need either an explicit `kind` selector on
+> `AuthConfig::Stored` or a separate policy module; until then, a
+> stored `BearerToken` record is treated as a miss for
+> `AuthConfig::Stored`. `codegg auth set-key` only writes `ApiKey`
+> records today, so this is consistent with the CLI's surface.
+
+`AuthConfig::ExternalCommand` is recognized but the synchronous resolver
+returns `AuthError::Unsupported("ExternalCommand")`. The same
+`Unsupported` result is returned by `ExternalCommandProvider::fetch`
+for any non-empty command so that no safe code path can accidentally
+shell out. The previous `std::process::Command`-based implementation
+has been removed; async timeout plumbing is a follow-up — see
+`plans/oauth_provider_auth_followup.md`. `AuthConfig::OAuthDevice` is
+recognized but returns `AuthError::Unsupported("OAuthDevice")`.
+`AuthConfig::None` returns `Ok(None)` regardless of legacy fields.
 
 `ResolvedAuthSource::as_str()` returns a stable, secret-free label
 (`env(explicit)`, `config(inline)`, `user_store`, `external_command`, ...)
@@ -91,7 +101,7 @@ suitable for `tracing::debug!` lines.
 |---------|----------|
 | `ApiKey { env, value, encrypted_value }` | The provider takes a static API key. `env` overrides the conventional `{PROVIDER}_API_KEY` name. `value` is an explicit inline string (avoid in committed configs). `encrypted_value` is a `v2:`-prefixed ciphertext (encrypted with the master key). All three are optional and the resolver falls through if they're empty. |
 | `Stored { account_id }` | The credential should live in the user-level encrypted store and be looked up by provider id (+ optional account id). Best fit for multi-account providers. |
-| `ExternalCommand { command, args, timeout_ms }` | The provider documents an officially-supported CLI that issues short-lived credentials. Currently returns `AuthError::Unsupported("ExternalCommand")` from the synchronous resolver; the underlying `ExternalCommandProvider::fetch` uses `std::process::Command` and does not enforce its timeout, which would otherwise let a hanging command stall provider registration. Async plumbing is a follow-up. |
+| `ExternalCommand { command, args, timeout_ms }` | The provider documents an officially-supported CLI that issues short-lived credentials. Currently returns `AuthError::Unsupported("ExternalCommand")` from both the synchronous resolver and `ExternalCommandProvider::fetch`. The previous `std::process::Command`-based shell-out path has been removed; async timeout plumbing is a follow-up. |
 | `OAuthDevice { client_id, scopes, auth_url, token_url }` | Reserved for providers that publish a stable, public device-code/PKCE contract. Not implemented in this pass; the resolver returns `AuthError::Unsupported`. |
 | `None` | Explicit "no auth" marker. The resolver returns `Ok(None)` and does not consult env, store, or legacy fields. |
 
@@ -124,15 +134,19 @@ store.
 
 3. **Wire the provider**: in `src/provider/mod.rs`,
    `register_credential_provider` (factories that accept a full
-   `Credential` envelope — used for all OpenAI-compatible providers) and
+   `Credential` envelope — used for all OpenAI-compatible providers),
    `register_api_key_provider` (factories that take only the secret —
    used for `minimax` and any provider that cannot accept a bearer
-   credential) both go through `AuthResolver`. The centralized
-   `resolve_provider_credential(provider_id, cfg, env_var, store)` helper
-   builds a `ResolverContext` and calls `AuthResolver::resolve`. The
-   helper passes the full `ResolvedAuth` back to the registration helper
-   so the credential kind can be preserved. No per-mode changes are
-   needed in `register_builtin_with_config` itself; it threads an
+   credential), and `register_config_provider` (base-URL-aware variant
+   for `anthropic`, `openai` native, `google`, `openrouter`) all go
+   through `AuthResolver`. The centralized
+   `resolve_provider_credential(provider_id, cfg, env_var, store)`
+   helper builds a `ResolverContext` and calls `AuthResolver::resolve`.
+   The helper passes the full `ResolvedAuth` back to the registration
+   helper so the credential kind can be preserved. **No helper reads
+   `cfg.api_key` directly** — the legacy field is honored by
+   `AuthResolver` via `ctx.legacy_api_key`, which keeps the resolution
+   path singular. `register_builtin_with_config` threads an
    `Arc<CredentialStore>` into every helper so the user store is
    available for `AuthConfig::Stored` lookups.
 
@@ -184,11 +198,19 @@ store.
 - **External command** output is treated as a bearer token. Do not log
   stdout / stderr. Treat the command itself as a privilege boundary —
   only point `AuthConfig::ExternalCommand.command` at officially
-  supported CLIs. The current synchronous implementation is
-  intentionally disabled from `AuthResolver::resolve` because the
-  `std::process::Command`-based `ExternalCommandProvider::fetch` does
-  not enforce its timeout. When async timeout plumbing lands, this
-  arm will be re-enabled and the warning will be removed.
+  supported CLIs. Both `AuthResolver::resolve` and
+  `ExternalCommandProvider::fetch` return
+  `AuthError::Unsupported("ExternalCommand")` for any non-empty command
+  until async timeout plumbing lands. No synchronous shell-out path is
+  reachable from the public safe API today.
+- **`codegg auth` CLI validation.** `AuthCli::set_key` and
+  `AuthCli::logout` validate provider and account ids up-front to
+  contain only `[A-Za-z0-9_-]`. The wildcard `*` is accepted **only**
+  by `logout` and is documented in `codegg auth logout --help`.
+  `set_key` does not echo the key, key length, or any prefix/suffix;
+  the only output is a generic "Stored API key for provider ..." line.
+  The `status` command never prints ciphertext, plaintext, or
+  secret-derived fingerprints.
 
 ## Test support
 
@@ -223,18 +245,27 @@ CLI is intentionally minimal — TUI flows can build on the same
 `CredentialStore` API for richer behavior.
 
 ```text
-codegg auth status                    # list stored credentials (no plaintext)
+codegg auth status                    # list stored credentials (metadata only)
 codegg auth set-key openai            # read key from stdin, store under default account
 codegg auth set-key openai --account work
 codegg auth logout openai             # remove default-account record
 codegg auth logout openai --account '*'    # remove all accounts for the provider
 ```
 
+Example: `printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai`.
+
 `set-key` requires `CODEGG_MASTER_KEY` to be set; if it is missing the
 command returns a `Config(Invalid("no master key configured..."))`
 error. The default input path is `read_key_from_stdin` (trims trailing
 newlines), so a `readline`-style prompt can be wired in later without
 changing the public API.
+
+Both `set-key` and `logout` validate the provider and account ids
+up-front. Empty ids, ids containing whitespace, punctuation, or
+non-ASCII characters are rejected with a `Config(Invalid(...))` error
+before the store is touched. This keeps error messages and any future
+log lines secret-free and prevents store-file corruption from
+arbitrary user input.
 
 ## Architecture reference
 
