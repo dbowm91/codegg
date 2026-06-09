@@ -29,7 +29,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
 | `lsp/` | Language Server Protocol support (diagnostics, code operations) — egglsp crate is authoritative implementation, src/lsp/ is thin shim |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
-| `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation |
+| `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation — `src/core/` is the transport layer; domain modules (bus, error, goal, memory, session, storage, snapshot, worktree, resilience, task_state, model_profile, protocol_conversions) live in `crates/codegg-core` |
 | `memory/` | Persistent memory system for session learning and namespace management — now in `crates/codegg-core` (`codegg-core` crate) |
 | `permission/` | Access control, path restrictions, DoomLoop detection, mode system |
 | `plugin/` | WASM plugin system with hooks and TUI extensions |
@@ -55,7 +55,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 
 ## Architecture Index
 
-- `architecture/core.md`: Core facade, transport adapters, request envelopes, and protocol boundaries
+- `architecture/core.md`: Core crate architecture, ownership boundaries, and extraction status
 - `architecture/codegg_core.md`: codegg-core workspace crate (bus, error, goal, memory, session, storage, snapshot, worktree, task_state, model_profile, resilience, protocol_conversions)
 - `architecture/tui.md`: TUI state, dialog/component maintenance, and CoreClient-backed flows
 - `architecture/client.md`: Remote TUI client, resume handshake, and replay-aware event handling
@@ -224,6 +224,8 @@ These items were verified during review sessions:
 | Theme live preview | `ThemePickerDialog::PreviewState` machine: Up/Down → `TuiMsg::ThemePreviewChanged` (live apply, no persist); Enter → `TuiMsg::ThemeCommit` (persist + close); Esc / close → `TuiMsg::ThemeRevert` (restore original + close) | `src/tui/components/dialogs/theme.rs`, `src/tui/app/mod.rs` |
 | Last-used model persistence | `KEY_MODEL_LAST_USED` in `user_preferences`. Updated on every `SelectModel` / `cycle_model_forward` / `cycle_model_backward`. Read on startup and applied to `agent_state.current_model` if present in the model list. | `src/tui/app/mod.rs` |
 | `/theme` slash command | list, use, reload, diagnostics subcommands | `src/tui/app/mod.rs:handle_theme_command` |
+| Boundary script | `scripts/check-core-boundary.sh` | Verifies no forbidden imports/dependencies in codegg-core |
+| ckcore alias | `.cargo/config.toml` | `cargo ckcore` = `check -p codegg-core` |
 
 ### Security Notes
 

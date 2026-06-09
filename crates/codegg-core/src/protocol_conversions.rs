@@ -2,6 +2,20 @@
 ///
 /// Agent-related conversions remain in root `src/protocol_conversions.rs`
 /// because the agent module is not extracted into `codegg-core`.
+///
+/// # Transitional Notes
+///
+/// These conversions intentionally live in `codegg-core` rather than in
+/// `codegg-protocol`. The protocol crate must remain a thin, dependency-free
+/// DTO layer; it must not depend on domain or runtime crates such as
+/// `codegg-core`, `codegg-providers`, or `codegg-config`.
+///
+/// Every conversion currently round-trips through `serde_json::Value`. This
+/// works because the domain types and DTOs share the same serde attributes,
+/// but it is a **transitional compatibility bridge**, not the intended
+/// long-term pattern. In a future cleanup pass, prefer explicit
+/// `From`/`TryFrom` implementations that avoid the intermediate JSON
+/// serialization and provide better compile-time error messages.
 
 // ── Domain → DTO (for constructing protocol responses / requests) ───────
 

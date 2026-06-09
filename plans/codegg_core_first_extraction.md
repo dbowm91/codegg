@@ -1,5 +1,9 @@
 # First `codegg-core` Extraction Handoff Plan
 
+## Status: Complete (hardening done 2026-06-09)
+
+This plan was the initial handoff for `codegg-core` extraction. The extraction and subsequent hardening are complete. See `plans/codegg_core_extraction.md` for the final state.
+
 ## Purpose
 
 The repository has completed the preparatory modularization work needed for a cautious first `codegg-core` extraction:

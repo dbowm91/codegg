@@ -1,11 +1,12 @@
 # codegg-core Extraction — Completed
 
 ## Date
-2026-06-09
+
+2026-06-09 (updated 2026-06-09 with hardening results)
 
 ## What was extracted
 
-The `crates/codegg-core` workspace crate was created and the following modules were moved from root `codegg`:
+The `crates/codegg-core` workspace crate was created and hardened. The following modules were moved from root `codegg`:
 
 | Module | Files | Notes |
 |--------|-------|-------|
@@ -14,13 +15,13 @@ The `crates/codegg-core` workspace crate was created and the following modules w
 | `goal` | 6 files | Goal runtime, budget enforcement, store |
 | `memory` | 2 files | Persistent memory patterns |
 | `model_profile` | 4 files | Model profile resolution and policy |
+| `protocol_conversions` | 1 file | Core-safe conversions (session/message/provider/config types) |
 | `resilience` | 1 file | Circuit breaker re-export from codegg-providers |
 | `session` | 11 files | Session storage, schema, checkpoint |
 | `snapshot` | 2 files | File state capture and diff |
 | `storage` | 2 files | SQLite initialization, preferences |
 | `task_state` | 1 file | Todo state management |
 | `worktree` | 1 file | Git worktree operations |
-| `protocol_conversions` | 1 file | Core-safe conversions (session/message/provider/config types) |
 
 ## What stayed root-side and why
 
@@ -40,7 +41,8 @@ The `crates/codegg-core` workspace crate was created and the following modules w
 | `theme` | Depends on ratatui projection |
 | `research` | Depends on agent, tool |
 | `search` | Depends on grep ecosystem |
-| `protocol_conversions` (agent parts) | Agent types not in codegg-core |
+| `search_backend` | Pluggable backend for websearch/webfetch |
+| `core/daemon` | Agent coupling, stores concrete agent runtime types |
 
 ## Error module split
 
@@ -54,6 +56,34 @@ The `crates/codegg-core` workspace crate was created and the following modules w
 - Agent-specific conversions → `src/protocol_conversions.rs` (root)
 - Root re-exports core conversions via `pub use codegg_core::protocol_conversions::*;`
 
+## Dependency pruning results
+
+Removed from `codegg-core` (not needed by moved modules):
+
+| Crate | Reason |
+|-------|--------|
+| `eggcontext` | Not imported by any moved module |
+| `globset` | Not imported by any moved module |
+| `ignore` | Not imported by any moved module |
+| `walkdir` | Not imported by any moved module |
+| `tiktoken` | Token counting lives root-side |
+
+Removed from root `codegg` (moved to `codegg-core` or unused):
+
+| Crate | Reason |
+|-------|--------|
+| `tiktoken` | Token counting now in codegg-core |
+| `shell-words` | Unused after extraction |
+| `bitflags` | Unused after extraction |
+| `num-traits` | Unused after extraction |
+
+## Boundary enforcement
+
+`scripts/check-core-boundary.sh` verifies:
+
+1. No forbidden root-domain imports (`agent`, `tool`, `permission`, `mcp`, `plugin`, `tui`, `server`, `client`, `auth`, `crypto`, `search`, `search_backend`, `research`, `theme`, `tts`, `upgrade`) in `crates/codegg-core/src/`
+2. No forbidden UI/server/plugin dependencies (`ratatui`, `crossterm`, `axum`, `tower_http`, `tokio_tungstenite`, `wasmtime`) in `codegg-core` Cargo.toml or source
+
 ## Validation commands
 
 ```bash
@@ -61,12 +91,14 @@ cargo check -p codegg-core
 cargo check -p codegg
 cargo check --workspace --all-targets
 cargo test --workspace
+bash scripts/check-core-boundary.sh
 ```
 
 ## Remaining extraction work
 
 The next extraction pass should focus on:
-1. `core/daemon.rs` — needs trait/factory boundary cleanup
+
+1. `core/daemon.rs` — needs trait/factory boundary cleanup; still stores concrete agent runtime types and has agent/tool/permission coupling
 2. `permission` — could extract with tool boundary work
 3. `mcp` — depends on auth/crypto
 4. Protocol conversions — agent-specific functions need agent module boundary

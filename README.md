@@ -793,6 +793,7 @@ src/
 
 crates/
 ├── codegg-config/      # Configuration schema, paths, loading, validation, watching
+├── codegg-core/        # Domain types: bus, error, goal, memory, session, storage, snapshot, worktree, resilience
 ├── codegg-protocol/    # Core protocol types (CoreRequest, CoreResponse, CoreEvent, TuiMessage)
 ├── codegg-providers/   # LLM provider implementations, auth types, CircuitBreaker
 ├── eggsentry/          # Security scanning (secrets, commands, deps, profiles)

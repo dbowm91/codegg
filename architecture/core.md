@@ -1,18 +1,135 @@
-# Core Runtime
+# Core Architecture
 
-The `core` module is the request/response facade that separates TUI transport from the underlying agent and session logic.
+This document covers two distinct "core" concerns:
 
-## Overview
+1. **`codegg-core` workspace crate** — domain types, storage, bus, and state
+2. **`src/core/` module** — the daemon/transport facade (CoreClient, InprocCoreClient, etc.)
+
+---
+
+## `codegg-core` Workspace Crate
+
+**Location**: `crates/codegg-core/`
+
+### Owned Modules
+
+`codegg-core` currently owns these modules (exported from `crates/codegg-core/src/lib.rs`):
+
+| Module | Key Types |
+|--------|-----------|
+| `bus` | GlobalEventBus, PermissionRegistry, QuestionRegistry |
+| `error` | AppError, ProviderError, ToolError, is_retryable |
+| `goal` | Goal, GoalStatus, GoalBudget, GoalStore, runtime |
+| `memory` | persistent session-to-session learning |
+| `model_profile` | model profile types |
+| `protocol_conversions` | core-safe domain↔DTO conversions (session, message, provider, config) |
+| `resilience` | CircuitBreaker, FallbackProvider |
+| `session` | session storage, message history, checkpointing |
+| `snapshot` | file state capture and restore |
+| `storage` | SQLite initialization, connection pooling |
+| `task_state` | task state tracking |
+| `worktree` | git worktree management |
+
+### Re-exports into Root
+
+Root `src/lib.rs` re-exports these modules so downstream code can use `crate::bus`, `crate::session`, etc.:
+
+```rust
+pub use codegg_core::bus;
+pub use codegg_core::goal;
+pub use codegg_core::memory;
+pub use codegg_core::model_profile;
+pub use codegg_core::resilience;
+pub use codegg_core::session;
+pub use codegg_core::snapshot;
+pub use codegg_core::storage;
+pub use codegg_core::task_state;
+pub use codegg_core::worktree;
+```
+
+### Root-Side Modules (intentionally not moved)
+
+These modules remain in root `src/` due to high coupling with UI/server/agent:
+
+| Module | Reason |
+|--------|--------|
+| `agent` | AgentLoop, compaction, routing, team |
+| `tool` | all built-in tools |
+| `permission` | access control, modes |
+| `mcp` | Model Context Protocol client |
+| `tui` | terminal user interface |
+| `server` | HTTP/WebSocket server (feature-gated) |
+| `client` | remote TUI client (feature-gated) |
+| `core` | daemon runtime, transport adapters |
+| `plugin` | WASM plugin system |
+| `search`, `search_backend` | web search |
+| `research` | deep research |
+| `auth` | typed auth config, credential store |
+| `crypto` | AES-256-GCM encryption |
+| `theme` | theme system |
+| `tts` | text-to-speech |
+| `upgrade` | self-upgrade |
+| `hooks` | agent lifecycle hooks |
+| `ide` | IDE integration |
+| `lsp` | Language Server Protocol |
+| `security` | SSRF, sandboxing |
+| `shell_session` | shell session metadata |
+| `skills` | skill loading and activation |
+| `command` | slash command registry |
+| `exec` | non-interactive exec mode |
+| `util` | clipboard, fuzzy search, pricing |
+
+### Dependencies (Cargo.toml)
+
+`codegg-core` depends on sibling workspace crates and external libraries, but **never** on UI/server/plugin crates:
+
+```
+codegg-config, codegg-protocol, codegg-providers
+egggit, egglsp, eggsentry
+anyhow, base64, reqwest, async-trait, chrono, dashmap, dirs,
+once_cell, parking_lot, rand, regex, serde, serde_json, sha2,
+similar, sqlx, thiserror, tokio, tracing, uuid
+```
+
+### Forbidden Dependencies
+
+`codegg-core` must NOT depend on:
+
+- **UI**: `ratatui`, `crossterm`, `ratatui_textarea`
+- **Server**: `axum`, `tower_http`, `tokio_tungstenite`
+- **Plugin**: `wasmtime`, `wasmtime_wasi`
+
+Run `./scripts/check-core-boundary.sh` to verify no forbidden imports or dependencies have crept in.
+
+### Why Root `src/error.rs` Still Exists
+
+Root `src/error.rs` re-exports `codegg_core::error::*` and adds Axum-specific response wrappers (`AxumAppError`, `AxumServerRuntimeError`) behind `#[cfg(feature = "server")]`. This avoids pulling `axum` into `codegg-core`.
+
+### Why Protocol Conversions Are Split
+
+- `crates/codegg-core/src/protocol_conversions.rs`: Core-safe conversions (session, message, provider, config) that don't depend on agent/server runtime.
+- `src/protocol_conversions.rs`: Agent-specific conversions + re-export of core conversions via `pub use codegg_core::protocol_conversions::*;`.
+
+`codegg-protocol` must not depend on domain/runtime crates; conversions intentionally live outside it.
+
+### Next Likely Extraction Target
+
+The daemon/agent/tool/permission boundary, not TUI. `src/core/daemon.rs` is the next candidate but requires resolving agent coupling first.
+
+---
+
+## `src/core/` Module (Transport Facade)
 
 **Location**: `src/core/`
 
-**Key Responsibilities**:
+The `core` module is the request/response facade that separates TUI transport from the underlying agent and session logic.
+
+### Key Responsibilities
+
 - Provide a typed request/response boundary for UI and transport adapters
 - Centralize session, memory, task, worktree, permission, and question operations
 - Support in-process, stdio, and socket-backed execution modes
 - Bridge core events into the global event bus when running in-process
-
-## Public API
 
 ### `CoreClient`
 
@@ -34,15 +151,15 @@ pub trait CoreClient: Send + Sync {
 
 | Type | Purpose |
 |------|---------|
-| `InprocCoreClient` | Runs the core in the current process. Contains 4 fields: `subagent_pool` (`Option<Arc<SubAgentPool>>`), `memory_store` (`Option<Arc<MemoryStore>>`), `bg_scheduler` (`Option<Arc<BackgroundScheduler>>`), and `pool` (`Option<sqlx::SqlitePool>` -- not wrapped in `Arc`, unlike the other three). `subscribe()` reads from GlobalEventBus and forwards events to the channel. Turn execution (spawned async) publishes `AgentFinished`/`Error` events to the bus. |
+| `InprocCoreClient` | Runs the core in the current process. Contains fields: `subagent_pool` (`Option<Arc<SubAgentPool>>`), `memory_store` (`Option<Arc<MemoryStore>>`), `bg_scheduler` (`Option<Arc<BackgroundScheduler>>`), and `pool` (`Option<sqlx::SqlitePool>`). `subscribe()` reads from GlobalEventBus and forwards events to the channel. Turn execution (spawned async) publishes `AgentFinished`/`Error` events to the bus. |
 | `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests/responses over stdin/stdout |
 | `SocketCoreClient` | Connects to a Unix socket endpoint and exchanges JSONL requests/responses |
 
-## Protocol
+### Protocol
 
 Defined in `crates/codegg-protocol/src/core.rs`.
 
-### Envelopes
+#### Envelopes
 
 | Type | Purpose |
 |------|---------|
@@ -52,149 +169,41 @@ Defined in `crates/codegg-protocol/src/core.rs`.
 | `CoreResponse` | Typed responses for acknowledgements, JSON payloads, sessions, and errors |
 | `CoreEvent` | Core-side event stream for in-process subscribers |
 
-### Request Families
+#### Request Families
 
 - Session lifecycle: list, create, load, attach, fork, delete, archive, restore, share, unshare, rename, export, import, create-from-template, initialize, subscribe, resume
 - Turn lifecycle: submit, cancel, steer, agent select, model select
 - Session data: message loading and message counts
 - Operational helpers: model refresh, permission/question response, memory CRUD, task CRUD/scheduling, worktree listing
 
-#### Explicit CoreRequest Variants
-
-The `CoreRequest` enum (in `crates/codegg-protocol/src/core.rs`) contains these variants:
-
-**Session Lifecycle:**
-- `Initialize` - Initialize session
-- `Subscribe { session_id }` - Subscribe to session events
-- `Resume { session_id, from_event_seq }` - Resume from event sequence
-- `SessionList { project_id, show_archived, limit }` - List sessions
-- `SessionCreate { directory, title }` - Create new session
-- `SessionAttach { session_id }` - Attach to session
-- `SessionLoad { session_id }` - Load session data
-- `SessionFork { session_id }` - Fork session
-- `SessionDelete { session_id, permanent }` - Delete session
-- `SessionArchive { session_id, unarchive }` - Archive/unarchive session
-- `SessionRestore { session_id }` - Restore session
-- `SessionShare { session_id }` - Share session
-- `SessionUnshare { session_id }` - Unshare session
-- `SessionRename { session_id, new_title }` - Rename session
-- `SessionExport { session_id }` - Export session
-- `SessionImportData { data }` - Import session data
-- `SessionCreateFromTemplate { template, project_id, directory }` - Create from template
-
-**Turn Lifecycle:**
-- `TurnSubmit { session_id, text, plan_mode, model, agents, current_agent_idx, messages }` - Submit a turn for execution. `session_id` identifies the session, `text` is user input, `plan_mode` enables planning, `model` specifies the LLM model, `agents` is the agent configuration array, `current_agent_idx` selects active agent, and `messages` is conversation history.
-- `TurnCancel { session_id, turn_id }` - Cancel a turn
-- `TurnSteer { session_id, turn_id, text }` - Steer with text
-- `AgentSelect { session_id, agent_name }` - Select agent
-- `ModelSelect { session_id, model }` - Select model
-
-**Session Data:**
-- `SessionMessagesLoad { session_id }` - Load session messages
-- `SessionMessageCounts { session_ids }` - Get message counts
-
-**Operational Helpers:**
-- `ModelsRefresh` - Refresh model list
-- `PermissionRespond { id, choice }` - Respond to permission request
-- `QuestionRespond { id, answers }` - Respond to question
-- `MemorySearch { query }` - Search memory
-- `MemoryList { namespace }` - List memory entries
-- `MemoryRemember { text, namespace }` - Remember to memory
-- `MemoryForget { id }` - Forget from memory
-- `TaskList` - List tasks
-- `TaskSchedule { session_id, interval_secs, message }` - Schedule task
-- `TaskDelete { id }` - Delete task
-- `WorktreeList { project_dir }` - List worktrees
-
 #### Request Handler Behavior
 
 **Handled variants** (produce meaningful response):
-- `TurnSubmit` - Spawns agent loop, returns `Ack` immediately
-- `SessionMessagesLoad` - Returns session messages
-- `SessionMessageCounts` - Returns message counts
-- `SessionCreate` - Creates and returns session
-- `SessionLoad` / `SessionAttach` - Loads and returns session
+- `TurnSubmit` — Spawns agent loop, returns `Ack` immediately
+- `SessionMessagesLoad` / `SessionMessageCounts` — Returns session data
+- `SessionCreate` / `SessionLoad` / `SessionAttach` — Session operations
 - All other session variants (List, Fork, Delete, Archive, Restore, Share, Unshare, Rename, Export, Import, CreateFromTemplate)
-- `PermissionRespond` / `QuestionRespond` - Registry responses
-- `ModelsRefresh` - Returns refreshed model list
-- `TaskList` / `TaskSchedule` / `TaskDelete` - Task operations
-- `MemoryList` / `MemorySearch` / `MemoryRemember` / `MemoryForget` - Memory operations
-- `WorktreeList` - Returns worktree list
+- `PermissionRespond` / `QuestionRespond` — Registry responses
+- `ModelsRefresh` — Returns refreshed model list
+- `TaskList` / `TaskSchedule` / `TaskDelete` — Task operations
+- `MemoryList` / `MemorySearch` / `MemoryRemember` / `MemoryForget` — Memory operations
+- `WorktreeList` — Returns worktree list
 
 **Fallthrough variants** (return `Ack` without processing):
-- `Initialize`
-- `Subscribe`
-- `Resume`
-- `TurnCancel`
-- `TurnSteer`
-- `AgentSelect`
-- `ModelSelect`
+- `Initialize`, `Subscribe`, `Resume`, `TurnCancel`, `TurnSteer`, `AgentSelect`, `ModelSelect`
 
-#### CoreEvent Enum
+### Transport Modes
 
-The `CoreEvent` enum (in `crates/codegg-protocol/src/core.rs`) is published by the core and received by in-process subscribers via `subscribe()`.
+| Mode | Description |
+|------|-------------|
+| In-Process | Default. Keeps the core in the same binary via `InprocCoreClient`. |
+| Stdio | Started with `core-stdio` command. Reads/writes JSONL on stdin/stdout. |
+| Socket | Connects to a Unix socket endpoint with reconnect-and-retry-once. |
 
-**Note**: Snapshot events (`SnapshotSession`, `SnapshotWorkspace`, `SnapshotModels`) are defined in `CoreEvent` but are **not published** via `map_app_event_to_core_event` at `src/core/mod.rs:733-848`. The mapping function returns `None` for snapshot events (they fall through to the catch-all `_ => None` case). This is intentional because snapshot events are handled directly by the snapshot system in `src/snapshot/mod.rs` - they bypass the normal event publication flow and are instead triggered through explicit `CoreRequest::SnapshotSession`/`SnapshotWorkspace`/`SnapshotModels` requests. The snapshot subsystem manages its own event emission separately from the global event bus.
+Selection: `--core-transport` flag → `CODEGG_CORE_TRANSPORT` env → default `inproc`.
 
-**Snapshot Events:**
-- `SnapshotSession { session_id }` - Session state snapshot requested
-- `SnapshotWorkspace { project_dir }` - Workspace snapshot requested
-- `SnapshotModels { current_model, models }` - Model list snapshot
+### Implementation Notes
 
-**Turn Events:**
-- `TurnStarted { session_id, turn_id }` - Turn execution started
-- `TurnTextDelta { session_id, turn_id, delta }` - Text delta received
-- `TurnReasoningDelta { session_id, turn_id, delta }` - Reasoning delta received
-- `TurnCompleted { session_id, turn_id, stop_reason }` - Turn completed
-- `TurnFailed { session_id, turn_id, message }` - Turn failed
-
-**Tool Events:**
-- `ToolStarted { session_id, turn_id, tool_name, tool_id, arguments }` - Tool execution started
-- `ToolCompleted { session_id, turn_id, tool_id, output, success }` - Tool completed
-
-**Permission/Question Events:**
-- `PermissionPending { id, tool, path }` - Permission request pending
-- `QuestionPending { id, questions }` - Question pending response
-
-**Session Events:**
-- `SessionUpdated { session_id }` - Session was updated
-- `FileChanged { path, action }` - File changed event
-
-**Subagent Events:**
-- `SubagentStarted { session_id, task_id, agent, description }` - Subagent started
-- `SubagentProgress { session_id, task_id, agent, message }` - Subagent progress
-- `SubagentCompleted { session_id, task_id, agent, result_summary }` - Subagent completed
-- `SubagentFailed { session_id, task_id, agent, error }` - Subagent failed
-
-**Error Events:**
-- `Error { code, message }` - Error occurred
-
-## Transport Modes
-
-### In-Process
-
-The default mode keeps the core in the same binary and routes requests through `InprocCoreClient`. This is the simplest local development path and preserves event publication.
-
-### Stdio
-
-The stdio adapter is started with the hidden `core-stdio` command. It reads `RequestEnvelope<CoreRequest>` values from stdin, writes `CoreResponse` values to stdout, and initializes the full core backend in-process.
-
-### Socket
-
-The socket adapter connects to a Unix socket endpoint, currently using JSONL request/response framing with a reconnect-and-retry-once strategy.
-
-## Startup Selection
-
-The TUI chooses the core transport from:
-
-1. `--core-transport`
-2. `CODEGG_CORE_TRANSPORT`
-3. Default `inproc`
-
-If socket mode is selected, `--core-endpoint` or `CODEGG_CORE_ENDPOINT` must provide the Unix socket path.
-
-## Implementation Notes
-
-- Local TUI flows should prefer `CoreClient` over direct store access when a request already exists in `CoreRequest`.
-- The in-process client **subscribes** to the GlobalEventBus (via `subscribe()`) and forwards events to the channel receiver. The actual event publishing (`AgentFinished`, `Error`) happens inside `tokio::spawn` within turn execution handlers.
 - The core protocol version is currently `1`.
+- Local TUI flows should prefer `CoreClient` over direct store access when a request already exists in `CoreRequest`.
+- The in-process client subscribes to the GlobalEventBus and forwards events to the channel receiver. Actual event publishing happens inside `tokio::spawn` within turn execution handlers.

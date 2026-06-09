@@ -9,7 +9,6 @@ license = "MIT"
 codegg-config = { path = "../codegg-config" }
 codegg-protocol = { path = "../codegg-protocol" }
 codegg-providers = { path = "../codegg-providers" }
-eggcontext = { path = "../eggcontext" }
 egggit = { path = "../egggit" }
 egglsp = { path = "../egglsp" }
 eggsentry = { path = "../eggsentry" }
@@ -21,8 +20,6 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "5"
 dirs = "6"
-globset = "0.4"
-ignore = "0.4"
 once_cell = "1"
 parking_lot = "0.12"
 rand = "0.9"
@@ -36,7 +33,6 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
-walkdir = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
