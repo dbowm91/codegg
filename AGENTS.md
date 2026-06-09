@@ -178,11 +178,12 @@ These items were verified during review sessions:
 | Tool backend contract | `src/tool/backend.rs` | `ToolBackendKind`, `ToolProvenance`, `StructuredToolResult`, `build_report()` for `/tool-backends` |
 | `/tool-backends` slash command | `src/tui/command.rs`, handler in `src/tui/app/mod.rs` | aliases: `/tools`, `/backends` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` except pool which is `Option<SqlitePool>` | `src/core/mod.rs:22-28` |
-| CoreRuntimeDeps | Bundles pool, memory_store, subagent_pool, bg_scheduler | `src/core/runtime_deps.rs` |
+| CoreRuntimeDeps | Bundles pool, memory_store, subagent_pool, bg_scheduler, turn_runtime (non-optional Arc<dyn TurnRuntime>) | `src/core/runtime_deps.rs` |
 | AgentRuntimeProvider | Trait for agent loop construction seam | `src/agent/runtime_provider.rs` |
 | TurnRuntime | Execution-oriented trait for turn lifecycle | `src/agent/turn_runtime.rs` |
 | DefaultTurnRuntime | Default implementation building tools, permissions, prompt, agent loop | `src/agent/turn_runtime.rs` |
 | Daemon direct agent refs | **0** (zero) | `src/core/daemon.rs` — acceptance target met |
+| Daemon turn runtime injection | `deps.turn_runtime.run_turn()` | `src/core/daemon.rs:560` — no direct DefaultTurnRuntime construction |
 | TaskToolRuntime | Narrow DTO for task tool construction | `src/agent/task_tool_runtime.rs` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
@@ -251,6 +252,7 @@ These items were verified during review sessions:
 
 - `CoreRequest` enum in `crates/codegg-protocol/src/core.rs:50-175`
 - InprocCoreClient handlers at `src/core/mod.rs:52-355` handle: TurnSubmit, SessionMessagesLoad, SessionMessageCounts, SessionCreate, SessionLoad, SessionAttach, etc.
+- TurnSubmit now delegates to `self.deps.turn_runtime` (injected `Arc<dyn TurnRuntime>`) instead of constructing `DefaultTurnRuntime` directly.
 - Variants falling through to `Ack`: Initialize, TurnCancel, TurnSteer, AgentSelect, ModelSelect - verify if TUI actually sends these before implementing meaningful responses.
 
 ## Helpful Patterns for Future Agents

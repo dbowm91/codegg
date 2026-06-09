@@ -102,3 +102,13 @@ The next extraction pass should focus on:
 2. `permission` — could extract with tool boundary work
 3. `mcp` — depends on auth/crypto
 4. Protocol conversions — agent-specific functions need agent module boundary
+
+## Completed extraction passes
+
+### Turn runtime wiring cleanup (plans/turn_runtime_wiring_cleanup.md)
+
+- CoreRuntimeDeps now always owns a non-optional `turn_runtime: Arc<dyn TurnRuntime>` (defaults to DefaultTurnRuntime)
+- CoreDaemon::TurnSubmit delegates to `self.deps.turn_runtime.run_turn()` instead of constructing DefaultTurnRuntime directly
+- AgentRuntimeProvider is marked as transitional (used only internally by DefaultTurnRuntime)
+- Provider validation is intentionally duplicated in the daemon for backward-compatible error response shape
+- Fake turn runtime injection test proves the wiring works

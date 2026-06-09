@@ -7,7 +7,6 @@ use chrono::Utc;
 
 use super::event_log::EventFilter;
 use super::runtime_deps::CoreRuntimeDeps;
-use crate::agent::turn_runtime::TurnRuntime;
 use crate::core::session_runtime::RuntimeSessionStatus;
 
 pub struct CoreDaemon {
@@ -477,6 +476,11 @@ impl CoreDaemon {
                         message: "Invalid agent index".to_string(),
                     });
                 }
+                // Validate the provider exists before delegating to the turn
+                // runtime. This preserves the existing `provider_not_found`
+                // response shape from the daemon layer. The turn runtime
+                // also validates provider existence internally, so this is
+                // intentionally duplicated for backward-compatible error handling.
                 let mut registry = crate::provider::ProviderRegistry::new();
                 let config = crate::config::schema::Config::load().unwrap_or_default();
                 crate::provider::register_builtin_with_config(&mut registry, &config);
@@ -539,9 +543,8 @@ impl CoreDaemon {
                     )
                     .await;
 
-                // Delegate to the turn runtime which handles tool registry,
-                // agent loop construction, and background spawning.
-                let turn_runtime = crate::agent::turn_runtime::DefaultTurnRuntime;
+                // Delegate to the injected turn runtime which handles tool
+                // registry, agent loop construction, and background spawning.
                 let turn_input = crate::agent::turn_runtime::TurnRunInput {
                     session_id: session_id.clone(),
                     agents_dto: agents,
@@ -556,7 +559,7 @@ impl CoreDaemon {
                     event_log: Arc::clone(&self.event_log),
                     turn_id: turn_id.clone(),
                 };
-                let turn_output = turn_runtime.run_turn(turn_input).await?;
+                let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
 
                 // Update the TurnHandle with the runtime's cancel/steer channels.
                 {
@@ -2178,6 +2181,7 @@ impl CoreDaemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::turn_runtime::TurnRuntime;
     use crate::core::CoreEvent;
     use crate::session::schema::migrate;
 
@@ -3066,5 +3070,67 @@ mod tests {
             }
             other => panic!("expected TurnTextDelta, got {:?}", other),
         }
+    }
+
+    /// A minimal fake turn runtime that records whether `run_turn` was called.
+    struct FakeTurnRuntime {
+        called: std::sync::atomic::AtomicBool,
+    }
+
+    impl FakeTurnRuntime {
+        fn new() -> Self {
+            Self { called: std::sync::atomic::AtomicBool::new(false) }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::agent::turn_runtime::TurnRuntime for FakeTurnRuntime {
+        async fn run_turn(
+            &self,
+            _input: crate::agent::turn_runtime::TurnRunInput,
+        ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+            let (steer_tx, _steer_rx) = tokio::sync::mpsc::unbounded_channel();
+            Ok(crate::agent::turn_runtime::TurnRunOutput { cancel_tx, steer_tx })
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_submit_uses_injected_runtime() {
+        // Verify that CoreDaemon::TurnSubmit delegates to the injected
+        // TurnRuntime instead of constructing DefaultTurnRuntime directly.
+        std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
+
+        let fake = Arc::new(FakeTurnRuntime::new());
+        let deps = CoreRuntimeDeps::new(None, None, None, None)
+            .with_turn_runtime(Arc::clone(&fake) as Arc<dyn TurnRuntime>);
+        let daemon = CoreDaemon::with_deps(deps);
+
+        let mut agent = crate::agent::Agent::default();
+        agent.name = "test".into();
+        agent.description = "test agent".into();
+
+        let session_id = "s-inject-test".to_string();
+        let req = crate::core::new_request(
+            "req-inject".into(),
+            CoreRequest::TurnSubmit {
+                session_id,
+                text: "hello".into(),
+                plan_mode: false,
+                model: "openai/gpt-4o".into(),
+                agents: vec![crate::protocol_conversions::agent_to_dto(agent)],
+                current_agent_idx: 0,
+                messages: vec![],
+            },
+        );
+        let resp = daemon.handle_request(req).await.unwrap();
+        assert!(matches!(resp, CoreResponse::Ack));
+        assert!(
+            fake.called.load(std::sync::atomic::Ordering::SeqCst),
+            "injected FakeTurnRuntime should have been invoked"
+        );
+        // Note: do not remove OPENAI_API_KEY here to avoid racing
+        // with other tests that also set it. The env var is process-global.
     }
 }

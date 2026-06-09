@@ -18,9 +18,11 @@ pub struct AgentLoopBuildInput {
     pub mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
 }
 
-/// Trait for building agent loops, abstracting daemon→agent construction.
+/// Transitional build-only factory used internally by `DefaultTurnRuntime`.
 ///
-/// The default implementation delegates to `runtime_factory::build_agent_loop`.
+/// Do not inject this into `CoreDaemon`; use [`crate::agent::turn_runtime::TurnRuntime`]
+/// instead. This trait exists only so `DefaultTurnRuntime` can delegate agent loop
+/// construction to the existing `runtime_factory::build_agent_loop` function.
 pub trait AgentRuntimeProvider: Send + Sync {
     fn build_agent_loop(&self, input: AgentLoopBuildInput) -> crate::agent::r#loop::AgentLoop;
 }

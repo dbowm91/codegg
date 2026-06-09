@@ -6,7 +6,6 @@ use crate::agent::turn_runtime::TurnRuntime;
 ///
 /// This localizes concrete agent/tool types so `CoreDaemon` does not
 /// need to import `SubAgentPool`, `BackgroundScheduler`, etc. directly.
-#[derive(Clone, Default)]
 pub struct CoreRuntimeDeps {
     pub pool: Option<sqlx::SqlitePool>,
     pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
@@ -15,9 +14,20 @@ pub struct CoreRuntimeDeps {
     /// The turn runtime that owns tool registry, permission checker,
     /// agent loop construction, and turn execution.
     ///
-    /// When `Some`, the daemon delegates turn execution to this runtime
-    /// instead of building tools/permissions/agent_loop inline.
-    pub agent_runtime: Option<Arc<dyn TurnRuntime>>,
+    /// Always present: defaults to [`crate::agent::turn_runtime::DefaultTurnRuntime`].
+    pub turn_runtime: Arc<dyn TurnRuntime>,
+}
+
+impl Clone for CoreRuntimeDeps {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            memory_store: self.memory_store.clone(),
+            subagent_pool: self.subagent_pool.clone(),
+            bg_scheduler: self.bg_scheduler.clone(),
+            turn_runtime: Arc::clone(&self.turn_runtime),
+        }
+    }
 }
 
 impl CoreRuntimeDeps {
@@ -27,12 +37,18 @@ impl CoreRuntimeDeps {
         memory_store: Option<Arc<crate::memory::MemoryStore>>,
         bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
     ) -> Self {
-        Self { pool, memory_store, subagent_pool, bg_scheduler, agent_runtime: None }
+        Self {
+            pool,
+            memory_store,
+            subagent_pool,
+            bg_scheduler,
+            turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
+        }
     }
 
-    /// Builder-style setter for the agent runtime.
-    pub fn with_agent_runtime(mut self, runtime: Arc<dyn TurnRuntime>) -> Self {
-        self.agent_runtime = Some(runtime);
+    /// Builder-style setter for the turn runtime.
+    pub fn with_turn_runtime(mut self, runtime: Arc<dyn TurnRuntime>) -> Self {
+        self.turn_runtime = runtime;
         self
     }
 }
