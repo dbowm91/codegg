@@ -1048,67 +1048,52 @@ fn list_mcp_servers(config: &Config) {
 }
 
 fn list_lsp_diagnostics(config: &Config) {
-    use codegg::config::schema::LspConfig;
+    use codegg::tool::RegistryBackendStatusKind;
+    use codegg::tool::ToolRegistry;
 
-    match &config.lsp {
-        Some(LspConfig::Disabled(true)) => {
-            println!("config: disabled");
-            return;
+    let registry = ToolRegistry::with_config(config);
+
+    // --- registry/backend state ---
+    let lsp_status = registry
+        .backend_report(None)
+        .into_iter()
+        .find(|r| r.domain == "lsp")
+        .map(|r| r.clone());
+
+    match &lsp_status {
+        Some(status) => {
+            let kind_label = match status.status {
+                RegistryBackendStatusKind::Active => "active",
+                RegistryBackendStatusKind::Disabled => "disabled",
+                RegistryBackendStatusKind::ConfiguredButUnavailable => "unavailable",
+                RegistryBackendStatusKind::FallbackToNative => "fallback-native",
+            };
+            println!(
+                "registry: {} (backend={}, kind={})",
+                status.tool, status.backend, kind_label
+            );
         }
-        Some(LspConfig::Disabled(false)) | Some(LspConfig::Rules(_)) | None => {}
-    }
-    println!("config: enabled");
-
-    let root = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "<unknown>".to_string());
-    println!("root: {root}");
-
-    if let Some(LspConfig::Rules(rules)) = &config.lsp {
-        let disabled: Vec<&str> = rules
-            .iter()
-            .filter(|(_, rule)| match rule {
-                codegg::config::schema::LspRule::Disabled { disabled } => *disabled,
-                codegg::config::schema::LspRule::Active {
-                    disabled: Some(true),
-                    ..
-                } => true,
-                _ => false,
-            })
-            .map(|(name, _)| name.as_str())
-            .collect();
-        if !disabled.is_empty() {
-            println!("disabled by config: {}", disabled.join(", "));
+        None => {
+            println!("registry: lsp not registered");
         }
     }
 
-    let servers = ["rust-analyzer", "pyright", "typescript-language-server"];
-    for name in servers {
-        let found = std::process::Command::new("which")
-            .arg(name)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if found {
-            println!("{name}: found in PATH");
-        } else {
-            println!("{name}: not found in PATH");
-        }
-    }
-
-    println!("requests: timeout 30000ms");
-
+    // --- agent exposure gate ---
     let expose_lsp_tool = config
         .experimental
         .as_ref()
         .and_then(|e| e.lsp_tool)
         .unwrap_or(false);
-    if expose_lsp_tool {
-        println!("model tool: exposed as native lsp");
+    println!("agent exposure gate: experimental.lsp_tool = {expose_lsp_tool}");
+
+    // --- model tool: visible only when registry-visible and gate allows ---
+    let lsp_in_definitions = registry.definitions().iter().any(|d| d.name == "lsp");
+    if lsp_in_definitions && expose_lsp_tool {
+        println!("model tool: exposed (native lsp)");
+    } else if lsp_in_definitions && !expose_lsp_tool {
+        println!("model tool: hidden (registry-visible but agent exposure gate is false)");
     } else {
-        println!("model tool: not exposed as native lsp");
+        println!("model tool: hidden (lsp not in registry definitions)");
     }
 }
 

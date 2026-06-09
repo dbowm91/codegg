@@ -281,7 +281,10 @@ There are now two report sources:
 - `LspRule { Disabled, Active { command, extensions, env, initialization } }`
 - `LspService::new(config)`, `open_file`, `update_file`, `close_file`, `save_file`, `shutdown_all`
 - `LspOperations::go_to_definition`, `find_references`, `hover`, `document_symbols`, `code_actions`, `code_lens`
-- `DiagnosticsCollector`
+- `DiagnosticsCollector`, `DiagnosticsOutput` (includes `diagnostics_may_still_be_warming: bool`)
+- `classify_json_rpc_message(value) -> JsonRpcMessage` — classifies raw JSON-RPC into Response/ErrorResponse/Notification/Unknown
+- `dispatch_notification(diagnostics, method, params)` — notification-driven diagnostics (no request ownership required)
+- Background stdout dispatcher: `LspClient._reader_task` continuously reads framed messages and routes responses to pending senders or dispatches notifications
 - `LspError { ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json }`
 
 ## Codegg-side bridge files

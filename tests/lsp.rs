@@ -82,7 +82,6 @@ fn lsp_tool_schema_operation_enum() {
         "documentSymbol",
         "workspaceSymbol",
         "diagnostics",
-        "codeLens",
     ];
     assert_eq!(ops.len(), expected.len());
     for name in &expected {
@@ -116,6 +115,7 @@ fn lsp_tool_name_and_description() {
     assert_eq!(tool.name(), "lsp");
     assert!(tool.description().contains("goToDefinition"));
     assert!(tool.description().contains("diagnostics"));
+    assert!(!tool.description().contains("codeLens"));
 }
 
 // ── 3. Line/column conversion ─────────────────────────────────────────
@@ -253,15 +253,15 @@ async fn lsp_execute_workspace_symbol_requires_symbol() {
 }
 
 #[tokio::test]
-async fn lsp_execute_code_lens_requires_file_path() {
+async fn lsp_execute_code_lens_removed_from_schema() {
     let tool = make_tool();
     let err = tool
         .execute(serde_json::json!({"operation": "codeLens"}))
         .await
         .unwrap_err();
     assert!(
-        matches!(err, ToolError::Execution(ref msg) if msg.contains("file_path")),
-        "expected file_path error for codeLens, got: {err:?}"
+        matches!(err, ToolError::Execution(ref msg) if msg.contains("unknown LSP operation")),
+        "expected unknown operation error for removed codeLens, got: {err:?}"
     );
 }
 

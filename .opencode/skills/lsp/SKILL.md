@@ -56,21 +56,29 @@ pub struct Lsp {
 
 ### LspClient (`client.rs`)
 
-JSON-RPC client managing LSP server process:
+JSON-RPC client managing LSP server process. Uses a background reader
+task for message dispatch (no more request-owned reads):
 
 ```rust
 pub struct LspClient {
     pub server_id: String,
     pub root: PathBuf,
     pub process: tokio::sync::Mutex<LspProcess>,
-    pub request_id: AtomicU64,  // Changed from AtomicI64 to avoid signed wrap-around
+    pub request_id: AtomicU64,
     pub capabilities: Mutex<Option<ServerCapabilities>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
+    pub last_opened_at: Mutex<HashMap<String, Instant>>,
     pub diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,
-    pub notif_tx: mpsc::UnboundedSender<String>,
-    pub notif_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    pub pending: PendingMap,
+    _reader_task: tokio::task::JoinHandle<()>,
 }
 ```
+
+The `pending` map routes response IDs to oneshot senders. The
+`_reader_task` continuously reads framed JSON-RPC messages from stdout
+and classifies them via `classify_json_rpc_message`. Responses are
+routed to pending senders; notifications are dispatched via
+`dispatch_notification`.
 
 **Request ID Generation:**
 - Uses `AtomicU64` for wrap-around safety (was `AtomicI64`)
@@ -175,13 +183,8 @@ Operations available via tool:
 - `findReferences`
 - `hover`
 - `documentSymbol`
-- `workspaceSymbol`
-- `goToImplementation`
-- `prepareCallHierarchy`
-- `incomingCalls`
-- `outgoingCalls`
-- `codeAction`
-- `codeLens`
+- `workspaceSymbol` (returns `WorkspaceSymbolSummary` with name, kind, file, start_line, start_column, container_name)
+- `diagnostics` (returns `diagnostics_may_still_be_warming: bool` to indicate if the server may not have responded yet after a recent `didOpen`/`didChange`)
 
 ## Project Root Detection
 
@@ -380,9 +383,26 @@ Content-Length: <bytes>\r\n\r\n<json payload>
 ### Notification Handling
 
 Server→client notifications (like `textDocument/publishDiagnostics`) are:
-1. Parsed from stdout
-2. Sent through `notif_tx` channel
-3. Currently only logged in a spawned task (not processed)
+
+1. Read by the background `_reader_task` from stdout
+2. Classified via `classify_json_rpc_message` into `JsonRpcMessage::Notification`
+3. Dispatched via `dispatch_notification` which updates the shared `diagnostics` map
+4. Diagnostics are now updated independently of pending requests (no more "diagnostics only consumed while request is pending")
+
+### Background Dispatcher Architecture
+
+The background reader task is spawned during `LspClient::new()`. It:
+
+- Continuously reads Content-Length framed JSON-RPC messages from stdout
+- Classifies each message via `classify_json_rpc_message` (Response, ErrorResponse, Notification, Unknown)
+- Routes responses to pending oneshot senders via the `pending` map
+- Dispatches notifications via `dispatch_notification` (currently handles `textDocument/publishDiagnostics`)
+- Diagnostics freshness is tracked via `last_opened_at` timestamps; the `diagnostics` operation reports `diagnostics_may_still_be_warming` when a file was recently opened or changed
+
+Key helper functions (exported from `client.rs`):
+- `classify_json_rpc_message(value) -> JsonRpcMessage`
+- `dispatch_notification(diagnostics, method, params)`
+- `url_to_uri(url) -> Uri`
 
 ## See Also
 

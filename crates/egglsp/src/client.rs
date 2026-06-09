@@ -16,15 +16,100 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use lsp_types::*;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, info, warn};
 use url::Url;
 
 use super::launch::{self, LspProcess};
 use super::server::LspServerDef;
 use crate::error::LspError;
+
+type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, LspError>>>>>;
+
+/// Classified JSON-RPC message from the server.
+pub enum JsonRpcMessage {
+    Response {
+        id: u64,
+        result: serde_json::Value,
+    },
+    ErrorResponse {
+        id: u64,
+        code: Option<i64>,
+        message: String,
+    },
+    Notification {
+        method: String,
+        params: serde_json::Value,
+    },
+    Unknown,
+}
+
+/// Classify a raw JSON-RPC value into its semantic type.
+pub fn classify_json_rpc_message(value: serde_json::Value) -> JsonRpcMessage {
+    let id = value.get("id").and_then(|v| v.as_u64());
+    let method = value.get("method").and_then(|v| v.as_str());
+
+    match (id, method) {
+        (Some(id), _) if value.get("error").is_some() => {
+            let code = value
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|c| c.as_i64());
+            let message = value
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            JsonRpcMessage::ErrorResponse { id, code, message }
+        }
+        (Some(id), _) => {
+            let result = value
+                .get("result")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            JsonRpcMessage::Response { id, result }
+        }
+        (None, Some(method)) => {
+            let params = value
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            JsonRpcMessage::Notification {
+                method: method.to_string(),
+                params,
+            }
+        }
+        _ => JsonRpcMessage::Unknown,
+    }
+}
+
+/// Dispatch a notification by method. Currently handles diagnostics.
+pub async fn dispatch_notification(
+    diagnostics: &tokio::sync::Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>,
+    method: &str,
+    params: serde_json::Value,
+) {
+    if method == "textDocument/publishDiagnostics" {
+        if let Some(uri) = params.get("uri").and_then(|v| v.as_str()) {
+            if let Some(diags_value) = params.get("diagnostics") {
+                match serde_json::from_value::<Vec<lsp_types::Diagnostic>>(diags_value.clone()) {
+                    Ok(diags) => {
+                        let count = diags.len();
+                        diagnostics.lock().await.insert(uri.to_string(), diags);
+                        debug!(uri, count, "received diagnostics via background reader");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, uri, "failed to parse diagnostics");
+                    }
+                }
+            }
+        }
+    }
+}
 
 pub fn url_to_uri(url: &Url) -> Result<Uri, LspError> {
     Uri::from_str(url.as_str()).map_err(|e| LspError::RequestFailed(format!("invalid URL: {e}")))
@@ -42,9 +127,11 @@ pub struct LspClient {
     pub request_id: AtomicU64,
     pub capabilities: Mutex<Option<ServerCapabilities>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
+    /// Tracks when each file was last opened or changed, for diagnostics warm-up detection.
+    pub last_opened_at: Mutex<HashMap<String, Instant>>,
     pub diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,
-    pub notif_tx: mpsc::UnboundedSender<String>,
-    pub notif_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    pub pending: PendingMap,
+    _reader_task: tokio::task::JoinHandle<()>,
 }
 
 impl LspClient {
@@ -67,7 +154,23 @@ impl LspClient {
             launch::spawn_stderr_drain(server.id, stderr.into_inner());
         }
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        // Split process: stdout goes to background reader, stdin stays in LspClient.
+        let stdout = process
+            .stdout
+            .take()
+            .ok_or_else(|| LspError::LaunchFailed("stdout not available".to_string()))?;
+
+        let diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+
+        // Spawn background stdout reader.
+        let reader_diagnostics = diagnostics.clone();
+        let reader_pending = pending.clone();
+        let server_id = server.id.to_string();
+        let reader_task = tokio::spawn(async move {
+            Self::background_reader(stdout, reader_diagnostics, reader_pending, server_id).await;
+        });
 
         let client = Self {
             server_id: server.id.to_string(),
@@ -76,12 +179,65 @@ impl LspClient {
             request_id: AtomicU64::new(0),
             capabilities: Mutex::new(None),
             opened_files: Mutex::new(HashMap::new()),
-            diagnostics: Arc::new(Mutex::new(HashMap::new())),
-            notif_tx: tx,
-            notif_rx: Mutex::new(Some(rx)),
+            last_opened_at: Mutex::new(HashMap::new()),
+            diagnostics,
+            pending,
+            _reader_task: reader_task,
         };
 
         Ok(client)
+    }
+
+    /// Background task that reads framed JSON-RPC messages from stdout
+    /// and routes them to pending request senders or notification handlers.
+    async fn background_reader(
+        mut stdout: tokio::process::ChildStdout,
+        diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,
+        pending: PendingMap,
+        server_id: String,
+    ) {
+        loop {
+            // Read Content-Length framed message.
+            let resp_str = match read_framed_message(&mut stdout).await {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!(server = %server_id, error = %e, "stdout reader exiting");
+                    break;
+                }
+            };
+
+            let value: serde_json::Value = match serde_json::from_str(&resp_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(server = %server_id, error = %e, "failed to parse JSON-RPC message");
+                    continue;
+                }
+            };
+
+            match classify_json_rpc_message(value) {
+                JsonRpcMessage::Response { id, result } => {
+                    let sender = pending.lock().await.remove(&id);
+                    if let Some(tx) = sender {
+                        let _ = tx.send(Ok(result));
+                    }
+                }
+                JsonRpcMessage::ErrorResponse { id, code, message } => {
+                    let sender = pending.lock().await.remove(&id);
+                    if let Some(tx) = sender {
+                        let code_str = code.map(|c| c.to_string()).unwrap_or_default();
+                        let _ = tx.send(Err(LspError::RequestFailed(format!(
+                            "LSP error {code_str}: {message}"
+                        ))));
+                    }
+                }
+                JsonRpcMessage::Notification { method, params } => {
+                    dispatch_notification(&diagnostics, &method, params).await;
+                }
+                JsonRpcMessage::Unknown => {
+                    debug!(server = %server_id, "received unknown JSON-RPC message");
+                }
+            }
+        }
     }
 
     pub async fn initialize(
@@ -164,21 +320,6 @@ impl LspClient {
 
         info!(server = %self.server_id, "LSP server initialized");
 
-        let notif_rx = self.notif_rx.lock().await.take();
-        if let Some(mut rx) = notif_rx {
-            let diagnostics = self.diagnostics.clone();
-            let server_id = self.server_id.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = rx.recv().await {
-                    if let Some((uri, diags)) = parse_publish_diagnostics(&msg) {
-                        let count = diags.len();
-                        diagnostics.lock().await.insert(uri.clone(), diags);
-                        debug!(server = %server_id, uri, count, "received diagnostics via notification");
-                    }
-                }
-            });
-        }
-
         Ok(caps.capabilities)
     }
 
@@ -199,10 +340,15 @@ impl LspClient {
         self.send_notification("textDocument/didOpen", serde_json::to_value(params)?)
             .await?;
 
+        let uri_str = uri.to_string();
         self.opened_files
             .lock()
             .await
-            .insert(uri.to_string(), version);
+            .insert(uri_str.clone(), version);
+        self.last_opened_at
+            .lock()
+            .await
+            .insert(uri_str, Instant::now());
         Ok(())
     }
 
@@ -221,10 +367,15 @@ impl LspClient {
         self.send_notification("textDocument/didChange", serde_json::to_value(params)?)
             .await?;
 
+        let uri_str = uri.to_string();
         self.opened_files
             .lock()
             .await
-            .insert(uri.to_string(), version);
+            .insert(uri_str.clone(), version);
+        self.last_opened_at
+            .lock()
+            .await
+            .insert(uri_str, Instant::now());
         Ok(())
     }
 
@@ -468,50 +619,42 @@ impl LspClient {
         });
 
         let msg_str = serde_json::to_string(&msg)?;
+
+        // Register pending request before writing to stdin.
+        let (tx, rx) = oneshot::channel();
+        {
+            self.pending.lock().await.insert(id, tx);
+        }
+
+        // Write the request.
         {
             let mut proc = self.process.lock().await;
             launch::send_request(&mut proc, &msg_str).await?;
         }
 
-        let result = tokio::time::timeout(Self::REQUEST_TIMEOUT, async {
-            loop {
-                let resp_str = {
-                    let mut proc = self.process.lock().await;
-                    launch::read_response(&mut proc).await?
-                };
-                let resp: serde_json::Value = serde_json::from_str(&resp_str)?;
-
-                if let Some(resp_id) = resp.get("id") {
-                    if resp_id.as_i64() == Some(id as i64) {
-                        if let Some(err) = resp.get("error") {
-                            return Err(LspError::RequestFailed(format!(
-                                "LSP error {}: {}",
-                                err.get("code").map(|c| c.to_string()).unwrap_or_default(),
-                                err.get("message")
-                                    .map(|m| m.to_string())
-                                    .unwrap_or_default()
-                            )));
-                        }
-                        return Ok(resp
-                            .get("result")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null));
-                    }
-                }
-                if let Err(e) = self.notif_tx.send(resp_str) {
-                    warn!(error = %e, "failed to send notification to channel");
-                }
-            }
-        })
-        .await;
+        // Wait for the background reader to deliver the response.
+        let result = tokio::time::timeout(Self::REQUEST_TIMEOUT, rx).await;
 
         match result {
-            Ok(inner) => inner,
-            Err(_) => Err(LspError::RequestTimeout(format!(
-                "LSP request '{}' timed out after {:?}",
-                method,
-                Self::REQUEST_TIMEOUT
-            ))),
+            Ok(Ok(Ok(val))) => Ok(val),
+            Ok(Ok(Err(e))) => Err(e),
+            Ok(Err(_)) => {
+                // oneshot dropped without sending — background reader exited.
+                self.pending.lock().await.remove(&id);
+                Err(LspError::RequestFailed(format!(
+                    "LSP request '{}' failed: response channel dropped",
+                    method
+                )))
+            }
+            Err(_) => {
+                // Timeout — clean up pending entry; background reader will ignore late response.
+                self.pending.lock().await.remove(&id);
+                Err(LspError::RequestTimeout(format!(
+                    "LSP request '{}' timed out after {:?}",
+                    method,
+                    Self::REQUEST_TIMEOUT
+                )))
+            }
         }
     }
 
@@ -554,6 +697,21 @@ impl LspClient {
         self.diagnostics.lock().await.clone()
     }
 
+    /// Returns true if the file was opened or changed very recently and
+    /// no diagnostics have been received yet for it.
+    pub async fn diagnostics_may_still_be_warming(&self, uri: &str) -> bool {
+        let last = self.last_opened_at.lock().await;
+        if let Some(instant) = last.get(uri) {
+            let elapsed = instant.elapsed();
+            // If opened/changed within the last 2 seconds, diagnostics may still be warming.
+            if elapsed < std::time::Duration::from_secs(2) {
+                let diags = self.diagnostics.lock().await;
+                return !diags.contains_key(uri) || diags.get(uri).map_or(true, |d| d.is_empty());
+            }
+        }
+        false
+    }
+
     pub async fn process_notification(&self, notification: &str) {
         if let Some(diags) = parse_publish_diagnostics(notification) {
             let uri = diags.0;
@@ -587,9 +745,107 @@ pub fn parse_publish_diagnostics(
     Some((uri.to_string(), diagnostics))
 }
 
+/// Read a single Content-Length framed message from a stdout stream.
+async fn read_framed_message(stdout: &mut tokio::process::ChildStdout) -> Result<String, LspError> {
+    use tokio::io::AsyncReadExt;
+    let mut header_buf = Vec::new();
+    let mut byte = [0u8; 1];
+
+    loop {
+        stdout
+            .read_exact(&mut byte)
+            .await
+            .map_err(|e| LspError::RequestFailed(format!("read header failed: {}", e)))?;
+        header_buf.push(byte[0]);
+
+        if header_buf.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let header_str = String::from_utf8_lossy(&header_buf);
+    let content_length = parse_content_length(&header_str)
+        .ok_or_else(|| LspError::RequestFailed("missing Content-Length header".to_string()))?;
+
+    let mut body = vec![0u8; content_length];
+    stdout
+        .read_exact(&mut body)
+        .await
+        .map_err(|e| LspError::RequestFailed(format!("read body failed: {}", e)))?;
+
+    String::from_utf8(body)
+        .map_err(|e| LspError::RequestFailed(format!("invalid utf8 in response: {}", e)))
+}
+
+fn parse_content_length(header: &str) -> Option<usize> {
+    for line in header.lines() {
+        if let Some(val) = line.strip_prefix("Content-Length: ") {
+            return val.trim().parse().ok();
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_response_message() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"capabilities": {}}
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::Response { id, result } => {
+                assert_eq!(id, 1);
+                assert!(result.get("capabilities").is_some());
+            }
+            _ => panic!("expected Response"),
+        }
+    }
+
+    #[test]
+    fn classify_error_response_message() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {"code": -32600, "message": "Invalid Request"}
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::ErrorResponse { id, code, message } => {
+                assert_eq!(id, 2);
+                assert_eq!(code, Some(-32600));
+                assert_eq!(message, "Invalid Request");
+            }
+            _ => panic!("expected ErrorResponse"),
+        }
+    }
+
+    #[test]
+    fn classify_notification_message() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {"uri": "file:///test.rs", "diagnostics": []}
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::Notification { method, .. } => {
+                assert_eq!(method, "textDocument/publishDiagnostics");
+            }
+            _ => panic!("expected Notification"),
+        }
+    }
+
+    #[test]
+    fn classify_unknown_message() {
+        let msg = serde_json::json!({"jsonrpc": "2.0"});
+        assert!(matches!(
+            classify_json_rpc_message(msg),
+            JsonRpcMessage::Unknown
+        ));
+    }
 
     #[test]
     fn parse_publish_diagnostics_valid() {
@@ -647,5 +903,50 @@ mod tests {
         assert!(result.is_some());
         let (_, diags) = result.unwrap();
         assert!(diags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_publish_diagnostics_updates_cache() {
+        let diags = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let params = serde_json::json!({
+            "uri": "file:///test.rs",
+            "diagnostics": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 5 }
+                },
+                "message": "test error",
+                "severity": 1
+            }]
+        });
+        dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
+        let map = diags.lock().await;
+        assert!(map.contains_key("file:///test.rs"));
+        assert_eq!(map["file:///test.rs"].len(), 1);
+        assert_eq!(map["file:///test.rs"][0].message, "test error");
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_notification_ignored() {
+        let diags = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        dispatch_notification(&diags, "textDocument/completion", serde_json::json!({})).await;
+        let map = diags.lock().await;
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn classify_malformed_non_object() {
+        assert!(matches!(
+            classify_json_rpc_message(serde_json::json!("just a string")),
+            JsonRpcMessage::Unknown
+        ));
+    }
+
+    #[test]
+    fn classify_empty_object() {
+        assert!(matches!(
+            classify_json_rpc_message(serde_json::json!({})),
+            JsonRpcMessage::Unknown
+        ));
     }
 }

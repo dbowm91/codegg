@@ -11,8 +11,8 @@ use std::time::Instant;
 
 const MAX_REFERENCES: usize = 100;
 const MAX_SYMBOLS: usize = 300;
+const MAX_WORKSPACE_SYMBOLS: usize = 200;
 const MAX_HOVER_CHARS: usize = 2000;
-const MAX_OUTPUT_CHARS: usize = 30_000;
 
 #[derive(Serialize)]
 struct LspToolOutput<T> {
@@ -62,6 +62,16 @@ struct HoverSummary {
     contents: String,
 }
 
+#[derive(Serialize)]
+struct WorkspaceSymbolSummary {
+    name: String,
+    kind: String,
+    file: Option<String>,
+    start_line: Option<u32>,
+    start_column: Option<u32>,
+    container_name: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct LspInput {
     operation: String,
@@ -83,14 +93,12 @@ pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Positio
 }
 
 fn uri_to_path(uri: &crate::lsp::lsp_types::Uri) -> String {
-    let s = uri.to_string();
-    if let Ok(p) = std::path::Path::new(s.as_str()).strip_prefix("file://") {
-        p.to_string_lossy().to_string()
-    } else if let Some(path) = s.strip_prefix("file:") {
-        path.to_string()
-    } else {
-        s
-    }
+    let raw = uri.to_string();
+    url::Url::parse(&raw)
+        .ok()
+        .and_then(|u| u.to_file_path().ok())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or(raw)
 }
 
 fn symbol_kind_to_string(kind: crate::lsp::lsp_types::SymbolKind) -> String {
@@ -215,7 +223,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Experimental: Query LSP server for code intelligence. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, codeLens."
+        "Experimental: Query LSP server for code intelligence. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -226,7 +234,7 @@ impl Tool for LspTool {
                     "type": "string",
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
-                        "documentSymbol", "workspaceSymbol", "diagnostics", "codeLens"
+                        "documentSymbol", "workspaceSymbol", "diagnostics"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -382,11 +390,12 @@ impl Tool for LspTool {
                 let file = self.resolve_file(&parsed.file_path)?;
                 let collector =
                     crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
-                let file_diags = collector
+                let diag_output = collector
                     .get_diagnostics_for_file(&file)
                     .await
                     .map_err(|e| ToolError::Execution(format!("diagnostics: {e}")))?;
-                let summaries: Vec<DiagnosticSummary> = file_diags
+                let summaries: Vec<DiagnosticSummary> = diag_output
+                    .diagnostics
                     .iter()
                     .map(|d| DiagnosticSummary {
                         file: d.file.clone(),
@@ -398,12 +407,21 @@ impl Tool for LspTool {
                         message: d.message.clone(),
                     })
                     .collect();
+                #[derive(Serialize)]
+                struct DiagnosticsResult {
+                    diagnostics_may_still_be_warming: bool,
+                    diagnostics: Vec<DiagnosticSummary>,
+                }
+                let result = DiagnosticsResult {
+                    diagnostics_may_still_be_warming: diag_output.diagnostics_may_still_be_warming,
+                    diagnostics: summaries,
+                };
                 let output = LspToolOutput {
                     operation: "diagnostics".to_string(),
                     file_path: file_path_str,
-                    result_count: summaries.len(),
+                    result_count: result.diagnostics.len(),
                     truncated: false,
-                    results: summaries,
+                    results: result,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
@@ -428,7 +446,7 @@ impl Tool for LspTool {
                 } else {
                     let root = std::env::current_dir().unwrap_or_default();
                     self.service
-                        .get_or_create_client_for_root_hint(Some(&root), None)
+                        .find_existing_client_for_root_hint(Some(&root), None)
                         .await
                         .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?
                         .0
@@ -438,44 +456,72 @@ impl Tool for LspTool {
                     .send_request(&key, "workspace/symbol", params)
                     .await
                     .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?;
+
+                // Try to parse as Vec<WorkspaceSymbol> first, then Vec<SymbolInformation>.
+                let summaries: Vec<WorkspaceSymbolSummary> = if resp.as_array().is_some() {
+                    // Try WorkspaceSymbol form
+                    if let Ok(syms) = serde_json::from_value::<
+                        Vec<crate::lsp::lsp_types::WorkspaceSymbol>,
+                    >(resp.clone())
+                    {
+                        syms.into_iter()
+                            .take(MAX_WORKSPACE_SYMBOLS)
+                            .map(|s| {
+                                let (file, start_line, start_column) = match &s.location {
+                                    crate::lsp::lsp_types::OneOf::Left(loc) => (
+                                        Some(uri_to_path(&loc.uri)),
+                                        Some(loc.range.start.line + 1),
+                                        Some(loc.range.start.character + 1),
+                                    ),
+                                    crate::lsp::lsp_types::OneOf::Right(wloc) => {
+                                        (Some(uri_to_path(&wloc.uri)), None, None)
+                                    }
+                                };
+                                WorkspaceSymbolSummary {
+                                    name: s.name,
+                                    kind: symbol_kind_to_string(s.kind),
+                                    file,
+                                    start_line,
+                                    start_column,
+                                    container_name: s.container_name,
+                                }
+                            })
+                            .collect()
+                    } else if let Ok(syms) = serde_json::from_value::<
+                        Vec<crate::lsp::lsp_types::SymbolInformation>,
+                    >(resp.clone())
+                    {
+                        // SymbolInformation form
+                        syms.into_iter()
+                            .take(MAX_WORKSPACE_SYMBOLS)
+                            .map(|s| WorkspaceSymbolSummary {
+                                name: s.name,
+                                kind: symbol_kind_to_string(s.kind),
+                                file: Some(uri_to_path(&s.location.uri)),
+                                start_line: Some(s.location.range.start.line + 1),
+                                start_column: Some(s.location.range.start.character + 1),
+                                container_name: s.container_name,
+                            })
+                            .collect()
+                    } else {
+                        // Cannot parse - return empty
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
+                let truncated = resp
+                    .as_array()
+                    .is_some_and(|a| a.len() > MAX_WORKSPACE_SYMBOLS);
                 let output = LspToolOutput {
                     operation: "workspaceSymbol".to_string(),
                     file_path: file_path_str,
-                    result_count: resp.as_array().map(|a| a.len()).unwrap_or(0),
-                    truncated: false,
-                    results: resp,
+                    result_count: summaries.len(),
+                    truncated,
+                    results: summaries,
                 };
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "codeLens" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let lenses = ops
-                    .code_lens(&file)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("codeLens: {e}")))?;
-                let output = LspToolOutput {
-                    operation: "codeLens".to_string(),
-                    file_path: file_path_str,
-                    result_count: lenses.len(),
-                    truncated: false,
-                    results: lenses,
-                };
-                let serialized = serde_json::to_string_pretty(&output)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?;
-                if serialized.len() > MAX_OUTPUT_CHARS {
-                    let output = LspToolOutput {
-                        operation: "codeLens".to_string(),
-                        file_path: output.file_path,
-                        result_count: output.result_count,
-                        truncated: true,
-                        results: serde_json::Value::Array(Vec::new()),
-                    };
-                    serde_json::to_string_pretty(&output)
-                        .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-                } else {
-                    serialized
-                }
             }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
@@ -532,7 +578,7 @@ mod tests {
                     "type": "string",
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
-                        "documentSymbol", "workspaceSymbol", "diagnostics", "codeLens"
+                        "documentSymbol", "workspaceSymbol", "diagnostics"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -556,6 +602,20 @@ mod tests {
             "required": ["operation"]
         });
         assert_eq!(params, expected);
+    }
+
+    #[test]
+    fn uri_to_path_decodes_percent_encoded_file_uri() {
+        let uri: crate::lsp::lsp_types::Uri = "file:///tmp/a%20b.rs".parse().unwrap();
+        let path = uri_to_path(&uri);
+        assert_eq!(path, "/tmp/a b.rs");
+    }
+
+    #[test]
+    fn uri_to_path_non_file_uri_unchanged() {
+        let uri: crate::lsp::lsp_types::Uri = "https://example.com/test".parse().unwrap();
+        let path = uri_to_path(&uri);
+        assert_eq!(path, "https://example.com/test");
     }
 
     #[tokio::test]

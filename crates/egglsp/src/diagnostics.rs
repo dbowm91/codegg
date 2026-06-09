@@ -27,6 +27,11 @@ pub struct FileDiagnostic {
     pub code: Option<String>,
 }
 
+pub struct DiagnosticsOutput {
+    pub diagnostics_may_still_be_warming: bool,
+    pub diagnostics: Vec<FileDiagnostic>,
+}
+
 pub struct DiagnosticsCollector {
     service: Arc<LspService>,
     last_update: Arc<Mutex<HashMap<String, Instant>>>,
@@ -66,7 +71,7 @@ impl DiagnosticsCollector {
     pub async fn get_diagnostics_for_file(
         &self,
         file_path: &Path,
-    ) -> Result<Vec<FileDiagnostic>, LspError> {
+    ) -> Result<DiagnosticsOutput, LspError> {
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?;
@@ -75,28 +80,39 @@ impl DiagnosticsCollector {
 
         if self.should_debounce(&uri_str).await {
             debug!(uri = %uri_str, "debouncing diagnostics");
-            return Ok(Vec::new());
+            return Ok(DiagnosticsOutput {
+                diagnostics_may_still_be_warming: false,
+                diagnostics: Vec::new(),
+            });
         }
 
         let (key, _root) = self.service.get_or_create_client(file_path).await?;
 
+        let warming = self
+            .service
+            .diagnostics_may_still_be_warming(&key, &uri_str)
+            .await;
+
         let raw = self.service.get_diagnostics_for_key(&key, &uri_str).await?;
 
-        Ok(raw
-            .into_iter()
-            .map(|d| FileDiagnostic {
-                file: uri_str.clone(),
-                line: d.range.start.line,
-                column: d.range.start.character,
-                message: d.message,
-                severity: d.severity.unwrap_or(DiagnosticSeverity::ERROR),
-                source: d.source,
-                code: d.code.as_ref().map(|c| match c {
-                    NumberOrString::Number(n) => n.to_string(),
-                    NumberOrString::String(s) => s.clone(),
-                }),
-            })
-            .collect())
+        Ok(DiagnosticsOutput {
+            diagnostics_may_still_be_warming: warming,
+            diagnostics: raw
+                .into_iter()
+                .map(|d| FileDiagnostic {
+                    file: uri_str.clone(),
+                    line: d.range.start.line,
+                    column: d.range.start.character,
+                    message: d.message,
+                    severity: d.severity.unwrap_or(DiagnosticSeverity::ERROR),
+                    source: d.source,
+                    code: d.code.as_ref().map(|c| match c {
+                        NumberOrString::Number(n) => n.to_string(),
+                        NumberOrString::String(s) => s.clone(),
+                    }),
+                })
+                .collect(),
+        })
     }
 
     pub async fn get_all_diagnostics(
@@ -131,8 +147,9 @@ impl DiagnosticsCollector {
     }
 
     pub async fn has_errors(&self, file_path: &Path) -> Result<bool, LspError> {
-        let diags = self.get_diagnostics_for_file(file_path).await?;
-        Ok(diags
+        let output = self.get_diagnostics_for_file(file_path).await?;
+        Ok(output
+            .diagnostics
             .iter()
             .any(|d| d.severity >= DiagnosticSeverity::ERROR))
     }

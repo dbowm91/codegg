@@ -19,7 +19,7 @@ use crate::error::LspError;
 
 pub struct LspProcess {
     pub stdin: tokio::process::ChildStdin,
-    pub stdout: tokio::process::ChildStdout,
+    pub stdout: Option<tokio::process::ChildStdout>,
     pub stderr: Option<BufReader<tokio::process::ChildStderr>>,
     pub child: tokio::process::Child,
 }
@@ -77,7 +77,7 @@ pub async fn spawn_server(
 
     Ok(LspProcess {
         stdin,
-        stdout,
+        stdout: Some(stdout),
         stderr: Some(stderr_reader),
         child,
     })
@@ -100,12 +100,16 @@ pub async fn send_request(process: &mut LspProcess, msg: &str) -> Result<(), Lsp
 }
 
 pub async fn read_response(process: &mut LspProcess) -> Result<String, LspError> {
+    let stdout = process
+        .stdout
+        .as_mut()
+        .ok_or_else(|| LspError::RequestFailed("stdout not available".to_string()))?;
+
     let mut header_buf = Vec::new();
     let mut byte = [0u8; 1];
 
     loop {
-        process
-            .stdout
+        stdout
             .read_exact(&mut byte)
             .await
             .map_err(|e| LspError::RequestFailed(format!("read header failed: {}", e)))?;
@@ -121,8 +125,7 @@ pub async fn read_response(process: &mut LspProcess) -> Result<String, LspError>
         .ok_or_else(|| LspError::RequestFailed("missing Content-Length header".to_string()))?;
 
     let mut body = vec![0u8; content_length];
-    process
-        .stdout
+    stdout
         .read_exact(&mut body)
         .await
         .map_err(|e| LspError::RequestFailed(format!("read body failed: {}", e)))?;
@@ -135,8 +138,13 @@ pub async fn read_response(process: &mut LspProcess) -> Result<String, LspError>
 }
 
 pub async fn read_notification(process: &mut LspProcess) -> Result<Option<String>, LspError> {
+    let stdout = process
+        .stdout
+        .as_mut()
+        .ok_or_else(|| LspError::RequestFailed("stdout not available".to_string()))?;
+
     let mut buf = [0u8; 1];
-    match process.stdout.read_exact(&mut buf).await {
+    match stdout.read_exact(&mut buf).await {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => {
@@ -149,8 +157,7 @@ pub async fn read_notification(process: &mut LspProcess) -> Result<Option<String
 
     let mut header_buf = vec![buf[0]];
     loop {
-        process
-            .stdout
+        stdout
             .read_exact(&mut buf)
             .await
             .map_err(|e| LspError::RequestFailed(format!("read header failed: {}", e)))?;
@@ -166,8 +173,7 @@ pub async fn read_notification(process: &mut LspProcess) -> Result<Option<String
         .ok_or_else(|| LspError::RequestFailed("missing Content-Length header".to_string()))?;
 
     let mut body = vec![0u8; content_length];
-    process
-        .stdout
+    stdout
         .read_exact(&mut body)
         .await
         .map_err(|e| LspError::RequestFailed(format!("read body failed: {}", e)))?;

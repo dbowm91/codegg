@@ -17,7 +17,7 @@ pub mod server;
 pub mod service;
 
 pub use config::{LspConfig, LspRule};
-pub use diagnostics::DiagnosticsCollector;
+pub use diagnostics::{DiagnosticsCollector, DiagnosticsOutput};
 pub use error::LspError;
 pub use operations::LspOperations;
 pub use service::LspService;

@@ -306,6 +306,15 @@ impl LspService {
         Ok(entry.client.get_all_diagnostics().await)
     }
 
+    pub async fn diagnostics_may_still_be_warming(&self, key: &str, uri: &str) -> bool {
+        let clients = self.clients.read().await;
+        if let Some(entry) = clients.get(key) {
+            entry.client.diagnostics_may_still_be_warming(uri).await
+        } else {
+            false
+        }
+    }
+
     pub async fn send_request(
         &self,
         key: &str,
@@ -331,7 +340,7 @@ impl LspService {
         self.get_or_create_client(file_path).await
     }
 
-    pub async fn get_or_create_client_for_root_hint(
+    pub async fn find_existing_client_for_root_hint(
         &self,
         root_hint: Option<&Path>,
         server_id: Option<&str>,
@@ -348,8 +357,7 @@ impl LspService {
                 return Ok((key, root));
             }
             return Err(LspError::ServerNotFound(format!(
-                "no LSP client for server '{}' at root {}",
-                sid,
+                "no LSP client for server '{sid}' at root {}; provide file_path to initialize one",
                 root.display()
             )));
         }
@@ -366,7 +374,7 @@ impl LspService {
 
         if matching.is_empty() {
             return Err(LspError::ServerNotFound(format!(
-                "no LSP client for root {}",
+                "no LSP client for root {}; provide file_path to initialize one",
                 root.display()
             )));
         }
