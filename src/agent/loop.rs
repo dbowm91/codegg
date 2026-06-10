@@ -37,7 +37,6 @@ use crate::tool::risk::{classify_tool_risk, summarize_tool_output};
 use crate::tool::ToolRegistry;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -430,6 +429,58 @@ impl AgentLoop {
                 self.context_policy_runtime.last_selected_tools = decision.selected_tools.clone();
             }
         }
+    }
+
+    /// Detect tool-palette starvation from parsed tool calls and set backoff.
+    ///
+    /// When the model attempts a tool present in the unreduced base palette but
+    /// omitted from the reduced selected palette, reduction is disabled for at
+    /// least the next provider call. Unknown tools are never blamed on policy.
+    ///
+    /// Returns `true` if starvation was detected.
+    fn observe_tool_palette_starvation(&mut self, tool_calls: &[ToolCall]) -> bool {
+        if self.base_request_tools.is_empty() {
+            return false;
+        }
+        if self.context_policy_runtime.last_selected_tools.is_empty() {
+            return false;
+        }
+        if self.context_policy_runtime.last_omitted_tools.is_empty() {
+            return false;
+        }
+
+        let base_names: Vec<String> = self
+            .base_request_tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        let called_names: Vec<String> = tool_calls.iter().map(|tc| tc.name.to_string()).collect();
+        let starved = crate::context::detect_palette_starvation(
+            &base_names,
+            &self.context_policy_runtime.last_selected_tools,
+            &called_names,
+        );
+
+        if !starved.is_empty() {
+            for name in &starved {
+                tracing::warn!(
+                    policy = "context_tool_palette",
+                    tool = %name,
+                    base_tool_count = self.base_request_tools.len(),
+                    last_selected_tool_count = self.context_policy_runtime.last_selected_tool_count,
+                    last_omitted_tool_count = self.context_policy_runtime.last_omitted_tools.len(),
+                    turn_count = self.state.turn_count,
+                    reduction_disabled_until_turn = %(self.state.turn_count + 1),
+                    "context policy starvation detected: model attempted omitted base-palette tool"
+                );
+            }
+            self.context_policy_runtime.reduction_disabled_until_turn =
+                Some(self.state.turn_count + 1);
+            self.context_policy_runtime.last_reason =
+                Some("starvation: model attempted omitted base-palette tool".to_string());
+        }
+
+        !starved.is_empty()
     }
 
     /// Record finish-event usage from the `EventProcessor` into `ContextCacheStats`.
@@ -3259,27 +3310,7 @@ impl AgentLoop {
                 }
                 break;
             }
-            let selected_names: HashSet<_> = self
-                .context_policy_runtime
-                .last_selected_tools
-                .iter()
-                .cloned()
-                .collect();
-            let base_names: HashSet<_> = self
-                .base_request_tools
-                .iter()
-                .map(|t| t.name.clone())
-                .collect();
-            for tc in &tool_calls {
-                if base_names.contains(tc.name.as_ref())
-                    && !selected_names.contains(tc.name.as_ref())
-                    && !selected_names.is_empty()
-                {
-                    tracing::warn!(tool=%tc.name, "context policy starvation: model attempted omitted tool; disabling reduction for next turn");
-                    self.context_policy_runtime.reduction_disabled_until_turn =
-                        Some(self.state.turn_count + 1);
-                }
-            }
+            self.observe_tool_palette_starvation(&tool_calls);
             missing_structured_tool_call_retries = 0;
             post_tool_continuation_retry_budget = 0;
             narration_retry_budget = 0;
@@ -4458,27 +4489,7 @@ impl AgentLoop {
                     processor.reset();
                     break;
                 }
-                let selected_names: HashSet<_> = self
-                    .context_policy_runtime
-                    .last_selected_tools
-                    .iter()
-                    .cloned()
-                    .collect();
-                let base_names: HashSet<_> = self
-                    .base_request_tools
-                    .iter()
-                    .map(|t| t.name.clone())
-                    .collect();
-                for tc in &tool_calls {
-                    if base_names.contains(tc.name.as_ref())
-                        && !selected_names.contains(tc.name.as_ref())
-                        && !selected_names.is_empty()
-                    {
-                        tracing::warn!(tool=%tc.name, "context policy starvation: model attempted omitted tool; disabling reduction for next turn");
-                        self.context_policy_runtime.reduction_disabled_until_turn =
-                            Some(self.state.turn_count + 1);
-                    }
-                }
+                self.observe_tool_palette_starvation(&tool_calls);
                 missing_structured_tool_call_retries = 0;
                 post_tool_continuation_retry_budget = 0;
                 let tool_results = match self.execute_tool_calls(&tool_calls).await {

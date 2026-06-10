@@ -248,6 +248,41 @@ pub fn reduce_tool_palette(
     }
 }
 
+/// Detect tool-palette starvation: the model attempted a tool that exists in the
+/// unreduced base palette but was omitted from the selected (reduced) palette.
+///
+/// Returns a de-duplicated list of omitted base-palette tool names that were called,
+/// in call order. Only tools present in `base_tool_names` AND absent from
+/// `selected_tool_names` are reported; unknown tool names are never blamed on
+/// policy reduction.
+///
+/// If `selected_tool_names` is empty (no reduction has occurred), returns empty.
+pub fn detect_palette_starvation(
+    base_tool_names: &[String],
+    selected_tool_names: &[String],
+    called_tool_names: &[String],
+) -> Vec<String> {
+    if selected_tool_names.is_empty() || base_tool_names.is_empty() {
+        return Vec::new();
+    }
+    let base_set: std::collections::HashSet<&str> =
+        base_tool_names.iter().map(|s| s.as_str()).collect();
+    let selected_set: std::collections::HashSet<&str> =
+        selected_tool_names.iter().map(|s| s.as_str()).collect();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for name in called_tool_names {
+        if base_set.contains(name.as_str())
+            && !selected_set.contains(name.as_str())
+            && seen.insert(name.clone())
+        {
+            result.push(name.clone());
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,5 +584,82 @@ mod tests {
         assert_eq!(n1, n2);
         // Non-cumulative: second reduce from full base does not shrink further
         assert!(n1.len() <= 4);
+    }
+
+    // --- detect_palette_starvation tests ---
+
+    #[test]
+    fn starvation_omitted_base_tool_triggers() {
+        let base = vec!["read".into(), "bash".into(), "edit".into()];
+        let selected = vec!["read".into(), "edit".into()];
+        let called = vec!["bash".into()];
+        let starved = detect_palette_starvation(&base, &selected, &called);
+        assert_eq!(starved, vec!["bash"]);
+    }
+
+    #[test]
+    fn starvation_selected_tool_does_not_trigger() {
+        let base = vec!["read".into(), "bash".into(), "edit".into()];
+        let selected = vec!["read".into(), "edit".into()];
+        let called = vec!["read".into()];
+        let starved = detect_palette_starvation(&base, &selected, &called);
+        assert!(starved.is_empty());
+    }
+
+    #[test]
+    fn starvation_unknown_tool_does_not_trigger() {
+        let base = vec!["read".into(), "edit".into()];
+        let selected = vec!["read".into()];
+        let called = vec!["nonexistent_tool".into()];
+        let starved = detect_palette_starvation(&base, &selected, &called);
+        assert!(starved.is_empty());
+    }
+
+    #[test]
+    fn starvation_no_prior_reduction_does_not_trigger() {
+        let base = vec!["read".into(), "bash".into()];
+        let selected: Vec<String> = Vec::new();
+        let called = vec!["bash".into()];
+        let starved = detect_palette_starvation(&base, &selected, &called);
+        assert!(starved.is_empty());
+    }
+
+    #[test]
+    fn starvation_multiple_omitted_calls_deduplicated() {
+        let base = vec!["read".into(), "bash".into(), "grep".into(), "edit".into()];
+        let selected = vec!["read".into()];
+        let called = vec!["grep".into(), "bash".into(), "grep".into()];
+        let starved = detect_palette_starvation(&base, &selected, &called);
+        assert_eq!(starved, vec!["grep", "bash"]);
+    }
+
+    #[test]
+    fn starvation_empty_base_returns_empty() {
+        let base: Vec<String> = Vec::new();
+        let selected = vec!["read".into()];
+        let called = vec!["bash".into()];
+        let starved = detect_palette_starvation(&base, &selected, &called);
+        assert!(starved.is_empty());
+    }
+
+    #[test]
+    fn starvation_empty_called_returns_empty() {
+        let base = vec!["read".into(), "bash".into()];
+        let selected = vec!["read".into()];
+        let called: Vec<String> = Vec::new();
+        let starved = detect_palette_starvation(&base, &selected, &called);
+        assert!(starved.is_empty());
+    }
+
+    // --- review_tool_palette_threshold=false in Warn mode ---
+
+    #[test]
+    fn warn_mode_review_threshold_false_disables_review_trigger() {
+        let mut cfg = make_config(true, ContextPolicyMode::Warn, 1, 10);
+        cfg.review_tool_palette_threshold = Some(false);
+        let a = make_analysis(EffectiveCostAction::ReviewToolPalette);
+        let d = decide_policy(&a, 30, &cfg, Some("BeforeProviderCall"), 5, None);
+        assert_eq!(d.kind, ContextPolicyDecisionKind::Noop);
+        assert!(d.reason.contains("no policy action"));
     }
 }

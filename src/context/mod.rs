@@ -21,8 +21,8 @@ pub use effective_cost::{EffectiveCostAction, EffectiveCostAnalysis};
 pub use handle::{clamp_to_char_boundary, ContextHandle, ContextHandleError, ContextHandleKind};
 pub use packer::{ContextPackBudget, ContextPackResult, OmissionReason, OmittedContextBlock};
 pub use policy::{
-    decide_policy, reduce_tool_palette, ContextPolicyDecision, ContextPolicyDecisionKind,
-    ToolPaletteReduction,
+    decide_policy, detect_palette_starvation, reduce_tool_palette, ContextPolicyDecision,
+    ContextPolicyDecisionKind, ToolPaletteReduction,
 };
 pub use projection::{
     project_tool_output, ProjectionConfig, ProjectionStatus, ToolOutputProjection,
