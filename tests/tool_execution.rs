@@ -10,7 +10,7 @@ use tempfile::TempDir;
 fn setup_dir() -> TempDir {
     let dir = tempfile::Builder::new()
         .prefix("codegg-tool-exec-")
-        .tempdir_in("/private/tmp")
+        .tempdir()
         .unwrap();
     fs::write(
         dir.path().join("hello.txt"),

@@ -765,8 +765,8 @@ mod tests {
 
     // --- Programmatic Compaction Tests ---
 
-    #[test]
-    fn test_programmatic_mode_no_provider_call() {
+    #[tokio::test]
+    async fn test_programmatic_mode_no_provider_call() {
         let messages = vec![
             Message::System {
                 content: Arc::new("system".to_string()),
@@ -795,14 +795,13 @@ mod tests {
             active_model: None,
         };
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(compact_with_policy(input, None)).unwrap();
+        let result = compact_with_policy(input, None).await.unwrap();
         assert!(!result.messages.is_empty());
         assert!(result.tokens_before > 0);
     }
 
-    #[test]
-    fn test_programmatic_compaction_preserves_tool_pairs() {
+    #[tokio::test]
+    async fn test_programmatic_compaction_preserves_tool_pairs() {
         let messages = vec![
             Message::System {
                 content: Arc::new("system".to_string()),
@@ -843,8 +842,7 @@ mod tests {
             active_model: None,
         };
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(compact_with_policy(input, None)).unwrap();
+        let result = compact_with_policy(input, None).await.unwrap();
 
         // Validate invariants
         assert!(validate_message_invariants(&result.messages).is_ok());

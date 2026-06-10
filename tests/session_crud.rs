@@ -1,18 +1,12 @@
+mod common;
+
 use codegg::session::{
     CreateSession, MessageStore, PartStore, SessionStore, TodoItemInput, TodoStore, UpdateSession,
 };
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 
 async fn create_test_pool() -> SqlitePool {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    codegg::session::schema::migrate(&pool)
-        .await
-        .expect("failed to run migrations");
+    let pool = common::pool::isolated_pool().await;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

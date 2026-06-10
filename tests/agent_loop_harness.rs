@@ -2892,8 +2892,15 @@ async fn test_max_parallel_tools_enforcement() {
     let request = make_chat_request("Run 3 parallel tools");
     let handle = tokio::spawn(async move { agent_loop.run(request).await });
 
-    // Wait briefly for tools to start executing
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Poll for tools to start executing. Wait until at least one
+    // tool has been entered (current > 0) or 1s elapses.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if current.load(Ordering::SeqCst) > 0 || std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     // Verify max observed concurrent tools does not exceed 2
     let max = max_observed.load(Ordering::SeqCst);

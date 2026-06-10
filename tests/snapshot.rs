@@ -1,15 +1,12 @@
+mod common;
+
 use codegg::snapshot::{FileSnapshot, SnapshotManager, SnapshotView};
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::fs;
 
 async fn create_test_pool() -> SqlitePool {
-    SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("failed to connect to memory db")
+    common::pool::isolated_pool().await
 }
 
 #[tokio::test]

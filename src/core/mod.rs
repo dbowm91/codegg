@@ -511,29 +511,23 @@ mod tests {
     }
 
     async fn test_pool() -> sqlx::SqlitePool {
-        use sqlx::sqlite::SqlitePoolOptions;
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("test.db");
-        let url = format!("sqlite:{}?mode=rwc", db_path.display());
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+        let url = format!(
+            "file:core_test_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let opts = SqliteConnectOptions::from_str(&url)
+            .expect("valid sqlite options")
+            .create_if_missing(true)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect(&url)
+            .connect_with(opts)
             .await
-            .unwrap();
-        sqlx::query("PRAGMA journal_mode=WAL")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA busy_timeout=5000")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA foreign_keys=ON")
-            .execute(&pool)
-            .await
-            .unwrap();
-        migrate(&pool).await.unwrap();
-        Box::leak(Box::new(dir));
+            .expect("connect in-memory sqlite");
+        migrate(&pool).await.expect("migrate");
         pool
     }
 

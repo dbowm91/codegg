@@ -24,9 +24,12 @@ async fn read_frame(reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>) -> 
 }
 
 /// Set up a daemon listening on a temp Unix socket, returning the
-/// path and a `JoinHandle` to the server task. The test must abort
-/// the handle when done.
-async fn spawn_daemon(daemon: Arc<CoreDaemon>) -> (String, tokio::task::JoinHandle<()>) {
+/// path, the `TempDir` guard, and a `JoinHandle` to the server task.
+/// The test must abort the handle before dropping the `TempDir` so
+/// the socket file is not removed while the server still holds it.
+async fn spawn_daemon(
+    daemon: Arc<CoreDaemon>,
+) -> (String, tempfile::TempDir, tokio::task::JoinHandle<()>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket_path = dir.path().join("daemon.sock");
     let socket_path_str = socket_path.to_string_lossy().to_string();
@@ -45,10 +48,7 @@ async fn spawn_daemon(daemon: Arc<CoreDaemon>) -> (String, tokio::task::JoinHand
     // sleep is enough to let the OS register the listener before the
     // test starts connecting.
     tokio::time::sleep(Duration::from_millis(100)).await;
-    // Leak the tempdir so the socket file is not removed before the
-    // test finishes; this mirrors the existing test pattern.
-    Box::leak(Box::new(dir));
-    (socket_path_str, handle)
+    (socket_path_str, dir, handle)
 }
 
 /// Drive a complete `ClientHello` + `Subscribe` handshake against the
@@ -132,7 +132,7 @@ async fn abort_server(handle: tokio::task::JoinHandle<()>) {
 #[tokio::test]
 async fn two_socket_session_filter_isolation() {
     let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
-    let (socket_path_str, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+    let (socket_path_str, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
 
     // Connect client A and B.
     let stream_a = UnixStream::connect(&socket_path_str)
@@ -223,7 +223,7 @@ async fn two_socket_session_filter_isolation() {
 #[tokio::test]
 async fn global_only_subscription_does_not_receive_session_events() {
     let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
-    let (socket_path_str, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+    let (socket_path_str, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
 
     let stream = UnixStream::connect(&socket_path_str)
         .await
@@ -343,7 +343,7 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
         )
         .await;
 
-    let (socket_path_str, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+    let (socket_path_str, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
     let stream = UnixStream::connect(&socket_path_str)
         .await
         .expect("connect client");
@@ -359,7 +359,7 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
 
     // Restart the test with a non-draining handshake to capture the
     // replayed events.
-    let (socket_path_str2, server_handle2) = spawn_daemon(Arc::clone(&daemon)).await;
+    let (socket_path_str2, _socket_dir2, server_handle2) = spawn_daemon(Arc::clone(&daemon)).await;
     let stream2 = UnixStream::connect(&socket_path_str2)
         .await
         .expect("connect client 2");

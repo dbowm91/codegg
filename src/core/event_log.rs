@@ -374,6 +374,32 @@ struct CoreEventRow {
 mod tests {
     use super::*;
 
+    /// Build a fresh in-memory SQLite pool with the full session schema.
+    /// Used by tests that need a backing DB. No on-disk tempdir is
+    /// created, so the pool's underlying memory is reclaimed when the
+    /// test's `SqlitePool` is dropped — no `Box::leak` required.
+    async fn in_memory_pool() -> sqlx::SqlitePool {
+        use crate::session::schema::migrate;
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+        let url = format!(
+            "file:eventlog_test_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let opts = SqliteConnectOptions::from_str(&url)
+            .expect("valid sqlite options")
+            .create_if_missing(true)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("connect in-memory sqlite");
+        migrate(&pool).await.expect("migrate");
+        pool
+    }
+
     #[tokio::test]
     async fn publish_assigns_sequential_ids() {
         let log = EventLog::new(100);
@@ -642,30 +668,7 @@ mod tests {
 
     #[tokio::test]
     async fn has_events_from_strict_semantics() {
-        use crate::session::schema::migrate;
-        use sqlx::sqlite::SqlitePoolOptions;
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("test.db");
-        let url = format!("sqlite:{}?mode=rwc", db_path.display());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA journal_mode=WAL")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA busy_timeout=5000")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA foreign_keys=ON")
-            .execute(&pool)
-            .await
-            .unwrap();
-        migrate(&pool).await.unwrap();
-        Box::leak(Box::new(dir));
+        let pool = in_memory_pool().await;
 
         let log = EventLog::new_with_pool(100, pool.clone());
         let s1 = log
@@ -688,30 +691,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_log_persists_event_type_as_string() {
-        use crate::session::schema::migrate;
-        use sqlx::sqlite::SqlitePoolOptions;
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("test.db");
-        let url = format!("sqlite:{}?mode=rwc", db_path.display());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA journal_mode=WAL")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA busy_timeout=5000")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA foreign_keys=ON")
-            .execute(&pool)
-            .await
-            .unwrap();
-        migrate(&pool).await.unwrap();
-        Box::leak(Box::new(dir));
+        let pool = in_memory_pool().await;
 
         let log = EventLog::new_with_pool(100, pool.clone());
         log.publish(
@@ -779,30 +759,7 @@ mod tests {
     async fn covers_from_too_old_ring_seq_is_true_with_db() {
         // Same scenario, but with a SQLite pool: the DB still has
         // event 1 so the request is covered.
-        use crate::session::schema::migrate;
-        use sqlx::sqlite::SqlitePoolOptions;
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("test.db");
-        let url = format!("sqlite:{}?mode=rwc", db_path.display());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA journal_mode=WAL")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA busy_timeout=5000")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA foreign_keys=ON")
-            .execute(&pool)
-            .await
-            .unwrap();
-        migrate(&pool).await.unwrap();
-        Box::leak(Box::new(dir));
+        let pool = in_memory_pool().await;
 
         let log = EventLog::new_with_pool(3, pool.clone());
         for i in 0..5 {

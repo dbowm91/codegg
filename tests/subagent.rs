@@ -1,3 +1,5 @@
+mod common;
+
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
@@ -108,7 +110,10 @@ mod tests {
                 }
             }
             drop(store);
-            tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+            // 10ms is the lower bound for tokio's timer wheel; the
+            // caller's `interval_ms` is preserved for backwards
+            // compatibility but the floor is what determines accuracy.
+            tokio::time::sleep(std::time::Duration::from_millis(10.max(interval_ms))).await;
         }
         None
     }
@@ -178,166 +183,9 @@ mod tests {
         (registry, requests)
     }
 
-    /// Create a test pool with required tables for subagent testing.
+    /// Create a test pool with the full session schema applied.
     async fn create_test_pool() -> SqlitePool {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
-
-        // Create required tables
-        create_session_table(&pool).await;
-        create_message_table(&pool).await;
-        create_part_table(&pool).await;
-        create_todo_table(&pool).await;
-        create_permission_table(&pool).await;
-        create_session_share_table(&pool).await;
-        create_task_table(&pool).await;
-
-        pool
-    }
-
-    async fn create_session_table(pool: &SqlitePool) {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS session (
-                id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                workspace_id TEXT,
-                parent_id TEXT,
-                slug TEXT NOT NULL,
-                directory TEXT NOT NULL,
-                title TEXT NOT NULL,
-                version TEXT NOT NULL,
-                share_url TEXT,
-                summary_additions INTEGER,
-                summary_deletions INTEGER,
-                summary_files INTEGER,
-                summary_diffs TEXT,
-                revert TEXT,
-                permission TEXT,
-                tags TEXT,
-                time_created INTEGER NOT NULL,
-                time_updated INTEGER NOT NULL,
-                time_compacting INTEGER,
-                time_archived INTEGER,
-                time_deleted INTEGER
-            )
-            "#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
-    async fn create_message_table(pool: &SqlitePool) {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS message (
-                id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                time_created INTEGER NOT NULL,
-                time_updated INTEGER NOT NULL,
-                data TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
-    async fn create_part_table(pool: &SqlitePool) {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS part (
-                id TEXT PRIMARY KEY,
-                message_id TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                time_created INTEGER NOT NULL,
-                time_updated INTEGER NOT NULL,
-                data TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
-    async fn create_todo_table(pool: &SqlitePool) {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS todo (
-                session_id TEXT NOT NULL,
-                content TEXT NOT NULL,
-                status TEXT NOT NULL,
-                priority TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                time_created INTEGER NOT NULL,
-                time_updated INTEGER NOT NULL,
-                PRIMARY KEY (session_id, position)
-            )
-            "#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
-    async fn create_permission_table(pool: &SqlitePool) {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS permission (
-                project_id TEXT PRIMARY KEY,
-                time_created INTEGER NOT NULL,
-                time_updated INTEGER NOT NULL,
-                data TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
-    async fn create_session_share_table(pool: &SqlitePool) {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS session_share (
-                session_id TEXT PRIMARY KEY,
-                id TEXT NOT NULL,
-                secret TEXT NOT NULL,
-                url TEXT NOT NULL,
-                share_expires_at INTEGER,
-                time_created INTEGER NOT NULL,
-                time_updated INTEGER NOT NULL
-            )
-            "#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
-    async fn create_task_table(pool: &SqlitePool) {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS task (
-                id INTEGER PRIMARY KEY,
-                parent_id TEXT,
-                session_id TEXT NOT NULL,
-                description TEXT NOT NULL,
-                prompt TEXT NOT NULL,
-                agent TEXT NOT NULL,
-                status TEXT NOT NULL,
-                result TEXT,
-                denied_tools TEXT,
-                time_created INTEGER NOT NULL,
-                time_updated INTEGER NOT NULL
-            )
-            "#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
+        crate::common::pool::isolated_pool().await
     }
 
     // =============================================================================
@@ -983,8 +831,16 @@ mod tests {
             assert!(result.is_ok(), "send_async should succeed for task {}", i);
         }
 
-        // Give tasks time to start
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Poll for tasks to start. Wait until either 2 are running (the
+        // pool's max_concurrent) or 1s elapses as a safety bound.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            let running = running_count.load(std::sync::atomic::Ordering::SeqCst);
+            if running >= 2 || std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
 
         // At this point, max 2 should be running (the 3rd is queued)
         let max = max_observed.load(std::sync::atomic::Ordering::SeqCst);
@@ -994,35 +850,40 @@ mod tests {
             max
         );
 
-        // Release one task at a time to verify concurrency
-        // Release first task
-        notify.notify_one();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        // Release second task
-        notify.notify_one();
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        // Now the 3rd task should be running (since one of the first 2 completed)
-        // Release third task
-        notify.notify_one();
-
-        // Wait for all tasks to complete by polling completed_count
-        for _ in 0..100 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            let completed = completed_count.load(std::sync::atomic::Ordering::SeqCst);
-            if completed >= 3 {
-                break;
+        // Release one task at a time. After each release, wait until the
+        // running count decreases, signalling that the released task
+        // actually completed before we kick the next one.
+        for _ in 0..3 {
+            let prev_completed = completed_count.load(std::sync::atomic::Ordering::SeqCst);
+            notify.notify_one();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                let completed = completed_count.load(std::sync::atomic::Ordering::SeqCst);
+                if completed > prev_completed || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         }
 
-        // Wait for active_count to become 0
-        for _ in 0..100 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            let active = subagent_pool.active_count();
-            if active == 0 {
+        // Wait for all tasks to complete by polling completed_count.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let completed = completed_count.load(std::sync::atomic::Ordering::SeqCst);
+            if completed >= 3 || std::time::Instant::now() >= deadline {
                 break;
             }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Wait for active_count to become 0.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let active = subagent_pool.active_count();
+            if active == 0 || std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
         // Verify all tasks eventually completed

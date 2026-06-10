@@ -15,11 +15,11 @@ mod tests {
     }
 
     impl RateLimiter {
-        pub(crate) fn new(max_requests: usize, window_secs: u64) -> Self {
+        pub(crate) fn new(max_requests: usize, window: Duration) -> Self {
             Self {
                 cache: Arc::new(RwLock::new(HashMap::new())),
                 max_requests,
-                window: Duration::from_secs(window_secs),
+                window,
             }
         }
 
@@ -41,7 +41,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiter_allows_under_limit() {
-        let limiter = RateLimiter::new(10, 60);
+        let limiter = RateLimiter::new(10, Duration::from_secs(60));
 
         for i in 0..5 {
             let result = limiter.check_rate_limit(&format!("key_{}", i)).await;
@@ -51,7 +51,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiter_blocks_at_limit() {
-        let limiter = RateLimiter::new(3, 60);
+        let limiter = RateLimiter::new(3, Duration::from_secs(60));
         let key = "test_key";
 
         assert!(limiter.check_rate_limit(key).await);
@@ -62,7 +62,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiter_different_keys() {
-        let limiter = RateLimiter::new(2, 60);
+        let limiter = RateLimiter::new(2, Duration::from_secs(60));
 
         assert!(limiter.check_rate_limit("key_a").await);
         assert!(limiter.check_rate_limit("key_a").await);
@@ -75,14 +75,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_rate_limiter_window_expiry() {
-        let limiter = RateLimiter::new(2, 1);
+        // Use a small window so the wait is short (a few hundred ms
+        // rather than the previous 2s).
+        let limiter = RateLimiter::new(2, Duration::from_millis(100));
+        let key = "expiry_key";
 
-        assert!(limiter.check_rate_limit("key").await);
-        assert!(limiter.check_rate_limit("key").await);
-        assert!(!limiter.check_rate_limit("key").await);
+        assert!(limiter.check_rate_limit(key).await);
+        assert!(limiter.check_rate_limit(key).await);
+        assert!(!limiter.check_rate_limit(key).await);
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Wait just past the window. The retain() inside
+        // check_rate_limit drops the expired requests, freeing
+        // capacity.
+        tokio::time::sleep(Duration::from_millis(150)).await;
 
-        assert!(limiter.check_rate_limit("key").await);
+        assert!(limiter.check_rate_limit(key).await);
     }
 }
