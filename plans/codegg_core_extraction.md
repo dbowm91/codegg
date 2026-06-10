@@ -112,3 +112,12 @@ The next extraction pass should focus on:
 - AgentRuntimeProvider is marked as transitional (used only internally by DefaultTurnRuntime)
 - Provider validation is intentionally duplicated in the daemon for backward-compatible error response shape
 - Fake turn runtime injection test proves the wiring works
+
+### Turn runtime final hardening (plans/turn_runtime_final_hardening.md) — completed 2026-06-09
+
+- `AgentRuntimeProvider` renamed to `AgentLoopFactory` / `DefaultAgentLoopFactory`; build-only nature is now clear
+- `LegacyAgentRuntimeDeps` groups concrete agent deps (`subagent_pool`, `bg_scheduler`) under a transitional container
+- Injected runtime test exists and proves `CoreDaemon::TurnSubmit` uses `deps.turn_runtime`
+- `src/core/**` has zero references to `AgentRuntimeProvider`, `AgentLoopBuildInput`, or `build_agent_loop`
+- `bg_scheduler` usage audited; stays in `LegacyAgentRuntimeDeps` with documented purpose
+- All workspace checks and `scripts/check-core-boundary.sh` pass

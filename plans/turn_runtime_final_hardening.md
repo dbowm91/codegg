@@ -1,5 +1,8 @@
 # Turn Runtime Final Hardening Handoff Plan
 
+> **Status: Completed** (2026-06-09)
+> All phases implemented: injected runtime test added, `AgentRuntimeProvider` renamed to `AgentLoopFactory`, `LegacyAgentRuntimeDeps` groups concrete agent deps, `bg_scheduler` usage audited, architecture docs updated. All acceptance criteria met.
+
 ## Purpose
 
 The daemon/turn-runtime boundary is now real:

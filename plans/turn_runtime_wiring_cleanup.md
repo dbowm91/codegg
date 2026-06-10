@@ -1,5 +1,7 @@
 # Turn Runtime Wiring Cleanup Handoff Plan
 
+> **Status: Complete** — All wiring items in this plan have been implemented. `CoreRuntimeDeps` owns a non-optional `turn_runtime`, daemon delegates through the injected runtime, terminology is consistent, and an injection test proves the wiring. The subsequent hardening pass (`plans/turn_runtime_final_hardening.md`) is also complete.
+
 ## Purpose
 
 The previous pass introduced an execution-oriented turn runtime boundary:

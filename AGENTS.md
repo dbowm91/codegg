@@ -86,9 +86,9 @@ These items are important for future agents to know when working with the codeba
 
 - **Agent runtime factory**: `src/agent/runtime_factory.rs` provides `build_agent_loop()` which consolidates agent loop construction (permission checker + AgentLoop::new + session/subagent configuration). Used by `core/daemon.rs` to reduce direct agent/permission module coupling.
 
-- **CoreRuntimeDeps**: `CoreDaemon` stores a single `deps: CoreRuntimeDeps` field instead of separate `subagent_pool`, `memory_store`, `bg_scheduler` fields. Legacy `new()` constructor kept for backward compat; new code should use `with_deps()`.
+- **CoreRuntimeDeps**: `CoreDaemon` stores a single `deps: CoreRuntimeDeps` field instead of separate `subagent_pool`, `memory_store`, `bg_scheduler` fields. `subagent_pool` and `bg_scheduler` are grouped under `legacy_agent: LegacyAgentRuntimeDeps`. Legacy `new()` constructor kept for backward compat; new code should use `with_deps()`.
 
-- **TurnRuntime**: Daemon calls `DefaultTurnRuntime.run_turn(TurnRunInput)` instead of building tool registries, permission checkers, and agent loops inline. `TurnRuntime` owns the full turn lifecycle: provider resolution, tool registry construction, system prompt assembly, agent loop construction, and background spawning. `AgentRuntimeProvider` (build-only) is kept as a transitional internal detail.
+- **TurnRuntime**: Daemon calls `DefaultTurnRuntime.run_turn(TurnRunInput)` instead of building tool registries, permission checkers, and agent loops inline. `TurnRuntime` owns the full turn lifecycle: provider resolution, tool registry construction, system prompt assembly, agent loop construction, and background spawning. `AgentLoopFactory` (build-only) is kept as a transitional internal detail.
 - **Daemon TurnSubmit ownership**: Daemon still owns request validation, session_id/turn_id management, active-turn bookkeeping, and TurnStarted event publishing. Runtime owns everything else.
 
 - **TaskToolRuntime**: `tool::factory::build_session_tool_registry` takes `Option<&TaskToolRuntime>` instead of `Option<&Arc<SubAgentPool>>`. This breaks the tool factory's direct dependency on `SubAgentPool`.
@@ -178,8 +178,8 @@ These items were verified during review sessions:
 | Tool backend contract | `src/tool/backend.rs` | `ToolBackendKind`, `ToolProvenance`, `StructuredToolResult`, `build_report()` for `/tool-backends` |
 | `/tool-backends` slash command | `src/tui/command.rs`, handler in `src/tui/app/mod.rs` | aliases: `/tools`, `/backends` |
 | InprocCoreClient fields | All wrapped in `Option<Arc<...>>` except pool which is `Option<SqlitePool>` | `src/core/mod.rs:22-28` |
-| CoreRuntimeDeps | Bundles pool, memory_store, subagent_pool, bg_scheduler, turn_runtime (non-optional Arc<dyn TurnRuntime>) | `src/core/runtime_deps.rs` |
-| AgentRuntimeProvider | Trait for agent loop construction seam | `src/agent/runtime_provider.rs` |
+| CoreRuntimeDeps | Bundles pool, memory_store, legacy_agent (LegacyAgentRuntimeDeps grouping subagent_pool + bg_scheduler), turn_runtime (non-optional Arc<dyn TurnRuntime>) | `src/core/runtime_deps.rs` |
+| AgentLoopFactory | Trait for agent loop construction seam | `src/agent/agent_loop_factory.rs` |
 | TurnRuntime | Execution-oriented trait for turn lifecycle | `src/agent/turn_runtime.rs` |
 | DefaultTurnRuntime | Default implementation building tools, permissions, prompt, agent loop | `src/agent/turn_runtime.rs` |
 | Daemon direct agent refs | **0** (zero) | `src/core/daemon.rs` — acceptance target met |

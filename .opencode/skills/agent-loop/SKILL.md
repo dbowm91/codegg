@@ -235,6 +235,8 @@ pub async fn run_event_loop(app: &mut App) -> Result<(), AppError> {
 
 ### Spawning AgentLoop
 
+Agent loops are now constructed via the `AgentLoopFactory` trait (`src/agent/agent_loop_factory.rs`), with `DefaultAgentLoopFactory` as the default implementation. This decouples agent loop construction from the daemon.
+
 ```rust
 processing_task = Some(tokio::spawn({
     let model = app.agent_state.current_model.clone();
@@ -252,17 +254,15 @@ processing_task = Some(tokio::spawn({
         
         if let Some(base_provider) = registry.get(&provider_name) {
             let provider = base_provider.clone_box();
-            let tool_registry = ToolRegistry::with_defaults();
-            let permission_checker = PermissionChecker::new(Some(&config), None);
-
-            let mut agent_loop = AgentLoop::new(
+            let factory = DefaultAgentLoopFactory::new(
                 agents,
                 provider,
+                config,
+            );
+            let mut agent_loop = factory.create(
                 permission_checker,
                 tool_registry,
-                config,
                 None, // mcp_service
-                None, // pool
             );
             agent_loop.set_session_id(&session_id);
 
@@ -283,6 +283,26 @@ processing_task = Some(tokio::spawn({
     }
 }));
 ```
+
+### CoreRuntimeDeps
+
+`CoreRuntimeDeps` (`src/core/runtime_deps.rs`) bundles runtime dependencies for the daemon:
+
+```rust
+pub struct CoreRuntimeDeps {
+    pub pool: Option<SqlitePool>,
+    pub memory_store: Option<Arc<MemoryStore>>,
+    pub legacy_agent: LegacyAgentRuntimeDeps,
+    pub turn_runtime: Arc<dyn TurnRuntime>,
+}
+
+pub struct LegacyAgentRuntimeDeps {
+    pub subagent_pool: Arc<SubAgentPool>,
+    pub bg_scheduler: Arc<BackgroundScheduler>,
+}
+```
+
+This replaces the previous flat structure where `subagent_pool` and `bg_scheduler` were top-level fields.
 
 ## PermissionRegistry Pattern
 

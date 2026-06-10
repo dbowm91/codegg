@@ -1,5 +1,7 @@
 # Turn Runtime Boundary Handoff Plan
 
+> **Status: Complete** — The boundary defined in this plan is now fully realized. The execution-oriented `TurnRuntime` trait exists, `CoreDaemon::TurnSubmit` delegates through the injected runtime, and the final hardening pass (`plans/turn_runtime_final_hardening.md`) has been completed.
+
 ## Purpose
 
 The previous daemon-boundary pass improved the shape of root `src/core/daemon.rs` by introducing:
