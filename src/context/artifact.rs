@@ -1,0 +1,363 @@
+use std::collections::HashMap;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    ToolResult,
+    CommandOutput,
+    ReadResult,
+    Diff,
+    TestOutput,
+    WebFetch,
+    Image,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextArtifact {
+    pub handle: String,
+    pub session_id: String,
+    pub turn_index: usize,
+    pub tool_call_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub kind: ArtifactKind,
+    pub created_at_ms: i64,
+    pub content_hash: String,
+    pub redacted_content: String,
+    pub raw_bytes_len: usize,
+    pub estimated_tokens: usize,
+}
+
+#[async_trait]
+pub trait ContextArtifactStore: Send + Sync {
+    async fn put(&self, artifact: ContextArtifact) -> anyhow::Result<()>;
+    async fn get(&self, handle: &str) -> anyhow::Result<Option<ContextArtifact>>;
+    async fn list_recent(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ContextArtifact>>;
+}
+
+pub struct InMemoryArtifactStore {
+    inner: tokio::sync::RwLock<HashMap<String, ContextArtifact>>,
+}
+
+impl InMemoryArtifactStore {
+    pub fn new() -> Self {
+        Self {
+            inner: tokio::sync::RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for InMemoryArtifactStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl ContextArtifactStore for InMemoryArtifactStore {
+    async fn put(&self, artifact: ContextArtifact) -> anyhow::Result<()> {
+        let mut map = self.inner.write().await;
+        map.insert(artifact.handle.clone(), artifact);
+        Ok(())
+    }
+
+    async fn get(&self, handle: &str) -> anyhow::Result<Option<ContextArtifact>> {
+        let map = self.inner.read().await;
+        Ok(map.get(handle).cloned())
+    }
+
+    async fn list_recent(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ContextArtifact>> {
+        let map = self.inner.read().await;
+        let mut artifacts: Vec<ContextArtifact> = map
+            .values()
+            .filter(|a| a.session_id == session_id)
+            .cloned()
+            .collect();
+        artifacts.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        artifacts.truncate(limit);
+        Ok(artifacts)
+    }
+}
+
+pub fn build_handle(session_id: &str, turn_index: usize, tool_call_id: &str) -> String {
+    format!("ctx://tool/{session_id}/{turn_index}/{tool_call_id}")
+}
+
+pub fn estimate_tokens(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let word_count = text.split_whitespace().count();
+    if word_count > 0 {
+        ((word_count as f64) * 1.3).ceil() as usize
+    } else {
+        text.len() / 4
+    }
+}
+
+pub fn compute_content_hash(content: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_handle() {
+        let handle = build_handle("sess123", 5, "call_abc");
+        assert_eq!(handle, "ctx://tool/sess123/5/call_abc");
+    }
+
+    #[test]
+    fn test_build_handle_special_chars() {
+        let handle = build_handle("s-1", 0, "c");
+        assert_eq!(handle, "ctx://tool/s-1/0/c");
+    }
+
+    #[test]
+    fn test_estimate_tokens_empty() {
+        assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn test_estimate_tokens_whitespace_only() {
+        assert_eq!(estimate_tokens("   "), 0);
+    }
+
+    #[test]
+    fn test_estimate_tokens_single_word() {
+        assert_eq!(estimate_tokens("hello"), 2);
+    }
+
+    #[test]
+    fn test_estimate_tokens_multiple_words() {
+        let tokens = estimate_tokens("hello world foo bar");
+        assert!(tokens >= 5 && tokens <= 7);
+    }
+
+    #[test]
+    fn test_estimate_tokens_long_text() {
+        let text = "the quick brown fox jumps over the lazy dog";
+        let tokens = estimate_tokens(text);
+        assert!(tokens >= 10 && tokens <= 15);
+    }
+
+    #[test]
+    fn test_compute_content_hash_deterministic() {
+        let h1 = compute_content_hash("hello");
+        let h2 = compute_content_hash("hello");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_compute_content_hash_different() {
+        let h1 = compute_content_hash("hello");
+        let h2 = compute_content_hash("world");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_artifact_kind_serde() {
+        let kind = ArtifactKind::ToolResult;
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, "\"tool_result\"");
+        let deserialized: ArtifactKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, ArtifactKind::ToolResult);
+    }
+
+    #[test]
+    fn test_artifact_kind_all_variants() {
+        let variants = vec![
+            ArtifactKind::ToolResult,
+            ArtifactKind::CommandOutput,
+            ArtifactKind::ReadResult,
+            ArtifactKind::Diff,
+            ArtifactKind::TestOutput,
+            ArtifactKind::WebFetch,
+            ArtifactKind::Image,
+        ];
+        for variant in variants {
+            let json = serde_json::to_string(&variant).unwrap();
+            let back: ArtifactKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    #[test]
+    fn test_context_artifact_roundtrip() {
+        let artifact = ContextArtifact {
+            handle: "ctx://tool/s1/0/c1".into(),
+            session_id: "s1".into(),
+            turn_index: 0,
+            tool_call_id: Some("c1".into()),
+            tool_name: Some("bash".into()),
+            kind: ArtifactKind::ToolResult,
+            created_at_ms: 1000,
+            content_hash: "abc123".into(),
+            redacted_content: "output".into(),
+            raw_bytes_len: 6,
+            estimated_tokens: 2,
+        };
+        let json = serde_json::to_string(&artifact).unwrap();
+        let back: ContextArtifact = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.handle, artifact.handle);
+        assert_eq!(back.session_id, artifact.session_id);
+        assert_eq!(back.kind, artifact.kind);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_put_and_get() {
+        let store = InMemoryArtifactStore::new();
+        let artifact = ContextArtifact {
+            handle: "ctx://tool/s1/0/c1".into(),
+            session_id: "s1".into(),
+            turn_index: 0,
+            tool_call_id: Some("c1".into()),
+            tool_name: Some("bash".into()),
+            kind: ArtifactKind::ToolResult,
+            created_at_ms: 1000,
+            content_hash: "abc".into(),
+            redacted_content: "output".into(),
+            raw_bytes_len: 6,
+            estimated_tokens: 2,
+        };
+        store.put(artifact.clone()).await.unwrap();
+        let got = store.get("ctx://tool/s1/0/c1").await.unwrap();
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().handle, "ctx://tool/s1/0/c1");
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_get_missing() {
+        let store = InMemoryArtifactStore::new();
+        let got = store.get("nonexistent").await.unwrap();
+        assert!(got.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_list_recent() {
+        let store = InMemoryArtifactStore::new();
+        for i in 0..5 {
+            let artifact = ContextArtifact {
+                handle: format!("ctx://tool/s1/{i}/c{i}"),
+                session_id: "s1".into(),
+                turn_index: i,
+                tool_call_id: Some(format!("c{i}")),
+                tool_name: Some("bash".into()),
+                kind: ArtifactKind::ToolResult,
+                created_at_ms: (i as i64) * 1000,
+                content_hash: "abc".into(),
+                redacted_content: "output".into(),
+                raw_bytes_len: 6,
+                estimated_tokens: 2,
+            };
+            store.put(artifact).await.unwrap();
+        }
+        let results = store.list_recent("s1", 3).await.unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].turn_index, 4);
+        assert_eq!(results[1].turn_index, 3);
+        assert_eq!(results[2].turn_index, 2);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_list_recent_filters_session() {
+        let store = InMemoryArtifactStore::new();
+        store
+            .put(ContextArtifact {
+                handle: "ctx://tool/s1/0/c0".into(),
+                session_id: "s1".into(),
+                turn_index: 0,
+                tool_call_id: Some("c0".into()),
+                tool_name: None,
+                kind: ArtifactKind::ToolResult,
+                created_at_ms: 1000,
+                content_hash: "abc".into(),
+                redacted_content: String::new(),
+                raw_bytes_len: 0,
+                estimated_tokens: 0,
+            })
+            .await
+            .unwrap();
+        store
+            .put(ContextArtifact {
+                handle: "ctx://tool/s2/0/c0".into(),
+                session_id: "s2".into(),
+                turn_index: 0,
+                tool_call_id: Some("c0".into()),
+                tool_name: None,
+                kind: ArtifactKind::ToolResult,
+                created_at_ms: 2000,
+                content_hash: "abc".into(),
+                redacted_content: String::new(),
+                raw_bytes_len: 0,
+                estimated_tokens: 0,
+            })
+            .await
+            .unwrap();
+        let results = store.list_recent("s1", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].session_id, "s1");
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_overwrite() {
+        let store = InMemoryArtifactStore::new();
+        store
+            .put(ContextArtifact {
+                handle: "ctx://tool/s1/0/c0".into(),
+                session_id: "s1".into(),
+                turn_index: 0,
+                tool_call_id: Some("c0".into()),
+                tool_name: Some("bash".into()),
+                kind: ArtifactKind::ToolResult,
+                created_at_ms: 1000,
+                content_hash: "abc".into(),
+                redacted_content: "old".into(),
+                raw_bytes_len: 3,
+                estimated_tokens: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .put(ContextArtifact {
+                handle: "ctx://tool/s1/0/c0".into(),
+                session_id: "s1".into(),
+                turn_index: 0,
+                tool_call_id: Some("c0".into()),
+                tool_name: Some("bash".into()),
+                kind: ArtifactKind::ToolResult,
+                created_at_ms: 2000,
+                content_hash: "def".into(),
+                redacted_content: "new".into(),
+                raw_bytes_len: 3,
+                estimated_tokens: 1,
+            })
+            .await
+            .unwrap();
+        let got = store.get("ctx://tool/s1/0/c0").await.unwrap().unwrap();
+        assert_eq!(got.redacted_content, "new");
+    }
+
+    #[test]
+    fn test_estimate_tokens_paragraph() {
+        let text = "This is a longer piece of text that should be used to test the token estimation heuristic. It has many words and should produce a reasonable token count.";
+        let tokens = estimate_tokens(text);
+        assert!(tokens >= 20 && tokens <= 40);
+    }
+}

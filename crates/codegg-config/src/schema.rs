@@ -249,6 +249,24 @@ pub struct Config {
     /// crates plan). Each entry is a generic selector that the
     /// `ToolRegistry` resolves into the actual implementation.
     pub tool_backends: Option<ToolBackendConfigSchema>,
+    /// Context ledger and artifact projection settings.
+    pub context: Option<ContextConfig>,
+}
+
+/// Configuration for the context ledger and artifact projection system.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ContextConfig {
+    /// Enable the artifact store for persisting tool outputs.
+    pub artifact_store: Option<bool>,
+    /// Enable tool output projection (compression before model sees it).
+    pub project_tool_outputs: Option<bool>,
+    /// Maximum tokens for successful tool output before summarization.
+    pub max_success_tokens: Option<usize>,
+    /// Maximum tokens for failed tool output before summarization.
+    pub max_failure_tokens: Option<usize>,
+    /// Preserve full tool output in debug logs even when projected.
+    pub lossless_debug: Option<bool>,
 }
 
 /// Web search/fetch backend configuration.
@@ -893,10 +911,8 @@ impl Config {
             tracing::warn!("No config files found, using defaults");
             return Ok(Config::default());
         }
-        let configs: Result<Vec<_>, _> = paths
-            .iter()
-            .map(|p| crate::paths::load_config(p))
-            .collect();
+        let configs: Result<Vec<_>, _> =
+            paths.iter().map(|p| crate::paths::load_config(p)).collect();
         let configs = configs?;
         let mut config = crate::paths::merge_configs(&configs);
 

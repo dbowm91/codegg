@@ -13,6 +13,7 @@ pub use codegg_core::{
 pub mod agent;
 pub mod auth;
 pub mod command;
+pub mod context;
 pub mod core;
 pub mod crypto;
 pub mod error;

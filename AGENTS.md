@@ -20,6 +20,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `client/` | Remote TUI client for WebSocket connections with resume/replay support |
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher — now in `crates/codegg-config` (`codegg-config` crate), re-exported as `codegg::config` |
+| `context/` | Context artifact storage, tool-output projection, and `context_read` tool for cache-aware context reduction |
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion — error enums now in `crates/codegg-core` (`codegg-core` crate), axum wrappers stay root-side |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
@@ -65,6 +66,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/git.md`: Git session management, git info injection, worktree per session (now in `crates/egggit` + `src/worktree`)
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
+- `architecture/context-ledger.md`: Context artifact storage, tool-output projection, ContextLedgerState, context_read tool, and config options
 
 ## Critical Implementation Notes
 
@@ -240,6 +242,9 @@ These items were verified during review sessions:
 | `/theme` slash command | list, use, reload, diagnostics subcommands | `src/tui/app/mod.rs:handle_theme_command` |
 | Boundary script | `scripts/check-core-boundary.sh` | Verifies no forbidden imports/dependencies in codegg-core |
 | ckcore alias | `.cargo/config.toml` | `cargo ckcore` = `check -p codegg-core` |
+| Context module | artifact storage + projection + context_read tool | `src/context/` |
+| ProjectionConfig defaults | max_success=800, max_failure=2000, enabled=true | `src/context/projection.rs` |
+| ContextLedgerState limits | 20 files, 10 commands, 10 test results, 10 errors | `src/agent/context_frame.rs` |
 
 ### Security Notes
 
@@ -281,6 +286,7 @@ These items were verified during review sessions:
 ├── command/            # Slash commands, templates, execution
 ├── compaction/         # Context compaction strategies
 ├── config/             # Config loading, validation, encryption, watching
+├── context/            # Artifact storage, tool-output projection, context_read tool
 ├── crypto/             # API key encryption
 ├── diff/               # Inline diff visualization
 ├── e2e/                # End-to-end testing guide
@@ -389,6 +395,7 @@ When adding guidance for a new module:
 | Compaction (context compaction strategies) | `.opencode/skills/compaction/SKILL.md` |
 | Router (model auto-routing) | `.opencode/skills/router/SKILL.md` |
 | Util (clipboard, fuzzy matching, truncation, metrics) | `.opencode/skills/util/SKILL.md` |
+| Context (artifact storage, projection, context_read) | `.opencode/skills/context/SKILL.md` |
 
 ## Testing Commands
 

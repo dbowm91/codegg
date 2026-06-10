@@ -1,4 +1,72 @@
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+
+#[derive(Debug, Default)]
+pub struct ContextLedgerState {
+    pub touched_files: Vec<String>,
+    pub commands_run: VecDeque<String>,
+    pub test_results: Vec<String>,
+    pub unresolved_errors: Vec<String>,
+    pub artifact_handles: Vec<String>,
+}
+
+impl ContextLedgerState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_projection(&mut self, proj: &crate::context::ToolOutputProjection, handle: &str) {
+        for file in &proj.touched_files {
+            if !self.touched_files.contains(file) {
+                self.touched_files.push(file.clone());
+            }
+        }
+        if self.touched_files.len() > 20 {
+            self.touched_files = self.touched_files.split_off(self.touched_files.len() - 20);
+        }
+
+        for cmd in &proj.commands_run {
+            self.commands_run.push_back(cmd.clone());
+        }
+        while self.commands_run.len() > 10 {
+            self.commands_run.pop_front();
+        }
+
+        for result in &proj.test_results {
+            if !self.test_results.contains(result) {
+                self.test_results.push(result.clone());
+            }
+        }
+        if self.test_results.len() > 10 {
+            self.test_results = self.test_results.split_off(self.test_results.len() - 10);
+        }
+
+        for error in &proj.unresolved_errors {
+            if !self.unresolved_errors.contains(error) {
+                self.unresolved_errors.push(error.clone());
+            }
+        }
+        if self.unresolved_errors.len() > 10 {
+            self.unresolved_errors = self
+                .unresolved_errors
+                .split_off(self.unresolved_errors.len() - 10);
+        }
+
+        if !self.artifact_handles.contains(&handle.to_string()) {
+            self.artifact_handles.push(handle.to_string());
+        }
+    }
+
+    pub fn to_context_frame(&self) -> ContextFrame {
+        ContextFrame {
+            touched_files: self.touched_files.clone(),
+            commands_run: self.commands_run.iter().cloned().collect(),
+            test_results: self.test_results.clone(),
+            unresolved_errors: self.unresolved_errors.clone(),
+            ..Default::default()
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContextFrame {
