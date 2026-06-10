@@ -119,6 +119,7 @@ impl ExecMode {
             config,
             mcp_service,
             None,
+            std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
         );
 
         let session_id = self

@@ -3,11 +3,17 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::config::schema::Config;
+use crate::context::{ContextArtifactStore, InMemoryArtifactStore};
 use crate::model_profile::types::TaskStatePolicy;
 use crate::tool::{ToolRegistry, ToolRegistryOptions};
 
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
 /// and the optional task tool (when a task tool runtime is available).
+///
+/// Returns the registry and a shared artifact store. The artifact store
+/// is used both by `context_read` (registered in the registry when
+/// context projection is enabled) and by the agent loop for capturing
+/// tool output artifacts.
 ///
 /// This function consolidates tool construction that was previously inline
 /// in `CoreDaemon`. It serves as a seam so that `core/daemon.rs` does not
@@ -18,10 +24,24 @@ pub fn build_session_tool_registry(
     session_id: &str,
     task_tool_runtime: Option<&crate::agent::task_tool_runtime::TaskToolRuntime>,
     task_state_policy: TaskStatePolicy,
-) -> ToolRegistry {
+) -> (ToolRegistry, Arc<dyn ContextArtifactStore>) {
     let todo_state = Arc::new(tokio::sync::Mutex::new(
         crate::task_state::TodoState::new(),
     ));
+
+    // Determine whether context_read should be registered.
+    let ctx_config = config.context.as_ref();
+    let artifact_store_enabled = ctx_config
+        .and_then(|c| c.artifact_store)
+        .unwrap_or(true);
+    let project_enabled = ctx_config
+        .and_then(|c| c.project_tool_outputs)
+        .unwrap_or(true);
+    let context_read_enabled = artifact_store_enabled && project_enabled;
+
+    let artifact_store: Arc<dyn ContextArtifactStore> =
+        Arc::new(InMemoryArtifactStore::new());
+
     let mut tool_registry = ToolRegistry::with_options(ToolRegistryOptions {
         todo_state: Some(todo_state),
         todo_policy: Some(task_state_policy),
@@ -29,6 +49,17 @@ pub fn build_session_tool_registry(
         session_id: Some(session_id.to_string()),
         lsp_service: None,
         tool_backends: crate::tool::ToolBackendConfig::from_config(config),
+        context_artifact_store: if context_read_enabled {
+            Some(artifact_store.clone())
+        } else {
+            None
+        },
+        context_session_id: if context_read_enabled {
+            Some(session_id.to_string())
+        } else {
+            None
+        },
+        context_read_enabled,
     });
 
     // Register the task/subagent tool when a runtime is available.
@@ -58,5 +89,5 @@ pub fn build_session_tool_registry(
         ));
     }
 
-    tool_registry
+    (tool_registry, artifact_store)
 }

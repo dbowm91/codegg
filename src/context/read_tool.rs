@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use super::handle::{clamp_to_char_boundary, ContextHandle};
+
 pub struct ContextReadTool {
     store: std::sync::Arc<dyn crate::context::ContextArtifactStore>,
     session_id: String,
@@ -54,7 +56,7 @@ impl crate::tool::Tool for ContextReadTool {
     }
 
     async fn execute(&self, input: Value) -> Result<String, crate::error::ToolError> {
-        let handle = input
+        let handle_str = input
             .get("handle")
             .and_then(|v| v.as_str())
             .ok_or_else(|| crate::error::ToolError::Format("missing 'handle' parameter".into()))?;
@@ -66,13 +68,13 @@ impl crate::tool::Tool for ContextReadTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(20000) as usize;
 
-        if !handle.starts_with("ctx://") {
-            return Err(crate::error::ToolError::Format(
-                "handle must start with ctx://".into(),
-            ));
-        }
+        // Parse the handle with the typed parser
+        let parsed = ContextHandle::parse(handle_str).map_err(|e| {
+            crate::error::ToolError::Format(format!("invalid handle: {e}"))
+        })?;
 
-        if !handle.contains(&self.session_id) {
+        // Exact session match, not substring
+        if !parsed.same_session(&self.session_id) {
             return Err(crate::error::ToolError::Permission(
                 "cross-session artifact access not permitted".into(),
             ));
@@ -80,7 +82,7 @@ impl crate::tool::Tool for ContextReadTool {
 
         let artifact = self
             .store
-            .get(handle)
+            .get(handle_str)
             .await
             .map_err(|e| crate::error::ToolError::Execution(format!("store error: {e}")))?;
 
@@ -92,18 +94,21 @@ impl crate::tool::Tool for ContextReadTool {
                 if offset >= total_len {
                     return Ok(format!(
                         "Artifact handle: {}\nTool: {}\nStatus: empty or fully consumed\nTotal bytes: {total_len}",
-                        handle,
+                        handle_str,
                         artifact.tool_name.as_deref().unwrap_or("unknown"),
                     ));
                 }
 
-                let end = (offset + max_bytes).min(total_len);
-                let slice = &content[offset..end];
+                // Clamp offsets to valid UTF-8 boundaries
+                let start = clamp_to_char_boundary(content, offset);
+                let raw_end = (start + max_bytes).min(total_len);
+                let end = clamp_to_char_boundary(content, raw_end);
+                let slice = &content[start..end];
                 let truncated = end < total_len;
 
                 let mut result = format!(
-                    "Artifact handle: {}\nTool: {}\nKind: {:?}\nBytes: {total_len} total, {offset}-{end} shown\n",
-                    handle,
+                    "Artifact handle: {}\nTool: {}\nKind: {:?}\nBytes: {total_len} total, {start}-{end} shown\n",
+                    handle_str,
                     artifact.tool_name.as_deref().unwrap_or("unknown"),
                     artifact.kind,
                 );
@@ -120,7 +125,7 @@ impl crate::tool::Tool for ContextReadTool {
                 Ok(result)
             }
             None => Err(crate::error::ToolError::NotFound(format!(
-                "no artifact found for handle: {handle}"
+                "no artifact found for handle: {handle_str}"
             ))),
         }
     }
@@ -193,7 +198,7 @@ mod tests {
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("must start with ctx://"));
+            .contains("invalid handle"));
     }
 
     #[tokio::test]
@@ -202,6 +207,18 @@ mod tests {
         let tool = ContextReadTool::new(store, "s1".into());
 
         let input = serde_json::json!({"handle": "ctx://tool/other/0/c1"});
+        let result = tool.execute(input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cross-session"));
+    }
+
+    #[tokio::test]
+    async fn test_context_read_cross_session_substring_denied() {
+        // "s1" must not match a handle with session "not-s1"
+        let store = make_store_with_artifact("ctx://tool/not-s1/0/c1", "not-s1", "secret");
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        let input = serde_json::json!({"handle": "ctx://tool/not-s1/0/c1"});
         let result = tool.execute(input).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cross-session"));
@@ -255,6 +272,32 @@ mod tests {
         assert!(result.contains("empty or fully consumed"));
     }
 
+    #[tokio::test]
+    async fn test_context_read_non_ascii_no_panic() {
+        // Chinese characters + emoji: each char is multi-byte
+        let content = "你好世界🚀🎉";
+        let store = make_store_with_artifact("ctx://tool/s1/0/c1", "s1", content);
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        // Offset in the middle of a multi-byte char should not panic
+        let input = serde_json::json!({"handle": "ctx://tool/s1/0/c1", "offset": 1, "max_bytes": 10});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("---"));
+    }
+
+    #[tokio::test]
+    async fn test_context_read_non_ascii_truncation_hint() {
+        let content = "日本語テスト".repeat(100);
+        let store = make_store_with_artifact("ctx://tool/s1/0/c1", "s1", &content);
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        let input = serde_json::json!({"handle": "ctx://tool/s1/0/c1", "max_bytes": 50});
+        let result = tool.execute(input).await.unwrap();
+        assert!(result.contains("truncated"));
+        // Continuation offset should be on a char boundary
+        assert!(result.contains("Use offset="));
+    }
+
     #[test]
     fn test_context_read_tool_metadata() {
         let store = Arc::new(InMemoryArtifactStore::new());
@@ -269,5 +312,17 @@ mod tests {
         assert!(props.get("handle").is_some());
         assert!(props.get("offset").is_some());
         assert!(props.get("max_bytes").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_context_read_malformed_handle_rejected_before_store() {
+        let store = Arc::new(InMemoryArtifactStore::new());
+        let tool = ContextReadTool::new(store, "s1".into());
+
+        // Missing turn_index
+        let input = serde_json::json!({"handle": "ctx://tool/s1/c1"});
+        let result = tool.execute(input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid handle"));
     }
 }

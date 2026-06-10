@@ -737,6 +737,7 @@ async fn execute_agent_task(
         (*config).clone(),
         mcp_service,
         pool,
+        std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
     );
 
     if let Some(parent_id) = &request.parent_id {

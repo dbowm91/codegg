@@ -1206,6 +1206,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         config.clone(),
         mcp_service,
         None,
+        std::sync::Arc::new(codegg::context::InMemoryArtifactStore::new()),
     );
     let session_id = uuid::Uuid::new_v4().to_string();
     agent_loop.set_session_id(&session_id);

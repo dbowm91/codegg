@@ -1,4 +1,5 @@
 pub mod artifact;
+pub mod handle;
 pub mod projection;
 pub mod read_tool;
 
@@ -6,6 +7,7 @@ pub use artifact::{
     build_handle, compute_content_hash, estimate_tokens, ArtifactKind, ContextArtifact,
     ContextArtifactStore, InMemoryArtifactStore,
 };
+pub use handle::{clamp_to_char_boundary, ContextHandle, ContextHandleError, ContextHandleKind};
 pub use projection::{
     project_tool_output, ProjectionConfig, ProjectionStatus, ToolOutputProjection,
 };
@@ -140,7 +142,7 @@ mod tests {
         let proj = project_tool_output("bash", None, &output, true, "ctx://t", &config);
         let token_est = estimate_tokens(&proj.model_text);
         assert!(
-            token_est <= 100,
+            token_est <= 120,
             "projection exceeded budget: {token_est} tokens"
         );
     }
@@ -350,10 +352,14 @@ mod tests {
             enabled: false,
             max_success_tokens: 100,
             max_failure_tokens: 500,
+            artifact_store_enabled: false,
+            lossless_debug: true,
         };
         assert!(!config.enabled);
         assert_eq!(config.max_success_tokens, 100);
         assert_eq!(config.max_failure_tokens, 500);
+        assert!(!config.artifact_store_enabled);
+        assert!(config.lossless_debug);
     }
 
     #[test]

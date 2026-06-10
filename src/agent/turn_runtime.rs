@@ -113,7 +113,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         let task_tool_runtime = subagent_pool
             .as_ref()
             .map(crate::agent::task_tool_runtime::TaskToolRuntime::from_subagent_pool);
-        let tool_registry = crate::tool::factory::build_session_tool_registry(
+        let (tool_registry, artifact_store) = crate::tool::factory::build_session_tool_registry(
             &config,
             pool.clone(),
             &session_id,
@@ -201,6 +201,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             subagent_pool,
             task_state_policy,
             mcp_service,
+            artifact_store,
         };
         let runtime_provider = crate::agent::agent_loop_factory::DefaultAgentLoopFactory;
         let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);

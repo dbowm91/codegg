@@ -66,7 +66,7 @@ fn publish_goal_updated(session_id: &str, goal: Option<crate::goal::model::Goal>
     let snap = goal.map(|g| g.to_snapshot());
     crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::GoalUpdated {
         session_id: session_id.to_string(),
-        goal: snap,
+        goal: Box::new(snap),
     });
 }
 

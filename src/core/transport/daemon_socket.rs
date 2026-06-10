@@ -101,7 +101,7 @@ async fn handle_client(
                             };
                             let frame = CoreFrame::Response {
                                 request_id,
-                                response,
+                                response: Box::new(response),
                             };
                             send_frame(&writer, &frame).await;
                         }

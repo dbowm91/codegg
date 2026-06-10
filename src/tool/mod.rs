@@ -200,6 +200,17 @@ pub struct ToolRegistryOptions {
     /// wrappers consult the resolved backend without re-parsing
     /// config.
     pub tool_backends: ToolBackendConfig,
+    /// Optional shared artifact store for context read recovery.
+    /// When `Some`, `context_read` is registered so the model can
+    /// expand compressed tool output via `ctx://` handles.
+    pub context_artifact_store: Option<Arc<dyn crate::context::ContextArtifactStore>>,
+    /// Optional session id for context read registration.
+    /// Required alongside `context_artifact_store` to enable `context_read`.
+    pub context_session_id: Option<String>,
+    /// Whether the `context_read` tool should be registered.
+    /// Requires `context_artifact_store` and `context_session_id` to
+    /// also be `Some`.
+    pub context_read_enabled: bool,
 }
 
 impl ToolRegistry {
@@ -381,6 +392,15 @@ impl ToolRegistry {
         // the runtime-resolved backend at call time.
         registry.tool_backends = options.tool_backends;
 
+        // --- Context read tool (artifact expansion) ---
+        if options.context_read_enabled {
+            if let (Some(store), Some(session_id)) =
+                (options.context_artifact_store, options.context_session_id)
+            {
+                registry.register(crate::context::ContextReadTool::new(store, session_id));
+            }
+        }
+
         registry
     }
 
@@ -490,6 +510,9 @@ impl ToolRegistry {
             session_id,
             lsp_service: None,
             tool_backends: ToolBackendConfig::from_config(config),
+            context_artifact_store: None,
+            context_session_id: None,
+            context_read_enabled: false,
         })
     }
 
@@ -515,6 +538,9 @@ impl ToolRegistry {
             session_id,
             lsp_service: None,
             tool_backends: ToolBackendConfig::default(),
+            context_artifact_store: None,
+            context_session_id: None,
+            context_read_enabled: false,
         })
     }
 

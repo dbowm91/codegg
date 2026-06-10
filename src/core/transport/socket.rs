@@ -178,7 +178,7 @@ impl SocketCoreClient {
                                     response,
                                 } => {
                                     if let Some((_, tx)) = pending.remove(&request_id) {
-                                        let _ = tx.send(response);
+                                        let _ = tx.send(*response);
                                     }
                                 }
                                 CoreFrame::Event(envelope) => {

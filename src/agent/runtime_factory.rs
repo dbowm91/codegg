@@ -3,6 +3,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::config::schema::Config;
+use crate::context::ContextArtifactStore;
 use crate::model_profile::types::TaskStatePolicy;
 use crate::tool::ToolRegistry;
 
@@ -25,6 +26,7 @@ pub fn build_agent_loop(
     subagent_pool: Option<&Arc<crate::agent::worker::SubAgentPool>>,
     task_state_policy: TaskStatePolicy,
     mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
+    artifact_store: Arc<dyn ContextArtifactStore>,
 ) -> crate::agent::r#loop::AgentLoop {
     let permission_checker =
         crate::permission::PermissionChecker::new(Some(&config), None).with_active_mode(&config);
@@ -37,6 +39,7 @@ pub fn build_agent_loop(
         config,
         mcp_service,
         pool,
+        artifact_store,
     );
     agent_loop.set_session_id(session_id);
     if let Some(spool) = subagent_pool {

@@ -24,6 +24,12 @@ pub struct ProjectionConfig {
     pub max_success_tokens: usize,
     pub max_failure_tokens: usize,
     pub enabled: bool,
+    /// When `true`, the artifact store is active and `ctx://` handles
+    /// may be included in projected output.
+    pub artifact_store_enabled: bool,
+    /// When `true`, bypass projection and append full redacted output
+    /// to the model transcript (useful for debugging).
+    pub lossless_debug: bool,
 }
 
 impl Default for ProjectionConfig {
@@ -32,6 +38,8 @@ impl Default for ProjectionConfig {
             max_success_tokens: 800,
             max_failure_tokens: 2000,
             enabled: true,
+            artifact_store_enabled: true,
+            lossless_debug: false,
         }
     }
 }
@@ -44,6 +52,11 @@ pub fn project_tool_output(
     handle: &str,
     config: &ProjectionConfig,
 ) -> ToolOutputProjection {
+    // lossless_debug: bypass projection, return full output
+    if config.lossless_debug {
+        return passthrough(output, success, handle, tool_name, tool_call_args);
+    }
+
     if !config.enabled {
         return passthrough(output, success, handle, tool_name, tool_call_args);
     }
@@ -61,7 +74,14 @@ pub fn project_tool_output(
     };
 
     let tool_label = tool_name;
-    let header = format!("[{handle}] via {tool_label}");
+    let recoverable = !handle.is_empty();
+    let header = if recoverable {
+        format!(
+            "[tool output captured]\nTool: {tool_label}\nHandle: {handle}\nFull output: use context_read with this handle."
+        )
+    } else {
+        format!("[tool output captured]\nTool: {tool_label}")
+    };
 
     let (model_text, summary) = match status {
         ProjectionStatus::Success => {
@@ -155,7 +175,15 @@ fn passthrough(
     let touched_files = extract_touched_files(output);
     let test_results = extract_test_results(output);
     let unresolved_errors = extract_errors(output);
-    let text = format!("[{handle}] via {tool_name}\n{output}");
+    let recoverable = !handle.is_empty();
+    let header = if recoverable {
+        format!(
+            "[tool output captured]\nTool: {tool_name}\nHandle: {handle}\nFull output: use context_read with this handle."
+        )
+    } else {
+        format!("[tool output captured]\nTool: {tool_name}")
+    };
+    let text = format!("{header}\n{output}");
     ToolOutputProjection {
         model_text: text.clone(),
         summary: text,
@@ -255,13 +283,12 @@ fn extract_test_results(output: &str) -> Vec<String> {
     let test_patterns = [
         "test result:",
         "running ",
-        "failed",
-        "passed",
         "tests passed",
         "tests failed",
         "assertions:",
         "assertion failed",
-        "ok.",
+        "FAILED ",  // pytest-style
+        "failures:",
     ];
     for line in output.lines() {
         let lower = line.to_lowercase();
@@ -326,9 +353,15 @@ fn collect_high_priority_lines(output: &str) -> Vec<String> {
         let lower = line.to_lowercase();
         for &pattern in &patterns {
             if lower.contains(pattern) {
-                lines.push(line.trim().to_string());
+                let trimmed = line.trim().to_string();
+                if !lines.contains(&trimmed) {
+                    lines.push(trimmed);
+                }
                 break;
             }
+        }
+        if lines.len() >= 30 {
+            break;
         }
     }
     lines
@@ -354,6 +387,9 @@ fn collect_medium_priority_lines(output: &str) -> Vec<String> {
                 }
                 break;
             }
+        }
+        if lines.len() >= 20 {
+            break;
         }
     }
     lines

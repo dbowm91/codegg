@@ -844,7 +844,6 @@ pub struct AgentLoop {
     context_ledger: crate::agent::context_frame::ContextLedgerState,
     artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
     projection_config: crate::context::ProjectionConfig,
-    turn_index: std::sync::atomic::AtomicUsize,
 }
 
 impl AgentLoop {
@@ -927,6 +926,7 @@ impl AgentLoop {
         config: Config,
         mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
         pool: Option<sqlx::SqlitePool>,
+        artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
     ) -> Self {
         let mut map = HashMap::new();
         let mut default_name = "build".to_string();
@@ -1076,9 +1076,8 @@ impl AgentLoop {
             steer_rx: None,
             pending_steer: None,
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
-            artifact_store: Arc::new(crate::context::InMemoryArtifactStore::new()),
+            artifact_store,
             projection_config,
-            turn_index: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -1093,6 +1092,8 @@ impl AgentLoop {
             enabled: ctx.project_tool_outputs.unwrap_or(true),
             max_success_tokens: ctx.max_success_tokens.unwrap_or(800),
             max_failure_tokens: ctx.max_failure_tokens.unwrap_or(2000),
+            artifact_store_enabled: ctx.artifact_store.unwrap_or(true),
+            lossless_debug: ctx.lossless_debug.unwrap_or(false),
         }
     }
 
@@ -2629,34 +2630,43 @@ impl AgentLoop {
                         });
                         let redacted_content = redact_local_paths(content);
 
-                        let turn = self.turn_index.load(std::sync::atomic::Ordering::Relaxed);
+                        let turn = self.state.turn_count;
                         let handle = crate::context::build_handle(&self.session_id, turn, id);
 
-                        let artifact = crate::context::ContextArtifact {
-                            handle: handle.clone(),
-                            session_id: self.session_id.clone(),
-                            turn_index: turn,
-                            tool_call_id: Some(id.clone()),
-                            tool_name: Some("list".to_string()),
-                            kind: crate::context::ArtifactKind::ToolResult,
-                            created_at_ms: chrono::Utc::now().timestamp_millis(),
-                            content_hash: crate::context::compute_content_hash(&redacted_content),
-                            redacted_content: redacted_content.clone(),
-                            raw_bytes_len: redacted_content.len(),
-                            estimated_tokens: crate::context::estimate_tokens(&redacted_content),
+                        let store_ok = self
+                            .artifact_store
+                            .put(crate::context::ContextArtifact {
+                                handle: handle.clone(),
+                                session_id: self.session_id.clone(),
+                                turn_index: turn,
+                                tool_call_id: Some(id.clone()),
+                                tool_name: Some("list".to_string()),
+                                kind: crate::context::ArtifactKind::ToolResult,
+                                created_at_ms: chrono::Utc::now().timestamp_millis(),
+                                content_hash: crate::context::compute_content_hash(&redacted_content),
+                                redacted_content: redacted_content.clone(),
+                                raw_bytes_len: redacted_content.len(),
+                                estimated_tokens: crate::context::estimate_tokens(&redacted_content),
+                            })
+                            .await
+                            .is_ok();
+
+                        let effective_handle = if store_ok && self.projection_config.artifact_store_enabled {
+                            handle.as_str()
+                        } else {
+                            ""
                         };
-                        let _ = self.artifact_store.put(artifact).await;
 
                         let proj = crate::context::project_tool_output(
                             "list",
                             None,
                             &redacted_content,
                             tool_result_is_success(content),
-                            &handle,
+                            effective_handle,
                             &self.projection_config,
                         );
 
-                        self.context_ledger.record_projection(&proj, &handle);
+                        self.context_ledger.record_projection(&proj, effective_handle);
 
                         let msg = Message::Tool {
                             tool_call_id: id.clone().into(),
@@ -2866,23 +2876,32 @@ impl AgentLoop {
 
                 let redacted_content = redact_local_paths(content);
 
-                let turn = self.turn_index.load(std::sync::atomic::Ordering::Relaxed);
+                let turn = self.state.turn_count;
                 let handle = crate::context::build_handle(&self.session_id, turn, id);
 
-                let artifact = crate::context::ContextArtifact {
-                    handle: handle.clone(),
-                    session_id: self.session_id.clone(),
-                    turn_index: turn,
-                    tool_call_id: Some(id.clone()),
-                    tool_name: tool_call_name_from_results(id, &tool_calls),
-                    kind: crate::context::ArtifactKind::ToolResult,
-                    created_at_ms: chrono::Utc::now().timestamp_millis(),
-                    content_hash: crate::context::compute_content_hash(&redacted_content),
-                    redacted_content: redacted_content.clone(),
-                    raw_bytes_len: redacted_content.len(),
-                    estimated_tokens: crate::context::estimate_tokens(&redacted_content),
+                let store_ok = self
+                    .artifact_store
+                    .put(crate::context::ContextArtifact {
+                        handle: handle.clone(),
+                        session_id: self.session_id.clone(),
+                        turn_index: turn,
+                        tool_call_id: Some(id.clone()),
+                        tool_name: tool_call_name_from_results(id, &tool_calls),
+                        kind: crate::context::ArtifactKind::ToolResult,
+                        created_at_ms: chrono::Utc::now().timestamp_millis(),
+                        content_hash: crate::context::compute_content_hash(&redacted_content),
+                        redacted_content: redacted_content.clone(),
+                        raw_bytes_len: redacted_content.len(),
+                        estimated_tokens: crate::context::estimate_tokens(&redacted_content),
+                    })
+                    .await
+                    .is_ok();
+
+                let effective_handle = if store_ok && self.projection_config.artifact_store_enabled {
+                    handle.as_str()
+                } else {
+                    ""
                 };
-                let _ = self.artifact_store.put(artifact).await;
 
                 let tool_args = tool_calls
                     .iter()
@@ -2899,11 +2918,11 @@ impl AgentLoop {
                     tool_args.as_deref(),
                     &redacted_content,
                     tool_result_is_success(content),
-                    &handle,
+                    effective_handle,
                     &self.projection_config,
                 );
 
-                self.context_ledger.record_projection(&proj, &handle);
+                self.context_ledger.record_projection(&proj, effective_handle);
 
                 let msg = Message::Tool {
                     tool_call_id: id.clone().into(),
@@ -3926,7 +3945,7 @@ impl AgentLoop {
 
                     let redacted_content = redact_local_paths(content);
 
-                    let turn = self.turn_index.load(std::sync::atomic::Ordering::Relaxed);
+                    let turn = self.state.turn_count;
                     let handle = crate::context::build_handle(&self.session_id, turn, id);
 
                     let tool_name_str = tool_calls
@@ -3935,20 +3954,29 @@ impl AgentLoop {
                         .map(|tc| tc.name.to_string())
                         .unwrap_or_default();
 
-                    let artifact = crate::context::ContextArtifact {
-                        handle: handle.clone(),
-                        session_id: self.session_id.clone(),
-                        turn_index: turn,
-                        tool_call_id: Some(id.clone()),
-                        tool_name: Some(tool_name_str.clone()),
-                        kind: crate::context::ArtifactKind::ToolResult,
-                        created_at_ms: chrono::Utc::now().timestamp_millis(),
-                        content_hash: crate::context::compute_content_hash(&redacted_content),
-                        redacted_content: redacted_content.clone(),
-                        raw_bytes_len: redacted_content.len(),
-                        estimated_tokens: crate::context::estimate_tokens(&redacted_content),
+                    let store_ok = self
+                        .artifact_store
+                        .put(crate::context::ContextArtifact {
+                            handle: handle.clone(),
+                            session_id: self.session_id.clone(),
+                            turn_index: turn,
+                            tool_call_id: Some(id.clone()),
+                            tool_name: Some(tool_name_str.clone()),
+                            kind: crate::context::ArtifactKind::ToolResult,
+                            created_at_ms: chrono::Utc::now().timestamp_millis(),
+                            content_hash: crate::context::compute_content_hash(&redacted_content),
+                            redacted_content: redacted_content.clone(),
+                            raw_bytes_len: redacted_content.len(),
+                            estimated_tokens: crate::context::estimate_tokens(&redacted_content),
+                        })
+                        .await
+                        .is_ok();
+
+                    let effective_handle = if store_ok && self.projection_config.artifact_store_enabled {
+                        handle.as_str()
+                    } else {
+                        ""
                     };
-                    let _ = self.artifact_store.put(artifact).await;
 
                     let tool_args = tool_calls
                         .iter()
@@ -3960,11 +3988,11 @@ impl AgentLoop {
                         tool_args.as_deref(),
                         &redacted_content,
                         tool_result_is_success(content),
-                        &handle,
+                        effective_handle,
                         &self.projection_config,
                     );
 
-                    self.context_ledger.record_projection(&proj, &handle);
+                    self.context_ledger.record_projection(&proj, effective_handle);
 
                     let msg = Message::Tool {
                         tool_call_id: id.clone().into(),

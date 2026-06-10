@@ -4,6 +4,7 @@ use codegg::agent::Agent;
 use codegg::bus::events::AppEvent;
 use codegg::bus::global::GlobalEventBus;
 use codegg::config::schema::{Config, ServerConfig};
+use codegg::context::InMemoryArtifactStore;
 use codegg::error::AppError;
 use codegg::permission::{PermissionChecker, PermissionLevel, PermissionRuleset};
 use codegg::provider::{
@@ -562,6 +563,7 @@ fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistr
         config,
         None,
         None,
+        Arc::new(InMemoryArtifactStore::new()),
     )
 }
 
@@ -599,6 +601,7 @@ fn build_test_agent_loop_with_permissions(
         config,
         None,
         None,
+        Arc::new(InMemoryArtifactStore::new()),
     )
 }
 
@@ -636,6 +639,7 @@ fn build_test_agent_loop_with_config(
         config,
         None,
         None,
+        Arc::new(InMemoryArtifactStore::new()),
     )
 }
 
@@ -2052,6 +2056,7 @@ fn build_agent_loop_with_error_config(
         config,
         None,
         None,
+        Arc::new(InMemoryArtifactStore::new()),
     )
 }
 
@@ -3186,6 +3191,7 @@ async fn test_task_tool_integration_with_subagent() {
         config,
         None,
         None,
+        Arc::new(InMemoryArtifactStore::new()),
     );
 
     agent_loop.set_session_id("test-session-123");
@@ -3386,6 +3392,7 @@ async fn test_task_tool_denied_tools_passthrough() {
         config,
         None,
         None,
+        Arc::new(InMemoryArtifactStore::new()),
     );
     agent_loop.set_session_id("test-session-denied");
 

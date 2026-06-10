@@ -3,6 +3,7 @@
 //! These tests verify the agent-loop tool exposure filtering behavior
 //! when `expose_raw_mcp_tools` is enabled or disabled.
 
+use std::sync::Arc;
 use std::sync::Mutex;
 
 // `search_backend::state` is a process-global slot, so tests that
@@ -352,6 +353,7 @@ mod real_build_tool_definitions_tests {
             Config::default(),
             Some(mcp),
             None,
+            Arc::new(codegg::context::InMemoryArtifactStore::new()),
         )
     }
 

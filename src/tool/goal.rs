@@ -165,7 +165,7 @@ impl Tool for GoalUpdateProgressTool {
 
         crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::GoalUpdated {
             session_id: self.session_id.clone(),
-            goal: Some(updated_goal.to_snapshot()),
+            goal: Box::new(Some(updated_goal.to_snapshot())),
         });
 
         Ok(serde_json::json!({
@@ -287,7 +287,7 @@ impl Tool for GoalRequestCompletionTool {
                 crate::bus::global::GlobalEventBus::publish(
                     crate::bus::events::AppEvent::GoalUpdated {
                         session_id: self.session_id.clone(),
-                        goal: Some(updated_goal.to_snapshot()),
+                        goal: Box::new(Some(updated_goal.to_snapshot())),
                     },
                 );
                 crate::bus::global::GlobalEventBus::publish(
@@ -308,7 +308,7 @@ impl Tool for GoalRequestCompletionTool {
                 crate::bus::global::GlobalEventBus::publish(
                     crate::bus::events::AppEvent::GoalUpdated {
                         session_id: self.session_id.clone(),
-                        goal: None,
+                        goal: Box::new(None),
                     },
                 );
                 Ok(serde_json::json!({

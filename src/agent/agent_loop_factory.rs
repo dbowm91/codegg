@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::config::schema::Config;
+use crate::context::ContextArtifactStore;
 use crate::model_profile::types::TaskStatePolicy;
 use crate::tool::ToolRegistry;
 
@@ -16,6 +17,9 @@ pub struct AgentLoopBuildInput {
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub task_state_policy: TaskStatePolicy,
     pub mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
+    /// Shared artifact store for context projection. The agent loop
+    /// stores tool output artifacts here and `context_read` expands them.
+    pub artifact_store: Arc<dyn ContextArtifactStore>,
 }
 
 /// Transitional build-only factory used internally by `DefaultTurnRuntime`.
@@ -42,6 +46,7 @@ impl AgentLoopFactory for DefaultAgentLoopFactory {
             input.subagent_pool.as_ref(),
             input.task_state_policy,
             input.mcp_service,
+            input.artifact_store,
         )
     }
 }
