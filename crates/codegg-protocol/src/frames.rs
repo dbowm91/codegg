@@ -55,7 +55,7 @@ pub enum CoreFrame {
     Request(RequestEnvelope<CoreRequest>),
     Response {
         request_id: String,
-        response: CoreResponse,
+        response: Box<CoreResponse>,
     },
     Subscribe {
         client_id: String,

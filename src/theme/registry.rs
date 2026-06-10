@@ -832,7 +832,7 @@ mod tests {
     fn get_tui_projects_semantic_theme() {
         let registry = ThemeRegistry::load_builtins();
         let theme = registry.get_tui("cyber-red").unwrap();
-        assert_eq!(theme.name, "cyber-red");
+        assert_eq!(theme.name, "Cyber Red");
         // Project a SemanticTheme manually and compare.
         let semantic = registry.get("cyber-red").unwrap();
         let projected: Theme = semantic.into();

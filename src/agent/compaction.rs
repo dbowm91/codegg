@@ -971,9 +971,9 @@ pub async fn semantic_checkpoint(
         ledger.push_str("### Evidence References\n");
         for e in &reduced.evidence {
             ledger.push_str(&format!(
-                "- [{}] {}: {}\n",
+                "- [{}] {:?}: {}\n",
                 e.id,
-                format!("{:?}", e.kind),
+                e.kind,
                 e.summary
             ));
         }
@@ -1523,8 +1523,8 @@ pub fn prune_tool_outputs_rich(
                 let lines: Vec<&str> = content.lines().collect();
                 let total_lines = lines.len();
 
-                let keep_head = (total_lines / 5).max(10).min(80);
-                let keep_tail = (total_lines / 10).max(5).min(40);
+                let keep_head = (total_lines / 5).clamp(10, 80);
+                let keep_tail = (total_lines / 10).clamp(5, 40);
 
                 let salient_indices: Vec<usize> = lines
                     .iter()
@@ -1787,7 +1787,7 @@ pub fn extract_user_constraints(messages: &[Message]) -> Vec<String> {
         if let Message::User { content } = msg {
             let text = extract_text_from_content(content);
             let sentences: Vec<&str> = text
-                .split(|c: char| c == '.' || c == '!' || c == '\n')
+                .split(['.', '!', '\n'])
                 .collect();
 
             for sentence in sentences {

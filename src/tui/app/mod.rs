@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_match)]
+
 mod types;
 
 pub use types::{CompletionType, Dialog, HistoryEntry, SessionStatus, TodoEntry, TuiMsg};
@@ -999,7 +1001,9 @@ impl App {
                 text,
                 plan_mode: self.agent_state.plan_mode,
                 model: self.agent_state.current_model.clone(),
-                agents: crate::protocol_conversions::agents_to_dtos(self.agent_state.agents.clone()),
+                agents: crate::protocol_conversions::agents_to_dtos(
+                    self.agent_state.agents.clone(),
+                ),
                 current_agent_idx: self.agent_state.current_agent,
                 messages: crate::protocol_conversions::provider_messages_to_dtos(messages),
             },
@@ -1773,7 +1777,7 @@ impl App {
                     })
                     .collect();
                 if !filter.is_empty() {
-                    scored.sort_by(|a, b| b.1.cmp(&a.1));
+                    scored.sort_by_key(|b| std::cmp::Reverse(b.1));
                 }
                 scored
                     .into_iter()
@@ -3650,7 +3654,7 @@ impl App {
             "/goal" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 let parts: Vec<&str> = query.splitn(2, ' ').collect();
-                let subcmd = parts.get(0).copied().unwrap_or("");
+                let subcmd = parts.first().copied().unwrap_or("");
                 let args = parts.get(1).copied().unwrap_or("").trim();
 
                 let Some(session) = self.session_state.session.clone() else {
@@ -3777,7 +3781,7 @@ impl App {
             "/plan" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 let parts: Vec<&str> = query.splitn(2, ' ').collect();
-                let subcmd = parts.get(0).copied().unwrap_or("");
+                let subcmd = parts.first().copied().unwrap_or("");
                 let args = parts.get(1).copied().unwrap_or("").trim();
 
                 match subcmd {
@@ -3788,7 +3792,7 @@ impl App {
                                 .warning("Usage: /plan add <text>");
                             return;
                         }
-                        let item_id = format!("plan-{}", uuid::Uuid::new_v4().to_string());
+                        let item_id = format!("plan-{}", uuid::Uuid::new_v4());
                         let mut plan = self.session_state_derived.plan.clone().unwrap_or(
                             crate::session::events::AgentPlan {
                                 items: Vec::new(),
@@ -8339,7 +8343,7 @@ mod theme_integration_tests {
     fn apply_theme_succeeds_for_known_and_fails_for_unknown() {
         let mut app = App::new_for_testing("/tmp".to_string());
         assert!(app.apply_theme("catppuccin-mocha"));
-        assert_eq!(app.ui_state.theme.name, "catppuccin-mocha");
+        assert_eq!(app.ui_state.theme.name, "Catppuccin Mocha");
         assert!(!app.apply_theme("no-such-theme"));
     }
 
@@ -8357,7 +8361,7 @@ mod theme_integration_tests {
     fn handle_theme_command_use_applies_and_keeps_registry() {
         let mut app = App::new_for_testing("/tmp".to_string());
         app.handle_theme_command(Some("/theme use catppuccin-latte"));
-        assert_eq!(app.ui_state.theme.name, "catppuccin-latte");
+        assert_eq!(app.ui_state.theme.name, "Catppuccin Latte");
     }
 
     #[test]
@@ -8412,7 +8416,7 @@ mod theme_integration_tests {
                 app.apply_persisted_preferences();
             });
         });
-        assert_eq!(app.ui_state.theme.name, "dracula");
+        assert_eq!(app.ui_state.theme.name, "Dracula");
         assert_eq!(
             app.agent_state.current_model,
             "opencode_zen/nemotron-3-super-free"

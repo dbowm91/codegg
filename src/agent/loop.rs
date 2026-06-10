@@ -992,7 +992,7 @@ impl AgentLoop {
             crate::security::service::SecurityService::new(config.security.as_ref());
 
         let mut tool_registry = tool_registry;
-        if let Some(ref deferred) = config
+        if let Some(deferred) = config
             .catalog
             .as_ref()
             .and_then(|c| c.deferred_tools.as_ref())
@@ -1320,9 +1320,9 @@ impl AgentLoop {
         let security_findings: Vec<String> = self
             .recent_findings
             .iter()
-            .filter_map(|f| {
+            .map(|f| {
                 let cat = format!("{:?}", f.category);
-                Some(format!("[{}] {}", cat, f.evidence))
+                format!("[{}] {}", cat, f.evidence)
             })
             .take(5)
             .collect();
@@ -1752,7 +1752,7 @@ impl AgentLoop {
                 complexity,
                 prompt
             );
-            let _ = crate::bus::global::GlobalEventBus::publish(AppEvent::ModelChanged {
+            crate::bus::global::GlobalEventBus::publish(AppEvent::ModelChanged {
                 model: model.clone(),
                 complexity: complexity.as_str().to_string(),
             });
@@ -2307,7 +2307,7 @@ impl AgentLoop {
                         "Inserting context frame after compaction: {} chars",
                         frame_text.len()
                     );
-                    push_control_instruction(messages, &model_profile, &frame_text);
+                    push_control_instruction(messages, model_profile, &frame_text);
                 }
             }
 
@@ -2317,14 +2317,14 @@ impl AgentLoop {
                     if let Some(reminder) =
                         crate::task_state::build_todo_reminder(&todo, &self.task_state_policy)
                     {
-                        push_control_instruction(messages, &model_profile, &reminder);
+                        push_control_instruction(messages, model_profile, &reminder);
                         todo.reminder_pending = false;
                         todo.tool_calls_since_injection = 0;
                     }
                 }
             }
 
-            let _ = crate::bus::global::GlobalEventBus::publish(AppEvent::CompactionTriggered {
+            crate::bus::global::GlobalEventBus::publish(AppEvent::CompactionTriggered {
                 session_id: self.session_id.clone(),
                 tokens_before,
                 tokens_after,
@@ -2447,7 +2447,7 @@ impl AgentLoop {
                     let mut new_parts: Vec<ContentPart> = vec![ContentPart::Text {
                         text: hint.clone().into(),
                     }];
-                    let old = std::mem::replace(content, Vec::new());
+                    let old = std::mem::take(content);
                     new_parts.extend(old);
                     *content = new_parts;
                     tracing::debug!("Injected research trigger hint for mode: {}", hint);
@@ -2530,7 +2530,7 @@ impl AgentLoop {
                     || (self
                         .task_state_policy
                         .inject_after_tool_calls
-                        .map_or(false, |threshold| {
+                        .is_some_and(|threshold| {
                             todo.tool_calls_since_injection >= threshold
                         }));
                 if should_inject {
@@ -2612,7 +2612,7 @@ impl AgentLoop {
                         tool_id: synthetic.id.to_string(),
                         arguments: synthetic.arguments.to_string(),
                     });
-                    let tool_results = self.execute_tool_calls(&[synthetic.clone()]).await?;
+                    let tool_results = self.execute_tool_calls(std::slice::from_ref(&synthetic)).await?;
                     let assistant = Message::Assistant {
                         content: vec![],
                         tool_calls: vec![synthetic],
@@ -3163,6 +3163,7 @@ impl AgentLoop {
         }
     }
 
+    #[allow(clippy::incompatible_msrv)]
     #[instrument(skip(self, tool_calls), fields(tool_count = tool_calls.len()))]
     async fn execute_tool_calls(
         &mut self,
@@ -4028,7 +4029,7 @@ impl AgentLoop {
 /// - edit and write are allowed
 /// - codesearch and websearch require a configured search provider
 ///   (any of `EXA_API_KEY`/`TAVILY_API_KEY`/`BRAVE_API_KEY`/`KAGI_API_KEY`/`SERPAPI_API_KEY`,
-///    or the no-key DuckDuckGo/Mojeek fallbacks which are always present)
+///   or the no-key DuckDuckGo/Mojeek fallbacks which are always present)
 /// - lsp requires lsp_enabled flag
 /// - batch is always disabled
 fn filter_tools_for_model<'a>(

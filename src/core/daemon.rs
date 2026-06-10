@@ -70,7 +70,12 @@ impl CoreDaemon {
         memory_store: Option<Arc<crate::memory::MemoryStore>>,
         bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
     ) -> Self {
-        Self::with_deps(CoreRuntimeDeps::new(pool, subagent_pool, memory_store, bg_scheduler))
+        Self::with_deps(CoreRuntimeDeps::new(
+            pool,
+            subagent_pool,
+            memory_store,
+            bg_scheduler,
+        ))
     }
 
     pub fn subscribe(
@@ -322,7 +327,7 @@ impl CoreDaemon {
                                     turn_id: turn_id.clone(),
                                     kind: NotificationKind::QuestionRequired,
                                     priority: NotificationPriority::Urgent,
-                                    message: format!("Question requires your input"),
+                                    message: "Question requires your input".to_string(),
                                     dedupe_key: Some(format!("question:{}", session_id)),
                                     created_at: Utc::now(),
                                 };
@@ -1676,7 +1681,7 @@ impl CoreDaemon {
                     Ok(Some(goal)) => Ok(CoreResponse::Json {
                         data: serde_json::json!({
                             "active": true,
-                            "goal": serde_json::to_value(&goal.to_snapshot())
+                            "goal": serde_json::to_value(goal.to_snapshot())
                                 .unwrap_or(serde_json::Value::Null),
                         }),
                     }),
@@ -3079,7 +3084,9 @@ mod tests {
 
     impl FakeTurnRuntime {
         fn new() -> Self {
-            Self { called: std::sync::atomic::AtomicBool::new(false) }
+            Self {
+                called: std::sync::atomic::AtomicBool::new(false),
+            }
         }
     }
 
@@ -3092,7 +3099,10 @@ mod tests {
             self.called.store(true, std::sync::atomic::Ordering::SeqCst);
             let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
             let (steer_tx, _steer_rx) = tokio::sync::mpsc::unbounded_channel();
-            Ok(crate::agent::turn_runtime::TurnRunOutput { cancel_tx, steer_tx })
+            Ok(crate::agent::turn_runtime::TurnRunOutput {
+                cancel_tx,
+                steer_tx,
+            })
         }
     }
 

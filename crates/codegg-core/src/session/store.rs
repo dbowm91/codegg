@@ -16,8 +16,12 @@ use super::row::{MessageRow, PartRow, SessionRow, TodoRow};
 use super::{
     parse_json_field, MESSAGE_QUERY, PART_QUERY, SESSION_COLUMNS, SESSION_COLUMNS_QUALIFIED,
 };
-use codegg_config::schema::SessionTemplate;
 use crate::error::StorageError;
+use codegg_config::schema::SessionTemplate;
+
+/// Row type returned by usage queries (id, session_id, provider, model,
+/// input_tokens, output_tokens, cached_tokens, cost_usd, timestamp).
+type UsageRow = (String, String, String, String, i64, i64, i64, f64, i64);
 
 pub fn escape_sql_like(s: &str) -> String {
     s.replace('\\', "\\\\")
@@ -350,7 +354,7 @@ impl SessionStore {
             }
         }
         let mut tags: Vec<_> = tag_counts.into_iter().collect();
-        tags.sort_by(|a, b| b.1.cmp(&a.1));
+        tags.sort_by_key(|b| std::cmp::Reverse(b.1));
         Ok(tags.into_iter().map(|(t, _)| t).collect())
     }
 
@@ -783,7 +787,7 @@ impl SessionStore {
         .bind(&version)
         .bind(now)
         .bind(now)
-        .bind(&serde_json::to_string(&parent.tags).unwrap_or_else(|_| "[]".to_string()))
+        .bind(serde_json::to_string(&parent.tags).unwrap_or_else(|_| "[]".to_string()))
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -2096,7 +2100,7 @@ impl UsageStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<UsageRecord>, StorageError> {
-        let rows: Vec<(String, String, String, String, i64, i64, i64, f64, i64)> = sqlx::query_as(
+        let rows: Vec<UsageRow> = sqlx::query_as(
             r#"
             SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp
             FROM usage WHERE session_id = ?
@@ -2142,7 +2146,7 @@ impl UsageStore {
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<UsageRecord>, StorageError> {
-        let rows: Vec<(String, String, String, String, i64, i64, i64, f64, i64)> = if let Some(
+        let rows: Vec<UsageRow> = if let Some(
             limit,
         ) = limit
         {

@@ -128,13 +128,6 @@ impl GitHubSource {
                 path: None,
                 issue_number,
             })
-        } else if segments.len() == 2 {
-            Some(GitHubParsedUrl {
-                owner,
-                repo,
-                path: None,
-                issue_number: None,
-            })
         } else {
             Some(GitHubParsedUrl {
                 owner,
@@ -532,8 +525,7 @@ impl ResearchSourceAdapter for GitHubSource {
                 seen_urls.insert(url.clone());
 
                 if let Some(parsed) = Self::parse_github_url(url) {
-                    if parsed.issue_number.is_some() {
-                        let issue_num = parsed.issue_number.unwrap();
+                    if let Some(issue_num) = parsed.issue_number {
                         match self
                             .fetch_issue(&parsed.owner, &parsed.repo, issue_num)
                             .await

@@ -115,7 +115,7 @@ pub enum AppEvent {
     /// session (e.g. after `GoalClear`).
     GoalUpdated {
         session_id: String,
-        goal: Option<GoalSnapshot>,
+        goal: Box<Option<GoalSnapshot>>,
     },
     /// A goal's usage counters were advanced (turn finished, tool calls
     /// executed, etc). The TUI uses this to keep the budget meter live

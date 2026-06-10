@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_match)]
+
 use crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

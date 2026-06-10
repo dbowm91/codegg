@@ -24,6 +24,7 @@ pub async fn find_command_files(base: &Path) -> Vec<Command> {
         .collect()
 }
 
+#[allow(clippy::incompatible_msrv)]
 pub fn find_command_files_sync(base: &Path) -> Vec<Result<Command, String>> {
     let mut commands = Vec::new();
 

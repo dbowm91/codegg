@@ -137,7 +137,7 @@ impl ToastManager {
             // Calculate height needed for the wrapped message
             // Subtract 2 for borders
             let inner_width = (max_width as usize).saturating_sub(2);
-            let wrap_lines = (toast.message.len() + inner_width - 1) / inner_width;
+            let wrap_lines = toast.message.len().div_ceil(inner_width);
             // Total height: title line (inside border) + wrap_lines + progress bar + 2 for top/bottom borders
             // Actually Paragraph with wrap does this, but we need to know the height for Layout
             // Title is in the block, so we need 1 for message lines + 1 for progress bar + 2 for borders

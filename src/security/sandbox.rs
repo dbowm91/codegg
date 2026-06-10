@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 use crate::error::ToolError;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};

@@ -14,6 +14,12 @@ pub struct ClientRegistry {
     clients: DashMap<String, ConnectedClient>,
 }
 
+impl Default for ClientRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClientRegistry {
     pub fn new() -> Self {
         Self {

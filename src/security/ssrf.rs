@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 
+#[allow(clippy::incompatible_msrv)]
 pub fn is_internal_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(ipv4) => {

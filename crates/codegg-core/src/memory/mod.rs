@@ -315,6 +315,7 @@ impl MemoryStore {
         let lock_path = self.root.join(".lock");
         let lock_file = fs::OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(&lock_path)?;
         flock_lock(&lock_file)?;
@@ -446,15 +447,11 @@ fn parse_frontmatter(frontmatter: &str, content: &str, namespace: &str) -> Optio
 
             match key {
                 "id" => id = Some(value.to_string()),
-                "title" => {
-                    if !value.is_empty() && value != "\"\"" && value != "null" {
-                        title = Some(value.trim_matches('"').to_string());
-                    }
+                "title" if !value.is_empty() && value != "\"\"" && value != "null" => {
+                    title = Some(value.trim_matches('"').to_string());
                 }
-                "uri" => {
-                    if !value.is_empty() && value != "null" {
-                        uri = Some(value.trim_matches('"').to_string());
-                    }
+                "uri" if !value.is_empty() && value != "null" => {
+                    uri = Some(value.trim_matches('"').to_string());
                 }
                 "created_at" => {
                     if let Ok(ts) = value.parse::<i64>() {
@@ -476,10 +473,8 @@ fn parse_frontmatter(frontmatter: &str, content: &str, namespace: &str) -> Optio
                         access_count = count;
                     }
                 }
-                "superseded_by" => {
-                    if !value.is_empty() && value != "null" {
-                        superseded_by = Some(value.trim_matches('"').to_string());
-                    }
+                "superseded_by" if !value.is_empty() && value != "null" => {
+                    superseded_by = Some(value.trim_matches('"').to_string());
                 }
                 _ => {}
             }

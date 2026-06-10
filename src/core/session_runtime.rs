@@ -45,6 +45,12 @@ pub struct SessionRuntimeRegistry {
     sessions: DashMap<String, std::sync::Arc<SessionRuntime>>,
 }
 
+impl Default for SessionRuntimeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionRuntimeRegistry {
     pub fn new() -> Self {
         Self {

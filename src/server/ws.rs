@@ -56,18 +56,15 @@ fn validate_ws_auth(auth: &WebSocketAuth) -> Result<(), StatusCode> {
 
     let expected = std::env::var("CODEGG_SERVER_TOKEN").ok();
 
-    match expected {
-        Some(expected_token) => {
-            let valid = client_token
-                .as_ref()
-                .map(|t| t.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1)
-                .unwrap_or(false);
+    if let Some(expected_token) = expected {
+        let valid = client_token
+            .as_ref()
+            .map(|t| t.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1)
+            .unwrap_or(false);
 
-            if !valid {
-                return Err(StatusCode::UNAUTHORIZED);
-            }
+        if !valid {
+            return Err(StatusCode::UNAUTHORIZED);
         }
-        None => {}
     }
 
     Ok(())
@@ -900,7 +897,7 @@ async fn handle_core_frame(
                 Ok(response) => {
                     responses.push(CoreFrame::Response {
                         request_id,
-                        response,
+                        response: Box::new(response),
                     });
                 }
                 Err(e) => {

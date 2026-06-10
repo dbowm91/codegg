@@ -1057,8 +1057,7 @@ fn list_lsp_diagnostics(config: &Config) {
     let lsp_status = registry
         .backend_report(None)
         .into_iter()
-        .find(|r| r.domain == "lsp")
-        .map(|r| r.clone());
+        .find(|r| r.domain == "lsp");
 
     match &lsp_status {
         Some(status) => {

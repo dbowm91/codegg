@@ -330,7 +330,7 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                                                     let mut manager = crate::mcp::remote::McpConnectionManager::new(
                                                         url,
                                                         headers,
-                                                        inner.timeout.unwrap_or(30000) as u64,
+                                                        inner.timeout.unwrap_or(30000),
                                                     )?;
                                                     manager.connect().await?;
                                                     println!("Connection successful!");
@@ -339,9 +339,7 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                                                     let _ = manager.disconnect().await;
                                                     Ok::<(), AppError>(())
                                                 });
-                                                if let Err(e) = result {
-                                                    return Err(e);
-                                                }
+                                                result?;
                                             } else {
                                                 println!(
                                                     "No URL configured for server '{}'",
@@ -396,9 +394,7 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                         let _ = manager.disconnect().await;
                         Ok::<(), AppError>(())
                     });
-                    if let Err(e) = result {
-                        return Err(e);
-                    }
+                    result?;
                 }
                 (Some(_test_name), Some(test_url)) => {
                     let result = handle.block_on(async {
@@ -412,9 +408,7 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                         let _ = manager.disconnect().await;
                         Ok::<(), AppError>(())
                     });
-                    if let Err(e) = result {
-                        return Err(e);
-                    }
+                    result?;
                 }
                 (None, None) => {
                     println!("Use --name <server> or --url <url> to specify a server to test");

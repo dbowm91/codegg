@@ -39,10 +39,8 @@ fn inject_todo_discipline(messages: &mut Vec<Message>, profile: &ResolvedModelPr
 fn content_already_present(messages: &[Message], text: &str) -> bool {
     for msg in messages {
         match msg {
-            Message::System { content } => {
-                if content.contains(text) {
-                    return true;
-                }
+            Message::System { content } if content.contains(text) => {
+                return true;
             }
             Message::User { content } => {
                 for part in content {

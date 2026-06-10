@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 //! Model Context Protocol (MCP) implementation.
 //!
 //! This module provides MCP client functionality for connecting to external MCP servers.

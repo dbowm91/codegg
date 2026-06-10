@@ -168,6 +168,7 @@ impl Default for TreeDialog {
 }
 
 impl Widget for &TreeDialog {
+    #[allow(clippy::incompatible_msrv)]
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
         let mut lines: Vec<Line> = Vec::new();
 
@@ -314,6 +315,7 @@ impl Component for TreeDialog {
         }
     }
 
+    #[allow(clippy::incompatible_msrv)]
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let mut lines: Vec<Line> = Vec::new();
 

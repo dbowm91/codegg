@@ -264,7 +264,8 @@ async fn ensure_local_session(app: &mut app::App) {
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => {
                 let session_id = session.id.clone();
-                app.session_state.session = Some(crate::protocol_conversions::dto_to_session(session));
+                app.session_state.session =
+                    Some(crate::protocol_conversions::dto_to_session(session));
                 debug_log!(
                     "Event loop: session created via core with id={}",
                     session_id
@@ -366,7 +367,9 @@ async fn reload_sessions(app: &mut app::App) {
         HashMap::new()
     };
 
-    app.dialog_state.session_dialog.load_sessions(crate::protocol_conversions::dtos_to_sessions(sessions));
+    app.dialog_state
+        .session_dialog
+        .load_sessions(crate::protocol_conversions::dtos_to_sessions(sessions));
     for (id, count) in message_counts {
         app.dialog_state
             .session_dialog
@@ -597,7 +600,8 @@ async fn handle_share_session(app: &mut app::App, session_id: String) {
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session: shared }) => {
-                app.session_state.session = Some(crate::protocol_conversions::dto_to_session(shared.clone()));
+                app.session_state.session =
+                    Some(crate::protocol_conversions::dto_to_session(shared.clone()));
                 let url = shared.share_url.unwrap_or_default();
                 let mut dialog = crate::tui::components::dialogs::share::ShareDialog::new(
                     Arc::clone(&app.ui_state.theme),
@@ -636,7 +640,8 @@ async fn handle_unshare_session(app: &mut app::App, session_id: String) {
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => {
-                app.session_state.session = Some(crate::protocol_conversions::dto_to_session(session));
+                app.session_state.session =
+                    Some(crate::protocol_conversions::dto_to_session(session));
                 app.messages_state.toasts.info("Session unshared");
             }
             Ok(CoreResponse::Error { message, .. }) => {
@@ -714,7 +719,8 @@ async fn handle_rename_session(app: &mut app::App, session_id: String, new_title
         );
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => {
-                app.session_state.session = Some(crate::protocol_conversions::dto_to_session(session));
+                app.session_state.session =
+                    Some(crate::protocol_conversions::dto_to_session(session));
                 app.messages_state.toasts.info("Session renamed");
             }
             Ok(CoreResponse::Error { message, .. }) => {
@@ -883,7 +889,10 @@ async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
                     ) => {
                         let msg_count = counts.get(&id).copied().unwrap_or(0);
                         if let Some(ref mut import) = app.dialog_state.import_dialog {
-                            import.set_preview(crate::protocol_conversions::dto_to_session(session), msg_count);
+                            import.set_preview(
+                                crate::protocol_conversions::dto_to_session(session),
+                                msg_count,
+                            );
                         }
                     }
                     (Ok(CoreResponse::Error { message, .. }), _)
@@ -927,7 +936,10 @@ async fn handle_preview_import(app: &mut app::App, source: ImportSource) {
                                     _ => 0,
                                 };
                                 if let Some(ref mut import) = app.dialog_state.import_dialog {
-                                    import.set_preview(crate::protocol_conversions::dto_to_session(session), msg_count);
+                                    import.set_preview(
+                                        crate::protocol_conversions::dto_to_session(session),
+                                        msg_count,
+                                    );
                                 }
                             }
                             Ok(CoreResponse::Error { message, .. }) => {
@@ -1045,7 +1057,8 @@ async fn handle_create_from_template(
     };
     match created {
         Ok(session) => {
-            app.session_state.session = Some(crate::protocol_conversions::dto_to_session(session.clone()));
+            app.session_state.session =
+                Some(crate::protocol_conversions::dto_to_session(session.clone()));
             app.ui_state
                 .routes
                 .navigate_to(crate::tui::Route::Session(session.id.clone()));
@@ -1164,7 +1177,9 @@ async fn handle_load_session_messages(app: &mut app::App, session_id: String) {
             },
         );
         match client.request(request).await {
-            Ok(CoreResponse::SessionMessages { messages, .. }) => Some(crate::protocol_conversions::dtos_to_messages(messages)),
+            Ok(CoreResponse::SessionMessages { messages, .. }) => {
+                Some(crate::protocol_conversions::dtos_to_messages(messages))
+            }
             Ok(CoreResponse::Error { message, .. }) => {
                 app.messages_state
                     .toasts
@@ -1770,7 +1785,7 @@ async fn handle_refresh_session_state(app: &mut app::App, session_id: String) {
         return;
     };
     // Hydrate the todo list.
-    match core_client
+    if let Ok(CoreResponse::Json { data }) = core_client
         .request(crate::core::new_request(
             format!("todo-list-{}", uuid::Uuid::new_v4()),
             CoreRequest::TodoList {
@@ -1779,25 +1794,22 @@ async fn handle_refresh_session_state(app: &mut app::App, session_id: String) {
         ))
         .await
     {
-        Ok(CoreResponse::Json { data }) => {
-            if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
-                let entries: Vec<crate::tui::app::TodoEntry> = items
-                    .iter()
-                    .filter_map(|v| {
-                        Some(crate::tui::app::TodoEntry {
-                            content: v.get("content")?.as_str()?.to_string(),
-                            status: v.get("status")?.as_str()?.to_string(),
-                            priority: v.get("priority")?.as_str()?.to_string(),
-                        })
+        if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
+            let entries: Vec<crate::tui::app::TodoEntry> = items
+                .iter()
+                .filter_map(|v| {
+                    Some(crate::tui::app::TodoEntry {
+                        content: v.get("content")?.as_str()?.to_string(),
+                        status: v.get("status")?.as_str()?.to_string(),
+                        priority: v.get("priority")?.as_str()?.to_string(),
                     })
-                    .collect();
-                app.set_todos(entries);
-            }
+                })
+                .collect();
+            app.set_todos(entries);
         }
-        _ => {}
     }
     // Hydrate the active goal.
-    match core_client
+    if let Ok(CoreResponse::Json { data }) = core_client
         .request(crate::core::new_request(
             format!("active-goal-{}", uuid::Uuid::new_v4()),
             CoreRequest::ActiveGoalLoad {
@@ -1806,20 +1818,17 @@ async fn handle_refresh_session_state(app: &mut app::App, session_id: String) {
         ))
         .await
     {
-        Ok(CoreResponse::Json { data }) => {
-            if data.get("active").and_then(|v| v.as_bool()) == Some(true) {
-                if let Some(goal_val) = data.get("goal") {
-                    if let Ok(snap) =
-                        serde_json::from_value::<crate::bus::events::GoalSnapshot>(goal_val.clone())
-                    {
-                        app.set_active_goal(Some(snap));
-                    }
+        if data.get("active").and_then(|v| v.as_bool()) == Some(true) {
+            if let Some(goal_val) = data.get("goal") {
+                if let Ok(snap) =
+                    serde_json::from_value::<crate::bus::events::GoalSnapshot>(goal_val.clone())
+                {
+                    app.set_active_goal(Some(snap));
                 }
-            } else {
-                app.set_active_goal(None);
             }
+        } else {
+            app.set_active_goal(None);
         }
-        _ => {}
     }
 }
 
@@ -2808,7 +2817,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     AppEvent::GoalUpdated { session_id: event_session, goal } => {
                         if let Some(active_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) {
                             if event_session == active_id {
-                                if let Some(snap) = goal {
+                                if let Some(snap) = *goal {
                                     app.set_active_goal(Some(snap));
                                 } else {
                                     app.set_active_goal(None);

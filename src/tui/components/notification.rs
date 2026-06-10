@@ -49,7 +49,7 @@ impl NotificationManager {
         {
             let mut notification = notification;
             notification.urgency(notification_type.urgency());
-            return notification;
+            notification
         }
 
         #[cfg(not(target_os = "linux"))]

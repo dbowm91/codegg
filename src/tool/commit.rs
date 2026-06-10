@@ -54,7 +54,7 @@ impl CommitTool {
         }
         cmd.kill_on_drop(true);
         let output = cmd
-            .args(&["add", "-A"])
+            .args(["add", "-A"])
             .current_dir(&self.workdir)
             .output()
             .await

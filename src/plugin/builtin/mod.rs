@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 pub mod codex;
 pub mod copilot;
 pub mod gitlab;

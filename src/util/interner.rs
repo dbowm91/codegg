@@ -36,7 +36,7 @@ impl StringInterner {
     }
 }
 
-static TOOL_STRING_INTERNER: LazyLock<StringInterner> = LazyLock::new(|| StringInterner::new());
+static TOOL_STRING_INTERNER: LazyLock<StringInterner> = LazyLock::new(StringInterner::new);
 
 pub fn tool_interner() -> &'static StringInterner {
     &TOOL_STRING_INTERNER

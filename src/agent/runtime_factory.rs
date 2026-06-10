@@ -14,6 +14,7 @@ use crate::tool::ToolRegistry;
 ///
 /// System prompt assembly (memory context, goal context, plan_mode) stays
 /// in the caller because it depends on daemon-local state.
+#[allow(clippy::too_many_arguments)]
 pub fn build_agent_loop(
     agents: Vec<crate::agent::Agent>,
     provider: Box<dyn crate::provider::Provider>,

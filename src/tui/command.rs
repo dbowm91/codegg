@@ -232,8 +232,8 @@ impl CommandRegistry {
         if let Some(config_commands) = config.commands.as_ref() {
             for cmd in crate::command::resolve_commands_from_config(config_commands) {
                 let normalized = Self::normalize_name(&cmd.name);
-                if !seen.contains_key(&normalized) {
-                    seen.insert(normalized, cmd.name.clone());
+                if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(normalized) {
+                    e.insert(cmd.name.clone());
                     new_commands.push(Command {
                         name: Self::to_slash_name(&cmd.name),
                         aliases: Vec::new(),
@@ -268,8 +268,8 @@ impl CommandRegistry {
             .unwrap_or_default()
         });
         for (normalized, cmd) in dynamic_commands {
-            if !seen.contains_key(&normalized) {
-                seen.insert(normalized, cmd.name.clone());
+            if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(normalized) {
+                e.insert(cmd.name.clone());
                 new_commands.push(Command {
                     name: Self::to_slash_name(&cmd.name),
                     aliases: Vec::new(),
@@ -348,7 +348,7 @@ impl CommandRegistry {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|b| std::cmp::Reverse(b.1));
         scored.truncate(10);
         scored
     }

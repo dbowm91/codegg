@@ -250,11 +250,10 @@ impl ReviewDialog {
         };
 
         let diff = similar::TextDiff::from_lines(old, new);
-        let mut y = 0u16;
         let visible_lines = inner.height as usize;
 
-        for change in diff.iter_all_changes() {
-            if y as usize >= visible_lines {
+        for (y, change) in diff.iter_all_changes().enumerate() {
+            if y >= visible_lines {
                 break;
             }
 
@@ -277,9 +276,8 @@ impl ReviewDialog {
                 Style::default().fg(color),
             ));
 
-            let line_area = Rect::new(inner.x, inner.y + y, inner.width, 1);
+            let line_area = Rect::new(inner.x, inner.y + y as u16, inner.width, 1);
             frame.render_widget(line, line_area);
-            y += 1;
         }
 
         let footer = Line::from(Span::styled(

@@ -52,8 +52,9 @@ pub struct SubagentSummary {
 // Test state
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TestState {
+    #[default]
     Unknown,
     Stale,
     Running {
@@ -68,12 +69,6 @@ pub enum TestState {
         duration_ms: Option<u64>,
         summary: String,
     },
-}
-
-impl Default for TestState {
-    fn default() -> Self {
-        TestState::Unknown
-    }
 }
 
 // ---------------------------------------------------------------------------

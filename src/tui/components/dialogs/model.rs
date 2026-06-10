@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_match)]
+
 use std::cell::RefCell;
 use std::sync::Arc;
 
@@ -489,7 +491,7 @@ impl ModelDialog {
             groups.entry(provider).or_default().push(model);
         }
         let mut result: Vec<(String, Vec<&String>)> = groups.into_iter().collect();
-        result.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        result.sort_by_key(|a| a.0.to_lowercase());
         result
     }
 

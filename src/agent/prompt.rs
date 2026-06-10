@@ -496,7 +496,8 @@ pub fn subagent_output_contract(role: &str) -> &'static str {
         "security" | "security_reviewer" => "Output contract: Return: finding category, exploitability assessment, affected surface/files, and mitigation recommendation. Distinguish confirmed issues from speculative risks.",
         "planner" => "Output contract: Return: implementation plan with ordered steps, estimated complexity per step, dependencies between steps, files to create/modify, and verification criteria.",
         "researcher" => "Output contract: Return a synthesized answer with: question, evidence, conclusion, and citations. Distinguish confirmed claims from speculative ones. Prefer concrete, citable sources.",
-        "executor" | _ => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
+        "executor" => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
+        _ => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
     }
 }
 

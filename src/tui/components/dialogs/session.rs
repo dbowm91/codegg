@@ -215,9 +215,9 @@ impl SessionDialog {
         }
 
         match self.sort_by {
-            SortBy::Date => sessions.sort_by(|a, b| b.time_updated.cmp(&a.time_updated)),
+            SortBy::Date => sessions.sort_by_key(|b| std::cmp::Reverse(b.time_updated)),
             SortBy::Title => {
-                sessions.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+                sessions.sort_by_key(|a| a.title.to_lowercase())
             }
             SortBy::Activity => {
                 sessions.sort_by(|a, b| {
@@ -535,6 +535,7 @@ impl Component for SessionDialog {
         }
     }
 
+    #[allow(clippy::incompatible_msrv)]
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         self.set_theme(theme);
         let mut lines: Vec<Line> = Vec::new();

@@ -62,9 +62,7 @@ pub fn matches_sensitive_path<'a>(
     file_path: Option<&str>,
     sensitive_paths: &'a [SensitivePathConfig],
 ) -> Option<&'a SensitivePathConfig> {
-    let Some(raw_path) = file_path else {
-        return None;
-    };
+    let raw_path = file_path?;
     if sensitive_paths.is_empty() {
         return None;
     }

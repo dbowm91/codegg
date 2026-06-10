@@ -487,9 +487,8 @@ impl Tool for BashTool {
                 "GOBIN",
             ];
             for var in &preserve_vars {
-                if var.ends_with('*') {
+                if let Some(prefix) = var.strip_suffix('*') {
                     // Handle wildcard prefix matching (e.g., "CARGO_PROFILE_*")
-                    let prefix = &var[..var.len() - 1];
                     for (key, value) in std::env::vars() {
                         if key.starts_with(prefix) {
                             cmd.env(&key, &value);

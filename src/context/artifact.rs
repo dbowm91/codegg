@@ -83,7 +83,7 @@ impl ContextArtifactStore for InMemoryArtifactStore {
             .filter(|a| a.session_id == session_id)
             .cloned()
             .collect();
-        artifacts.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        artifacts.sort_by_key(|b| std::cmp::Reverse(b.created_at_ms));
         artifacts.truncate(limit);
         Ok(artifacts)
     }

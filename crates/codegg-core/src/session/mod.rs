@@ -70,4 +70,4 @@ pub(crate) fn parse_json_field(raw: &str) -> serde_json::Value {
     }
 }
 
-pub(crate) use import::redact_for_export;
+pub use import::redact_for_export;

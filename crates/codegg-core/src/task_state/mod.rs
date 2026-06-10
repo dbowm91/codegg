@@ -176,7 +176,7 @@ impl TodoState {
         if policy.require_blocker_reason {
             for item in &items {
                 if item.status == TodoStatus::Blocked
-                    && item.blocker.as_ref().map_or(true, |b| b.trim().is_empty())
+                    && item.blocker.as_ref().is_none_or(|b| b.trim().is_empty())
                 {
                     return Err(TodoStateError::MissingBlockerReason);
                 }

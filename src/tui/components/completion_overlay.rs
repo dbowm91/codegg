@@ -168,7 +168,7 @@ impl CompletionOverlay {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         let indices: Vec<usize> = scored.into_iter().map(|(i, _)| i).collect();
         *self.filtered_cache.borrow_mut() = Some((self.filter.clone(), ctype, indices));

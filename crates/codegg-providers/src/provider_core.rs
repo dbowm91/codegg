@@ -87,21 +87,11 @@ impl Provider for Box<dyn Provider> {
 ///
 /// Determines which providers support deferred tool loading and tool references,
 /// allowing the agent loop to partition tools into immediate vs deferred arrays.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ProviderCapabilities {
     pub supports_defer_loading: bool,
     pub supports_tool_references: bool,
     pub max_tools_per_request: Option<usize>,
-}
-
-impl Default for ProviderCapabilities {
-    fn default() -> Self {
-        Self {
-            supports_defer_loading: false,
-            supports_tool_references: false,
-            max_tools_per_request: None,
-        }
-    }
 }
 
 impl ProviderCapabilities {
@@ -394,18 +384,40 @@ pub(crate) fn resolve_provider_credential(
         store: store.cloned(),
     };
     let auth_ref = cfg.and_then(|c| c.auth.as_ref()).map(|a| match a {
-        codegg_config::schema::AuthConfig::ApiKey { env, value, encrypted_value } => {
-            crate::auth_types::AuthConfig::ApiKey { env: env.clone(), value: value.clone(), encrypted_value: encrypted_value.clone() }
-        }
+        codegg_config::schema::AuthConfig::ApiKey {
+            env,
+            value,
+            encrypted_value,
+        } => crate::auth_types::AuthConfig::ApiKey {
+            env: env.clone(),
+            value: value.clone(),
+            encrypted_value: encrypted_value.clone(),
+        },
         codegg_config::schema::AuthConfig::Stored { account_id } => {
-            crate::auth_types::AuthConfig::Stored { account_id: account_id.clone() }
+            crate::auth_types::AuthConfig::Stored {
+                account_id: account_id.clone(),
+            }
         }
-        codegg_config::schema::AuthConfig::ExternalCommand { command, args, timeout_ms } => {
-            crate::auth_types::AuthConfig::ExternalCommand { command: command.clone(), args: args.clone(), timeout_ms: *timeout_ms }
-        }
-        codegg_config::schema::AuthConfig::OAuthDevice { client_id, scopes, auth_url, token_url } => {
-            crate::auth_types::AuthConfig::OAuthDevice { client_id: client_id.clone(), scopes: scopes.clone(), auth_url: auth_url.clone(), token_url: token_url.clone() }
-        }
+        codegg_config::schema::AuthConfig::ExternalCommand {
+            command,
+            args,
+            timeout_ms,
+        } => crate::auth_types::AuthConfig::ExternalCommand {
+            command: command.clone(),
+            args: args.clone(),
+            timeout_ms: *timeout_ms,
+        },
+        codegg_config::schema::AuthConfig::OAuthDevice {
+            client_id,
+            scopes,
+            auth_url,
+            token_url,
+        } => crate::auth_types::AuthConfig::OAuthDevice {
+            client_id: client_id.clone(),
+            scopes: scopes.clone(),
+            auth_url: auth_url.clone(),
+            token_url: token_url.clone(),
+        },
         codegg_config::schema::AuthConfig::None => crate::auth_types::AuthConfig::None,
     });
     resolver.resolve(auth_ref.as_ref(), &ctx)

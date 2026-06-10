@@ -103,7 +103,7 @@ impl Tool for GlobTool {
 
         let matcher = glob.compile_matcher();
 
-        let walk = WalkBuilder::new(&search_path)
+        let walk = WalkBuilder::new(search_path)
             .hidden(false)
             .git_ignore(true)
             .follow_links(false)

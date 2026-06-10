@@ -24,7 +24,9 @@ pub struct CreateProjectRequest {
     pub path: String,
 }
 
-pub async fn get_project(State(state): State<ServerState>) -> Result<Json<ProjectInfo>, AxumAppError> {
+pub async fn get_project(
+    State(state): State<ServerState>,
+) -> Result<Json<ProjectInfo>, AxumAppError> {
     let store = crate::session::SessionStore::new(state.pool);
     let session_count = store
         .list(&state.project_dir, 1)
@@ -92,10 +94,7 @@ pub async fn create_project(
     let canonical_root = project_root.canonicalize().map_err(AppError::Io)?;
 
     if !canonical_requested.starts_with(&canonical_root) {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "path not allowed".into(),
-        ))
-        .into());
+        return Err(AppError::Storage(StorageError::NotFound("path not allowed".into())).into());
     }
 
     let full = std::path::Path::new(&req.path);
@@ -105,7 +104,7 @@ pub async fn create_project(
             .map_err(AppError::Io)?;
     }
 
-    let git_root = crate::worktree::find_git_root(&full).map(|p| p.to_string_lossy().to_string());
+    let git_root = crate::worktree::find_git_root(full).map(|p| p.to_string_lossy().to_string());
     let abs = full
         .canonicalize()
         .ok()

@@ -207,7 +207,7 @@ impl ResearchSourceAdapter for DocsRsSource {
                     // Parse from URL: https://docs.rs/{crate_name}/latest/{item_path}
                     if let Some(rest) = url.strip_prefix("https://docs.rs/") {
                         let parts: Vec<&str> = rest.split('/').collect();
-                        if parts.len() >= 1 && !parts[0].is_empty() {
+                        if !parts.is_empty() && !parts[0].is_empty() {
                             let crate_name = parts[0].to_string();
                             let item_path = if parts.len() > 2 && parts[1] == "latest" {
                                 Some(parts[2..].join("/"))
