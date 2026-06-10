@@ -264,6 +264,105 @@ impl AgentLoop {
         }
     }
 
+    /// Apply gated context policy tool-palette reduction to the *per-request* `request.tools`
+    /// payload when diagnostics recommend ReviewToolPalette, policy is enabled, mode=ToolPaletteReduce,
+    /// observed cache stats meet threshold, current count exceeds cap, and phase is pre-provider.
+    /// Never mutates the ToolRegistry or any persisted state. Only the outgoing provider request tools list.
+    /// Called after profile filtering and before the corresponding BeforeProviderCall (or Initial) observe
+    /// so that diagnostics reflect the reduced palette.
+    fn apply_tool_palette_policy_if_active(&mut self, request: &mut ChatRequest, phase: &str) {
+        if !self.context_policy_config.enabled() {
+            return;
+        }
+        let mode = self.context_policy_config.mode();
+        if mode == crate::config::schema::ContextPolicyMode::Observe {
+            return;
+        }
+        let Some(ref tools) = request.tools else {
+            return;
+        };
+        if tools.is_empty() {
+            return;
+        }
+        let current_count = tools.len();
+        // Preview pack + analysis on the *current* (pre-this-reduction) state to obtain the
+        // ReviewToolPalette recommendation (based on slow-changing/tool-defs token ratio + cache stats).
+        let pack_res = self.compute_context_pack_result(request);
+        let analysis = if let Some(res) = pack_res {
+            let slow_tokens: usize = res
+                .blocks
+                .iter()
+                .filter(|b| b.kind.tier() == crate::context::CacheClass::SlowChanging)
+                .map(|b| b.estimated_tokens)
+                .sum();
+            crate::context::EffectiveCostAnalysis::analyze(
+                &self.context_cache_stats,
+                &request.model,
+                res.stable_prefix_tokens,
+                slow_tokens,
+                res.volatile_tokens,
+            )
+        } else {
+            // Packer disabled => no slow/volatile token breakdown for the recommendation signal.
+            // Prototype conservatively skips active reduction without the diagnostic signal.
+            return;
+        };
+        let observed_count = self
+            .context_cache_stats
+            .get(&request.model)
+            .map(|e| e.call_count)
+            .unwrap_or(0);
+        let decision = crate::context::decide_policy(
+            &analysis,
+            current_count,
+            &self.context_policy_config,
+            Some(phase),
+            observed_count,
+        );
+        match decision.kind {
+            crate::context::ContextPolicyDecisionKind::ReduceToolPalette => {
+                if let Some(ref mut tlist) = request.tools {
+                    let red = crate::context::reduce_tool_palette(
+                        tlist,
+                        &self.context_policy_config,
+                        None,
+                    );
+                    let orig_len = tlist.len();
+                    *tlist = red.selected;
+                    if self.context_policy_config.log_policy_decisions() {
+                        tracing::info!(
+                            policy = "context_tool_palette",
+                            mode = ?mode,
+                            action = "ReduceToolPalette",
+                            recommended_action = ?decision.recommended_action,
+                            original_tool_count = orig_len,
+                            selected_tool_count = tlist.len(),
+                            omitted_tool_count = red.omitted.len(),
+                            reason = %red.reason,
+                            "context policy decision"
+                        );
+                        tracing::debug!(
+                            selected = ?tlist.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+                            omitted = ?red.omitted,
+                            "context policy tool selection"
+                        );
+                    }
+                }
+            }
+            crate::context::ContextPolicyDecisionKind::WarnOnly
+                if self.context_policy_config.log_policy_decisions() =>
+            {
+                tracing::warn!(
+                    "context policy would reduce tool palette: {} -> {} ({})",
+                    decision.original_tool_count,
+                    decision.selected_tool_count,
+                    decision.reason
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// Record finish-event usage from the `EventProcessor` into `ContextCacheStats`.
     ///
     /// Uses `normalize_from_finish` to clamp cached tokens before recording.
@@ -1056,6 +1155,7 @@ pub struct AgentLoop {
     artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
     projection_config: crate::context::ProjectionConfig,
     context_packer_config: crate::config::schema::ContextPackerConfig,
+    context_policy_config: crate::config::schema::ContextPolicyConfig,
     context_cache_stats: crate::context::ContextCacheStats,
 }
 
@@ -1223,6 +1323,7 @@ impl AgentLoop {
 
         let projection_config = Self::resolve_projection_config(&config);
         let context_packer_config = config.context_packer.clone().unwrap_or_default();
+        let context_policy_config = config.context_policy.clone().unwrap_or_default();
 
         Self {
             agents: map,
@@ -1293,6 +1394,7 @@ impl AgentLoop {
             artifact_store,
             projection_config,
             context_packer_config,
+            context_policy_config,
             context_cache_stats: crate::context::ContextCacheStats::new(),
         }
     }
@@ -2616,6 +2718,10 @@ impl AgentLoop {
             self.build_tool_definitions().await,
             &model_profile,
         ));
+        // Gated effective-cost driven tool palette reduction (prototype). Applies only to
+        // the per-request payload (request.tools), never to ToolRegistry. Decision may reduce
+        // before the InitialRequest observe so diagnostics reflect the sent palette.
+        self.apply_tool_palette_policy_if_active(&mut request, "InitialRequest");
         crate::model_profile::policy::apply_startup_profile_policy(
             &mut request.messages,
             &model_profile,
@@ -2778,6 +2884,10 @@ impl AgentLoop {
                 &model_profile,
                 ContextPackObservationPhase::AfterCompaction,
             );
+            // Apply policy reduction (if triggered) immediately before the BeforeProviderCall observe
+            // so that packer diagnostics (tool hash, slow-changing tokens, effective cost) reflect the
+            // palette actually sent to the provider for this turn.
+            self.apply_tool_palette_policy_if_active(&mut request, "BeforeProviderCall");
             self.observe_context_pack(
                 &request,
                 &model_profile,
@@ -4094,6 +4204,7 @@ impl AgentLoop {
                     &model_profile,
                     ContextPackObservationPhase::AfterCompaction,
                 );
+                self.apply_tool_palette_policy_if_active(request, "BeforeProviderCall");
                 self.observe_context_pack(
                     request,
                     &model_profile,

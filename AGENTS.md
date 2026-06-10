@@ -20,7 +20,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `client/` | Remote TUI client for WebSocket connections with resume/replay support |
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher — now in `crates/codegg-config` (`codegg-config` crate), re-exported as `codegg::config` |
-| `context/` | Context artifact storage, tool-output projection, `context_read` tool, cache-aware context packing for stable provider prompt-cache prefixes, `NormalizedProviderUsage` (usage_normalize.rs), `EffectiveCostAnalysis` (effective_cost.rs) |
+| `context/` | Context artifact storage, tool-output projection, `context_read` tool, cache-aware context packing for stable provider prompt-cache prefixes, `NormalizedProviderUsage` (usage_normalize.rs), `EffectiveCostAnalysis` (effective_cost.rs), gated context policy layer, ContextPolicyConfig, tool-palette reduction prototype (first active policy, strictly gated) |
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion — error enums now in `crates/codegg-core` (`codegg-core` crate), axum wrappers stay root-side |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
@@ -67,7 +67,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
 - `architecture/context-ledger.md`: Context artifact storage, tool-output projection, ContextLedgerState, context_read tool, and config options
-- `architecture/cache-aware-context.md`: Cache-aware context packing, tier-based block ordering, ContextPacker algorithm, ContextBlockBuilder, cache stats, and config (hardened: observe-only, stable hashes via stable_hash_hex, source_handle on ContextBlock, multi-phase observation via observe_context_pack, cache stats wired from provider finish events via `record_context_cache_stats_from_processor` with normalization; active mutation disabled)
+- `architecture/cache-aware-context.md`: Cache-aware context packing, tier-based block ordering, ContextPacker algorithm, ContextBlockBuilder, cache stats, and config (hardened: observe-only, stable hashes via stable_hash_hex, source_handle on ContextBlock, multi-phase observation via observe_context_pack, cache stats wired from provider finish events via `record_context_cache_stats_from_processor` with normalization; active mutation disabled); gated context policy layer (ContextPolicyConfig + tool-palette reduction prototype) added in policy.rs, wired per-request in AgentLoop (strictly gated, defaults disabled/observe)
 
 ## Critical Implementation Notes
 
@@ -139,6 +139,8 @@ These items are important for future agents to know when working with the codeba
 - **Goal budget accounting is atomic**: `GoalStore::increment_usage()` checks all four budget axes in a single transaction. If any axis is exceeded, the goal transitions to `BudgetLimited` atomically. The agent loop then queues a wrap-up prompt on the next turn.
 
 - **Goal wall-clock is durable**: `wallclock_secs` is persisted in SQLite, so time spent on the goal across session restarts is accurately tracked. `GoalWallClock` in the agent loop tracks wall-clock deltas between accounting ticks.
+
+- **Context policy (first active, gated)**: `[context_policy]` section + ContextPolicyMode (Observe|Warn|ToolPaletteReduce) + ContextPolicyConfig helpers; src/context/policy.rs (decide_policy + reduce_tool_palette deterministic); wired only to per-request tools in AgentLoop before provider observes; defaults safe (disabled/observe); see plan effective-cost-tool-palette-prototype.md.
 
 ### Known Issues (Lower Priority)
 
@@ -244,7 +246,7 @@ These items were verified during review sessions:
 | Boundary script | `scripts/check-core-boundary.sh` | Verifies no forbidden imports/dependencies in codegg-core |
 | ckcore alias | `.cargo/config.toml` | `cargo ckcore` = `check -p codegg-core` |
 | Context module | artifact storage + projection + context_read tool + cache-aware packer (hardened observe-only layer) | `src/context/` |
-| Context new modules | `NormalizedProviderUsage` (usage_normalize.rs), `EffectiveCostAnalysis` (effective_cost.rs) — diagnostic-only, no mutation | `src/context/usage_normalize.rs`, `src/context/effective_cost.rs` |
+| Context new modules | `NormalizedProviderUsage` (usage_normalize.rs), `EffectiveCostAnalysis` (effective_cost.rs) — diagnostic-only, no mutation; plus policy.rs (decide_policy + reduce_tool_palette) | `src/context/usage_normalize.rs`, `src/context/effective_cost.rs`, `src/context/policy.rs` |
 | ProjectionConfig defaults | max_success=800, max_failure=2000, enabled=true, artifact_store=true | `src/context/projection.rs` |
 | ContextLedgerState limits | 20 files, 10 commands, 10 test results, 10 errors; empty handles rejected | `src/agent/context_frame.rs` |
 | context_read registration | Registered when `artifact_store = true`, regardless of `project_tool_outputs` | `src/tool/factory.rs` |

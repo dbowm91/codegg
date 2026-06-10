@@ -253,6 +253,9 @@ pub struct Config {
     pub context: Option<ContextConfig>,
     /// Cache-aware context packer settings.
     pub context_packer: Option<ContextPackerConfig>,
+    /// Gated active context policy (first use: tool-palette reduction driven by effective-cost diagnostics).
+    /// Disabled by default; observe -> warn -> tool_palette_reduce rollout.
+    pub context_policy: Option<ContextPolicyConfig>,
 }
 
 /// Configuration for the context ledger and artifact projection system.
@@ -281,6 +284,74 @@ pub struct ContextPackerConfig {
     pub max_stable_prefix_tokens: Option<usize>,
     pub max_volatile_tokens: Option<usize>,
     pub log_diagnostics: Option<bool>,
+}
+
+/// Gated active context policy modes. Defaults to Observe (no mutation).
+/// Rollout: observe (diagnostics only) -> warn (logs decisions without change) -> tool_palette_reduce (first active use).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextPolicyMode {
+    #[default]
+    Observe,
+    Warn,
+    ToolPaletteReduce,
+}
+
+/// Configuration for gated active context policies.
+/// First supported policy: deterministic tool-palette reduction driven by EffectiveCostAnalysis (ReviewToolPalette).
+/// All active behavior is disabled unless explicitly enabled with mode=tool_palette_reduce.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ContextPolicyConfig {
+    /// Master enable for the policy layer. When false (default), policy decisions are Noop regardless of mode.
+    pub enabled: Option<bool>,
+    /// Policy mode controlling behavior: observe (log only), warn (warn on would-reduce), tool_palette_reduce (apply reductions to request.tools only).
+    pub mode: Option<ContextPolicyMode>,
+    /// Minimum number of cache observations (per-model ContextCacheStats entries) required before active reduction decisions.
+    pub min_cache_observations: Option<usize>,
+    /// If true, consider ReviewToolPalette recommendations from EffectiveCostAnalysis as a trigger for warn/reduce.
+    pub review_tool_palette_threshold: Option<bool>,
+    /// Hard cap on tool definitions sent to the provider when reduction is active. Required tools may cause overflow (logged, not truncated).
+    pub max_tool_definitions: Option<usize>,
+    /// Tool names that must always be kept if present in the filtered palette (e.g. context_read, tool_search, todowrite).
+    pub always_include_tools: Option<Vec<String>>,
+    /// Tool names that must never be removed by the reducer (even if not in always_include).
+    pub never_reduce_tools: Option<Vec<String>>,
+    /// Emit structured policy decision logs (info for decisions, debug for selected/omitted names).
+    pub log_policy_decisions: Option<bool>,
+}
+
+impl ContextPolicyConfig {
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+    pub fn mode(&self) -> ContextPolicyMode {
+        self.mode.unwrap_or_default()
+    }
+    pub fn min_cache_observations(&self) -> usize {
+        self.min_cache_observations.unwrap_or(3)
+    }
+    pub fn review_tool_palette_threshold(&self) -> bool {
+        self.review_tool_palette_threshold.unwrap_or(true)
+    }
+    pub fn max_tool_definitions(&self) -> usize {
+        self.max_tool_definitions.unwrap_or(24)
+    }
+    pub fn always_include_tools(&self) -> Vec<String> {
+        self.always_include_tools.clone().unwrap_or_else(|| {
+            vec![
+                "context_read".into(),
+                "tool_search".into(),
+                "todowrite".into(),
+            ]
+        })
+    }
+    pub fn never_reduce_tools(&self) -> Vec<String> {
+        self.never_reduce_tools.clone().unwrap_or_default()
+    }
+    pub fn log_policy_decisions(&self) -> bool {
+        self.log_policy_decisions.unwrap_or(true)
+    }
 }
 
 /// Web search/fetch backend configuration.

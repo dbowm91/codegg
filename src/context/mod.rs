@@ -5,6 +5,7 @@ pub mod cache_stats;
 pub mod effective_cost;
 pub mod handle;
 pub mod packer;
+pub mod policy;
 pub mod projection;
 pub mod read_tool;
 pub mod tool_hash;
@@ -19,6 +20,10 @@ pub use cache_stats::{CacheStatsEntry, ContextCacheStats};
 pub use effective_cost::{EffectiveCostAction, EffectiveCostAnalysis};
 pub use handle::{clamp_to_char_boundary, ContextHandle, ContextHandleError, ContextHandleKind};
 pub use packer::{ContextPackBudget, ContextPackResult, OmissionReason, OmittedContextBlock};
+pub use policy::{
+    decide_policy, reduce_tool_palette, ContextPolicyDecision, ContextPolicyDecisionKind,
+    ToolPaletteReduction,
+};
 pub use projection::{
     project_tool_output, ProjectionConfig, ProjectionStatus, ToolOutputProjection,
 };

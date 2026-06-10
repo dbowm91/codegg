@@ -198,7 +198,10 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             vim_mode,
             hooks,
             notifications,
-            catalog
+            catalog,
+            context,
+            context_packer,
+            context_policy
         );
         if let Some(ref server) = config.server {
             match &mut merged.server {

@@ -20,8 +20,10 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use uuid::Uuid;
 
+#[allow(dead_code)]
 const SHARED_DB_NAME: &str = "codegg_test_shared";
 
+#[allow(dead_code)]
 static SHARED_POOL: OnceLock<SqlitePool> = OnceLock::new();
 
 /// Returns a process-wide `SqlitePool`. The underlying database lives in
@@ -31,6 +33,7 @@ static SHARED_POOL: OnceLock<SqlitePool> = OnceLock::new();
 /// Tests that mutate state through this pool **must clean up after
 /// themselves** — typically by deleting rows they inserted, or by using
 /// unique session/project identifiers.
+#[allow(dead_code)]
 pub async fn shared_pool() -> &'static SqlitePool {
     if let Some(pool) = SHARED_POOL.get() {
         return pool;

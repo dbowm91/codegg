@@ -18,6 +18,7 @@ src/context/
 ├── tool_hash.rs      # tool_definitions_hash — deterministic toolset identity
 ├── usage_normalize.rs # NormalizedProviderUsage — provider-agnostic token normalization
 ├── effective_cost.rs  # EffectiveCostAnalysis — diagnostic-only cost recommendations
+├── policy.rs          # ContextPolicyConfig, ContextPolicyMode (Observe/Warn/ToolPaletteReduce), decide_policy, reduce_tool_palette — gated first-active policy for tool palette reduction (effective-cost-tool-palette-prototype)
 └── (existing files)  # artifact.rs, handle.rs, projection.rs, read_tool.rs
 ```
 
@@ -241,6 +242,92 @@ Key properties:
 
 `NormalizedProviderUsage` normalizes raw provider token counts (input, output, cached) into a provider-agnostic representation. This allows cache stats and effective-cost analysis to work uniformly across providers that report tokens differently (e.g., some providers count cached tokens as a subset of input, others report them separately).
 
+### Gated Context Policy for Tool-Palette Reduction (policy.rs)
+
+A new top-level `[context_policy]` config section (distinct from `context_packer`) was added under plan name `effective-cost-tool-palette-prototype`. It implements the first *active* (but strictly gated) policy: conservative tool-palette reduction driven by `EffectiveCostAnalysis` + per-tool call counts.
+
+#### ContextPolicyConfig and ContextPolicyMode
+
+```rust
+// In src/context/policy.rs (new)
+pub struct ContextPolicyConfig {
+    pub enabled: bool,                    // default false (safe)
+    pub mode: ContextPolicyMode,          // default Observe
+    pub min_observations: usize,          // default 3
+    pub max_tool_definitions: usize,      // default 24
+    pub always_include: Vec<String>,      // defaults include context_read, tool_search, todowrite, ...
+    pub never_reduce: Vec<String>,
+    pub log_decisions: bool,              // default true
+}
+
+pub enum ContextPolicyMode {
+    Observe,           // default — no change, full diagnostics
+    Warn,              // logs would-reduce decisions at warn level
+    ToolPaletteReduce, // first active policy: mutates only per-request request.tools
+}
+```
+
+All defaults are conservative. `enabled=false` and `mode=Observe` ensure zero behavioral change on upgrade. `always_include` and `never_reduce` are explicit allow/deny lists; `tool_search` is additionally hard-guarded.
+
+#### Policy Decision Flow
+
+Decision is made in `decide_policy` (called from `AgentLoop::apply_tool_palette_policy_if_active`):
+
+1. Review the latest `EffectiveCostAnalysis` (via `ReviewToolPalette` recommended action) for the current model/phase.
+2. Check observed `call_count` for the specific tool (from tool-usage sidecar, separate from packer stats) meets or exceeds `min_observations`.
+3. Current number of tool definitions in the *per-request* `Vec<ToolDefinition>` exceeds `max_tool_definitions`.
+4. Phase is `InitialRequest` or a pre-provider phase in the follow-up drain (before `BeforeProviderCall` observation).
+
+If all gates pass and `mode == ToolPaletteReduce`, emit `ContextPolicyDecision::ReduceToolPalette { recommended, original_count, selected, omitted, reason }`. For `Warn` mode the decision is `WarnOnly`. For `Observe` or any gate failure, decision is `NoAction`.
+
+#### Deterministic Reduction (`reduce_tool_palette`)
+
+Reduction is purely syntactic and order-preserving:
+
+- Collect the *required set* in input order: (a) any tool whose name is in the hardcoded recovery set, (b) `always_include`, (c) `never_reduce`, (d) the tool that originally called the current sub-task (if any).
+- If required set size > cap, keep only the required set and set `overflow=true` in the reason.
+- Fill remaining slots from the original input list (in arrival order), skipping already-included required tools, up to the cap.
+- Guardrails: if the selected set would be empty while input was non-empty, fall back to the first `min(3, input.len())` tools; `tool_search` is forcibly preserved if present in the input.
+
+The function returns a `ToolPaletteReduction` struct containing `selected: Vec<ToolDefinition>`, `omitted_names`, `reason`, and `overflow` flag. It never reorders within the kept prefix and never performs semantic ranking.
+
+#### Integration Point in AgentLoop
+
+`AgentLoop::apply_tool_palette_policy_if_active(&self, phase: ObservationPhase, request: &mut ProviderRequest)` is invoked:
+
+- After the model-profile filter has run on `InitialRequest`.
+- Before the `BeforeProviderCall` `observe_context_pack` call (both in the main turn and in the follow-up-drain loop).
+
+It only ever mutates the per-request `request.tools: Vec<ToolDefinition>`. It:
+- Never touches the `ToolRegistry`, the transcript, compaction paths, or any packer mutation logic.
+- Is a no-op when `config.enabled == false` or `mode == Observe`.
+- Is a no-op (with debug log) when the policy decides `NoAction` or `WarnOnly`.
+
+When reduction occurs, the call site logs at info level (structured fields: policy, mode, action, recommended, original, selected, omitted, reason) and at debug level the concrete tool names. Warn-mode decisions log at warn level with the would-reduce message but do not mutate.
+
+#### Logging and Observability
+
+- Info: `context-policy[ToolPaletteReduce]: policy=context_policy mode=ToolPaletteReduce action=reduce recommended=ReviewToolPalette original=37 selected=24 omitted=13 reason="call_count>=3 and defs>24 at InitialRequest; overflow=false"`
+- Debug: lists of kept/omitted names.
+- Warn (only when mode=Warn): `context-policy[WARN]: would reduce tool palette (37→24) for reason=... (no mutation because mode=Warn)`
+- All logs are gated behind the existing `log_decisions` flag (default true) and the master `enabled` flag.
+
+#### Rollout Recommendation
+
+1. Default (`enabled=false`, `mode=Observe`) — zero change, full diagnostics.
+2. `enabled=true, mode=Warn` — observe would-reduce decisions in logs without behavioral impact.
+3. `enabled=true, mode=ToolPaletteReduce` — first active, conservative reduction.
+
+The policy is deliberately scoped to the tool-definitions list that is about to be sent to the provider on this specific request. It is intentionally *not* a general compaction or context-packer mutation.
+
+#### Non-Goals (Still Hold)
+
+- No transcript rewrite or reordering.
+- No compaction triggered.
+- No `ToolRegistry` mutation.
+- No pricing calculation (uses only call counts + `EffectiveCostAnalysis` recommendation).
+- No semantic / usage-based ranking inside the reduction (purely order-of-appearance + explicit allow/deny lists).
+
 ## Active Mode (Disabled)
 
 Active mode is disabled for this pass. Requesting it (via config `observe_only: false` when `enabled: true`) produces a warning and forces observe-only execution. There is no code path that mutates provider requests or replaces system prompt content. The previous "Current session context:" replacement logic has been removed. Active mutation is not yet safe; this pass hardened the observation layer only.
@@ -289,8 +376,9 @@ Both systems are complementary. Projection reduces the size of individual `ToolR
 
 - **Effective-cost compaction (active)**: The diagnostic analysis (`EffectiveCostAnalysis`) is now in place and produces recommendations, but no code path acts on those recommendations. A future enhancement would wire the analysis output into the packer's budget enforcement, allowing cost-aware decisions about which volatile blocks to omit.
 - **Stable-prefix preservation decisions**: The analysis can recommend preserving stable prefixes, but the packer does not yet act on this. Future work would allow the packer to adjust block ordering or omission based on cache hit rate feedback.
-- **Dynamic tool palettes**: The tool definitions block is always required and always included in full. A future optimization could allow the packer to omit low-usage tools from the definitions when budget is tight, using the tool hash to detect palette changes.
+- **Dynamic tool palettes (packer-level)**: The tool definitions block is always required and always included in full by the packer. A future optimization could allow the packer to omit low-usage tools from the definitions when budget is tight, using the tool hash to detect palette changes.
+- **Gated tool-palette reduction (first active policy)**: *This* pass did wire the first active (but strictly gated) policy for conservative tool-palette reduction under the new top-level `[context_policy]` section (plan: effective-cost-tool-palette-prototype). It is implemented in `src/context/policy.rs` (`decide_policy`, `reduce_tool_palette`, `ContextPolicyConfig`, `ContextPolicyMode`, `ContextPolicyDecision`, `ToolPaletteReduction`) and integrated only in `AgentLoop::apply_tool_palette_policy_if_active`. The policy is phase-scoped to pre-provider windows, mutates *only* the per-request `request.tools` Vec, never touches ToolRegistry/transcript/compaction/packer mutation paths, and is behind safe defaults (`enabled=false`, `mode=Observe`). It remains a conservative, order-based reduction (no semantic selection). The broader "dynamic tool palettes" item above refers to deeper packer-level integration that is still future work.
 - **Provider-specific pricing**: Cache hit rates vary by provider and model. The packer does not currently adjust its strategy based on provider-specific cache pricing (e.g., Anthropic's 90% discount on cached tokens vs. OpenAI's 50%).
 - **Cross-turn block diffing**: The packer currently rebuilds all blocks each turn. A future optimization could diff against the previous turn's blocks and only re-pack changed blocks, further improving cache stability.
 
-**This pass (hardening) added**: multi-phase observation (`observe_context_pack` at InitialRequest/BeforeProviderCall/AfterToolResults/AfterCompaction/BeforeFinalization), `source_handle: Option<String>` on `ContextBlock`, stable full SHA-256 hashes via `stable_hash_hex` (no DefaultHasher in context modules), real non-empty deterministic tool-definition summary text (for realistic token counts), cache-hit-rate wiring from provider `cached_tokens` telemetry into diagnostics, `NormalizedProviderUsage` for provider-agnostic token normalization (`usage_normalize.rs`), `EffectiveCostAnalysis` for diagnostic-only cost recommendations (`effective_cost.rs`), and correction of the misleading transcript-order test (packer sorts volatile by priority/id; no live transcript blocks yet; comment added in packer.rs). Active mutation remains disabled; this is an observation/diagnostic layer only. No persistence of stats, no transcript packing/reordering, no effective-cost decisions wired into packer behavior, no replacement of compaction.
+**This pass (hardening) added**: multi-phase observation (`observe_context_pack` at InitialRequest/BeforeProviderCall/AfterToolResults/AfterCompaction/BeforeFinalization), `source_handle: Option<String>` on `ContextBlock`, stable full SHA-256 hashes via `stable_hash_hex` (no DefaultHasher in context modules), real non-empty deterministic tool-definition summary text (for realistic token counts), cache-hit-rate wiring from provider `cached_tokens` telemetry into diagnostics, `NormalizedProviderUsage` for provider-agnostic token normalization (`usage_normalize.rs`), `EffectiveCostAnalysis` for diagnostic-only cost recommendations (`effective_cost.rs`), correction of the misleading transcript-order test (packer sorts volatile by priority/id; no live transcript blocks yet; comment added in packer.rs), *and* gated `[context_policy]` top-level config section + `ContextPolicyConfig`/`ContextPolicyMode` (Observe/Warn/ToolPaletteReduce) + `decide_policy`/`reduce_tool_palette` implementation in new `src/context/policy.rs` + `AgentLoop::apply_tool_palette_policy_if_active` integration for phase-scoped per-request `request.tools` reduction (first active but strictly gated policy under plan effective-cost-tool-palette-prototype; only mutates the outgoing tool list, never registry/transcript/compaction/packer; safe defaults; deterministic order-based reduction with explicit guardrails). Active mutation of the packer itself remains disabled; this is still primarily an observation/diagnostic layer, now with one narrow, conservative, opt-in active policy for tool-palette size. No persistence of stats, no transcript packing/reordering, no effective-cost decisions wired into packer behavior, no replacement of compaction.
