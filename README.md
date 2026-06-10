@@ -11,7 +11,7 @@ A lightweight, pure-Rust implementation of an AI coding agent.
 - **TUI Interface** - Terminal user interface with syntax highlighting
 - **Server Mode** - Headless HTTP server for remote access
 - **Session Management** - Persistent conversations with SQLite storage
-- **Context System** - Artifact storage, tool-output projection, cache-aware context packing (observe/diagnostic), and gated active context policy (first use: phase-scoped tool-palette reduction driven by effective-cost diagnostics; disabled by default; see architecture/cache-aware-context.md and `[context_policy]` config)
+- **Context System** - Artifact storage, tool-output projection, cache-aware context packing (observe/diagnostic), and hardened gated active context policy (first use: phase-scoped tool-palette reduction (base-derived, non-cumulative, backoff/starvation, Warn dry-run, threshold gate; still disabled by default); see architecture/cache-aware-context.md and `[context_policy]` config)
 
 ## Installation
 

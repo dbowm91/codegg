@@ -37,6 +37,7 @@ use crate::tool::risk::{classify_tool_risk, summarize_tool_output};
 use crate::tool::ToolRegistry;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -265,11 +266,12 @@ impl AgentLoop {
     }
 
     /// Apply gated context policy tool-palette reduction to the *per-request* `request.tools`
-    /// payload when diagnostics recommend ReviewToolPalette, policy is enabled, mode=ToolPaletteReduce,
-    /// observed cache stats meet threshold, current count exceeds cap, and phase is pre-provider.
-    /// Never mutates the ToolRegistry or any persisted state. Only the outgoing provider request tools list.
-    /// Called after profile filtering and before the corresponding BeforeProviderCall (or Initial) observe
-    /// so that diagnostics reflect the reduced palette.
+    /// payload. Reductions always derive from the UNREDUCED `self.base_request_tools` (full
+    /// profile-filtered palette captured at run start). Recomputed from base on every call site
+    /// (non-cumulative). If request.tools is None (e.g. max-steps), leaves it None. For noop/warn/no-reduction
+    /// sets to Some(base) unless legitimately None. Implements backoff (reduction_disabled_until_turn)
+    /// and empty-selection fallback to full base + backoff. Updates context_policy_runtime stats on decisions.
+    /// Backoff check, starvation (from tool_calls sites), and base-driven semantics per policy hardening.
     fn apply_tool_palette_policy_if_active(&mut self, request: &mut ChatRequest, phase: &str) {
         if !self.context_policy_config.enabled() {
             return;
@@ -278,15 +280,28 @@ impl AgentLoop {
         if mode == crate::config::schema::ContextPolicyMode::Observe {
             return;
         }
-        let Some(ref tools) = request.tools else {
-            return;
-        };
-        if tools.is_empty() {
+        if self.base_request_tools.is_empty() {
             return;
         }
-        let current_count = tools.len();
-        // Preview pack + analysis on the *current* (pre-this-reduction) state to obtain the
-        // ReviewToolPalette recommendation (based on slow-changing/tool-defs token ratio + cache stats).
+        if request.tools.is_none() {
+            return;
+        }
+        if let Some(until) = self.context_policy_runtime.reduction_disabled_until_turn {
+            if self.state.turn_count <= until {
+                tracing::info!(
+                    policy = "context_tool_palette",
+                    action = "backoff",
+                    reduction_disabled_until_turn = ?until,
+                    turn_count = self.state.turn_count,
+                    "context policy backoff active"
+                );
+                request.tools = Some(self.base_request_tools.clone());
+                self.context_policy_runtime.last_reason =
+                    Some("backoff active; using full base palette".to_string());
+                return;
+            }
+        }
+        let current_count_for_decision = self.base_request_tools.len();
         let pack_res = self.compute_context_pack_result(request);
         let analysis = if let Some(res) = pack_res {
             let slow_tokens: usize = res
@@ -303,8 +318,6 @@ impl AgentLoop {
                 res.volatile_tokens,
             )
         } else {
-            // Packer disabled => no slow/volatile token breakdown for the recommendation signal.
-            // Prototype conservatively skips active reduction without the diagnostic signal.
             return;
         };
         let observed_count = self
@@ -314,37 +327,72 @@ impl AgentLoop {
             .unwrap_or(0);
         let decision = crate::context::decide_policy(
             &analysis,
-            current_count,
+            current_count_for_decision,
             &self.context_policy_config,
             Some(phase),
             observed_count,
+            Some(&self.base_request_tools),
         );
         match decision.kind {
             crate::context::ContextPolicyDecisionKind::ReduceToolPalette => {
+                let mut red = crate::context::reduce_tool_palette(
+                    &self.base_request_tools,
+                    &self.context_policy_config,
+                    None,
+                );
+                let cap_exceeded_by_required = red.cap_exceeded_by_required;
+                if red.selected.is_empty() && !self.base_request_tools.is_empty() {
+                    red = crate::context::ToolPaletteReduction {
+                        selected: self.base_request_tools.clone(),
+                        omitted: vec![],
+                        reason:
+                            "fallback to full base palette to avoid empty selection after reduction"
+                                .to_string(),
+                        cap_exceeded_by_required,
+                    };
+                    self.context_policy_runtime.reduction_disabled_until_turn =
+                        Some(self.state.turn_count + 1);
+                }
+                let selected = red.selected.clone();
+                let omitted = red.omitted.clone();
+                let reason = red.reason.clone();
                 if let Some(ref mut tlist) = request.tools {
-                    let red = crate::context::reduce_tool_palette(
-                        tlist,
-                        &self.context_policy_config,
-                        None,
+                    *tlist = selected.clone();
+                }
+                self.context_policy_runtime.last_selected_tool_count = selected.len();
+                self.context_policy_runtime.last_omitted_tools = omitted.clone();
+                self.context_policy_runtime.last_reason = Some(reason.clone());
+                self.context_policy_runtime.last_selected_tools =
+                    selected.iter().map(|t| t.name.clone()).collect();
+                self.context_policy_runtime.consecutive_reductions += 1;
+                if self.context_policy_config.log_policy_decisions() {
+                    let reduction_disabled_until_turn =
+                        self.context_policy_runtime.reduction_disabled_until_turn;
+                    let policy_backoff_active =
+                        reduction_disabled_until_turn.is_some_and(|u| self.state.turn_count <= u);
+                    tracing::info!(
+                        policy = "context_tool_palette",
+                        mode = ?mode,
+                        action = "ReduceToolPalette",
+                        recommended_action = ?decision.recommended_action,
+                        base_tool_count = self.base_request_tools.len(),
+                        selected_tool_count = selected.len(),
+                        omitted_tool_count = omitted.len(),
+                        reason = %reason,
+                        policy_backoff_active = policy_backoff_active,
+                        reduction_disabled_until_turn = ?reduction_disabled_until_turn,
+                        cap_exceeded_by_required = cap_exceeded_by_required,
+                        "context policy decision"
                     );
-                    let orig_len = tlist.len();
-                    *tlist = red.selected;
-                    if self.context_policy_config.log_policy_decisions() {
-                        tracing::info!(
-                            policy = "context_tool_palette",
-                            mode = ?mode,
-                            action = "ReduceToolPalette",
-                            recommended_action = ?decision.recommended_action,
-                            original_tool_count = orig_len,
-                            selected_tool_count = tlist.len(),
-                            omitted_tool_count = red.omitted.len(),
-                            reason = %red.reason,
-                            "context policy decision"
-                        );
+                    tracing::debug!(
+                        selected = ?selected.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+                        omitted = ?omitted,
+                        "context policy tool selection"
+                    );
+                    if cap_exceeded_by_required {
                         tracing::debug!(
-                            selected = ?tlist.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
-                            omitted = ?red.omitted,
-                            "context policy tool selection"
+                            cap_exceeded_by_required = true,
+                            "context policy: required tools forced cap overflow"
                         );
                     }
                 }
@@ -352,14 +400,35 @@ impl AgentLoop {
             crate::context::ContextPolicyDecisionKind::WarnOnly
                 if self.context_policy_config.log_policy_decisions() =>
             {
+                if request.tools.is_some() {
+                    request.tools = Some(self.base_request_tools.clone());
+                }
+                self.context_policy_runtime.last_selected_tool_count = decision.selected_tool_count;
+                self.context_policy_runtime.last_omitted_tools = decision.omitted_tools.clone();
+                self.context_policy_runtime.last_reason = Some(decision.reason.clone());
+                self.context_policy_runtime.last_selected_tools = decision.selected_tools.clone();
+                let would_s = decision
+                    .would_selected_tool_count
+                    .unwrap_or(decision.selected_tool_count);
+                let would_o = decision.would_omitted_tool_count.unwrap_or(0);
                 tracing::warn!(
-                    "context policy would reduce tool palette: {} -> {} ({})",
+                    "context policy would reduce tool palette: {} -> {} ({}) would_select={} would_omit={}",
                     decision.original_tool_count,
                     decision.selected_tool_count,
-                    decision.reason
+                    decision.reason,
+                    would_s,
+                    would_o
                 );
             }
-            _ => {}
+            _ => {
+                if request.tools.is_some() {
+                    request.tools = Some(self.base_request_tools.clone());
+                }
+                self.context_policy_runtime.last_selected_tool_count = decision.selected_tool_count;
+                self.context_policy_runtime.last_omitted_tools = decision.omitted_tools.clone();
+                self.context_policy_runtime.last_reason = Some(decision.reason.clone());
+                self.context_policy_runtime.last_selected_tools = decision.selected_tools.clone();
+            }
         }
     }
 
@@ -1075,6 +1144,19 @@ impl AgentLoop {
     }
 }
 
+/// Minimal in-memory runtime state for the gated context policy backoff/starvation handling.
+/// Resets per AgentLoop (i.e. per run/session in this context); not persisted.
+#[derive(Debug, Clone, Default)]
+struct ContextPolicyRuntimeState {
+    /// If Some(turn), reduction is disabled for calls where state.turn_count <= this value.
+    reduction_disabled_until_turn: Option<usize>,
+    consecutive_reductions: usize,
+    last_selected_tool_count: usize,
+    last_omitted_tools: Vec<String>,
+    last_reason: Option<String>,
+    last_selected_tools: Vec<String>,
+}
+
 pub struct AgentLoopState {
     pub current_agent: String,
     pub turn_count: usize,
@@ -1157,6 +1239,12 @@ pub struct AgentLoop {
     context_packer_config: crate::config::schema::ContextPackerConfig,
     context_policy_config: crate::config::schema::ContextPolicyConfig,
     context_cache_stats: crate::context::ContextCacheStats,
+    /// Full profile-filtered tool palette for the current run (source of truth for policy reductions).
+    /// Captured once after model-profile filter at start of run(); reductions derive from this, not from
+    /// the (possibly previously reduced) request.tools. Enables non-cumulative, restorable palettes.
+    base_request_tools: Vec<crate::provider::ToolDefinition>,
+    /// In-memory backoff/starvation state for the context policy (resets per run()).
+    context_policy_runtime: ContextPolicyRuntimeState,
 }
 
 impl AgentLoop {
@@ -1396,6 +1484,8 @@ impl AgentLoop {
             context_packer_config,
             context_policy_config,
             context_cache_stats: crate::context::ContextCacheStats::new(),
+            base_request_tools: Vec::new(),
+            context_policy_runtime: ContextPolicyRuntimeState::default(),
         }
     }
 
@@ -2714,13 +2804,19 @@ impl AgentLoop {
             );
         }
         self.recent_findings.clear();
-        request.tools = Some(crate::agent::policy::filter_tool_definitions_for_profile(
+        let filtered = crate::agent::policy::filter_tool_definitions_for_profile(
             self.build_tool_definitions().await,
             &model_profile,
-        ));
+        );
+        request.tools = Some(filtered.clone());
+        self.base_request_tools = filtered;
+        // Reset per-run policy runtime (defensive; new AgentLoop instances also start defaulted).
+        self.context_policy_runtime = ContextPolicyRuntimeState::default();
         // Gated effective-cost driven tool palette reduction (prototype). Applies only to
         // the per-request payload (request.tools), never to ToolRegistry. Decision may reduce
         // before the InitialRequest observe so diagnostics reflect the sent palette.
+        // Reductions now derive from the captured base_request_tools (full profile-filtered palette)
+        // so they are stateless per call and non-cumulative.
         self.apply_tool_palette_policy_if_active(&mut request, "InitialRequest");
         crate::model_profile::policy::apply_startup_profile_policy(
             &mut request.messages,
@@ -2887,6 +2983,8 @@ impl AgentLoop {
             // Apply policy reduction (if triggered) immediately before the BeforeProviderCall observe
             // so that packer diagnostics (tool hash, slow-changing tokens, effective cost) reflect the
             // palette actually sent to the provider for this turn.
+            // Uses base_request_tools as source of truth so repeated calls from the same base do not
+            // compound; noop/backoff can restore the full base.
             self.apply_tool_palette_policy_if_active(&mut request, "BeforeProviderCall");
             self.observe_context_pack(
                 &request,
@@ -3160,6 +3258,27 @@ impl AgentLoop {
                     });
                 }
                 break;
+            }
+            let selected_names: HashSet<_> = self
+                .context_policy_runtime
+                .last_selected_tools
+                .iter()
+                .cloned()
+                .collect();
+            let base_names: HashSet<_> = self
+                .base_request_tools
+                .iter()
+                .map(|t| t.name.clone())
+                .collect();
+            for tc in &tool_calls {
+                if base_names.contains(tc.name.as_ref())
+                    && !selected_names.contains(tc.name.as_ref())
+                    && !selected_names.is_empty()
+                {
+                    tracing::warn!(tool=%tc.name, "context policy starvation: model attempted omitted tool; disabling reduction for next turn");
+                    self.context_policy_runtime.reduction_disabled_until_turn =
+                        Some(self.state.turn_count + 1);
+                }
             }
             missing_structured_tool_call_retries = 0;
             post_tool_continuation_retry_budget = 0;
@@ -4338,6 +4457,27 @@ impl AgentLoop {
                     }
                     processor.reset();
                     break;
+                }
+                let selected_names: HashSet<_> = self
+                    .context_policy_runtime
+                    .last_selected_tools
+                    .iter()
+                    .cloned()
+                    .collect();
+                let base_names: HashSet<_> = self
+                    .base_request_tools
+                    .iter()
+                    .map(|t| t.name.clone())
+                    .collect();
+                for tc in &tool_calls {
+                    if base_names.contains(tc.name.as_ref())
+                        && !selected_names.contains(tc.name.as_ref())
+                        && !selected_names.is_empty()
+                    {
+                        tracing::warn!(tool=%tc.name, "context policy starvation: model attempted omitted tool; disabling reduction for next turn");
+                        self.context_policy_runtime.reduction_disabled_until_turn =
+                            Some(self.state.turn_count + 1);
+                    }
                 }
                 missing_structured_tool_call_retries = 0;
                 post_tool_continuation_retry_budget = 0;

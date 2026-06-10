@@ -20,7 +20,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `client/` | Remote TUI client for WebSocket connections with resume/replay support |
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher — now in `crates/codegg-config` (`codegg-config` crate), re-exported as `codegg::config` |
-| `context/` | Context artifact storage, tool-output projection, `context_read` tool, cache-aware context packing for stable provider prompt-cache prefixes, `NormalizedProviderUsage` (usage_normalize.rs), `EffectiveCostAnalysis` (effective_cost.rs), gated context policy layer, ContextPolicyConfig, tool-palette reduction prototype (first active policy, strictly gated) |
+| `context/` | Context artifact storage, tool-output projection, `context_read` tool, cache-aware context packing for stable provider prompt-cache prefixes, `NormalizedProviderUsage` (usage_normalize.rs), `EffectiveCostAnalysis` (effective_cost.rs), gated context policy layer (ContextPolicyConfig + hardened tool-palette reduction: base_request_tools source-of-truth, ContextPolicyRuntimeState, non-cumulative base-derived reductions, backoff+starvation detection, Warn dry-run would_*, review_tool_palette_threshold gate, enhanced diagnostics); defaults safe (disabled/observe) |
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion — error enums now in `crates/codegg-core` (`codegg-core` crate), axum wrappers stay root-side |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
@@ -130,7 +130,7 @@ These items are important for future agents to know when working with the codeba
 
 - **DialogType is in component.rs**: Not in `types.rs`. FocusManager is in `component/focus.rs`.
 
-- **AgentLoop has 24 fields**: The struct at `src/agent/loop.rs:559-584` has 24 fields; many docs list only 15.
+- **AgentLoop has 26 fields**: The struct at `src/agent/loop.rs:1183+` has 26 fields (added base_request_tools + context_policy_runtime for hardened tool-palette policy); many docs list only 15.
 
 - **Exec mode question behavior**: `setup_question_channel_for_exec()` at `src/exec.rs:121` DOES set `question_rx`, meaning exec mode waits up to 300s before timing out. The "[question not supported]" string is in the `else` branch (non-exec path when `question_rx` is None).
 
@@ -140,7 +140,7 @@ These items are important for future agents to know when working with the codeba
 
 - **Goal wall-clock is durable**: `wallclock_secs` is persisted in SQLite, so time spent on the goal across session restarts is accurately tracked. `GoalWallClock` in the agent loop tracks wall-clock deltas between accounting ticks.
 
-- **Context policy (first active, gated)**: `[context_policy]` section + ContextPolicyMode (Observe|Warn|ToolPaletteReduce) + ContextPolicyConfig helpers; src/context/policy.rs (decide_policy + reduce_tool_palette deterministic); wired only to per-request tools in AgentLoop before provider observes; defaults safe (disabled/observe); see plan effective-cost-tool-palette-prototype.md.
+- **Context policy (first active, gated, now hardened Phases 1-8)**: `[context_policy]` section + ContextPolicyMode (Observe|Warn|ToolPaletteReduce) + ContextPolicyConfig (incl. review_tool_palette_threshold); src/context/policy.rs (decide_policy + reduce_tool_palette deterministic, now with would_* for Warn dry-run); reductions always derive from unreduced `base_request_tools` (full profile-filtered palette captured once per run after model-profile filter) in AgentLoop; non-cumulative/stateless per provider call (noop or backoff can restore full base); `request.tools=None` respected and never re-enabled; ContextPolicyRuntimeState (backoff `reduction_disabled_until_turn`, consecutive_reductions, last_* counters/names); starvation detection after tool_calls parse (main loop + drain_follow_up): if name in base but not last_selected (only base-present tools), set backoff + warn; backoff triggers (empty selected fallback, starvation) logged with `policy_backoff_active`/`reduction_disabled_until_turn`; Warn performs dry-run reduce when base passed and populates would_selected/omitted counts (logs include would_select/would_omit); `review_tool_palette_threshold=false` gates ReviewToolPalette trigger in decide_policy; diagnostics (info when log_policy_decisions): base_tool_count/selected/omitted/cap_exceeded_by_required/policy_backoff_active/reduction_disabled_until_turn + debug names/overflow; wired only to per-request tools before provider observes; defaults safe (disabled/observe). Active mutation of packer itself remains disabled. See architecture/cache-aware-context.md.
 
 ### Known Issues (Lower Priority)
 
