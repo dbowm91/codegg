@@ -1,7 +1,7 @@
-use codegg_config::schema::Config;
 use crate::model_profile::types::{
     ModelProfileConfig, PromptProfileKind, ReliabilityTier, ResolvedModelProfile, TaskStatePolicy,
 };
+use codegg_config::schema::Config;
 
 pub struct ModelProfileResolver<'a> {
     config: &'a Config,

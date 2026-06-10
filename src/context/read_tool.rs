@@ -69,9 +69,8 @@ impl crate::tool::Tool for ContextReadTool {
             .unwrap_or(20000) as usize;
 
         // Parse the handle with the typed parser
-        let parsed = ContextHandle::parse(handle_str).map_err(|e| {
-            crate::error::ToolError::Format(format!("invalid handle: {e}"))
-        })?;
+        let parsed = ContextHandle::parse(handle_str)
+            .map_err(|e| crate::error::ToolError::Format(format!("invalid handle: {e}")))?;
 
         // Exact session match, not substring
         if !parsed.same_session(&self.session_id) {
@@ -195,10 +194,7 @@ mod tests {
         let input = serde_json::json!({"handle": "invalid://handle"});
         let result = tool.execute(input).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid handle"));
+        assert!(result.unwrap_err().to_string().contains("invalid handle"));
     }
 
     #[tokio::test]
@@ -280,7 +276,8 @@ mod tests {
         let tool = ContextReadTool::new(store, "s1".into());
 
         // Offset in the middle of a multi-byte char should not panic
-        let input = serde_json::json!({"handle": "ctx://tool/s1/0/c1", "offset": 1, "max_bytes": 10});
+        let input =
+            serde_json::json!({"handle": "ctx://tool/s1/0/c1", "offset": 1, "max_bytes": 10});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("---"));
     }

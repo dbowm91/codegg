@@ -14,7 +14,6 @@
 /// this implicit coupling is fragile. In a future cleanup pass, replace
 /// these with explicit `From`/`TryFrom` implementations to get
 /// compile-time safety and remove the serde overhead.
-
 pub use codegg_core::protocol_conversions::*;
 
 // ── Agent-specific conversions (root-only) ─────────────────────────────
@@ -30,8 +29,7 @@ pub fn agents_to_dtos(agents: Vec<crate::agent::Agent>) -> Vec<codegg_protocol::
 
 pub fn dto_to_agent(a: codegg_protocol::dto::Agent) -> crate::agent::Agent {
     let json = serde_json::to_value(&a).expect("dto::Agent is always serializable");
-    serde_json::from_value(json)
-        .expect("agent::Agent is always deserializable from dto::Agent")
+    serde_json::from_value(json).expect("agent::Agent is always deserializable from dto::Agent")
 }
 
 pub fn dtos_to_agents(agents: Vec<codegg_protocol::dto::Agent>) -> Vec<crate::agent::Agent> {

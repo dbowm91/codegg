@@ -5,20 +5,20 @@
 //! and system prompts. Codegg supports multiple agent modes: Primary (full access),
 //! Subagent (limited), and All (combines multiple agents).
 
+pub mod agent_loop_factory;
 pub mod compaction;
 pub mod context_frame;
 pub mod r#loop;
 pub mod mention;
-pub mod runtime_factory;
-pub mod agent_loop_factory;
-pub mod task_tool_runtime;
-pub mod turn_runtime;
 pub mod policy;
 pub mod processor;
 pub mod prompt;
 pub mod router;
+pub mod runtime_factory;
 pub mod task;
+pub mod task_tool_runtime;
 pub mod team;
+pub mod turn_runtime;
 pub mod worker;
 
 use serde::{Deserialize, Serialize};

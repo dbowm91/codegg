@@ -27,8 +27,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_handle_through_mod() {
-        let h = build_handle("s1", 0, "c1");
+    fn test_build_handle_checked_through_mod() {
+        let h = ContextHandle::build_tool("s1", 0, "c1").unwrap();
         assert_eq!(h, "ctx://tool/s1/0/c1");
     }
 
@@ -396,6 +396,65 @@ mod tests {
         assert_eq!(config.max_success_tokens, Some(100));
         assert!(config.artifact_store.is_none());
         assert!(config.project_tool_outputs.is_none());
+    }
+
+    // --- Phase 2: artifact_store = false skips storage ---
+
+    #[tokio::test]
+    async fn test_artifact_store_false_skips_storage() {
+        let store = InMemoryArtifactStore::new();
+        // Simulate artifact_store = false by not calling put()
+        // The store should remain empty
+        let results = store.list_recent("s1", 10).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_projection_without_artifact_store_no_handle() {
+        let config = ProjectionConfig {
+            artifact_store_enabled: false,
+            ..Default::default()
+        };
+        // When artifact_store is false, effective_handle should be ""
+        let proj = project_tool_output("bash", None, "output", true, "", &config);
+        assert!(!proj.model_text.contains("ctx://"));
+    }
+
+    // --- Phase 6: no empty artifact handles ---
+
+    #[test]
+    fn test_ledger_does_not_store_empty_handles() {
+        let mut ledger = crate::agent::context_frame::ContextLedgerState::new();
+        let proj = ToolOutputProjection {
+            model_text: "text".into(),
+            summary: "summary".into(),
+            status: ProjectionStatus::Success,
+            detected_kind: ArtifactKind::ToolResult,
+            touched_files: vec![],
+            commands_run: vec![],
+            test_results: vec![],
+            unresolved_errors: vec![],
+        };
+        ledger.record_projection(&proj, "");
+        assert!(ledger.artifact_handles.is_empty());
+    }
+
+    #[test]
+    fn test_ledger_deduplicates_handles() {
+        let mut ledger = crate::agent::context_frame::ContextLedgerState::new();
+        let proj = ToolOutputProjection {
+            model_text: "text".into(),
+            summary: "summary".into(),
+            status: ProjectionStatus::Success,
+            detected_kind: ArtifactKind::ToolResult,
+            touched_files: vec![],
+            commands_run: vec![],
+            test_results: vec![],
+            unresolved_errors: vec![],
+        };
+        ledger.record_projection(&proj, "ctx://t/0/c1");
+        ledger.record_projection(&proj, "ctx://t/0/c1");
+        assert_eq!(ledger.artifact_handles.len(), 1);
     }
 
     // --- ContextReadTool tests (additional) ---

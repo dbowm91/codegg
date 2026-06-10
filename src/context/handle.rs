@@ -32,7 +32,10 @@ pub enum ContextHandleError {
     /// The turn_index segment is not a valid `usize`.
     InvalidTurnIndex(String),
     /// A segment contains `/`, control characters, or whitespace.
-    UnsafeSegment { field: &'static str, character: char },
+    UnsafeSegment {
+        field: &'static str,
+        character: char,
+    },
 }
 
 impl fmt::Display for ContextHandleError {
@@ -134,7 +137,10 @@ impl ContextHandle {
     fn check_segment_safe(segment: &str, field: &'static str) -> Result<(), ContextHandleError> {
         for ch in segment.chars() {
             if ch == '/' || ch.is_control() || ch.is_whitespace() {
-                return Err(ContextHandleError::UnsafeSegment { field, character: ch });
+                return Err(ContextHandleError::UnsafeSegment {
+                    field,
+                    character: ch,
+                });
             }
         }
         Ok(())
@@ -184,10 +190,7 @@ mod tests {
     #[test]
     fn test_parse_unsupported_kind() {
         let err = ContextHandle::parse("ctx://file/s1/0/c1").unwrap_err();
-        assert_eq!(
-            err,
-            ContextHandleError::UnsupportedKind("file".to_string())
-        );
+        assert_eq!(err, ContextHandleError::UnsupportedKind("file".to_string()));
     }
 
     #[test]
@@ -233,10 +236,7 @@ mod tests {
     #[test]
     fn test_parse_invalid_turn_index() {
         let err = ContextHandle::parse("ctx://tool/s1/abc/c1").unwrap_err();
-        assert_eq!(
-            err,
-            ContextHandleError::InvalidTurnIndex("abc".to_string())
-        );
+        assert_eq!(err, ContextHandleError::InvalidTurnIndex("abc".to_string()));
     }
 
     #[test]
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn test_clamp_to_char_boundary_multibyte() {
         let s = "héllo"; // é is 2 bytes: byte 1 (0xC3) and byte 2 (0xA9)
-        // Byte index 1 is the START of é, which IS a valid boundary
+                         // Byte index 1 is the START of é, which IS a valid boundary
         assert_eq!(clamp_to_char_boundary(s, 1), 1);
         // Byte index 2 is the SECOND byte of é, NOT a boundary — clamps down to 1
         assert_eq!(clamp_to_char_boundary(s, 2), 1);

@@ -300,24 +300,22 @@ mod tests {
 
     #[test]
     fn server_runtime_error_maps_auth_to_401() {
-        let response = AxumServerRuntimeError(ServerRuntimeError::Auth("bad token".into()))
-            .into_response();
+        let response =
+            AxumServerRuntimeError(ServerRuntimeError::Auth("bad token".into())).into_response();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
     fn server_runtime_error_maps_bind_to_500() {
-        let response = AxumServerRuntimeError(ServerRuntimeError::Bind("port in use".into()))
-            .into_response();
+        let response =
+            AxumServerRuntimeError(ServerRuntimeError::Bind("port in use".into())).into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
     fn server_runtime_error_body_does_not_expose_debug_details() {
-        let response = AxumServerRuntimeError(ServerRuntimeError::Rpc(
-            "db://prod.internal".into(),
-        ))
-        .into_response();
+        let response = AxumServerRuntimeError(ServerRuntimeError::Rpc("db://prod.internal".into()))
+            .into_response();
         let body = response_json(response);
         assert_eq!(
             body.get("error").and_then(Value::as_str),

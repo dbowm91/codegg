@@ -970,12 +970,7 @@ pub async fn semantic_checkpoint(
     if !reduced.evidence.is_empty() {
         ledger.push_str("### Evidence References\n");
         for e in &reduced.evidence {
-            ledger.push_str(&format!(
-                "- [{}] {:?}: {}\n",
-                e.id,
-                e.kind,
-                e.summary
-            ));
+            ledger.push_str(&format!("- [{}] {:?}: {}\n", e.id, e.kind, e.summary));
         }
         ledger.push('\n');
     }
@@ -1786,9 +1781,7 @@ pub fn extract_user_constraints(messages: &[Message]) -> Vec<String> {
     for msg in messages {
         if let Message::User { content } = msg {
             let text = extract_text_from_content(content);
-            let sentences: Vec<&str> = text
-                .split(['.', '!', '\n'])
-                .collect();
+            let sentences: Vec<&str> = text.split(['.', '!', '\n']).collect();
 
             for sentence in sentences {
                 let sentence = sentence.trim();

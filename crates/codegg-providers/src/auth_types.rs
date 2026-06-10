@@ -464,8 +464,8 @@ impl CredentialStore {
         expires_at: Option<DateTime<Utc>>,
         scopes: Vec<String>,
     ) -> Result<(), AuthError> {
-        let master = codegg_config::encryption::get_master_key()
-            .ok_or(AuthError::MasterKeyMissing)?;
+        let master =
+            codegg_config::encryption::get_master_key().ok_or(AuthError::MasterKeyMissing)?;
         let encrypted = crate::crypto::encrypt_to_string(secret, &master)?;
         let now = Utc::now();
         let mut records = self.records.lock().expect("poisoned");

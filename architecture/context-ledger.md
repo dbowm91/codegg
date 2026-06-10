@@ -51,6 +51,8 @@ Key methods:
 - `build_tool(session_id, turn_index, tool_call_id) -> Result<String, ContextHandleError>` — build a handle, rejecting unsafe characters
 - `same_session(session_id: &str) -> bool` — exact session match (not substring)
 
+**Handle building is always checked.** The agent loop uses `ContextHandle::build_tool()` (not raw string formatting) to construct handles. If any segment contains `/`, control characters, or whitespace, handle creation fails and no artifact is stored under an invalid key. A legacy `build_handle()` free function exists in `artifact.rs` but is not used by the agent loop.
+
 ### ContextArtifact (`artifact.rs`)
 
 ```rust
@@ -147,11 +149,22 @@ Handles use `state.turn_count` (the agent loop's turn counter) as the turn index
 
 ## Store Failure Handling
 
-If `artifact_store.put()` fails:
-- A warning is logged with tool name, tool-call id, and error
+If handle creation via `ContextHandle::build_tool()` fails (e.g., unsafe characters in session id or tool-call id):
+- A warning is logged with tool name, tool-call id, session id, and error
+- No `ctx://` handle is emitted
+- Artifact storage is skipped entirely
+
+If `artifact_store.put()` fails after a valid handle is created:
+- A warning is logged with tool name, tool-call id, session id, and error
 - No `ctx://` handle is emitted in the projected output
 - The model sees projected text without the recovery affordance
 - Message/tool-call pairing remains valid regardless of store failure
+
+When `artifact_store_enabled: false`:
+- `ContextHandle::build_tool()` is not called
+- `artifact_store.put()` is not called
+- No `ctx://` handles are emitted
+- Projection may still compress output if `project_tool_outputs: true`
 
 ## context_read Tool (`read_tool.rs`)
 
@@ -167,7 +180,7 @@ The `ContextReadTool` implements the `Tool` trait and allows the model to recove
 - Rejects malformed handles with a format error before store lookup
 - Safe UTF-8 slicing: `clamp_to_char_boundary()` prevents panics on non-ASCII boundaries
 
-**Registration:** `context_read` is registered in `ToolRegistry::with_options()` when `context_read_enabled: true` is set in `ToolRegistryOptions`. This requires `context_artifact_store` and `context_session_id` to also be `Some`. The tool is wired from `build_session_tool_registry` → `DefaultTurnRuntime` → `AgentLoopBuildInput` → `AgentLoop`.
+**Registration:** `context_read` is registered when `artifact_store = true` (the default), regardless of `project_tool_outputs`. This is because `context_read` is read-only and session-scoped, so exposing it when storage is active is reasonable even if projection is disabled. The tool is wired from `build_session_tool_registry` → `DefaultTurnRuntime` → `AgentLoopBuildInput` → `AgentLoop`.
 
 ## Integration with AgentLoop
 
@@ -175,6 +188,12 @@ The agent loop stores tool output artifacts and projects them at all three tool 
 1. Bootstrap tool loop (list tool)
 2. Main tool execution loop
 3. Streaming/retry tool processing
+
+All three paths use the same semantics:
+- **Checked handle building**: `ContextHandle::build_tool()` validates segments before creating handles. Invalid inputs produce no handle and no artifact storage.
+- **Config gating**: When `artifact_store_enabled: false`, handle building and storage are skipped entirely.
+- **Store failure logging**: Both handle creation failures and store failures emit `tracing::warn!` with tool name, tool-call id, session id, and error.
+- **No unrecoverable handles**: Malformed `ctx://` strings are never exposed to the model.
 
 The resulting `model_text` is what the model sees in the conversation. The full content is stored in the artifact store.
 
@@ -231,16 +250,18 @@ In `opencode.json`:
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `artifact_store` | `Option<bool>` | `true` | Enable artifact store; if false, no handles emitted |
-| `project_tool_outputs` | `Option<bool>` | `true` | Enable projection before model sees output |
+| `artifact_store` | `Option<bool>` | `true` | Enable artifact storage; if false, no artifacts stored, no handles emitted, `context_read` not registered |
+| `project_tool_outputs` | `Option<bool>` | `true` | Enable projection before model sees output; artifacts may still be stored if `artifact_store` is true |
 | `max_success_tokens` | `Option<usize>` | `800` | Token budget for successful outputs |
 | `max_failure_tokens` | `Option<usize>` | `2000` | Token budget for failed outputs |
-| `lossless_debug` | `Option<bool>` | `false` | Bypass projection, preserve full output; still stores artifact |
+| `lossless_debug` | `Option<bool>` | `false` | Bypass projection, preserve full output; still stores artifact if `artifact_store` is true |
+
+**`context_read` registration**: The `context_read` tool is registered when `artifact_store = true`, regardless of `project_tool_outputs`. This allows explicit artifact recovery even when projection is disabled.
 
 ### Semantic Notes
 
-- `artifact_store: false` — Do not store artifacts or emit handles. Projection text does not imply recoverability.
-- `project_tool_outputs: false` — Do not compress/project model-facing tool results. Preserve full redacted tool output.
+- `artifact_store: false` — Do not store artifacts, do not emit handles, do not register `context_read`. Projection text does not imply recoverability. No `ctx://` handles are generated.
+- `project_tool_outputs: false` — Do not compress/project model-facing tool results. Preserve full redacted tool output. Artifacts may still be stored if `artifact_store` is true.
 - `lossless_debug: true` — Bypass projection, append full redacted output to model transcript. If `artifact_store` is also true, still store the artifact for diagnostics/replay.
 
 ## Persistence Note

@@ -52,7 +52,7 @@ impl ContextLedgerState {
                 .split_off(self.unresolved_errors.len() - 10);
         }
 
-        if !self.artifact_handles.contains(&handle.to_string()) {
+        if !handle.is_empty() && !self.artifact_handles.contains(&handle.to_string()) {
             self.artifact_handles.push(handle.to_string());
         }
     }

@@ -118,4 +118,3 @@ impl Lsp {
         self.service.shutdown_all().await
     }
 }
-

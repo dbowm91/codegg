@@ -21,10 +21,9 @@ pub async fn submit_question(
     Json(req): Json<SubmitQuestionRequest>,
 ) -> Result<Json<QuestionResponse>, AxumAppError> {
     if req.session_id != session_id {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "session id mismatch".to_string(),
-        ))
-        .into());
+        return Err(
+            AppError::Storage(StorageError::NotFound("session id mismatch".to_string())).into(),
+        );
     }
 
     // Normalize answers to consistent JSON string format

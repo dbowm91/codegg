@@ -116,17 +116,42 @@ pub fn compute_content_hash(content: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::handle::ContextHandle;
 
     #[test]
-    fn test_build_handle() {
-        let handle = build_handle("sess123", 5, "call_abc");
+    fn test_build_handle_checked_valid() {
+        let handle = ContextHandle::build_tool("sess123", 5, "call_abc").unwrap();
         assert_eq!(handle, "ctx://tool/sess123/5/call_abc");
     }
 
     #[test]
-    fn test_build_handle_special_chars() {
-        let handle = build_handle("s-1", 0, "c");
+    fn test_build_handle_checked_special_chars() {
+        let handle = ContextHandle::build_tool("s-1", 0, "c").unwrap();
         assert_eq!(handle, "ctx://tool/s-1/0/c");
+    }
+
+    #[test]
+    fn test_build_handle_rejects_whitespace_in_session() {
+        let err = ContextHandle::build_tool("s 1", 0, "c1").unwrap_err();
+        assert!(matches!(
+            err,
+            crate::context::handle::ContextHandleError::UnsafeSegment {
+                field: "session_id",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_build_handle_rejects_slash_in_tool_call_id() {
+        let err = ContextHandle::build_tool("s1", 0, "c/1").unwrap_err();
+        assert!(matches!(
+            err,
+            crate::context::handle::ContextHandleError::UnsafeSegment {
+                field: "tool_call_id",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -352,6 +377,51 @@ mod tests {
             .unwrap();
         let got = store.get("ctx://tool/s1/0/c0").await.unwrap().unwrap();
         assert_eq!(got.redacted_content, "new");
+    }
+
+    // --- Phase 3: Failing mock store ---
+
+    struct FailingStore;
+
+    #[async_trait]
+    impl ContextArtifactStore for FailingStore {
+        async fn put(&self, _artifact: ContextArtifact) -> anyhow::Result<()> {
+            anyhow::bail!("simulated store failure")
+        }
+        async fn get(&self, _handle: &str) -> anyhow::Result<Option<ContextArtifact>> {
+            anyhow::bail!("simulated store failure")
+        }
+        async fn list_recent(
+            &self,
+            _session_id: &str,
+            _limit: usize,
+        ) -> anyhow::Result<Vec<ContextArtifact>> {
+            anyhow::bail!("simulated store failure")
+        }
+    }
+
+    #[tokio::test]
+    async fn test_failing_store_returns_error() {
+        let store = FailingStore;
+        let artifact = ContextArtifact {
+            handle: "ctx://tool/s1/0/c1".into(),
+            session_id: "s1".into(),
+            turn_index: 0,
+            tool_call_id: Some("c1".into()),
+            tool_name: Some("bash".into()),
+            kind: ArtifactKind::ToolResult,
+            created_at_ms: 1000,
+            content_hash: "abc".into(),
+            redacted_content: "output".into(),
+            raw_bytes_len: 6,
+            estimated_tokens: 2,
+        };
+        let result = store.put(artifact).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("simulated store failure"));
     }
 
     #[test]

@@ -27,7 +27,6 @@ impl ModelDiscoveryService {
         }
     }
 
-    
     pub fn with_pool(mut self, pool: SqlitePool) -> Self {
         self.pool = Some(pool);
         self
@@ -38,7 +37,6 @@ impl ModelDiscoveryService {
     }
 
     async fn load_from_cache_or_embedded(&self) {
-        
         if let Some(ref pool) = self.pool {
             if let Ok(models) = self.load_from_db(pool).await {
                 if !models.is_empty() {
@@ -77,7 +75,6 @@ impl ModelDiscoveryService {
             .collect();
     }
 
-    
     async fn load_from_db(
         &self,
         pool: &SqlitePool,
@@ -169,7 +166,6 @@ impl ModelDiscoveryService {
             })
             .collect();
 
-        
         if let Some(ref pool) = self.pool {
             if let Err(e) = self.save_to_db(pool, &internal_models).await {
                 tracing::warn!("failed to cache models: {}", e);
@@ -188,7 +184,6 @@ impl ModelDiscoveryService {
         all_models
     }
 
-    
     async fn save_to_db(
         &self,
         pool: &SqlitePool,
@@ -264,7 +259,7 @@ impl ModelDiscoveryService {
             let mut last = self.last_refresh.write().await;
             *last = None;
         }
-        
+
         if let Some(ref pool) = self.pool {
             let _ = sqlx::query("DELETE FROM cached_models").execute(pool).await;
         }

@@ -2146,10 +2146,7 @@ impl UsageStore {
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<UsageRecord>, StorageError> {
-        let rows: Vec<UsageRow> = if let Some(
-            limit,
-        ) = limit
-        {
+        let rows: Vec<UsageRow> = if let Some(limit) = limit {
             sqlx::query_as(
                 r#"
                 SELECT id, session_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, timestamp

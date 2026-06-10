@@ -20,9 +20,9 @@
 
 use std::io::{self, Read};
 
+use crate::auth::AuthError;
 use crate::auth::CredentialKind;
 use crate::auth::CredentialStore;
-use crate::auth::AuthError;
 use crate::error::AppError;
 
 const VALID_ID_CHARS: &str = "provider/account id must contain only [A-Za-z0-9_-] characters";

@@ -169,10 +169,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                     } else {
                         None
                     };
-                    crate::goal::render::render_goal_context(
-                        &goal,
-                        checkpoint_excerpt.as_deref(),
-                    )
+                    crate::goal::render::render_goal_context(&goal, checkpoint_excerpt.as_deref())
                 }
                 _ => String::new(),
             }
@@ -247,11 +244,9 @@ impl TurnRuntime for DefaultTurnRuntime {
                         },
                     )
                     .await;
-                crate::bus::global::GlobalEventBus::publish(
-                    crate::bus::events::AppEvent::Error {
-                        message: format!("Agent error: {}", e),
-                    },
-                );
+                crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::Error {
+                    message: format!("Agent error: {}", e),
+                });
                 crate::bus::global::GlobalEventBus::publish(
                     crate::bus::events::AppEvent::AgentFinished {
                         session_id: session_id_for_spawn,
@@ -287,6 +282,9 @@ impl TurnRuntime for DefaultTurnRuntime {
             }
         });
 
-        Ok(TurnRunOutput { cancel_tx, steer_tx })
+        Ok(TurnRunOutput {
+            cancel_tx,
+            steer_tx,
+        })
     }
 }

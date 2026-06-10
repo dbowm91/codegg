@@ -35,7 +35,10 @@ pub struct InprocCoreClient {
 
 impl InprocCoreClient {
     /// Construct from a bundled [`runtime_deps::CoreRuntimeDeps`].
-    pub fn with_deps(deps: runtime_deps::CoreRuntimeDeps, _config: crate::config::schema::Config) -> Self {
+    pub fn with_deps(
+        deps: runtime_deps::CoreRuntimeDeps,
+        _config: crate::config::schema::Config,
+    ) -> Self {
         let pool = deps.pool.clone();
         let daemon = Arc::new(daemon::CoreDaemon::with_deps(deps));
         Self {
@@ -53,7 +56,12 @@ impl InprocCoreClient {
         config: crate::config::schema::Config,
     ) -> Self {
         Self::with_deps(
-            runtime_deps::CoreRuntimeDeps::new(pool.clone(), subagent_pool, memory_store, bg_scheduler),
+            runtime_deps::CoreRuntimeDeps::new(
+                pool.clone(),
+                subagent_pool,
+                memory_store,
+                bg_scheduler,
+            ),
             config,
         )
     }

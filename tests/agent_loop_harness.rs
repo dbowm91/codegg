@@ -3517,8 +3517,10 @@ async fn test_question_http_route_wakes_waiting_receiver() {
 async fn test_permission_http_route_no_pending_permission() {
     use codegg::bus::{PermissionDecision, PermissionRegistry};
 
-    let responded =
-        PermissionRegistry::respond("nonexistent-perm".to_string(), PermissionDecision::AllowOnce);
+    let responded = PermissionRegistry::respond(
+        "nonexistent-perm".to_string(),
+        PermissionDecision::AllowOnce,
+    );
     assert!(
         !responded,
         "respond should return false when no permission is pending"

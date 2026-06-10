@@ -84,9 +84,10 @@ impl Tts {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::warn!("say command failed: {}", stderr);
-            return Err(AppError::Io(std::io::Error::other(
-                format!("say command failed: {}", stderr),
-            )));
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "say command failed: {}",
+                stderr
+            ))));
         }
         Ok(())
     }
@@ -107,9 +108,10 @@ impl Tts {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::warn!("pkill say failed: {}", stderr);
-            return Err(AppError::Io(std::io::Error::other(
-                format!("pkill say failed: {}", stderr),
-            )));
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "pkill say failed: {}",
+                stderr
+            ))));
         }
         Ok(())
     }

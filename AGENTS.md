@@ -243,8 +243,10 @@ These items were verified during review sessions:
 | Boundary script | `scripts/check-core-boundary.sh` | Verifies no forbidden imports/dependencies in codegg-core |
 | ckcore alias | `.cargo/config.toml` | `cargo ckcore` = `check -p codegg-core` |
 | Context module | artifact storage + projection + context_read tool | `src/context/` |
-| ProjectionConfig defaults | max_success=800, max_failure=2000, enabled=true | `src/context/projection.rs` |
-| ContextLedgerState limits | 20 files, 10 commands, 10 test results, 10 errors | `src/agent/context_frame.rs` |
+| ProjectionConfig defaults | max_success=800, max_failure=2000, enabled=true, artifact_store=true | `src/context/projection.rs` |
+| ContextLedgerState limits | 20 files, 10 commands, 10 test results, 10 errors; empty handles rejected | `src/agent/context_frame.rs` |
+| context_read registration | Registered when `artifact_store = true`, regardless of `project_tool_outputs` | `src/tool/factory.rs` |
+| Handle building | Uses `ContextHandle::build_tool()` (checked); raw `build_handle()` not used by agent loop | `src/context/handle.rs` |
 
 ### Security Notes
 

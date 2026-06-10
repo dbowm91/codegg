@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::tool::task::TaskStore;
 use crate::agent::worker::SubAgentSpawner;
+use crate::tool::task::TaskStore;
 
 /// Narrow runtime DTO for constructing the task/subagent tool.
 ///

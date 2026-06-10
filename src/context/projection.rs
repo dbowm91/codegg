@@ -287,7 +287,7 @@ fn extract_test_results(output: &str) -> Vec<String> {
         "tests failed",
         "assertions:",
         "assertion failed",
-        "FAILED ",  // pytest-style
+        "FAILED ", // pytest-style
         "failures:",
     ];
     for line in output.lines() {

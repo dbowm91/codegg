@@ -25,22 +25,17 @@ pub fn build_session_tool_registry(
     task_tool_runtime: Option<&crate::agent::task_tool_runtime::TaskToolRuntime>,
     task_state_policy: TaskStatePolicy,
 ) -> (ToolRegistry, Arc<dyn ContextArtifactStore>) {
-    let todo_state = Arc::new(tokio::sync::Mutex::new(
-        crate::task_state::TodoState::new(),
-    ));
+    let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
 
     // Determine whether context_read should be registered.
     let ctx_config = config.context.as_ref();
-    let artifact_store_enabled = ctx_config
-        .and_then(|c| c.artifact_store)
-        .unwrap_or(true);
-    let project_enabled = ctx_config
+    let artifact_store_enabled = ctx_config.and_then(|c| c.artifact_store).unwrap_or(true);
+    let _project_enabled = ctx_config
         .and_then(|c| c.project_tool_outputs)
         .unwrap_or(true);
-    let context_read_enabled = artifact_store_enabled && project_enabled;
+    let context_read_enabled = artifact_store_enabled;
 
-    let artifact_store: Arc<dyn ContextArtifactStore> =
-        Arc::new(InMemoryArtifactStore::new());
+    let artifact_store: Arc<dyn ContextArtifactStore> = Arc::new(InMemoryArtifactStore::new());
 
     let mut tool_registry = ToolRegistry::with_options(ToolRegistryOptions {
         todo_state: Some(todo_state),

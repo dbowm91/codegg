@@ -52,10 +52,7 @@ pub async fn get_session(
         .await?
         .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
     if session.project_id != state.project_dir {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "session not found".into(),
-        ))
-        .into());
+        return Err(AppError::Storage(StorageError::NotFound("session not found".into())).into());
     }
     Ok(Json(session))
 }
@@ -89,10 +86,7 @@ pub async fn archive_session(
         .await?
         .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
     if session.project_id != state.project_dir {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "session not found".into(),
-        ))
-        .into());
+        return Err(AppError::Storage(StorageError::NotFound("session not found".into())).into());
     }
     store.archive(&session.id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -108,10 +102,7 @@ pub async fn fork_session(
         .await?
         .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
     if existing.project_id != state.project_dir {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "session not found".into(),
-        ))
-        .into());
+        return Err(AppError::Storage(StorageError::NotFound("session not found".into())).into());
     }
     let forked = store.fork(&id).await?;
     Ok((StatusCode::CREATED, Json(forked)))
@@ -127,10 +118,7 @@ pub async fn share_session(
         .await?
         .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
     if existing.project_id != state.project_dir {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "session not found".into(),
-        ))
-        .into());
+        return Err(AppError::Storage(StorageError::NotFound("session not found".into())).into());
     }
     let session = store.share_session(&id).await?;
     Ok(Json(session))
@@ -146,10 +134,7 @@ pub async fn unshare_session(
         .await?
         .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
     if existing.project_id != state.project_dir {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "session not found".into(),
-        ))
-        .into());
+        return Err(AppError::Storage(StorageError::NotFound("session not found".into())).into());
     }
     let session = store.unshare_session(&id).await?;
     Ok(Json(session))
@@ -166,10 +151,7 @@ pub async fn revert_session(
         .await?
         .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
     if existing.project_id != state.project_dir {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "session not found".into(),
-        ))
-        .into());
+        return Err(AppError::Storage(StorageError::NotFound("session not found".into())).into());
     }
     let session = store.revert_to_message(&id, &req.message_id).await?;
     Ok(Json(session))
@@ -185,10 +167,7 @@ pub async fn unrevert_session(
         .await?
         .ok_or_else(|| AppError::Storage(StorageError::NotFound("session not found".into())))?;
     if existing.project_id != state.project_dir {
-        return Err(AppError::Storage(StorageError::NotFound(
-            "session not found".into(),
-        ))
-        .into());
+        return Err(AppError::Storage(StorageError::NotFound("session not found".into())).into());
     }
     let session = store.unrevert_session(&id).await?;
     Ok(Json(session))

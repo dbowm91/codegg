@@ -98,9 +98,7 @@ impl From<reqwest::Error> for ProviderError {
 impl From<crate::circuit::CircuitError> for ProviderError {
     fn from(e: crate::circuit::CircuitError) -> Self {
         match e {
-            crate::circuit::CircuitError::Open(name) => {
-                ProviderError::CircuitOpen(name)
-            }
+            crate::circuit::CircuitError::Open(name) => ProviderError::CircuitOpen(name),
         }
     }
 }

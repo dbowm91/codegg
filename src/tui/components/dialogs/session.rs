@@ -216,9 +216,7 @@ impl SessionDialog {
 
         match self.sort_by {
             SortBy::Date => sessions.sort_by_key(|b| std::cmp::Reverse(b.time_updated)),
-            SortBy::Title => {
-                sessions.sort_by_key(|a| a.title.to_lowercase())
-            }
+            SortBy::Title => sessions.sort_by_key(|a| a.title.to_lowercase()),
             SortBy::Activity => {
                 sessions.sort_by(|a, b| {
                     let a_count = self.message_counts.get(&a.id).unwrap_or(&0);

@@ -1,8 +1,6 @@
-use crate::auth_types::Credential;
 use crate::anthropic::AnthropicProvider;
-use crate::openai_compatible::{
-    OpenAiCompatibleConfig, OpenAiCompatibleProvider, ToolChoice,
-};
+use crate::auth_types::Credential;
+use crate::openai_compatible::{OpenAiCompatibleConfig, OpenAiCompatibleProvider, ToolChoice};
 use crate::{ModelInfo, Provider};
 
 /// xAI models exposed by the OpenAI-compatible endpoint.

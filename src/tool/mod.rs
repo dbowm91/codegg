@@ -296,7 +296,9 @@ impl ToolRegistry {
             ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
                 let lsp_service = options.lsp_service.unwrap_or_else(|| {
                     Arc::new(crate::lsp::service::LspService::new(
-                        crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+                        crate::lsp::config_lsp_to_egglsp(
+                            crate::config::schema::LspConfig::default(),
+                        ),
                     ))
                 });
                 registry.register(crate::tool::lsp::LspTool::new(lsp_service));
@@ -318,7 +320,9 @@ impl ToolRegistry {
                     // report this row as `fallback-native`.
                     let lsp_service = options.lsp_service.clone().unwrap_or_else(|| {
                         Arc::new(crate::lsp::service::LspService::new(
-                            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+                            crate::lsp::config_lsp_to_egglsp(
+                                crate::config::schema::LspConfig::default(),
+                            ),
                         ))
                     });
                     registry.register(crate::tool::lsp::LspTool::new(lsp_service));

@@ -94,13 +94,6 @@ fn redact_local_paths(input: &str) -> String {
     result
 }
 
-fn tool_call_name_from_results(tool_call_id: &str, tool_calls: &[ToolCall]) -> Option<String> {
-    tool_calls
-        .iter()
-        .find(|tc| tc.id.as_str() == tool_call_id)
-        .map(|tc| tc.name.to_string())
-}
-
 fn harden_history(messages: &mut Vec<Message>) {
     let mut hardened: Vec<Message> = Vec::with_capacity(messages.len() + 8);
     let mut pending_tool_calls: BTreeMap<String, String> = BTreeMap::new();
@@ -2531,9 +2524,7 @@ impl AgentLoop {
                     || (self
                         .task_state_policy
                         .inject_after_tool_calls
-                        .is_some_and(|threshold| {
-                            todo.tool_calls_since_injection >= threshold
-                        }));
+                        .is_some_and(|threshold| todo.tool_calls_since_injection >= threshold));
                 if should_inject {
                     if let Some(reminder) =
                         crate::task_state::build_todo_reminder(&todo, &self.task_state_policy)
@@ -2613,7 +2604,9 @@ impl AgentLoop {
                         tool_id: synthetic.id.to_string(),
                         arguments: synthetic.arguments.to_string(),
                     });
-                    let tool_results = self.execute_tool_calls(std::slice::from_ref(&synthetic)).await?;
+                    let tool_results = self
+                        .execute_tool_calls(std::slice::from_ref(&synthetic))
+                        .await?;
                     let assistant = Message::Assistant {
                         content: vec![],
                         tool_calls: vec![synthetic],
@@ -2629,36 +2622,65 @@ impl AgentLoop {
                             success: tool_result_is_success(content),
                         });
                         let redacted_content = redact_local_paths(content);
+                        let tool_name_str = "list";
 
                         let turn = self.state.turn_count;
-                        let handle = crate::context::build_handle(&self.session_id, turn, id);
-
-                        let store_ok = self
-                            .artifact_store
-                            .put(crate::context::ContextArtifact {
-                                handle: handle.clone(),
-                                session_id: self.session_id.clone(),
-                                turn_index: turn,
-                                tool_call_id: Some(id.clone()),
-                                tool_name: Some("list".to_string()),
-                                kind: crate::context::ArtifactKind::ToolResult,
-                                created_at_ms: chrono::Utc::now().timestamp_millis(),
-                                content_hash: crate::context::compute_content_hash(&redacted_content),
-                                redacted_content: redacted_content.clone(),
-                                raw_bytes_len: redacted_content.len(),
-                                estimated_tokens: crate::context::estimate_tokens(&redacted_content),
-                            })
-                            .await
-                            .is_ok();
-
-                        let effective_handle = if store_ok && self.projection_config.artifact_store_enabled {
-                            handle.as_str()
+                        let handle_result =
+                            crate::context::ContextHandle::build_tool(&self.session_id, turn, id);
+                        let effective_handle = if self.projection_config.artifact_store_enabled {
+                            match handle_result {
+                                Ok(ref handle) => {
+                                    let store_result = self
+                                        .artifact_store
+                                        .put(crate::context::ContextArtifact {
+                                            handle: handle.clone(),
+                                            session_id: self.session_id.clone(),
+                                            turn_index: turn,
+                                            tool_call_id: Some(id.clone()),
+                                            tool_name: Some(tool_name_str.to_string()),
+                                            kind: crate::context::ArtifactKind::ToolResult,
+                                            created_at_ms: chrono::Utc::now().timestamp_millis(),
+                                            content_hash: crate::context::compute_content_hash(
+                                                &redacted_content,
+                                            ),
+                                            redacted_content: redacted_content.clone(),
+                                            raw_bytes_len: redacted_content.len(),
+                                            estimated_tokens: crate::context::estimate_tokens(
+                                                &redacted_content,
+                                            ),
+                                        })
+                                        .await;
+                                    match store_result {
+                                        Ok(()) => handle.as_str(),
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                tool_call_id = %id,
+                                                tool_name = %tool_name_str,
+                                                session_id = %self.session_id,
+                                                error = %err,
+                                                "failed to store context artifact; omitting recovery handle"
+                                            );
+                                            ""
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        tool_call_id = %id,
+                                        tool_name = %tool_name_str,
+                                        session_id = %self.session_id,
+                                        error = %err,
+                                        "failed to build context handle; omitting recovery handle"
+                                    );
+                                    ""
+                                }
+                            }
                         } else {
                             ""
                         };
 
                         let proj = crate::context::project_tool_output(
-                            "list",
+                            tool_name_str,
                             None,
                             &redacted_content,
                             tool_result_is_success(content),
@@ -2666,7 +2688,8 @@ impl AgentLoop {
                             &self.projection_config,
                         );
 
-                        self.context_ledger.record_projection(&proj, effective_handle);
+                        self.context_ledger
+                            .record_projection(&proj, effective_handle);
 
                         let msg = Message::Tool {
                             tool_call_id: id.clone().into(),
@@ -2876,33 +2899,6 @@ impl AgentLoop {
 
                 let redacted_content = redact_local_paths(content);
 
-                let turn = self.state.turn_count;
-                let handle = crate::context::build_handle(&self.session_id, turn, id);
-
-                let store_ok = self
-                    .artifact_store
-                    .put(crate::context::ContextArtifact {
-                        handle: handle.clone(),
-                        session_id: self.session_id.clone(),
-                        turn_index: turn,
-                        tool_call_id: Some(id.clone()),
-                        tool_name: tool_call_name_from_results(id, &tool_calls),
-                        kind: crate::context::ArtifactKind::ToolResult,
-                        created_at_ms: chrono::Utc::now().timestamp_millis(),
-                        content_hash: crate::context::compute_content_hash(&redacted_content),
-                        redacted_content: redacted_content.clone(),
-                        raw_bytes_len: redacted_content.len(),
-                        estimated_tokens: crate::context::estimate_tokens(&redacted_content),
-                    })
-                    .await
-                    .is_ok();
-
-                let effective_handle = if store_ok && self.projection_config.artifact_store_enabled {
-                    handle.as_str()
-                } else {
-                    ""
-                };
-
                 let tool_args = tool_calls
                     .iter()
                     .find(|tc| tc.id.as_str() == id.as_str())
@@ -2913,6 +2909,61 @@ impl AgentLoop {
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
 
+                let turn = self.state.turn_count;
+                let handle_result =
+                    crate::context::ContextHandle::build_tool(&self.session_id, turn, id);
+                let effective_handle = if self.projection_config.artifact_store_enabled {
+                    match handle_result {
+                        Ok(ref handle) => {
+                            let store_result = self
+                                .artifact_store
+                                .put(crate::context::ContextArtifact {
+                                    handle: handle.clone(),
+                                    session_id: self.session_id.clone(),
+                                    turn_index: turn,
+                                    tool_call_id: Some(id.clone()),
+                                    tool_name: Some(tool_name_str.clone()),
+                                    kind: crate::context::ArtifactKind::ToolResult,
+                                    created_at_ms: chrono::Utc::now().timestamp_millis(),
+                                    content_hash: crate::context::compute_content_hash(
+                                        &redacted_content,
+                                    ),
+                                    redacted_content: redacted_content.clone(),
+                                    raw_bytes_len: redacted_content.len(),
+                                    estimated_tokens: crate::context::estimate_tokens(
+                                        &redacted_content,
+                                    ),
+                                })
+                                .await;
+                            match store_result {
+                                Ok(()) => handle.as_str(),
+                                Err(err) => {
+                                    tracing::warn!(
+                                        tool_call_id = %id,
+                                        tool_name = %tool_name_str,
+                                        session_id = %self.session_id,
+                                        error = %err,
+                                        "failed to store context artifact; omitting recovery handle"
+                                    );
+                                    ""
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                tool_call_id = %id,
+                                tool_name = %tool_name_str,
+                                session_id = %self.session_id,
+                                error = %err,
+                                "failed to build context handle; omitting recovery handle"
+                            );
+                            ""
+                        }
+                    }
+                } else {
+                    ""
+                };
+
                 let proj = crate::context::project_tool_output(
                     &tool_name_str,
                     tool_args.as_deref(),
@@ -2922,7 +2973,8 @@ impl AgentLoop {
                     &self.projection_config,
                 );
 
-                self.context_ledger.record_projection(&proj, effective_handle);
+                self.context_ledger
+                    .record_projection(&proj, effective_handle);
 
                 let msg = Message::Tool {
                     tool_call_id: id.clone().into(),
@@ -3945,35 +3997,63 @@ impl AgentLoop {
 
                     let redacted_content = redact_local_paths(content);
 
-                    let turn = self.state.turn_count;
-                    let handle = crate::context::build_handle(&self.session_id, turn, id);
-
                     let tool_name_str = tool_calls
                         .iter()
                         .find(|tc| tc.id.as_str() == id.as_str())
                         .map(|tc| tc.name.to_string())
                         .unwrap_or_default();
 
-                    let store_ok = self
-                        .artifact_store
-                        .put(crate::context::ContextArtifact {
-                            handle: handle.clone(),
-                            session_id: self.session_id.clone(),
-                            turn_index: turn,
-                            tool_call_id: Some(id.clone()),
-                            tool_name: Some(tool_name_str.clone()),
-                            kind: crate::context::ArtifactKind::ToolResult,
-                            created_at_ms: chrono::Utc::now().timestamp_millis(),
-                            content_hash: crate::context::compute_content_hash(&redacted_content),
-                            redacted_content: redacted_content.clone(),
-                            raw_bytes_len: redacted_content.len(),
-                            estimated_tokens: crate::context::estimate_tokens(&redacted_content),
-                        })
-                        .await
-                        .is_ok();
-
-                    let effective_handle = if store_ok && self.projection_config.artifact_store_enabled {
-                        handle.as_str()
+                    let turn = self.state.turn_count;
+                    let handle_result =
+                        crate::context::ContextHandle::build_tool(&self.session_id, turn, id);
+                    let effective_handle = if self.projection_config.artifact_store_enabled {
+                        match handle_result {
+                            Ok(ref handle) => {
+                                let store_result = self
+                                    .artifact_store
+                                    .put(crate::context::ContextArtifact {
+                                        handle: handle.clone(),
+                                        session_id: self.session_id.clone(),
+                                        turn_index: turn,
+                                        tool_call_id: Some(id.clone()),
+                                        tool_name: Some(tool_name_str.clone()),
+                                        kind: crate::context::ArtifactKind::ToolResult,
+                                        created_at_ms: chrono::Utc::now().timestamp_millis(),
+                                        content_hash: crate::context::compute_content_hash(
+                                            &redacted_content,
+                                        ),
+                                        redacted_content: redacted_content.clone(),
+                                        raw_bytes_len: redacted_content.len(),
+                                        estimated_tokens: crate::context::estimate_tokens(
+                                            &redacted_content,
+                                        ),
+                                    })
+                                    .await;
+                                match store_result {
+                                    Ok(()) => handle.as_str(),
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            tool_call_id = %id,
+                                            tool_name = %tool_name_str,
+                                            session_id = %self.session_id,
+                                            error = %err,
+                                            "failed to store context artifact; omitting recovery handle"
+                                        );
+                                        ""
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    tool_call_id = %id,
+                                    tool_name = %tool_name_str,
+                                    session_id = %self.session_id,
+                                    error = %err,
+                                    "failed to build context handle; omitting recovery handle"
+                                );
+                                ""
+                            }
+                        }
                     } else {
                         ""
                     };
@@ -3992,7 +4072,8 @@ impl AgentLoop {
                         &self.projection_config,
                     );
 
-                    self.context_ledger.record_projection(&proj, effective_handle);
+                    self.context_ledger
+                        .record_projection(&proj, effective_handle);
 
                     let msg = Message::Tool {
                         tool_call_id: id.clone().into(),

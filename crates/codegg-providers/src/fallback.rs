@@ -1,7 +1,7 @@
 #[allow(unused_imports)]
 use super::{ChatEvent, ChatRequest, EventStream, ModelInfo, Provider, TokenUsage};
-use crate::error::ProviderError;
 use crate::circuit::CircuitBreaker;
+use crate::error::ProviderError;
 #[allow(unused_imports)]
 use async_trait::async_trait;
 
