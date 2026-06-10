@@ -91,10 +91,6 @@ impl ContextArtifactStore for InMemoryArtifactStore {
     }
 }
 
-pub fn build_handle(session_id: &str, turn_index: usize, tool_call_id: &str) -> String {
-    format!("ctx://tool/{session_id}/{turn_index}/{tool_call_id}")
-}
-
 pub fn estimate_tokens(text: &str) -> usize {
     if text.is_empty() {
         return 0;

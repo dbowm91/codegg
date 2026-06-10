@@ -2,18 +2,21 @@ pub mod artifact;
 pub mod block;
 pub mod block_builder;
 pub mod cache_stats;
+pub mod effective_cost;
 pub mod handle;
 pub mod packer;
 pub mod projection;
 pub mod read_tool;
 pub mod tool_hash;
+pub mod usage_normalize;
 
 pub use artifact::{
-    build_handle, compute_content_hash, estimate_tokens, stable_hash_hex, ArtifactKind,
-    ContextArtifact, ContextArtifactStore, InMemoryArtifactStore,
+    compute_content_hash, estimate_tokens, stable_hash_hex, ArtifactKind, ContextArtifact,
+    ContextArtifactStore, InMemoryArtifactStore,
 };
 pub use block::{CacheClass, ContextBlock, ContextBlockId, ContextBlockKind, Lossiness};
 pub use cache_stats::{CacheStatsEntry, ContextCacheStats};
+pub use effective_cost::{EffectiveCostAction, EffectiveCostAnalysis};
 pub use handle::{clamp_to_char_boundary, ContextHandle, ContextHandleError, ContextHandleKind};
 pub use packer::{ContextPackBudget, ContextPackResult, OmissionReason, OmittedContextBlock};
 pub use projection::{
@@ -23,6 +26,7 @@ pub use read_tool::ContextReadTool;
 pub use tool_hash::tool_definitions_hash;
 
 pub use block_builder::ContextBlockBuilder;
+pub use usage_normalize::{normalize_from_finish, NormalizedProviderUsage};
 
 #[cfg(test)]
 mod tests {

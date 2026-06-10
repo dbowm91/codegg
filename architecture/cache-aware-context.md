@@ -16,6 +16,8 @@ src/context/
 ├── packer.rs         # pack() algorithm — sort by tier/priority, budget enforcement
 ├── cache_stats.rs    # ContextCacheStats — per-model cache hit rate tracking
 ├── tool_hash.rs      # tool_definitions_hash — deterministic toolset identity
+├── usage_normalize.rs # NormalizedProviderUsage — provider-agnostic token normalization
+├── effective_cost.rs  # EffectiveCostAnalysis — diagnostic-only cost recommendations
 └── (existing files)  # artifact.rs, handle.rs, projection.rs, read_tool.rs
 ```
 
@@ -171,6 +173,8 @@ pub struct CacheStatsEntry {
 
 Stats are session-local and in-memory. They allow the packer (and diagnostics) to measure whether cache-aware ordering is actually improving hit rates.
 
+**Note on cached-token telemetry**: Cached-token values are only reported by providers that support prompt caching (currently OpenAI and Anthropic). Other providers may report zero or omit cached tokens entirely. Cache stats for non-caching providers will show 0% hit rates, which is expected.
+
 ## Agent Loop Integration (`src/agent/loop.rs`)
 
 The packer is invoked via `observe_context_pack` (which calls the private `compute_context_pack_result` / `build_packer_candidates`) at these phases during a turn: InitialRequest, AfterToolResults, AfterCompaction, BeforeProviderCall, BeforeFinalization.
@@ -200,9 +204,30 @@ Example log (info level when `log_diagnostics` enabled):
 context-packer[BeforeProviderCall]: model=anthropic/claude-..., candidates=12, packed=9, stable_prefix_tokens=12450, slow_changing_tokens=3870, volatile_tokens=9200, omitted=3, tool_definitions_hash=..., cache_hit_rate=0.6123
 ```
 
+Enriched diagnostic log showing effective-cost fields:
+
+```
+context-packer[BeforeProviderCall]: model=gpt-4, candidates=15000, packed=12000, stable_prefix_tokens=5000, slow_changing_tokens=3000, volatile_tokens=4000, omitted=2, tool_definitions_hash=abc123, cache_hit_rate=0.6500
+context-packer[BeforeProviderCall]: recommended_action=preserve_stable_prefix, uncached_input_tokens=3500, effective_cache_hit_rate=0.6500, effective_reason=cache hit rate 0.65 is high and stable prefix is 42% of total; preserving stable prefix maximizes cache reuse
+```
+
 Per-block omission details (top omitted) are logged at debug level.
 
 This is an observation/diagnostic layer to inform later effective-cost compaction. It does not change request behavior.
+
+### Effective-Cost Analysis (`effective_cost.rs`)
+
+`EffectiveCostAnalysis` provides diagnostic-only cost recommendations based on cache hit rates and tier composition. It operates on the output of `observe_context_pack` and `ContextCacheStats` to suggest actions that *would* improve cache efficiency, but it does **not** mutate requests, trigger compaction, or alter provider calls.
+
+Key properties:
+- **Diagnostic only**: Outputs recommendations (e.g., `preserve_stable_prefix`, `reorder_blocks`) but takes no action.
+- **No compaction**: Does not trigger compaction or removal of content.
+- **No request mutation**: Does not modify the outgoing provider request in any way.
+- **Stable-prefix preservation decisions**: Future work — the analysis can recommend preserving stable prefixes, but this is not yet wired into the packer's behavior.
+
+### Usage Normalization (`usage_normalize.rs`)
+
+`NormalizedProviderUsage` normalizes raw provider token counts (input, output, cached) into a provider-agnostic representation. This allows cache stats and effective-cost analysis to work uniformly across providers that report tokens differently (e.g., some providers count cached tokens as a subset of input, others report them separately).
 
 ## Active Mode (Disabled)
 
@@ -250,9 +275,10 @@ Both systems are complementary. Projection reduces the size of individual `ToolR
 
 ## What Is Not Implemented Yet
 
-- **Effective-cost compaction**: The packer currently uses a simple token count for budget enforcement. A future enhancement would weight blocks by their cache effectiveness (cached tokens cost less than uncached tokens), allowing the packer to make cost-aware decisions about which volatile blocks to omit.
+- **Effective-cost compaction (active)**: The diagnostic analysis (`EffectiveCostAnalysis`) is now in place and produces recommendations, but no code path acts on those recommendations. A future enhancement would wire the analysis output into the packer's budget enforcement, allowing cost-aware decisions about which volatile blocks to omit.
+- **Stable-prefix preservation decisions**: The analysis can recommend preserving stable prefixes, but the packer does not yet act on this. Future work would allow the packer to adjust block ordering or omission based on cache hit rate feedback.
 - **Dynamic tool palettes**: The tool definitions block is always required and always included in full. A future optimization could allow the packer to omit low-usage tools from the definitions when budget is tight, using the tool hash to detect palette changes.
 - **Provider-specific pricing**: Cache hit rates vary by provider and model. The packer does not currently adjust its strategy based on provider-specific cache pricing (e.g., Anthropic's 90% discount on cached tokens vs. OpenAI's 50%).
 - **Cross-turn block diffing**: The packer currently rebuilds all blocks each turn. A future optimization could diff against the previous turn's blocks and only re-pack changed blocks, further improving cache stability.
 
-**This pass (hardening) added**: multi-phase observation (`observe_context_pack` at InitialRequest/BeforeProviderCall/AfterToolResults/AfterCompaction/BeforeFinalization), `source_handle: Option<String>` on `ContextBlock`, stable full SHA-256 hashes via `stable_hash_hex` (no DefaultHasher in context modules), real non-empty deterministic tool-definition summary text (for realistic token counts), cache-hit-rate wiring from provider `cached_tokens` telemetry into diagnostics, and correction of the misleading transcript-order test (packer sorts volatile by priority/id; no live transcript blocks yet; comment added in packer.rs). Active mutation remains disabled; this is an observation/diagnostic layer only. No persistence of stats, no transcript packing/reordering, no effective-cost decisions, no replacement of compaction.
+**This pass (hardening) added**: multi-phase observation (`observe_context_pack` at InitialRequest/BeforeProviderCall/AfterToolResults/AfterCompaction/BeforeFinalization), `source_handle: Option<String>` on `ContextBlock`, stable full SHA-256 hashes via `stable_hash_hex` (no DefaultHasher in context modules), real non-empty deterministic tool-definition summary text (for realistic token counts), cache-hit-rate wiring from provider `cached_tokens` telemetry into diagnostics, `NormalizedProviderUsage` for provider-agnostic token normalization (`usage_normalize.rs`), `EffectiveCostAnalysis` for diagnostic-only cost recommendations (`effective_cost.rs`), and correction of the misleading transcript-order test (packer sorts volatile by priority/id; no live transcript blocks yet; comment added in packer.rs). Active mutation remains disabled; this is an observation/diagnostic layer only. No persistence of stats, no transcript packing/reordering, no effective-cost decisions wired into packer behavior, no replacement of compaction.

@@ -229,6 +229,21 @@ impl AgentLoop {
                 tool_definitions_hash,
                 hit_rate,
             );
+            // Compute effective-cost analysis (observation-only, no mutation)
+            let analysis = crate::context::EffectiveCostAnalysis::analyze(
+                &self.context_cache_stats,
+                model,
+                result.stable_prefix_tokens,
+                slow_tokens,
+                result.volatile_tokens,
+            );
+            tracing::info!(
+                "context-packer[{phase:?}]: recommended_action={}, uncached_input_tokens={}, effective_cache_hit_rate={:.4}, effective_reason={}",
+                analysis.recommended_action,
+                analysis.uncached_input_tokens,
+                analysis.cache_hit_rate,
+                analysis.reason,
+            );
             if let Some(e) = self.context_cache_stats.get(model) {
                 tracing::debug!(
                     "context-packer[{phase:?}]: cache_stats model={} last_in={} last_cached={} total_in={} total_cached={} calls={} rate={:.4}",
@@ -1668,6 +1683,14 @@ impl AgentLoop {
                                 usage.input_tokens,
                                 usage.cached_tokens,
                                 usage.output_tokens,
+                            );
+                            tracing::debug!(
+                                model = %model_name,
+                                input_tokens = usage.input_tokens,
+                                cached_input_tokens = ?usage.cached_tokens,
+                                output_tokens = usage.output_tokens,
+                                cache_hit_rate = self.context_cache_stats.cache_hit_rate(&model_name),
+                                "updated context cache stats"
                             );
                         }
                         _ => {}
