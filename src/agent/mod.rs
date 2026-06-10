@@ -10,7 +10,7 @@ pub mod context_frame;
 pub mod r#loop;
 pub mod mention;
 pub mod runtime_factory;
-pub mod runtime_provider;
+pub mod agent_loop_factory;
 pub mod task_tool_runtime;
 pub mod turn_runtime;
 pub mod policy;
