@@ -20,7 +20,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `client/` | Remote TUI client for WebSocket connections with resume/replay support |
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher — now in `crates/codegg-config` (`codegg-config` crate), re-exported as `codegg::config` |
-| `context/` | Context artifact storage, tool-output projection, and `context_read` tool for cache-aware context reduction |
+| `context/` | Context artifact storage, tool-output projection, `context_read` tool, and cache-aware context packing for stable provider prompt-cache prefixes |
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion — error enums now in `crates/codegg-core` (`codegg-core` crate), axum wrappers stay root-side |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
@@ -67,6 +67,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
 - `architecture/context-ledger.md`: Context artifact storage, tool-output projection, ContextLedgerState, context_read tool, and config options
+- `architecture/cache-aware-context.md`: Cache-aware context packing, tier-based block ordering, ContextPacker algorithm, ContextBlockBuilder, cache stats, and config
 
 ## Critical Implementation Notes
 

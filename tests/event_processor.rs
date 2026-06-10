@@ -113,7 +113,7 @@ mod tests {
         processor.process(finish("stop", 100, 50));
 
         assert!(processor.is_complete());
-        assert_eq!(processor.stop_reason().map(|s| s.as_ref()), Some("stop"));
+        assert_eq!(processor.stop_reason(), Some("stop"));
         assert_eq!(processor.input_tokens(), 100);
         assert_eq!(processor.output_tokens(), 50);
     }

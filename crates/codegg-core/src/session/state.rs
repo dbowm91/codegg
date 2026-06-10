@@ -334,8 +334,8 @@ impl TuiSessionState {
 mod tests {
     use super::super::events::{
         AgentPlanItem, ContextCompactedEvent, EventMeta, FileChangedEvent, GoalSetEvent,
-        ModelRoutedEvent, PlanItemStatus, PlanItemUpdatedEvent, PlanUpdatedEvent,
-        TestRunFinishedEvent, TestRunStartedEvent, ToolCallFinishedEvent, ToolCallStartedEvent,
+        PlanItemStatus, PlanItemUpdatedEvent, PlanUpdatedEvent, TestRunFinishedEvent,
+        TestRunStartedEvent, ToolCallFinishedEvent, ToolCallStartedEvent,
     };
     use super::*;
 

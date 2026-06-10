@@ -443,7 +443,7 @@ impl Tool for ParallelTool {
         // Update max observed
         loop {
             let current_max = self.max_observed.load(Ordering::SeqCst);
-            if prev + 1 <= current_max {
+            if prev < current_max {
                 break;
             }
             if self
@@ -699,10 +699,7 @@ fn assert_assistant_has_tool_call(msg: &Message, id: &str, name: &str, arg_value
     let tc = tool_calls
         .iter()
         .find(|tc| tc.id.as_ref() == id)
-        .expect(&format!(
-            "tool call '{}' not found in assistant message",
-            id
-        ));
+        .unwrap_or_else(|| panic!("tool call '{}' not found in assistant message", id));
     assert_eq!(
         tc.name.as_ref(),
         name,
@@ -798,7 +795,7 @@ fn find_assistant_with_tool_call<'a>(
 
 fn assert_assistant_tool_call_precedes_result(msgs: &[Message], tool_call_id: &str) {
     let (_assistant_msg, assistant_idx) = find_assistant_with_tool_call(msgs, tool_call_id)
-        .expect(&format!("No assistant tool call '{}' found", tool_call_id));
+        .unwrap_or_else(|| panic!("No assistant tool call '{}' found", tool_call_id));
     assert_tool_result_ordered_after_assistant(msgs, assistant_idx, tool_call_id);
 }
 
@@ -2830,11 +2827,13 @@ async fn test_max_parallel_tools_enforcement() {
     }
 
     // Configure max_parallel_tools = 2
-    let mut config = Config::default();
-    config.server = Some(ServerConfig {
-        max_parallel_tools: Some(2),
+    let config = Config {
+        server: Some(ServerConfig {
+            max_parallel_tools: Some(2),
+            ..Default::default()
+        }),
         ..Default::default()
-    });
+    };
 
     // Create permission checker that allows all parallel tools
     let mut tool_rules = vec![];

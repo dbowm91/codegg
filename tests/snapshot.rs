@@ -48,7 +48,7 @@ async fn test_snapshot_capture_empty_dir() {
     let snapshot = result.unwrap();
     assert_eq!(snapshot.session_id, "test-session");
     assert_eq!(snapshot.label, Some("test-label".to_string()));
-    assert!(snapshot.id.len() > 0);
+    assert!(!snapshot.id.is_empty());
 }
 
 async fn create_test_manager_with_pool() -> (SnapshotManager, SqlitePool) {

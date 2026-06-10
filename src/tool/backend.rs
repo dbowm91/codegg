@@ -848,8 +848,10 @@ mod report_tests {
 
     #[test]
     fn report_disabled_backend_marks_disabled_status() {
-        let mut cfg = SearchConfig::default();
-        cfg.backend = Some(SearchBackendConfig::Disabled);
+        let cfg = SearchConfig {
+            backend: Some(SearchBackendConfig::Disabled),
+            ..Default::default()
+        };
         let report = build_report(&cfg, None, None);
         let websearch = report.rows.iter().find(|r| r.tool == "websearch").unwrap();
         assert_eq!(websearch.status, "disabled");

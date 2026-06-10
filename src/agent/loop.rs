@@ -837,6 +837,8 @@ pub struct AgentLoop {
     context_ledger: crate::agent::context_frame::ContextLedgerState,
     artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
     projection_config: crate::context::ProjectionConfig,
+    context_packer_config: crate::config::schema::ContextPackerConfig,
+    context_cache_stats: crate::context::ContextCacheStats,
 }
 
 impl AgentLoop {
@@ -1002,6 +1004,7 @@ impl AgentLoop {
         }
 
         let projection_config = Self::resolve_projection_config(&config);
+        let context_packer_config = config.context_packer.clone().unwrap_or_default();
 
         Self {
             agents: map,
@@ -1071,6 +1074,8 @@ impl AgentLoop {
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
             artifact_store,
             projection_config,
+            context_packer_config,
+            context_cache_stats: crate::context::ContextCacheStats::new(),
         }
     }
 
@@ -1502,6 +1507,12 @@ impl AgentLoop {
                             // it to the active goal's budget.
                             self.state.last_turn_input_tokens = usage.input_tokens as i64;
                             self.state.last_turn_output_tokens = usage.output_tokens as i64;
+                            self.context_cache_stats.record_usage(
+                                &model_name,
+                                usage.input_tokens,
+                                usage.cached_tokens,
+                                usage.output_tokens,
+                            );
                         }
                         _ => {}
                     }
@@ -2395,6 +2406,100 @@ impl AgentLoop {
             &model_profile,
         );
         self.context_tracker.add_messages(&request.messages);
+
+        if self.context_packer_config.enabled.unwrap_or(false) {
+            let observe_only = self.context_packer_config.observe_only.unwrap_or(true);
+            let model_key = request.model.clone();
+            let builder = crate::context::ContextBlockBuilder::new(&self.session_id, &model_key);
+
+            let system_text = request
+                .messages
+                .iter()
+                .find_map(|m| {
+                    if let crate::provider::Message::System { content } = m {
+                        Some(content.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or("");
+
+            let definitions = request.tools.as_deref().unwrap_or(&[]);
+            let frame = self.context_ledger.to_context_frame();
+            let control_text = frame.to_control_text();
+
+            let candidates = builder.build_all(
+                system_text,
+                &format!("model: {}", request.model),
+                definitions,
+                &frame,
+                None,
+                None,
+                None,
+                Some(&control_text),
+                None,
+                0,
+            );
+
+            let budget = crate::context::ContextPackBudget {
+                max_tokens: self
+                    .context_packer_config
+                    .max_stable_prefix_tokens
+                    .unwrap_or(32000)
+                    + self
+                        .context_packer_config
+                        .max_volatile_tokens
+                        .unwrap_or(24000),
+                reserved_output_tokens: 10000,
+                emergency_margin_tokens: 4000,
+            };
+
+            let result = crate::context::packer::pack(candidates, &budget);
+
+            if self.context_packer_config.log_diagnostics.unwrap_or(true) {
+                tracing::info!(
+                    "context-packer: candidates={}, packed={}, stable_prefix_tokens={}, volatile_tokens={}, omitted={}",
+                    result.estimated_tokens + result.omitted_blocks.iter().map(|o| o.estimated_tokens).sum::<usize>(),
+                    result.estimated_tokens,
+                    result.stable_prefix_tokens,
+                    result.volatile_tokens,
+                    result.omitted_blocks.len(),
+                );
+                for omitted in &result.omitted_blocks {
+                    tracing::debug!(
+                        "context-packer: omitted block {:?} ({} tokens, reason: {:?})",
+                        omitted.id,
+                        omitted.estimated_tokens,
+                        omitted.reason,
+                    );
+                }
+            }
+
+            if !observe_only {
+                if let Some(frame_block) = result
+                    .blocks
+                    .iter()
+                    .find(|b| b.kind == crate::context::ContextBlockKind::SessionFrame)
+                {
+                    let packed_control = &frame_block.text;
+                    for msg in request.messages.iter_mut() {
+                        if let crate::provider::Message::System { content } = msg {
+                            if let Some(pos) = content.find("Current session context:") {
+                                *content = packed_control.to_string().into();
+                                let _ = pos;
+                                break;
+                            }
+                        }
+                    }
+                    if self.context_packer_config.log_diagnostics.unwrap_or(true) {
+                        tracing::debug!(
+                            "context-packer: active mode injected {} tokens of session frame",
+                            frame_block.estimated_tokens
+                        );
+                    }
+                }
+            }
+        }
 
         let mut all_events = Vec::with_capacity(128);
         let mut processor = EventProcessor::new();
@@ -4205,21 +4310,34 @@ fn compute_model_flags(model: Option<&String>) -> ModelFlags {
     }
 }
 
+/// Test-only: expose `build_tool_definitions` so integration tests can
+/// assert the actual tool set the agent sends to the model.
+///
+/// **Not** intended for production use.
+#[doc(hidden)]
+impl AgentLoop {
+    #[doc(hidden)]
+    pub async fn test_build_tool_definitions(&mut self) -> Vec<crate::provider::ToolDefinition> {
+        self.build_tool_definitions().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::schema::{ResearchAutoTriggerConfig, ResearchConfig};
 
     fn config_with_trigger(enabled: bool, min_confidence: f32) -> Config {
-        let mut cfg = Config::default();
-        cfg.research = Some(ResearchConfig {
-            search_provider: None,
-            auto_trigger: Some(ResearchAutoTriggerConfig {
-                enabled,
-                min_confidence,
+        Config {
+            research: Some(ResearchConfig {
+                search_provider: None,
+                auto_trigger: Some(ResearchAutoTriggerConfig {
+                    enabled,
+                    min_confidence,
+                }),
             }),
-        });
-        cfg
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -4508,17 +4626,5 @@ mod tests {
             normal_names.contains(&"todowrite"),
             "normal mode must include todowrite"
         );
-    }
-}
-
-/// Test-only: expose `build_tool_definitions` so integration tests can
-/// assert the actual tool set the agent sends to the model.
-///
-/// **Not** intended for production use.
-#[doc(hidden)]
-impl AgentLoop {
-    #[doc(hidden)]
-    pub async fn test_build_tool_definitions(&mut self) -> Vec<crate::provider::ToolDefinition> {
-        self.build_tool_definitions().await
     }
 }

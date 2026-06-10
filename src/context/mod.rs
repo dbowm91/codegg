@@ -1,17 +1,28 @@
 pub mod artifact;
+pub mod block;
+pub mod block_builder;
+pub mod cache_stats;
 pub mod handle;
+pub mod packer;
 pub mod projection;
 pub mod read_tool;
+pub mod tool_hash;
 
 pub use artifact::{
     build_handle, compute_content_hash, estimate_tokens, ArtifactKind, ContextArtifact,
     ContextArtifactStore, InMemoryArtifactStore,
 };
+pub use block::{CacheClass, ContextBlock, ContextBlockId, ContextBlockKind, Lossiness};
+pub use cache_stats::{CacheStatsEntry, ContextCacheStats};
 pub use handle::{clamp_to_char_boundary, ContextHandle, ContextHandleError, ContextHandleKind};
+pub use packer::{ContextPackBudget, ContextPackResult, OmissionReason, OmittedContextBlock};
 pub use projection::{
     project_tool_output, ProjectionConfig, ProjectionStatus, ToolOutputProjection,
 };
 pub use read_tool::ContextReadTool;
+pub use tool_hash::tool_definitions_hash;
+
+pub use block_builder::ContextBlockBuilder;
 
 #[cfg(test)]
 mod tests {
@@ -110,7 +121,7 @@ mod tests {
     fn test_projection_failure_preserves_pytest_errors() {
         let config = ProjectionConfig::default();
         let output = "FAILED test_app.py::test_login - AssertionError: x != y\nTraceback (most recent call last):\n  File \"app.py\", line 10\n    foo()\nAssertionError: x != y";
-        let proj = project_tool_output("python", None, &output, false, "ctx://t", &config);
+        let proj = project_tool_output("python", None, output, false, "ctx://t", &config);
         assert_eq!(proj.status, ProjectionStatus::Failure);
         assert!(proj
             .unresolved_errors

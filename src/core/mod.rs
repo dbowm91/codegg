@@ -493,6 +493,14 @@ pub(crate) fn map_app_event_to_core_event(
     }
 }
 
+pub fn new_request<T>(request_id: String, payload: T) -> RequestEnvelope<T> {
+    RequestEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        request_id,
+        payload,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -823,13 +831,5 @@ mod tests {
             }
             other => panic!("expected Error, got {:?}", other),
         }
-    }
-}
-
-pub fn new_request<T>(request_id: String, payload: T) -> RequestEnvelope<T> {
-    RequestEnvelope {
-        protocol_version: PROTOCOL_VERSION,
-        request_id,
-        payload,
     }
 }

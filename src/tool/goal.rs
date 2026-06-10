@@ -326,7 +326,6 @@ impl Tool for GoalRequestCompletionTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::schema::migrate;
 
     async fn test_pool() -> SqlitePool {
         use sqlx::sqlite::SqlitePoolOptions;

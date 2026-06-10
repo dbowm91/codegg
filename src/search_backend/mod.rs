@@ -175,8 +175,10 @@ mod tests {
     #[test]
     fn dispatch_disabled_backend_errors() {
         state::reset_for_tests();
-        let mut cfg = SearchConfig::default();
-        cfg.backend = Some(SearchBackendConfig::Disabled);
+        let cfg = SearchConfig {
+            backend: Some(SearchBackendConfig::Disabled),
+            ..Default::default()
+        };
         state::install_search_config(cfg);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -189,8 +191,10 @@ mod tests {
     #[test]
     fn dispatch_disabled_backend_errors_for_fetch() {
         state::reset_for_tests();
-        let mut cfg = SearchConfig::default();
-        cfg.backend = Some(SearchBackendConfig::Disabled);
+        let cfg = SearchConfig {
+            backend: Some(SearchBackendConfig::Disabled),
+            ..Default::default()
+        };
         state::install_search_config(cfg);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -208,11 +212,13 @@ mod tests {
 
     #[test]
     fn effective_server_name_uses_eggsearch_config_value() {
-        let mut cfg = SearchConfig::default();
-        cfg.eggsearch = Some(crate::config::schema::EggsearchConfig {
-            server_name: Some("myegg".to_string()),
+        let cfg = SearchConfig {
+            eggsearch: Some(crate::config::schema::EggsearchConfig {
+                server_name: Some("myegg".to_string()),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         assert_eq!(effective_server_name(&cfg), "myegg");
     }
 
@@ -220,16 +226,20 @@ mod tests {
     fn provenance_for_search_reflects_backend() {
         state::reset_for_tests();
         // Disabled backend.
-        let mut cfg = SearchConfig::default();
-        cfg.backend = Some(SearchBackendConfig::Disabled);
+        let cfg = SearchConfig {
+            backend: Some(SearchBackendConfig::Disabled),
+            ..Default::default()
+        };
         state::install_search_config(cfg);
         let p = provenance_for_search().unwrap();
         assert_eq!(p.implementation, "disabled");
 
         // Builtin backend.
         state::reset_for_tests();
-        let mut cfg = SearchConfig::default();
-        cfg.backend = Some(SearchBackendConfig::Builtin);
+        let cfg = SearchConfig {
+            backend: Some(SearchBackendConfig::Builtin),
+            ..Default::default()
+        };
         state::install_search_config(cfg);
         let p = provenance_for_search().unwrap();
         assert_eq!(p.implementation, "codegg/legacy");

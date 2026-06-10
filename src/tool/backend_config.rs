@@ -180,14 +180,16 @@ mod tests {
 
     #[test]
     fn from_config_with_section_uses_runtime_values() {
-        let mut cfg = Config::default();
-        cfg.tool_backends = Some(ToolBackendConfigSchema {
-            security: Some(ExternalToolBackendConfigSchema {
-                backend: Some(ToolImplementationBackendSchema::Mcp),
+        let cfg = Config {
+            tool_backends: Some(ToolBackendConfigSchema {
+                security: Some(ExternalToolBackendConfigSchema {
+                    backend: Some(ToolImplementationBackendSchema::Mcp),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
-        });
+        };
         let runtime = ToolBackendConfig::from_config(&cfg);
         assert_eq!(
             runtime.backend_for(crate::tool::backend::BackendDomain::Security),

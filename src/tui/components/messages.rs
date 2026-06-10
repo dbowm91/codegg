@@ -2977,7 +2977,10 @@ mod tests {
         // on ceil(50/12) lines ~= 5
         let s = "aaaaaaaaaa bbbbbbbbbb cccccccccc dddddddddd eeeeeeeeee";
         let n = wrap_count(s, 12);
-        assert!(n >= 4 && n <= 6, "got {n} for 50-char string at width 12");
+        assert!(
+            (4..=6).contains(&n),
+            "got {n} for 50-char string at width 12"
+        );
     }
 
     #[test]

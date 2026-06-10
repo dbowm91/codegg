@@ -1194,11 +1194,13 @@ mod tests {
 
         let pool = create_test_pool().await;
 
-        let mut config = Config::default();
-        config.subagent = Some(SubagentConfig {
-            max_concurrent: Some(2),
-            max_depth: Some(3),
-        });
+        let config = Config {
+            subagent: Some(SubagentConfig {
+                max_concurrent: Some(2),
+                max_depth: Some(3),
+            }),
+            ..Default::default()
+        };
 
         let provider_registry = ProviderRegistry::new();
         let session_store = Arc::new(codegg::session::SessionStore::new(pool.clone()));

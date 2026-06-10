@@ -394,7 +394,6 @@ impl SourceLocator {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use std::path::PathBuf;
 
     fn make_source(source_type: SourceType, uri: &str) -> SourceRecord {
         SourceRecord {

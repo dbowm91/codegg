@@ -119,8 +119,6 @@ pub async fn call_llm_json(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn strip_json_fences_basic() {
         let input = "```json\n{\"key\": \"value\"}\n```";

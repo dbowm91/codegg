@@ -111,10 +111,7 @@ mod tests {
     #[test]
     fn test_fuzzy_score_consecutive_bonus() {
         let score_consec = fuzzy_score("he", "hello");
-        let score_gap = {
-            let s1 = fuzzy_score("hl", "hello");
-            s1
-        };
+        let score_gap = fuzzy_score("hl", "hello");
         assert!(score_consec > score_gap);
     }
 

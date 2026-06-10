@@ -102,7 +102,7 @@ fn test_messages_widget_add_user_message() {
     widget.add_user_message("Hello".to_string(), None);
 
     assert_eq!(widget.message_count(), 1);
-    if let Some(msg) = widget.messages.get(0) {
+    if let Some(msg) = widget.messages.first() {
         assert_eq!(msg.role, MessageRole::User);
         assert!(msg.timestamp.is_some());
     }
@@ -127,8 +127,8 @@ fn test_messages_widget_add_assistant_text_appends_to_last() {
     widget.add_assistant_text(" World".to_string());
 
     assert_eq!(widget.message_count(), 1);
-    if let Some(msg) = widget.messages.get(0) {
-        if let Some(MsgPart::Text { content }) = msg.parts.get(0) {
+    if let Some(msg) = widget.messages.first() {
+        if let Some(MsgPart::Text { content }) = msg.parts.first() {
             assert_eq!(content, "Hello World");
         }
     }
@@ -160,9 +160,9 @@ fn test_messages_widget_add_tool_call() {
     );
 
     assert_eq!(widget.message_count(), 1);
-    if let Some(msg) = widget.messages.get(0) {
+    if let Some(msg) = widget.messages.first() {
         assert_eq!(msg.role, MessageRole::Assistant);
-        if let Some(MsgPart::ToolCall { name, status, .. }) = msg.parts.get(0) {
+        if let Some(MsgPart::ToolCall { name, status, .. }) = msg.parts.first() {
             assert_eq!(name, "read");
             assert!(matches!(status, ToolStatus::Pending));
         }
@@ -186,8 +186,8 @@ fn test_messages_widget_update_tool_call() {
         Some(3),
     );
 
-    if let Some(msg) = widget.messages.get(0) {
-        if let Some(MsgPart::ToolCall { output, status, .. }) = msg.parts.get(0) {
+    if let Some(msg) = widget.messages.first() {
+        if let Some(MsgPart::ToolCall { output, status, .. }) = msg.parts.first() {
             assert_eq!(output, "file content");
             assert!(matches!(status, ToolStatus::Completed));
         }

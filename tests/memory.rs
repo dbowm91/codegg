@@ -10,7 +10,7 @@ fn test_memory_new() {
 
     assert_eq!(memory.namespace, "test-namespace");
     assert_eq!(memory.content, "Test content");
-    assert!(memory.id.len() > 0);
+    assert!(!memory.id.is_empty());
     assert!(memory.title.is_none());
     assert_eq!(memory.access_count, 0);
     assert_eq!(memory.importance, 0.5);
@@ -26,7 +26,7 @@ fn test_memory_with_title() {
 
 #[test]
 fn test_memory_store_add() {
-    let mut store = create_memory_store();
+    let store = create_memory_store();
     let memory = Memory::new("test-ns", "content");
     let id = memory.id.clone();
 
@@ -54,7 +54,7 @@ fn test_memory_store_search_empty() {
 
 #[test]
 fn test_memory_store_delete_nonexistent() {
-    let mut store = create_memory_store();
+    let store = create_memory_store();
     let result = store.delete("nonexistent-id");
     assert!(result.is_none());
 }

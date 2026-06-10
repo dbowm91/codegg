@@ -45,7 +45,7 @@ fn test_find_git_root_with_git_dir() {
     let git_dir = temp_dir.path().join(".git");
     std::fs::create_dir_all(&git_dir).expect("failed to create .git dir");
 
-    let result = find_git_root(&temp_dir.path().to_path_buf());
+    let result = find_git_root(temp_dir.path());
     assert!(result.is_some());
     assert_eq!(result.unwrap(), temp_dir.path().to_path_buf());
 }
@@ -56,7 +56,7 @@ fn test_find_git_root_with_git_file() {
     let git_file = temp_dir.path().join(".git");
     std::fs::write(&git_file, "gitdir: /tmp/fake-gitdir\n").expect("failed to create .git file");
 
-    let result = find_git_root(&temp_dir.path().to_path_buf());
+    let result = find_git_root(temp_dir.path());
     assert!(result.is_some());
     assert_eq!(result.unwrap(), temp_dir.path().to_path_buf());
 }

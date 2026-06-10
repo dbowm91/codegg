@@ -121,9 +121,11 @@ fn install_mock_recorder() -> Arc<Mutex<Vec<(String, serde_json::Value)>>> {
 
 #[tokio::test]
 async fn num_results_maps_to_max_results() {
-    let _g = lock_tests();
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
+    let calls = {
+        let _g = lock_tests();
+        state::reset_for_tests();
+        install_mock_recorder()
+    };
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "num_results": 12,
@@ -139,9 +141,11 @@ async fn num_results_maps_to_max_results() {
 
 #[tokio::test]
 async fn max_results_alias_is_accepted() {
-    let _g = lock_tests();
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
+    let calls = {
+        let _g = lock_tests();
+        state::reset_for_tests();
+        install_mock_recorder()
+    };
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "max_results": 7,
@@ -156,9 +160,11 @@ async fn max_results_alias_is_accepted() {
 
 #[tokio::test]
 async fn num_results_is_capped_at_30() {
-    let _g = lock_tests();
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
+    let calls = {
+        let _g = lock_tests();
+        state::reset_for_tests();
+        install_mock_recorder()
+    };
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "num_results": 5000,
@@ -172,9 +178,11 @@ async fn num_results_is_capped_at_30() {
 
 #[tokio::test]
 async fn provider_pinned_to_specific_backend() {
-    let _g = lock_tests();
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
+    let calls = {
+        let _g = lock_tests();
+        state::reset_for_tests();
+        install_mock_recorder()
+    };
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "provider": "arxiv",
@@ -190,9 +198,11 @@ async fn provider_pinned_to_specific_backend() {
 
 #[tokio::test]
 async fn provider_unknown_does_not_emit_providers_field() {
-    let _g = lock_tests();
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
+    let calls = {
+        let _g = lock_tests();
+        state::reset_for_tests();
+        install_mock_recorder()
+    };
     let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
         "query": "x",
         "provider": "unknown_backend",
@@ -214,9 +224,11 @@ async fn provider_unknown_does_not_emit_providers_field() {
 
 #[tokio::test]
 async fn webfetch_max_length_maps_to_max_chars() {
-    let _g = lock_tests();
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
+    let calls = {
+        let _g = lock_tests();
+        state::reset_for_tests();
+        install_mock_recorder()
+    };
     let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
         "url": "https://example.com",
         "max_length": 4000,
@@ -234,9 +246,11 @@ async fn webfetch_max_length_maps_to_max_chars() {
 
 #[tokio::test]
 async fn webfetch_default_extract_mode_is_text() {
-    let _g = lock_tests();
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
+    let calls = {
+        let _g = lock_tests();
+        state::reset_for_tests();
+        install_mock_recorder()
+    };
     let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
         "url": "https://example.com",
     }))

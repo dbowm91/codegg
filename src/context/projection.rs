@@ -737,7 +737,7 @@ mod tests {
     fn test_project_tool_output_touched_files_from_error_output() {
         let config = default_config();
         let output = "error in src/lib.rs:10:5\nalso src/main.rs:3:1";
-        let proj = project_tool_output("bash", None, &output, false, "ctx://t", &config);
+        let proj = project_tool_output("bash", None, output, false, "ctx://t", &config);
         assert!(proj.touched_files.iter().any(|f| f.contains("lib.rs")));
     }
 
@@ -745,7 +745,7 @@ mod tests {
     fn test_project_tool_output_python_traceback() {
         let config = default_config();
         let output = "Traceback (most recent call last):\n  File \"app.py\", line 10\n    foo()\nAssertionError: x != y";
-        let proj = project_tool_output("python", None, &output, false, "ctx://t", &config);
+        let proj = project_tool_output("python", None, output, false, "ctx://t", &config);
         assert!(!proj.unresolved_errors.is_empty());
     }
 }

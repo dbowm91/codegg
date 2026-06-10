@@ -251,6 +251,8 @@ pub struct Config {
     pub tool_backends: Option<ToolBackendConfigSchema>,
     /// Context ledger and artifact projection settings.
     pub context: Option<ContextConfig>,
+    /// Cache-aware context packer settings.
+    pub context_packer: Option<ContextPackerConfig>,
 }
 
 /// Configuration for the context ledger and artifact projection system.
@@ -267,6 +269,18 @@ pub struct ContextConfig {
     pub max_failure_tokens: Option<usize>,
     /// Preserve full tool output in debug logs even when projected.
     pub lossless_debug: Option<bool>,
+}
+
+/// Configuration for the cache-aware context packer.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
+pub struct ContextPackerConfig {
+    pub enabled: Option<bool>,
+    pub observe_only: Option<bool>,
+    pub stable_prefix: Option<bool>,
+    pub max_stable_prefix_tokens: Option<usize>,
+    pub max_volatile_tokens: Option<usize>,
+    pub log_diagnostics: Option<bool>,
 }
 
 /// Web search/fetch backend configuration.

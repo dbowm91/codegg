@@ -424,10 +424,8 @@ mod tests {
                         }
                     }
                 }
-                Message::Tool { tool_call_id, .. } => {
-                    if tool_call_id.as_ref() == "call_xyz" {
-                        found_tool_id = true;
-                    }
+                Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "call_xyz" => {
+                    found_tool_id = true;
                 }
                 _ => {}
             }

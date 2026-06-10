@@ -3,7 +3,6 @@
 //! These tests verify the agent-loop tool exposure filtering behavior
 //! when `expose_raw_mcp_tools` is enabled or disabled.
 
-use std::sync::Arc;
 use std::sync::Mutex;
 
 // `search_backend::state` is a process-global slot, so tests that
@@ -363,12 +362,15 @@ mod real_build_tool_definitions_tests {
     /// raw `mcp__eggsearch__*` tools.
     #[tokio::test]
     async fn real_build_hides_raw_eggsearch_tools() {
-        let _g = TEST_LOCK.lock().unwrap();
-        state::reset_for_tests();
+        let mcp = {
+            let _g = TEST_LOCK.lock().unwrap();
+            state::reset_for_tests();
 
-        let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
-        state::install_mcp_service(Arc::clone(&mcp));
-        state::install_search_config(eggsearch_config(false));
+            let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
+            state::install_mcp_service(Arc::clone(&mcp));
+            state::install_search_config(eggsearch_config(false));
+            mcp
+        };
 
         let mut agent_loop = build_agent_loop_with_mcp(Arc::clone(&mcp));
 
@@ -410,12 +412,15 @@ mod real_build_tool_definitions_tests {
     /// tools in addition to the native wrappers.
     #[tokio::test]
     async fn real_build_shows_raw_eggsearch_tools_when_exposed() {
-        let _g = TEST_LOCK.lock().unwrap();
-        state::reset_for_tests();
+        let mcp = {
+            let _g = TEST_LOCK.lock().unwrap();
+            state::reset_for_tests();
 
-        let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
-        state::install_mcp_service(Arc::clone(&mcp));
-        state::install_search_config(eggsearch_config(true));
+            let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
+            state::install_mcp_service(Arc::clone(&mcp));
+            state::install_search_config(eggsearch_config(true));
+            mcp
+        };
 
         let mut agent_loop = build_agent_loop_with_mcp(Arc::clone(&mcp));
 
@@ -455,30 +460,33 @@ mod real_build_tool_definitions_tests {
     /// `expose_raw_mcp_tools = false`.
     #[tokio::test]
     async fn real_build_hides_raw_eggsearch_tools_for_custom_server_name() {
-        let _g = TEST_LOCK.lock().unwrap();
-        state::reset_for_tests();
+        let mcp = {
+            let _g = TEST_LOCK.lock().unwrap();
+            state::reset_for_tests();
 
-        // Build a service whose tools use a non-default prefix.
-        let mut svc = McpService::new();
-        svc.register_mock_server(
-            "myegg",
-            vec![McpTool {
-                name: "web_search".to_string(),
-                description: "Search the web".to_string(),
-                input_schema: serde_json::json!({"type": "object", "properties": {}}),
-                server: "myegg".to_string(),
-            }],
-            Box::new(|_tool, _args| -> Result<String, McpError> { Ok("{}".to_string()) }),
-        );
-        let mcp = Arc::new(RwLock::new(svc));
+            // Build a service whose tools use a non-default prefix.
+            let mut svc = McpService::new();
+            svc.register_mock_server(
+                "myegg",
+                vec![McpTool {
+                    name: "web_search".to_string(),
+                    description: "Search the web".to_string(),
+                    input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                    server: "myegg".to_string(),
+                }],
+                Box::new(|_tool, _args| -> Result<String, McpError> { Ok("{}".to_string()) }),
+            );
+            let mcp = Arc::new(RwLock::new(svc));
 
-        state::install_mcp_service(Arc::clone(&mcp));
-        let mut cfg = eggsearch_config(false);
-        cfg.eggsearch = Some(EggsearchConfig {
-            server_name: Some("myegg".to_string()),
-            ..Default::default()
-        });
-        state::install_search_config(cfg);
+            state::install_mcp_service(Arc::clone(&mcp));
+            let mut cfg = eggsearch_config(false);
+            cfg.eggsearch = Some(EggsearchConfig {
+                server_name: Some("myegg".to_string()),
+                ..Default::default()
+            });
+            state::install_search_config(cfg);
+            mcp
+        };
 
         let mut agent_loop = build_agent_loop_with_mcp(Arc::clone(&mcp));
 

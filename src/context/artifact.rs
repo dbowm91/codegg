@@ -172,14 +172,14 @@ mod tests {
     #[test]
     fn test_estimate_tokens_multiple_words() {
         let tokens = estimate_tokens("hello world foo bar");
-        assert!(tokens >= 5 && tokens <= 7);
+        assert!((5..=7).contains(&tokens));
     }
 
     #[test]
     fn test_estimate_tokens_long_text() {
         let text = "the quick brown fox jumps over the lazy dog";
         let tokens = estimate_tokens(text);
-        assert!(tokens >= 10 && tokens <= 15);
+        assert!((10..=15).contains(&tokens));
     }
 
     #[test]
@@ -428,6 +428,6 @@ mod tests {
     fn test_estimate_tokens_paragraph() {
         let text = "This is a longer piece of text that should be used to test the token estimation heuristic. It has many words and should produce a reasonable token count.";
         let tokens = estimate_tokens(text);
-        assert!(tokens >= 20 && tokens <= 40);
+        assert!((20..=40).contains(&tokens));
     }
 }

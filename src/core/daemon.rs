@@ -2848,9 +2848,11 @@ mod tests {
         std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
 
         let daemon = test_daemon().await;
-        let mut agent = crate::agent::Agent::default();
-        agent.name = "test".into();
-        agent.description = "test agent".into();
+        let agent = crate::agent::Agent {
+            name: "test".into(),
+            description: "test agent".into(),
+            ..Default::default()
+        };
 
         let session_id = "s-submit-started".to_string();
         let req = crate::core::new_request(
@@ -3117,9 +3119,11 @@ mod tests {
             .with_turn_runtime(Arc::clone(&fake) as Arc<dyn TurnRuntime>);
         let daemon = CoreDaemon::with_deps(deps);
 
-        let mut agent = crate::agent::Agent::default();
-        agent.name = "test".into();
-        agent.description = "test agent".into();
+        let agent = crate::agent::Agent {
+            name: "test".into(),
+            description: "test agent".into(),
+            ..Default::default()
+        };
 
         let session_id = "s-inject-test".to_string();
         let req = crate::core::new_request(

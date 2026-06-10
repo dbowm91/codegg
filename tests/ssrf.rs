@@ -1,7 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use codegg::security::ssrf::is_internal_ip;
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -267,3 +267,7 @@ In `opencode.json`:
 ## Persistence Note
 
 Artifacts are currently **session-local and in-memory only**. SQLite persistence is a future follow-up. The API is designed to allow persistent backing without interface changes.
+
+## Cache-Aware Context Packing
+
+The context ledger provides artifact storage and projection. The cache-aware context packer builds on this by ordering context blocks for stable provider prompt caching. See [cache-aware-context.md](cache-aware-context.md) for the full architecture.

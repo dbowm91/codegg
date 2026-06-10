@@ -180,14 +180,16 @@ fn with_session_config_defaults_preserves_resolved_backends() {
     use codegg::config::schema::{
         ExternalToolBackendConfigSchema, ToolBackendConfigSchema, ToolImplementationBackendSchema,
     };
-    let mut config = codegg::config::schema::Config::default();
-    config.tool_backends = Some(ToolBackendConfigSchema {
-        lsp: Some(ExternalToolBackendConfigSchema {
-            backend: Some(ToolImplementationBackendSchema::Disabled),
+    let config = codegg::config::schema::Config {
+        tool_backends: Some(ToolBackendConfigSchema {
+            lsp: Some(ExternalToolBackendConfigSchema {
+                backend: Some(ToolImplementationBackendSchema::Disabled),
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
-    });
+    };
     let todo_state =
         std::sync::Arc::new(tokio::sync::Mutex::new(codegg::task_state::TodoState::new()));
     let registry = ToolRegistry::with_session_config_defaults(
@@ -261,14 +263,16 @@ fn with_config_populates_resolved_backends() {
     use codegg::config::schema::{
         ExternalToolBackendConfigSchema, ToolBackendConfigSchema, ToolImplementationBackendSchema,
     };
-    let mut config = codegg::config::schema::Config::default();
-    config.tool_backends = Some(ToolBackendConfigSchema {
-        lsp: Some(ExternalToolBackendConfigSchema {
-            backend: Some(ToolImplementationBackendSchema::Disabled),
+    let config = codegg::config::schema::Config {
+        tool_backends: Some(ToolBackendConfigSchema {
+            lsp: Some(ExternalToolBackendConfigSchema {
+                backend: Some(ToolImplementationBackendSchema::Disabled),
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         ..Default::default()
-    });
+    };
     let registry = ToolRegistry::with_config(&config);
     let lsp = registry
         .tool_backends()

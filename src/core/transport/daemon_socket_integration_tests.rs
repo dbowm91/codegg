@@ -347,7 +347,7 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
     let stream = UnixStream::connect(&socket_path_str)
         .await
         .expect("connect client");
-    let (mut reader, _client_id) = handshake_and_subscribe(stream, Some("s1".to_string())).await;
+    let (reader, _client_id) = handshake_and_subscribe(stream, Some("s1".to_string())).await;
 
     // The replay burst was drained by `handshake_and_subscribe`. Now
     // confirm we received s1 + global but NOT s2. We have to inspect
