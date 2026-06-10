@@ -67,7 +67,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
 - `architecture/context-ledger.md`: Context artifact storage, tool-output projection, ContextLedgerState, context_read tool, and config options
-- `architecture/cache-aware-context.md`: Cache-aware context packing, tier-based block ordering, ContextPacker algorithm, ContextBlockBuilder, cache stats, and config (hardened: observe-only, stable hashes via stable_hash_hex, source_handle on ContextBlock, multi-phase observation via observe_context_pack, cache stats wired from provider telemetry; active mutation disabled)
+- `architecture/cache-aware-context.md`: Cache-aware context packing, tier-based block ordering, ContextPacker algorithm, ContextBlockBuilder, cache stats, and config (hardened: observe-only, stable hashes via stable_hash_hex, source_handle on ContextBlock, multi-phase observation via observe_context_pack, cache stats wired from provider finish events via `record_context_cache_stats_from_processor` with normalization; active mutation disabled)
 
 ## Critical Implementation Notes
 

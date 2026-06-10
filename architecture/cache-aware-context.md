@@ -184,6 +184,18 @@ The packer is invoked via `observe_context_pack` (which calls the private `compu
 3. **Pack**: `packer::pack(candidates, budget)` sorts and enforces budget (global tier/priority/id sort; no chronological transcript order preservation yet).
 4. **Observe only**: Diagnostics are logged (enriched with phase, tool hash, cache hit rate, slow-changing tokens, top omitted). No mutation occurs. The `observe_context_pack` helper never mutates the request.
 
+### Provider Usage Recording
+
+`AgentLoop::record_context_cache_stats_from_processor()` is called exactly once per successful provider response in the main `run()` loop, after `EventProcessor` has consumed the stream events and before the processor is reset. It:
+
+1. Checks `processor.is_complete()` — skips incomplete responses.
+2. Skips zero-usage responses (input=0, output=0, no cached_tokens) to avoid synthetic zero-call stats.
+3. Calls `normalize_from_finish()` to clamp cached tokens (e.g., cached ≤ input).
+4. Records normalized usage into `ContextCacheStats`.
+5. Logs updated cache hit rate at debug level.
+
+This replaces the previous inline recording in `stream_once`, ensuring normalization is applied and the single recording point is easy to audit. Each successful provider response with usage increments `call_count` by one.
+
 ## Observation Mode (Only Effective Mode)
 
 Active mutation is disabled for this pass. `observe_only` is forced internally; requesting `observe_only=false` emits a warning and runs as observe-only. No code path can replace system prompt content with packed frame text (the "Current session context:" replacement branch is removed).

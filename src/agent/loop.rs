@@ -263,6 +263,53 @@ impl AgentLoop {
             }
         }
     }
+
+    /// Record finish-event usage from the `EventProcessor` into `ContextCacheStats`.
+    ///
+    /// Uses `normalize_from_finish` to clamp cached tokens before recording.
+    /// Returns `None` when the processor is incomplete or usage is absent,
+    /// avoiding synthetic zero-call stats.
+    fn record_context_cache_stats_from_processor(
+        &mut self,
+        model: &str,
+        processor: &EventProcessor,
+    ) -> Option<crate::context::NormalizedProviderUsage> {
+        if !processor.is_complete() {
+            return None;
+        }
+
+        let input_tokens = processor.input_tokens();
+        let output_tokens = processor.output_tokens();
+
+        // Do not record a fake provider call if usage is completely absent.
+        if input_tokens == 0 && output_tokens == 0 && processor.cached_tokens().is_none() {
+            return None;
+        }
+
+        let usage = crate::context::normalize_from_finish(
+            input_tokens,
+            output_tokens,
+            processor.cached_tokens(),
+        );
+
+        self.context_cache_stats.record_usage(
+            model,
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.output_tokens,
+        );
+
+        tracing::debug!(
+            model = %model,
+            input_tokens = usage.input_tokens,
+            cached_input_tokens = ?usage.cached_input_tokens,
+            output_tokens = usage.output_tokens,
+            cache_hit_rate = self.context_cache_stats.cache_hit_rate(model),
+            "updated context cache stats"
+        );
+
+        Some(usage)
+    }
 }
 
 fn harden_history(messages: &mut Vec<Message>) {
@@ -1678,20 +1725,9 @@ impl AgentLoop {
                             // it to the active goal's budget.
                             self.state.last_turn_input_tokens = usage.input_tokens as i64;
                             self.state.last_turn_output_tokens = usage.output_tokens as i64;
-                            self.context_cache_stats.record_usage(
-                                &model_name,
-                                usage.input_tokens,
-                                usage.cached_tokens,
-                                usage.output_tokens,
-                            );
-                            tracing::debug!(
-                                model = %model_name,
-                                input_tokens = usage.input_tokens,
-                                cached_input_tokens = ?usage.cached_tokens,
-                                output_tokens = usage.output_tokens,
-                                cache_hit_rate = self.context_cache_stats.cache_hit_rate(&model_name),
-                                "updated context cache stats"
-                            );
+                            // Context cache stats are now recorded once per
+                            // provider response via the main loop's call to
+                            // record_context_cache_stats_from_processor().
                         }
                         _ => {}
                     }
@@ -2761,6 +2797,13 @@ impl AgentLoop {
                 processor.process(event.clone());
             }
             all_events.extend(events);
+
+            // Record provider finish usage into context cache stats exactly
+            // once per successful provider response, using the processor's
+            // normalized values.
+            let model_key = request.model.clone();
+            let _normalized_usage =
+                self.record_context_cache_stats_from_processor(&model_key, &processor);
 
             let mut tool_calls = processor.tool_calls().to_vec();
             if tool_calls.is_empty() {
@@ -5058,5 +5101,233 @@ Current session context: [old frame here that would have been clobbered]";
         // After a tool result the volatile estimate should be >= the initial (more volatile content present).
         // In practice the frame/control may contribute, but the test asserts non-decrease as a minimal "different" signal.
         assert!(volatile1 >= volatile0, "volatile tokens should not decrease after appending tool result (initial={}, after={})", volatile0, volatile1);
+    }
+
+    // --- Phase 4: context cache stats from processor wiring tests ---
+
+    /// Simulate what record_context_cache_stats_from_processor does:
+    /// feed events to processor, normalize, record. Helper for tests.
+    fn simulate_record_from_processor(
+        stats: &mut crate::context::ContextCacheStats,
+        model: &str,
+        events: Vec<crate::provider::ChatEvent>,
+    ) -> Option<crate::context::NormalizedProviderUsage> {
+        let mut processor = EventProcessor::new();
+        for evt in events {
+            processor.process(evt);
+        }
+        if !processor.is_complete() {
+            return None;
+        }
+        let input = processor.input_tokens();
+        let output = processor.output_tokens();
+        if input == 0 && output == 0 && processor.cached_tokens().is_none() {
+            return None;
+        }
+        let usage = crate::context::normalize_from_finish(input, output, processor.cached_tokens());
+        stats.record_usage(
+            model,
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.output_tokens,
+        );
+        Some(usage)
+    }
+
+    #[test]
+    fn processor_missing_usage_returns_none() {
+        let mut stats = crate::context::ContextCacheStats::new();
+        // No Finish event → processor not complete
+        let result = simulate_record_from_processor(
+            &mut stats,
+            "m1",
+            vec![crate::provider::ChatEvent::TextDelta(Arc::from(
+                "hi".to_string(),
+            ))],
+        );
+        assert!(result.is_none());
+        assert!(stats.get("m1").is_none());
+    }
+
+    #[test]
+    fn processor_zero_usage_returns_none() {
+        let mut stats = crate::context::ContextCacheStats::new();
+        // Finish with zero tokens and no cached_tokens → should not record
+        let result = simulate_record_from_processor(
+            &mut stats,
+            "m1",
+            vec![crate::provider::ChatEvent::Finish {
+                stop_reason: Arc::from("stop".to_string()),
+                usage: crate::provider::TokenUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cached_tokens: None,
+                    ..Default::default()
+                },
+            }],
+        );
+        assert!(result.is_none());
+        assert!(stats.get("m1").is_none());
+    }
+
+    #[test]
+    fn processor_no_cached_tokens_records_with_zero_rate() {
+        let mut stats = crate::context::ContextCacheStats::new();
+        let usage = simulate_record_from_processor(
+            &mut stats,
+            "m1",
+            vec![crate::provider::ChatEvent::Finish {
+                stop_reason: Arc::from("stop".to_string()),
+                usage: crate::provider::TokenUsage {
+                    input_tokens: 1000,
+                    output_tokens: 200,
+                    cached_tokens: None,
+                    ..Default::default()
+                },
+            }],
+        );
+        let u = usage.unwrap();
+        assert_eq!(u.input_tokens, 1000);
+        assert_eq!(u.cached_input_tokens, None);
+        assert_eq!(u.output_tokens, 200);
+
+        let entry = stats.get("m1").unwrap();
+        assert_eq!(entry.call_count, 1);
+        assert_eq!(entry.total_input_tokens, 1000);
+        assert_eq!(entry.total_cached_tokens, 0);
+        assert_eq!(entry.total_output_tokens, 200);
+        assert!((stats.cache_hit_rate("m1") - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn processor_with_cached_tokens_records_correct_rate() {
+        let mut stats = crate::context::ContextCacheStats::new();
+        let usage = simulate_record_from_processor(
+            &mut stats,
+            "m1",
+            vec![crate::provider::ChatEvent::Finish {
+                stop_reason: Arc::from("stop".to_string()),
+                usage: crate::provider::TokenUsage {
+                    input_tokens: 1000,
+                    output_tokens: 200,
+                    cached_tokens: Some(600),
+                    ..Default::default()
+                },
+            }],
+        );
+        let u = usage.unwrap();
+        assert_eq!(u.cached_input_tokens, Some(600));
+
+        let entry = stats.get("m1").unwrap();
+        assert_eq!(entry.call_count, 1);
+        assert_eq!(entry.total_cached_tokens, 600);
+        assert!((stats.cache_hit_rate("m1") - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn processor_cached_tokens_clamped_to_input() {
+        let mut stats = crate::context::ContextCacheStats::new();
+        let usage = simulate_record_from_processor(
+            &mut stats,
+            "m1",
+            vec![crate::provider::ChatEvent::Finish {
+                stop_reason: Arc::from("stop".to_string()),
+                usage: crate::provider::TokenUsage {
+                    input_tokens: 100,
+                    output_tokens: 20,
+                    cached_tokens: Some(500),
+                    ..Default::default()
+                },
+            }],
+        );
+        let u = usage.unwrap();
+        // Clamped from 500 to 100
+        assert_eq!(u.cached_input_tokens, Some(100));
+
+        let entry = stats.get("m1").unwrap();
+        assert_eq!(entry.total_cached_tokens, 100);
+        assert!((stats.cache_hit_rate("m1") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn repeated_processor_responses_count_once_each() {
+        let mut stats = crate::context::ContextCacheStats::new();
+        let finish = |input, output, cached| {
+            vec![crate::provider::ChatEvent::Finish {
+                stop_reason: Arc::from("stop".to_string()),
+                usage: crate::provider::TokenUsage {
+                    input_tokens: input,
+                    output_tokens: output,
+                    cached_tokens: cached,
+                    ..Default::default()
+                },
+            }]
+        };
+
+        simulate_record_from_processor(&mut stats, "m1", finish(1000, 200, Some(300)));
+        simulate_record_from_processor(&mut stats, "m1", finish(2000, 400, Some(600)));
+
+        let entry = stats.get("m1").unwrap();
+        assert_eq!(entry.call_count, 2);
+        assert_eq!(entry.total_input_tokens, 3000);
+        assert_eq!(entry.total_cached_tokens, 900);
+        assert_eq!(entry.total_output_tokens, 600);
+        assert!((stats.cache_hit_rate("m1") - 0.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn one_finish_event_in_batch_increments_once() {
+        let mut stats = crate::context::ContextCacheStats::new();
+        let events = vec![
+            crate::provider::ChatEvent::TextDelta(Arc::from("hello".to_string())),
+            crate::provider::ChatEvent::Finish {
+                stop_reason: Arc::from("stop".to_string()),
+                usage: crate::provider::TokenUsage {
+                    input_tokens: 500,
+                    output_tokens: 100,
+                    cached_tokens: Some(200),
+                    ..Default::default()
+                },
+            },
+        ];
+        let usage = simulate_record_from_processor(&mut stats, "m1", events);
+        assert!(usage.is_some());
+        let entry = stats.get("m1").unwrap();
+        assert_eq!(entry.call_count, 1);
+    }
+
+    // --- Phase 5: effective-cost diagnostic uses real cache stats ---
+
+    #[test]
+    fn effective_cost_analysis_uses_recorded_cache_stats() {
+        let mut stats = crate::context::ContextCacheStats::new();
+        // Record usage with high cached ratio (0.6)
+        simulate_record_from_processor(
+            &mut stats,
+            "model-x",
+            vec![crate::provider::ChatEvent::Finish {
+                stop_reason: Arc::from("stop".to_string()),
+                usage: crate::provider::TokenUsage {
+                    input_tokens: 10000,
+                    output_tokens: 2000,
+                    cached_tokens: Some(6000),
+                    ..Default::default()
+                },
+            }],
+        );
+
+        // Analyze with high stable prefix → should recommend PreserveStablePrefix
+        let analysis = crate::context::EffectiveCostAnalysis::analyze(
+            &stats, "model-x", 5000, // stable_prefix_tokens
+            2000, // slow_changing_tokens
+            1000, // volatile_tokens
+        );
+        assert_eq!(
+            analysis.recommended_action,
+            crate::context::EffectiveCostAction::PreserveStablePrefix
+        );
+        assert!((analysis.cache_hit_rate - 0.6).abs() < 1e-9);
+        assert_eq!(analysis.input_tokens, 10000);
+        assert_eq!(analysis.cached_input_tokens, 6000);
     }
 }
