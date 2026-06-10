@@ -554,7 +554,7 @@ impl CoreDaemon {
                     plan_mode,
                     config,
                     pool: self.pool.clone(),
-                    subagent_pool: self.deps.subagent_pool.clone(),
+                    subagent_pool: self.deps.legacy_agent.subagent_pool.clone(),
                     memory_store: self.deps.memory_store.clone(),
                     event_log: Arc::clone(&self.event_log),
                     turn_id: turn_id.clone(),
@@ -1045,7 +1045,7 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::TaskList => {
-                let Some(scheduler) = self.deps.bg_scheduler.clone() else {
+                let Some(scheduler) = self.deps.legacy_agent.bg_scheduler.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_scheduler".to_string(),
                         message: "Core client missing background scheduler".to_string(),
@@ -1066,7 +1066,7 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::TaskDelete { id } => {
-                let Some(scheduler) = self.deps.bg_scheduler.clone() else {
+                let Some(scheduler) = self.deps.legacy_agent.bg_scheduler.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_scheduler".to_string(),
                         message: "Core client missing background scheduler".to_string(),
@@ -1087,7 +1087,7 @@ impl CoreDaemon {
                 interval_secs,
                 message,
             } => {
-                let Some(scheduler) = self.deps.bg_scheduler.clone() else {
+                let Some(scheduler) = self.deps.legacy_agent.bg_scheduler.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "missing_scheduler".to_string(),
                         message: "Core client missing background scheduler".to_string(),
@@ -1101,7 +1101,7 @@ impl CoreDaemon {
                 let task_id = task.id.clone();
                 match scheduler.add(task).await {
                     Ok(_) => {
-                        if let Some(pool) = self.deps.subagent_pool.clone() {
+                        if let Some(pool) = self.deps.legacy_agent.subagent_pool.clone() {
                             let request = crate::agent::worker::SubAgentRequest {
                                 task_id: 0,
                                 prompt: format!("[Background] {}", message),

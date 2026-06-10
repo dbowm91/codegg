@@ -2,6 +2,17 @@ use std::sync::Arc;
 
 use crate::agent::turn_runtime::TurnRuntime;
 
+/// Transitional container for concrete agent runtime dependencies.
+///
+/// These fields are still needed for task scheduling and subagent spawning,
+/// but will eventually be replaced by the turn runtime abstraction.
+/// Grouped here to make their legacy status explicit.
+#[derive(Clone, Default)]
+pub struct LegacyAgentRuntimeDeps {
+    pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+    pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
+}
+
 /// Bundles optional runtime dependencies for [`CoreDaemon`].
 ///
 /// This localizes concrete agent/tool types so `CoreDaemon` does not
@@ -9,8 +20,7 @@ use crate::agent::turn_runtime::TurnRuntime;
 pub struct CoreRuntimeDeps {
     pub pool: Option<sqlx::SqlitePool>,
     pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
-    pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
-    pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
+    pub legacy_agent: LegacyAgentRuntimeDeps,
     /// The turn runtime that owns tool registry, permission checker,
     /// agent loop construction, and turn execution.
     ///
@@ -23,8 +33,7 @@ impl Clone for CoreRuntimeDeps {
         Self {
             pool: self.pool.clone(),
             memory_store: self.memory_store.clone(),
-            subagent_pool: self.subagent_pool.clone(),
-            bg_scheduler: self.bg_scheduler.clone(),
+            legacy_agent: self.legacy_agent.clone(),
             turn_runtime: Arc::clone(&self.turn_runtime),
         }
     }
@@ -40,9 +49,25 @@ impl CoreRuntimeDeps {
         Self {
             pool,
             memory_store,
-            subagent_pool,
-            bg_scheduler,
+            legacy_agent: LegacyAgentRuntimeDeps {
+                subagent_pool,
+                bg_scheduler,
+            },
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
+        }
+    }
+
+    pub fn from_parts(
+        pool: Option<sqlx::SqlitePool>,
+        memory_store: Option<Arc<crate::memory::MemoryStore>>,
+        legacy_agent: LegacyAgentRuntimeDeps,
+        turn_runtime: Arc<dyn TurnRuntime>,
+    ) -> Self {
+        Self {
+            pool,
+            memory_store,
+            legacy_agent,
+            turn_runtime,
         }
     }
 
