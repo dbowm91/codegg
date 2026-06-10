@@ -67,7 +67,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
 - `architecture/context-ledger.md`: Context artifact storage, tool-output projection, ContextLedgerState, context_read tool, and config options
-- `architecture/cache-aware-context.md`: Cache-aware context packing, tier-based block ordering, ContextPacker algorithm, ContextBlockBuilder, cache stats, and config
+- `architecture/cache-aware-context.md`: Cache-aware context packing, tier-based block ordering, ContextPacker algorithm, ContextBlockBuilder, cache stats, and config (hardened: observe-only, stable hashes via stable_hash_hex, source_handle on ContextBlock, multi-phase observation via observe_context_pack, cache stats wired from provider telemetry; active mutation disabled)
 
 ## Critical Implementation Notes
 
@@ -243,7 +243,7 @@ These items were verified during review sessions:
 | `/theme` slash command | list, use, reload, diagnostics subcommands | `src/tui/app/mod.rs:handle_theme_command` |
 | Boundary script | `scripts/check-core-boundary.sh` | Verifies no forbidden imports/dependencies in codegg-core |
 | ckcore alias | `.cargo/config.toml` | `cargo ckcore` = `check -p codegg-core` |
-| Context module | artifact storage + projection + context_read tool | `src/context/` |
+| Context module | artifact storage + projection + context_read tool + cache-aware packer (hardened observe-only layer) | `src/context/` |
 | ProjectionConfig defaults | max_success=800, max_failure=2000, enabled=true, artifact_store=true | `src/context/projection.rs` |
 | ContextLedgerState limits | 20 files, 10 commands, 10 test results, 10 errors; empty handles rejected | `src/agent/context_frame.rs` |
 | context_read registration | Registered when `artifact_store = true`, regardless of `project_tool_outputs` | `src/tool/factory.rs` |
@@ -398,7 +398,7 @@ When adding guidance for a new module:
 | Compaction (context compaction strategies) | `.opencode/skills/compaction/SKILL.md` |
 | Router (model auto-routing) | `.opencode/skills/router/SKILL.md` |
 | Util (clipboard, fuzzy matching, truncation, metrics) | `.opencode/skills/util/SKILL.md` |
-| Context (artifact storage, projection, context_read) | `.opencode/skills/context/SKILL.md` |
+| Context (artifact storage, projection, context_read, cache-aware packer observation layer) | `.opencode/skills/context/SKILL.md` |
 
 ## Testing Commands
 

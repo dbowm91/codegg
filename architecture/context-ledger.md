@@ -270,4 +270,4 @@ Artifacts are currently **session-local and in-memory only**. SQLite persistence
 
 ## Cache-Aware Context Packing
 
-The context ledger provides artifact storage and projection. The cache-aware context packer builds on this by ordering context blocks for stable provider prompt caching. See [cache-aware-context.md](cache-aware-context.md) for the full architecture.
+The context ledger provides artifact storage and projection. The cache-aware context packer builds on this by ordering context blocks for stable provider prompt caching (see [cache-aware-context.md](cache-aware-context.md) for the authoritative post-hardening description: observe-only diagnostics at multiple phases, stable SHA-256 hashes via `stable_hash_hex`, `source_handle` on `ContextBlock`, real tool-definition summary text for token accounting, cache stats surfaced from provider telemetry, and the fact that active mutation is disabled).

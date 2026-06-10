@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use hex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -106,11 +108,13 @@ pub fn estimate_tokens(text: &str) -> usize {
 }
 
 pub fn compute_content_hash(content: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    format!("{:x}", Sha256::digest(content.as_bytes()))
+}
+
+/// Stable full SHA-256 hex (64 lowercase chars) over arbitrary input bytes.
+/// This is the common primitive for cache-aware context hashes (content, block ids, tool defs).
+pub fn stable_hash_hex(input: impl AsRef<[u8]>) -> String {
+    hex::encode(Sha256::digest(input.as_ref()))
 }
 
 #[cfg(test)]
@@ -194,6 +198,34 @@ mod tests {
         let h1 = compute_content_hash("hello");
         let h2 = compute_content_hash("world");
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_stable_hash_hex_stable_across_calls() {
+        let h1 = stable_hash_hex("hello world");
+        let h2 = stable_hash_hex("hello world");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn test_stable_hash_hex_known_sha256_vector() {
+        // SHA-256("hello") must match this exact lowercase hex (64 chars)
+        let h = stable_hash_hex("hello");
+        assert_eq!(
+            h,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        assert_eq!(h.len(), 64);
+    }
+
+    #[test]
+    fn test_compute_content_hash_changes_with_text() {
+        let h1 = compute_content_hash("foo bar baz");
+        let h2 = compute_content_hash("different text here");
+        assert_ne!(h1, h2);
+        assert_eq!(h1.len(), 64);
+        assert_eq!(h2.len(), 64);
     }
 
     #[test]

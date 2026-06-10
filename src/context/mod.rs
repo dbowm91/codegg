@@ -9,8 +9,8 @@ pub mod read_tool;
 pub mod tool_hash;
 
 pub use artifact::{
-    build_handle, compute_content_hash, estimate_tokens, ArtifactKind, ContextArtifact,
-    ContextArtifactStore, InMemoryArtifactStore,
+    build_handle, compute_content_hash, estimate_tokens, stable_hash_hex, ArtifactKind,
+    ContextArtifact, ContextArtifactStore, InMemoryArtifactStore,
 };
 pub use block::{CacheClass, ContextBlock, ContextBlockId, ContextBlockKind, Lossiness};
 pub use cache_stats::{CacheStatsEntry, ContextCacheStats};
@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn test_projection_failure_preserves_pytest_errors() {
         let config = ProjectionConfig::default();
-        let output = "FAILED test_app.py::test_login - AssertionError: x != y\nTraceback (most recent call last):\n  File \"app.py\", line 10\n    foo()\nAssertionError: x != y";
+        let output = "FAILED test_app.py::test_login - AssertionError: x != y\nTraceback (0 last):\n  File \"app.py\", line 10\n    foo()\nAssertionError: x != y";
         let proj = project_tool_output("python", None, output, false, "ctx://t", &config);
         assert_eq!(proj.status, ProjectionStatus::Failure);
         assert!(proj

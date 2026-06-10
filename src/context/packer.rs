@@ -59,6 +59,9 @@ impl SortKey {
 
 pub fn pack(blocks: Vec<ContextBlock>, budget: &ContextPackBudget) -> ContextPackResult {
     let mut sorted = blocks;
+    // Transcript messages (UserMessage/AssistantMessage/ToolResult) are not yet emitted as candidate blocks
+    // from the live transcript in AgentLoop; when they are, an explicit TranscriptTail ordered wrapper or
+    // order_index will be needed to preserve chronology. Current global sort is by tier/priority/id only.
     sorted.sort_by_key(SortKey::for_block);
 
     let mut included = Vec::new();
@@ -147,7 +150,15 @@ mod tests {
         required: bool,
     ) -> ContextBlock {
         let text = "x".repeat(tokens * 4);
-        let mut b = ContextBlock::new(kind, source, text, priority, required, Lossiness::Lossless);
+        let mut b = ContextBlock::new(
+            kind,
+            source,
+            text,
+            priority,
+            required,
+            Lossiness::Lossless,
+            None,
+        );
         b.estimated_tokens = tokens;
         b
     }
@@ -198,15 +209,40 @@ mod tests {
     }
 
     #[test]
-    fn transcript_order_preserved() {
-        let a = block(ContextBlockKind::UserMessage, "msg1", 50, 50, false);
-        let b = block(ContextBlockKind::AssistantMessage, "msg2", 50, 50, false);
-        let c = block(ContextBlockKind::ToolResult, "res1", 50, 50, false);
-        let result = pack(vec![c.clone(), a.clone(), b.clone()], &budget(1000));
-        let kinds: Vec<_> = result.blocks.iter().map(|b| b.kind).collect();
-        assert!(kinds.contains(&ContextBlockKind::UserMessage));
-        assert!(kinds.contains(&ContextBlockKind::AssistantMessage));
-        assert!(kinds.contains(&ContextBlockKind::ToolResult));
+    fn packer_sorts_volatile_by_priority_id_not_input_order() {
+        // Create three Volatile blocks with distinct priorities.
+        // Input order deliberately does not match priority order (to prove we do not preserve transcript/input chronology).
+        let low = block(ContextBlockKind::UserMessage, "low", 50, 10, false);
+        let mid = block(ContextBlockKind::AssistantMessage, "mid", 50, 50, false);
+        let high = block(ContextBlockKind::ToolResult, "high", 50, 90, false);
+
+        // Feed in a shuffled input order: low, high, mid (not sorted by priority).
+        let input_seq: Vec<_> = vec![low.id.clone(), high.id.clone(), mid.id.clone()];
+        let result = pack(vec![low.clone(), high.clone(), mid.clone()], &budget(1000));
+
+        // All should be included (large budget).
+        assert_eq!(
+            result.blocks.len(),
+            3,
+            "all volatile blocks fit in large budget"
+        );
+
+        // The packer sorts globally by (tier, priority DESC, id ASC). For same-tier volatiles this means highest priority first.
+        // Therefore output order must be high (prio 90), mid (50), low (10) — NOT the input order we fed.
+        let out_ids: Vec<_> = result.blocks.iter().map(|b| b.id.clone()).collect();
+        let expected_sorted: Vec<_> = vec![high.id.clone(), mid.id.clone(), low.id.clone()];
+        assert_eq!(
+            out_ids, expected_sorted,
+            "output must be sorted by priority DESC (then id), not input sequence"
+        );
+
+        // Explicitly prove it did not preserve the arbitrary input order.
+        assert_ne!(out_ids, input_seq, "packer must not emit blocks in the caller's input order for volatile transcript-like kinds");
+
+        // Also assert by priority for readability.
+        assert_eq!(result.blocks[0].priority, 90);
+        assert_eq!(result.blocks[1].priority, 50);
+        assert_eq!(result.blocks[2].priority, 10);
     }
 
     #[test]

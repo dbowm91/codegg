@@ -1,11 +1,9 @@
-use std::collections::hash_map::DefaultHasher;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 
-use super::artifact::{compute_content_hash, estimate_tokens};
+use super::artifact::{compute_content_hash, estimate_tokens, stable_hash_hex};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ContextBlockId(pub String);
@@ -92,6 +90,8 @@ pub struct ContextBlock {
     pub required: bool,
     pub lossiness: Lossiness,
     pub source: String,
+    #[serde(default)]
+    pub source_handle: Option<String>,
 }
 
 impl ContextBlock {
@@ -102,6 +102,7 @@ impl ContextBlock {
         priority: u32,
         required: bool,
         lossiness: Lossiness,
+        source_handle: Option<String>,
     ) -> Self {
         let content_hash = compute_content_hash(&text);
         let estimated_tokens = estimate_tokens(&text);
@@ -116,15 +117,16 @@ impl ContextBlock {
             required,
             lossiness,
             source: source.to_string(),
+            source_handle,
         }
     }
 }
 
 pub fn compute_block_id(kind: ContextBlockKind, source: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    kind.hash(&mut hasher);
-    source.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    // Stable hash of (kind-as-str + ":" + source) using the common sha256 primitive.
+    // Full 64-char lowercase hex for correctness (plan: "at least 32 hex").
+    let input = format!("{:?}:{}", kind, source);
+    stable_hash_hex(input)
 }
 
 #[cfg(test)]
@@ -139,6 +141,7 @@ mod tests {
             100,
             true,
             Lossiness::Lossless,
+            None,
         )
     }
 
@@ -151,6 +154,7 @@ mod tests {
             100,
             true,
             Lossiness::Lossless,
+            None,
         );
         let b = ContextBlock::new(
             ContextBlockKind::SystemPrompt,
@@ -159,6 +163,7 @@ mod tests {
             100,
             true,
             Lossiness::Lossless,
+            None,
         );
         assert_eq!(a.id, b.id);
     }
@@ -186,6 +191,7 @@ mod tests {
             100,
             true,
             Lossiness::Lossless,
+            None,
         );
         let b = ContextBlock::new(
             ContextBlockKind::SystemPrompt,
@@ -194,6 +200,7 @@ mod tests {
             100,
             true,
             Lossiness::Lossless,
+            None,
         );
         assert_ne!(a.id, b.id);
     }
@@ -207,6 +214,7 @@ mod tests {
             100,
             true,
             Lossiness::Lossless,
+            None,
         );
         let b = ContextBlock::new(
             ContextBlockKind::ToolDefinitions,
@@ -215,8 +223,28 @@ mod tests {
             100,
             true,
             Lossiness::Lossless,
+            None,
         );
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn block_id_deterministic() {
+        let id1 = compute_block_id(ContextBlockKind::ToolDefinitions, "src/foo.rs");
+        let id2 = compute_block_id(ContextBlockKind::ToolDefinitions, "src/foo.rs");
+        assert_eq!(id1, id2);
+        assert_eq!(id1.len(), 64);
+    }
+
+    #[test]
+    fn changing_source_or_kind_changes_block_id() {
+        let id1 = compute_block_id(ContextBlockKind::SystemPrompt, "s1");
+        let id2 = compute_block_id(ContextBlockKind::SystemPrompt, "s2");
+        let id3 = compute_block_id(ContextBlockKind::ToolDefinitions, "s1");
+        assert_ne!(id1, id2);
+        assert_ne!(id1, id3);
+        assert_eq!(id1.len(), 64);
+        assert_eq!(id2.len(), 64);
     }
 
     #[test]
@@ -237,6 +265,78 @@ mod tests {
         assert_eq!(back.estimated_tokens, block.estimated_tokens);
         assert_eq!(back.priority, block.priority);
         assert_eq!(back.required, block.required);
+        assert_eq!(back.source_handle, block.source_handle);
+    }
+
+    #[test]
+    fn serialization_roundtrip_includes_source_handle() {
+        let block = ContextBlock::new(
+            ContextBlockKind::ArtifactSummary,
+            "artifacts:s1:1",
+            "summary".to_string(),
+            20,
+            false,
+            Lossiness::SummaryOnly,
+            Some("ctx://tool/sess/1/call_abc".to_string()),
+        );
+        let json = serde_json::to_string(&block).unwrap();
+        let back: ContextBlock = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.source_handle,
+            Some("ctx://tool/sess/1/call_abc".to_string())
+        );
+        assert_eq!(back.source_handle, block.source_handle);
+    }
+
+    #[test]
+    fn non_artifact_blocks_default_source_handle_to_none() {
+        let sys = ContextBlock::new(
+            ContextBlockKind::SystemPrompt,
+            "sys:m",
+            "sys".to_string(),
+            100,
+            true,
+            Lossiness::Lossless,
+            None,
+        );
+        assert_eq!(sys.source_handle, None);
+
+        let tools = ContextBlock::new(
+            ContextBlockKind::ToolDefinitions,
+            "tools:hash",
+            "tools".to_string(),
+            80,
+            true,
+            Lossiness::Lossless,
+            None,
+        );
+        assert_eq!(tools.source_handle, None);
+
+        let ctrl = ContextBlock::new(
+            ContextBlockKind::ControlInstruction,
+            "ctrl:s",
+            "ctrl".to_string(),
+            30,
+            false,
+            Lossiness::SummaryOnly,
+            None,
+        );
+        assert_eq!(ctrl.source_handle, None);
+    }
+
+    #[test]
+    fn artifact_block_can_carry_ctx_source_handle() {
+        let art = ContextBlock::new(
+            ContextBlockKind::ArtifactSummary,
+            "artifacts:s1:3",
+            "sum".to_string(),
+            20,
+            false,
+            Lossiness::SummaryOnly,
+            Some("ctx://tool/s1/0/c42".to_string()),
+        );
+        assert_eq!(art.source_handle, Some("ctx://tool/s1/0/c42".to_string()));
+        assert_eq!(art.kind, ContextBlockKind::ArtifactSummary);
     }
 
     #[test]

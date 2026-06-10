@@ -1,7 +1,37 @@
+use super::artifact::stable_hash_hex;
 use super::block::{ContextBlock, ContextBlockKind, Lossiness};
 use super::tool_hash::tool_definitions_hash;
 use crate::agent::context_frame::ContextFrame;
 use crate::provider::ToolDefinition;
+
+fn schema_hash(params: &serde_json::Value) -> String {
+    let canon = canonicalize_json(params);
+    let full = stable_hash_hex(canon);
+    if full.len() >= 16 {
+        full[..16].to_string()
+    } else {
+        full
+    }
+}
+
+fn canonicalize_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut sorted: Vec<_> = map.iter().collect();
+            sorted.sort_by_key(|(k, _)| (*k).clone());
+            let mut parts = Vec::new();
+            for (k, v) in sorted {
+                parts.push(format!("{}:{}", k, canonicalize_json(v)));
+            }
+            format!("{{{}}}", parts.join(","))
+        }
+        serde_json::Value::Array(arr) => {
+            let inner: Vec<_> = arr.iter().map(canonicalize_json).collect();
+            format!("[{}]", inner.join(","))
+        }
+        other => other.to_string(),
+    }
+}
 
 pub struct ContextBlockBuilder {
     session_id: String,
@@ -25,6 +55,7 @@ impl ContextBlockBuilder {
             100,
             true,
             Lossiness::Lossless,
+            None,
         )
     }
 
@@ -37,19 +68,47 @@ impl ContextBlockBuilder {
             90,
             true,
             Lossiness::Lossless,
+            None,
         )
     }
 
     pub fn build_tool_definitions_block(&self, definitions: &[ToolDefinition]) -> ContextBlock {
         let hash = tool_definitions_hash(definitions);
         let source = format!("tools:{hash}");
+
+        let mut lines = vec![format!("Tool definitions hash: {}", hash)];
+        if !definitions.is_empty() {
+            lines.push("Tools:".to_string());
+            let mut sorted: Vec<&ToolDefinition> = definitions.iter().collect();
+            sorted.sort_by(|a, b| a.name.cmp(&b.name));
+            for def in sorted {
+                let defer = match def.defer_loading {
+                    Some(true) => "true",
+                    Some(false) => "false",
+                    None => "",
+                };
+                let sh = schema_hash(&def.parameters);
+                let desc = if def.description.is_empty() {
+                    ""
+                } else {
+                    &def.description
+                };
+                lines.push(format!(
+                    "- {} | defer={} | schema_hash={} | {}",
+                    def.name, defer, sh, desc
+                ));
+            }
+        }
+        let text = lines.join("\n");
+
         ContextBlock::new(
             ContextBlockKind::ToolDefinitions,
             &source,
-            String::new(),
+            text,
             80,
             true,
             Lossiness::Lossless,
+            None,
         )
     }
 
@@ -65,6 +124,7 @@ impl ContextBlockBuilder {
             60,
             false,
             Lossiness::ProjectedRecoverable,
+            None,
         ))
     }
 
@@ -79,6 +139,7 @@ impl ContextBlockBuilder {
             70,
             false,
             Lossiness::ProjectedRecoverable,
+            None,
         ))
     }
 
@@ -93,6 +154,7 @@ impl ContextBlockBuilder {
             65,
             false,
             Lossiness::ProjectedRecoverable,
+            None,
         ))
     }
 
@@ -107,6 +169,7 @@ impl ContextBlockBuilder {
             40,
             false,
             Lossiness::SummaryOnly,
+            None,
         ))
     }
 
@@ -118,6 +181,7 @@ impl ContextBlockBuilder {
             30,
             false,
             Lossiness::SummaryOnly,
+            None,
         )
     }
 
@@ -136,6 +200,7 @@ impl ContextBlockBuilder {
             20,
             false,
             Lossiness::SummaryOnly,
+            None,
         ))
     }
 
@@ -372,5 +437,69 @@ mod tests {
                 .priority,
             20
         );
+    }
+
+    #[test]
+    fn tool_block_text_is_nonempty_when_definitions_exist() {
+        let builder = ContextBlockBuilder::new("s", "m");
+        let defs = vec![sample_tool_def("bash"), sample_tool_def("read")];
+        let block = builder.build_tool_definitions_block(&defs);
+        assert!(!block.text.is_empty());
+        assert!(block.text.contains("Tool definitions hash:"));
+        assert!(block.text.contains("Tools:"));
+        assert!(block.text.contains("bash"));
+        assert!(block.text.contains("read"));
+    }
+
+    #[test]
+    fn reordered_definitions_produce_same_block_source_and_same_rendered_text_order() {
+        let builder = ContextBlockBuilder::new("s", "m");
+        let defs1 = vec![sample_tool_def("bash"), sample_tool_def("read")];
+        let defs2 = vec![sample_tool_def("read"), sample_tool_def("bash")];
+        let b1 = builder.build_tool_definitions_block(&defs1);
+        let b2 = builder.build_tool_definitions_block(&defs2);
+        assert_eq!(b1.source, b2.source);
+        // text order is deterministic (sorted by name)
+        assert_eq!(b1.text, b2.text);
+        assert!(b1.text.find("bash").unwrap() < b1.text.find("read").unwrap());
+    }
+
+    #[test]
+    fn description_change_params_change_defer_change_alter_tool_block_content_hash_and_text() {
+        let builder = ContextBlockBuilder::new("s", "m");
+        let base = vec![sample_tool_def("bash")];
+        let b_base = builder.build_tool_definitions_block(&base);
+
+        // desc change
+        let mut d2 = sample_tool_def("bash");
+        d2.description = "Execute shell commands".to_string();
+        let b_desc = builder.build_tool_definitions_block(&[d2]);
+        assert_ne!(b_base.content_hash, b_desc.content_hash);
+        assert_ne!(b_base.text, b_desc.text);
+
+        // params change
+        let mut d3 = sample_tool_def("bash");
+        d3.parameters =
+            serde_json::json!({"type": "object", "properties": {"cmd": {"type": "string"}}});
+        let b_params = builder.build_tool_definitions_block(&[d3]);
+        assert_ne!(b_base.content_hash, b_params.content_hash);
+        assert_ne!(b_base.text, b_params.text);
+
+        // defer change
+        let mut d4 = sample_tool_def("bash");
+        d4.defer_loading = Some(true);
+        let b_defer = builder.build_tool_definitions_block(&[d4]);
+        assert_ne!(b_base.content_hash, b_defer.content_hash);
+        assert_ne!(b_base.text, b_defer.text);
+    }
+
+    #[test]
+    fn estimated_tokens_nonzero_and_scale_with_tool_count() {
+        let builder = ContextBlockBuilder::new("s", "m");
+        let one = builder.build_tool_definitions_block(&[sample_tool_def("bash")]);
+        let two = builder
+            .build_tool_definitions_block(&[sample_tool_def("bash"), sample_tool_def("read")]);
+        assert!(one.estimated_tokens > 0);
+        assert!(two.estimated_tokens > one.estimated_tokens);
     }
 }

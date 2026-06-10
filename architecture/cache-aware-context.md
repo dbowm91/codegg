@@ -44,15 +44,16 @@ The packer's sort order guarantees this: `StablePrefix` blocks always precede `S
 
 ```rust
 pub struct ContextBlock {
-    pub id: ContextBlockId,          // Deterministic hash of (kind, source)
+    pub id: ContextBlockId,          // Deterministic hash of (kind, source) via stable_hash_hex (full SHA-256, 64 lowercase hex)
     pub kind: ContextBlockKind,     // Determines tier
     pub text: String,               // Block content
-    pub content_hash: String,       // SHA-like hash of text for change detection
+    pub content_hash: String,       // Stable full SHA-256 (64 hex) of text via stable_hash_hex
     pub estimated_tokens: usize,    // Token count estimate
     pub priority: u32,              // Higher = included first within tier
     pub required: bool,             // If true, always included regardless of budget
     pub lossiness: Lossiness,       // How much compression is acceptable
-    pub source: String,             // Provenance tag (e.g., "system:claude-3")
+    pub source: String,             // Stable identity label (e.g., "system:claude-3" or tool hash)
+    pub source_handle: Option<String>, // Recoverable context handle (e.g. "ctx://...") or None for non-artifact blocks
 }
 ```
 
@@ -66,8 +67,10 @@ pub struct ContextBlock {
 
 ### Block ID Stability
 
-Block IDs are computed from `(kind, source)` via a deterministic hash. This means:
-- The same block kind + source always produces the same ID, regardless of text content.
+All block IDs, `content_hash`, and `tool_definitions_hash` now use stable full SHA-256 (64 lowercase hex chars) via the shared `stable_hash_hex` helper (no `DefaultHasher` in any context module). Hashes are stable across process restarts and have known test vectors. Tool-definition hashes are order-insensitive.
+
+Block IDs are computed from `(kind, source)`:
+- The same block kind + source always produces the same ID (64 hex), regardless of text content.
 - Changing the text changes the `content_hash` but not the `id`.
 - This allows the packer to track which blocks have changed between turns.
 
@@ -91,14 +94,11 @@ Constructs `ContextBlock` instances from runtime state. The builder takes a `ses
 
 The `build_all` convenience method constructs all blocks from a single call, skipping `None` optionals.
 
-### Tool Definitions Hash
+### Tool Definitions Hash and Summary Text
 
-`tool_definitions_hash()` in `tool_hash.rs` computes a deterministic hash of the tool palette:
-1. Sorts definitions by name.
-2. Hashes each definition's name, description, canonicalized parameters (sorted keys), and `defer_loading` flag.
-3. Returns a 16-character hex string.
+`tool_definitions_hash()` in `tool_hash.rs` computes a deterministic hash of the tool palette using `stable_hash_hex` (full SHA-256, 64 lowercase hex chars; order-insensitive for the set of definitions). No `DefaultHasher` is used in context modules.
 
-This hash serves as the `source` tag for the `ToolDefinitions` block, making the block ID change when the tool palette changes — which is the correct behavior for cache invalidation.
+`build_tool_definitions_block` now renders deterministic non-empty summary text (hash + per-tool lines with `name | defer=... | schema_hash=... | description`). This makes stable/slow-changing token accounting realistic (previously undercounted because `text=""`). The summary is compact for logs but sufficient for token estimates; full schemas are not inlined.
 
 ## Packer Algorithm (`packer.rs`)
 
@@ -173,36 +173,40 @@ Stats are session-local and in-memory. They allow the packer (and diagnostics) t
 
 ## Agent Loop Integration (`src/agent/loop.rs`)
 
-The packer is invoked at the start of each provider turn, after tool definitions are built and the context frame is assembled:
+The packer is invoked via `observe_context_pack` (which calls the private `compute_context_pack_result` / `build_packer_candidates`) at these phases during a turn: InitialRequest, AfterToolResults, AfterCompaction, BeforeProviderCall, BeforeFinalization.
 
-1. **Build candidates**: `ContextBlockBuilder::build_all()` constructs blocks from the current system prompt, model profile, tool definitions, context frame, goal, memory, todo, and control text.
+1. **Build candidates**: `build_packer_candidates` (via `ContextBlockBuilder::build_all()` + transcript frame) constructs blocks from the current system prompt, model profile, tool definitions, context frame, goal, memory, todo, and control text. (Transcript messages User/Assistant/ToolResult are not yet emitted as live blocks; the packer sorts volatile blocks by priority/id only.)
 2. **Compute budget**: `ContextPackBudget` uses configured `max_stable_prefix_tokens` + `max_volatile_tokens` as total, minus reserved output (10K) and emergency margin (4K).
-3. **Pack**: `packer::pack(candidates, budget)` sorts and enforces budget.
-4. **Observe or act**:
-   - **Observe mode** (default): Logs diagnostics only. The original messages are sent unmodified.
-   - **Active mode**: Replaces the `Current session context:` section in the system message with the packed session frame content.
+3. **Pack**: `packer::pack(candidates, budget)` sorts and enforces budget (global tier/priority/id sort; no chronological transcript order preservation yet).
+4. **Observe only**: Diagnostics are logged (enriched with phase, tool hash, cache hit rate, slow-changing tokens, top omitted). No mutation occurs. The `observe_context_pack` helper never mutates the request.
 
-## Observation Mode
+## Observation Mode (Only Effective Mode)
 
-When `observe_only = true` (the default), the packer runs but does not modify the request. It logs:
+Active mutation is disabled for this pass. `observe_only` is forced internally; requesting `observe_only=false` emits a warning and runs as observe-only. No code path can replace system prompt content with packed frame text (the "Current session context:" replacement branch is removed).
+
+Observation/diagnostics are the only effective mode. Diagnostics run at multiple phases (InitialRequest, BeforeProviderCall, AfterToolResults, AfterCompaction, BeforeFinalization) via the private `observe_context_pack` helper (which calls `compute_context_pack_result` / `build_packer_candidates` internally). The helper never mutates the request.
+
+Diagnostics include:
+- phase,
+- model,
+- candidate/packed/stable/slow-changing/volatile token estimates,
+- omitted count + top omitted (id/kind/reason/tokens),
+- tool_definitions_hash,
+- cache_hit_rate from `ContextCacheStats` (surfaced from provider `cached_tokens` telemetry via `record_usage`).
+
+Example log (info level when `log_diagnostics` enabled):
 
 ```
-context-packer: candidates=N, packed=M, stable_prefix_tokens=X, volatile_tokens=Y, omitted=Z
+context-packer[BeforeProviderCall]: model=anthropic/claude-..., candidates=12, packed=9, stable_prefix_tokens=12450, slow_changing_tokens=3870, volatile_tokens=9200, omitted=3, tool_definitions_hash=..., cache_hit_rate=0.6123
 ```
 
-Per-block omission details are logged at `debug` level:
+Per-block omission details (top omitted) are logged at debug level.
 
-```
-context-packer: omitted block <id> (N tokens, reason: OverBudget)
-```
+This is an observation/diagnostic layer to inform later effective-cost compaction. It does not change request behavior.
 
-This allows operators to measure cache efficiency without risking behavioral changes. Enable diagnostics with `log_diagnostics: true` (the default).
+## Active Mode (Disabled)
 
-## Active Mode
-
-When `observe_only = false`, the packer replaces the session context injection in the system message. It finds the `Current session context:` marker in the system message and replaces everything from that marker onward with the packed session frame block content.
-
-This ensures the packed (ordered, budget-enforced) content is what the model sees, rather than the raw assembled context frame.
+Active mode is disabled for this pass. Requesting it (via config `observe_only: false` when `enabled: true`) produces a warning and forces observe-only execution. There is no code path that mutates provider requests or replaces system prompt content. The previous "Current session context:" replacement logic has been removed. Active mutation is not yet safe; this pass hardened the observation layer only.
 
 ## Configuration
 
@@ -223,12 +227,12 @@ In `opencode.json`:
 
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
-| `enabled` | `Option<bool>` | `false` | Master toggle; when false, packer is not invoked |
-| `observe_only` | `Option<bool>` | `true` | When true, logs diagnostics without modifying requests |
-| `stable_prefix` | `Option<bool>` | `true` | When true, stable prefix blocks are prioritized in sort order |
+| `enabled` | `Option<bool>` | `false` | Master toggle; when false, packer is not invoked. Note: even when enabled, active mutation is disabled for this pass (see Observation Mode). |
+| `observe_only` | `Option<bool>` | `true` | Forced true internally for now; requesting false emits a warning and runs observe-only. Active mutation is not yet safe. |
+| `stable_prefix` | `Option<bool>` | `true` | Parsed but currently has no effect on sort (sort is always tier-based). Reserved for future ordered-prefix support. |
 | `max_stable_prefix_tokens` | `Option<usize>` | `32000` | Budget allocated to StablePrefix + SlowChanging tiers |
 | `max_volatile_tokens` | `Option<usize>` | `24000` | Budget allocated to Volatile tier |
-| `log_diagnostics` | `Option<bool>` | `true` | Log packer metrics at info/debug level |
+| `log_diagnostics` | `Option<bool>` | `true` | Log packer metrics at info/debug level (includes phase, tool hash, cache hit rate, slow-changing, top omitted) |
 
 **Budget calculation**: Total context budget = `max_stable_prefix_tokens + max_volatile_tokens`. Reserved output = 10,000 tokens. Emergency margin = 4,000 tokens. Available for context = total - 14,000.
 
@@ -250,3 +254,5 @@ Both systems are complementary. Projection reduces the size of individual `ToolR
 - **Dynamic tool palettes**: The tool definitions block is always required and always included in full. A future optimization could allow the packer to omit low-usage tools from the definitions when budget is tight, using the tool hash to detect palette changes.
 - **Provider-specific pricing**: Cache hit rates vary by provider and model. The packer does not currently adjust its strategy based on provider-specific cache pricing (e.g., Anthropic's 90% discount on cached tokens vs. OpenAI's 50%).
 - **Cross-turn block diffing**: The packer currently rebuilds all blocks each turn. A future optimization could diff against the previous turn's blocks and only re-pack changed blocks, further improving cache stability.
+
+**This pass (hardening) added**: multi-phase observation (`observe_context_pack` at InitialRequest/BeforeProviderCall/AfterToolResults/AfterCompaction/BeforeFinalization), `source_handle: Option<String>` on `ContextBlock`, stable full SHA-256 hashes via `stable_hash_hex` (no DefaultHasher in context modules), real non-empty deterministic tool-definition summary text (for realistic token counts), cache-hit-rate wiring from provider `cached_tokens` telemetry into diagnostics, and correction of the misleading transcript-order test (packer sorts volatile by priority/id; no live transcript blocks yet; comment added in packer.rs). Active mutation remains disabled; this is an observation/diagnostic layer only. No persistence of stats, no transcript packing/reordering, no effective-cost decisions, no replacement of compaction.

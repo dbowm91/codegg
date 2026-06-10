@@ -1,25 +1,31 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use crate::provider::ToolDefinition;
+
+use super::artifact::stable_hash_hex;
 
 pub fn tool_definitions_hash(defs: &[ToolDefinition]) -> String {
     let mut sorted: Vec<&ToolDefinition> = defs.iter().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut hasher = DefaultHasher::new();
-
+    // Build canonical string form then feed to stable sha256 (full 64-hex).
+    // This replaces the DefaultHasher path entirely.
+    let mut buf = String::new();
     for def in sorted {
-        def.name.hash(&mut hasher);
-        def.description.hash(&mut hasher);
+        buf.push_str(&def.name);
+        buf.push(':');
+        buf.push_str(&def.description);
+        buf.push(':');
 
         let canonical = canonicalize_json(&def.parameters);
-        canonical.hash(&mut hasher);
+        buf.push_str(&canonical);
+        buf.push(':');
 
-        def.defer_loading.hash(&mut hasher);
+        if let Some(d) = def.defer_loading {
+            buf.push_str(&d.to_string());
+        }
+        buf.push(';');
     }
 
-    format!("{:016x}", hasher.finish())
+    stable_hash_hex(buf)
 }
 
 fn canonicalize_json(value: &serde_json::Value) -> String {
@@ -103,7 +109,7 @@ mod tests {
     #[test]
     fn empty_definitions_produce_hash() {
         let hash = tool_definitions_hash(&[]);
-        assert_eq!(hash.len(), 16);
+        assert_eq!(hash.len(), 64);
     }
 
     #[test]
