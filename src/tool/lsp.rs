@@ -93,6 +93,7 @@ struct SemanticContextPacket {
     definitions_error: Option<String>,
     references: Vec<LocationSummary>,
     references_error: Option<String>,
+    source_actions: Vec<SemanticSourceActionHint>,
     limits: SemanticContextLimits,
 }
 
@@ -130,6 +131,14 @@ struct SemanticContextLimits {
     excerpt_truncated: bool,
 }
 
+#[derive(Serialize)]
+pub struct SemanticSourceActionHint {
+    pub action: String,
+    pub available: bool,
+    pub preview: Option<crate::lsp::edit::WorkspaceEditPreview>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct LspInput {
     operation: String,
@@ -157,6 +166,8 @@ struct LspInput {
     include_definitions: Option<bool>,
     #[serde(default)]
     include_overlay: Option<bool>,
+    #[serde(default)]
+    include_source_actions: Option<bool>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -393,6 +404,53 @@ impl LspTool {
             }
         }
     }
+
+    pub fn source_action_hint_from_result(
+        action: crate::lsp::operations::SourceActionPreviewKind,
+        result: Result<crate::lsp::edit::WorkspaceEditPreview, crate::lsp::LspError>,
+    ) -> SemanticSourceActionHint {
+        let action_str = match action {
+            crate::lsp::operations::SourceActionPreviewKind::OrganizeImports => {
+                "source.organizeImports".to_string()
+            }
+        };
+        match result {
+            Ok(preview) if preview.total_edits > 0 => SemanticSourceActionHint {
+                action: action_str,
+                available: true,
+                preview: Some(preview),
+                error: None,
+            },
+            Ok(preview) => SemanticSourceActionHint {
+                action: action_str,
+                available: false,
+                preview: Some(preview),
+                error: Some("source action produced no edits".to_string()),
+            },
+            Err(e) => SemanticSourceActionHint {
+                action: action_str,
+                available: false,
+                preview: None,
+                error: Some(e.to_string()),
+            },
+        }
+    }
+
+    async fn collect_source_action_hints(
+        &self,
+        ops: &crate::lsp::operations::LspOperations,
+        file: &Path,
+    ) -> Vec<SemanticSourceActionHint> {
+        let actions = [crate::lsp::operations::SourceActionPreviewKind::OrganizeImports];
+        let mut hints = Vec::with_capacity(actions.len());
+        for action in actions {
+            let result = ops
+                .source_action_preview(file, action, Some(&self.allowed_root))
+                .await;
+            hints.push(Self::source_action_hint_from_result(action, result));
+        }
+        hints
+    }
 }
 
 #[async_trait]
@@ -402,7 +460,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -466,6 +524,10 @@ impl Tool for LspTool {
                 "include_overlay": {
                     "type": "boolean",
                     "description": "Include overlay diagnostics in semanticContext (default true when content or patch provided)"
+                },
+                "include_source_actions": {
+                    "type": "boolean",
+                    "description": "Include safe allowlisted source-action preview hints in semanticContext. Initially only source.organizeImports. Default false."
                 }
             },
             "required": ["operation"]
@@ -1076,12 +1138,24 @@ impl Tool for LspTool {
 
                 let overlay_diag_count = overlay.as_ref().map(|o| o.diagnostics.len()).unwrap_or(0);
                 let overlay_sym_count = overlay.as_ref().map(|o| o.symbols.len()).unwrap_or(0);
+
+                // Source-action hints (opt-in)
+                let include_source_actions = parsed.include_source_actions.unwrap_or(false);
+                let source_actions = if include_source_actions {
+                    self.collect_source_action_hints(&ops, &file).await
+                } else {
+                    Vec::new()
+                };
+                let source_action_count =
+                    source_actions.iter().filter(|hint| hint.available).count();
+
                 let result_count = current_diags.len()
                     + current_syms.len()
                     + definitions.len()
                     + references.len()
                     + overlay_diag_count
-                    + overlay_sym_count;
+                    + overlay_sym_count
+                    + source_action_count;
                 let packet = SemanticContextPacket {
                     file: file_str,
                     target,
@@ -1095,6 +1169,7 @@ impl Tool for LspTool {
                     definitions_error,
                     references,
                     references_error,
+                    source_actions,
                     limits: SemanticContextLimits {
                         diagnostics_truncated,
                         symbols_truncated,
@@ -1242,6 +1317,10 @@ mod tests {
                 "include_overlay": {
                     "type": "boolean",
                     "description": "Include overlay diagnostics in semanticContext (default true when content or patch provided)"
+                },
+                "include_source_actions": {
+                    "type": "boolean",
+                    "description": "Include safe allowlisted source-action preview hints in semanticContext. Initially only source.organizeImports. Default false."
                 }
             },
             "required": ["operation"]

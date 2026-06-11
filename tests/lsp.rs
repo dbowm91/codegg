@@ -1403,3 +1403,141 @@ fn semantic_context_excerpt_truncates_on_utf8_boundary() {
         "excerpt contains replacement characters from split UTF-8"
     );
 }
+
+// ── 15. semanticContext source action hints ─────────────────────────────
+
+#[test]
+#[allow(non_snake_case)]
+fn lsp_schema_includes_include_source_actions() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let prop = params["properties"]["include_source_actions"]
+        .as_object()
+        .expect("include_source_actions property should be an object");
+    assert_eq!(prop["type"], "boolean");
+    assert!(prop["description"]
+        .as_str()
+        .unwrap()
+        .contains("source.organizeImports"));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semantic_context_source_actions_default_false() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let prop = params["properties"]["include_source_actions"]
+        .as_object()
+        .expect("include_source_actions property should be an object");
+    assert_eq!(prop["type"], "boolean");
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semantic_context_source_actions_is_read_only() {
+    let tool = make_tool();
+    assert_eq!(tool.category(), ToolCategory::ReadOnly);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semantic_context_packet_serializes_empty_source_actions() {
+    let packet = serde_json::json!({
+        "file": "src/main.rs",
+        "target": null,
+        "excerpt": {"start_line": 1, "end_line": 5, "text": "hello"},
+        "diagnostics": [],
+        "current_diagnostics_error": null,
+        "overlay": null,
+        "symbols": [],
+        "current_symbols_error": null,
+        "definitions": [],
+        "definitions_error": null,
+        "references": [],
+        "references_error": null,
+        "source_actions": [],
+        "limits": {
+            "diagnostics_truncated": false,
+            "symbols_truncated": false,
+            "references_truncated": false,
+            "overlay_diagnostics_truncated": false,
+            "excerpt_truncated": false
+        }
+    });
+    let v: serde_json::Value = packet;
+    assert!(v["source_actions"].as_array().unwrap().is_empty());
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semantic_context_packet_serializes_source_action_error_hint() {
+    let hint = serde_json::json!({
+        "action": "source.organizeImports",
+        "available": false,
+        "preview": null,
+        "error": "No edit-bearing source action available"
+    });
+    let arr = serde_json::json!([hint]);
+    let v: serde_json::Value = arr;
+    assert_eq!(v[0]["action"], "source.organizeImports");
+    assert_eq!(v[0]["available"], false);
+    assert!(v[0]["preview"].is_null());
+    assert!(v[0]["error"].as_str().unwrap().contains("No edit-bearing"));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_hint_available_when_preview_has_edits() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    use codegg::tool::lsp::LspTool;
+    let preview = codegg::lsp::edit::WorkspaceEditPreview {
+        title: "organize imports".to_string(),
+        files: vec![],
+        total_files: 1,
+        total_edits: 3,
+        truncated: false,
+    };
+    let hint = LspTool::source_action_hint_from_result(
+        SourceActionPreviewKind::OrganizeImports,
+        Ok(preview),
+    );
+    assert!(hint.available);
+    assert_eq!(hint.action, "source.organizeImports");
+    assert!(hint.preview.is_some());
+    assert!(hint.error.is_none());
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_hint_unavailable_when_preview_empty() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    use codegg::tool::lsp::LspTool;
+    let preview = codegg::lsp::edit::WorkspaceEditPreview {
+        title: "organize imports".to_string(),
+        files: vec![],
+        total_files: 0,
+        total_edits: 0,
+        truncated: false,
+    };
+    let hint = LspTool::source_action_hint_from_result(
+        SourceActionPreviewKind::OrganizeImports,
+        Ok(preview),
+    );
+    assert!(!hint.available);
+    assert!(hint.preview.is_some());
+    assert!(hint.error.as_deref() == Some("source action produced no edits"));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_hint_captures_error() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    use codegg::tool::lsp::LspTool;
+    let err = codegg::lsp::LspError::NoEditForSourceAction("organize imports".to_string());
+    let hint =
+        LspTool::source_action_hint_from_result(SourceActionPreviewKind::OrganizeImports, Err(err));
+    assert!(!hint.available);
+    assert!(hint.preview.is_none());
+    assert!(hint.error.is_some());
+    assert!(hint.error.unwrap().contains("organize imports"));
+}

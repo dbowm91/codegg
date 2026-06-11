@@ -264,6 +264,7 @@ These items were verified during review sessions:
 | `semanticCheckPreview` error fields | `diagnostics_error`, `symbols_error`, `restore_error` are `Option<String>` — non-None when the corresponding LSP request or restore fails; `restored_disk_view` reflects restore success; previously returned empty vectors or a bare bool | `crates/egglsp/src/overlay.rs` |
 | `semanticCheckPreview` root enforcement | Operation-level `allowed_root: Option<&Path>` param; rejects files outside root with `LspError::PathOutsideRoot` | `crates/egglsp/src/operations.rs` |
 | LspTool `execute_structured` success | `success=false` when `restore_error` is present in the JSON response; checks `/results/restore_error` pointer | `src/tool/lsp.rs` |
+| `semanticContext` source-action hints | `include_source_actions` bool (default false) triggers `collect_source_action_hints` which iterates a hardcoded allowlist (`OrganizeImports`); returns `Vec<SemanticSourceActionHint>` with `action`, `available`, `preview`, `error`; pure helper `source_action_hint_from_result` converts `Result<WorkspaceEditPreview, LspError>` to hint; available hints add to `result_count`; source-action failures are per-hint and non-fatal | `src/tool/lsp.rs` |
 
 ### Security Notes
 
