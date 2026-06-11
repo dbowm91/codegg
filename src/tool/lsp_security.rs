@@ -431,6 +431,16 @@ pub(crate) fn preset_defaults(preset: SecurityPreset) -> SecurityPresetDefaults 
     }
 }
 
+pub(crate) fn security_preset_name(preset: SecurityPreset) -> &'static str {
+    match preset {
+        SecurityPreset::RustServer => "rust_server",
+        SecurityPreset::RustCli => "rust_cli",
+        SecurityPreset::WebBackend => "web_backend",
+        SecurityPreset::DependencyReview => "dependency_review",
+        SecurityPreset::UnsafeReview => "unsafe_review",
+    }
+}
+
 use serde::Serialize;
 
 #[cfg(test)]
