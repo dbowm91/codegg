@@ -199,7 +199,10 @@ fn uri_to_path(uri: &Uri) -> Result<PathBuf, LspError> {
         .map_err(|_| LspError::RequestFailed(format!("uri is not a file path: {}", s)))
 }
 
-fn validate_path_against_root(path: &Path, allowed_root: Option<&Path>) -> Result<(), LspError> {
+pub(crate) fn validate_path_against_root(
+    path: &Path,
+    allowed_root: Option<&Path>,
+) -> Result<(), LspError> {
     if let Some(root) = allowed_root {
         let root_canon = root.canonicalize().map_err(LspError::from)?;
         let p = if path.is_absolute() {

@@ -1127,3 +1127,14 @@ fn semanticCheckPreview_is_read_only() {
     let tool = make_tool();
     assert_eq!(tool.category(), ToolCategory::ReadOnly);
 }
+
+#[test]
+#[allow(non_snake_case)]
+fn semanticCheckPreview_schema_includes_error_fields() {
+    let tool = make_tool();
+    let schema = tool.parameters();
+    let op_enum = schema["properties"]["operation"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(op_enum.iter().any(|v| v == "semanticCheckPreview"));
+}

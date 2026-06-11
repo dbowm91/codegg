@@ -5,9 +5,14 @@ use tracing::trace;
 use url::Url;
 
 use crate::client::url_to_uri;
-use crate::edit::{preview_text_edits_for_file, preview_workspace_edit, WorkspaceEditPreview};
+use crate::edit::{
+    preview_text_edits_for_file, preview_workspace_edit, validate_path_against_root,
+    WorkspaceEditPreview,
+};
 use crate::error::LspError;
-use crate::overlay::{diagnostic_to_file_diagnostic, flatten_symbols, SemanticCheckPreview};
+use crate::overlay::{
+    diagnostic_to_file_diagnostic, flatten_symbols, OverlaySession, SemanticCheckPreview,
+};
 use crate::service::LspService;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -721,22 +726,16 @@ impl LspOperations {
         &self,
         file_path: &Path,
         proposed_text: String,
+        allowed_root: Option<&Path>,
     ) -> Result<SemanticCheckPreview, LspError> {
         const OVERLAY_DIAGNOSTIC_WAIT_MS: u64 = 250;
         const MAX_OVERLAY_DIAGNOSTICS: usize = 100;
         const MAX_OVERLAY_SYMBOLS: usize = 200;
 
-        let (key, uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
+        validate_path_against_root(file_path, allowed_root)?;
 
-        let original = tokio::fs::read_to_string(file_path).await.map_err(|e| {
-            LspError::RequestFailed(format!(
-                "failed to read file {}: {}",
-                file_path.display(),
-                e
-            ))
-        })?;
-
-        self.service.update_file(file_path, &proposed_text).await?;
+        let overlay = OverlaySession::new(self.service.clone());
+        let token = overlay.apply_overlay(file_path, &proposed_text).await?;
 
         tokio::time::sleep(tokio::time::Duration::from_millis(
             OVERLAY_DIAGNOSTIC_WAIT_MS,
@@ -745,45 +744,56 @@ impl LspOperations {
 
         let warming = self
             .service
-            .diagnostics_may_still_be_warming(&key, &uri_str)
+            .diagnostics_may_still_be_warming(&token.key, &token.uri)
             .await;
 
-        let diag_result = self.service.get_diagnostics_for_key(&key, &uri_str).await;
+        let diag_result = self
+            .service
+            .get_diagnostics_for_key(&token.key, &token.uri)
+            .await;
 
         let sym_result = self.document_symbols(file_path).await;
 
-        let restore_result = self.service.update_file(file_path, &original).await;
+        let restore_result = overlay.restore(&token).await;
 
-        let diagnostics = match diag_result {
-            Ok(raw) => raw
-                .into_iter()
-                .take(MAX_OVERLAY_DIAGNOSTICS)
-                .map(|d| diagnostic_to_file_diagnostic(&uri_str, d))
-                .collect(),
-            Err(_) => Vec::new(),
+        let (diagnostics, diagnostics_error) = match diag_result {
+            Ok(raw) => (
+                raw.into_iter()
+                    .take(MAX_OVERLAY_DIAGNOSTICS)
+                    .map(|d| diagnostic_to_file_diagnostic(&token.uri, d))
+                    .collect(),
+                None,
+            ),
+            Err(e) => (Vec::new(), Some(e.to_string())),
         };
 
-        let symbols = match sym_result {
+        let (symbols, symbols_error) = match sym_result {
             Ok(raw) => {
                 let mut symbols = Vec::new();
                 let mut remaining = MAX_OVERLAY_SYMBOLS;
                 flatten_symbols(&raw, &mut symbols, &mut remaining);
-                symbols
+                (symbols, None)
             }
-            Err(_) => Vec::new(),
+            Err(e) => (Vec::new(), Some(e.to_string())),
         };
 
-        let restored_disk_view = restore_result.is_ok();
-        if let Err(e) = restore_result {
-            tracing::warn!(file = %file_path.display(), error = %e, "overlay restore failed");
-        }
+        let (restored_disk_view, restore_error) = match restore_result {
+            Ok(()) => (true, None),
+            Err(e) => {
+                tracing::warn!(file = %file_path.display(), error = %e, "overlay restore failed");
+                (false, Some(e.to_string()))
+            }
+        };
 
         Ok(SemanticCheckPreview {
-            file: uri_str,
+            file: token.uri,
             diagnostics_may_still_be_warming: warming,
             diagnostics,
+            diagnostics_error,
             symbols,
+            symbols_error,
             restored_disk_view,
+            restore_error,
         })
     }
 }

@@ -10,7 +10,7 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 - Diagnostics collection via publishDiagnostics notifications
 - Code operations (goto definition, find references, hover, document symbols, workspace symbols, diagnostics)
 - Preview-only semantic edits (renamePreview, formatPreview, sourceActionPreview) — returns unified-diff patches, never writes files
-- Temporary overlays (semanticCheckPreview) — pushes proposed content to LSP, collects diagnostics/symbols, restores disk view, never writes files
+- Temporary overlays (semanticCheckPreview) — pushes proposed content to LSP via OverlaySession, collects diagnostics/symbols, restores disk view, never writes files
 - Language detection from file extensions
 - Project root detection
 - Compact agent-facing output DTOs (not raw LSP JSON)
@@ -117,7 +117,7 @@ impl LspOperations {
     pub async fn rename_preview(&self, file_path: &Path, line: u32, column: u32, new_name: &str, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
     pub async fn format_preview(&self, file_path: &Path, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
     pub async fn source_action_preview(&self, file_path: &Path, action: SourceActionPreviewKind, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
-    pub async fn semantic_check_preview(&self, file_path: &Path, content: &str) -> Result<SemanticCheckPreview, LspError>
+    pub async fn semantic_check_preview(&self, file_path: &Path, content: &str, allowed_root: Option<&Path>) -> Result<SemanticCheckPreview, LspError>
 }
 ```
 
@@ -287,7 +287,7 @@ Only these operations are model-facing:
 | `renamePreview` | `textDocument/rename` (after ensure open + optional prepareRename) | `WorkspaceEditPreview` (unified diff patches + metadata; preview-only) |
 | `formatPreview` | `textDocument/formatting` | `WorkspaceEditPreview` (unified diff patches; preview-only) |
 | `sourceActionPreview` | `textDocument/codeAction` (filtered to `source.organizeImports`; full-document range computed from synced file contents) | `WorkspaceEditPreview` (unified diff patches; preview-only) |
-| `semanticCheckPreview` | `textDocument/didChange` (overlay + restore) + `textDocument/documentSymbol` | `SemanticCheckPreview` (diagnostics + symbols; preview-only, no disk writes) |
+| `semanticCheckPreview` | `textDocument/didChange` (OverlaySession + restore) + `textDocument/documentSymbol` | `SemanticCheckPreview` (diagnostics + symbols + error fields; preview-only, no disk writes) |
 
 `codeLens` is intentionally not exposed in the model-facing schema (remains available in `egglsp::operations` only).
 
@@ -301,18 +301,20 @@ Hidden operations (in `egglsp::operations` for internal use only, not model-faci
 
 ### Temporary overlays
 
-`semanticCheckPreview` pushes proposed file content to the language server with `didChange`, gathers diagnostics/symbols, then restores the LSP view back to the current disk content. This allows pre-apply semantic checks without writing files. The operation is read-only from Codegg's filesystem permission perspective.
+`semanticCheckPreview` pushes proposed file content to the language server via `OverlaySession`, gathers diagnostics/symbols, then restores the LSP view back to the current disk content. This allows pre-apply semantic checks without writing files. The operation is read-only from Codegg's filesystem permission perspective.
+
+`OverlaySession::apply_overlay(file_path, proposed_text)` reads disk content, opens the file in LSP, sends `didChange` with the proposed content, and returns an `OverlayRestoreToken` capturing the original text, file path, key, and URI. `OverlaySession::restore(token)` sends `didChange` restoring the original disk content. The proposed content is never written to disk.
 
 The overlay flow:
-1. Read current disk content
-2. Ensure file is open in LSP from disk
-3. Send `didChange` with proposed content
-4. Wait 250ms for diagnostics debounce
-5. Collect diagnostics and document symbols
-6. Send `didChange` restoring disk content
-7. Return results (diagnostics, symbols, `restored_disk_view` flag)
+1. `OverlaySession::apply_overlay` reads disk content and sends `didChange` with proposed content
+2. Wait 250ms for diagnostics debounce
+3. Collect diagnostics and document symbols
+4. `OverlaySession::restore` sends `didChange` restoring disk content
+5. Return results (diagnostics, symbols, `restored_disk_view` flag, error fields)
 
-Restore runs even if diagnostics or symbol collection fails. Restore failures are logged and surfaced via `restored_disk_view: false`. The operation is single-file in the first pass; multi-file overlays are a follow-up. `SemanticCheckPreview` includes `diagnostics_may_still_be_warming` to indicate the LSP server may not have fully processed the overlay yet. Diagnostics may be warming or stale.
+Operation-level root enforcement: `semantic_check_preview` accepts `allowed_root: Option<&Path>` and rejects files outside the root with `LspError::PathOutsideRoot`.
+
+Restore runs even if diagnostics or symbol collection fails. Restore failures are logged and surfaced via `restore_error: Option<String>` in the response (and `restored_disk_view: false`). `SemanticCheckPreview` also includes `diagnostics_error: Option<String>` and `symbols_error: Option<String>` — each is non-None when the corresponding LSP request fails, replacing previously swallowed empty-vector fallbacks. `diagnostics_may_still_be_warming` indicates the LSP server may not have fully processed the overlay yet. Diagnostics may be warming or stale (publishDiagnostics is async). The operation is single-file in the first pass; multi-file overlays are a follow-up.
 
 ### Position Convention
 
@@ -349,7 +351,7 @@ config-aware paths.
 
 ## Error Handling
 
-Overlay-specific behavior: `semanticCheckPreview` restore failures are logged and surfaced via `restored_disk_view: false` in the response rather than returning `LspError`. The original disk content is never written by this operation, so a restore failure leaves the LSP in-memory state stale but the filesystem untouched.
+Overlay-specific behavior: `semanticCheckPreview` restore failures are logged and surfaced via `restore_error: Option<String>` in the response (alongside `restored_disk_view: false`) rather than returning `LspError`. `diagnostics_error` and `symbols_error` are similarly non-None when their respective LSP requests fail, rather than silently returning empty vectors. The original disk content is never written by this operation, so a restore failure leaves the LSP in-memory state stale but the filesystem untouched. The wrapper's `execute_structured` sets `success=false` when `restore_error` is present.
 
 ```rust
 pub enum LspError {

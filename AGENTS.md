@@ -259,7 +259,10 @@ These items were verified during review sessions:
 | `sourceActionPreview` full-document range | Uses `document_end_position_utf16()` to compute real UTF-16 end position from synced file contents (no `u32::MAX`) | `crates/egglsp/src/operations.rs` |
 | `select_source_action_edit` command-only | `CodeAction` with `command: Some(_)` but `edit: None` is classified as `CommandOnlySourceAction` (command execution disabled) | `crates/egglsp/src/operations.rs` |
 | `document_end_position_utf16` | Pure helper computing LSP Position at end of document using UTF-16 code units; handles empty, single-line, multiline, unicode, and trailing-newline cases | `crates/egglsp/src/operations.rs` |
-| Overlay module | `crates/egglsp/src/overlay.rs` | OverlaySession, OverlayRestoreToken, SemanticCheckPreview, SemanticSymbolSummary |
+| Overlay module | `crates/egglsp/src/overlay.rs` | OverlaySession (apply_overlay/restore), OverlayRestoreToken, SemanticCheckPreview (with diagnostics_error, symbols_error, restore_error), SemanticSymbolSummary |
+| `semanticCheckPreview` error fields | `diagnostics_error`, `symbols_error`, `restore_error` are `Option<String>` — non-None when the corresponding LSP request or restore fails; previously returned empty vectors or a bare bool | `crates/egglsp/src/overlay.rs` |
+| `semanticCheckPreview` root enforcement | Operation-level `allowed_root: Option<&Path>` param; rejects files outside root with `LspError::PathOutsideRoot` | `crates/egglsp/src/operations.rs` |
+| LspTool `execute_structured` success | `success=false` when `restore_error` is present in the JSON response; checks `/results/restore_error` pointer | `src/tool/lsp.rs` |
 
 ### Security Notes
 

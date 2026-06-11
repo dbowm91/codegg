@@ -614,7 +614,7 @@ impl Tool for LspTool {
                 })?;
                 let ops = crate::lsp::operations::LspOperations::new(self.service.clone());
                 let preview = ops
-                    .semantic_check_preview(&file, content.clone())
+                    .semantic_check_preview(&file, content.clone(), Some(&self.allowed_root))
                     .await
                     .map_err(|e| ToolError::Execution(format!("semanticCheckPreview: {e}")))?;
                 let diag_summaries: Vec<DiagnosticSummary> = preview
@@ -634,14 +634,20 @@ impl Tool for LspTool {
                 struct SemanticCheckResult {
                     diagnostics_may_still_be_warming: bool,
                     diagnostics: Vec<DiagnosticSummary>,
+                    diagnostics_error: Option<String>,
                     symbols: Vec<crate::lsp::overlay::SemanticSymbolSummary>,
+                    symbols_error: Option<String>,
                     restored_disk_view: bool,
+                    restore_error: Option<String>,
                 }
                 let result = SemanticCheckResult {
                     diagnostics_may_still_be_warming: preview.diagnostics_may_still_be_warming,
                     diagnostics: diag_summaries,
+                    diagnostics_error: preview.diagnostics_error,
                     symbols: preview.symbols,
+                    symbols_error: preview.symbols_error,
                     restored_disk_view: preview.restored_disk_view,
+                    restore_error: preview.restore_error,
                 };
                 let output = LspToolOutput {
                     operation: "semanticCheckPreview".to_string(),
@@ -675,8 +681,15 @@ impl Tool for LspTool {
             truncated: false,
             trust: ToolTrust::LocalUntrusted,
         };
+        let success = match serde_json::from_str::<serde_json::Value>(&output) {
+            Ok(v) => v
+                .pointer("/results/restore_error")
+                .and_then(|e| e.as_str())
+                .is_none(),
+            Err(_) => true,
+        };
         Ok(StructuredToolResult::with_provenance(
-            output, true, provenance,
+            output, success, provenance,
         ))
     }
 }
