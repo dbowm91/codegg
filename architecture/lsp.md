@@ -8,7 +8,8 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 
 - LSP server lifecycle management (download, launch, initialize)
 - Diagnostics collection via publishDiagnostics notifications
-- Code operations (goto definition, find references, hover, document symbols, workspace symbols, diagnostics, code lens)
+- Code operations (goto definition, find references, hover, document symbols, workspace symbols, diagnostics)
+- Preview-only semantic edits (renamePreview, formatPreview) — returns unified-diff patches, never writes files
 - Language detection from file extensions
 - Project root detection
 - Compact agent-facing output DTOs (not raw LSP JSON)
@@ -109,7 +110,10 @@ impl LspOperations {
     pub async fn code_actions(&self, file_path: &Path, start_line: u32, start_col: u32, end_line: u32, end_col: u32, diagnostics: Vec<Diagnostic>, only: Option<Vec<CodeActionKind>>) -> Result<Vec<CodeActionOrCommand>, LspError>
     pub async fn completion(&self, file_path: &Path, line: u32, column: u32, trigger_kind: Option<CompletionTriggerKind>, trigger_char: Option<String>) -> Result<Vec<CompletionItem>, LspError>
     pub async fn signature_help(&self, file_path: &Path, line: u32, column: u32) -> Result<Option<String>, LspError>
-    pub async fn code_lens(&self, file_path: &Path) -> Result<Vec<CodeLens>, LspError>
+    pub async fn code_lens(&self, file_path: &Path) -> Result<Vec<CodeLens>, LspError>  // internal, not model-facing
+    pub async fn prepare_rename(&self, file_path: &Path, line: u32, column: u32) -> Result<Option<PrepareRenameResponse>, LspError>
+    pub async fn rename_preview(&self, file_path: &Path, line: u32, column: u32, new_name: &str, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
+    pub async fn format_preview(&self, file_path: &Path, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
 }
 ```
 
@@ -282,6 +286,10 @@ Only these operations are model-facing:
 `codeLens` is intentionally not exposed in the model-facing schema (remains available in `egglsp::operations` only).
 
 **LSP edit previews are strictly read-only**: `renamePreview`/`formatPreview` (and any future preview ops) return bounded unified-diff patches via `WorkspaceEditPreview` (title, per-file original_hash + TextEditPreview + patch). They never write files. Actual mutation requires the separate mutating `apply_patch` tool (or equivalent). The `lsp` tool remains `ToolCategory::ReadOnly`.
+
+### Preview-only edits
+
+`renamePreview` and `formatPreview` request semantic edits from the language server, convert them into `WorkspaceEditPreview`, and return unified diff patches. They never write files. `format_preview` enforces `allowed_root` at the crate layer — paths outside the root are rejected with `LspError::PathOutsideRoot`. Large patches are structurally marked via `FileEditPreview.patch_omitted` (not by string matching). Applying a preview requires the existing mutating `apply_patch` tool and therefore follows normal Codegg permission handling.
 
 Hidden operations (in `egglsp::operations` for future use): `completion`, `signatureHelp`, `codeAction`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `goToImplementation`, and arbitrary `sourceAction*` (follow-up).
 

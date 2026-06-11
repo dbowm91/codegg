@@ -28,7 +28,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering — now in `crates/codegg-core` (`codegg-core` crate) |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
-| `lsp/` | Language Server Protocol support (diagnostics, code operations) — egglsp crate is authoritative implementation, src/lsp/ is thin shim |
+| `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
 | `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation — `src/core/` is the transport layer; domain modules (bus, error, goal, memory, session, storage, snapshot, worktree, resilience, task_state, model_profile, protocol_conversions) live in `crates/codegg-core`. Also contains `runtime_deps` (`CoreRuntimeDeps`) for bundling runtime dependencies. |
 | `memory/` | Persistent memory system for session learning and namespace management — now in `crates/codegg-core` (`codegg-core` crate) |
@@ -125,6 +125,8 @@ These items are important for future agents to know when working with the codeba
 - **IdeServer async I/O**: `run_stdio()` uses `tokio::io::stdin()/stdout()` with async I/O, not blocking `std::io`
 
 - **ToolCatalog::register() takes `&dyn Tool`**: Not `Box<dyn Tool>`. Document in architecture but often overlooked.
+
+- **patch_util.rs shared utilities**: `src/tool/patch_util.rs` contains shared patch utility functions used by both `apply_patch` tool and LSP preview operations. Extracted to avoid duplication between the mutating `apply_patch` tool and the read-only `WorkspaceEditPreview` path.
 
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum at `types.rs:2-25`.
 

@@ -159,7 +159,7 @@ the dispatch logic, config schema, and trust framing.
 | Tool | File | Description |
 |------|------|-------------|
 | **review** | `review.rs` | Analyze git diff and provide structured code review feedback using LLM. Uses emojis for categorization (bug, performance, style, suggestion). |
-| **lsp** | `lsp.rs` | Query LSP server for code intelligence and preview-only semantic edits (defined in `src/tool/lsp.rs`, registered via backend config). Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview. Previews return `WorkspaceEditPreview` (unified diff patches + hashes); actual mutation stays in the mutating `apply_patch` tool. `lsp` tool is always `ToolCategory::ReadOnly`. |
+| **lsp** | `lsp.rs` | Query LSP server for code intelligence and preview-only semantic edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview. Previews return `WorkspaceEditPreview` (unified diff patches + hashes + `patch_omitted` flag); previews are read-only — actual mutation stays in the mutating `apply_patch` tool. `lsp` tool is always `ToolCategory::ReadOnly`. |
 
 ### Security Operations
 
@@ -532,6 +532,7 @@ src/tool/
 ├── diff.rs         # Unified diff generation
 ├── replace.rs      # Regex find/replace
 ├── apply_patch.rs  # Unified diff patch application
+├── patch_util.rs   # Shared patch utility functions for apply_patch and LSP preview
 ├── task.rs         # Subagent task spawning
 ├── todo.rs         # Todo list management
 ├── webfetch.rs     # URL content fetching (dispatches to search_backend)

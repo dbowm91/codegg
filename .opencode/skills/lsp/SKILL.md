@@ -27,6 +27,7 @@ crates/egglsp/src/          # Authoritative LSP implementation
 ├── client.rs               # LspClient - JSON-RPC, diagnostics cache, notification parser
 ├── config.rs               # LspConfig, LspRule types
 ├── diagnostics.rs          # DiagnosticsCollector
+├── edit.rs               # Workspace edit preview, text edit application, unified diff generation
 ├── download.rs             # Binary download/cache
 ├── error.rs                # LspError
 ├── language.rs             # Language detection from file extensions
@@ -84,6 +85,36 @@ routed to pending senders; notifications are dispatched via
 - Uses `AtomicU64` for wrap-around safety (was `AtomicI64`)
 - `fetch_add(1, Ordering::SeqCst)` for sequential IDs
 - No special wrap-around check needed with unsigned integer
+
+### Edit Preview Types (`edit.rs`)
+
+```rust
+pub struct WorkspaceEditPreview {
+    pub title: String,
+    pub files: Vec<FileEditPreview>,
+    pub total_files: usize,
+    pub total_edits: usize,
+    pub truncated: bool,
+}
+
+pub struct FileEditPreview {
+    pub file: PathBuf,
+    pub original_hash: String,
+    pub edits: Vec<TextEditPreview>,
+    pub patch: String,
+    pub patch_omitted: bool,
+}
+
+pub struct TextEditPreview {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub replacement_preview: String,
+}
+```
+
+These types are re-exported from `egglsp` at the crate root (e.g. `egglsp::WorkspaceEditPreview`).
 
 ### LspServerDef (`server.rs`)
 
@@ -194,7 +225,7 @@ Operations available via tool:
 - `renamePreview` (preview-only; returns `WorkspaceEditPreview` {title, files:[{file, original_hash, edits, patch}], total_*, truncated}; never mutates)
 - `formatPreview` (preview-only; same `WorkspaceEditPreview` shape)
 
-**Preview-only contract**: `renamePreview` / `formatPreview` (and future edit previews) produce bounded unified-diff patches for review. They are `ToolCategory::ReadOnly`. Actual file changes require the separate mutating `apply_patch` tool (or equivalent). `codeLens` is not exposed in the model-facing schema.
+**Preview-only contract**: `renamePreview` / `formatPreview` (and future edit previews) produce bounded unified-diff patches for review via `WorkspaceEditPreview`. `format_preview` enforces `allowed_root` at the crate layer. Large patches are structurally flagged via `FileEditPreview.patch_omitted` (not string matching). They are `ToolCategory::ReadOnly`. Actual file changes require the separate mutating `apply_patch` tool (or equivalent). `codeLens` is not exposed in the model-facing schema.
 
 ## Project Root Detection
 

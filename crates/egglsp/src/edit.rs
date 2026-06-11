@@ -30,6 +30,7 @@ pub struct FileEditPreview {
     pub original_hash: String,
     pub edits: Vec<TextEditPreview>,
     pub patch: String,
+    pub patch_omitted: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -64,7 +65,7 @@ pub fn preview_workspace_edit(
             validate_path_against_root(&path, allowed_root)?;
             match build_file_preview(&path, text_edits, allowed_root) {
                 Ok(fp) => {
-                    if fp.patch.contains("omitted") {
+                    if fp.patch_omitted {
                         truncated = true;
                     }
                     files.push(fp);
@@ -96,7 +97,7 @@ pub fn preview_workspace_edit(
                     }
                     match build_file_preview(&path, text_edits, allowed_root) {
                         Ok(fp) => {
-                            if fp.patch.contains("omitted") {
+                            if fp.patch_omitted {
                                 truncated = true;
                             }
                             files.push(fp);
@@ -127,7 +128,7 @@ pub fn preview_workspace_edit(
                             }
                             match build_file_preview(&path, text_edits, allowed_root) {
                                 Ok(fp) => {
-                                    if fp.patch.contains("omitted") {
+                                    if fp.patch_omitted {
                                         truncated = true;
                                     }
                                     files.push(fp);
@@ -164,14 +165,15 @@ pub fn preview_text_edits_for_file(
     title: impl Into<String>,
     file_path: &Path,
     edits: Vec<TextEdit>,
+    allowed_root: Option<&Path>,
 ) -> Result<WorkspaceEditPreview, LspError> {
     let title = title.into();
     let logical_edits = edits.len();
     let mut truncated = logical_edits > MAX_EDIT_PREVIEW_EDITS;
 
-    validate_path_against_root(file_path, None)?;
-    let fp = build_file_preview(file_path, edits, None)?;
-    if fp.patch.contains("omitted") {
+    validate_path_against_root(file_path, allowed_root)?;
+    let fp = build_file_preview(file_path, edits, allowed_root)?;
+    if fp.patch_omitted {
         truncated = true;
     }
     let total_files = 1;
@@ -289,8 +291,9 @@ fn build_file_preview(
 
     let rel = make_relative_path(file_path, allowed_root);
     let mut patch = generate_unified_patch(&original, &new_content, &rel);
-    if patch.len() > MAX_PATCH_CHARS_PER_FILE {
-        patch = "(patch omitted due to size)".to_string();
+    let patch_omitted = patch.len() > MAX_PATCH_CHARS_PER_FILE;
+    if patch_omitted {
+        patch = String::new();
     }
 
     Ok(FileEditPreview {
@@ -298,6 +301,7 @@ fn build_file_preview(
         original_hash,
         edits: preview_edits,
         patch,
+        patch_omitted,
     })
 }
 
@@ -684,6 +688,8 @@ mod tests {
         let new = "y".repeat(60000);
         let p = generate_unified_patch_for_test(&old, &new, "big.txt");
         assert!(p.len() > MAX_PATCH_CHARS_PER_FILE || p.contains("omitted"));
+        let tmp = std::env::temp_dir().join("egglsp_test_big.txt");
+        std::fs::write(&tmp, &old).unwrap();
         let title = "big";
         let te = TextEdit {
             range: Range {
@@ -698,7 +704,89 @@ mod tests {
             },
             new_text: "y".repeat(60000),
         };
-        let preview = preview_text_edits_for_file(title, Path::new("/tmp/big.txt"), vec![te]);
-        assert!(preview.is_err() || preview.unwrap().truncated);
+        let preview = preview_text_edits_for_file(title, &tmp, vec![te], None);
+        let wp = preview.unwrap();
+        assert!(wp.truncated);
+        assert!(wp.files[0].patch_omitted);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn format_preview_rejects_path_outside_allowed_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("allowed");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = Path::new("/etc/passwd");
+        let edits = vec![TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
+            },
+            new_text: "x".to_string(),
+        }];
+        let err = preview_text_edits_for_file("format", outside, edits, Some(&root)).unwrap_err();
+        assert!(matches!(err, LspError::PathOutsideRoot(_)));
+    }
+
+    #[test]
+    fn large_patch_sets_patch_omitted_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("big.txt");
+        let original = "x".repeat(10);
+        std::fs::write(&file_path, &original).unwrap();
+        let te = TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 1,
+                },
+            },
+            new_text: "y".repeat(60000),
+        };
+        let preview = preview_text_edits_for_file("big", &file_path, vec![te], None).unwrap();
+        assert!(preview.files[0].patch_omitted);
+        assert!(preview.truncated);
+        assert!(preview.files[0].patch.is_empty());
+    }
+
+    #[test]
+    fn workspace_truncated_uses_structured_flag_not_patch_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("big.txt");
+        let original = "x".repeat(10);
+        std::fs::write(&file_path, &original).unwrap();
+        let te = TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 1,
+                },
+            },
+            new_text: "y".repeat(60000),
+        };
+        let preview = preview_text_edits_for_file("big", &file_path, vec![te], None).unwrap();
+        assert!(!preview.files[0].patch.contains("omitted"));
+        assert!(preview.files[0].patch_omitted);
+    }
+
+    #[test]
+    fn workspace_edit_preview_type_is_reexported() {
+        let _ = std::any::type_name::<crate::WorkspaceEditPreview>();
+        let _ = std::any::type_name::<crate::FileEditPreview>();
+        let _ = std::any::type_name::<crate::TextEditPreview>();
     }
 }

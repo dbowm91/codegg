@@ -1,4 +1,5 @@
 use crate::error::ToolError;
+use crate::tool::patch_util::apply_unified_diff;
 use crate::tool::util::{canonicalize_path, check_path_for_symlinks, validate_path};
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
@@ -230,7 +231,7 @@ impl ApplyPatchTool {
                 .map_err(|e| ToolError::Execution(format!("failed to read file: {e}")))?;
 
             let result =
-                apply_unified_diff_result(&original, &patch_owned).map_err(ToolError::Execution)?;
+                apply_unified_diff(&original, &patch_owned).map_err(ToolError::Execution)?;
 
             let preview = generate_diff_preview(&original, &result, &path_owned);
 
@@ -244,105 +245,6 @@ impl ApplyPatchTool {
 
         Ok(format!("Applied patch to: {path}\n\n{preview}"))
     }
-}
-
-fn apply_unified_diff_result(original: &str, patch: &str) -> Result<String, String> {
-    let original_lines: Vec<&str> = original.lines().collect();
-    let patch_lines: Vec<&str> = patch.lines().collect();
-
-    let mut output: Vec<String> = Vec::new();
-    let mut orig_idx: usize = 0;
-    let mut patch_idx: usize = 0;
-    let mut saw_hunk = false;
-
-    while patch_idx < patch_lines.len() {
-        let line = patch_lines[patch_idx];
-
-        if !line.starts_with("@@") {
-            patch_idx += 1;
-            continue;
-        }
-
-        saw_hunk = true;
-        let old_start =
-            parse_hunk_old_start(line).ok_or_else(|| format!("invalid hunk header: {}", line))?;
-
-        let target_idx = old_start.saturating_sub(1);
-        if target_idx < orig_idx {
-            return Err(format!("overlapping hunk at original line {}", old_start));
-        }
-        while orig_idx < target_idx && orig_idx < original_lines.len() {
-            output.push(original_lines[orig_idx].to_string());
-            orig_idx += 1;
-        }
-
-        patch_idx += 1;
-        while patch_idx < patch_lines.len() {
-            let hline = patch_lines[patch_idx];
-            if hline.starts_with("@@") {
-                break;
-            }
-            if hline.starts_with("--- ") || hline.starts_with("+++ ") {
-                patch_idx += 1;
-                continue;
-            }
-            if hline.starts_with("\\ No newline at end of file") {
-                patch_idx += 1;
-                continue;
-            }
-
-            if hline.is_empty() {
-                return Err("invalid empty hunk line".to_string());
-            }
-            let tag = &hline[..1];
-            let content = &hline[1..];
-            match tag {
-                " " => {
-                    if orig_idx >= original_lines.len() || original_lines[orig_idx] != content {
-                        return Err(format!(
-                            "context mismatch at original line {}",
-                            orig_idx + 1
-                        ));
-                    }
-                    output.push(content.to_string());
-                    orig_idx += 1;
-                }
-                "-" => {
-                    if orig_idx >= original_lines.len() || original_lines[orig_idx] != content {
-                        return Err(format!("delete mismatch at original line {}", orig_idx + 1));
-                    }
-                    orig_idx += 1;
-                }
-                "+" => output.push(content.to_string()),
-                _ => return Err(format!("invalid hunk prefix '{}'", tag)),
-            }
-            patch_idx += 1;
-        }
-    }
-
-    if !saw_hunk {
-        return Err("patch does not contain any hunks".to_string());
-    }
-
-    while orig_idx < original_lines.len() {
-        output.push(original_lines[orig_idx].to_string());
-        orig_idx += 1;
-    }
-
-    Ok(output.join("\n"))
-}
-
-fn parse_hunk_old_start(header: &str) -> Option<usize> {
-    // @@ -old_start,old_count +new_start,new_count @@
-    let mut parts = header.split_whitespace();
-    let _at1 = parts.next()?;
-    let old_part = parts.next()?;
-    if !old_part.starts_with('-') {
-        return None;
-    }
-    let old_nums = &old_part[1..];
-    let old_start = old_nums.split(',').next()?.parse::<usize>().ok()?;
-    Some(old_start)
 }
 
 fn generate_diff_preview(original: &str, modified: &str, _path: &str) -> String {
@@ -444,63 +346,6 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn apply_unified_diff_applies_single_hunk() {
-        let original = "a\nb\nc";
-        let patch = "\
-@@ -1,3 +1,3 @@
- a
--b
-+B
- c";
-
-        let updated = apply_unified_diff_result(original, patch).expect("patch should apply");
-        assert_eq!(updated, "a\nB\nc");
-    }
-
-    #[test]
-    fn apply_unified_diff_applies_multiple_hunks() {
-        let original = "l1\nl2\nl3\nl4\nl5";
-        let patch = "\
-@@ -1,2 +1,2 @@
- l1
--l2
-+L2
-@@ -4,2 +4,2 @@
- l4
--l5
-+L5";
-
-        let updated = apply_unified_diff_result(original, patch).expect("patch should apply");
-        assert_eq!(updated, "l1\nL2\nl3\nl4\nL5");
-    }
-
-    #[test]
-    fn apply_unified_diff_fails_on_context_mismatch() {
-        let original = "a\nb\nc";
-        let patch = "\
-@@ -1,3 +1,3 @@
- a
- x
- c";
-
-        let err = apply_unified_diff_result(original, patch).expect_err("must fail");
-        assert!(err.contains("context mismatch"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn apply_unified_diff_fails_on_delete_mismatch() {
-        let original = "a\nb\nc";
-        let patch = "\
-@@ -1,3 +1,2 @@
- a
--x
- c";
-
-        let err = apply_unified_diff_result(original, patch).expect_err("must fail");
-        assert!(err.contains("delete mismatch"), "unexpected error: {err}");
-    }
-
-    #[test]
     fn validate_target_path_allows_nonexistent_file_within_root() {
         let temp = TempDir::new().expect("temp dir");
         let root = temp.path();
@@ -534,5 +379,39 @@ mod tests {
             }
             other => panic!("unexpected error type: {other:?}"),
         }
+    }
+
+    #[test]
+    fn generated_lsp_patch_applies_with_codegg_patch_parser() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("main.rs");
+        let original = "fn main() {\n    old_name();\n}\n";
+        std::fs::write(&file_path, original).unwrap();
+
+        let edits = vec![egglsp::lsp_types::TextEdit {
+            range: egglsp::lsp_types::Range {
+                start: egglsp::lsp_types::Position {
+                    line: 1,
+                    character: 4,
+                },
+                end: egglsp::lsp_types::Position {
+                    line: 1,
+                    character: 14,
+                },
+            },
+            new_text: "new_name()".to_string(),
+        }];
+        let preview = egglsp::edit::preview_text_edits_for_file(
+            "rename",
+            &file_path,
+            edits,
+            Some(dir.path()),
+        )
+        .unwrap();
+        assert!(!preview.files[0].patch_omitted);
+        let patch = &preview.files[0].patch;
+        let updated = crate::tool::patch_util::apply_unified_diff(original, patch)
+            .expect("patch should apply");
+        assert_eq!(updated, "fn main() {\n    new_name();\n}");
     }
 }

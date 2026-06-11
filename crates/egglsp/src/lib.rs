@@ -23,4 +23,5 @@ pub use error::LspError;
 pub use operations::LspOperations;
 pub use service::LspService;
 
+pub use edit::{FileEditPreview, TextEditPreview, WorkspaceEditPreview};
 pub use lsp_types;

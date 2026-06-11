@@ -456,7 +456,7 @@ impl LspOperations {
     pub async fn format_preview(
         &self,
         file_path: &Path,
-        _allowed_root: Option<&Path>,
+        allowed_root: Option<&Path>,
     ) -> Result<WorkspaceEditPreview, LspError> {
         let (key, _uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
         let uri = Url::from_file_path(file_path).map_err(|_| {
@@ -504,7 +504,7 @@ impl LspOperations {
             });
         }
 
-        preview_text_edits_for_file("format", file_path, edits)
+        preview_text_edits_for_file("format", file_path, edits, allowed_root)
     }
 }
 

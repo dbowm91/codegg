@@ -28,6 +28,7 @@ pub mod invalid;
 pub mod list;
 pub mod lsp;
 pub mod multiedit;
+pub mod patch_util;
 pub mod plan;
 pub mod question;
 pub mod read;
