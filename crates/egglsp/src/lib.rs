@@ -13,6 +13,7 @@ pub mod error;
 pub mod language;
 pub mod launch;
 pub mod operations;
+pub mod overlay;
 pub mod root;
 pub mod server;
 pub mod service;
@@ -27,3 +28,6 @@ pub use service::LspService;
 
 pub use edit::{FileEditPreview, TextEditPreview, WorkspaceEditPreview};
 pub use lsp_types;
+pub use overlay::{
+    OverlayRestoreToken, OverlaySession, SemanticCheckPreview, SemanticSymbolSummary,
+};

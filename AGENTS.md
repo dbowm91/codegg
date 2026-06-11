@@ -28,7 +28,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering — now in `crates/codegg-core` (`codegg-core` crate) |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
-| `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp |
+| `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits, temporary overlays) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
 | `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation — `src/core/` is the transport layer; domain modules (bus, error, goal, memory, session, storage, snapshot, worktree, resilience, task_state, model_profile, protocol_conversions) live in `crates/codegg-core`. Also contains `runtime_deps` (`CoreRuntimeDeps`) for bundling runtime dependencies. |
 | `memory/` | Persistent memory system for session learning and namespace management — now in `crates/codegg-core` (`codegg-core` crate) |
@@ -62,6 +62,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
 - `architecture/native_crates.md`: Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers), backend contract, raw MCP exposure policy, diagnostics
+- `architecture/lsp.md`: LSP client, diagnostics, code operations, preview-only semantic edits, temporary overlays (semanticCheckPreview)
 - `architecture/git.md`: Git session management, git info injection, worktree per session (now in `crates/egggit`; worktree is read-only in codegg-core, mutating operations removed)
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
@@ -258,6 +259,7 @@ These items were verified during review sessions:
 | `sourceActionPreview` full-document range | Uses `document_end_position_utf16()` to compute real UTF-16 end position from synced file contents (no `u32::MAX`) | `crates/egglsp/src/operations.rs` |
 | `select_source_action_edit` command-only | `CodeAction` with `command: Some(_)` but `edit: None` is classified as `CommandOnlySourceAction` (command execution disabled) | `crates/egglsp/src/operations.rs` |
 | `document_end_position_utf16` | Pure helper computing LSP Position at end of document using UTF-16 code units; handles empty, single-line, multiline, unicode, and trailing-newline cases | `crates/egglsp/src/operations.rs` |
+| Overlay module | `crates/egglsp/src/overlay.rs` | OverlaySession, OverlayRestoreToken, SemanticCheckPreview, SemanticSymbolSummary |
 
 ### Security Notes
 

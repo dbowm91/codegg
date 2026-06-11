@@ -44,6 +44,9 @@ pub mod root {
 pub mod server {
     pub use egglsp::server::*;
 }
+pub mod overlay {
+    pub use egglsp::overlay::*;
+}
 pub mod service {
     pub use egglsp::service::*;
 }

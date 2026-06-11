@@ -87,6 +87,8 @@ struct LspInput {
     new_name: Option<String>,
     #[serde(default)]
     action: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -227,7 +229,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -239,7 +241,8 @@ impl Tool for LspTool {
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
-                        "renamePreview", "formatPreview", "sourceActionPreview"
+                        "renamePreview", "formatPreview", "sourceActionPreview",
+                        "semanticCheckPreview"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -266,6 +269,10 @@ impl Tool for LspTool {
                 "action": {
                     "type": "string",
                     "description": "Allowlisted source action for sourceActionPreview. Initially supports source.organizeImports."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Proposed full file content for semanticCheckPreview operation"
                 }
             },
             "required": ["operation"]
@@ -600,6 +607,52 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "semanticCheckPreview" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let content = parsed.content.as_ref().ok_or_else(|| {
+                    ToolError::Execution("content required for semanticCheckPreview".to_string())
+                })?;
+                let ops = crate::lsp::operations::LspOperations::new(self.service.clone());
+                let preview = ops
+                    .semantic_check_preview(&file, content.clone())
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("semanticCheckPreview: {e}")))?;
+                let diag_summaries: Vec<DiagnosticSummary> = preview
+                    .diagnostics
+                    .iter()
+                    .map(|d| DiagnosticSummary {
+                        file: d.file.clone(),
+                        line: d.line + 1,
+                        column: d.column + 1,
+                        severity: severity_to_string(d.severity),
+                        source: d.source.clone(),
+                        code: d.code.clone(),
+                        message: d.message.clone(),
+                    })
+                    .collect();
+                #[derive(Serialize)]
+                struct SemanticCheckResult {
+                    diagnostics_may_still_be_warming: bool,
+                    diagnostics: Vec<DiagnosticSummary>,
+                    symbols: Vec<crate::lsp::overlay::SemanticSymbolSummary>,
+                    restored_disk_view: bool,
+                }
+                let result = SemanticCheckResult {
+                    diagnostics_may_still_be_warming: preview.diagnostics_may_still_be_warming,
+                    diagnostics: diag_summaries,
+                    symbols: preview.symbols,
+                    restored_disk_view: preview.restored_disk_view,
+                };
+                let output = LspToolOutput {
+                    operation: "semanticCheckPreview".to_string(),
+                    file_path: file_path_str,
+                    result_count: result.diagnostics.len() + result.symbols.len(),
+                    truncated: false,
+                    results: result,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
 
@@ -656,7 +709,8 @@ mod tests {
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
-                        "renamePreview", "formatPreview", "sourceActionPreview"
+                        "renamePreview", "formatPreview", "sourceActionPreview",
+                        "semanticCheckPreview"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -683,6 +737,10 @@ mod tests {
                 "action": {
                     "type": "string",
                     "description": "Allowlisted source action for sourceActionPreview. Initially supports source.organizeImports."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Proposed full file content for semanticCheckPreview operation"
                 }
             },
             "required": ["operation"]

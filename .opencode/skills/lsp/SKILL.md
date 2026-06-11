@@ -33,6 +33,7 @@ crates/egglsp/src/          # Authoritative LSP implementation
 ├── language.rs             # Language detection from file extensions
 ├── launch.rs               # Process spawning, Content-Length framing, background stderr drain
 ├── operations.rs           # LspOperations - goto definition, hover, etc.
+├── overlay.rs              # OverlaySession, OverlayRestoreToken, semantic check preview
 ├── root.rs                 # Project root detection
 ├── server.rs               # 39 server definitions
 ├── service.rs              # LspService - client management, file-based routing
@@ -230,6 +231,7 @@ Operations available via tool:
 - `renamePreview` (preview-only; returns `WorkspaceEditPreview` {title, files:[{file, original_hash, edits, patch}], total_*, truncated}; never mutates)
 - `formatPreview` (preview-only; same `WorkspaceEditPreview` shape)
 - `sourceActionPreview` (preview-only; same `WorkspaceEditPreview` shape; accepts `action` parameter — currently only `source.organizeImports` with aliases `organizeImports`/`organize_imports`; command-only actions are rejected because command execution is disabled)
+- `semanticCheckPreview` (requires `file_path` and `content`; overlays proposed content to LSP via `didChange`, collects diagnostics + symbols, restores disk content; never writes disk; returns `SemanticCheckPreview` with `diagnostics_may_still_be_warming`, `diagnostics`, `symbols`, `restored_disk_view`)
 
 **Preview-only contract**: `renamePreview` / `formatPreview` / `sourceActionPreview` (and future edit previews) produce bounded unified-diff patches for review via `WorkspaceEditPreview`. `sourceActionPreview` currently supports only `source.organizeImports`; arbitrary code actions and command execution are intentionally rejected. `CodeAction` values with `command: Some(_)` but `edit: None` are classified as command-only and rejected. `format_preview` enforces `allowed_root` at the crate layer. Large patches are structurally flagged via `FileEditPreview.patch_omitted` (not string matching). They are `ToolCategory::ReadOnly`. Actual file changes require the separate mutating `apply_patch` tool (or equivalent). `codeLens` is not exposed in the model-facing schema.
 

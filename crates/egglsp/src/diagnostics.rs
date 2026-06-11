@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lsp_types::*;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tracing::debug;
@@ -15,7 +16,7 @@ const DEBOUNCE_MS: u64 = 150;
 const MAX_ENTRIES: usize = 1000;
 const TTL_MS: u64 = 60_000;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileDiagnostic {
     pub file: String,
     pub line: u32,

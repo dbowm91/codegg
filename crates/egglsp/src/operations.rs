@@ -7,6 +7,7 @@ use url::Url;
 use crate::client::url_to_uri;
 use crate::edit::{preview_text_edits_for_file, preview_workspace_edit, WorkspaceEditPreview};
 use crate::error::LspError;
+use crate::overlay::{diagnostic_to_file_diagnostic, flatten_symbols, SemanticCheckPreview};
 use crate::service::LspService;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -714,6 +715,76 @@ impl LspOperations {
         let actions: Vec<CodeActionOrCommand> = serde_json::from_value(resp)?;
         let ws_edit = crate::operations::select_source_action_edit(action, actions)?;
         preview_workspace_edit(action.title(), ws_edit, allowed_root)
+    }
+
+    pub async fn semantic_check_preview(
+        &self,
+        file_path: &Path,
+        proposed_text: String,
+    ) -> Result<SemanticCheckPreview, LspError> {
+        const OVERLAY_DIAGNOSTIC_WAIT_MS: u64 = 250;
+        const MAX_OVERLAY_DIAGNOSTICS: usize = 100;
+        const MAX_OVERLAY_SYMBOLS: usize = 200;
+
+        let (key, uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
+
+        let original = tokio::fs::read_to_string(file_path).await.map_err(|e| {
+            LspError::RequestFailed(format!(
+                "failed to read file {}: {}",
+                file_path.display(),
+                e
+            ))
+        })?;
+
+        self.service.update_file(file_path, &proposed_text).await?;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(
+            OVERLAY_DIAGNOSTIC_WAIT_MS,
+        ))
+        .await;
+
+        let warming = self
+            .service
+            .diagnostics_may_still_be_warming(&key, &uri_str)
+            .await;
+
+        let diag_result = self.service.get_diagnostics_for_key(&key, &uri_str).await;
+
+        let sym_result = self.document_symbols(file_path).await;
+
+        let restore_result = self.service.update_file(file_path, &original).await;
+
+        let diagnostics = match diag_result {
+            Ok(raw) => raw
+                .into_iter()
+                .take(MAX_OVERLAY_DIAGNOSTICS)
+                .map(|d| diagnostic_to_file_diagnostic(&uri_str, d))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+        let symbols = match sym_result {
+            Ok(raw) => {
+                let mut symbols = Vec::new();
+                let mut remaining = MAX_OVERLAY_SYMBOLS;
+                flatten_symbols(&raw, &mut symbols, &mut remaining);
+                symbols
+            }
+            Err(_) => Vec::new(),
+        };
+
+        let restored_disk_view = restore_result.is_ok();
+        if let Err(e) = restore_result {
+            tracing::warn!(file = %file_path.display(), error = %e, "overlay restore failed");
+        }
+
+        Ok(SemanticCheckPreview {
+            file: uri_str,
+            diagnostics_may_still_be_warming: warming,
+            diagnostics,
+            symbols,
+            restored_disk_view,
+        })
     }
 }
 

@@ -86,6 +86,7 @@ fn lsp_tool_schema_operation_enum() {
         "renamePreview",
         "formatPreview",
         "sourceActionPreview",
+        "semanticCheckPreview",
     ];
     assert_eq!(ops.len(), expected.len());
     for name in &expected {
@@ -1082,4 +1083,47 @@ async fn sourceActionPreview_rejects_unsupported_action_without_lsp_request() {
         matches!(err, ToolError::Execution(ref m) if m.contains("unsupported source action")),
         "expected unsupported action error, got: {err:?}"
     );
+}
+
+// ── 13. semanticCheckPreview tests ──────────────────────────────────
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticCheckPreview_requires_content() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "semanticCheckPreview",
+            "file_path": "src/main.rs"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("content")),
+        "expected content error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticCheckPreview_requires_file_path() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "semanticCheckPreview",
+            "content": "fn main() {}"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("file_path")),
+        "expected file_path error, got: {err:?}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semanticCheckPreview_is_read_only() {
+    let tool = make_tool();
+    assert_eq!(tool.category(), ToolCategory::ReadOnly);
 }
