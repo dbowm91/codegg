@@ -24,6 +24,15 @@ const MAX_HIERARCHY_ITEMS: usize = 32;
 const MAX_HIERARCHY_EDGES: usize = 128;
 const MAX_HIERARCHY_RANGES: usize = 32;
 
+const DEFAULT_SECURITY_CONTEXT_RADIUS: u32 = 80;
+const MAX_SECURITY_CONTEXT_RADIUS: u32 = 200;
+const DEFAULT_MAX_RISK_MARKERS: usize = 80;
+const MAX_RISK_MARKERS: usize = 200;
+const MAX_SECURITY_SYMBOLS: usize = 80;
+const MAX_SECURITY_DIAGNOSTICS: usize = 80;
+const SECURITY_NEARBY_LINE_RADIUS: u32 = 20;
+const MAX_RISK_MATCHED_TEXT: usize = 120;
+
 #[derive(Serialize)]
 struct LspToolOutput<T> {
     operation: String,
@@ -33,7 +42,7 @@ struct LspToolOutput<T> {
     results: T,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct DiagnosticSummary {
     file: String,
     line: u32,
@@ -53,7 +62,7 @@ struct LocationSummary {
     end_column: u32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct SymbolSummary {
     name: String,
     kind: String,
@@ -196,6 +205,41 @@ struct TypeHierarchySummary {
     truncated: bool,
 }
 
+#[derive(Serialize)]
+struct SecurityContextPacket {
+    file: String,
+    target: Option<SemanticContextTarget>,
+    excerpt: SourceExcerpt,
+    risk_markers: Vec<SecurityRiskMarker>,
+    security_relevant_symbols: Vec<SymbolSummary>,
+    security_relevant_diagnostics: Vec<DiagnosticSummary>,
+    definitions: Vec<LocationSummary>,
+    references: Vec<LocationSummary>,
+    call_hierarchy: Option<CallHierarchySummary>,
+    overlay: Option<SemanticOverlaySummary>,
+    notes: Vec<String>,
+    limits: SecurityContextLimits,
+}
+
+#[derive(Serialize)]
+struct SecurityRiskMarker {
+    category: String,
+    label: String,
+    line: u32,
+    column: u32,
+    matched_text: String,
+    rationale: String,
+}
+
+#[derive(Serialize)]
+struct SecurityContextLimits {
+    risk_markers_truncated: bool,
+    diagnostics_truncated: bool,
+    symbols_truncated: bool,
+    references_truncated: bool,
+    excerpt_truncated: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct LspInput {
     operation: String,
@@ -231,6 +275,10 @@ struct LspInput {
     include_call_hierarchy: Option<bool>,
     #[serde(default)]
     include_type_hierarchy: Option<bool>,
+    #[serde(default)]
+    security_categories: Option<Vec<String>>,
+    #[serde(default)]
+    max_risk_markers: Option<usize>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -558,6 +606,277 @@ impl LspTool {
         }
     }
 
+    fn scan_risk_markers(
+        excerpt: &SourceExcerpt,
+        categories: &Option<Vec<String>>,
+        max_markers: usize,
+    ) -> Vec<SecurityRiskMarker> {
+        static PATTERNS: &[super::lsp_security::RiskPattern] = &[
+            super::lsp_security::RiskPattern {
+                category: "auth",
+                label: "authentication/authorization",
+                needles: &[
+                    "password",
+                    "Password",
+                    "PASSWORD",
+                    "login",
+                    "Login",
+                    "authenticate",
+                    "authorize",
+                    "jwt",
+                    "JWT",
+                    "bearer",
+                    "Bearer",
+                    "session",
+                    "cookie",
+                    "Cookie",
+                    "auth",
+                    "Auth",
+                ],
+                rationale: "authentication and authorization code controls access to resources",
+            },
+            super::lsp_security::RiskPattern {
+                category: "crypto",
+                label: "cryptographic operation",
+                needles: &[
+                    "encrypt",
+                    "decrypt",
+                    "sign",
+                    "verify",
+                    "hash",
+                    "sha256",
+                    "sha512",
+                    "md5",
+                    "hmac",
+                    "aes",
+                    "rsa",
+                    "rand::random",
+                    "OsRng",
+                    "CryptoRng",
+                ],
+                rationale:
+                    "cryptographic operations must use correct algorithms and key management",
+            },
+            super::lsp_security::RiskPattern {
+                category: "filesystem",
+                label: "filesystem access",
+                needles: &[
+                    "std::fs::",
+                    "tokio::fs::",
+                    "File::open",
+                    "File::create",
+                    "OpenOptions",
+                    "read_to_string",
+                    "write(",
+                    "create_dir",
+                ],
+                rationale: "filesystem access may need path validation and permission review",
+            },
+            super::lsp_security::RiskPattern {
+                category: "network",
+                label: "network boundary",
+                needles: &[
+                    "TcpListener",
+                    "TcpStream",
+                    "UdpSocket",
+                    "axum::",
+                    "hyper::",
+                    "reqwest::",
+                    "hyper::Client",
+                    "bind(",
+                    "connect(",
+                ],
+                rationale: "network-facing code often processes untrusted input",
+            },
+            super::lsp_security::RiskPattern {
+                category: "process",
+                label: "process execution",
+                needles: &[
+                    "Command::new",
+                    "std::process::Command",
+                    "tokio::process::Command",
+                    "exec(",
+                    "spawn(",
+                ],
+                rationale:
+                    "process execution can cross a trust boundary and requires input validation",
+            },
+            super::lsp_security::RiskPattern {
+                category: "unsafe",
+                label: "unsafe Rust",
+                needles: &["unsafe {", "unsafe fn", "unsafe impl"],
+                rationale:
+                    "unsafe blocks bypass compiler memory-safety guarantees and deserve review",
+            },
+            super::lsp_security::RiskPattern {
+                category: "serialization",
+                label: "serialization/deserialization",
+                needles: &[
+                    "serde_json::from",
+                    "toml::from",
+                    "bincode::",
+                    "deserialize",
+                    "from_str(",
+                    "from_slice(",
+                ],
+                rationale: "deserialization can expand trust boundaries and parser attack surface",
+            },
+            super::lsp_security::RiskPattern {
+                category: "sql",
+                label: "database query",
+                needles: &[
+                    "sqlx::query",
+                    "rusqlite",
+                    "SELECT ",
+                    "INSERT ",
+                    "UPDATE ",
+                    "DELETE ",
+                    "execute(",
+                    "prepare(",
+                ],
+                rationale:
+                    "database access should be reviewed for parameterization and authorization",
+            },
+            super::lsp_security::RiskPattern {
+                category: "secrets",
+                label: "secret material",
+                needles: &[
+                    "API_KEY",
+                    "SECRET",
+                    "TOKEN",
+                    "PASSWORD",
+                    "Authorization",
+                    "credential",
+                    "private_key",
+                ],
+                rationale: "secret-bearing code should avoid logging and accidental exposure",
+            },
+            super::lsp_security::RiskPattern {
+                category: "path_traversal",
+                label: "path traversal risk",
+                needles: &["../", "..\\", "path::join", "push(", "components()"],
+                rationale: "path construction should be validated against traversal attacks",
+            },
+            super::lsp_security::RiskPattern {
+                category: "concurrency",
+                label: "concurrency primitive",
+                needles: &[
+                    "unsafe {",
+                    "UnsafeCell",
+                    "transmute",
+                    "raw pointer",
+                    "AtomicPtr",
+                ],
+                rationale: "concurrency primitives require careful synchronization review",
+            },
+        ];
+
+        let lines: Vec<&str> = excerpt.text.lines().collect();
+        let mut markers = Vec::new();
+        let category_filter: Option<std::collections::HashSet<&str>> = categories
+            .as_ref()
+            .map(|cats| cats.iter().map(|s| s.as_str()).collect());
+
+        for (line_offset, line_text) in lines.iter().enumerate() {
+            let line_number = excerpt.start_line + line_offset as u32;
+            for pattern in PATTERNS {
+                if let Some(ref filter) = category_filter {
+                    if !filter.contains(pattern.category) {
+                        continue;
+                    }
+                }
+                for &needle in pattern.needles {
+                    if let Some(col) = line_text.find(needle) {
+                        let col_1indexed = col as u32 + 1;
+                        let matched_text: String = line_text
+                            .chars()
+                            .skip(col)
+                            .take(MAX_RISK_MATCHED_TEXT)
+                            .collect();
+                        markers.push(SecurityRiskMarker {
+                            category: pattern.category.to_string(),
+                            label: pattern.label.to_string(),
+                            line: line_number,
+                            column: col_1indexed,
+                            matched_text,
+                            rationale: pattern.rationale.to_string(),
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+
+        markers.sort_by(|a, b| {
+            a.line
+                .cmp(&b.line)
+                .then_with(|| a.category.cmp(&b.category))
+        });
+        markers.truncate(max_markers);
+        markers
+    }
+
+    fn is_security_relevant_symbol(
+        sym: &SymbolSummary,
+        risk_markers: &[SecurityRiskMarker],
+        target_line: Option<u32>,
+    ) -> bool {
+        if target_line.is_some_and(|t| sym.start_line <= t && sym.end_line >= t) {
+            return true;
+        }
+        let name_lower = sym.name.to_lowercase();
+        let security_terms = [
+            "auth",
+            "login",
+            "token",
+            "secret",
+            "password",
+            "session",
+            "cookie",
+            "jwt",
+            "permission",
+            "role",
+            "admin",
+            "encrypt",
+            "decrypt",
+            "sign",
+            "verify",
+            "parse",
+            "deserialize",
+            "upload",
+            "download",
+            "path",
+            "file",
+            "exec",
+            "command",
+            "shell",
+            "unsafe",
+            "crypt",
+            "hash",
+            "verify",
+        ];
+        if security_terms.iter().any(|term| name_lower.contains(term)) {
+            return true;
+        }
+        risk_markers.iter().any(|m| {
+            m.line >= sym.start_line.saturating_sub(SECURITY_NEARBY_LINE_RADIUS)
+                && m.line <= sym.end_line.saturating_add(SECURITY_NEARBY_LINE_RADIUS)
+        })
+    }
+
+    fn is_security_relevant_diagnostic(
+        diag: &DiagnosticSummary,
+        risk_markers: &[SecurityRiskMarker],
+    ) -> bool {
+        if diag.severity == "error" || diag.severity == "warning" {
+            return true;
+        }
+        risk_markers.iter().any(|m| {
+            m.line >= diag.line.saturating_sub(SECURITY_NEARBY_LINE_RADIUS)
+                && m.line <= diag.line.saturating_add(SECURITY_NEARBY_LINE_RADIUS)
+        })
+    }
+
     async fn build_call_hierarchy_summary(
         &self,
         ops: &crate::lsp::operations::LspOperations,
@@ -608,6 +927,7 @@ impl LspTool {
         let mut outgoing = Vec::new();
         let mut outgoing_error = None;
         let mut outgoing_raw_len = 0usize;
+        let mut ranges_truncated = false;
 
         if matches!(
             direction,
@@ -620,14 +940,19 @@ impl LspTool {
                     let capped: Vec<_> = calls.into_iter().take(MAX_HIERARCHY_EDGES).collect();
                     incoming = capped
                         .iter()
-                        .map(|call| IncomingCallSummary {
-                            from: Self::convert_hierarchy_item(&call.from),
-                            from_ranges: call
+                        .map(|call| {
+                            let raw_range_count = call.from_ranges.len();
+                            let truncated_ranges: Vec<_> = call
                                 .from_ranges
                                 .iter()
                                 .take(MAX_HIERARCHY_RANGES)
                                 .map(|r| Self::convert_lsp_range(*r))
-                                .collect(),
+                                .collect();
+                            ranges_truncated |= raw_range_count > MAX_HIERARCHY_RANGES;
+                            IncomingCallSummary {
+                                from: Self::convert_hierarchy_item(&call.from),
+                                from_ranges: truncated_ranges,
+                            }
                         })
                         .collect();
                 }
@@ -648,14 +973,19 @@ impl LspTool {
                     let capped: Vec<_> = calls.into_iter().take(MAX_HIERARCHY_EDGES).collect();
                     outgoing = capped
                         .iter()
-                        .map(|call| OutgoingCallSummary {
-                            to: Self::convert_hierarchy_item(&call.to),
-                            from_ranges: call
+                        .map(|call| {
+                            let raw_range_count = call.from_ranges.len();
+                            let truncated_ranges: Vec<_> = call
                                 .from_ranges
                                 .iter()
                                 .take(MAX_HIERARCHY_RANGES)
                                 .map(|r| Self::convert_lsp_range(*r))
-                                .collect(),
+                                .collect();
+                            ranges_truncated |= raw_range_count > MAX_HIERARCHY_RANGES;
+                            OutgoingCallSummary {
+                                to: Self::convert_hierarchy_item(&call.to),
+                                from_ranges: truncated_ranges,
+                            }
                         })
                         .collect();
                 }
@@ -667,7 +997,8 @@ impl LspTool {
 
         let truncated = items_truncated
             || incoming_raw_len > MAX_HIERARCHY_EDGES
-            || outgoing_raw_len > MAX_HIERARCHY_EDGES;
+            || outgoing_raw_len > MAX_HIERARCHY_EDGES
+            || ranges_truncated;
 
         CallHierarchySummary {
             items: item_summaries,
@@ -794,7 +1125,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext, callHierarchy, typeHierarchy. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. securityContext returns a security-review context packet with risk markers. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -808,9 +1139,10 @@ impl Tool for LspTool {
                         "documentSymbol", "workspaceSymbol", "diagnostics",
                         "renamePreview", "formatPreview", "sourceActionPreview",
                         "semanticCheckPreview", "semanticContext",
-                        "callHierarchy", "typeHierarchy"
+                        "callHierarchy", "typeHierarchy",
+                        "securityContext"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",
@@ -876,6 +1208,15 @@ impl Tool for LspTool {
                 "include_type_hierarchy": {
                     "type": "boolean",
                     "description": "Include type hierarchy section in semanticContext. Requires line+column. Default false."
+                },
+                "security_categories": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional risk marker categories to include in securityContext. Defaults to all supported categories. Supported: auth, crypto, filesystem, network, process, unsafe, serialization, sql, secrets, path_traversal, concurrency."
+                },
+                "max_risk_markers": {
+                    "type": "number",
+                    "description": "Maximum risk markers to return for securityContext. Default 80, max 200."
                 }
             },
             "required": ["operation"]
@@ -1634,6 +1975,298 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "securityContext" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+
+                if parsed.content.is_some() && parsed.patch.is_some() {
+                    return Err(ToolError::Execution(
+                        "securityContext accepts either content or patch, not both".to_string(),
+                    ));
+                }
+
+                let file_str = file.to_string_lossy().to_string();
+                let radius = parsed
+                    .radius
+                    .unwrap_or(DEFAULT_SECURITY_CONTEXT_RADIUS)
+                    .min(MAX_SECURITY_CONTEXT_RADIUS);
+                let has_position = parsed.line.is_some() && parsed.column.is_some();
+                let has_proposed = parsed.content.is_some() || parsed.patch.is_some();
+                let max_risk_markers = parsed
+                    .max_risk_markers
+                    .unwrap_or(DEFAULT_MAX_RISK_MARKERS)
+                    .min(MAX_RISK_MARKERS);
+
+                let target = if has_position {
+                    Some(SemanticContextTarget {
+                        line: parsed.line.unwrap(),
+                        column: parsed.column.unwrap(),
+                    })
+                } else if parsed.line.is_some() || parsed.column.is_some() {
+                    return Err(ToolError::Execution(
+                        "securityContext requires both line and column when either is supplied"
+                            .to_string(),
+                    ));
+                } else {
+                    None
+                };
+
+                let include_call_hierarchy = parsed.include_call_hierarchy.unwrap_or(has_position);
+
+                if include_call_hierarchy && !has_position {
+                    return Err(ToolError::Execution(
+                        "securityContext call hierarchy requires both line and column".to_string(),
+                    ));
+                }
+
+                let (excerpt, excerpt_truncated) = if has_position {
+                    Self::build_source_excerpt(&file, parsed.line, radius)?
+                } else {
+                    Self::build_source_excerpt(&file, None, radius)?
+                };
+
+                let risk_markers = Self::scan_risk_markers(
+                    &excerpt,
+                    &parsed.security_categories,
+                    max_risk_markers,
+                );
+
+                let collector =
+                    crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
+                let (all_diags, _current_diag_err, diagnostics_truncated) =
+                    match collector.get_diagnostics_for_file(&file).await {
+                        Ok(diag_output) => {
+                            let raw_diag_len = diag_output.diagnostics.len();
+                            let diagnostics_truncated = raw_diag_len > MAX_SECURITY_DIAGNOSTICS;
+                            let diags: Vec<DiagnosticSummary> = diag_output
+                                .diagnostics
+                                .iter()
+                                .take(MAX_SECURITY_DIAGNOSTICS)
+                                .map(|d| DiagnosticSummary {
+                                    file: d.file.clone(),
+                                    line: d.line + 1,
+                                    column: d.column + 1,
+                                    severity: severity_to_string(d.severity),
+                                    source: d.source.clone(),
+                                    code: d.code.clone(),
+                                    message: d.message.clone(),
+                                })
+                                .collect();
+                            (diags, None, diagnostics_truncated)
+                        }
+                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}")), false),
+                    };
+
+                let security_diags: Vec<DiagnosticSummary> = all_diags
+                    .iter()
+                    .filter(|d| Self::is_security_relevant_diagnostic(d, &risk_markers))
+                    .cloned()
+                    .collect();
+
+                let (all_syms, _current_sym_err, _symbols_truncated) =
+                    match ops.document_symbols(&file).await {
+                        Ok(syms) => {
+                            let mut remaining = MAX_CONTEXT_SYMBOLS;
+                            let mut summaries = Vec::new();
+                            Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
+                            (summaries, None, remaining == 0)
+                        }
+                        Err(e) => (Vec::new(), Some(format!("documentSymbol: {e}")), false),
+                    };
+
+                let security_syms: Vec<SymbolSummary> = all_syms
+                    .iter()
+                    .filter(|s| Self::is_security_relevant_symbol(s, &risk_markers, parsed.line))
+                    .take(MAX_SECURITY_SYMBOLS)
+                    .cloned()
+                    .collect();
+
+                let mut definitions = Vec::new();
+                let mut references = Vec::new();
+                let mut refs_truncated = false;
+                if has_position {
+                    let pos = to_lsp_position(parsed.line.unwrap(), parsed.column.unwrap());
+                    if let Ok(defs) = ops.go_to_definition(&file, pos.line, pos.character).await {
+                        definitions = defs
+                            .iter()
+                            .map(|loc| {
+                                let range = loc.target_range;
+                                LocationSummary {
+                                    file: uri_to_path(&loc.target_uri),
+                                    start_line: range.start.line + 1,
+                                    start_column: range.start.character + 1,
+                                    end_line: range.end.line + 1,
+                                    end_column: range.end.character + 1,
+                                }
+                            })
+                            .collect();
+                    }
+                    if let Ok(refs) = ops.find_references(&file, pos.line, pos.character).await {
+                        refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
+                        references = refs
+                            .into_iter()
+                            .take(MAX_CONTEXT_REFERENCES)
+                            .map(|loc| {
+                                let range = loc.range;
+                                LocationSummary {
+                                    file: uri_to_path(&loc.uri),
+                                    start_line: range.start.line + 1,
+                                    start_column: range.start.character + 1,
+                                    end_line: range.end.line + 1,
+                                    end_column: range.end.character + 1,
+                                }
+                            })
+                            .collect();
+                    }
+                }
+
+                let (overlay, _overlay_diagnostics_truncated) = if has_proposed {
+                    match self
+                        .resolve_semantic_check_content(
+                            &file,
+                            parsed.content.as_ref(),
+                            parsed.patch.as_ref(),
+                        )
+                        .await
+                    {
+                        Ok(content) => {
+                            match ops
+                                .semantic_check_preview(&file, content, Some(&self.allowed_root))
+                                .await
+                            {
+                                Ok(preview) => {
+                                    let overlay_diag_truncated =
+                                        preview.diagnostics.len() > MAX_SECURITY_DIAGNOSTICS;
+                                    let diag_summaries: Vec<DiagnosticSummary> = preview
+                                        .diagnostics
+                                        .iter()
+                                        .take(MAX_SECURITY_DIAGNOSTICS)
+                                        .map(|d| DiagnosticSummary {
+                                            file: d.file.clone(),
+                                            line: d.line + 1,
+                                            column: d.column + 1,
+                                            severity: severity_to_string(d.severity),
+                                            source: d.source.clone(),
+                                            code: d.code.clone(),
+                                            message: d.message.clone(),
+                                        })
+                                        .collect();
+                                    (
+                                        Some(SemanticOverlaySummary {
+                                            used: true,
+                                            diagnostics_may_still_be_warming: preview
+                                                .diagnostics_may_still_be_warming,
+                                            diagnostics: diag_summaries,
+                                            diagnostics_error: preview.diagnostics_error,
+                                            symbols: preview.symbols,
+                                            symbols_error: preview.symbols_error,
+                                            restored_disk_view: preview.restored_disk_view,
+                                            restore_error: preview.restore_error,
+                                        }),
+                                        overlay_diag_truncated,
+                                    )
+                                }
+                                Err(e) => (
+                                    Some(SemanticOverlaySummary {
+                                        used: true,
+                                        diagnostics_may_still_be_warming: false,
+                                        diagnostics: Vec::new(),
+                                        diagnostics_error: Some(format!("overlay: {e}")),
+                                        symbols: Vec::new(),
+                                        symbols_error: None,
+                                        restored_disk_view: false,
+                                        restore_error: None,
+                                    }),
+                                    false,
+                                ),
+                            }
+                        }
+                        Err(e) => (
+                            Some(SemanticOverlaySummary {
+                                used: true,
+                                diagnostics_may_still_be_warming: false,
+                                diagnostics: Vec::new(),
+                                diagnostics_error: Some(format!("overlay content: {e}")),
+                                symbols: Vec::new(),
+                                symbols_error: None,
+                                restored_disk_view: false,
+                                restore_error: None,
+                            }),
+                            false,
+                        ),
+                    }
+                } else {
+                    (None, false)
+                };
+
+                let call_hierarchy = if include_call_hierarchy && has_position {
+                    Some(
+                        self.build_call_hierarchy_summary(
+                            &ops,
+                            &file,
+                            parsed.line.unwrap(),
+                            parsed.column.unwrap(),
+                            crate::lsp::operations::HierarchyDirection::Both,
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                };
+
+                let mut notes = Vec::new();
+                if risk_markers.is_empty() {
+                    notes.push("no risk markers detected in excerpt".to_string());
+                }
+                if !has_position {
+                    notes.push(
+                        "no target position: definitions, references, and call hierarchy omitted"
+                            .to_string(),
+                    );
+                }
+
+                let security_diag_count = security_diags.len();
+                let security_sym_count = security_syms.len();
+                let risk_markers_len = risk_markers.len();
+                let call_hierarchy_count = call_hierarchy
+                    .as_ref()
+                    .map(|c| c.items.len() + c.incoming.len() + c.outgoing.len())
+                    .unwrap_or(0);
+                let result_count = risk_markers_len
+                    + security_diag_count
+                    + security_sym_count
+                    + definitions.len()
+                    + references.len()
+                    + call_hierarchy_count;
+                let packet = SecurityContextPacket {
+                    file: file_str,
+                    target,
+                    excerpt,
+                    risk_markers,
+                    security_relevant_symbols: security_syms,
+                    security_relevant_diagnostics: security_diags,
+                    definitions,
+                    references,
+                    call_hierarchy,
+                    overlay,
+                    notes,
+                    limits: SecurityContextLimits {
+                        risk_markers_truncated: risk_markers_len >= max_risk_markers,
+                        diagnostics_truncated,
+                        symbols_truncated: security_sym_count >= MAX_SECURITY_SYMBOLS,
+                        references_truncated: refs_truncated,
+                        excerpt_truncated,
+                    },
+                };
+                let output = LspToolOutput {
+                    operation: "securityContext".to_string(),
+                    file_path: file_path_str,
+                    result_count,
+                    truncated: false,
+                    results: packet,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
 
@@ -1713,9 +2346,10 @@ mod tests {
                         "documentSymbol", "workspaceSymbol", "diagnostics",
                         "renamePreview", "formatPreview", "sourceActionPreview",
                         "semanticCheckPreview", "semanticContext",
-                        "callHierarchy", "typeHierarchy"
+                        "callHierarchy", "typeHierarchy",
+                        "securityContext"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",
@@ -1781,6 +2415,15 @@ mod tests {
                 "include_type_hierarchy": {
                     "type": "boolean",
                     "description": "Include type hierarchy section in semanticContext. Requires line+column. Default false."
+                },
+                "security_categories": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional risk marker categories to include in securityContext. Defaults to all supported categories. Supported: auth, crypto, filesystem, network, process, unsafe, serialization, sql, secrets, path_traversal, concurrency."
+                },
+                "max_risk_markers": {
+                    "type": "number",
+                    "description": "Maximum risk markers to return for securityContext. Default 80, max 200."
                 }
             },
             "required": ["operation"]
@@ -2116,5 +2759,103 @@ diff --git a/src/lib.rs b/src/lib.rs
         let (capped, truncated) = take_capped(items, 32);
         assert!(capped.is_empty());
         assert!(!truncated);
+    }
+
+    // ── securityContext tests ──────────────────────────────────────────
+
+    #[test]
+    fn security_risk_scanner_detects_process_execution() {
+        let excerpt = SourceExcerpt {
+            start_line: 1,
+            end_line: 3,
+            text: "use std::process::Command;\nfn main() {\n    let c = Command::new(\"ls\");\n}"
+                .to_string(),
+        };
+        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
+        assert!(!markers.is_empty());
+        assert!(markers.iter().any(|m| m.category == "process"));
+    }
+
+    #[test]
+    fn security_risk_scanner_detects_unsafe() {
+        let excerpt = SourceExcerpt {
+            start_line: 1,
+            end_line: 2,
+            text: "fn main() {\n    let x = unsafe { 42 };\n}".to_string(),
+        };
+        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
+        assert!(markers.iter().any(|m| m.category == "unsafe"));
+    }
+
+    #[test]
+    fn security_risk_scanner_detects_filesystem() {
+        let excerpt = SourceExcerpt {
+            start_line: 1,
+            end_line: 2,
+            text: "use std::fs::File;\nlet f = File::open(\"foo\");".to_string(),
+        };
+        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
+        assert!(markers.iter().any(|m| m.category == "filesystem"));
+    }
+
+    #[test]
+    fn security_risk_scanner_detects_network() {
+        let excerpt = SourceExcerpt {
+            start_line: 1,
+            end_line: 2,
+            text: "use axum::Router;\nlet app = Router::new();".to_string(),
+        };
+        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
+        assert!(markers.iter().any(|m| m.category == "network"));
+    }
+
+    #[test]
+    fn security_risk_scanner_filters_categories() {
+        let excerpt = SourceExcerpt {
+            start_line: 1,
+            end_line: 3,
+            text: "use std::process::Command;\nuse std::fs::File;\nfn main() {}".to_string(),
+        };
+        let markers = LspTool::scan_risk_markers(&excerpt, &Some(vec!["process".to_string()]), 80);
+        assert!(markers.iter().all(|m| m.category == "process"));
+    }
+
+    #[test]
+    fn security_risk_scanner_caps_results() {
+        let mut lines = Vec::new();
+        for i in 0..200 {
+            lines.push(format!("Command::new(\"{i}\");"));
+        }
+        let excerpt = SourceExcerpt {
+            start_line: 1,
+            end_line: 200,
+            text: lines.join("\n"),
+        };
+        let markers = LspTool::scan_risk_markers(&excerpt, &None, 5);
+        assert!(markers.len() <= 5);
+    }
+
+    #[test]
+    fn security_risk_scanner_preserves_line_numbers() {
+        let excerpt = SourceExcerpt {
+            start_line: 10,
+            end_line: 12,
+            text: "fn main() {}\nunsafe { }\nfn foo() {}".to_string(),
+        };
+        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
+        let unsafe_marker = markers.iter().find(|m| m.category == "unsafe");
+        assert!(unsafe_marker.is_some());
+        assert_eq!(unsafe_marker.unwrap().line, 11);
+    }
+
+    #[test]
+    fn security_risk_scanner_no_markers_for_clean_code() {
+        let excerpt = SourceExcerpt {
+            start_line: 1,
+            end_line: 2,
+            text: "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}".to_string(),
+        };
+        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
+        assert!(markers.is_empty());
     }
 }

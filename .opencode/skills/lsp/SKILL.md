@@ -235,6 +235,7 @@ Operations available via tool:
 - `semanticContext` (combines multiple LSP requests; returns `SemanticContextPacket` with bounded source excerpt + diagnostics + symbols + optional definitions/references/overlay + optional source-action hints + optional call/type hierarchy; read-only, bounded; per-section errors via `definitions_error`, `references_error`; overlay limits tracked by `overlay_diagnostics_truncated`; `result_count` includes overlay items and available source-action hints; source excerpt truncation is UTF-8-safe via char-boundary cutting; `include_source_actions` boolean input, default false, populates `source_actions` array of `SemanticSourceActionHint` objects; `include_call_hierarchy` boolean input, default false, populates `call_hierarchy` section with incoming/outgoing callers; `include_type_hierarchy` boolean input, default false, populates `type_hierarchy` section with supertypes/subtypes)
 - `callHierarchy` (requires file_path, line, column; optional `direction` parameter — `incoming`, `outgoing`, or `both` (default `both`); returns `CallHierarchySummary` with items, incoming, outgoing, errors, truncated)
 - `typeHierarchy` (requires file_path, line, column; optional `direction` parameter; returns `TypeHierarchySummary` with items, supertypes, subtypes, errors, truncated)
+- `securityContext` (security-review context packet; returns risk markers, security-relevant diagnostics/symbols, optional definitions/references/call hierarchy, optional overlay; read-only, bounded; accepts `security_categories` filter and `max_risk_markers` cap; `include_call_hierarchy` defaults true when position provided)
 
 **Preview-only contract**: `renamePreview` / `formatPreview` / `sourceActionPreview` (and future edit previews) produce bounded unified-diff patches for review via `WorkspaceEditPreview`. `sourceActionPreview` currently supports only `source.organizeImports`; arbitrary code actions and command execution are intentionally rejected. `CodeAction` values with `command: Some(_)` but `edit: None` are classified as command-only and rejected. `format_preview` enforces `allowed_root` at the crate layer. Large patches are structurally flagged via `FileEditPreview.patch_omitted` (not string matching). They are `ToolCategory::ReadOnly`. Actual file changes require the separate mutating `apply_patch` tool (or equivalent). `codeLens` is not exposed in the model-facing schema. Source-action hints returned via `semanticContext` with `include_source_actions: true` follow the same preview-only contract — each hint's `preview` field carries a `WorkspaceEditPreview` when the action is available and has edits, or `None` when unavailable or command-only.
 
@@ -254,6 +255,24 @@ Input parameters:
 Source-action hints: when `include_source_actions` is true, `semanticContext` includes a `source_actions` array of `SemanticSourceActionHint` objects. Each hint has `action` (string identifier), `available` (bool), `preview` (Option\<WorkspaceEditPreview\>), and `error` (Option\<String\>). Currently only `source.organizeImports` is supported. Hints reuse the existing `sourceActionPreview` behavior (preview-only, no command execution, no mutation). Source-action failures are non-fatal; they set `error` on the individual hint but do not fail the whole packet. Available hints affect `result_count`. A pure helper `source_action_hint_from_result` converts results to hints, and `collect_source_action_hints` iterates the hardcoded allowlist.
 
 All sections bounded: diagnostics (100), symbols (120), references (80), overlay diagnostics (100), excerpt (32KB). Per-section errors (`definitions_error`, `references_error`) are non-None when the corresponding LSP request fails. `overlay_diagnostics_truncated` in limits tracks overlay diagnostics overflow. `result_count` includes overlay diagnostics and overlay symbols. Source excerpt truncation uses `truncate_to_byte_limit_on_char_boundary` (UTF-8-safe, no replacement characters). All sections are best-effort; individual failures do not prevent the packet from being returned.
+
+### securityContext operation
+
+`securityContext` is a security-review context packet. It provides:
+
+- Bounded source excerpt with configurable radius
+- Deterministic risk markers via pattern matching (11 categories: auth, crypto, filesystem, network, process, unsafe, serialization, sql, secrets, path_traversal, concurrency)
+- Security-relevant symbols and diagnostics (filtered by keyword matching and proximity to risk markers)
+- Optional definitions, references, call hierarchy, and overlay diagnostics
+- Risk marker category filtering and configurable caps
+
+**Key properties:**
+- Read-only: never writes files
+- Deterministic: same input produces same output
+- Bounded: all sections have configurable caps
+- Context, not verdict: provides risk markers with rationale, not vulnerability assessments
+
+**Input parameters:** `file_path` (required), `line`/`column` (optional, both required together), `radius` (default 80, max 200), `security_categories` (optional filter), `max_risk_markers` (default 80, max 200), `content`/`patch` (optional overlay, mutually exclusive), `include_call_hierarchy` (default true when position provided).
 
 ### Hierarchy Output Shapes
 
@@ -299,6 +318,12 @@ Returned by `typeHierarchy` and optionally embedded in `semanticContext` when `i
 ```
 
 Items are the prepared type hierarchy symbols at the given position. Supertypes/subtypes are flattened lists of all ancestors/descendants. Each item summary includes `name`, `kind`, `file_path`, `start_line`, `start_column`, `end_line`, `end_column`, `parents` (list of parent item summaries).
+
+### Hierarchy behavior
+
+`callHierarchy` and `typeHierarchy` are shallow, non-recursive operations. They prepare the target item and request immediate relationships only. `from_ranges` are capped at 32 per call; the `truncated` flag accounts for item, edge, and range truncation.
+
+Unsupported language servers return empty sections or per-section error fields.
 
 ## Project Root Detection
 

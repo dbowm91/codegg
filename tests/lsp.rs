@@ -90,6 +90,7 @@ fn lsp_tool_schema_operation_enum() {
         "semanticContext",
         "callHierarchy",
         "typeHierarchy",
+        "securityContext",
     ];
     assert_eq!(ops.len(), expected.len());
     for name in &expected {
@@ -1948,4 +1949,203 @@ fn type_hierarchy_summary_serializes_error_fields() {
     assert!(s.contains("prepare_error"));
     assert!(s.contains("supertypes_error"));
     assert!(s.contains("subtypes_error"));
+}
+
+// ── securityContext tests ────────────────────────────────────────────
+
+#[tokio::test]
+async fn security_context_schema_includes_operation() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum should be an array");
+    assert!(ops.iter().any(|v| v.as_str() == Some("securityContext")));
+}
+
+#[tokio::test]
+async fn security_context_schema_includes_security_categories() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let prop = params["properties"]["security_categories"]
+        .as_object()
+        .expect("security_categories property should be an object");
+    assert_eq!(prop.get("type").unwrap(), "array");
+}
+
+#[tokio::test]
+async fn security_context_schema_includes_max_risk_markers() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let prop = params["properties"]["max_risk_markers"]
+        .as_object()
+        .expect("max_risk_markers property should be an object");
+    assert_eq!(prop.get("type").unwrap(), "number");
+}
+
+#[tokio::test]
+async fn security_context_is_read_only() {
+    let tool = make_tool();
+    assert_eq!(tool.category(), ToolCategory::ReadOnly);
+}
+
+#[tokio::test]
+async fn security_context_requires_file_path() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("file_path")),
+        "expected file_path error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn security_context_rejects_line_without_column() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("both line and column")),
+        "expected line+column error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn security_context_rejects_content_and_patch() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1,
+            "column": 1,
+            "content": "fn main() {}",
+            "patch": "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() {}\n"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("either content or patch, not both")),
+        "expected content+patch error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn security_context_patch_does_not_write_disk() {
+    let (_dir, path) = temp_rs_file("fn main() {\n    println!(\"old\");\n}\n");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let tool = make_tool_with_root(_dir.path());
+    let _ = tool.execute(serde_json::json!({
+        "operation": "securityContext",
+        "file_path": path.to_str().unwrap(),
+        "line": 1,
+        "column": 1,
+        "patch": "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"old\");\n+    println!(\"new\");\n }\n"
+    })).await;
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after, original,
+        "securityContext must not write patched content to disk"
+    );
+}
+
+#[tokio::test]
+async fn security_context_returns_risk_markers_for_source_file() {
+    let tool = make_tool();
+    let result = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": "src/ide/mod.rs",
+            "line": 4,
+            "column": 1
+        }))
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["operation"], "securityContext");
+    let markers = parsed["results"]["risk_markers"].as_array().unwrap();
+    assert!(
+        !markers.is_empty(),
+        "should detect risk markers in source code"
+    );
+    let categories: Vec<&str> = markers
+        .iter()
+        .map(|m| m["category"].as_str().unwrap())
+        .collect();
+    assert!(
+        categories.contains(&"process"),
+        "should detect process category"
+    );
+}
+
+#[tokio::test]
+async fn security_context_with_patch_does_not_mutate_disk() {
+    let (_dir, path) = temp_rs_file("fn main() {\n    println!(\"original\");\n}\n");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let tool = make_tool_with_root(_dir.path());
+    let _ = tool.execute(serde_json::json!({
+        "operation": "securityContext",
+        "file_path": path.to_str().unwrap(),
+        "line": 2,
+        "column": 1,
+        "patch": "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"original\");\n+    println!(\"modified\");\n }\n"
+    })).await;
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(after, original, "disk must not be mutated");
+}
+
+#[tokio::test]
+async fn security_context_result_count_includes_markers() {
+    let tool = make_tool();
+    let result = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1,
+            "column": 1
+        }))
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let result_count = parsed["result_count"].as_u64().unwrap();
+    let markers_count = parsed["results"]["risk_markers"].as_array().unwrap().len() as u64;
+    assert!(
+        result_count >= markers_count,
+        "result_count should include risk markers"
+    );
+}
+
+#[tokio::test]
+async fn security_context_filters_by_category() {
+    let tool = make_tool();
+    let result = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1,
+            "column": 1,
+            "security_categories": ["process"]
+        }))
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let markers = parsed["results"]["risk_markers"].as_array().unwrap();
+    for marker in markers {
+        assert_eq!(
+            marker["category"].as_str().unwrap(),
+            "process",
+            "only process category should be present when filtered"
+        );
+    }
 }

@@ -27,6 +27,7 @@ pub mod image;
 pub mod invalid;
 pub mod list;
 pub mod lsp;
+pub(crate) mod lsp_security;
 pub mod multiedit;
 pub mod patch_util;
 pub mod plan;

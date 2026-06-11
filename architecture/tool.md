@@ -167,6 +167,8 @@ the dispatch logic, config schema, and trust framing.
 |------|------|-------------|
 | **security** | `security.rs` | Analyze code for security vulnerabilities. Checks for SQL injection, XSS, command injection, path traversal, and other common security issues. |
 
+`securityContext` is a security-review context packet operation. It reuses the same LSP infrastructure as `semanticContext` but adds deterministic risk marker scanning over the source excerpt. Risk markers use pattern matching against known security-sensitive code patterns (process execution, unsafe blocks, filesystem access, network boundaries, etc.). The scanner is bounded, deterministic, and does not execute code or run external tools. Output includes filtered symbols/diagnostics prioritized by security relevance, optional call hierarchy, and optional overlay diagnostics for proposed patches.
+
 ### Meta Operations
 
 | Tool | File | Description |

@@ -12,6 +12,7 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 - Preview-only semantic edits (renamePreview, formatPreview, sourceActionPreview) — returns unified-diff patches, never writes files
 - Temporary overlays (semanticCheckPreview) — accepts full content or a single-file unified diff patch, applies it in memory via OverlaySession, collects diagnostics/symbols, restores disk view, never writes files
 - Compact semantic context packets (semanticContext) — combines source excerpt, diagnostics, symbols, optional definition/reference/overlay information into a bounded pre-edit/pre-review context packet
+- Security context packets (securityContext) — security-review context packet with deterministic risk markers, security-relevant diagnostics/symbols, optional call hierarchy, and optional overlay diagnostics
 - Language detection from file extensions
 - Project root detection
 - Shallow call/type hierarchy queries (`callHierarchy`, `typeHierarchy`) — read-only, bounded, non-recursive relationship summaries for the symbol at a target position.
@@ -291,6 +292,7 @@ Only these operations are model-facing:
 | `sourceActionPreview` | `textDocument/codeAction` (filtered to `source.organizeImports`; full-document range computed from synced file contents) | `WorkspaceEditPreview` (unified diff patches; preview-only) |
 | `semanticCheckPreview` | `textDocument/didChange` (OverlaySession + restore) + `textDocument/documentSymbol` | `SemanticCheckPreview` (diagnostics + symbols + error fields; accepts `content` or single-file `patch`, preview-only, no disk writes) |
 | `semanticContext` | (combines multiple LSP requests) | `SemanticContextPacket` (source excerpt + diagnostics + symbols + optional definitions/references/overlay + optional source-action hints + optional call/type hierarchy; read-only, never writes files) |
+| `securityContext` | (combines multiple LSP requests + risk marker scanning) | `SecurityContextPacket` (source excerpt + risk markers + security-relevant diagnostics/symbols + optional definitions/references/call hierarchy + optional overlay; read-only, never writes files) |
 | `callHierarchy` | `textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls` | `CallHierarchySummary` (items, incoming, outgoing, errors, truncated) |
 | `typeHierarchy` | `textDocument/prepareTypeHierarchy` + `typeHierarchy/supertypes` + `typeHierarchy/subtypes` | `TypeHierarchySummary` (items, supertypes, subtypes, errors, truncated) |
 
@@ -333,7 +335,9 @@ Restore runs even if diagnostics or symbol collection fails. Restore failures ar
 - `incoming` → supertypes
 - `outgoing` → subtypes
 
-The first pass is shallow and non-recursive. It prepares the target hierarchy item and requests only the immediate incoming/outgoing or super/subtype relationships. Unsupported language servers may return empty sections or error fields.
+The first implementation is shallow and non-recursive. It prepares the target hierarchy item and requests immediate relationships only. Unsupported language servers may return empty sections or per-section error fields.
+
+Hierarchy `from_ranges` truncation (capped at `MAX_HIERARCHY_RANGES = 32` per call) is now included in the summary `truncated` flag. The `truncated` field is `true` when items, edges, or ranges exceed their caps.
 
 Hierarchy prepare operations use `ensure_file_open_from_disk` to open/sync the file from disk before sending the prepare request, ensuring position-sensitive behavior against a document view known to the server.
 
@@ -361,6 +365,39 @@ All output sections are bounded:
 - Source excerpt: capped at 32KB text
 
 The operation gathers existing read-only semantic facts, optionally runs an overlay semantic check, and returns a stable JSON DTO. All sections are best-effort: individual failures do not prevent the rest of the packet from being returned. Per-section errors are surfaced as `definitions_error: Option<String>` and `references_error: Option<String>` (non-None when the corresponding LSP request fails). `result_count` includes overlay diagnostics and overlay symbols in addition to the base counts. Source excerpt truncation is UTF-8-safe — it cuts at character boundaries using `truncate_to_byte_limit_on_char_boundary`, avoiding replacement characters or partial-codepoint corruption. `execute_structured` checks both `/results/restore_error` and `/results/overlay/restore_error` for success detection.
+
+### Security context packets
+
+`securityContext` is a security-review context packet. It combines bounded source excerpts, deterministic risk markers, prioritized diagnostics/symbols, optional definition/reference/call hierarchy context, and optional overlay diagnostics for proposed content or a single-file patch. It is not a vulnerability scanner and does not mutate files.
+
+**Input parameters:**
+
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `file_path` | string | required | Target file |
+| `line` | number | optional | 1-indexed line; both line and column required together |
+| `column` | number | optional | 1-indexed column |
+| `radius` | number | 80 | Excerpt radius (max 200) |
+| `content` | string | optional | Proposed file content for overlay (mutually exclusive with patch) |
+| `patch` | string | optional | Single-file unified diff for overlay (mutually exclusive with content) |
+| `security_categories` | string[] | all | Filter risk marker categories |
+| `max_risk_markers` | number | 80 | Max risk markers (max 200) |
+| `include_call_hierarchy` | bool | true when position | Include call hierarchy when line+column provided |
+
+**Risk marker categories:** `auth`, `crypto`, `filesystem`, `network`, `process`, `unsafe`, `serialization`, `sql`, `secrets`, `path_traversal`, `concurrency`
+
+**Output shape:**
+
+- `risk_markers` — deterministic pattern-matched markers with category, label, line, column, matched_text, rationale
+- `security_relevant_symbols` — symbols filtered for security relevance (keyword matching + proximity to risk markers)
+- `security_relevant_diagnostics` — diagnostics filtered for severity (error/warning) and proximity to risk markers
+- `definitions` / `references` — when line+column provided
+- `call_hierarchy` — when include_call_hierarchy=true and line+column provided
+- `overlay` — when content or patch provided
+- `notes` — human-readable context notes
+- `limits` — truncation flags per section
+
+**Read-only contract:** `securityContext` never writes files. Patch-based overlay is applied in memory only and restored after diagnostics collection.
 
 ### Position Convention
 
