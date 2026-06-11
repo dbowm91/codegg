@@ -1146,6 +1146,15 @@ pub fn synthesize_findings(
 // ---------------------------------------------------------------------------
 
 /// Check whether a piece of structured evidence matches a group's file and line bucket.
+/// Returns true if `line` falls within `radius` of any position in
+/// `[bucket_start, bucket_end]`.  Uses saturating arithmetic to avoid
+/// overflow on small bucket values.
+fn line_within_window(line: u32, bucket_start: u32, bucket_end: u32, radius: u32) -> bool {
+    let window_start = bucket_start.saturating_sub(radius);
+    let window_end = bucket_end.saturating_add(radius);
+    line >= window_start && line <= window_end
+}
+
 fn evidence_matches_group(
     evidence: &StructuredSecurityEvidence,
     file_path: &Path,
@@ -1158,14 +1167,8 @@ fn evidence_matches_group(
         return false;
     }
     match (line_bucket, evidence.line) {
-        (Some(bucket), Some(line)) => {
-            let bucket_start = bucket;
-            let bucket_end = bucket + 4;
-            (line >= bucket_start && line <= bucket_end)
-                || (line >= 5 && line <= bucket_end + 5)
-                || (line + 5 >= bucket_start && line <= bucket_end)
-        }
-        (Some(_bucket), None) => true,
+        (Some(bucket), Some(line)) => line_within_window(line, bucket, bucket + 4, 5),
+        (Some(_), None) => true,
         (None, _) => true,
     }
 }
