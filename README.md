@@ -11,7 +11,7 @@ A lightweight, pure-Rust implementation of an AI coding agent.
 - **TUI Interface** - Terminal user interface with syntax highlighting
 - **Server Mode** - Headless HTTP server for remote access
 - **Session Management** - Persistent conversations with SQLite storage
-- **Context System** - Artifact storage, tool-output projection, cache-aware context packing (observe/diagnostic), and hardened gated active context policy (first use: phase-scoped tool-palette reduction (base-derived, non-cumulative, backoff/starvation, Warn dry-run, threshold gate; still disabled by default); see architecture/cache-aware-context.md and `[context_policy]` config)
+- **Context System** - Artifact storage, tool-output projection, cache-aware context packing (observe/diagnostic), and hardened gated active context policy (first use: phase-scoped tool-palette reduction (base-derived, non-cumulative, backoff/starvation, Warn dry-run, threshold gate; still disabled by default); volatile-tail compaction for late-context token reduction of old tool results with recovery handles; see architecture/cache-aware-context.md and `[context_policy]` config)
 
 ## Installation
 
@@ -715,6 +715,31 @@ The compaction system automatically selects strategies based on message patterns
 - `drop_middle` - Removes middle messages
 - `prune_tool_outputs` - Reduces tool output detail
 - `summarize` - Uses LLM to summarize context
+
+### Volatile-Tail Compaction
+
+A gated, late-context-only compaction policy for reducing token pressure from old tool results. Disabled by default; configure under `[context_policy]`:
+
+```json
+{
+  "context_policy": {
+    "volatile_tail_compaction": false,
+    "volatile_tail_mode": "observe",
+    "min_volatile_tokens_for_compaction": 12000,
+    "preserve_recent_messages": 12,
+    "max_compacted_tail_tokens": 8000,
+    "require_effective_cost_signal": true,
+    "compact_tool_results_only_first": true
+  }
+}
+```
+
+- **Rollout**: observe → warn → compact (all disabled by default)
+- **Preserves**: system prefix, user messages, assistant tool-call messages, recent tail
+- **Requires**: recovery handles (`ctx://`) on tool results for compaction
+- **Recovery**: use `context_read` with the recovery handle from the tombstone
+- **Idempotent**: already-compacted messages are skipped on repeated application
+- See `architecture/cache-aware-context.md` for full details.
 
 ## Permission System
 
