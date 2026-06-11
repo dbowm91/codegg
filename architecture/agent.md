@@ -766,7 +766,7 @@ pub fn subagent_output_contract(role: &str) -> &'static str {
         "review" | "reviewer" => "Output contract: Return findings by severity (critical/high/medium/low/info). For each: file path, line number if applicable, title, rationale, and suggested patch scope. Prioritize correctness and security over style.",
         "debug" => "Output contract: Return: commands/logs that revealed the issue, failure signature, root-cause candidates ranked by likelihood, and next experiment to try.",
         "test" => "Output contract: Return: tests added or run, pass/fail status per test, coverage gaps identified, and any flaky or skipped tests.",
-        "security" | "security_reviewer" => "Output contract: Return: finding category, exploitability assessment, affected surface/files, and mitigation recommendation. Distinguish confirmed issues from speculative risks.",
+        "security" | "security_reviewer" => "Output contract: Return findings with: severity, confidence, title, file path, line, evidence (code locations + risk markers + call paths), reasoning, recommendation, and suggested tests. Return review prompts (marker-only) separately from evidence-based findings. Do not inflate severity without exploitability evidence.",
         "planner" => "Output contract: Return: implementation plan with ordered steps, estimated complexity per step, dependencies between steps, files to create/modify, and verification criteria.",
         "executor" | _ => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
     }

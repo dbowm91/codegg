@@ -423,6 +423,45 @@ Path extraction from tool arguments:
 - `read`, `write`, `edit`, `replace`, `glob`, `grep`, `list` → `arguments["path"]`
 - `apply_patch` → `arguments["patch_path"]`
 
+## Security review workflow
+
+The `src/security/workflow.rs` module provides a structured security review workflow that ties together the existing security infrastructure.
+
+### Workflow types
+
+- `SecurityReviewTarget` — A file/location selected for review, with preset and reason
+- `SecurityReviewFinding` — Evidence-based finding with severity, confidence, evidence, reasoning, recommendation
+- `SecurityReviewPrompt` — Marker-only triage prompt (not a confirmed finding)
+- `SecurityPreflightResult` — Deterministic check result (pass/fail/skipped)
+- `SecurityReviewOutput` — Complete workflow output combining all of the above
+
+### Target discovery
+
+`discover_targets_from_diff()` uses `egggit` to parse unified diffs and produce `SecurityReviewTarget` instances. Files are filtered through `should_skip_file()` which excludes binary, vendor, and generated paths.
+
+### Preset selection
+
+`select_preset_for_file()` maps file paths to `securityContext` presets deterministically:
+- `Cargo.toml`, `build.rs` → `dependency_review`
+- Files with "unsafe" in name → `unsafe_review`
+- Auth/middleware/handler/route paths → `web_backend`
+- CLI/command/process paths → `rust_cli`
+- Default → `rust_server`
+
+### Finding synthesis
+
+`synthesize_findings()` enforces the marker-vs-finding distinction:
+- Risk markers without additional evidence → `SecurityReviewPrompt`
+- Risk markers with changed code + plausible flow → `SecurityReviewFinding`
+- Preflight failures on changed lines → `SecurityReviewFinding`
+- Never emit a finding from a marker alone
+
+### Invoking the workflow
+
+- Slash command: `/security-review [--changed] [--file <path>] [--preset <name>] [--deep]`
+- Subagent: spawn `security-review` agent via task tool
+- Internal: call `discover_targets_from_diff()` + `run_preflight_checks()` + `synthesize_findings()` directly
+
 ## Security Checklist
 
 When implementing new tools or modifying existing ones:

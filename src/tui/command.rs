@@ -210,6 +210,8 @@ impl CommandRegistry {
             Command::new("/tool-backends", CommandCategory::System, None)
                 .with_aliases(&["/tools", "/backends"])
                 .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),
+            Command::new("/security-review", CommandCategory::Agent, None)
+                .with_description("Security review of changed files (/security-review [--changed] [--file <path>] [--preset <name>] [--deep])"),
         ];
 
         Self::append_dynamic_commands(&mut commands);

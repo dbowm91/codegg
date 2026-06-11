@@ -300,6 +300,17 @@ Presets do NOT enable expansion. Only explicit `call_depth > 0` activates it.
 
 Read-only: only LSP hierarchy requests, never writes files.
 
+### Security review workflow
+
+The `security-review` agent uses `securityContext` in a structured workflow (`src/security/workflow.rs`):
+
+- **Target discovery**: Changed hunks from git diff, filtered for binary/vendor paths
+- **Preset selection**: Per-file heuristics map to the 5 `securityContext` presets
+- **Context strategy**: `call_depth=0` by default; escalated to 1 only for high-risk targets (unsafe, network, auth, process)
+- **Synthesis rule**: Risk markers are review prompts, not findings. Findings require risk marker + changed code + evidence of flow, or preflight failure.
+
+The workflow is invoked via the `/security-review` slash command or by spawning the `security-review` subagent.
+
 ### Hierarchy Output Shapes
 
 Hierarchy operations (`callHierarchy`, `typeHierarchy`) follow a consistent shape. Both require `file_path`, `line`, and `column` (1-indexed). An optional `direction` parameter controls which callsites/type sites to retrieve.

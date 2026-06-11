@@ -173,6 +173,10 @@ the dispatch logic, config schema, and trust framing.
 
 `securityContext` is a security-review context packet operation. It reuses the same LSP infrastructure as `semanticContext` but adds deterministic risk marker scanning over the source excerpt. Risk markers use pattern matching against known security-sensitive code patterns (process execution, unsafe blocks, filesystem access, network boundaries, etc.). The scanner is bounded, deterministic, and does not execute code or run external tools. Output includes filtered symbols/diagnostics prioritized by security relevance, optional call hierarchy, optional bounded call expansion, and optional overlay diagnostics for proposed patches. Risk marker scanning, pattern tables, and security-relevant filtering helpers live in `src/tool/lsp_security.rs`. Diagnostics and symbols are filtered for security relevance before capping; truncation flags are precise (reflect filtered counts, not raw counts). Nonfatal LSP subrequest failures are surfaced in the `notes` array. Presets via `security_preset` (`rust_server`, `rust_cli`, `web_backend`, `dependency_review`, `unsafe_review`) tune default risk categories, excerpt radius, marker count, and call-hierarchy inclusion; explicit user inputs override preset defaults. Call expansion (`call_depth` 0/1/2) performs BFS-based recursive call hierarchy traversal with dedup, capped by `max_call_nodes` (default 32, max 64); no preset enables expansion by default.
 
+#### Security review workflow
+
+The `security` tool is also used by the `security-review` agent as part of a structured workflow (`src/security/workflow.rs`). The workflow discovers changed hunks via git diff, selects presets via path heuristics, runs deterministic preflight checks, and synthesizes findings from risk markers and evidence. Risk markers alone produce review prompts; findings require concrete evidence.
+
 ### Meta Operations
 
 | Tool | File | Description |

@@ -490,6 +490,19 @@ This is not whole-program analysis. It is a shallow LSP-backed neighborhood arou
 
 Preset defaults are retrieval defaults, not vulnerability policies. They do not change the read-only contract or add external scanners. Explicit user inputs (`security_categories`, `radius`, `max_risk_markers`, `include_call_hierarchy`) always override preset defaults.
 
+### Security agent workflow
+
+The security agent uses `securityContext` as evidence-gathering input for defensive code review. It follows this loop:
+
+1. **Target discovery** — Uses `egggit` diff APIs to identify changed files and hunks. Binary/deleted files are skipped. Generated/vendor paths (`target/`, `node_modules/`, etc.) are excluded.
+2. **Preset selection** — Each file is classified into a `securityContext` preset (`rust_server`, `rust_cli`, `web_backend`, `dependency_review`, `unsafe_review`) based on path heuristics.
+3. **Preflight checks** — Deterministic pattern scans (secret patterns, unsafe code) run on changed lines without an LSP server.
+4. **Context gathering** — `securityContext` is requested around changed hunks with bounded settings. Call expansion is opt-in (depth 0 by default, escalated to 1 only for high-risk targets).
+5. **Finding synthesis** — Risk markers without additional evidence produce *review prompts* (not findings). Findings require concrete evidence: risk marker + changed code + plausible flow, or preflight failure, or diagnostic on a security-relevant path.
+6. **Output** — Findings include severity, confidence, file, line, evidence, reasoning, recommendation, and suggested tests. Review prompts are returned separately.
+
+Key types live in `src/security/workflow.rs`. The workflow is read-only and never mutates files.
+
 ### Position Convention
 
 Model-facing line and column are **1-indexed**. The wrapper converts to LSP 0-indexed via `to_lsp_position()`. Missing required fields return clear `ToolError::Execution` messages.

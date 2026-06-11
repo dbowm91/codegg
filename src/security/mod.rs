@@ -27,6 +27,7 @@ pub mod policy;
 pub mod sandbox;
 pub mod service;
 pub mod ssrf;
+pub mod workflow;
 
 pub mod command {
     pub use eggsentry::command::*;

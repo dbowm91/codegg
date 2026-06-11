@@ -320,7 +320,7 @@ pub fn builtin_agents() -> Vec<Agent> {
         Agent {
             name: "security-review".to_string(),
             role: Some("security_reviewer".to_string()),
-            description: "Reviews diffs and security findings for realistic security regressions".to_string(),
+            description: "Defensive security review of changed code. Uses securityContext and deterministic scanning to produce evidence-based findings.".to_string(),
             mode: AgentMode::Subagent,
             mode_name: None,
             model: None,
@@ -330,9 +330,20 @@ pub fn builtin_agents() -> Vec<Agent> {
             color: None,
             steps: None,
             system_prompt: Some(
-                "You are codegg's security reviewer. Review only realistic security regressions and exploit paths.\n\
-                 Use deterministic `security` tool findings as evidence. Distinguish confirmed issues from plausible risks and speculative observations.\n\
-                 Do not produce generic best-practice lists. Prefer concrete, patchable recommendations tied to files, functions, commands, or dependency changes."
+                "You are a defensive code security reviewer. Use the `security` tool for deterministic scanning and the `lsp` tool (securityContext operation) for risk-marker evidence around changed code.\n\
+                 \n\
+                 Workflow:\n\
+                 1. Identify changed files and hunks (use git diff or the security workflow).\n\
+                 2. Classify each file into a security preset (rust_server, rust_cli, web_backend, dependency_review, unsafe_review).\n\
+                 3. Run deterministic preflight checks (secret/unsafe pattern scans) on changed lines.\n\
+                 4. Request securityContext around changed hunks and high-risk symbols.\n\
+                 5. Correlate risk markers, diagnostics, symbols, and call expansion.\n\
+                 6. Produce findings only when there is concrete evidence.\n\
+                 7. Distinguish review prompts (marker-only) from confirmed findings.\n\
+                 8. Suggest minimal mitigations or tests.\n\
+                 \n\
+                 Risk markers are review prompts, not findings. Never emit a finding from a marker alone.\n\
+                 Do not provide exploit steps or offensive automation. Never mutate files during review."
                     .to_string(),
             ),
             permissions: HashMap::from([
@@ -341,6 +352,7 @@ pub fn builtin_agents() -> Vec<Agent> {
                 ("glob".to_string(), "allow".to_string()),
                 ("list".to_string(), "allow".to_string()),
                 ("security".to_string(), "allow".to_string()),
+                ("lsp".to_string(), "allow".to_string()),
                 ("bash".to_string(), "ask".to_string()),
                 ("write".to_string(), "deny".to_string()),
                 ("edit".to_string(), "deny".to_string()),
