@@ -431,6 +431,143 @@ impl AgentLoop {
         }
     }
 
+    /// Apply or observe volatile-tail compaction policy.
+    ///
+    /// Called after existing tool-output projection and after existing
+    /// `compact_if_needed(...)`, but before the next provider call.
+    ///
+    /// In Observe mode: no logs unless diagnostics enabled.
+    /// In Warn mode: logs candidate count, tokens, and planned compaction.
+    /// In Compact mode: mutates selected `Message::Tool` contents with tombstones.
+    fn observe_or_apply_volatile_tail_policy(&mut self, request: &mut ChatRequest, phase: &str) {
+        if !self.context_policy_config.volatile_tail_compaction() {
+            return;
+        }
+
+        let mode = self.context_policy_config.volatile_tail_mode();
+
+        // Build a minimal effective-cost analysis for the decision gate.
+        // Reuse the pack result if available, otherwise build from message estimates.
+        let pack_res = self.compute_context_pack_result(request);
+        let model_name = &request.model;
+        let analysis = if let Some(res) = pack_res {
+            let slow_tokens: usize = res
+                .blocks
+                .iter()
+                .filter(|b| b.kind.tier() == crate::context::CacheClass::SlowChanging)
+                .map(|b| b.estimated_tokens)
+                .sum();
+            crate::context::EffectiveCostAnalysis::analyze(
+                &self.context_cache_stats,
+                model_name,
+                res.stable_prefix_tokens,
+                slow_tokens,
+                res.volatile_tokens,
+            )
+        } else {
+            // Without packer data, build a conservative analysis from message estimates
+            let total_tokens: usize = request
+                .messages
+                .iter()
+                .map(crate::context::volatile_tail::estimate_message_tokens)
+                .sum();
+            crate::context::EffectiveCostAnalysis {
+                input_tokens: total_tokens,
+                cached_input_tokens: 0,
+                uncached_input_tokens: total_tokens,
+                cache_hit_rate: 0.0,
+                stable_prefix_tokens: 0,
+                slow_changing_tokens: 0,
+                volatile_tokens: total_tokens,
+                recommended_action: if total_tokens > 12000 {
+                    crate::context::EffectiveCostAction::CompactVolatileTailFirst
+                } else {
+                    crate::context::EffectiveCostAction::NoAction
+                },
+                reason: "no packer data; conservative estimate".into(),
+            }
+        };
+
+        let plan = crate::context::volatile_tail::plan_volatile_tail_compaction(
+            &request.messages,
+            &analysis,
+            &self.context_policy_config,
+        );
+
+        let decision = crate::context::volatile_tail::decide_volatile_tail(
+            &analysis,
+            &self.context_policy_config,
+            &plan,
+        );
+
+        match decision.kind {
+            crate::context::volatile_tail::VolatileTailDecisionKind::Compact => {
+                let applied = crate::context::volatile_tail::apply_volatile_tail_compaction(
+                    &mut request.messages,
+                    &plan,
+                );
+                if self.context_policy_config.log_policy_decisions() {
+                    tracing::info!(
+                        policy = "volatile_tail_compaction",
+                        mode = ?mode,
+                        action = "Compact",
+                        recommended_action = ?analysis.recommended_action,
+                        candidate_count = plan.candidates.len(),
+                        safe_candidate_count = plan.safe_candidates.len(),
+                        planned_compaction_tokens = plan.planned_tokens,
+                        applied_compactions = applied,
+                        preserved_recent_messages = self.context_policy_config.preserve_recent_messages(),
+                        phase = %phase,
+                        "volatile tail policy decision"
+                    );
+                    if tracing::enabled!(tracing::Level::DEBUG) {
+                        for c in &plan.safe_candidates {
+                            tracing::debug!(
+                                message_index = c.message_index,
+                                kind = ?c.kind,
+                                estimated_tokens = c.estimated_tokens,
+                                has_recovery_handle = c.has_recovery_handle,
+                                "volatile tail compaction candidate selected"
+                            );
+                        }
+                    }
+                }
+            }
+            crate::context::volatile_tail::VolatileTailDecisionKind::WarnOnly => {
+                if self.context_policy_config.log_policy_decisions() {
+                    tracing::warn!(
+                        policy = "volatile_tail_compaction",
+                        mode = ?mode,
+                        action = "WarnOnly",
+                        recommended_action = ?analysis.recommended_action,
+                        candidate_count = plan.candidates.len(),
+                        safe_candidate_count = plan.safe_candidates.len(),
+                        planned_compaction_tokens = plan.planned_tokens,
+                        preserved_recent_messages = self.context_policy_config.preserve_recent_messages(),
+                        reason = %decision.reason,
+                        phase = %phase,
+                        "volatile tail would compact but only warning"
+                    );
+                }
+            }
+            crate::context::volatile_tail::VolatileTailDecisionKind::Noop => {
+                if self.context_policy_config.log_policy_decisions()
+                    && tracing::enabled!(tracing::Level::DEBUG)
+                {
+                    tracing::debug!(
+                        policy = "volatile_tail_compaction",
+                        mode = ?mode,
+                        action = "Noop",
+                        reason = %decision.reason,
+                        candidate_count = plan.candidates.len(),
+                        phase = %phase,
+                        "volatile tail policy noop"
+                    );
+                }
+            }
+        }
+    }
+
     /// Detect tool-palette starvation from parsed tool calls and set backoff.
     ///
     /// When the model attempts a tool present in the unreduced base palette but
@@ -3037,6 +3174,10 @@ impl AgentLoop {
             // Uses base_request_tools as source of truth so repeated calls from the same base do not
             // compound; noop/backoff can restore the full base.
             self.apply_tool_palette_policy_if_active(&mut request, "BeforeProviderCall");
+            // Apply volatile-tail compaction policy after tool palette reduction.
+            // This only touches late volatile context (tool results) and preserves
+            // stable prefix, system prompts, and recent messages.
+            self.observe_or_apply_volatile_tail_policy(&mut request, "BeforeProviderCall");
             self.observe_context_pack(
                 &request,
                 &model_profile,
@@ -4355,6 +4496,7 @@ impl AgentLoop {
                     ContextPackObservationPhase::AfterCompaction,
                 );
                 self.apply_tool_palette_policy_if_active(request, "BeforeProviderCall");
+                self.observe_or_apply_volatile_tail_policy(request, "BeforeProviderCall");
                 self.observe_context_pack(
                     request,
                     &model_profile,

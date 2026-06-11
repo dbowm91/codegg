@@ -10,6 +10,7 @@ pub mod projection;
 pub mod read_tool;
 pub mod tool_hash;
 pub mod usage_normalize;
+pub mod volatile_tail;
 
 pub use artifact::{
     compute_content_hash, estimate_tokens, stable_hash_hex, ArtifactKind, ContextArtifact,
@@ -32,6 +33,12 @@ pub use tool_hash::tool_definitions_hash;
 
 pub use block_builder::ContextBlockBuilder;
 pub use usage_normalize::{normalize_from_finish, NormalizedProviderUsage};
+pub use volatile_tail::{
+    analyze_volatile_tail, apply_volatile_tail_compaction, decide_volatile_tail,
+    estimate_message_tokens, extract_recovery_handle, format_tombstone,
+    plan_volatile_tail_compaction, VolatileTailAnalysis, VolatileTailCandidate,
+    VolatileTailCandidateKind, VolatileTailDecision, VolatileTailDecisionKind, VolatileTailPlan,
+};
 
 #[cfg(test)]
 mod tests {

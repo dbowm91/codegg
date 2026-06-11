@@ -297,8 +297,20 @@ pub enum ContextPolicyMode {
     ToolPaletteReduce,
 }
 
+/// Volatile-tail compaction policy mode. Defaults to Observe (no mutation).
+/// Rollout: observe (diagnostics only) -> warn (logs decisions without change) -> compact (apply tombstone replacements).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VolatileTailPolicyMode {
+    #[default]
+    Observe,
+    Warn,
+    Compact,
+}
+
 /// Configuration for gated active context policies.
 /// First supported policy: deterministic tool-palette reduction driven by EffectiveCostAnalysis (ReviewToolPalette).
+/// Second supported policy: volatile-tail compaction for late-context pressure relief.
 /// All active behavior is disabled unless explicitly enabled with mode=tool_palette_reduce.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
@@ -319,6 +331,22 @@ pub struct ContextPolicyConfig {
     pub never_reduce_tools: Option<Vec<String>>,
     /// Emit structured policy decision logs (info for decisions, debug for selected/omitted names).
     pub log_policy_decisions: Option<bool>,
+
+    // --- Volatile-tail compaction fields ---
+    /// Enable volatile-tail compaction. When false (default), no tail compaction occurs.
+    pub volatile_tail_compaction: Option<bool>,
+    /// Volatile-tail policy mode: observe (diagnostics only), warn (dry-run logs), compact (apply tombstone replacements).
+    pub volatile_tail_mode: Option<VolatileTailPolicyMode>,
+    /// Minimum total volatile-tail candidate tokens required before compaction is considered.
+    pub min_volatile_tokens_for_compaction: Option<usize>,
+    /// Number of recent transcript messages to preserve from compaction (always kept untouched).
+    pub preserve_recent_messages: Option<usize>,
+    /// Maximum tokens to compact in a single volatile-tail pass.
+    pub max_compacted_tail_tokens: Option<usize>,
+    /// When true, volatile-tail compaction only fires when EffectiveCostAction::CompactVolatileTailFirst is the recommended action.
+    pub require_effective_cost_signal: Option<bool>,
+    /// When true, only compact tool-result messages in the first pass (skip user/assistant messages).
+    pub compact_tool_results_only_first: Option<bool>,
 }
 
 impl ContextPolicyConfig {
@@ -351,6 +379,30 @@ impl ContextPolicyConfig {
     }
     pub fn log_policy_decisions(&self) -> bool {
         self.log_policy_decisions.unwrap_or(true)
+    }
+
+    // --- Volatile-tail compaction accessors ---
+
+    pub fn volatile_tail_compaction(&self) -> bool {
+        self.volatile_tail_compaction.unwrap_or(false)
+    }
+    pub fn volatile_tail_mode(&self) -> VolatileTailPolicyMode {
+        self.volatile_tail_mode.unwrap_or_default()
+    }
+    pub fn min_volatile_tokens_for_compaction(&self) -> usize {
+        self.min_volatile_tokens_for_compaction.unwrap_or(12000)
+    }
+    pub fn preserve_recent_messages(&self) -> usize {
+        self.preserve_recent_messages.unwrap_or(12)
+    }
+    pub fn max_compacted_tail_tokens(&self) -> usize {
+        self.max_compacted_tail_tokens.unwrap_or(8000)
+    }
+    pub fn require_effective_cost_signal(&self) -> bool {
+        self.require_effective_cost_signal.unwrap_or(true)
+    }
+    pub fn compact_tool_results_only_first(&self) -> bool {
+        self.compact_tool_results_only_first.unwrap_or(true)
     }
 }
 

@@ -327,6 +327,13 @@ mod tests {
             always_include_tools: None,
             never_reduce_tools: None,
             log_policy_decisions: Some(true),
+            volatile_tail_compaction: None,
+            volatile_tail_mode: None,
+            min_volatile_tokens_for_compaction: None,
+            preserve_recent_messages: None,
+            max_compacted_tail_tokens: None,
+            require_effective_cost_signal: None,
+            compact_tool_results_only_first: None,
         }
     }
 

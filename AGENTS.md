@@ -20,7 +20,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `client/` | Remote TUI client for WebSocket connections with resume/replay support |
 | `command/` | Slash command registry and routing from markdown files |
 | `config/` | Configuration loading, validation, and file watcher — now in `crates/codegg-config` (`codegg-config` crate), re-exported as `codegg::config` |
-| `context/` | Context artifact storage, tool-output projection, `context_read` tool, cache-aware context packing for stable provider prompt-cache prefixes, `NormalizedProviderUsage` (usage_normalize.rs), `EffectiveCostAnalysis` (effective_cost.rs), gated context policy layer (ContextPolicyConfig + hardened tool-palette reduction: base_request_tools source-of-truth, ContextPolicyRuntimeState, non-cumulative base-derived reductions, backoff+starvation detection, Warn dry-run would_*, review_tool_palette_threshold gate, enhanced diagnostics); defaults safe (disabled/observe) |
+| `context/` | Context artifact storage, tool-output projection, `context_read` tool, cache-aware context packing for stable provider prompt-cache prefixes, `NormalizedProviderUsage` (usage_normalize.rs), `EffectiveCostAnalysis` (effective_cost.rs), gated context policy layer (ContextPolicyConfig + hardened tool-palette reduction: base_request_tools source-of-truth, ContextPolicyRuntimeState, non-cumulative base-derived reductions, backoff+starvation detection, Warn dry-run would_*, review_tool_palette_threshold gate, enhanced diagnostics); volatile-tail compaction (`volatile_tail.rs`): gated late-context-only compaction of old tool-result messages with recovery handles, tombstone format, idempotent, observe/warn/compact rollout; defaults safe (disabled/observe) |
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion — error enums now in `crates/codegg-core` (`codegg-core` crate), axum wrappers stay root-side |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
@@ -67,7 +67,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
 - `architecture/context-ledger.md`: Context artifact storage, tool-output projection, ContextLedgerState, context_read tool, and config options
-- `architecture/cache-aware-context.md`: Cache-aware context packing, tier-based block ordering, ContextPacker algorithm, ContextBlockBuilder, cache stats, and config (hardened: observe-only, stable hashes via stable_hash_hex, source_handle on ContextBlock, multi-phase observation via observe_context_pack, cache stats wired from provider finish events via `record_context_cache_stats_from_processor` with normalization; active mutation disabled); gated context policy layer (ContextPolicyConfig + tool-palette reduction prototype) added in policy.rs, wired per-request in AgentLoop (strictly gated, defaults disabled/observe)
+- `architecture/cache-aware-context.md`: Cache-aware context packing, tier-based block ordering, ContextPacker algorithm, ContextBlockBuilder, cache stats, and config (hardened: observe-only, stable hashes via stable_hash_hex, source_handle on ContextBlock, multi-phase observation via observe_context_pack, cache stats wired from provider finish events via `record_context_cache_stats_from_processor` with normalization; active mutation disabled); gated context policy layer (ContextPolicyConfig + tool-palette reduction prototype) added in policy.rs, wired per-request in AgentLoop (strictly gated, defaults disabled/observe); volatile-tail compaction (`volatile_tail.rs`) for late-context-only compaction of old tool-result messages
 
 ## Critical Implementation Notes
 
@@ -141,6 +141,8 @@ These items are important for future agents to know when working with the codeba
 - **Goal wall-clock is durable**: `wallclock_secs` is persisted in SQLite, so time spent on the goal across session restarts is accurately tracked. `GoalWallClock` in the agent loop tracks wall-clock deltas between accounting ticks.
 
 - **Context policy (first active, gated, now hardened Phases 1-8)**: `[context_policy]` section + ContextPolicyMode (Observe|Warn|ToolPaletteReduce) + ContextPolicyConfig (incl. review_tool_palette_threshold); src/context/policy.rs (decide_policy + reduce_tool_palette deterministic, now with would_* for Warn dry-run + `detect_palette_starvation()` pure helper); reductions always derive from unreduced `base_request_tools` (full profile-filtered palette captured once per run after model-profile filter) in AgentLoop; non-cumulative/stateless per provider call (noop or backoff can restore full base); `request.tools=None` respected and never re-enabled; ContextPolicyRuntimeState (backoff `reduction_disabled_until_turn`, consecutive_reductions, last_* counters/names); starvation detection via `detect_palette_starvation()` (pure, testable) + `AgentLoop::observe_tool_palette_starvation()` (wired at both parse sites): if name in base but not last_selected (only base-present tools), set backoff + warn; starvation never blocks the tool call — only disables reduction for next provider call; backoff triggers (empty selected fallback, starvation) logged with `policy_backoff_active`/`reduction_disabled_until_turn`; Warn performs dry-run reduce when base passed and populates would_selected/omitted counts (logs include would_select/would_omit); `review_tool_palette_threshold=false` gates ReviewToolPalette trigger in decide_policy; diagnostics (info when log_policy_decisions): base_tool_count/selected/omitted/cap_exceeded_by_required/policy_backoff_active/reduction_disabled_until_turn + debug names/overflow; wired only to per-request tools before provider observes; defaults safe (disabled/observe). Active mutation of packer itself remains disabled. See architecture/cache-aware-context.md.
+
+- **Volatile-tail compaction**: `[context_policy]` section with `volatile_tail_compaction` (bool, default false), `volatile_tail_mode` (observe|warn|compact, default observe), `min_volatile_tokens_for_compaction` (12000), `preserve_recent_messages` (12), `max_compacted_tail_tokens` (8000), `require_effective_cost_signal` (true), `compact_tool_results_only_first` (true). Lives in `src/context/volatile_tail.rs`. Only compacts old volatile tool-result messages with recovery handles (`ctx://` source_handle). Tombstone format: `[compacted volatile tool result]` with `original_estimated_tokens`, `reason`, `recovery_handle`. Idempotent — already-compacted messages are skipped. Preserves stable prefix, system prompts, user messages, assistant messages with tool calls, and recent messages. Rollout: observe → warn → compact (all disabled by default).
 
 ### Known Issues (Lower Priority)
 
@@ -247,6 +249,7 @@ These items were verified during review sessions:
 | ckcore alias | `.cargo/config.toml` | `cargo ckcore` = `check -p codegg-core` |
 | Context module | artifact storage + projection + context_read tool + cache-aware packer (hardened observe-only layer) | `src/context/` |
 | Context new modules | `NormalizedProviderUsage` (usage_normalize.rs), `EffectiveCostAnalysis` (effective_cost.rs) — diagnostic-only, no mutation; plus policy.rs (decide_policy + reduce_tool_palette + `detect_palette_starvation`) | `src/context/usage_normalize.rs`, `src/context/effective_cost.rs`, `src/context/policy.rs` |
+| Volatile-tail compaction | `volatile_tail.rs` — gated late-context-only compaction of old tool-result messages with recovery handles, tombstone format, idempotent, observe/warn/compact rollout | `src/context/volatile_tail.rs` |
 | ProjectionConfig defaults | max_success=800, max_failure=2000, enabled=true, artifact_store=true | `src/context/projection.rs` |
 | ContextLedgerState limits | 20 files, 10 commands, 10 test results, 10 errors; empty handles rejected | `src/agent/context_frame.rs` |
 | context_read registration | Registered when `artifact_store = true`, regardless of `project_tool_outputs` | `src/tool/factory.rs` |
@@ -292,7 +295,7 @@ These items were verified during review sessions:
 ├── command/            # Slash commands, templates, execution
 ├── compaction/         # Context compaction strategies
 ├── config/             # Config loading, validation, encryption, watching
-├── context/            # Artifact storage, tool-output projection, context_read tool, cache-aware packer
+├── context/            # Artifact storage, tool-output projection, context_read tool, cache-aware packer, volatile-tail compaction
 ├── crypto/             # API key encryption
 ├── diff/               # Inline diff visualization
 ├── e2e/                # End-to-end testing guide
@@ -401,7 +404,7 @@ When adding guidance for a new module:
 | Compaction (context compaction strategies) | `.opencode/skills/compaction/SKILL.md` |
 | Router (model auto-routing) | `.opencode/skills/router/SKILL.md` |
 | Util (clipboard, fuzzy matching, truncation, metrics) | `.opencode/skills/util/SKILL.md` |
-| Context (artifact storage, projection, context_read, cache-aware packer observation layer, `NormalizedProviderUsage`, `EffectiveCostAnalysis`) | `.opencode/skills/context/SKILL.md` |
+| Context (artifact storage, projection, context_read, cache-aware packer observation layer, `NormalizedProviderUsage`, `EffectiveCostAnalysis`, volatile-tail compaction) | `.opencode/skills/context/SKILL.md` |
 
 ## Testing Commands
 

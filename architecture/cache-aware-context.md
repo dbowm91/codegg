@@ -363,6 +363,67 @@ The policy is deliberately scoped to the tool-definitions list that is about to 
 - No pricing calculation (uses only call counts + `EffectiveCostAnalysis` recommendation).
 - No semantic / usage-based ranking inside the reduction (purely order-of-appearance + explicit allow/deny lists).
 
+## Volatile-Tail Compaction (`volatile_tail.rs`)
+
+A gated, late-context-only compaction policy implemented in `src/context/volatile_tail.rs`. It compacts old volatile tool-result messages that have recovery handles, reducing token consumption in the tail of the context window while preserving the stable prefix and recent messages.
+
+### Configuration
+
+Configured via the `[context_policy]` section in `opencode.json`:
+
+```json
+{
+  "context_policy": {
+    "volatile_tail_compaction": false,
+    "volatile_tail_mode": "observe",
+    "min_volatile_tokens_for_compaction": 12000,
+    "preserve_recent_messages": 12,
+    "max_compacted_tail_tokens": 8000,
+    "require_effective_cost_signal": true,
+    "compact_tool_results_only_first": true
+  }
+}
+```
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `volatile_tail_compaction` | `bool` | `false` | Master toggle for volatile-tail compaction |
+| `volatile_tail_mode` | `observe\|warn\|compact` | `observe` | Rollout mode: observe (no-op diagnostics), warn (dry-run), compact (active) |
+| `min_volatile_tokens_for_compaction` | `usize` | `12000` | Minimum total volatile tokens before compaction is considered |
+| `preserve_recent_messages` | `usize` | `12` | Number of recent messages to always preserve from compaction |
+| `max_compacted_tail_tokens` | `usize` | `8000` | Target token count for the compacted tail region |
+| `require_effective_cost_signal` | `bool` | `true` | Require an `EffectiveCostAnalysis` recommendation before compacting |
+| `compact_tool_results_only_first` | `bool` | `true` | Only compact the first (oldest) eligible tool-result messages |
+
+### What Gets Compacted
+
+- Only old volatile tool-result messages that have a recovery handle (`source_handle` containing `ctx://`).
+- Messages are eligible for compaction only when they fall outside the `preserve_recent_messages` window.
+- The stable prefix, system prompts, user messages, and assistant messages with tool calls are never compacted.
+- Already-compacted messages are detected by their tombstone format and skipped (idempotent).
+
+### Tombstone Format
+
+Compacted messages are replaced with:
+
+```
+[compacted volatile tool result]
+original_estimated_tokens=N
+reason=volatile_tail_compaction
+recovery_handle=ctx://...
+Use context_read with the recovery_handle if full output is needed.
+```
+
+### Rollout
+
+Rollout follows the observe → warn → compact pattern:
+
+1. **observe** (default): No compaction. Diagnostic logs show what *would* be compacted.
+2. **warn**: Dry-run compaction. Logs would-compact decisions with token savings estimates but does not mutate messages.
+3. **compact**: Active compaction. Eligible tool-result messages are replaced with tombstones.
+
+All modes are disabled by default (`volatile_tail_compaction: false`). Enable with `volatile_tail_compaction: true` and set the desired mode.
+
 ## Active Mode (Disabled)
 
 Active mode is disabled for this pass. Requesting it (via config `observe_only: false` when `enabled: true`) produces a warning and forces observe-only execution. There is no code path that mutates provider requests or replaces system prompt content. The previous "Current session context:" replacement logic has been removed. Active mutation is not yet safe; this pass hardened the observation layer only.
