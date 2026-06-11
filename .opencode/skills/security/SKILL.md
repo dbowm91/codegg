@@ -437,24 +437,31 @@ The `src/security/workflow.rs` module provides a structured security review work
 
 ### Target discovery
 
-`discover_targets_from_diff()` uses `egggit` to parse unified diffs and produce `SecurityReviewTarget` instances. Files are filtered through `should_skip_file()` which excludes binary, vendor, and generated paths.
+`discover_targets_from_diff()` uses `egggit` to parse unified diffs and produce `SecurityReviewTarget` instances. Files are filtered through `should_skip_file()` which excludes binary, vendor, and generated paths. This is a read-only operation — it does not mutate the worktree.
+
+`parse_changed_hunks_for_file()` handles per-file patches that may lack a `diff --git` header, falling back to hunk-header parsing with the provided file path.
+
+`build_file_level_security_review_target()` creates unpositioned targets for files where no parseable hunks are available, using content-based preset selection.
 
 ### Preset selection
 
-`select_preset_for_file()` maps file paths to `securityContext` presets deterministically:
+`select_security_preset()` maps file paths and optional content hints to `securityContext` presets deterministically:
 - `Cargo.toml`, `build.rs` → `dependency_review`
-- Files with "unsafe" in name → `unsafe_review`
+- Files with "unsafe" in name or content → `unsafe_review`
 - Auth/middleware/handler/route paths → `web_backend`
 - CLI/command/process paths → `rust_cli`
 - Default → `rust_server`
 
+### Prompt sources
+
+Planned targets produce prompts with `source: changed_hunk` evidence. Risk-marker prompts from `securityContext` include `source: securityContext.risk_marker` evidence, making the two sources distinguishable.
+
 ### Finding synthesis
 
 `synthesize_findings()` enforces the marker-vs-finding distinction:
-- Risk markers without additional evidence → `SecurityReviewPrompt`
-- Risk markers with changed code + plausible flow → `SecurityReviewFinding`
-- Preflight failures on changed lines → `SecurityReviewFinding`
-- Never emit a finding from a marker alone
+- Risk markers always become `SecurityReviewPrompt`s — never findings
+- Preflight failures also surface as prompts
+- The `Vec<SecurityReviewFinding>` is always empty by design in this vertical slice
 
 ### Invoking the workflow
 

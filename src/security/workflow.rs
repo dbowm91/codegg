@@ -74,8 +74,10 @@ pub struct SecurityEvidence {
     pub description: String,
 }
 
-/// A security review finding with structured evidence (reserved for future
-/// evidence-based synthesis — not emitted in the vertical slice).
+/// Reserved for future evidence-based synthesis. This vertical slice does not
+/// emit this type — risk markers become [`SecurityReviewPrompt`]s, never
+/// findings. Full finding synthesis will require concrete evidence, severity/
+/// confidence enums, and affected-code grounding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityReviewFinding {
     pub severity: String,
@@ -239,6 +241,58 @@ fn parse_range(s: &str) -> Option<(u32, u32)> {
     let start = start_str.parse::<u32>().ok()?;
     let count = count_str.parse::<u32>().ok()?;
     Some((start, count))
+}
+
+/// Parse a per-file unified diff that may lack a `diff --git` header.
+///
+/// If `parse_changed_hunks(diff)` returns non-empty results, those are used
+/// directly.  Otherwise, hunk headers (`@@ ... @@`) are parsed using
+/// `file_path` as the associated file.  Binary and deleted markers are still
+/// skipped where visible.
+pub fn parse_changed_hunks_for_file(diff: &str, file_path: &Path) -> Vec<ChangedHunk> {
+    let hunks = parse_changed_hunks(diff);
+    if !hunks.is_empty() {
+        return hunks;
+    }
+
+    // Fallback: parse hunk headers directly, associating them with `file_path`.
+    let mut result = Vec::new();
+    for line in diff.lines() {
+        if line.starts_with("Binary files ") || line.starts_with("GIT binary") {
+            return Vec::new();
+        }
+        if line == "+++ /dev/null" || line == "--- /dev/null" {
+            return Vec::new();
+        }
+        if let Some(hunk) = parse_hunk_header(line, Some(file_path)) {
+            result.push(hunk);
+        }
+    }
+    result
+}
+
+/// Build a file-level security review target for files where no parseable
+/// hunks are available.
+///
+/// Returns `None` for excluded paths.  When present, the target is
+/// unpositioned (`line=None`, `column=None`) and uses content-based preset
+/// selection when a content hint is available.
+pub fn build_file_level_security_review_target(
+    path: &Path,
+    content_hint: Option<&str>,
+) -> Option<SecurityReviewTarget> {
+    if is_security_review_excluded_path(path) {
+        return None;
+    }
+    let preset = select_security_preset(path, content_hint);
+    let reason = infer_reason_from_preset_or_content(&preset, content_hint);
+    Some(SecurityReviewTarget {
+        file_path: path.to_path_buf(),
+        line: None,
+        column: None,
+        preset,
+        reason,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +702,7 @@ pub fn prompts_from_security_context(
         );
 
         let mut evidence = vec![
+            "source: securityContext.risk_marker".to_string(),
             category.unwrap_or_default(),
             matched_text.to_string(),
             rationale.to_string(),
@@ -718,9 +773,14 @@ pub fn plan_security_review_from_diff(diff: &str, _repo_root: &Path) -> Security
             line: t.line,
             preset: t.preset.clone(),
             category: None,
-            title: format!("Review changed code in {}", t.file_path.display()),
+            title: format!("Review changed hunk: {}", t.file_path.display()),
             rationale: format!("Changed hunk detected (reason: {:?})", t.reason),
-            evidence: vec![format!("preset: {}", t.preset)],
+            evidence: vec![
+                "source: changed_hunk".to_string(),
+                format!("preset: {}", t.preset),
+                format!("reason: {:?}", t.reason),
+                "no securityContext executed in this planning step".to_string(),
+            ],
         })
         .collect();
 
@@ -739,6 +799,8 @@ pub fn plan_security_review_from_diff(diff: &str, _repo_root: &Path) -> Security
 ///
 /// Uses `egggit::diff_summary` and `egggit::file_diff` to get changed
 /// files, parse hunks, and create targets with the appropriate preset.
+///
+/// This is a read-only operation — it does not mutate the worktree.
 pub async fn discover_targets_from_diff(
     root: &Path,
     base: Option<&str>,
@@ -747,10 +809,10 @@ pub async fn discover_targets_from_diff(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut targets = Vec::new();
+    let mut all_hunks = Vec::new();
+    let mut file_level_paths: Vec<(PathBuf, Option<String>)> = Vec::new();
 
     for file in &summary.files {
-        // Skip deleted files
         if file.kind == egggit::diff::ChangeKind::Deleted {
             continue;
         }
@@ -761,34 +823,29 @@ pub async fn discover_targets_from_diff(
             continue;
         }
 
-        let preset = select_preset_for_file(&path);
+        let content_hint = std::fs::read_to_string(root.join(&path)).ok();
 
-        // Get the per-file diff and parse hunks
         let file_diff = egggit::file_diff(root, &path, base)
             .await
             .map_err(|e| e.to_string())?;
 
-        let hunks = parse_changed_hunks(&file_diff.patch);
+        let hunks = parse_changed_hunks_for_file(&file_diff.patch, &path);
 
         if hunks.is_empty() {
-            // Binary or no parseable hunks — file-level target
-            targets.push(SecurityReviewTarget {
-                file_path: path,
-                line: None,
-                column: None,
-                preset,
-                reason: SecurityTargetReason::ChangedHunk,
-            });
+            file_level_paths.push((path, content_hint));
         } else {
-            for hunk in &hunks {
-                targets.push(SecurityReviewTarget {
-                    file_path: hunk.file_path.clone(),
-                    line: Some(hunk.new_start),
-                    column: None,
-                    preset: preset.clone(),
-                    reason: SecurityTargetReason::ChangedHunk,
-                });
-            }
+            all_hunks.extend(hunks);
+        }
+    }
+
+    let mut targets =
+        build_security_review_targets(&all_hunks, |p| std::fs::read_to_string(root.join(p)).ok());
+
+    for (path, content_hint) in file_level_paths {
+        if let Some(target) =
+            build_file_level_security_review_target(&path, content_hint.as_deref())
+        {
+            targets.push(target);
         }
     }
 
@@ -819,14 +876,14 @@ const UNSAFE_PATTERNS: &[&str] = &[
     "raw pointer",
 ];
 
-/// Run deterministic preflight checks against target file contents.
+/// Run deterministic preflight checks against target file paths.
 ///
-/// For now this scans the file paths (not contents) for pattern matches.
-/// In a full implementation the caller would provide file contents.
+/// These checks inspect **file names only**, not file contents.  Check names
+/// and notes reflect this limitation explicitly.
 pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPreflightResult> {
     let mut results = Vec::new();
 
-    // Secret pattern scan — check file names for obvious indicators
+    // Secret filename-hint scan — check file names for obvious indicators
     let secret_evidence: Vec<String> = targets
         .iter()
         .filter(|t| {
@@ -840,31 +897,26 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
                 .iter()
                 .any(|pat| name.contains(&pat.to_lowercase()))
         })
-        .map(|t| {
-            format!(
-                "{}: file name matches secret pattern",
-                t.file_path.display()
-            )
-        })
+        .map(|t| format!("{}: file name matches secret hint", t.file_path.display()))
         .collect();
 
     if secret_evidence.is_empty() {
         results.push(SecurityPreflightResult {
-            check_name: "secret_pattern_scan".to_string(),
+            check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
-            notes: vec!["No secret patterns detected in target file names".to_string()],
+            notes: vec!["No secret filename hints detected in target file names".to_string()],
         });
     } else {
         results.push(SecurityPreflightResult {
-            check_name: "secret_pattern_scan".to_string(),
+            check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: secret_evidence,
-            notes: vec!["Secret-like patterns found in target file names".to_string()],
+            notes: vec!["Secret-like filename hints found in target file names".to_string()],
         });
     }
 
-    // Unsafe pattern scan — check file names for unsafe indicators
+    // Unsafe filename-hint scan — check file names for unsafe indicators
     let unsafe_evidence: Vec<String> = targets
         .iter()
         .filter(|t| {
@@ -878,27 +930,22 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
                 .iter()
                 .any(|pat| name.contains(&pat.to_lowercase()))
         })
-        .map(|t| {
-            format!(
-                "{}: file name matches unsafe pattern",
-                t.file_path.display()
-            )
-        })
+        .map(|t| format!("{}: file name matches unsafe hint", t.file_path.display()))
         .collect();
 
     if unsafe_evidence.is_empty() {
         results.push(SecurityPreflightResult {
-            check_name: "unsafe_pattern_scan".to_string(),
+            check_name: "unsafe_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
-            notes: vec!["No unsafe patterns detected in target file names".to_string()],
+            notes: vec!["No unsafe filename hints detected in target file names".to_string()],
         });
     } else {
         results.push(SecurityPreflightResult {
-            check_name: "unsafe_pattern_scan".to_string(),
+            check_name: "unsafe_filename_hint_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: unsafe_evidence,
-            notes: vec!["Unsafe-like patterns found in target file names".to_string()],
+            notes: vec!["Unsafe-like filename hints found in target file names".to_string()],
         });
     }
 
@@ -906,15 +953,16 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
 }
 
 // ---------------------------------------------------------------------------
-// Finding synthesis (legacy — produces only prompts in the vertical slice)
+// Finding synthesis (produces only prompts in the vertical slice)
 // ---------------------------------------------------------------------------
 
 /// Synthesize review prompts from targets, risk markers, and preflight
 /// results.
 ///
 /// In the vertical slice, risk markers **always** become
-/// [`SecurityReviewPrompt`]s — never findings.  Preflight failures are
-/// also surfaced as prompts.
+/// [`SecurityReviewPrompt`]s — never findings.  The returned
+/// `Vec<SecurityReviewFinding>` is always empty by design.  Preflight
+/// failures are also surfaced as prompts.
 pub fn synthesize_findings(
     _targets: &[SecurityReviewTarget],
     risk_markers: &[SecurityRiskMarkerFromWorkflow],
@@ -1681,7 +1729,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
         }];
 
         let preflight = vec![SecurityPreflightResult {
-            check_name: "secret_pattern_scan".to_string(),
+            check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
             notes: Vec::new(),
@@ -1717,7 +1765,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
         }];
 
         let preflight = vec![SecurityPreflightResult {
-            check_name: "secret_pattern_scan".to_string(),
+            check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
             notes: Vec::new(),
@@ -1735,7 +1783,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
         let targets = vec![];
         let markers = vec![];
         let preflight = vec![SecurityPreflightResult {
-            check_name: "secret_pattern_scan".to_string(),
+            check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: vec!["api_key.rs: secret pattern in name".to_string()],
             notes: vec!["Secret-like patterns found".to_string()],
@@ -1745,7 +1793,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
 
         assert!(findings.is_empty());
         assert_eq!(prompts.len(), 1);
-        assert!(prompts[0].title.contains("secret_pattern_scan"));
+        assert!(prompts[0].title.contains("secret_filename_hint_scan"));
     }
 
     #[test]
@@ -1753,7 +1801,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
         let targets = vec![];
         let markers = vec![];
         let preflight = vec![SecurityPreflightResult {
-            check_name: "secret_pattern_scan".to_string(),
+            check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
             notes: Vec::new(),
@@ -1787,7 +1835,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
         let results = run_preflight_checks(&targets);
         let secret_result = results
             .iter()
-            .find(|r| r.check_name == "secret_pattern_scan")
+            .find(|r| r.check_name == "secret_filename_hint_scan")
             .unwrap();
         assert_eq!(secret_result.status, PreflightStatus::Fail);
     }
@@ -1850,5 +1898,154 @@ index abc1234..def5678 100644
         assert!(!should_skip_file(Path::new("src/lib.rs")));
         assert!(!should_skip_file(Path::new("README.md")));
         assert!(!should_skip_file(Path::new("src/main.rs")));
+    }
+
+    // -- Per-file diff parser tests --
+
+    #[test]
+    fn security_review_parse_hunks_for_file_without_diff_git_header() {
+        // A per-file patch that only contains hunk headers, no diff --git line
+        let patch = "\
+@@ -10,6 +10,8 @@ fn example() {
+     let x = 1;
+     let y = 2;
++    let z = x + y;
++    assert!(z > 0);
+ }
+";
+        let hunks = parse_changed_hunks_for_file(patch, Path::new("src/lib.rs"));
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].file_path, Path::new("src/lib.rs"));
+        assert_eq!(hunks[0].new_start, 10);
+        assert_eq!(hunks[0].new_count, 8);
+    }
+
+    #[test]
+    fn security_review_parse_hunks_for_file_prefers_embedded_diff_path() {
+        // When a full diff --git header is present, it takes precedence
+        let patch = "\
+diff --git a/src/other.rs b/src/other.rs
+--- a/src/other.rs
++++ b/src/other.rs
+@@ -1,3 +1,4 @@
++use std::path::Path;
+ fn a() {}
+ fn b() {}
+";
+        let hunks = parse_changed_hunks_for_file(patch, Path::new("src/lib.rs"));
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].file_path, Path::new("src/other.rs"));
+    }
+
+    #[test]
+    fn security_review_parse_hunks_for_file_skips_deleted_or_binary() {
+        // A per-file patch with +++ /dev/null (deletion marker) should produce no hunks
+        let patch = "\
+--- a/src/old.rs
++++ /dev/null
+@@ -1,3 +0,0 @@
+-fn old() {}
+-fn also_old() {}
+-fn third() {}
+";
+        let hunks = parse_changed_hunks_for_file(patch, Path::new("src/old.rs"));
+        assert!(hunks.is_empty());
+    }
+
+    #[test]
+    fn security_review_parse_hunks_for_file_empty_patch() {
+        let hunks = parse_changed_hunks_for_file("", Path::new("src/lib.rs"));
+        assert!(hunks.is_empty());
+    }
+
+    // -- File-level target helper tests --
+
+    #[test]
+    fn security_review_file_level_target_uses_content_hint() {
+        let target =
+            build_file_level_security_review_target(Path::new("src/lib.rs"), Some("unsafe { }"));
+        assert!(target.is_some());
+        let t = target.unwrap();
+        assert_eq!(t.preset, "unsafe_review");
+        assert!(t.line.is_none());
+        assert!(t.column.is_none());
+    }
+
+    #[test]
+    fn security_review_file_level_target_skips_excluded_path() {
+        let target = build_file_level_security_review_target(Path::new("vendor/lib.rs"), None);
+        assert!(target.is_none());
+    }
+
+    #[test]
+    fn security_review_file_level_target_unpositioned() {
+        let target = build_file_level_security_review_target(Path::new("src/lib.rs"), None);
+        assert!(target.is_some());
+        let t = target.unwrap();
+        assert!(t.line.is_none());
+        assert!(t.column.is_none());
+    }
+
+    #[test]
+    fn security_review_file_level_target_selects_preset_from_content() {
+        let target = build_file_level_security_review_target(
+            Path::new("src/handler.rs"),
+            Some("fn handle_auth(session: &Session) {}"),
+        );
+        assert!(target.is_some());
+        let t = target.unwrap();
+        assert_eq!(t.preset, "web_backend");
+        assert_eq!(t.reason, SecurityTargetReason::AuthOrSecretHandling);
+    }
+
+    // -- Prompt source evidence tests --
+
+    #[test]
+    fn security_review_plan_prompt_has_changed_hunk_source() {
+        let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -10,2 +10,4 @@
++    let z = x + y;
+ }
+";
+        let report = plan_security_review_from_diff(patch, Path::new("."));
+        assert_eq!(report.review_prompts.len(), 1);
+        let prompt = &report.review_prompts[0];
+        assert!(prompt.evidence.iter().any(|e| e == "source: changed_hunk"));
+        assert!(prompt.title.starts_with("Review changed hunk:"));
+    }
+
+    #[test]
+    fn security_review_marker_prompt_has_security_context_marker_source() {
+        let target = SecurityReviewTarget {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(42),
+            column: Some(1),
+            preset: "web_backend".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        };
+
+        let context_json = serde_json::json!({
+            "risk_markers": [
+                {
+                    "category": "auth",
+                    "label": "jwt handling",
+                    "file": "src/auth.rs",
+                    "line": 42,
+                    "matched_text": "jwt::decode(token)",
+                    "rationale": "Token flows from request to decode call"
+                }
+            ],
+            "truncated": false
+        });
+
+        let prompts = prompts_from_security_context(&target, &context_json);
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0]
+            .evidence
+            .iter()
+            .any(|e| e == "source: securityContext.risk_marker"));
     }
 }

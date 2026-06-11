@@ -494,12 +494,12 @@ Preset defaults are retrieval defaults, not vulnerability policies. They do not 
 
 The security agent uses `securityContext` as evidence-gathering input for defensive code review. It follows this loop:
 
-1. **Target discovery** — Uses `egggit` diff APIs to identify changed files and hunks. Binary/deleted files are skipped. Generated/vendor paths (`target/`, `node_modules/`, etc.) are excluded.
-2. **Preset selection** — Each file is classified into a `securityContext` preset (`rust_server`, `rust_cli`, `web_backend`, `dependency_review`, `unsafe_review`) based on path heuristics.
-3. **Preflight checks** — Deterministic pattern scans (secret patterns, unsafe code) run on changed lines without an LSP server.
+1. **Target discovery** — Uses `egggit` diff APIs to identify changed files and hunks. Binary/deleted files are skipped. Generated/vendor paths (`target/`, `node_modules/`, etc.) are excluded. Async discovery reuses `build_security_review_targets` and `build_file_level_security_review_target` for consistent positioned targets (`column: Some(1)`).
+2. **Preset selection** — Each file is classified into a `securityContext` preset (`rust_server`, `rust_cli`, `web_backend`, `dependency_review`, `unsafe_review`) based on path heuristics and optional content hints.
+3. **Preflight checks** — Filename-hint scans (`secret_filename_hint_scan`, `unsafe_filename_hint_scan`) run on target file names (not contents).
 4. **Context gathering** — `securityContext` is requested around changed hunks with bounded settings. Call expansion is opt-in (depth 0 by default, escalated to 1 only for high-risk targets).
-5. **Finding synthesis** — Risk markers without additional evidence produce *review prompts* (not findings). Findings require concrete evidence: risk marker + changed code + plausible flow, or preflight failure, or diagnostic on a security-relevant path.
-6. **Output** — Findings include severity, confidence, file, line, evidence, reasoning, recommendation, and suggested tests. Review prompts are returned separately.
+5. **Prompt synthesis** — Risk markers always become *review prompts*, never findings. Planned target prompts use `source: changed_hunk` evidence; risk-marker prompts use `source: securityContext.risk_marker` evidence.
+6. **Output** — Review prompts are returned separately. Findings are always empty in this vertical slice — confirmed finding synthesis is deferred to a later phase.
 
 Key types live in `src/security/workflow.rs`. The workflow is read-only and never mutates files.
 

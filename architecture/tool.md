@@ -175,7 +175,7 @@ the dispatch logic, config schema, and trust framing.
 
 #### Security review workflow
 
-The `security` tool is also used by the `security-review` agent as part of a structured workflow (`src/security/workflow.rs`). The workflow discovers changed hunks via git diff, selects presets via path heuristics, runs deterministic preflight checks, and synthesizes findings from risk markers and evidence. Risk markers alone produce review prompts; findings require concrete evidence.
+The `security` tool is also used by the `security-review` agent as part of a structured workflow (`src/security/workflow.rs`). The workflow discovers changed hunks via git diff, selects presets via path heuristics, runs deterministic filename-hint preflight checks (`secret_filename_hint_scan`, `unsafe_filename_hint_scan`), and synthesizes prompts from risk markers and evidence. Risk markers always produce review prompts, never confirmed findings. Planned target prompts include `source: changed_hunk` evidence; risk-marker prompts include `source: securityContext.risk_marker` evidence, making the two sources distinguishable.
 
 ### Meta Operations
 
