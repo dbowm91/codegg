@@ -1,15 +1,82 @@
 //! Security review vertical slice: diff parsing, preset selection, target
-//! building, securityContext request construction, and review-prompt
-//! generation.
+//! building, securityContext request construction, review-prompt generation,
+//! and evidence-based finding synthesis.
 //!
 //! This module is intentionally decoupled from the LSP layer so it can run
-//! without a language server.  Risk markers become review prompts — never
-//! confirmed findings — in this pass.  Finding synthesis is deferred to a
-//! later phase that requires concrete evidence.
+//! without a language server.  Risk markers become review prompts unless
+//! additional evidence supports a concrete finding.  Finding synthesis is
+//! conservative: severity and confidence are deterministic enums, structured
+//! evidence tracks provenance, and outputs are never proof of exploitability.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+// ---------------------------------------------------------------------------
+// Finding model enums
+// ---------------------------------------------------------------------------
+
+/// Severity level for evidence-based security findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SecuritySeverity {
+    Info,
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl std::fmt::Display for SecuritySeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Info => write!(f, "info"),
+            Self::Low => write!(f, "low"),
+            Self::Medium => write!(f, "medium"),
+            Self::High => write!(f, "high"),
+            Self::Critical => write!(f, "critical"),
+        }
+    }
+}
+
+/// Confidence level for evidence-based security findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SecurityConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+impl std::fmt::Display for SecurityConfidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Low => write!(f, "low"),
+            Self::Medium => write!(f, "medium"),
+            Self::High => write!(f, "high"),
+        }
+    }
+}
+
+/// The source kind of a piece of evidence supporting a finding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecurityEvidenceKind {
+    ChangedHunk,
+    RiskMarker,
+    Diagnostic,
+    CallPath,
+    Preflight,
+    CodeReasoning,
+    TruncationNotice,
+}
+
+/// A single piece of structured evidence supporting a finding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuredSecurityEvidence {
+    pub kind: SecurityEvidenceKind,
+    pub file_path: Option<PathBuf>,
+    pub line: Option<u32>,
+    pub summary: String,
+    pub detail: Option<String>,
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,25 +134,27 @@ pub enum PreflightStatus {
     Skipped,
 }
 
-/// Evidence supporting a finding.
+/// Legacy evidence type (kept for backward compatibility with existing tests).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityEvidence {
     pub location: String,
     pub description: String,
 }
 
-/// Reserved for future evidence-based synthesis. This vertical slice does not
-/// emit this type — risk markers become [`SecurityReviewPrompt`]s, never
-/// findings. Full finding synthesis will require concrete evidence, severity/
-/// confidence enums, and affected-code grounding.
+/// An evidence-based security finding produced by conservative synthesis.
+///
+/// Risk markers alone never produce findings — additional evidence is
+/// required.  Severity and confidence are deterministic enums.  Findings
+/// are defensive review outputs, not proof of exploitability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityReviewFinding {
-    pub severity: String,
-    pub confidence: String,
+    pub severity: SecuritySeverity,
+    pub confidence: SecurityConfidence,
     pub title: String,
     pub file_path: PathBuf,
     pub line: Option<u32>,
-    pub evidence: Vec<SecurityEvidence>,
+    pub category: Option<String>,
+    pub evidence: Vec<StructuredSecurityEvidence>,
     pub reasoning: String,
     pub recommendation: String,
     pub tests: Vec<String>,
@@ -132,7 +201,7 @@ pub struct SecurityReviewReport {
 }
 
 /// Complete output from the full security review workflow (includes
-/// preflight results and structured findings for future synthesis).
+/// preflight results and evidence-based findings).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityReviewOutput {
     pub targets: Vec<SecurityReviewTarget>,
@@ -1009,6 +1078,715 @@ pub fn synthesize_findings(
 }
 
 // ---------------------------------------------------------------------------
+// Evidence-based finding synthesis
+// ---------------------------------------------------------------------------
+
+/// Explicit gate: marker-only evidence is never finding-eligible.
+pub fn marker_only_is_finding_eligible(_evidence: &[StructuredSecurityEvidence]) -> bool {
+    false
+}
+
+/// Determine whether a set of structured evidence is eligible to produce
+/// a finding.  Requires at least two meaningful evidence dimensions or
+/// explicit code reasoning.
+pub fn is_finding_eligible(evidence: &[StructuredSecurityEvidence]) -> bool {
+    let has_marker = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::RiskMarker);
+    let has_changed_hunk = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::ChangedHunk);
+    let has_preflight_fail = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::Preflight);
+    let has_call_path = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::CallPath);
+    let has_diagnostic = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::Diagnostic);
+    let has_reasoning = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::CodeReasoning);
+
+    (has_marker
+        && (has_changed_hunk
+            || has_preflight_fail
+            || has_call_path
+            || has_diagnostic
+            || has_reasoning))
+        || (has_preflight_fail && has_changed_hunk)
+        || (has_reasoning && has_changed_hunk)
+}
+
+/// Convert a [`SecurityReviewTarget`] into structured evidence.
+pub fn evidence_from_target(target: &SecurityReviewTarget) -> StructuredSecurityEvidence {
+    let kind = match target.reason {
+        SecurityTargetReason::ChangedHunk => SecurityEvidenceKind::ChangedHunk,
+        SecurityTargetReason::UnsafeCode
+        | SecurityTargetReason::ProcessExecution
+        | SecurityTargetReason::NetworkBoundary
+        | SecurityTargetReason::AuthOrSecretHandling => SecurityEvidenceKind::CodeReasoning,
+        _ => SecurityEvidenceKind::CodeReasoning,
+    };
+    StructuredSecurityEvidence {
+        kind,
+        file_path: Some(target.file_path.clone()),
+        line: target.line,
+        summary: format!("target {:?} preset={}", target.reason, target.preset),
+        detail: None,
+    }
+}
+
+/// Convert a [`SecurityReviewPrompt`] into structured evidence.
+///
+/// Prompts from `source: securityContext.risk_marker` emit `RiskMarker`
+/// evidence.  Prompts from `source: changed_hunk` emit `ChangedHunk`
+/// evidence.
+pub fn evidence_from_review_prompt(
+    prompt: &SecurityReviewPrompt,
+) -> Vec<StructuredSecurityEvidence> {
+    let mut evidence = Vec::new();
+
+    let has_marker_source = prompt
+        .evidence
+        .iter()
+        .any(|e| e == "source: securityContext.risk_marker");
+    let has_hunk_source = prompt.evidence.iter().any(|e| e == "source: changed_hunk");
+
+    if has_marker_source {
+        evidence.push(StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::RiskMarker,
+            file_path: Some(prompt.file_path.clone()),
+            line: prompt.line,
+            summary: prompt.title.clone(),
+            detail: Some(prompt.rationale.clone()),
+        });
+    } else if has_hunk_source {
+        evidence.push(StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::ChangedHunk,
+            file_path: Some(prompt.file_path.clone()),
+            line: prompt.line,
+            summary: prompt.title.clone(),
+            detail: Some(prompt.rationale.clone()),
+        });
+    }
+
+    let truncated = prompt.evidence.iter().any(|e| e.contains("truncated"));
+    if truncated {
+        evidence.push(StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::TruncationNotice,
+            file_path: Some(prompt.file_path.clone()),
+            line: prompt.line,
+            summary: "context was truncated".to_string(),
+            detail: None,
+        });
+    }
+
+    evidence
+}
+
+/// Content-aware preflight checks that scan file content for heuristic
+/// security signals.  These are local, deterministic, and do not require
+/// network access or external scanners.
+pub fn run_content_preflight_checks(
+    targets: &[SecurityReviewTarget],
+    load_content: impl Fn(&Path) -> Option<String>,
+) -> Vec<SecurityPreflightResult> {
+    let mut results = Vec::new();
+
+    // Hardcoded secret-like assignments
+    let secret_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let has_secret = content.lines().any(|line| {
+                let lower = line.to_lowercase();
+                (lower.contains("api_key")
+                    || lower.contains("secret")
+                    || lower.contains("password")
+                    || lower.contains("token")
+                    || lower.contains("private_key"))
+                    && (lower.contains("=") && !lower.contains("//"))
+            });
+            if has_secret {
+                Some(format!(
+                    "{}: hardcoded secret-like assignment in content",
+                    t.file_path.display()
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if secret_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "secret_content_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            notes: vec!["No hardcoded secret-like assignments found in content".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "secret_content_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: secret_evidence,
+            notes: vec!["Hardcoded secret-like assignments found in content".to_string()],
+        });
+    }
+
+    // Unsafe keyword usage
+    let unsafe_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let has_unsafe = content.lines().any(|line| {
+                let trimmed = line.trim();
+                trimmed.contains("unsafe {")
+                    || trimmed.starts_with("unsafe fn")
+                    || trimmed.starts_with("unsafe impl")
+                    || trimmed.contains("transmute")
+                    || trimmed.contains("raw pointer")
+            });
+            if has_unsafe {
+                Some(format!(
+                    "{}: unsafe keyword usage in content",
+                    t.file_path.display()
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if unsafe_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "unsafe_content_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            notes: vec!["No unsafe keyword usage found in content".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "unsafe_content_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: unsafe_evidence,
+            notes: vec!["Unsafe keyword usage found in content".to_string()],
+        });
+    }
+
+    // Process execution APIs
+    let process_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let has_process = content.lines().any(|line| {
+                line.contains("Command::new")
+                    || line.contains("std::process::Command")
+                    || line.contains("process::Command")
+                    || line.contains("exec(")
+            });
+            if has_process {
+                Some(format!(
+                    "{}: process execution API in content",
+                    t.file_path.display()
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if process_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "process_exec_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            notes: vec!["No process execution APIs found in content".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "process_exec_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: process_evidence,
+            notes: vec!["Process execution APIs found in content".to_string()],
+        });
+    }
+
+    // SQL string construction with format/interpolation
+    let sql_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let has_sql = content.lines().any(|line| {
+                let lower = line.to_lowercase();
+                (lower.contains("format!") || lower.contains("format!("))
+                    && (lower.contains("select")
+                        || lower.contains("insert")
+                        || lower.contains("update")
+                        || lower.contains("delete"))
+            });
+            if has_sql {
+                Some(format!(
+                    "{}: SQL string construction with format interpolation",
+                    t.file_path.display()
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if sql_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "sql_injection_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            notes: vec!["No SQL string construction with interpolation found".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "sql_injection_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: sql_evidence,
+            notes: vec!["SQL string construction with format interpolation found".to_string()],
+        });
+    }
+
+    // Weak crypto names
+    let crypto_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let has_weak = content.lines().any(|line| {
+                let lower = line.to_lowercase();
+                lower.contains("md5")
+                    || lower.contains("sha1")
+                    || lower.contains("des")
+                    || lower.contains("ecb")
+            });
+            if has_weak {
+                Some(format!(
+                    "{}: weak crypto primitive in content",
+                    t.file_path.display()
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if crypto_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "weak_crypto_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            notes: vec!["No weak crypto primitives found in content".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "weak_crypto_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: crypto_evidence,
+            notes: vec!["Weak crypto primitives found in content".to_string()],
+        });
+    }
+
+    results
+}
+
+// ---------------------------------------------------------------------------
+// Finding synthesis (evidence-based)
+// ---------------------------------------------------------------------------
+
+/// Synthesize evidence-based findings from targets, review prompts, and
+/// preflight results.  Groups evidence by file and nearby line, applies the
+/// eligibility gate, and emits findings only for eligible groups.  Ineligible
+/// prompts are preserved as review prompts.
+pub fn synthesize_evidence_based_findings(
+    targets: &[SecurityReviewTarget],
+    prompts: &[SecurityReviewPrompt],
+    preflight: &[SecurityPreflightResult],
+) -> (Vec<SecurityReviewFinding>, Vec<SecurityReviewPrompt>) {
+    let mut findings = Vec::new();
+    let remaining_prompts: Vec<SecurityReviewPrompt> = prompts.to_vec();
+
+    // Collect preflight evidence
+    let preflight_evidence: Vec<StructuredSecurityEvidence> = preflight
+        .iter()
+        .filter(|p| p.status == PreflightStatus::Fail)
+        .flat_map(|p| {
+            p.evidence.iter().map(move |e| StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::Preflight,
+                file_path: None,
+                line: None,
+                summary: format!("{}: {}", p.check_name, e),
+                detail: Some(p.notes.join("; ")),
+            })
+        })
+        .collect();
+
+    // Group prompts by file path and line bucket
+    #[derive(Hash, PartialEq, Eq, Clone)]
+    struct GroupKey {
+        file_path: PathBuf,
+        line_bucket: Option<u32>,
+    }
+
+    let mut groups: std::collections::HashMap<GroupKey, Vec<usize>> =
+        std::collections::HashMap::new();
+
+    for (idx, prompt) in remaining_prompts.iter().enumerate() {
+        let line_bucket = prompt.line.map(|l| l / 5 * 5); // bucket by 5-line ranges
+        let key = GroupKey {
+            file_path: prompt.file_path.clone(),
+            line_bucket,
+        };
+        groups.entry(key).or_default().push(idx);
+    }
+
+    // Process each group
+    let mut indices_to_remove: HashSet<usize> = HashSet::new();
+
+    for (key, indices) in &groups {
+        let mut group_evidence: Vec<StructuredSecurityEvidence> = Vec::new();
+
+        // Add target evidence for this file
+        for target in targets {
+            if target.file_path == key.file_path {
+                group_evidence.push(evidence_from_target(target));
+            }
+        }
+
+        // Add preflight evidence for this file
+        for pe in &preflight_evidence {
+            if pe.file_path.as_deref() == Some(&key.file_path) || pe.file_path.is_none() {
+                group_evidence.push(pe.clone());
+            }
+        }
+
+        // Add prompt evidence
+        for &idx in indices {
+            let prompt_evidence = evidence_from_review_prompt(&remaining_prompts[idx]);
+            group_evidence.extend(prompt_evidence);
+        }
+
+        // Check if truncated
+        let truncated = group_evidence
+            .iter()
+            .any(|e| e.kind == SecurityEvidenceKind::TruncationNotice);
+
+        if is_finding_eligible(&group_evidence) {
+            let category = remaining_prompts[indices[0]].category.clone();
+            let (severity, confidence) =
+                classify_finding(category.as_deref(), &group_evidence, truncated);
+            let title = finding_title(category.as_deref(), &group_evidence);
+            let reasoning = finding_reasoning(&group_evidence);
+            let recommendation = finding_recommendation(category.as_deref());
+            let tests = finding_tests(category.as_deref());
+
+            findings.push(SecurityReviewFinding {
+                severity,
+                confidence,
+                title,
+                file_path: key.file_path.clone(),
+                line: remaining_prompts[indices[0]].line,
+                category,
+                evidence: group_evidence,
+                reasoning,
+                recommendation,
+                tests,
+            });
+
+            for &idx in indices {
+                indices_to_remove.insert(idx);
+            }
+        }
+    }
+
+    // Remove prompts that became findings
+    let remaining: Vec<SecurityReviewPrompt> = remaining_prompts
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !indices_to_remove.contains(i))
+        .map(|(_, p)| p)
+        .collect();
+
+    (findings, remaining)
+}
+
+// ---------------------------------------------------------------------------
+// Severity and confidence classification
+// ---------------------------------------------------------------------------
+
+/// Deterministically classify the severity and confidence of a finding
+/// based on its category, evidence, and truncation state.
+pub fn classify_finding(
+    category: Option<&str>,
+    evidence: &[StructuredSecurityEvidence],
+    truncated: bool,
+) -> (SecuritySeverity, SecurityConfidence) {
+    let has_marker = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::RiskMarker);
+    let has_changed_hunk = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::ChangedHunk);
+    let has_preflight = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::Preflight);
+    let has_call_path = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::CallPath);
+    let has_diagnostic = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::Diagnostic);
+    let has_reasoning = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::CodeReasoning);
+
+    // Base severity from category
+    let base_severity = match category {
+        Some("auth") | Some("secret") | Some("crypto") => SecuritySeverity::Medium,
+        Some("unsafe") | Some("process") | Some("sql") => SecuritySeverity::Medium,
+        Some("filesystem") | Some("path") => SecuritySeverity::Medium,
+        _ => SecuritySeverity::Low,
+    };
+
+    // Adjust severity based on evidence strength
+    let severity = if has_call_path && has_reasoning {
+        // Call path + reasoning pushes toward higher severity
+        match base_severity {
+            SecuritySeverity::Low => SecuritySeverity::Medium,
+            other => other,
+        }
+    } else if has_preflight && has_changed_hunk {
+        // Content preflight + changed hunk is meaningful
+        match base_severity {
+            SecuritySeverity::Low => SecuritySeverity::Medium,
+            other => other,
+        }
+    } else {
+        base_severity
+    };
+
+    // Base confidence
+    let mut confidence = if has_preflight && has_changed_hunk && has_marker {
+        SecurityConfidence::High
+    } else if has_marker && (has_changed_hunk || has_call_path || has_diagnostic || has_reasoning) {
+        SecurityConfidence::Medium
+    } else {
+        SecurityConfidence::Low
+    };
+
+    // Truncation reduces confidence by one level
+    if truncated && confidence != SecurityConfidence::Low {
+        confidence = match confidence {
+            SecurityConfidence::High => SecurityConfidence::Medium,
+            SecurityConfidence::Medium => SecurityConfidence::Low,
+            SecurityConfidence::Low => SecurityConfidence::Low,
+        };
+    }
+
+    // No Critical by default in this pass
+    let severity = match severity {
+        SecuritySeverity::Critical => SecuritySeverity::High,
+        other => other,
+    };
+
+    (severity, confidence)
+}
+
+// ---------------------------------------------------------------------------
+// Finding text generation
+// ---------------------------------------------------------------------------
+
+/// Generate a finding title from category and evidence.
+fn finding_title(category: Option<&str>, evidence: &[StructuredSecurityEvidence]) -> String {
+    let cat = category.unwrap_or("unknown");
+    let has_marker = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::RiskMarker);
+    let has_preflight = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::Preflight);
+
+    if has_preflight {
+        format!("Evidence-based finding: {} (preflight confirmed)", cat)
+    } else if has_marker {
+        format!(
+            "Evidence-based finding: {} (marker + supporting evidence)",
+            cat
+        )
+    } else {
+        format!("Evidence-based finding: {}", cat)
+    }
+}
+
+/// Generate reasoning text from evidence.
+fn finding_reasoning(evidence: &[StructuredSecurityEvidence]) -> String {
+    let mut parts = Vec::new();
+
+    let marker_count = evidence
+        .iter()
+        .filter(|e| e.kind == SecurityEvidenceKind::RiskMarker)
+        .count();
+    if marker_count > 0 {
+        parts.push(format!("{} risk marker(s) present", marker_count));
+    }
+
+    let hunk_count = evidence
+        .iter()
+        .filter(|e| e.kind == SecurityEvidenceKind::ChangedHunk)
+        .count();
+    if hunk_count > 0 {
+        parts.push(format!("{} changed hunk(s) in scope", hunk_count));
+    }
+
+    let preflight_count = evidence
+        .iter()
+        .filter(|e| e.kind == SecurityEvidenceKind::Preflight)
+        .count();
+    if preflight_count > 0 {
+        parts.push(format!("{} content preflight(s) failed", preflight_count));
+    }
+
+    if evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::CallPath)
+    {
+        parts.push("reachable from public/auth boundary".to_string());
+    }
+
+    if evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::Diagnostic)
+    {
+        parts.push("LSP diagnostics support concern".to_string());
+    }
+
+    if evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::CodeReasoning)
+    {
+        parts.push("code analysis indicates potential risk".to_string());
+    }
+
+    let truncated = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::TruncationNotice);
+    if truncated {
+        parts.push("context was truncated, confidence reduced".to_string());
+    }
+
+    if parts.is_empty() {
+        "insufficient evidence for detailed reasoning".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+/// Generate a defensive recommendation for a category.
+fn finding_recommendation(category: Option<&str>) -> String {
+    match category {
+        Some("auth") => {
+            "Add validation and negative tests; enforce issuer/audience/expiry checks; \
+             never trust client-supplied tokens without verification"
+                .to_string()
+        }
+        Some("secret") => {
+            "Remove hardcoded secret; load from secret store or environment variable; \
+             add secret-scan regression test"
+                .to_string()
+        }
+        Some("unsafe") => "Document invariant and safety requirements; add boundary checks; \
+             reduce unsafe scope to minimum necessary"
+            .to_string(),
+        Some("process") => "Avoid shell interpolation; pass arguments separately to Command; \
+             add test for malicious input handling"
+            .to_string(),
+        Some("filesystem") | Some("path") => "Canonicalize paths and enforce root directory; \
+             add traversal tests for edge cases"
+            .to_string(),
+        Some("sql") => "Use parameterized queries; never construct SQL with format!(); \
+             add injection regression test"
+            .to_string(),
+        Some("crypto") => "Use modern cryptographic primitives; avoid weak hash algorithms, \
+             ECB mode, and hardcoded keys"
+            .to_string(),
+        _ => "Review for security implications; add appropriate defensive tests; \
+             follow principle of least privilege"
+            .to_string(),
+    }
+}
+
+/// Generate suggested test names for a category.
+fn finding_tests(category: Option<&str>) -> Vec<String> {
+    match category {
+        Some("auth") => vec![
+            "test_auth_rejects_invalid_token".to_string(),
+            "test_auth_enforces_issuer_check".to_string(),
+            "test_auth_enforces_expiry_check".to_string(),
+        ],
+        Some("secret") => vec![
+            "test_no_hardcoded_secrets_in_source".to_string(),
+            "test_secret_loaded_from_env".to_string(),
+        ],
+        Some("unsafe") => vec![
+            "test_unsafe_invariant_documented".to_string(),
+            "test_unsafe_boundary_checks".to_string(),
+        ],
+        Some("process") => vec![
+            "test_command_no_shell_interpolation".to_string(),
+            "test_command_handles_malicious_args".to_string(),
+        ],
+        Some("filesystem") | Some("path") => vec![
+            "test_path_canonicalized_within_root".to_string(),
+            "test_path_rejects_traversal".to_string(),
+        ],
+        Some("sql") => vec![
+            "test_query_uses_parameterized_statement".to_string(),
+            "test_sql_injection_rejected".to_string(),
+        ],
+        Some("crypto") => vec![
+            "test_uses_modern_crypto_primitive".to_string(),
+            "test_no_hardcoded_key".to_string(),
+        ],
+        _ => vec!["test_security_review_defensive".to_string()],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Report assembly (with findings)
+// ---------------------------------------------------------------------------
+
+/// Assemble a [`SecurityReviewOutput`] from targets, prompts, findings,
+/// and notes.  Includes mandatory notes about conservative semantics.
+pub fn assemble_security_review_report_with_findings(
+    targets: Vec<SecurityReviewTarget>,
+    prompts: Vec<SecurityReviewPrompt>,
+    findings: Vec<SecurityReviewFinding>,
+    preflight_results: Vec<SecurityPreflightResult>,
+    mut notes: Vec<String>,
+) -> SecurityReviewOutput {
+    notes.push(
+        "risk markers are review prompts unless supported by additional evidence".to_string(),
+    );
+    notes.push(
+        "findings are heuristic defensive review outputs, not proof of exploitability".to_string(),
+    );
+
+    SecurityReviewOutput {
+        targets,
+        findings,
+        review_prompts: prompts,
+        preflight_results,
+        notes,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public re-exports
 // ---------------------------------------------------------------------------
 
@@ -1024,6 +1802,8 @@ pub use SecurityReviewPrompt as ReviewPrompt;
 pub use SecurityReviewTarget as ReviewTarget;
 #[allow(unused_imports)]
 pub use SecurityTargetReason as TargetReason;
+#[allow(unused_imports)]
+pub use StructuredSecurityEvidence as Evidence;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -2047,5 +2827,565 @@ diff --git a/src/lib.rs b/src/lib.rs
             .evidence
             .iter()
             .any(|e| e == "source: securityContext.risk_marker"));
+    }
+
+    // -- Evidence-based finding type/eligibility tests --
+
+    #[test]
+    fn security_finding_marker_only_not_eligible() {
+        let evidence = vec![StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::RiskMarker,
+            file_path: Some(PathBuf::from("src/lib.rs")),
+            line: Some(10),
+            summary: "marker only".to_string(),
+            detail: None,
+        }];
+        assert!(!is_finding_eligible(&evidence));
+        assert!(!marker_only_is_finding_eligible(&evidence));
+    }
+
+    #[test]
+    fn security_finding_changed_hunk_only_not_eligible() {
+        let evidence = vec![StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::ChangedHunk,
+            file_path: Some(PathBuf::from("src/lib.rs")),
+            line: Some(10),
+            summary: "changed hunk only".to_string(),
+            detail: None,
+        }];
+        assert!(!is_finding_eligible(&evidence));
+    }
+
+    #[test]
+    fn security_finding_marker_plus_changed_hunk_eligible() {
+        let evidence = vec![
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::RiskMarker,
+                file_path: Some(PathBuf::from("src/lib.rs")),
+                line: Some(10),
+                summary: "marker".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::ChangedHunk,
+                file_path: Some(PathBuf::from("src/lib.rs")),
+                line: Some(10),
+                summary: "changed hunk".to_string(),
+                detail: None,
+            },
+        ];
+        assert!(is_finding_eligible(&evidence));
+    }
+
+    #[test]
+    fn security_finding_preflight_plus_changed_hunk_eligible() {
+        let evidence = vec![
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::Preflight,
+                file_path: Some(PathBuf::from("src/lib.rs")),
+                line: None,
+                summary: "preflight fail".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::ChangedHunk,
+                file_path: Some(PathBuf::from("src/lib.rs")),
+                line: Some(10),
+                summary: "changed hunk".to_string(),
+                detail: None,
+            },
+        ];
+        assert!(is_finding_eligible(&evidence));
+    }
+
+    #[test]
+    fn security_finding_truncation_lowers_confidence() {
+        let evidence = vec![
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::RiskMarker,
+                file_path: Some(PathBuf::from("src/lib.rs")),
+                line: Some(10),
+                summary: "marker".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::ChangedHunk,
+                file_path: Some(PathBuf::from("src/lib.rs")),
+                line: Some(10),
+                summary: "changed hunk".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::TruncationNotice,
+                file_path: Some(PathBuf::from("src/lib.rs")),
+                line: None,
+                summary: "truncated".to_string(),
+                detail: None,
+            },
+        ];
+        let (_, confidence) = classify_finding(Some("auth"), &evidence, true);
+        assert_eq!(confidence, SecurityConfidence::Low);
+    }
+
+    // -- Evidence conversion tests --
+
+    #[test]
+    fn security_evidence_from_changed_target() {
+        let target = SecurityReviewTarget {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(10),
+            column: Some(1),
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        };
+        let evidence = evidence_from_target(&target);
+        assert_eq!(evidence.kind, SecurityEvidenceKind::ChangedHunk);
+        assert_eq!(evidence.file_path, Some(PathBuf::from("src/lib.rs")));
+        assert_eq!(evidence.line, Some(10));
+    }
+
+    #[test]
+    fn security_evidence_from_risk_marker_prompt() {
+        let prompt = SecurityReviewPrompt {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(42),
+            preset: "web_backend".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth: jwt".to_string(),
+            rationale: "token handling".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        };
+        let evidence = evidence_from_review_prompt(&prompt);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].kind, SecurityEvidenceKind::RiskMarker);
+        assert_eq!(evidence[0].file_path, Some(PathBuf::from("src/auth.rs")));
+        assert_eq!(evidence[0].line, Some(42));
+    }
+
+    #[test]
+    fn security_evidence_from_preflight_failure() {
+        let target = SecurityReviewTarget {
+            file_path: PathBuf::from("secret.rs"),
+            line: None,
+            column: None,
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        };
+        let results = run_content_preflight_checks(&[target], |_| {
+            Some("api_key = \"hardcoded\"".to_string())
+        });
+        let secret_result = results
+            .iter()
+            .find(|r| r.check_name == "secret_content_scan")
+            .unwrap();
+        assert_eq!(secret_result.status, PreflightStatus::Fail);
+    }
+
+    #[test]
+    fn security_evidence_preserves_file_and_line() {
+        let target = SecurityReviewTarget {
+            file_path: PathBuf::from("src/handler.rs"),
+            line: Some(42),
+            column: Some(1),
+            preset: "web_backend".to_string(),
+            reason: SecurityTargetReason::AuthOrSecretHandling,
+        };
+        let evidence = evidence_from_target(&target);
+        assert_eq!(evidence.file_path, Some(PathBuf::from("src/handler.rs")));
+        assert_eq!(evidence.line, Some(42));
+    }
+
+    // -- Synthesis tests --
+
+    #[test]
+    fn security_synthesis_marker_only_remains_prompt() {
+        // No targets means no ChangedHunk evidence from targets — truly marker-only
+        let targets = vec![];
+
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(10),
+            preset: "rust_server".to_string(),
+            category: Some("unsafe".to_string()),
+            title: "Review unsafe: block".to_string(),
+            rationale: "Potential issue".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+
+        let preflight = vec![SecurityPreflightResult {
+            check_name: "secret_filename_hint_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            notes: Vec::new(),
+        }];
+
+        let (findings, remaining) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        // Marker-only: no findings, prompt preserved
+        assert!(findings.is_empty());
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn security_synthesis_marker_plus_changed_hunk_emits_finding() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(42),
+            column: None,
+            preset: "web_backend".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(42),
+            preset: "web_backend".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth: jwt".to_string(),
+            rationale: "Token handling".to_string(),
+            evidence: vec![
+                "source: securityContext.risk_marker".to_string(),
+                "auth".to_string(),
+                "jwt::decode(token)".to_string(),
+            ],
+        }];
+
+        let preflight = vec![SecurityPreflightResult {
+            check_name: "secret_filename_hint_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            notes: Vec::new(),
+        }];
+
+        let (findings, remaining) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        assert_eq!(findings.len(), 1);
+        assert!(remaining.is_empty());
+        assert_eq!(findings[0].severity, SecuritySeverity::Medium);
+    }
+
+    #[test]
+    fn security_synthesis_preflight_filename_only_remains_prompt() {
+        let targets = vec![];
+
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("api_key.rs"),
+            line: None,
+            preset: "rust_server".to_string(),
+            category: Some("secret_filename_hint_scan".to_string()),
+            title: "Preflight check failed: secret_filename_hint_scan".to_string(),
+            rationale: "Secret-like filename".to_string(),
+            evidence: vec!["api_key.rs: file name matches secret hint".to_string()],
+        }];
+
+        let preflight = vec![SecurityPreflightResult {
+            check_name: "secret_filename_hint_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: vec!["api_key.rs: file name matches secret hint".to_string()],
+            notes: vec!["Secret-like filename".to_string()],
+        }];
+
+        let (findings, remaining) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        // Preflight filename-only without changed hunk: no finding
+        assert!(findings.is_empty());
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn security_synthesis_content_preflight_plus_changed_hunk_emits_finding() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("src/db.rs"),
+            line: Some(15),
+            column: None,
+            preset: "web_backend".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/db.rs"),
+            line: Some(15),
+            preset: "web_backend".to_string(),
+            category: Some("sql".to_string()),
+            title: "Review sql: query".to_string(),
+            rationale: "SQL construction".to_string(),
+            evidence: vec!["source: changed_hunk".to_string(), "sql".to_string()],
+        }];
+
+        let preflight = vec![SecurityPreflightResult {
+            check_name: "sql_injection_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: vec!["src/db.rs: SQL format interpolation".to_string()],
+            notes: vec!["SQL found".to_string()],
+        }];
+
+        let (findings, remaining) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        assert_eq!(findings.len(), 1);
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn security_synthesis_ineligible_prompts_are_preserved() {
+        let targets = vec![];
+
+        let prompts = vec![
+            SecurityReviewPrompt {
+                file_path: PathBuf::from("src/a.rs"),
+                line: Some(1),
+                preset: "rust_server".to_string(),
+                category: None,
+                title: "Review changed hunk: src/a.rs".to_string(),
+                rationale: "Changed".to_string(),
+                evidence: vec!["source: changed_hunk".to_string()],
+            },
+            SecurityReviewPrompt {
+                file_path: PathBuf::from("src/b.rs"),
+                line: Some(5),
+                preset: "rust_server".to_string(),
+                category: None,
+                title: "Review changed hunk: src/b.rs".to_string(),
+                rationale: "Changed".to_string(),
+                evidence: vec!["source: changed_hunk".to_string()],
+            },
+        ];
+
+        let preflight = vec![];
+
+        let (findings, remaining) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        assert!(findings.is_empty());
+        assert_eq!(remaining.len(), 2);
+    }
+
+    // -- Classification tests --
+
+    #[test]
+    fn security_classify_auth_with_call_path_medium_or_high() {
+        let evidence = vec![
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::RiskMarker,
+                file_path: None,
+                line: None,
+                summary: "marker".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::ChangedHunk,
+                file_path: None,
+                line: None,
+                summary: "hunk".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::CallPath,
+                file_path: None,
+                line: None,
+                summary: "call path".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::CodeReasoning,
+                file_path: None,
+                line: None,
+                summary: "reasoning".to_string(),
+                detail: None,
+            },
+        ];
+        let (severity, _) = classify_finding(Some("auth"), &evidence, false);
+        assert!(severity >= SecuritySeverity::Medium);
+    }
+
+    #[test]
+    fn security_classify_secret_with_content_preflight_medium() {
+        let evidence = vec![
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::RiskMarker,
+                file_path: None,
+                line: None,
+                summary: "marker".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::ChangedHunk,
+                file_path: None,
+                line: None,
+                summary: "hunk".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::Preflight,
+                file_path: None,
+                line: None,
+                summary: "preflight fail".to_string(),
+                detail: None,
+            },
+        ];
+        let (severity, confidence) = classify_finding(Some("secret"), &evidence, false);
+        assert_eq!(severity, SecuritySeverity::Medium);
+        assert_eq!(confidence, SecurityConfidence::High);
+    }
+
+    #[test]
+    fn security_classify_filename_hint_low_confidence() {
+        let evidence = vec![StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::Preflight,
+            file_path: None,
+            line: None,
+            summary: "filename hint".to_string(),
+            detail: None,
+        }];
+        let (_, confidence) = classify_finding(None, &evidence, false);
+        assert_eq!(confidence, SecurityConfidence::Low);
+    }
+
+    #[test]
+    fn security_classify_no_critical_by_default() {
+        let evidence = vec![
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::RiskMarker,
+                file_path: None,
+                line: None,
+                summary: "marker".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::ChangedHunk,
+                file_path: None,
+                line: None,
+                summary: "hunk".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::CallPath,
+                file_path: None,
+                line: None,
+                summary: "call path".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::CodeReasoning,
+                file_path: None,
+                line: None,
+                summary: "reasoning".to_string(),
+                detail: None,
+            },
+        ];
+        let (severity, _) = classify_finding(Some("auth"), &evidence, false);
+        assert_ne!(severity, SecuritySeverity::Critical);
+    }
+
+    // -- Text tests --
+
+    #[test]
+    fn security_recommendation_auth_is_defensive() {
+        let rec = finding_recommendation(Some("auth"));
+        assert!(rec.contains("validation") || rec.contains("tests"));
+        assert!(!rec.contains("exploit"));
+        assert!(!rec.contains("attack"));
+    }
+
+    #[test]
+    fn security_recommendation_process_avoids_shell_interpolation() {
+        let rec = finding_recommendation(Some("process"));
+        assert!(rec.contains("shell interpolation") || rec.contains("separately"));
+        assert!(!rec.contains("exploit"));
+    }
+
+    #[test]
+    fn security_recommendation_sql_mentions_parameterized_queries() {
+        let rec = finding_recommendation(Some("sql"));
+        assert!(rec.contains("parameterized"));
+        assert!(!rec.contains("exploit"));
+    }
+
+    #[test]
+    fn security_tests_are_defensive_regression_tests() {
+        let tests = finding_tests(Some("auth"));
+        assert!(!tests.is_empty());
+        for t in &tests {
+            assert!(t.starts_with("test_"));
+            assert!(!t.contains("exploit"));
+            assert!(!t.contains("payload"));
+        }
+    }
+
+    // -- Content preflight tests --
+
+    #[test]
+    fn security_content_preflight_detects_hardcoded_secret() {
+        let target = SecurityReviewTarget {
+            file_path: PathBuf::from("src/config.rs"),
+            line: Some(5),
+            column: None,
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        };
+        let results =
+            run_content_preflight_checks(&[target], |_| Some("api_key = \"sk-1234\"".to_string()));
+        let secret = results
+            .iter()
+            .find(|r| r.check_name == "secret_content_scan")
+            .unwrap();
+        assert_eq!(secret.status, PreflightStatus::Fail);
+    }
+
+    #[test]
+    fn security_content_preflight_detects_process_exec() {
+        let target = SecurityReviewTarget {
+            file_path: PathBuf::from("src/runner.rs"),
+            line: Some(10),
+            column: None,
+            preset: "rust_cli".to_string(),
+            reason: SecurityTargetReason::ProcessExecution,
+        };
+        let results = run_content_preflight_checks(&[target], |_| {
+            Some("let child = Command::new(\"sh\")".to_string())
+        });
+        let proc = results
+            .iter()
+            .find(|r| r.check_name == "process_exec_scan")
+            .unwrap();
+        assert_eq!(proc.status, PreflightStatus::Fail);
+    }
+
+    #[test]
+    fn security_content_preflight_clean_file_passes() {
+        let target = SecurityReviewTarget {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(1),
+            column: None,
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        };
+        let results = run_content_preflight_checks(&[target], |_| {
+            Some("fn add(a: i32, b: i32) -> i32 { a + b }".to_string())
+        });
+        assert!(results.iter().all(|r| r.status == PreflightStatus::Pass));
+    }
+
+    // -- Report assembly with findings tests --
+
+    #[test]
+    fn security_report_with_findings_includes_conservative_notes() {
+        let targets = vec![];
+        let prompts = vec![];
+        let findings = vec![];
+        let preflight = vec![];
+        let report = assemble_security_review_report_with_findings(
+            targets,
+            prompts,
+            findings,
+            preflight,
+            Vec::new(),
+        );
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("not proof of exploitability")));
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n.contains("additional evidence")));
     }
 }

@@ -456,18 +456,53 @@ The `src/security/workflow.rs` module provides a structured security review work
 
 Planned targets produce prompts with `source: changed_hunk` evidence. Risk-marker prompts from `securityContext` include `source: securityContext.risk_marker` evidence, making the two sources distinguishable.
 
-### Finding synthesis
+### Evidence-based security findings
 
-`synthesize_findings()` enforces the marker-vs-finding distinction:
-- Risk markers always become `SecurityReviewPrompt`s — never findings
-- Preflight failures also surface as prompts
-- The `Vec<SecurityReviewFinding>` is always empty by design in this vertical slice
+The security workflow separates review prompts from findings. Risk markers remain prompts unless additional evidence supports a concrete issue. Finding synthesis is conservative: severity and confidence are deterministic enums, recommendations are defensive, and outputs are not proof of exploitability.
+
+#### Finding model
+
+- `SecuritySeverity` enum: Info, Low, Medium, High, Critical (no Critical emitted by default)
+- `SecurityConfidence` enum: Low, Medium, High
+- `SecurityEvidenceKind` enum: ChangedHunk, RiskMarker, Diagnostic, CallPath, Preflight, CodeReasoning, TruncationNotice
+- `StructuredSecurityEvidence` struct with kind, file_path, line, summary, detail
+- `SecurityReviewFinding` struct with severity, confidence, title, file_path, line, category, evidence, reasoning, recommendation, tests
+
+#### Eligibility gate
+
+`is_finding_eligible()` requires at least two meaningful evidence dimensions:
+- Marker-only evidence is never eligible (`marker_only_is_finding_eligible()` always returns false)
+- Changed hunk + risk marker => eligible (low/medium confidence)
+- Content preflight failure + changed hunk => eligible
+- Code reasoning + changed hunk => eligible
+- Call path to public/auth boundary + marker => eligible
+
+#### Evidence conversion
+
+- `evidence_from_target()` converts `SecurityReviewTarget` to structured evidence
+- `evidence_from_review_prompt()` converts `SecurityReviewPrompt` to structured evidence (RiskMarker for securityContext source, ChangedHunk for diff source)
+- `run_content_preflight_checks()` runs local, deterministic content scans for hardcoded secrets, unsafe keywords, process execution APIs, SQL interpolation, and weak crypto
+
+#### Finding synthesis
+
+`synthesize_evidence_based_findings()` groups evidence by file and nearby line, applies the eligibility gate, and emits findings only for eligible groups. Ineligible prompts are preserved.
+
+`classify_finding()` deterministically maps category + evidence to severity/confidence. Truncation reduces confidence by one level. No Critical findings by default.
+
+#### Conservative semantics
+
+- Risk markers are review prompts, not confirmed findings
+- Findings are heuristic defensive review outputs, not proof of exploitability
+- All preflight checks are local and deterministic (no network, no external scanner)
+- Recommendations are defensive (no exploit instructions)
+- Tests are concrete regression tests, not offensive payload recipes
 
 ### Invoking the workflow
 
 - Slash command: `/security-review [--changed] [--file <path>] [--preset <name>] [--deep]`
 - Subagent: spawn `security-review` agent via task tool
 - Internal: call `discover_targets_from_diff()` + `run_preflight_checks()` + `synthesize_findings()` directly
+- Internal: call `synthesize_evidence_based_findings()` for evidence-based finding synthesis
 
 ## Security Checklist
 
