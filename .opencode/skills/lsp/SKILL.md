@@ -232,7 +232,9 @@ Operations available via tool:
 - `formatPreview` (preview-only; same `WorkspaceEditPreview` shape)
 - `sourceActionPreview` (preview-only; same `WorkspaceEditPreview` shape; accepts `action` parameter — currently only `source.organizeImports` with aliases `organizeImports`/`organize_imports`; command-only actions are rejected because command execution is disabled)
 - `semanticCheckPreview` (accepts either `content` or a single-file unified diff `patch`; patch input is applied in memory against `file_path` via `OverlaySession` (`apply_overlay`/`restore`), collects diagnostics + symbols, restores disk content, never writes disk; multi-file patches are unsupported in this pass; operation-level root enforcement via `allowed_root`; returns `SemanticCheckPreview` with `diagnostics_may_still_be_warming`, `diagnostics`, `diagnostics_error`, `symbols`, `symbols_error`, `restored_disk_view`, `restore_error`; `execute_structured` sets `success=false` when `restore_error` is present)
-- `semanticContext` (combines multiple LSP requests; returns `SemanticContextPacket` with bounded source excerpt + diagnostics + symbols + optional definitions/references/overlay + optional source-action hints; read-only, bounded; per-section errors via `definitions_error`, `references_error`; overlay limits tracked by `overlay_diagnostics_truncated`; `result_count` includes overlay items and available source-action hints; source excerpt truncation is UTF-8-safe via char-boundary cutting; `include_source_actions` boolean input, default false, populates `source_actions` array of `SemanticSourceActionHint` objects)
+- `semanticContext` (combines multiple LSP requests; returns `SemanticContextPacket` with bounded source excerpt + diagnostics + symbols + optional definitions/references/overlay + optional source-action hints + optional call/type hierarchy; read-only, bounded; per-section errors via `definitions_error`, `references_error`; overlay limits tracked by `overlay_diagnostics_truncated`; `result_count` includes overlay items and available source-action hints; source excerpt truncation is UTF-8-safe via char-boundary cutting; `include_source_actions` boolean input, default false, populates `source_actions` array of `SemanticSourceActionHint` objects; `include_call_hierarchy` boolean input, default false, populates `call_hierarchy` section with incoming/outgoing callers; `include_type_hierarchy` boolean input, default false, populates `type_hierarchy` section with supertypes/subtypes)
+- `callHierarchy` (requires file_path, line, column; optional `direction` parameter — `incoming`, `outgoing`, or `both` (default `both`); returns `CallHierarchySummary` with items, incoming, outgoing, errors, truncated)
+- `typeHierarchy` (requires file_path, line, column; optional `direction` parameter; returns `TypeHierarchySummary` with items, supertypes, subtypes, errors, truncated)
 
 **Preview-only contract**: `renamePreview` / `formatPreview` / `sourceActionPreview` (and future edit previews) produce bounded unified-diff patches for review via `WorkspaceEditPreview`. `sourceActionPreview` currently supports only `source.organizeImports`; arbitrary code actions and command execution are intentionally rejected. `CodeAction` values with `command: Some(_)` but `edit: None` are classified as command-only and rejected. `format_preview` enforces `allowed_root` at the crate layer. Large patches are structurally flagged via `FileEditPreview.patch_omitted` (not string matching). They are `ToolCategory::ReadOnly`. Actual file changes require the separate mutating `apply_patch` tool (or equivalent). `codeLens` is not exposed in the model-facing schema. Source-action hints returned via `semanticContext` with `include_source_actions: true` follow the same preview-only contract — each hint's `preview` field carries a `WorkspaceEditPreview` when the action is available and has edits, or `None` when unavailable or command-only.
 
@@ -245,11 +247,56 @@ Input parameters:
 - `line`, `column` (optional, both-or-neither): 1-indexed target position
 - `radius` (optional, default 40, max 120): lines above/below for excerpt
 - `include_references` / `include_definitions` / `include_overlay` / `include_source_actions` (optional booleans)
+- `include_call_hierarchy` (optional, default false): include call hierarchy information (requires line+column)
+- `include_type_hierarchy` (optional, default false): include type hierarchy information (requires line+column)
 - `content` / `patch` (optional, mutually exclusive): for overlay diagnostics
 
 Source-action hints: when `include_source_actions` is true, `semanticContext` includes a `source_actions` array of `SemanticSourceActionHint` objects. Each hint has `action` (string identifier), `available` (bool), `preview` (Option\<WorkspaceEditPreview\>), and `error` (Option\<String\>). Currently only `source.organizeImports` is supported. Hints reuse the existing `sourceActionPreview` behavior (preview-only, no command execution, no mutation). Source-action failures are non-fatal; they set `error` on the individual hint but do not fail the whole packet. Available hints affect `result_count`. A pure helper `source_action_hint_from_result` converts results to hints, and `collect_source_action_hints` iterates the hardcoded allowlist.
 
 All sections bounded: diagnostics (100), symbols (120), references (80), overlay diagnostics (100), excerpt (32KB). Per-section errors (`definitions_error`, `references_error`) are non-None when the corresponding LSP request fails. `overlay_diagnostics_truncated` in limits tracks overlay diagnostics overflow. `result_count` includes overlay diagnostics and overlay symbols. Source excerpt truncation uses `truncate_to_byte_limit_on_char_boundary` (UTF-8-safe, no replacement characters). All sections are best-effort; individual failures do not prevent the packet from being returned.
+
+### Hierarchy Output Shapes
+
+Hierarchy operations (`callHierarchy`, `typeHierarchy`) follow a consistent shape. Both require `file_path`, `line`, and `column` (1-indexed). An optional `direction` parameter controls which callsites/type sites to retrieve.
+
+**`HierarchyDirection`** accepts:
+- `"incoming"` — callers / supertypes only
+- `"outgoing"` — callees / subtypes only
+- `"both"` (default) — both directions
+
+Invalid values fall back to `"both"` with a warning.
+
+#### CallHierarchySummary
+
+Returned by `callHierarchy` and optionally embedded in `semanticContext` when `include_call_hierarchy` is true.
+
+```json
+{
+  "items": ["CallHierarchyItemSummary", "..."],
+  "incoming": ["CallHierarchyIncomingCallSummary", "..."],
+  "outgoing": ["CallHierarchyOutgoingCallSummary", "..."],
+  "errors": ["error string", "..."],
+  "truncated": false
+}
+```
+
+Items are the prepared call hierarchy symbols at the given position. Incoming/outgoing calls reference those items by ID. Each item summary includes `name`, `kind`, `file_path`, `start_line`, `start_column`, `end_line`, `end_column`. Each incoming/outgoing summary includes `from`/`to` (item summary) and `from_ranges`/`to_ranges` (list of `LocationSummary`).
+
+#### TypeHierarchySummary
+
+Returned by `typeHierarchy` and optionally embedded in `semanticContext` when `include_type_hierarchy` is true.
+
+```json
+{
+  "items": ["TypeHierarchyItemSummary", "..."],
+  "supertypes": ["TypeHierarchyItemSummary", "..."],
+  "subtypes": ["TypeHierarchyItemSummary", "..."],
+  "errors": ["error string", "..."],
+  "truncated": false
+}
+```
+
+Items are the prepared type hierarchy symbols at the given position. Supertypes/subtypes are flattened lists of all ancestors/descendants. Each item summary includes `name`, `kind`, `file_path`, `start_line`, `start_column`, `end_line`, `end_column`, `parents` (list of parent item summaries).
 
 ## Project Root Detection
 

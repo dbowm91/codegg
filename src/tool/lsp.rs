@@ -20,6 +20,9 @@ const MAX_CONTEXT_DIAGNOSTICS: usize = 100;
 const MAX_CONTEXT_SYMBOLS: usize = 120;
 const MAX_CONTEXT_REFERENCES: usize = 80;
 const MAX_CONTEXT_EXCERPT_BYTES: usize = 32_000;
+const MAX_HIERARCHY_ITEMS: usize = 32;
+const MAX_HIERARCHY_EDGES: usize = 128;
+const MAX_HIERARCHY_RANGES: usize = 32;
 
 #[derive(Serialize)]
 struct LspToolOutput<T> {
@@ -94,6 +97,8 @@ struct SemanticContextPacket {
     references: Vec<LocationSummary>,
     references_error: Option<String>,
     source_actions: Vec<SemanticSourceActionHint>,
+    call_hierarchy: Option<CallHierarchySummary>,
+    type_hierarchy: Option<TypeHierarchySummary>,
     limits: SemanticContextLimits,
 }
 
@@ -139,6 +144,58 @@ pub struct SemanticSourceActionHint {
     pub error: Option<String>,
 }
 
+#[derive(Serialize)]
+struct HierarchyRangeSummary {
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+}
+
+#[derive(Serialize)]
+struct HierarchyItemSummary {
+    name: String,
+    kind: String,
+    file: Option<String>,
+    range: HierarchyRangeSummary,
+    selection_range: HierarchyRangeSummary,
+    detail: Option<String>,
+}
+
+#[derive(Serialize)]
+struct IncomingCallSummary {
+    from: HierarchyItemSummary,
+    from_ranges: Vec<HierarchyRangeSummary>,
+}
+
+#[derive(Serialize)]
+struct OutgoingCallSummary {
+    to: HierarchyItemSummary,
+    from_ranges: Vec<HierarchyRangeSummary>,
+}
+
+#[derive(Serialize)]
+struct CallHierarchySummary {
+    items: Vec<HierarchyItemSummary>,
+    incoming: Vec<IncomingCallSummary>,
+    outgoing: Vec<OutgoingCallSummary>,
+    prepare_error: Option<String>,
+    incoming_error: Option<String>,
+    outgoing_error: Option<String>,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+struct TypeHierarchySummary {
+    items: Vec<HierarchyItemSummary>,
+    supertypes: Vec<HierarchyItemSummary>,
+    subtypes: Vec<HierarchyItemSummary>,
+    prepare_error: Option<String>,
+    supertypes_error: Option<String>,
+    subtypes_error: Option<String>,
+    truncated: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct LspInput {
     operation: String,
@@ -168,6 +225,12 @@ struct LspInput {
     include_overlay: Option<bool>,
     #[serde(default)]
     include_source_actions: Option<bool>,
+    #[serde(default)]
+    direction: Option<String>,
+    #[serde(default)]
+    include_call_hierarchy: Option<bool>,
+    #[serde(default)]
+    include_type_hierarchy: Option<bool>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -451,6 +514,259 @@ impl LspTool {
         }
         hints
     }
+
+    fn convert_lsp_range(range: crate::lsp::lsp_types::Range) -> HierarchyRangeSummary {
+        HierarchyRangeSummary {
+            start_line: range.start.line + 1,
+            start_column: range.start.character + 1,
+            end_line: range.end.line + 1,
+            end_column: range.end.character + 1,
+        }
+    }
+
+    fn convert_hierarchy_item(
+        item: &crate::lsp::lsp_types::CallHierarchyItem,
+    ) -> HierarchyItemSummary {
+        HierarchyItemSummary {
+            name: item.name.clone(),
+            kind: symbol_kind_to_string(item.kind),
+            file: Some(uri_to_path(&item.uri)),
+            range: Self::convert_lsp_range(item.range),
+            selection_range: Self::convert_lsp_range(item.selection_range),
+            detail: item.detail.clone(),
+        }
+    }
+
+    fn convert_type_hierarchy_item(
+        item: &crate::lsp::lsp_types::TypeHierarchyItem,
+    ) -> HierarchyItemSummary {
+        HierarchyItemSummary {
+            name: item.name.clone(),
+            kind: symbol_kind_to_string(item.kind),
+            file: Some(uri_to_path(&item.uri)),
+            range: Self::convert_lsp_range(item.range),
+            selection_range: Self::convert_lsp_range(item.selection_range),
+            detail: item.detail.clone(),
+        }
+    }
+
+    async fn build_call_hierarchy_summary(
+        &self,
+        ops: &crate::lsp::operations::LspOperations,
+        file: &Path,
+        line: u32,
+        column: u32,
+        direction: crate::lsp::operations::HierarchyDirection,
+    ) -> CallHierarchySummary {
+        let items_result = ops.prepare_call_hierarchy(file, line, column).await;
+        let items = match items_result {
+            Ok(items) => items,
+            Err(e) => {
+                return CallHierarchySummary {
+                    items: Vec::new(),
+                    incoming: Vec::new(),
+                    outgoing: Vec::new(),
+                    prepare_error: Some(e.to_string()),
+                    incoming_error: None,
+                    outgoing_error: None,
+                    truncated: false,
+                };
+            }
+        };
+
+        let item_summaries: Vec<HierarchyItemSummary> = items
+            .iter()
+            .take(MAX_HIERARCHY_ITEMS)
+            .map(Self::convert_hierarchy_item)
+            .collect();
+
+        if items.is_empty() {
+            return CallHierarchySummary {
+                items: Vec::new(),
+                incoming: Vec::new(),
+                outgoing: Vec::new(),
+                prepare_error: None,
+                incoming_error: None,
+                outgoing_error: None,
+                truncated: false,
+            };
+        }
+
+        let primary = &items[0];
+        let mut incoming = Vec::new();
+        let mut incoming_error = None;
+        let mut outgoing = Vec::new();
+        let mut outgoing_error = None;
+
+        if matches!(
+            direction,
+            crate::lsp::operations::HierarchyDirection::Incoming
+                | crate::lsp::operations::HierarchyDirection::Both
+        ) {
+            match ops.incoming_calls(primary.clone()).await {
+                Ok(calls) => {
+                    let capped: Vec<_> = calls.into_iter().take(MAX_HIERARCHY_EDGES).collect();
+                    incoming = capped
+                        .iter()
+                        .map(|call| IncomingCallSummary {
+                            from: Self::convert_hierarchy_item(&call.from),
+                            from_ranges: call
+                                .from_ranges
+                                .iter()
+                                .take(MAX_HIERARCHY_RANGES)
+                                .map(|r| Self::convert_lsp_range(*r))
+                                .collect(),
+                        })
+                        .collect();
+                }
+                Err(e) => {
+                    incoming_error = Some(e.to_string());
+                }
+            }
+        }
+
+        if matches!(
+            direction,
+            crate::lsp::operations::HierarchyDirection::Outgoing
+                | crate::lsp::operations::HierarchyDirection::Both
+        ) {
+            match ops.outgoing_calls(primary.clone()).await {
+                Ok(calls) => {
+                    let capped: Vec<_> = calls.into_iter().take(MAX_HIERARCHY_EDGES).collect();
+                    outgoing = capped
+                        .iter()
+                        .map(|call| OutgoingCallSummary {
+                            to: Self::convert_hierarchy_item(&call.to),
+                            from_ranges: call
+                                .from_ranges
+                                .iter()
+                                .take(MAX_HIERARCHY_RANGES)
+                                .map(|r| Self::convert_lsp_range(*r))
+                                .collect(),
+                        })
+                        .collect();
+                }
+                Err(e) => {
+                    outgoing_error = Some(e.to_string());
+                }
+            }
+        }
+
+        let truncated = item_summaries.len() >= MAX_HIERARCHY_ITEMS
+            || incoming.len() >= MAX_HIERARCHY_EDGES
+            || outgoing.len() >= MAX_HIERARCHY_EDGES;
+
+        CallHierarchySummary {
+            items: item_summaries,
+            incoming,
+            outgoing,
+            prepare_error: None,
+            incoming_error,
+            outgoing_error,
+            truncated,
+        }
+    }
+
+    async fn build_type_hierarchy_summary(
+        &self,
+        ops: &crate::lsp::operations::LspOperations,
+        file: &Path,
+        line: u32,
+        column: u32,
+        direction: crate::lsp::operations::HierarchyDirection,
+    ) -> TypeHierarchySummary {
+        let items_result = ops.prepare_type_hierarchy(file, line, column).await;
+        let items = match items_result {
+            Ok(items) => items,
+            Err(e) => {
+                return TypeHierarchySummary {
+                    items: Vec::new(),
+                    supertypes: Vec::new(),
+                    subtypes: Vec::new(),
+                    prepare_error: Some(e.to_string()),
+                    supertypes_error: None,
+                    subtypes_error: None,
+                    truncated: false,
+                };
+            }
+        };
+
+        let item_summaries: Vec<HierarchyItemSummary> = items
+            .iter()
+            .take(MAX_HIERARCHY_ITEMS)
+            .map(Self::convert_type_hierarchy_item)
+            .collect();
+
+        if items.is_empty() {
+            return TypeHierarchySummary {
+                items: Vec::new(),
+                supertypes: Vec::new(),
+                subtypes: Vec::new(),
+                prepare_error: None,
+                supertypes_error: None,
+                subtypes_error: None,
+                truncated: false,
+            };
+        }
+
+        let primary = &items[0];
+        let mut supertypes = Vec::new();
+        let mut supertypes_error = None;
+        let mut subtypes = Vec::new();
+        let mut subtypes_error = None;
+
+        if matches!(
+            direction,
+            crate::lsp::operations::HierarchyDirection::Incoming
+                | crate::lsp::operations::HierarchyDirection::Both
+        ) {
+            match ops.supertypes(primary.clone()).await {
+                Ok(items) => {
+                    let capped: Vec<_> = items.into_iter().take(MAX_HIERARCHY_ITEMS).collect();
+                    supertypes = capped
+                        .iter()
+                        .map(Self::convert_type_hierarchy_item)
+                        .collect();
+                }
+                Err(e) => {
+                    supertypes_error = Some(e.to_string());
+                }
+            }
+        }
+
+        if matches!(
+            direction,
+            crate::lsp::operations::HierarchyDirection::Outgoing
+                | crate::lsp::operations::HierarchyDirection::Both
+        ) {
+            match ops.subtypes(primary.clone()).await {
+                Ok(items) => {
+                    let capped: Vec<_> = items.into_iter().take(MAX_HIERARCHY_ITEMS).collect();
+                    subtypes = capped
+                        .iter()
+                        .map(Self::convert_type_hierarchy_item)
+                        .collect();
+                }
+                Err(e) => {
+                    subtypes_error = Some(e.to_string());
+                }
+            }
+        }
+
+        let truncated = item_summaries.len() >= MAX_HIERARCHY_ITEMS
+            || supertypes.len() >= MAX_HIERARCHY_ITEMS
+            || subtypes.len() >= MAX_HIERARCHY_ITEMS;
+
+        TypeHierarchySummary {
+            items: item_summaries,
+            supertypes,
+            subtypes,
+            prepare_error: None,
+            supertypes_error,
+            subtypes_error,
+            truncated,
+        }
+    }
 }
 
 #[async_trait]
@@ -460,7 +776,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext, callHierarchy, typeHierarchy. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -473,9 +789,10 @@ impl Tool for LspTool {
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
                         "renamePreview", "formatPreview", "sourceActionPreview",
-                        "semanticCheckPreview", "semanticContext"
+                        "semanticCheckPreview", "semanticContext",
+                        "callHierarchy", "typeHierarchy"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column."
                 },
                 "file_path": {
                     "type": "string",
@@ -528,6 +845,19 @@ impl Tool for LspTool {
                 "include_source_actions": {
                     "type": "boolean",
                     "description": "Include safe allowlisted source-action preview hints in semanticContext. Initially only source.organizeImports. Default false."
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["incoming", "outgoing", "both"],
+                    "description": "Hierarchy direction for callHierarchy/typeHierarchy. Defaults to both. For typeHierarchy, incoming means supertypes and outgoing means subtypes."
+                },
+                "include_call_hierarchy": {
+                    "type": "boolean",
+                    "description": "Include call hierarchy section in semanticContext. Requires line+column. Default false."
+                },
+                "include_type_hierarchy": {
+                    "type": "boolean",
+                    "description": "Include type hierarchy section in semanticContext. Requires line+column. Default false."
                 }
             },
             "required": ["operation"]
@@ -862,6 +1192,50 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "callHierarchy" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let direction =
+                    crate::lsp::operations::HierarchyDirection::parse(parsed.direction.as_deref())
+                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                let pos = to_lsp_position(line, col);
+                let summary = self
+                    .build_call_hierarchy_summary(&ops, &file, pos.line, pos.character, direction)
+                    .await;
+                let output = LspToolOutput {
+                    operation: "callHierarchy".to_string(),
+                    file_path: file_path_str,
+                    result_count: summary.items.len()
+                        + summary.incoming.len()
+                        + summary.outgoing.len(),
+                    truncated: summary.truncated,
+                    results: summary,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "typeHierarchy" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let direction =
+                    crate::lsp::operations::HierarchyDirection::parse(parsed.direction.as_deref())
+                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                let pos = to_lsp_position(line, col);
+                let summary = self
+                    .build_type_hierarchy_summary(&ops, &file, pos.line, pos.character, direction)
+                    .await;
+                let output = LspToolOutput {
+                    operation: "typeHierarchy".to_string(),
+                    file_path: file_path_str,
+                    result_count: summary.items.len()
+                        + summary.supertypes.len()
+                        + summary.subtypes.len(),
+                    truncated: summary.truncated,
+                    results: summary,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             "semanticCheckPreview" => {
                 let file = self.resolve_file(&parsed.file_path)?;
                 let content = self
@@ -1149,13 +1523,57 @@ impl Tool for LspTool {
                 let source_action_count =
                     source_actions.iter().filter(|hint| hint.available).count();
 
+                // Call and type hierarchy (opt-in)
+                let include_call_hierarchy = parsed.include_call_hierarchy.unwrap_or(false);
+                let include_type_hierarchy = parsed.include_type_hierarchy.unwrap_or(false);
+
+                let call_hierarchy = if include_call_hierarchy && has_position {
+                    Some(
+                        self.build_call_hierarchy_summary(
+                            &ops,
+                            &file,
+                            parsed.line.unwrap(),
+                            parsed.column.unwrap(),
+                            crate::lsp::operations::HierarchyDirection::Both,
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                };
+
+                let type_hierarchy = if include_type_hierarchy && has_position {
+                    Some(
+                        self.build_type_hierarchy_summary(
+                            &ops,
+                            &file,
+                            parsed.line.unwrap(),
+                            parsed.column.unwrap(),
+                            crate::lsp::operations::HierarchyDirection::Both,
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                };
+
+                let call_hierarchy_count = call_hierarchy
+                    .as_ref()
+                    .map(|c| c.items.len() + c.incoming.len() + c.outgoing.len())
+                    .unwrap_or(0);
+                let type_hierarchy_count = type_hierarchy
+                    .as_ref()
+                    .map(|c| c.items.len() + c.supertypes.len() + c.subtypes.len())
+                    .unwrap_or(0);
                 let result_count = current_diags.len()
                     + current_syms.len()
                     + definitions.len()
                     + references.len()
                     + overlay_diag_count
                     + overlay_sym_count
-                    + source_action_count;
+                    + source_action_count
+                    + call_hierarchy_count
+                    + type_hierarchy_count;
                 let packet = SemanticContextPacket {
                     file: file_str,
                     target,
@@ -1170,6 +1588,8 @@ impl Tool for LspTool {
                     references,
                     references_error,
                     source_actions,
+                    call_hierarchy,
+                    type_hierarchy,
                     limits: SemanticContextLimits {
                         diagnostics_truncated,
                         symbols_truncated,
@@ -1266,9 +1686,10 @@ mod tests {
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
                         "renamePreview", "formatPreview", "sourceActionPreview",
-                        "semanticCheckPreview", "semanticContext"
+                        "semanticCheckPreview", "semanticContext",
+                        "callHierarchy", "typeHierarchy"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column."
                 },
                 "file_path": {
                     "type": "string",
@@ -1321,6 +1742,19 @@ mod tests {
                 "include_source_actions": {
                     "type": "boolean",
                     "description": "Include safe allowlisted source-action preview hints in semanticContext. Initially only source.organizeImports. Default false."
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["incoming", "outgoing", "both"],
+                    "description": "Hierarchy direction for callHierarchy/typeHierarchy. Defaults to both. For typeHierarchy, incoming means supertypes and outgoing means subtypes."
+                },
+                "include_call_hierarchy": {
+                    "type": "boolean",
+                    "description": "Include call hierarchy section in semanticContext. Requires line+column. Default false."
+                },
+                "include_type_hierarchy": {
+                    "type": "boolean",
+                    "description": "Include type hierarchy section in semanticContext. Requires line+column. Default false."
                 }
             },
             "required": ["operation"]

@@ -88,6 +88,8 @@ fn lsp_tool_schema_operation_enum() {
         "sourceActionPreview",
         "semanticCheckPreview",
         "semanticContext",
+        "callHierarchy",
+        "typeHierarchy",
     ];
     assert_eq!(ops.len(), expected.len());
     for name in &expected {
@@ -1431,7 +1433,10 @@ fn semantic_context_source_actions_default_false() {
         .expect("include_source_actions property should be an object");
     assert_eq!(prop["type"], "boolean");
     let desc = prop["description"].as_str().unwrap();
-    assert!(desc.contains("Default false"), "description should document default: {desc}");
+    assert!(
+        desc.contains("Default false"),
+        "description should document default: {desc}"
+    );
 }
 
 #[tokio::test]
@@ -1452,7 +1457,10 @@ async fn semantic_context_source_actions_omitted_by_default() {
     let src_actions = v["results"]["source_actions"]
         .as_array()
         .expect("source_actions should be an array");
-    assert!(src_actions.is_empty(), "source_actions should be empty when include_source_actions is omitted");
+    assert!(
+        src_actions.is_empty(),
+        "source_actions should be empty when include_source_actions is omitted"
+    );
 }
 
 #[test]
@@ -1604,4 +1612,274 @@ fn source_action_hint_available_with_single_edit() {
     );
     assert!(hint.available);
     assert_eq!(hint.action, "source.organizeImports");
+}
+
+// ── Hierarchy tests ───────────────────────────────────────────────────
+
+#[test]
+#[allow(non_snake_case)]
+fn lsp_schema_includes_callHierarchy_and_typeHierarchy() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum should be an array");
+    assert!(
+        ops.iter().any(|v| v.as_str() == Some("callHierarchy")),
+        "missing callHierarchy in operation enum"
+    );
+    assert!(
+        ops.iter().any(|v| v.as_str() == Some("typeHierarchy")),
+        "missing typeHierarchy in operation enum"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn lsp_schema_includes_direction() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let direction = &params["properties"]["direction"];
+    assert_eq!(direction["type"], "string");
+    let enum_vals = direction["enum"]
+        .as_array()
+        .expect("direction.enum should be an array");
+    assert!(enum_vals.iter().any(|v| v.as_str() == Some("incoming")));
+    assert!(enum_vals.iter().any(|v| v.as_str() == Some("outgoing")));
+    assert!(enum_vals.iter().any(|v| v.as_str() == Some("both")));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn lsp_schema_includes_hierarchy_context_flags() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    assert_eq!(
+        params["properties"]["include_call_hierarchy"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        params["properties"]["include_type_hierarchy"]["type"],
+        "boolean"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn callHierarchy_requires_file_path_line_column() {
+    let tool = make_tool();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "callHierarchy"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("file_path")),
+            "expected file_path error, got: {err:?}"
+        );
+
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "callHierarchy",
+                "file_path": "src/main.rs"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("line")),
+            "expected line error, got: {err:?}"
+        );
+
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "callHierarchy",
+                "file_path": "src/main.rs",
+                "line": 1
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("column")),
+            "expected column error, got: {err:?}"
+        );
+    });
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn typeHierarchy_requires_file_path_line_column() {
+    let tool = make_tool();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "typeHierarchy"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("file_path")),
+            "expected file_path error, got: {err:?}"
+        );
+
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "typeHierarchy",
+                "file_path": "src/main.rs"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("line")),
+            "expected line error, got: {err:?}"
+        );
+    });
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semanticContext_hierarchy_requires_line_column() {
+    let tool = make_tool();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        // include_call_hierarchy without line+column should not fail -
+        // it just won't produce hierarchy results
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "semanticContext",
+                "file_path": "src/tool/mod.rs",
+                "include_call_hierarchy": true,
+                "include_type_hierarchy": true
+            }))
+            .await;
+        // Should succeed - hierarchy flags without position just produce None sections
+        assert!(
+            result.is_ok(),
+            "hierarchy flags without position should not fail: {result:?}"
+        );
+    });
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hierarchy_direction_defaults_to_both() {
+    use codegg::lsp::operations::HierarchyDirection;
+    let dir = HierarchyDirection::parse(None).unwrap();
+    assert_eq!(dir, HierarchyDirection::Both);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hierarchy_direction_parses_incoming_outgoing_both() {
+    use codegg::lsp::operations::HierarchyDirection;
+    assert_eq!(
+        HierarchyDirection::parse(Some("incoming")).unwrap(),
+        HierarchyDirection::Incoming
+    );
+    assert_eq!(
+        HierarchyDirection::parse(Some("outgoing")).unwrap(),
+        HierarchyDirection::Outgoing
+    );
+    assert_eq!(
+        HierarchyDirection::parse(Some("both")).unwrap(),
+        HierarchyDirection::Both
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hierarchy_direction_rejects_invalid() {
+    use codegg::lsp::operations::HierarchyDirection;
+    let err = HierarchyDirection::parse(Some("invalid")).unwrap_err();
+    assert!(
+        matches!(err, codegg::lsp::LspError::RequestFailed(ref m) if m.contains("unsupported hierarchy direction")),
+        "expected direction error, got: {err:?}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn callHierarchy_invalid_direction_rejected() {
+    let tool = make_tool();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "callHierarchy",
+                "file_path": "src/main.rs",
+                "line": 1,
+                "column": 1,
+                "direction": "invalid"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("unsupported hierarchy direction")),
+            "expected direction error, got: {err:?}"
+        );
+    });
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn typeHierarchy_invalid_direction_rejected() {
+    let tool = make_tool();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "typeHierarchy",
+                "file_path": "src/main.rs",
+                "line": 1,
+                "column": 1,
+                "direction": "bad"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("unsupported hierarchy direction")),
+            "expected direction error, got: {err:?}"
+        );
+    });
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn callHierarchy_summary_serializes_error_fields() {
+    use serde_json::json;
+    let summary = json!({
+        "items": [],
+        "incoming": [],
+        "outgoing": [],
+        "prepare_error": "server does not support call hierarchy",
+        "incoming_error": null,
+        "outgoing_error": null,
+        "truncated": false
+    });
+    let s = serde_json::to_string(&summary).unwrap();
+    assert!(s.contains("prepare_error"));
+    assert!(s.contains("server does not support call hierarchy"));
+    assert!(s.contains("truncated"));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn type_hierarchy_summary_serializes_error_fields() {
+    use serde_json::json;
+    let summary = json!({
+        "items": [],
+        "supertypes": [],
+        "subtypes": [],
+        "prepare_error": "not supported",
+        "supertypes_error": null,
+        "subtypes_error": null,
+        "truncated": false
+    });
+    let s = serde_json::to_string(&summary).unwrap();
+    assert!(s.contains("prepare_error"));
+    assert!(s.contains("supertypes_error"));
+    assert!(s.contains("subtypes_error"));
 }

@@ -43,6 +43,26 @@ impl SourceActionPreviewKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HierarchyDirection {
+    Incoming,
+    Outgoing,
+    Both,
+}
+
+impl HierarchyDirection {
+    pub fn parse(input: Option<&str>) -> Result<Self, crate::error::LspError> {
+        match input.unwrap_or("both") {
+            "incoming" => Ok(Self::Incoming),
+            "outgoing" => Ok(Self::Outgoing),
+            "both" => Ok(Self::Both),
+            other => Err(crate::error::LspError::RequestFailed(format!(
+                "unsupported hierarchy direction: {other}"
+            ))),
+        }
+    }
+}
+
 /// Pure helper: given a requested action kind and the raw LSP code action
 /// responses, select the single best edit-bearing `WorkspaceEdit`.
 ///
@@ -796,6 +816,191 @@ impl LspOperations {
             restore_error,
         })
     }
+
+    pub async fn prepare_call_hierarchy(
+        &self,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<CallHierarchyItem>, LspError> {
+        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+
+        let params = serde_json::to_value(CallHierarchyPrepareParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: url_to_uri(&uri)?,
+                },
+                position: Position {
+                    line,
+                    character: column,
+                },
+            },
+            work_done_progress_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "textDocument/prepareCallHierarchy", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let items: Vec<CallHierarchyItem> = serde_json::from_value(resp)?;
+        Ok(items)
+    }
+
+    pub async fn incoming_calls(
+        &self,
+        item: CallHierarchyItem,
+    ) -> Result<Vec<CallHierarchyIncomingCall>, LspError> {
+        let file_path = uri_to_file_path(&item.uri)?;
+        let (key, _root) = self.service.get_or_create_client(&file_path).await?;
+
+        let params = serde_json::to_value(CallHierarchyIncomingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "callHierarchy/incomingCalls", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let calls: Vec<CallHierarchyIncomingCall> = serde_json::from_value(resp)?;
+        Ok(calls)
+    }
+
+    pub async fn outgoing_calls(
+        &self,
+        item: CallHierarchyItem,
+    ) -> Result<Vec<CallHierarchyOutgoingCall>, LspError> {
+        let file_path = uri_to_file_path(&item.uri)?;
+        let (key, _root) = self.service.get_or_create_client(&file_path).await?;
+
+        let params = serde_json::to_value(CallHierarchyOutgoingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "callHierarchy/outgoingCalls", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let calls: Vec<CallHierarchyOutgoingCall> = serde_json::from_value(resp)?;
+        Ok(calls)
+    }
+
+    pub async fn prepare_type_hierarchy(
+        &self,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Vec<TypeHierarchyItem>, LspError> {
+        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+
+        let params = serde_json::to_value(TypeHierarchyPrepareParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: url_to_uri(&uri)?,
+                },
+                position: Position {
+                    line,
+                    character: column,
+                },
+            },
+            work_done_progress_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "textDocument/prepareTypeHierarchy", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let items: Vec<TypeHierarchyItem> = serde_json::from_value(resp)?;
+        Ok(items)
+    }
+
+    pub async fn supertypes(
+        &self,
+        item: TypeHierarchyItem,
+    ) -> Result<Vec<TypeHierarchyItem>, LspError> {
+        let file_path = uri_to_file_path(&item.uri)?;
+        let (key, _root) = self.service.get_or_create_client(&file_path).await?;
+
+        let params = serde_json::to_value(TypeHierarchySupertypesParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "typeHierarchy/supertypes", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let items: Vec<TypeHierarchyItem> = serde_json::from_value(resp)?;
+        Ok(items)
+    }
+
+    pub async fn subtypes(
+        &self,
+        item: TypeHierarchyItem,
+    ) -> Result<Vec<TypeHierarchyItem>, LspError> {
+        let file_path = uri_to_file_path(&item.uri)?;
+        let (key, _root) = self.service.get_or_create_client(&file_path).await?;
+
+        let params = serde_json::to_value(TypeHierarchySubtypesParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "typeHierarchy/subtypes", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let items: Vec<TypeHierarchyItem> = serde_json::from_value(resp)?;
+        Ok(items)
+    }
+}
+
+fn uri_to_file_path(uri: &Uri) -> Result<std::path::PathBuf, LspError> {
+    let url = Url::parse(uri.as_str())
+        .map_err(|e| LspError::RequestFailed(format!("invalid LSP URI: {e}")))?;
+    url.to_file_path()
+        .map_err(|_| LspError::RequestFailed(format!("URI is not a file path: {}", uri.as_str())))
 }
 
 fn format_hover_contents(contents: &HoverContents) -> String {
