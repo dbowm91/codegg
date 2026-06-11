@@ -800,7 +800,7 @@ fn select_source_action_rejects_no_edit() {
 }
 
 #[test]
-#[allow(non_snake_case)]
+#[allow(non_snake_case, clippy::mutable_key_type)]
 fn select_source_action_selects_single_edit_bearing() {
     use codegg::lsp::lsp_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit,
@@ -830,7 +830,7 @@ fn select_source_action_selects_single_edit_bearing() {
 }
 
 #[test]
-#[allow(non_snake_case)]
+#[allow(non_snake_case, clippy::mutable_key_type)]
 fn select_source_action_rejects_ambiguous_multiple_edits() {
     use codegg::lsp::lsp_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit,
@@ -898,7 +898,7 @@ fn select_source_action_rejects_code_action_command_only() {
 }
 
 #[test]
-#[allow(non_snake_case)]
+#[allow(non_snake_case, clippy::mutable_key_type)]
 fn select_source_action_ignores_nonmatching_actions() {
     use codegg::lsp::lsp_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit,
@@ -939,7 +939,7 @@ fn select_source_action_ignores_nonmatching_actions() {
 }
 
 #[test]
-#[allow(non_snake_case)]
+#[allow(non_snake_case, clippy::mutable_key_type)]
 fn select_source_action_accepts_child_kind() {
     use codegg::lsp::lsp_types::{
         CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit,
@@ -1002,6 +1002,21 @@ fn document_end_position_utf16_multiline() {
     let pos = document_end_position_utf16("line1\nline2\nline3");
     assert_eq!(pos.line, 2);
     assert_eq!(pos.character, 5);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn document_end_position_utf16_crlf() {
+    use codegg::lsp::operations::document_end_position_utf16;
+    // \r is counted as a character before \n resets the line.
+    // "a\r\n" → line 1, character 0
+    let pos = document_end_position_utf16("a\r\n");
+    assert_eq!(pos.line, 1);
+    assert_eq!(pos.character, 0);
+    // "\r\n" alone → line 1, character 0
+    let pos = document_end_position_utf16("\r\n");
+    assert_eq!(pos.line, 1);
+    assert_eq!(pos.character, 0);
 }
 
 #[test]
