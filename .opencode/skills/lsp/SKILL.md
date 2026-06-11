@@ -258,7 +258,11 @@ All sections bounded: diagnostics (100), symbols (120), references (80), overlay
 
 ### securityContext operation
 
-`securityContext` is a read-only context-gathering operation for security review. It is not a vulnerability scanner and does not produce vulnerability verdicts. It provides:
+`securityContext` is a read-only context-gathering operation for security review. It is not a vulnerability scanner and does not produce vulnerability verdicts.
+
+**Usage guidance:** Use `securityContext` before a security review of a target symbol or proposed patch. Treat risk markers as review prompts, not findings. Use explicit mutating tools only after reviewing returned patches or context.
+
+It provides:
 
 - Bounded source excerpt with configurable radius (default 80, max 200)
 - Deterministic risk markers via pattern matching (11 categories: auth, crypto, filesystem, network, process, unsafe, serialization, sql, secrets, path_traversal, concurrency)

@@ -880,15 +880,15 @@ impl Tool for LspTool {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Proposed full file content for semanticCheckPreview and semanticContext overlay. Mutually exclusive with patch."
+                    "description": "Proposed full file content for semanticCheckPreview, semanticContext overlay, or securityContext overlay. Mutually exclusive with patch."
                 },
                 "patch": {
                     "type": "string",
-                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview and semanticContext overlay. Mutually exclusive with content."
+                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview, semanticContext overlay, or securityContext overlay. Mutually exclusive with content."
                 },
                 "radius": {
                     "type": "number",
-                    "description": "Number of lines above and below target for semanticContext source excerpt (default 40, max 120)"
+                    "description": "Number of lines above and below target for semanticContext/securityContext source excerpt. semanticContext default 40/max 120; securityContext default 80/max 200."
                 },
                 "include_references": {
                     "type": "boolean",
@@ -913,7 +913,7 @@ impl Tool for LspTool {
                 },
                 "include_call_hierarchy": {
                     "type": "boolean",
-                    "description": "Include call hierarchy section in semanticContext. Requires line+column. Default false."
+                    "description": "Include call hierarchy section in semanticContext. In securityContext, call hierarchy defaults to true when line+column are supplied. Requires line+column."
                 },
                 "include_type_hierarchy": {
                     "type": "boolean",
@@ -1998,11 +1998,17 @@ impl Tool for LspTool {
                         excerpt_truncated,
                     },
                 };
+                let truncated = risk_markers_truncated
+                    || diagnostics_truncated
+                    || symbols_truncated
+                    || refs_truncated
+                    || excerpt_truncated;
+
                 let output = LspToolOutput {
                     operation: "securityContext".to_string(),
                     file_path: file_path_str,
                     result_count,
-                    truncated: false,
+                    truncated,
                     results: packet,
                 };
                 serde_json::to_string_pretty(&output)
@@ -2022,16 +2028,22 @@ impl Tool for LspTool {
         let start = Instant::now();
         let output = self.execute(input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
+        let output_value = serde_json::from_str::<serde_json::Value>(&output).ok();
+        let truncated = output_value
+            .as_ref()
+            .and_then(|v| v.get("truncated"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let provenance = ToolProvenance {
             backend: ToolBackendKind::Native.label().to_lowercase(),
             implementation: "egglsp".to_string(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             elapsed_ms: Some(elapsed_ms),
-            truncated: false,
+            truncated,
             trust: ToolTrust::LocalUntrusted,
         };
-        let success = match serde_json::from_str::<serde_json::Value>(&output) {
-            Ok(v) => {
+        let success = match output_value {
+            Some(v) => {
                 let top_restore_error = v
                     .pointer("/results/restore_error")
                     .and_then(|e| e.as_str())
@@ -2042,7 +2054,7 @@ impl Tool for LspTool {
                     .is_some();
                 !(top_restore_error || overlay_restore_error)
             }
-            Err(_) => true,
+            None => true,
         };
         Ok(StructuredToolResult::with_provenance(
             output, success, provenance,
@@ -2118,15 +2130,15 @@ mod tests {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Proposed full file content for semanticCheckPreview and semanticContext overlay. Mutually exclusive with patch."
+                    "description": "Proposed full file content for semanticCheckPreview, semanticContext overlay, or securityContext overlay. Mutually exclusive with patch."
                 },
                 "patch": {
                     "type": "string",
-                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview and semanticContext overlay. Mutually exclusive with content."
+                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview, semanticContext overlay, or securityContext overlay. Mutually exclusive with content."
                 },
                 "radius": {
                     "type": "number",
-                    "description": "Number of lines above and below target for semanticContext source excerpt (default 40, max 120)"
+                    "description": "Number of lines above and below target for semanticContext/securityContext source excerpt. semanticContext default 40/max 120; securityContext default 80/max 200."
                 },
                 "include_references": {
                     "type": "boolean",
@@ -2151,7 +2163,7 @@ mod tests {
                 },
                 "include_call_hierarchy": {
                     "type": "boolean",
-                    "description": "Include call hierarchy section in semanticContext. Requires line+column. Default false."
+                    "description": "Include call hierarchy section in semanticContext. In securityContext, call hierarchy defaults to true when line+column are supplied. Requires line+column."
                 },
                 "include_type_hierarchy": {
                     "type": "boolean",
@@ -2619,5 +2631,130 @@ diff --git a/src/lib.rs b/src/lib.rs
         };
         let result = super::super::lsp_security::scan_risk_markers(&excerpt, &None, 80);
         assert!(result.markers.is_empty());
+    }
+
+    // ── Phase 7: truncation + schema tests ───────────────────────────
+
+    #[test]
+    fn security_context_top_level_truncated_false_when_limits_clear() {
+        let limits = SecurityContextLimits {
+            risk_markers_truncated: false,
+            diagnostics_truncated: false,
+            symbols_truncated: false,
+            references_truncated: false,
+            excerpt_truncated: false,
+        };
+        let truncated = limits.risk_markers_truncated
+            || limits.diagnostics_truncated
+            || limits.symbols_truncated
+            || limits.references_truncated
+            || limits.excerpt_truncated;
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn security_context_top_level_truncated_true_when_marker_limit_truncated() {
+        let limits = SecurityContextLimits {
+            risk_markers_truncated: true,
+            diagnostics_truncated: false,
+            symbols_truncated: false,
+            references_truncated: false,
+            excerpt_truncated: false,
+        };
+        let truncated = limits.risk_markers_truncated
+            || limits.diagnostics_truncated
+            || limits.symbols_truncated
+            || limits.references_truncated
+            || limits.excerpt_truncated;
+        assert!(truncated);
+    }
+
+    #[test]
+    fn security_context_top_level_truncated_true_when_any_limit_truncated() {
+        let cases: [[bool; 5]; 5] = [
+            [true, false, false, false, false],
+            [false, true, false, false, false],
+            [false, false, true, false, false],
+            [false, false, false, true, false],
+            [false, false, false, false, true],
+        ];
+        for (i, flag) in cases.iter().enumerate() {
+            let limits = SecurityContextLimits {
+                risk_markers_truncated: flag[0],
+                diagnostics_truncated: flag[1],
+                symbols_truncated: flag[2],
+                references_truncated: flag[3],
+                excerpt_truncated: flag[4],
+            };
+            let truncated = limits.risk_markers_truncated
+                || limits.diagnostics_truncated
+                || limits.symbols_truncated
+                || limits.references_truncated
+                || limits.excerpt_truncated;
+            assert!(truncated, "case {i} should be truncated");
+        }
+    }
+
+    #[test]
+    fn structured_lsp_provenance_reflects_truncated_field() {
+        let json_truncated = r#"{"operation":"findReferences","truncated":true,"results":[]}"#;
+        let v: serde_json::Value = serde_json::from_str(json_truncated).unwrap();
+        let truncated = v
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(truncated);
+
+        let json_not_truncated = r#"{"operation":"findReferences","truncated":false,"results":[]}"#;
+        let v: serde_json::Value = serde_json::from_str(json_not_truncated).unwrap();
+        let truncated = v
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(!truncated);
+
+        let json_missing = r#"{"operation":"findReferences","results":[]}"#;
+        let v: serde_json::Value = serde_json::from_str(json_missing).unwrap();
+        let truncated = v
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn lsp_schema_descriptions_include_security_context_overlay() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let params = tool.parameters();
+        let content_desc = params["properties"]["content"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            content_desc.contains("securityContext"),
+            "content description should mention securityContext: {content_desc}"
+        );
+        let patch_desc = params["properties"]["patch"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            patch_desc.contains("securityContext"),
+            "patch description should mention securityContext: {patch_desc}"
+        );
+        let radius_desc = params["properties"]["radius"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            radius_desc.contains("securityContext"),
+            "radius description should mention securityContext: {radius_desc}"
+        );
+        let hierarchy_desc = params["properties"]["include_call_hierarchy"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            hierarchy_desc.contains("securityContext"),
+            "include_call_hierarchy description should mention securityContext: {hierarchy_desc}"
+        );
     }
 }

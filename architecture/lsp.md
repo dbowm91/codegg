@@ -341,6 +341,10 @@ Hierarchy `from_ranges` truncation (capped at `MAX_HIERARCHY_RANGES = 32` per ca
 
 Hierarchy prepare operations use `ensure_file_open_from_disk` to open/sync the file from disk before sending the prepare request, ensuring position-sensitive behavior against a document view known to the server.
 
+`semanticContext` can include hierarchy sections with `include_call_hierarchy=true` or `include_type_hierarchy=true`. These flags require `line` and `column`; requests without a target position are rejected.
+
+`securityContext` includes call hierarchy by default when a target position is supplied unless disabled by input behavior in future presets.
+
 ### Semantic context packets
 
 `semanticContext` is the preferred agent-facing pre-edit/pre-review context operation. It combines a bounded source excerpt with current diagnostics, document symbols, optional definition/reference information, optional overlay diagnostics for proposed content or a single-file patch, optional source-action hints, and optional call/type hierarchy information. It is read-only and never applies changes.
@@ -369,6 +373,8 @@ The operation gathers existing read-only semantic facts, optionally runs an over
 ### Security context packets
 
 `securityContext` is a read-only context-gathering operation for security review. It is not a vulnerability scanner and does not produce vulnerability verdicts. It never writes proposed content to disk; patch/content input is applied only in memory through the existing semantic overlay path.
+
+Risk markers are deterministic keyword/identifier/context matches with rationale strings. They are prompts for review, not evidence of a confirmed vulnerability.
 
 It combines:
 - bounded source excerpt (configurable radius, default 80, max 200);
