@@ -1430,6 +1430,29 @@ fn semantic_context_source_actions_default_false() {
         .as_object()
         .expect("include_source_actions property should be an object");
     assert_eq!(prop["type"], "boolean");
+    let desc = prop["description"].as_str().unwrap();
+    assert!(desc.contains("Default false"), "description should document default: {desc}");
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semantic_context_source_actions_omitted_by_default() {
+    let tool = make_tool();
+    let result = tool
+        .execute(serde_json::json!({
+            "operation": "semanticContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1,
+            "column": 1,
+            "radius": 5
+        }))
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let src_actions = v["results"]["source_actions"]
+        .as_array()
+        .expect("source_actions should be an array");
+    assert!(src_actions.is_empty(), "source_actions should be empty when include_source_actions is omitted");
 }
 
 #[test]
@@ -1540,4 +1563,45 @@ fn source_action_hint_captures_error() {
     assert!(hint.preview.is_none());
     assert!(hint.error.is_some());
     assert!(hint.error.unwrap().contains("organize imports"));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_hint_available_when_truncated() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    use codegg::tool::lsp::LspTool;
+    let preview = codegg::lsp::edit::WorkspaceEditPreview {
+        title: "organize imports".to_string(),
+        files: vec![],
+        total_files: 5,
+        total_edits: 12,
+        truncated: true,
+    };
+    let hint = LspTool::source_action_hint_from_result(
+        SourceActionPreviewKind::OrganizeImports,
+        Ok(preview),
+    );
+    assert!(hint.available);
+    assert!(hint.preview.is_some());
+    assert!(hint.error.is_none());
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_hint_available_with_single_edit() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    use codegg::tool::lsp::LspTool;
+    let preview = codegg::lsp::edit::WorkspaceEditPreview {
+        title: "organize imports".to_string(),
+        files: vec![],
+        total_files: 1,
+        total_edits: 1,
+        truncated: false,
+    };
+    let hint = LspTool::source_action_hint_from_result(
+        SourceActionPreviewKind::OrganizeImports,
+        Ok(preview),
+    );
+    assert!(hint.available);
+    assert_eq!(hint.action, "source.organizeImports");
 }
