@@ -66,7 +66,7 @@ impl LspService {
 
 ### client.rs - LSP Client
 
-Manages JSON-RPC communication with a single LSP server process:
+Manages JSON-RPC communication with a single LSP server process. A dedicated background reader task owns stdout and routes responses via the `pending` map while independently dispatching notifications (e.g. `publishDiagnostics`):
 
 ```rust
 pub struct LspClient {
@@ -76,23 +76,23 @@ pub struct LspClient {
     pub request_id: AtomicU64,
     pub capabilities: Mutex<Option<ServerCapabilities>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
+    pub last_opened_at: Mutex<HashMap<String, Instant>>,
     pub diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,
-    pub notif_tx: mpsc::UnboundedSender<String>,
-    pub notif_rx: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    pub pending: PendingMap,
+    _reader_task: tokio::task::JoinHandle<()>,
 }
 
-pub struct DiagnosticEntry {
-    pub uri: String,
-    pub diagnostic: lsp_types::Diagnostic,
-}
+pub struct DiagnosticEntry { ... } // internal
 ```
 
 **Key operations**:
-- File lifecycle: `open_file()`, `update_file()`, `close_file()`, `save_file()`
-- Code intelligence: `go_to_definition()`, `find_references()`, `hover()`, `document_symbols()`, `code_actions()`, `completion()`, `signature_help()`
-- Diagnostics: `get_diagnostics()`, `get_all_diagnostics()`, `process_notification()`
+- File lifecycle: `open_file()`, `update_file()`, `close_file()`, `save_file()`, `ensure_file_open_from_disk()`
+- Code intelligence: `go_to_definition()`, `find_references()`, `hover()`, `document_symbols()`, `code_actions()`, `completion()`, `signature_help()`, `code_lens()` (internal), plus preview-only `rename_preview()` / `format_preview()` (see edit.rs)
+- Diagnostics: `get_diagnostics()`, `get_all_diagnostics()`, `diagnostics_may_still_be_warming()`
 - Communication: `send_request()`, `send_notification()`, `send_initialized()`
-- Utilities: `url_to_uri()`, `detect_language_id()`
+- Utilities: `url_to_uri()`, `detect_language_id()`, `classify_json_rpc_message`, `dispatch_notification`
+
+`notif_tx`/`notif_rx` and direct `read_response`/`read_notification` paths have been removed; stdout is exclusively owned by the background reader.
 
 ### operations.rs - High-Level Operations
 
@@ -266,7 +266,7 @@ LSP is exposed via `LspTool` in `src/tool/lsp.rs`. The tool returns compact agen
 
 ### Exposed Operations
 
-Only these operations are model-facing (Phase 7 narrow set):
+Only these operations are model-facing:
 
 | Operation | LSP Request | Output Shape |
 |-----------|-------------|--------------|
@@ -274,11 +274,16 @@ Only these operations are model-facing (Phase 7 narrow set):
 | `findReferences` | `textDocument/references` | `Vec<LocationSummary>` (capped at 100) |
 | `hover` | `textDocument/hover` | `HoverSummary` (capped at 2000 chars) |
 | `documentSymbol` | `textDocument/documentSymbol` | `Vec<SymbolSummary>` (capped at 300) |
-| `workspaceSymbol` | `workspace/symbol` | Raw JSON wrapped in `LspToolOutput` |
-| `diagnostics` | (via DiagnosticsCollector) | `Vec<DiagnosticSummary>` |
-| `codeLens` | `textDocument/codeLens` | Raw JSON wrapped in `LspToolOutput` |
+| `workspaceSymbol` | `workspace/symbol` | Compact summary list |
+| `diagnostics` | (via DiagnosticsCollector) | `Vec<DiagnosticSummary>` (plus warming flag) |
+| `renamePreview` | `textDocument/rename` (after ensure open + optional prepareRename) | `WorkspaceEditPreview` (unified diff patches + metadata; preview-only) |
+| `formatPreview` | `textDocument/formatting` | `WorkspaceEditPreview` (unified diff patches; preview-only) |
 
-Hidden operations (in `egglsp::operations` for future use): `completion`, `signatureHelp`, `codeAction`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `goToImplementation`.
+`codeLens` is intentionally not exposed in the model-facing schema (remains available in `egglsp::operations` only).
+
+**LSP edit previews are strictly read-only**: `renamePreview`/`formatPreview` (and any future preview ops) return bounded unified-diff patches via `WorkspaceEditPreview` (title, per-file original_hash + TextEditPreview + patch). They never write files. Actual mutation requires the separate mutating `apply_patch` tool (or equivalent). The `lsp` tool remains `ToolCategory::ReadOnly`.
+
+Hidden operations (in `egglsp::operations` for future use): `completion`, `signatureHelp`, `codeAction`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `goToImplementation`, and arbitrary `sourceAction*` (follow-up).
 
 ### Position Convention
 

@@ -83,6 +83,8 @@ struct LspInput {
     column: Option<u32>,
     #[serde(default)]
     symbol: Option<String>,
+    #[serde(default)]
+    new_name: Option<String>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -223,7 +225,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Experimental: Query LSP server for code intelligence. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview. LSP edits are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -234,7 +236,8 @@ impl Tool for LspTool {
                     "type": "string",
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
-                        "documentSymbol", "workspaceSymbol", "diagnostics"
+                        "documentSymbol", "workspaceSymbol", "diagnostics",
+                        "renamePreview", "formatPreview"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -253,6 +256,10 @@ impl Tool for LspTool {
                 "symbol": {
                     "type": "string",
                     "description": "Symbol name for workspaceSymbol operation"
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "New name for renamePreview operation"
                 }
             },
             "required": ["operation"]
@@ -523,6 +530,49 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "renamePreview" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
+                let new_name = parsed.new_name.as_ref().ok_or_else(|| {
+                    ToolError::Execution("new_name required for renamePreview".to_string())
+                })?;
+                let pos = to_lsp_position(line, col);
+                let preview = ops
+                    .rename_preview(
+                        &file,
+                        pos.line,
+                        pos.character,
+                        new_name,
+                        Some(&self.allowed_root),
+                    )
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("renamePreview: {e}")))?;
+                let output = LspToolOutput {
+                    operation: "renamePreview".to_string(),
+                    file_path: file_path_str,
+                    result_count: preview.total_edits,
+                    truncated: preview.truncated,
+                    results: preview,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "formatPreview" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let preview = ops
+                    .format_preview(&file, Some(&self.allowed_root))
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("formatPreview: {e}")))?;
+                let output = LspToolOutput {
+                    operation: "formatPreview".to_string(),
+                    file_path: file_path_str,
+                    result_count: preview.total_edits,
+                    truncated: preview.truncated,
+                    results: preview,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
 
@@ -578,7 +628,8 @@ mod tests {
                     "type": "string",
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
-                        "documentSymbol", "workspaceSymbol", "diagnostics"
+                        "documentSymbol", "workspaceSymbol", "diagnostics",
+                        "renamePreview", "formatPreview"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -597,6 +648,10 @@ mod tests {
                 "symbol": {
                     "type": "string",
                     "description": "Symbol name for workspaceSymbol operation"
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "New name for renamePreview operation"
                 }
             },
             "required": ["operation"]

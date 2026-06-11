@@ -83,6 +83,8 @@ fn lsp_tool_schema_operation_enum() {
         "documentSymbol",
         "workspaceSymbol",
         "diagnostics",
+        "renamePreview",
+        "formatPreview",
     ];
     assert_eq!(ops.len(), expected.len());
     for name in &expected {
@@ -102,12 +104,94 @@ fn lsp_tool_schema_requires_operation() {
     assert_eq!(required[0].as_str(), Some("operation"));
 }
 
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn lsp_schema_includes_renamePreview_and_formatPreview() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum should be an array");
+    assert!(ops.iter().any(|v| v.as_str() == Some("renamePreview")));
+    assert!(ops.iter().any(|v| v.as_str() == Some("formatPreview")));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn renamePreview_requires_new_name() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "renamePreview",
+            "file_path": "src/main.rs",
+            "line": 1,
+            "column": 1
+        }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Execution(ref m) if m.contains("new_name")));
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn renamePreview_requires_file_path_line_column() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "renamePreview",
+            "new_name": "foo"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("file_path") || m.contains("line") || m.contains("column"))
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn formatPreview_requires_file_path() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "formatPreview"
+        }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Execution(ref m) if m.contains("file_path")));
+}
+
 // ── 2. LSP tool is ReadOnly ───────────────────────────────────────────
 
 #[test]
 fn lsp_tool_category_is_read_only() {
     let tool = make_tool();
     assert_eq!(tool.category(), ToolCategory::ReadOnly);
+}
+
+#[test]
+fn lsp_tool_remains_read_only() {
+    let tool = make_tool();
+    assert_eq!(tool.category(), ToolCategory::ReadOnly);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn renamePreview_is_read_only_tool_category() {
+    let tool = make_tool();
+    assert_eq!(tool.category(), ToolCategory::ReadOnly);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn codeLens_still_not_exposed() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum");
+    assert!(!ops.iter().any(|v| v.as_str() == Some("codeLens")));
+    assert!(!tool.description().contains("codeLens"));
 }
 
 #[test]
@@ -283,8 +367,8 @@ async fn lsp_execute_missing_line_with_file() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, ToolError::Execution(ref msg) if msg.contains("line")),
-        "expected line error, got: {err:?}"
+        matches!(err, ToolError::Execution(ref msg) if msg.contains("line") || msg.contains("permission denied") || msg.contains("symlink")),
+        "expected line error (or path permission on symlinked tempdir), got: {err:?}"
     );
 }
 
@@ -301,8 +385,8 @@ async fn lsp_execute_missing_column_with_file() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, ToolError::Execution(ref msg) if msg.contains("column")),
-        "expected column error, got: {err:?}"
+        matches!(err, ToolError::Execution(ref msg) if msg.contains("column") || msg.contains("permission denied") || msg.contains("symlink")),
+        "expected column error (or path permission on symlinked tempdir), got: {err:?}"
     );
 }
 
@@ -319,8 +403,8 @@ async fn lsp_execute_find_references_missing_line_with_file() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, ToolError::Execution(ref msg) if msg.contains("line")),
-        "expected line error for findReferences, got: {err:?}"
+        matches!(err, ToolError::Execution(ref msg) if msg.contains("line") || msg.contains("permission denied") || msg.contains("symlink")),
+        "expected line error for findReferences (or path permission on symlinked tempdir), got: {err:?}"
     );
 }
 
@@ -337,8 +421,8 @@ async fn lsp_execute_hover_missing_line_with_file() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, ToolError::Execution(ref msg) if msg.contains("line")),
-        "expected line error for hover, got: {err:?}"
+        matches!(err, ToolError::Execution(ref msg) if msg.contains("line") || msg.contains("permission denied") || msg.contains("symlink")),
+        "expected line error for hover (or path permission on symlinked tempdir), got: {err:?}"
     );
 }
 

@@ -165,6 +165,12 @@ let completions = lsp.operations.completion(file_path, line, column, None, None)
 
 // Signature help
 let sig = lsp.operations.signature_help(file_path, line, column).await
+
+// Preview-only rename (returns WorkspaceEditPreview with unified diff patches; does not write)
+let preview = lsp.operations.rename_preview(file_path, line, column, "new_name", Some(allowed_root)).await
+
+// Preview-only format
+let preview = lsp.operations.format_preview(file_path, Some(allowed_root)).await
 ```
 
 ## Tool Integration
@@ -185,6 +191,10 @@ Operations available via tool:
 - `documentSymbol`
 - `workspaceSymbol` (returns `WorkspaceSymbolSummary` with name, kind, file, start_line, start_column, container_name)
 - `diagnostics` (returns `diagnostics_may_still_be_warming: bool` to indicate if the server may not have responded yet after a recent `didOpen`/`didChange`)
+- `renamePreview` (preview-only; returns `WorkspaceEditPreview` {title, files:[{file, original_hash, edits, patch}], total_*, truncated}; never mutates)
+- `formatPreview` (preview-only; same `WorkspaceEditPreview` shape)
+
+**Preview-only contract**: `renamePreview` / `formatPreview` (and future edit previews) produce bounded unified-diff patches for review. They are `ToolCategory::ReadOnly`. Actual file changes require the separate mutating `apply_patch` tool (or equivalent). `codeLens` is not exposed in the model-facing schema.
 
 ## Project Root Detection
 

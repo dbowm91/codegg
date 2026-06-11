@@ -8,6 +8,7 @@ pub mod client;
 pub mod config;
 pub mod diagnostics;
 pub mod download;
+pub mod edit;
 pub mod error;
 pub mod language;
 pub mod launch;

@@ -214,6 +214,18 @@ impl From<egglsp::LspError> for LspError {
             egglsp::LspError::UnsupportedLanguage(s) => LspError::UnsupportedLanguage(s),
             egglsp::LspError::Io(e) => LspError::Io(e),
             egglsp::LspError::Json(e) => LspError::Json(e),
+            egglsp::LspError::UnsupportedEdit(s) => {
+                LspError::RequestFailed(format!("unsupported edit: {}", s))
+            }
+            egglsp::LspError::PathOutsideRoot(s) => {
+                LspError::RequestFailed(format!("path outside root: {}", s))
+            }
+            egglsp::LspError::Utf16Position(s) => {
+                LspError::RequestFailed(format!("utf16 position: {}", s))
+            }
+            egglsp::LspError::OverlappingEdits => {
+                LspError::RequestFailed("overlapping edits".to_string())
+            }
         }
     }
 }

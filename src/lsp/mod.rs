@@ -26,6 +26,9 @@ pub mod diagnostics {
 pub mod download {
     pub use egglsp::download::*;
 }
+pub mod edit {
+    pub use egglsp::edit::*;
+}
 pub mod language {
     pub use egglsp::language::*;
 }

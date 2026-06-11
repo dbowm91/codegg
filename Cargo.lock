@@ -1833,6 +1833,8 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
+ "similar",
  "tar",
  "tempfile",
  "thiserror 2.0.18",

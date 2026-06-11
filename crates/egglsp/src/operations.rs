@@ -5,6 +5,7 @@ use tracing::trace;
 use url::Url;
 
 use crate::client::url_to_uri;
+use crate::edit::{preview_text_edits_for_file, preview_workspace_edit, WorkspaceEditPreview};
 use crate::error::LspError;
 use crate::service::LspService;
 
@@ -356,6 +357,154 @@ impl LspOperations {
 
         let lenses: Vec<CodeLens> = serde_json::from_value(resp)?;
         Ok(lenses)
+    }
+
+    pub async fn prepare_rename(
+        &self,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+    ) -> Result<Option<PrepareRenameResponse>, LspError> {
+        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+
+        let params = serde_json::to_value(TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: url_to_uri(&uri)?,
+            },
+            position: Position {
+                line,
+                character: column,
+            },
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "textDocument/prepareRename", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(None);
+        }
+
+        let pr: Option<PrepareRenameResponse> = serde_json::from_value(resp)?;
+        Ok(pr)
+    }
+
+    pub async fn rename_preview(
+        &self,
+        file_path: &Path,
+        line: u32,
+        column: u32,
+        new_name: &str,
+        allowed_root: Option<&Path>,
+    ) -> Result<WorkspaceEditPreview, LspError> {
+        let (key, _uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+
+        // Optionally attempt prepareRename; ignore unsupported errors and proceed.
+        let _ = self
+            .service
+            .send_request(
+                &key,
+                "textDocument/prepareRename",
+                serde_json::to_value(TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: url_to_uri(&uri)?,
+                    },
+                    position: Position {
+                        line,
+                        character: column,
+                    },
+                })?,
+            )
+            .await;
+
+        let params = serde_json::to_value(RenameParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: url_to_uri(&uri)?,
+                },
+                position: Position {
+                    line,
+                    character: column,
+                },
+            },
+            new_name: new_name.to_string(),
+            work_done_progress_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "textDocument/rename", params)
+            .await?;
+
+        if resp.is_null() {
+            return Err(LspError::RequestFailed(
+                "rename returned no result (no edits or unsupported at location)".to_string(),
+            ));
+        }
+
+        let ws_edit: WorkspaceEdit = serde_json::from_value(resp)?;
+        preview_workspace_edit("rename symbol", ws_edit, allowed_root)
+    }
+
+    pub async fn format_preview(
+        &self,
+        file_path: &Path,
+        _allowed_root: Option<&Path>,
+    ) -> Result<WorkspaceEditPreview, LspError> {
+        let (key, _uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+
+        let params = serde_json::to_value(DocumentFormattingParams {
+            text_document: TextDocumentIdentifier {
+                uri: url_to_uri(&uri)?,
+            },
+            options: FormattingOptions {
+                tab_size: 4,
+                insert_spaces: true,
+                properties: Default::default(),
+                trim_trailing_whitespace: Some(true),
+                insert_final_newline: Some(true),
+                trim_final_newlines: Some(true),
+            },
+            work_done_progress_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "textDocument/formatting", params)
+            .await?;
+
+        if resp.is_null() {
+            return Ok(WorkspaceEditPreview {
+                title: "format".to_string(),
+                files: vec![],
+                total_files: 0,
+                total_edits: 0,
+                truncated: false,
+            });
+        }
+
+        let edits: Vec<TextEdit> = serde_json::from_value(resp)?;
+        if edits.is_empty() {
+            return Ok(WorkspaceEditPreview {
+                title: "format".to_string(),
+                files: vec![],
+                total_files: 0,
+                total_edits: 0,
+                truncated: false,
+            });
+        }
+
+        preview_text_edits_for_file("format", file_path, edits)
     }
 }
 

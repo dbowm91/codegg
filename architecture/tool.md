@@ -159,7 +159,7 @@ the dispatch logic, config schema, and trust framing.
 | Tool | File | Description |
 |------|------|-------------|
 | **review** | `review.rs` | Analyze git diff and provide structured code review feedback using LLM. Uses emojis for categorization (bug, performance, style, suggestion). |
-| **lsp** | `lsp.rs` | Query LSP server for code intelligence (defined in `src/tool/lsp.rs`, registered in `with_defaults()` at lines 161-163). Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics. |
+| **lsp** | `lsp.rs` | Query LSP server for code intelligence and preview-only semantic edits (defined in `src/tool/lsp.rs`, registered via backend config). Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview. Previews return `WorkspaceEditPreview` (unified diff patches + hashes); actual mutation stays in the mutating `apply_patch` tool. `lsp` tool is always `ToolCategory::ReadOnly`. |
 
 ### Security Operations
 

@@ -31,6 +31,18 @@ pub enum LspError {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("unsupported edit: {0}")]
+    UnsupportedEdit(String),
+
+    #[error("path outside allowed root: {0}")]
+    PathOutsideRoot(String),
+
+    #[error("utf16 position error: {0}")]
+    Utf16Position(String),
+
+    #[error("overlapping edits")]
+    OverlappingEdits,
 }
 
 impl LspError {
