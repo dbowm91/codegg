@@ -14,6 +14,13 @@ const MAX_SYMBOLS: usize = 300;
 const MAX_WORKSPACE_SYMBOLS: usize = 200;
 const MAX_HOVER_CHARS: usize = 2000;
 
+const MAX_SEMANTIC_CONTEXT_RADIUS: u32 = 120;
+const DEFAULT_SEMANTIC_CONTEXT_RADIUS: u32 = 40;
+const MAX_CONTEXT_DIAGNOSTICS: usize = 100;
+const MAX_CONTEXT_SYMBOLS: usize = 120;
+const MAX_CONTEXT_REFERENCES: usize = 80;
+const MAX_CONTEXT_EXCERPT_BYTES: usize = 32_000;
+
 #[derive(Serialize)]
 struct LspToolOutput<T> {
     operation: String,
@@ -72,6 +79,54 @@ struct WorkspaceSymbolSummary {
     container_name: Option<String>,
 }
 
+#[derive(Serialize)]
+struct SemanticContextPacket {
+    file: String,
+    target: Option<SemanticContextTarget>,
+    excerpt: SourceExcerpt,
+    diagnostics: Vec<DiagnosticSummary>,
+    current_diagnostics_error: Option<String>,
+    overlay: Option<SemanticOverlaySummary>,
+    symbols: Vec<SymbolSummary>,
+    current_symbols_error: Option<String>,
+    definitions: Vec<LocationSummary>,
+    references: Vec<LocationSummary>,
+    limits: SemanticContextLimits,
+}
+
+#[derive(Serialize)]
+struct SemanticContextTarget {
+    line: u32,
+    column: u32,
+}
+
+#[derive(Serialize)]
+struct SourceExcerpt {
+    start_line: u32,
+    end_line: u32,
+    text: String,
+}
+
+#[derive(Serialize)]
+struct SemanticOverlaySummary {
+    used: bool,
+    diagnostics_may_still_be_warming: bool,
+    diagnostics: Vec<DiagnosticSummary>,
+    diagnostics_error: Option<String>,
+    symbols: Vec<crate::lsp::overlay::SemanticSymbolSummary>,
+    symbols_error: Option<String>,
+    restored_disk_view: bool,
+    restore_error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SemanticContextLimits {
+    diagnostics_truncated: bool,
+    symbols_truncated: bool,
+    references_truncated: bool,
+    excerpt_truncated: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct LspInput {
     operation: String,
@@ -91,6 +146,14 @@ struct LspInput {
     content: Option<String>,
     #[serde(default)]
     patch: Option<String>,
+    #[serde(default)]
+    radius: Option<u32>,
+    #[serde(default)]
+    include_references: Option<bool>,
+    #[serde(default)]
+    include_definitions: Option<bool>,
+    #[serde(default)]
+    include_overlay: Option<bool>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -249,6 +312,50 @@ impl LspTool {
         Ok((l, c))
     }
 
+    fn build_source_excerpt(
+        file: &Path,
+        target_line: Option<u32>,
+        radius: u32,
+    ) -> Result<(SourceExcerpt, bool), ToolError> {
+        let content = std::fs::read_to_string(file).map_err(|e| {
+            ToolError::Execution(format!(
+                "semanticContext: failed to read {}: {}",
+                file.display(),
+                e
+            ))
+        })?;
+        let total_lines = content.lines().count().max(1) as u32;
+        let (start_line, end_line) = if let Some(target) = target_line {
+            let start = target.saturating_sub(radius).max(1);
+            let end = (target.saturating_add(radius)).min(total_lines);
+            (start, end)
+        } else {
+            (1, radius.min(total_lines))
+        };
+        let start_idx = (start_line.saturating_sub(1)) as usize;
+        let end_idx = end_line as usize;
+        let text: String = content
+            .lines()
+            .skip(start_idx)
+            .take((end_idx - start_idx).max(0) as usize)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let truncated = text.len() > MAX_CONTEXT_EXCERPT_BYTES;
+        let display = if truncated {
+            String::from_utf8_lossy(&text.as_bytes()[..MAX_CONTEXT_EXCERPT_BYTES]).to_string()
+        } else {
+            text
+        };
+        Ok((
+            SourceExcerpt {
+                start_line,
+                end_line,
+                text: display,
+            },
+            truncated,
+        ))
+    }
+
     fn flatten_symbols(
         symbols: &[crate::lsp::lsp_types::DocumentSymbol],
         file: &str,
@@ -284,7 +391,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -297,9 +404,9 @@ impl Tool for LspTool {
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
                         "renamePreview", "formatPreview", "sourceActionPreview",
-                        "semanticCheckPreview"
+                        "semanticCheckPreview", "semanticContext"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet."
                 },
                 "file_path": {
                     "type": "string",
@@ -327,11 +434,27 @@ impl Tool for LspTool {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Proposed full file content for semanticCheckPreview. Mutually exclusive with patch."
+                    "description": "Proposed full file content for semanticCheckPreview and semanticContext overlay. Mutually exclusive with patch."
                 },
                 "patch": {
                     "type": "string",
-                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview. Mutually exclusive with content."
+                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview and semanticContext overlay. Mutually exclusive with content."
+                },
+                "radius": {
+                    "type": "number",
+                    "description": "Number of lines above and below target for semanticContext source excerpt (default 40, max 120)"
+                },
+                "include_references": {
+                    "type": "boolean",
+                    "description": "Include findReferences results in semanticContext (default true when line+column provided)"
+                },
+                "include_definitions": {
+                    "type": "boolean",
+                    "description": "Include goToDefinition results in semanticContext (default true when line+column provided)"
+                },
+                "include_overlay": {
+                    "type": "boolean",
+                    "description": "Include overlay diagnostics in semanticContext (default true when content or patch provided)"
                 }
             },
             "required": ["operation"]
@@ -721,6 +844,230 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "semanticContext" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+
+                // Reject both content and patch upfront (same as semanticCheckPreview)
+                if parsed.content.is_some() && parsed.patch.is_some() {
+                    return Err(ToolError::Execution(
+                        "semanticCheckPreview accepts either content or patch, not both"
+                            .to_string(),
+                    ));
+                }
+
+                let file_str = file.to_string_lossy().to_string();
+                let radius = parsed
+                    .radius
+                    .unwrap_or(DEFAULT_SEMANTIC_CONTEXT_RADIUS)
+                    .min(MAX_SEMANTIC_CONTEXT_RADIUS);
+                let has_position = parsed.line.is_some() && parsed.column.is_some();
+                let want_defs = parsed.include_definitions.unwrap_or(has_position);
+                let want_refs = parsed.include_references.unwrap_or(has_position);
+                let has_proposed = parsed.content.is_some() || parsed.patch.is_some();
+                let want_overlay = parsed.include_overlay.unwrap_or(has_proposed);
+
+                let target = if has_position {
+                    Some(SemanticContextTarget {
+                        line: parsed.line.unwrap(),
+                        column: parsed.column.unwrap(),
+                    })
+                } else if parsed.line.is_some() || parsed.column.is_some() {
+                    return Err(ToolError::Execution(
+                        "semanticContext requires both line and column when either is supplied"
+                            .to_string(),
+                    ));
+                } else {
+                    None
+                };
+
+                // Phase 3: source excerpt
+                let (excerpt, excerpt_truncated) = if has_position {
+                    Self::build_source_excerpt(&file, parsed.line, radius)?
+                } else {
+                    Self::build_source_excerpt(&file, None, radius)?
+                };
+
+                // Phase 4: current diagnostics
+                let collector =
+                    crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
+                let (current_diags, current_diag_err) =
+                    match collector.get_diagnostics_for_file(&file).await {
+                        Ok(diag_output) => {
+                            let diags: Vec<DiagnosticSummary> = diag_output
+                                .diagnostics
+                                .iter()
+                                .take(MAX_CONTEXT_DIAGNOSTICS)
+                                .map(|d| DiagnosticSummary {
+                                    file: d.file.clone(),
+                                    line: d.line + 1,
+                                    column: d.column + 1,
+                                    severity: severity_to_string(d.severity),
+                                    source: d.source.clone(),
+                                    code: d.code.clone(),
+                                    message: d.message.clone(),
+                                })
+                                .collect();
+                            (diags, None)
+                        }
+                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}"))),
+                    };
+
+                // Phase 4: current document symbols
+                let (current_syms, current_sym_err) = match ops.document_symbols(&file).await {
+                    Ok(syms) => {
+                        let mut remaining = MAX_CONTEXT_SYMBOLS;
+                        let mut summaries = Vec::new();
+                        Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
+                        (summaries, None)
+                    }
+                    Err(e) => (Vec::new(), Some(format!("documentSymbol: {e}"))),
+                };
+
+                // Phase 5: definitions + references
+                let mut definitions = Vec::new();
+                let mut references = Vec::new();
+                let mut refs_truncated = false;
+                if has_position {
+                    let pos = to_lsp_position(parsed.line.unwrap(), parsed.column.unwrap());
+                    if want_defs {
+                        if let Ok(defs) = ops.go_to_definition(&file, pos.line, pos.character).await
+                        {
+                            definitions = defs
+                                .iter()
+                                .map(|loc| {
+                                    let range = loc.target_range;
+                                    LocationSummary {
+                                        file: uri_to_path(&loc.target_uri),
+                                        start_line: range.start.line + 1,
+                                        start_column: range.start.character + 1,
+                                        end_line: range.end.line + 1,
+                                        end_column: range.end.character + 1,
+                                    }
+                                })
+                                .collect();
+                        }
+                    }
+                    if want_refs {
+                        if let Ok(refs) = ops.find_references(&file, pos.line, pos.character).await
+                        {
+                            refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
+                            references = refs
+                                .into_iter()
+                                .take(MAX_CONTEXT_REFERENCES)
+                                .map(|loc| {
+                                    let range = loc.range;
+                                    LocationSummary {
+                                        file: uri_to_path(&loc.uri),
+                                        start_line: range.start.line + 1,
+                                        start_column: range.start.character + 1,
+                                        end_line: range.end.line + 1,
+                                        end_column: range.end.character + 1,
+                                    }
+                                })
+                                .collect();
+                        }
+                    }
+                }
+
+                // Phase 6: overlay
+                let overlay = if want_overlay {
+                    match self
+                        .resolve_semantic_check_content(
+                            &file,
+                            parsed.content.as_ref(),
+                            parsed.patch.as_ref(),
+                        )
+                        .await
+                    {
+                        Ok(content) => {
+                            match ops
+                                .semantic_check_preview(&file, content, Some(&self.allowed_root))
+                                .await
+                            {
+                                Ok(preview) => {
+                                    let diag_summaries: Vec<DiagnosticSummary> = preview
+                                        .diagnostics
+                                        .iter()
+                                        .map(|d| DiagnosticSummary {
+                                            file: d.file.clone(),
+                                            line: d.line + 1,
+                                            column: d.column + 1,
+                                            severity: severity_to_string(d.severity),
+                                            source: d.source.clone(),
+                                            code: d.code.clone(),
+                                            message: d.message.clone(),
+                                        })
+                                        .collect();
+                                    Some(SemanticOverlaySummary {
+                                        used: true,
+                                        diagnostics_may_still_be_warming: preview
+                                            .diagnostics_may_still_be_warming,
+                                        diagnostics: diag_summaries,
+                                        diagnostics_error: preview.diagnostics_error,
+                                        symbols: preview.symbols,
+                                        symbols_error: preview.symbols_error,
+                                        restored_disk_view: preview.restored_disk_view,
+                                        restore_error: preview.restore_error,
+                                    })
+                                }
+                                Err(e) => Some(SemanticOverlaySummary {
+                                    used: true,
+                                    diagnostics_may_still_be_warming: false,
+                                    diagnostics: Vec::new(),
+                                    diagnostics_error: Some(format!("overlay: {e}")),
+                                    symbols: Vec::new(),
+                                    symbols_error: None,
+                                    restored_disk_view: false,
+                                    restore_error: None,
+                                }),
+                            }
+                        }
+                        Err(_) if !has_proposed => None,
+                        Err(e) => Some(SemanticOverlaySummary {
+                            used: true,
+                            diagnostics_may_still_be_warming: false,
+                            diagnostics: Vec::new(),
+                            diagnostics_error: Some(format!("overlay content: {e}")),
+                            symbols: Vec::new(),
+                            symbols_error: None,
+                            restored_disk_view: false,
+                            restore_error: None,
+                        }),
+                    }
+                } else {
+                    None
+                };
+
+                let result_count =
+                    current_diags.len() + current_syms.len() + definitions.len() + references.len();
+                let packet = SemanticContextPacket {
+                    file: file_str,
+                    target,
+                    excerpt,
+                    diagnostics: current_diags,
+                    current_diagnostics_error: current_diag_err,
+                    overlay,
+                    symbols: current_syms,
+                    current_symbols_error: current_sym_err,
+                    definitions,
+                    references,
+                    limits: SemanticContextLimits {
+                        diagnostics_truncated: false,
+                        symbols_truncated: false,
+                        references_truncated: refs_truncated,
+                        excerpt_truncated,
+                    },
+                };
+                let output = LspToolOutput {
+                    operation: "semanticContext".to_string(),
+                    file_path: file_path_str,
+                    result_count,
+                    truncated: false,
+                    results: packet,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
 
@@ -792,9 +1139,9 @@ mod tests {
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
                         "renamePreview", "formatPreview", "sourceActionPreview",
-                        "semanticCheckPreview"
+                        "semanticCheckPreview", "semanticContext"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet."
                 },
                 "file_path": {
                     "type": "string",
@@ -822,11 +1169,27 @@ mod tests {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Proposed full file content for semanticCheckPreview. Mutually exclusive with patch."
+                    "description": "Proposed full file content for semanticCheckPreview and semanticContext overlay. Mutually exclusive with patch."
                 },
                 "patch": {
                     "type": "string",
-                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview. Mutually exclusive with content."
+                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview and semanticContext overlay. Mutually exclusive with content."
+                },
+                "radius": {
+                    "type": "number",
+                    "description": "Number of lines above and below target for semanticContext source excerpt (default 40, max 120)"
+                },
+                "include_references": {
+                    "type": "boolean",
+                    "description": "Include findReferences results in semanticContext (default true when line+column provided)"
+                },
+                "include_definitions": {
+                    "type": "boolean",
+                    "description": "Include goToDefinition results in semanticContext (default true when line+column provided)"
+                },
+                "include_overlay": {
+                    "type": "boolean",
+                    "description": "Include overlay diagnostics in semanticContext (default true when content or patch provided)"
                 }
             },
             "required": ["operation"]
@@ -977,5 +1340,141 @@ diff --git a/src/lib.rs b/src/lib.rs
             .execute_structured(json!({"operation": "no_such_op"}), None)
             .await;
         assert!(res.is_err());
+    }
+
+    // ── semanticContext tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn semantic_context_requires_file_path() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let params = tool.parameters();
+        let ops = params["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(ops.iter().any(|v| v.as_str() == Some("semanticContext")));
+    }
+
+    #[tokio::test]
+    async fn semantic_context_requires_line_and_column_together() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .execute(json!({
+                "operation": "semanticContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("both line and column")),
+            "expected line+column error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_context_rejects_content_and_patch() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .execute(json!({
+                "operation": "semanticContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "content": "fn main() {}",
+                "patch": "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() {}\n"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("either content or patch, not both")),
+            "expected content+patch error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_context_patch_does_not_write_disk() {
+        let (_dir, path) = temp_rs_file("fn main() {\n    println!(\"old\");\n}\n");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )))
+        .with_allowed_root(_dir.path().to_path_buf());
+        let _ = tool.execute(json!({
+            "operation": "semanticContext",
+            "file_path": path.to_str().unwrap(),
+            "line": 1,
+            "column": 1,
+            "patch": "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"old\");\n+    println!(\"new\");\n }\n"
+        })).await;
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after, original,
+            "semanticContext must not write patched content to disk"
+        );
+    }
+
+    #[test]
+    fn semantic_context_excerpt_top_of_file() {
+        let content = "line1\nline2\nline3\nline4\nline5\n";
+        let (_dir, path) = temp_rs_file(content);
+        let (excerpt, truncated) = LspTool::build_source_excerpt(&path, Some(1), 40).unwrap();
+        assert_eq!(excerpt.start_line, 1);
+        assert!(!truncated);
+        assert!(excerpt.text.contains("line1"));
+    }
+
+    #[test]
+    fn semantic_context_excerpt_middle() {
+        let content: String = (1..=20)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_dir, path) = temp_rs_file(&content);
+        let (excerpt, truncated) = LspTool::build_source_excerpt(&path, Some(10), 2).unwrap();
+        assert_eq!(excerpt.start_line, 8);
+        assert_eq!(excerpt.end_line, 12);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn semantic_context_excerpt_end_of_file() {
+        let content: String = (1..=10)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_dir, path) = temp_rs_file(&content);
+        let (excerpt, truncated) = LspTool::build_source_excerpt(&path, Some(10), 2).unwrap();
+        assert_eq!(excerpt.start_line, 8);
+        assert_eq!(excerpt.end_line, 10);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn semantic_context_excerpt_caps_radius() {
+        let content: String = (1..=100)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_dir, path) = temp_rs_file(&content);
+        let (excerpt, _) = LspTool::build_source_excerpt(&path, Some(50), 200).unwrap();
+        assert!(excerpt.text.contains("line50"));
+    }
+
+    #[test]
+    fn semantic_context_excerpt_truncates_large_text() {
+        let line = "x".repeat(1000);
+        let content: String = (1..=50)
+            .map(|_| line.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (_dir, path) = temp_rs_file(&content);
+        let (_excerpt, truncated) = LspTool::build_source_excerpt(&path, Some(25), 40).unwrap();
+        assert!(truncated);
     }
 }

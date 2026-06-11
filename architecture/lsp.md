@@ -11,6 +11,7 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 - Code operations (goto definition, find references, hover, document symbols, workspace symbols, diagnostics)
 - Preview-only semantic edits (renamePreview, formatPreview, sourceActionPreview) — returns unified-diff patches, never writes files
 - Temporary overlays (semanticCheckPreview) — accepts full content or a single-file unified diff patch, applies it in memory via OverlaySession, collects diagnostics/symbols, restores disk view, never writes files
+- Compact semantic context packets (semanticContext) — combines source excerpt, diagnostics, symbols, optional definition/reference/overlay information into a bounded pre-edit/pre-review context packet
 - Language detection from file extensions
 - Project root detection
 - Compact agent-facing output DTOs (not raw LSP JSON)
@@ -288,6 +289,7 @@ Only these operations are model-facing:
 | `formatPreview` | `textDocument/formatting` | `WorkspaceEditPreview` (unified diff patches; preview-only) |
 | `sourceActionPreview` | `textDocument/codeAction` (filtered to `source.organizeImports`; full-document range computed from synced file contents) | `WorkspaceEditPreview` (unified diff patches; preview-only) |
 | `semanticCheckPreview` | `textDocument/didChange` (OverlaySession + restore) + `textDocument/documentSymbol` | `SemanticCheckPreview` (diagnostics + symbols + error fields; accepts `content` or single-file `patch`, preview-only, no disk writes) |
+| `semanticContext` | (combines multiple LSP requests) | `SemanticContextPacket` (source excerpt + diagnostics + symbols + optional definitions/references/overlay; read-only, never writes files) |
 
 `codeLens` is intentionally not exposed in the model-facing schema (remains available in `egglsp::operations` only).
 
@@ -316,13 +318,34 @@ Operation-level root enforcement: `semantic_check_preview` accepts `allowed_root
 
 Restore runs even if diagnostics or symbol collection fails. Restore failures are logged and surfaced via `restore_error: Option<String>` in the response (and `restored_disk_view: false`). `SemanticCheckPreview` also includes `diagnostics_error: Option<String>` and `symbols_error: Option<String>` — each is non-None when the corresponding LSP request fails, replacing previously swallowed empty-vector fallbacks. `diagnostics_may_still_be_warming` indicates the LSP server may not have fully processed the overlay yet. Diagnostics may be warming or stale (publishDiagnostics is async). The operation is single-file in the first pass; multi-file overlays are unsupported in this pass.
 
+### Semantic context packets
+
+`semanticContext` is the preferred agent-facing pre-edit/pre-review context operation. It combines a bounded source excerpt with current diagnostics, document symbols, optional definition/reference information, and optional overlay diagnostics for proposed content or a single-file patch. It is read-only and never applies changes.
+
+Input parameters:
+- `file_path` (required): file to analyze
+- `line`, `column` (optional, both-or-neither): 1-indexed target position for definitions/references
+- `radius` (optional, default 40, max 120): lines above/below target for source excerpt
+- `include_references` (optional, default true when line+column): include findReferences results
+- `include_definitions` (optional, default true when line+column): include goToDefinition results
+- `include_overlay` (optional, default true when content/patch provided): include overlay diagnostics
+- `content` / `patch` (optional, mutually exclusive): proposed content for overlay diagnostics
+
+All output sections are bounded:
+- Diagnostics: capped at 100
+- Symbols: capped at 120
+- References: capped at 80
+- Source excerpt: capped at 32KB text
+
+The operation gathers existing read-only semantic facts, optionally runs an overlay semantic check, and returns a stable JSON DTO. Failures in individual sections (diagnostics, symbols, definitions, references) do not prevent the rest of the packet from being returned.
+
 ### Position Convention
 
 Model-facing line and column are **1-indexed**. The wrapper converts to LSP 0-indexed via `to_lsp_position()`. Missing required fields return clear `ToolError::Execution` messages.
 
 ### Compact DTOs
 
-All output is wrapped in `LspToolOutput<T>` with `operation`, `file_path`, `result_count`, `truncated`, and `results` fields. Individual results use `LocationSummary`, `DiagnosticSummary`, `SymbolSummary`, or `HoverSummary` with 1-indexed positions and file paths (not URIs).
+All output is wrapped in `LspToolOutput<T>` with `operation`, `file_path`, `result_count`, `truncated`, and `results` fields. Individual results use `LocationSummary`, `DiagnosticSummary`, `SymbolSummary`, or `HoverSummary` with 1-indexed positions and file paths (not URIs). Additionally, `SemanticContextPacket` wraps a bounded source excerpt (`SourceExcerpt` with `start_line`, `end_line`, `text`), diagnostics, symbols, definitions, references, and a `SemanticContextLimits` struct tracking truncation.
 
 ### Diagnostics
 

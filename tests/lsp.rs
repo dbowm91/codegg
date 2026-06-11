@@ -87,6 +87,7 @@ fn lsp_tool_schema_operation_enum() {
         "formatPreview",
         "sourceActionPreview",
         "semanticCheckPreview",
+        "semanticContext",
     ];
     assert_eq!(ops.len(), expected.len());
     for name in &expected {
@@ -219,6 +220,7 @@ fn lsp_tool_name_and_description() {
     assert_eq!(tool.name(), "lsp");
     assert!(tool.description().contains("goToDefinition"));
     assert!(tool.description().contains("diagnostics"));
+    assert!(tool.description().contains("semanticContext"));
     assert!(!tool.description().contains("codeLens"));
 }
 
@@ -1240,4 +1242,149 @@ fn semanticCheckPreview_schema_includes_error_fields() {
         .and_then(|v| v.as_str())
         .unwrap()
         .contains("Single-file unified diff"));
+}
+
+// ── 14. semanticContext tests ───────────────────────────────────────
+
+#[test]
+#[allow(non_snake_case)]
+fn lsp_schema_includes_semanticContext() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum should be an array");
+    assert!(
+        ops.iter().any(|v| v.as_str() == Some("semanticContext")),
+        "semanticContext missing from operation enum"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn lsp_schema_includes_radius_and_include_flags() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let radius = params["properties"]["radius"]
+        .as_object()
+        .expect("radius property should be an object");
+    assert!(radius.get("description").is_some());
+    let include_refs = params["properties"]["include_references"]
+        .as_object()
+        .expect("include_references property should be an object");
+    assert!(include_refs.get("description").is_some());
+    let include_defs = params["properties"]["include_definitions"]
+        .as_object()
+        .expect("include_definitions property should be an object");
+    assert!(include_defs.get("description").is_some());
+    let include_overlay = params["properties"]["include_overlay"]
+        .as_object()
+        .expect("include_overlay property should be an object");
+    assert!(include_overlay.get("description").is_some());
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semanticContext_is_read_only() {
+    let tool = make_tool();
+    assert_eq!(tool.category(), ToolCategory::ReadOnly);
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticContext_requires_file_path() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "semanticContext"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("file_path")),
+        "expected file_path error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticContext_requires_line_and_column_together() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "semanticContext",
+            "file_path": "src/main.rs",
+            "line": 1
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("both line and column")),
+        "expected line+column error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticContext_rejects_content_and_patch() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "semanticContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1,
+            "column": 1,
+            "content": "fn main() {}",
+            "patch": "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() {}\n"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("either content or patch, not both")),
+        "expected content+patch error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticContext_patch_does_not_write_disk() {
+    let (_dir, path) = temp_rs_file("fn main() {\n    println!(\"old\");\n}\n");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let tool = make_tool_with_root(_dir.path());
+    let _ = tool
+        .execute(serde_json::json!({
+            "operation": "semanticContext",
+            "file_path": path.to_str().unwrap(),
+            "line": 1,
+            "column": 1,
+            "patch": "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"old\");\n+    println!(\"new\");\n }\n"
+        }))
+        .await;
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after, original,
+        "semanticContext must not write patched content to disk"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticContext_with_line_column_returns_excerpt() {
+    let tool = make_tool();
+    let result = tool
+        .execute(serde_json::json!({
+            "operation": "semanticContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1,
+            "column": 1,
+            "radius": 5
+        }))
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(v["operation"], "semanticContext");
+    assert!(v["results"]["excerpt"]["text"].is_string());
+    assert!(v["results"]["target"]["line"] == 1);
+    assert!(v["results"]["target"]["column"] == 1);
+    assert!(v["results"]["limits"].is_object());
 }
