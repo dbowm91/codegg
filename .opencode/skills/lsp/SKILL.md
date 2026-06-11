@@ -311,6 +311,8 @@ The `security-review` agent uses `securityContext` in a structured workflow (`sr
 
 The workflow is invoked via the `/security-review` slash command or by spawning the `security-review` subagent.
 
+The vertical slice entry point is `plan_security_review_from_diff(diff, repo_root)`. It parses unified diff hunks, applies path exclusions (`vendor/`, `third_party/`, `target/`, `dist/`, `build/`, `node_modules/`, `*.min.js`; notably does NOT exclude `Cargo.toml`, `Cargo.lock`, `build.rs`), selects `securityContext` presets, builds request payloads, converts risk markers to review prompts, and assembles reports with an explicit "not confirmed findings" note. In this pass, `call_depth` is always 0 and findings are always empty — risk markers become review prompts only.
+
 ### Hierarchy Output Shapes
 
 Hierarchy operations (`callHierarchy`, `typeHierarchy`) follow a consistent shape. Both require `file_path`, `line`, and `column` (1-indexed). An optional `direction` parameter controls which callsites/type sites to retrieve.

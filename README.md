@@ -12,6 +12,7 @@ A lightweight, pure-Rust implementation of an AI coding agent.
 - **Server Mode** - Headless HTTP server for remote access
 - **Session Management** - Persistent conversations with SQLite storage
 - **Context System** - Artifact storage, tool-output projection, cache-aware context packing (observe/diagnostic), and hardened gated active context policy (first use: phase-scoped tool-palette reduction (base-derived, non-cumulative, backoff/starvation, Warn dry-run, threshold gate; still disabled by default); volatile-tail compaction for late-context token reduction of old tool results with recovery handles; see architecture/cache-aware-context.md and `[context_policy]` config)
+- **Security** - SSRF protection, path validation, Landlock sandboxing, and security review workflow (diff-based preset selection, risk-marker-to-prompt synthesis, read-only evidence gathering via `securityContext`)
 
 ## Installation
 
@@ -838,6 +839,10 @@ This tool provides an agent system with access to powerful tools including shell
 - **Server Mode** - Enable authentication with `CODEGG_SERVER_PASSWORD`.
 - **Permissions** - Configure permission rulesets to limit tool access.
 - **File Access** - Use path restrictions to limit filesystem access.
+
+### Security Review Workflow
+
+The agent includes a built-in security review workflow (`src/security/workflow.rs`) for defensive code review. It parses unified diffs, applies path exclusions, selects `securityContext` presets per file, builds context-gathering requests, and converts risk markers into review prompts. The workflow is read-only and never mutates files. Risk markers are review prompts, not confirmed findings.
 
 ### Best Practices
 

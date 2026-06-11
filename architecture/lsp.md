@@ -490,7 +490,7 @@ This is not whole-program analysis. It is a shallow LSP-backed neighborhood arou
 
 Preset defaults are retrieval defaults, not vulnerability policies. They do not change the read-only contract or add external scanners. Explicit user inputs (`security_categories`, `radius`, `max_risk_markers`, `include_call_hierarchy`) always override preset defaults.
 
-### Security agent workflow
+### Security review workflow
 
 The security agent uses `securityContext` as evidence-gathering input for defensive code review. It follows this loop:
 
@@ -502,6 +502,8 @@ The security agent uses `securityContext` as evidence-gathering input for defens
 6. **Output** — Findings include severity, confidence, file, line, evidence, reasoning, recommendation, and suggested tests. Review prompts are returned separately.
 
 Key types live in `src/security/workflow.rs`. The workflow is read-only and never mutates files.
+
+The security review vertical slice (`src/security/workflow.rs`) provides a standalone entry point `plan_security_review_from_diff(diff, repo_root)` that orchestrates the full pipeline from unified diff to report. It parses changed hunks via `parse_changed_hunks`, applies path exclusions (`is_security_review_excluded_path` — excludes `vendor/`, `third_party/`, `target/`, `dist/`, `build/`, `node_modules/`, `*.min.js`; notably does NOT exclude `Cargo.toml`, `Cargo.lock`, `build.rs`), selects presets via `select_security_preset`, builds `securityContext` request payloads via `build_security_context_request`, converts risk markers to review prompts via `prompts_from_security_context`, and assembles reports with an explicit "not confirmed findings" note via `assemble_security_review_report`. In this vertical slice, `call_depth` is always 0 and findings are always empty — risk markers become review prompts only.
 
 ### Position Convention
 
