@@ -368,7 +368,27 @@ The operation gathers existing read-only semantic facts, optionally runs an over
 
 ### Security context packets
 
-`securityContext` is a security-review context packet. It combines bounded source excerpts, deterministic risk markers, prioritized diagnostics/symbols, optional definition/reference/call hierarchy context, and optional overlay diagnostics for proposed content or a single-file patch. It is not a vulnerability scanner and does not mutate files.
+`securityContext` is a read-only context-gathering operation for security review. It is not a vulnerability scanner and does not produce vulnerability verdicts. It never writes proposed content to disk; patch/content input is applied only in memory through the existing semantic overlay path.
+
+It combines:
+- bounded source excerpt (configurable radius, default 80, max 200);
+- deterministic risk markers via pattern matching (11 categories);
+- security-relevant diagnostics and symbols (filtered by keyword matching and proximity to risk markers);
+- definitions and references when a target position is supplied;
+- shallow call hierarchy when a target position is supplied;
+- optional overlay diagnostics for proposed full content or a single-file patch.
+
+**Supported risk marker categories:** `auth`, `crypto`, `filesystem`, `network`, `process`, `unsafe`, `serialization`, `sql`, `secrets`, `path_traversal`, `concurrency`
+
+**Limits:**
+
+| Section | Default | Max |
+|---------|---------|-----|
+| risk markers | 80 | 200 |
+| excerpt radius | 80 lines | 200 lines |
+| security diagnostics | 80 | 80 |
+| security symbols | 80 | 80 |
+| references | 80 | 80 |
 
 **Input parameters:**
 
@@ -394,10 +414,14 @@ The operation gathers existing read-only semantic facts, optionally runs an over
 - `definitions` / `references` — when line+column provided
 - `call_hierarchy` — when include_call_hierarchy=true and line+column provided
 - `overlay` — when content or patch provided
-- `notes` — human-readable context notes
-- `limits` — truncation flags per section
+- `notes` — human-readable context notes including unavailable section errors
+- `limits` — truncation flags per section (precise: flags reflect filtered counts, not raw counts)
 
 **Read-only contract:** `securityContext` never writes files. Patch-based overlay is applied in memory only and restored after diagnostics collection.
+
+**Error visibility:** Nonfatal LSP subrequest failures (diagnostics, document symbols, definitions, references) are surfaced in the `notes` array rather than failing the whole packet. This allows partial results when individual LSP operations fail.
+
+**Implementation:** Risk marker scanning, pattern tables, and security-relevant filtering helpers live in `src/tool/lsp_security.rs`. The scanner collects all markers then caps, ensuring precise truncation flags. Diagnostics and symbols are filtered for security relevance before capping, so relevant items after many irrelevant ones are not dropped.
 
 ### Position Convention
 

@@ -266,7 +266,7 @@ These items were verified during review sessions:
 | LspTool `execute_structured` success | `success=false` when `restore_error` is present in the JSON response; checks `/results/restore_error` pointer | `src/tool/lsp.rs` |
 | `semanticContext` source-action hints | `include_source_actions` bool (default false) triggers `collect_source_action_hints` which iterates a hardcoded allowlist (`OrganizeImports`); returns `Vec<SemanticSourceActionHint>` with `action`, `available`, `preview`, `error`; pure helper `source_action_hint_from_result` converts `Result<WorkspaceEditPreview, LspError>` to hint; available hints add to `result_count`; source-action failures are per-hint and non-fatal | `src/tool/lsp.rs` |
 | HierarchyDirection enum | Incoming, Outgoing, Both | `crates/egglsp/src/operations.rs` — invalid values return an error |
-| `securityContext` operation | Security-review context packet with deterministic risk markers (11 categories), security-relevant diagnostics/symbols, optional call hierarchy, optional overlay; read-only, never writes files | `src/tool/lsp.rs` |
+| `securityContext` operation | Security-review context packet with deterministic risk markers (11 categories), security-relevant diagnostics/symbols, optional call hierarchy, optional overlay; read-only, never writes files; risk marker scanning and filtering helpers in `src/tool/lsp_security.rs`; precise truncation flags; nonfatal LSP failures surfaced in notes | `src/tool/lsp.rs`, `src/tool/lsp_security.rs` |
 | Hierarchy `from_ranges` truncation | Capped at `MAX_HIERARCHY_RANGES = 32` per call; included in summary `truncated` flag alongside item and edge truncation | `src/tool/lsp.rs` |
 
 ### Security Notes

@@ -1,3 +1,4 @@
+use super::lsp_security::SecurityRiskMarker;
 use crate::error::ToolError;
 use crate::tool::{
     StructuredToolResult, Tool, ToolBackendKind, ToolCategory, ToolExecutionContext,
@@ -30,8 +31,6 @@ const DEFAULT_MAX_RISK_MARKERS: usize = 80;
 const MAX_RISK_MARKERS: usize = 200;
 const MAX_SECURITY_SYMBOLS: usize = 80;
 const MAX_SECURITY_DIAGNOSTICS: usize = 80;
-const SECURITY_NEARBY_LINE_RADIUS: u32 = 20;
-const MAX_RISK_MATCHED_TEXT: usize = 120;
 
 #[derive(Serialize)]
 struct LspToolOutput<T> {
@@ -43,14 +42,14 @@ struct LspToolOutput<T> {
 }
 
 #[derive(Serialize, Clone)]
-struct DiagnosticSummary {
-    file: String,
-    line: u32,
-    column: u32,
-    severity: String,
-    source: Option<String>,
-    code: Option<String>,
-    message: String,
+pub(crate) struct DiagnosticSummary {
+    pub(crate) file: String,
+    pub(crate) line: u32,
+    pub(crate) column: u32,
+    pub(crate) severity: String,
+    pub(crate) source: Option<String>,
+    pub(crate) code: Option<String>,
+    pub(crate) message: String,
 }
 
 #[derive(Serialize)]
@@ -63,14 +62,14 @@ struct LocationSummary {
 }
 
 #[derive(Serialize, Clone)]
-struct SymbolSummary {
-    name: String,
-    kind: String,
-    file: String,
-    start_line: u32,
-    start_column: u32,
-    end_line: u32,
-    end_column: u32,
+pub(crate) struct SymbolSummary {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+    pub(crate) file: String,
+    pub(crate) start_line: u32,
+    pub(crate) start_column: u32,
+    pub(crate) end_line: u32,
+    pub(crate) end_column: u32,
 }
 
 #[derive(Serialize)]
@@ -222,16 +221,6 @@ struct SecurityContextPacket {
 }
 
 #[derive(Serialize)]
-struct SecurityRiskMarker {
-    category: String,
-    label: String,
-    line: u32,
-    column: u32,
-    matched_text: String,
-    rationale: String,
-}
-
-#[derive(Serialize)]
 struct SecurityContextLimits {
     risk_markers_truncated: bool,
     diagnostics_truncated: bool,
@@ -306,14 +295,6 @@ fn uri_to_path(uri: &crate::lsp::lsp_types::Uri) -> String {
         .and_then(|u| u.to_file_path().ok())
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or(raw)
-}
-
-/// Pure helper: cap a vector to a maximum length, returning the capped
-/// vector and whether truncation occurred.
-#[allow(dead_code)]
-fn take_capped<T>(items: Vec<T>, max: usize) -> (Vec<T>, bool) {
-    let truncated = items.len() > max;
-    (items.into_iter().take(max).collect(), truncated)
 }
 
 fn symbol_kind_to_string(kind: crate::lsp::lsp_types::SymbolKind) -> String {
@@ -604,277 +585,6 @@ impl LspTool {
             selection_range: Self::convert_lsp_range(item.selection_range),
             detail: item.detail.clone(),
         }
-    }
-
-    fn scan_risk_markers(
-        excerpt: &SourceExcerpt,
-        categories: &Option<Vec<String>>,
-        max_markers: usize,
-    ) -> Vec<SecurityRiskMarker> {
-        static PATTERNS: &[super::lsp_security::RiskPattern] = &[
-            super::lsp_security::RiskPattern {
-                category: "auth",
-                label: "authentication/authorization",
-                needles: &[
-                    "password",
-                    "Password",
-                    "PASSWORD",
-                    "login",
-                    "Login",
-                    "authenticate",
-                    "authorize",
-                    "jwt",
-                    "JWT",
-                    "bearer",
-                    "Bearer",
-                    "session",
-                    "cookie",
-                    "Cookie",
-                    "auth",
-                    "Auth",
-                ],
-                rationale: "authentication and authorization code controls access to resources",
-            },
-            super::lsp_security::RiskPattern {
-                category: "crypto",
-                label: "cryptographic operation",
-                needles: &[
-                    "encrypt",
-                    "decrypt",
-                    "sign",
-                    "verify",
-                    "hash",
-                    "sha256",
-                    "sha512",
-                    "md5",
-                    "hmac",
-                    "aes",
-                    "rsa",
-                    "rand::random",
-                    "OsRng",
-                    "CryptoRng",
-                ],
-                rationale:
-                    "cryptographic operations must use correct algorithms and key management",
-            },
-            super::lsp_security::RiskPattern {
-                category: "filesystem",
-                label: "filesystem access",
-                needles: &[
-                    "std::fs::",
-                    "tokio::fs::",
-                    "File::open",
-                    "File::create",
-                    "OpenOptions",
-                    "read_to_string",
-                    "write(",
-                    "create_dir",
-                ],
-                rationale: "filesystem access may need path validation and permission review",
-            },
-            super::lsp_security::RiskPattern {
-                category: "network",
-                label: "network boundary",
-                needles: &[
-                    "TcpListener",
-                    "TcpStream",
-                    "UdpSocket",
-                    "axum::",
-                    "hyper::",
-                    "reqwest::",
-                    "hyper::Client",
-                    "bind(",
-                    "connect(",
-                ],
-                rationale: "network-facing code often processes untrusted input",
-            },
-            super::lsp_security::RiskPattern {
-                category: "process",
-                label: "process execution",
-                needles: &[
-                    "Command::new",
-                    "std::process::Command",
-                    "tokio::process::Command",
-                    "exec(",
-                    "spawn(",
-                ],
-                rationale:
-                    "process execution can cross a trust boundary and requires input validation",
-            },
-            super::lsp_security::RiskPattern {
-                category: "unsafe",
-                label: "unsafe Rust",
-                needles: &["unsafe {", "unsafe fn", "unsafe impl"],
-                rationale:
-                    "unsafe blocks bypass compiler memory-safety guarantees and deserve review",
-            },
-            super::lsp_security::RiskPattern {
-                category: "serialization",
-                label: "serialization/deserialization",
-                needles: &[
-                    "serde_json::from",
-                    "toml::from",
-                    "bincode::",
-                    "deserialize",
-                    "from_str(",
-                    "from_slice(",
-                ],
-                rationale: "deserialization can expand trust boundaries and parser attack surface",
-            },
-            super::lsp_security::RiskPattern {
-                category: "sql",
-                label: "database query",
-                needles: &[
-                    "sqlx::query",
-                    "rusqlite",
-                    "SELECT ",
-                    "INSERT ",
-                    "UPDATE ",
-                    "DELETE ",
-                    "execute(",
-                    "prepare(",
-                ],
-                rationale:
-                    "database access should be reviewed for parameterization and authorization",
-            },
-            super::lsp_security::RiskPattern {
-                category: "secrets",
-                label: "secret material",
-                needles: &[
-                    "API_KEY",
-                    "SECRET",
-                    "TOKEN",
-                    "PASSWORD",
-                    "Authorization",
-                    "credential",
-                    "private_key",
-                ],
-                rationale: "secret-bearing code should avoid logging and accidental exposure",
-            },
-            super::lsp_security::RiskPattern {
-                category: "path_traversal",
-                label: "path traversal risk",
-                needles: &["../", "..\\", "path::join", "push(", "components()"],
-                rationale: "path construction should be validated against traversal attacks",
-            },
-            super::lsp_security::RiskPattern {
-                category: "concurrency",
-                label: "concurrency primitive",
-                needles: &[
-                    "unsafe {",
-                    "UnsafeCell",
-                    "transmute",
-                    "raw pointer",
-                    "AtomicPtr",
-                ],
-                rationale: "concurrency primitives require careful synchronization review",
-            },
-        ];
-
-        let lines: Vec<&str> = excerpt.text.lines().collect();
-        let mut markers = Vec::new();
-        let category_filter: Option<std::collections::HashSet<&str>> = categories
-            .as_ref()
-            .map(|cats| cats.iter().map(|s| s.as_str()).collect());
-
-        for (line_offset, line_text) in lines.iter().enumerate() {
-            let line_number = excerpt.start_line + line_offset as u32;
-            for pattern in PATTERNS {
-                if let Some(ref filter) = category_filter {
-                    if !filter.contains(pattern.category) {
-                        continue;
-                    }
-                }
-                for &needle in pattern.needles {
-                    if let Some(col) = line_text.find(needle) {
-                        let col_1indexed = col as u32 + 1;
-                        let matched_text: String = line_text
-                            .chars()
-                            .skip(col)
-                            .take(MAX_RISK_MATCHED_TEXT)
-                            .collect();
-                        markers.push(SecurityRiskMarker {
-                            category: pattern.category.to_string(),
-                            label: pattern.label.to_string(),
-                            line: line_number,
-                            column: col_1indexed,
-                            matched_text,
-                            rationale: pattern.rationale.to_string(),
-                        });
-                        break;
-                    }
-                }
-            }
-        }
-
-        markers.sort_by(|a, b| {
-            a.line
-                .cmp(&b.line)
-                .then_with(|| a.category.cmp(&b.category))
-        });
-        markers.truncate(max_markers);
-        markers
-    }
-
-    fn is_security_relevant_symbol(
-        sym: &SymbolSummary,
-        risk_markers: &[SecurityRiskMarker],
-        target_line: Option<u32>,
-    ) -> bool {
-        if target_line.is_some_and(|t| sym.start_line <= t && sym.end_line >= t) {
-            return true;
-        }
-        let name_lower = sym.name.to_lowercase();
-        let security_terms = [
-            "auth",
-            "login",
-            "token",
-            "secret",
-            "password",
-            "session",
-            "cookie",
-            "jwt",
-            "permission",
-            "role",
-            "admin",
-            "encrypt",
-            "decrypt",
-            "sign",
-            "verify",
-            "parse",
-            "deserialize",
-            "upload",
-            "download",
-            "path",
-            "file",
-            "exec",
-            "command",
-            "shell",
-            "unsafe",
-            "crypt",
-            "hash",
-            "verify",
-        ];
-        if security_terms.iter().any(|term| name_lower.contains(term)) {
-            return true;
-        }
-        risk_markers.iter().any(|m| {
-            m.line >= sym.start_line.saturating_sub(SECURITY_NEARBY_LINE_RADIUS)
-                && m.line <= sym.end_line.saturating_add(SECURITY_NEARBY_LINE_RADIUS)
-        })
-    }
-
-    fn is_security_relevant_diagnostic(
-        diag: &DiagnosticSummary,
-        risk_markers: &[SecurityRiskMarker],
-    ) -> bool {
-        if diag.severity == "error" || diag.severity == "warning" {
-            return true;
-        }
-        risk_markers.iter().any(|m| {
-            m.line >= diag.line.saturating_sub(SECURITY_NEARBY_LINE_RADIUS)
-                && m.line <= diag.line.saturating_add(SECURITY_NEARBY_LINE_RADIUS)
-        })
     }
 
     async fn build_call_hierarchy_summary(
@@ -2024,23 +1734,22 @@ impl Tool for LspTool {
                     Self::build_source_excerpt(&file, None, radius)?
                 };
 
-                let risk_markers = Self::scan_risk_markers(
+                let risk_scan = super::lsp_security::scan_risk_markers(
                     &excerpt,
                     &parsed.security_categories,
                     max_risk_markers,
                 );
+                let risk_markers = risk_scan.markers;
+                let risk_markers_truncated = risk_scan.truncated;
 
                 let collector =
                     crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
-                let (all_diags, _current_diag_err, diagnostics_truncated) =
+                let (raw_diags, current_diag_err) =
                     match collector.get_diagnostics_for_file(&file).await {
                         Ok(diag_output) => {
-                            let raw_diag_len = diag_output.diagnostics.len();
-                            let diagnostics_truncated = raw_diag_len > MAX_SECURITY_DIAGNOSTICS;
                             let diags: Vec<DiagnosticSummary> = diag_output
                                 .diagnostics
                                 .iter()
-                                .take(MAX_SECURITY_DIAGNOSTICS)
                                 .map(|d| DiagnosticSummary {
                                     file: d.file.clone(),
                                     line: d.line + 1,
@@ -2051,71 +1760,91 @@ impl Tool for LspTool {
                                     message: d.message.clone(),
                                 })
                                 .collect();
-                            (diags, None, diagnostics_truncated)
+                            (diags, None)
                         }
-                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}")), false),
+                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}"))),
                     };
 
-                let security_diags: Vec<DiagnosticSummary> = all_diags
-                    .iter()
-                    .filter(|d| Self::is_security_relevant_diagnostic(d, &risk_markers))
-                    .cloned()
+                let security_diags: Vec<DiagnosticSummary> = raw_diags
+                    .into_iter()
+                    .filter(|d| {
+                        super::lsp_security::is_security_relevant_diagnostic(d, &risk_markers)
+                    })
                     .collect();
+                let (security_diags, diagnostics_truncated) =
+                    super::lsp_security::cap_vec(security_diags, MAX_SECURITY_DIAGNOSTICS);
 
-                let (all_syms, _current_sym_err, _symbols_truncated) =
-                    match ops.document_symbols(&file).await {
-                        Ok(syms) => {
-                            let mut remaining = MAX_CONTEXT_SYMBOLS;
-                            let mut summaries = Vec::new();
-                            Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
-                            (summaries, None, remaining == 0)
-                        }
-                        Err(e) => (Vec::new(), Some(format!("documentSymbol: {e}")), false),
-                    };
+                let (all_syms, current_sym_err) = match ops.document_symbols(&file).await {
+                    Ok(syms) => {
+                        let mut remaining = MAX_CONTEXT_SYMBOLS;
+                        let mut summaries = Vec::new();
+                        Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
+                        (summaries, None)
+                    }
+                    Err(e) => (Vec::new(), Some(format!("documentSymbol: {e}"))),
+                };
 
-                let security_syms: Vec<SymbolSummary> = all_syms
-                    .iter()
-                    .filter(|s| Self::is_security_relevant_symbol(s, &risk_markers, parsed.line))
-                    .take(MAX_SECURITY_SYMBOLS)
-                    .cloned()
+                let relevant_syms: Vec<SymbolSummary> = all_syms
+                    .into_iter()
+                    .filter(|s| {
+                        super::lsp_security::is_security_relevant_symbol(
+                            s,
+                            &risk_markers,
+                            parsed.line,
+                        )
+                    })
                     .collect();
+                let (security_syms, symbols_truncated) =
+                    super::lsp_security::cap_vec(relevant_syms, MAX_SECURITY_SYMBOLS);
 
                 let mut definitions = Vec::new();
                 let mut references = Vec::new();
                 let mut refs_truncated = false;
+                let mut defs_error: Option<String> = None;
+                let mut refs_error: Option<String> = None;
                 if has_position {
                     let pos = to_lsp_position(parsed.line.unwrap(), parsed.column.unwrap());
-                    if let Ok(defs) = ops.go_to_definition(&file, pos.line, pos.character).await {
-                        definitions = defs
-                            .iter()
-                            .map(|loc| {
-                                let range = loc.target_range;
-                                LocationSummary {
-                                    file: uri_to_path(&loc.target_uri),
-                                    start_line: range.start.line + 1,
-                                    start_column: range.start.character + 1,
-                                    end_line: range.end.line + 1,
-                                    end_column: range.end.character + 1,
-                                }
-                            })
-                            .collect();
+                    match ops.go_to_definition(&file, pos.line, pos.character).await {
+                        Ok(defs) => {
+                            definitions = defs
+                                .iter()
+                                .map(|loc| {
+                                    let range = loc.target_range;
+                                    LocationSummary {
+                                        file: uri_to_path(&loc.target_uri),
+                                        start_line: range.start.line + 1,
+                                        start_column: range.start.character + 1,
+                                        end_line: range.end.line + 1,
+                                        end_column: range.end.character + 1,
+                                    }
+                                })
+                                .collect();
+                        }
+                        Err(e) => {
+                            defs_error = Some(format!("definitions: {e}"));
+                        }
                     }
-                    if let Ok(refs) = ops.find_references(&file, pos.line, pos.character).await {
-                        refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
-                        references = refs
-                            .into_iter()
-                            .take(MAX_CONTEXT_REFERENCES)
-                            .map(|loc| {
-                                let range = loc.range;
-                                LocationSummary {
-                                    file: uri_to_path(&loc.uri),
-                                    start_line: range.start.line + 1,
-                                    start_column: range.start.character + 1,
-                                    end_line: range.end.line + 1,
-                                    end_column: range.end.character + 1,
-                                }
-                            })
-                            .collect();
+                    match ops.find_references(&file, pos.line, pos.character).await {
+                        Ok(refs) => {
+                            refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
+                            references = refs
+                                .into_iter()
+                                .take(MAX_CONTEXT_REFERENCES)
+                                .map(|loc| {
+                                    let range = loc.range;
+                                    LocationSummary {
+                                        file: uri_to_path(&loc.uri),
+                                        start_line: range.start.line + 1,
+                                        start_column: range.start.character + 1,
+                                        end_line: range.end.line + 1,
+                                        end_column: range.end.character + 1,
+                                    }
+                                })
+                                .collect();
+                        }
+                        Err(e) => {
+                            refs_error = Some(format!("references: {e}"));
+                        }
                     }
                 }
 
@@ -2223,6 +1952,18 @@ impl Tool for LspTool {
                             .to_string(),
                     );
                 }
+                if let Some(err) = current_diag_err {
+                    notes.push(format!("diagnostics unavailable: {err}"));
+                }
+                if let Some(err) = current_sym_err {
+                    notes.push(format!("document symbols unavailable: {err}"));
+                }
+                if let Some(err) = defs_error {
+                    notes.push(format!("definitions unavailable: {err}"));
+                }
+                if let Some(err) = refs_error {
+                    notes.push(format!("references unavailable: {err}"));
+                }
 
                 let security_diag_count = security_diags.len();
                 let security_sym_count = security_syms.len();
@@ -2250,9 +1991,9 @@ impl Tool for LspTool {
                     overlay,
                     notes,
                     limits: SecurityContextLimits {
-                        risk_markers_truncated: risk_markers_len >= max_risk_markers,
+                        risk_markers_truncated,
                         diagnostics_truncated,
-                        symbols_truncated: security_sym_count >= MAX_SECURITY_SYMBOLS,
+                        symbols_truncated,
                         references_truncated: refs_truncated,
                         excerpt_truncated,
                     },
@@ -2730,33 +2471,33 @@ diff --git a/src/lib.rs b/src/lib.rs
     }
 
     #[test]
-    fn take_capped_exact_cap_not_truncated() {
+    fn cap_vec_exact_cap_not_truncated() {
         let items: Vec<i32> = (0..32).collect();
-        let (capped, truncated) = take_capped(items, 32);
+        let (capped, truncated) = super::super::lsp_security::cap_vec(items, 32);
         assert_eq!(capped.len(), 32);
         assert!(!truncated);
     }
 
     #[test]
-    fn take_capped_over_cap_truncated() {
+    fn cap_vec_over_cap_truncated() {
         let items: Vec<i32> = (0..33).collect();
-        let (capped, truncated) = take_capped(items, 32);
+        let (capped, truncated) = super::super::lsp_security::cap_vec(items, 32);
         assert_eq!(capped.len(), 32);
         assert!(truncated);
     }
 
     #[test]
-    fn take_capped_under_cap_not_truncated() {
+    fn cap_vec_under_cap_not_truncated() {
         let items: Vec<i32> = (0..10).collect();
-        let (capped, truncated) = take_capped(items, 32);
+        let (capped, truncated) = super::super::lsp_security::cap_vec(items, 32);
         assert_eq!(capped.len(), 10);
         assert!(!truncated);
     }
 
     #[test]
-    fn take_capped_empty_not_truncated() {
+    fn cap_vec_empty_not_truncated() {
         let items: Vec<i32> = Vec::new();
-        let (capped, truncated) = take_capped(items, 32);
+        let (capped, truncated) = super::super::lsp_security::cap_vec(items, 32);
         assert!(capped.is_empty());
         assert!(!truncated);
     }
@@ -2771,9 +2512,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             text: "use std::process::Command;\nfn main() {\n    let c = Command::new(\"ls\");\n}"
                 .to_string(),
         };
-        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
-        assert!(!markers.is_empty());
-        assert!(markers.iter().any(|m| m.category == "process"));
+        let result = super::super::lsp_security::scan_risk_markers(&excerpt, &None, 80);
+        assert!(!result.markers.is_empty());
+        assert!(result.markers.iter().any(|m| m.category == "process"));
     }
 
     #[test]
@@ -2783,8 +2524,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             end_line: 2,
             text: "fn main() {\n    let x = unsafe { 42 };\n}".to_string(),
         };
-        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
-        assert!(markers.iter().any(|m| m.category == "unsafe"));
+        let result = super::super::lsp_security::scan_risk_markers(&excerpt, &None, 80);
+        assert!(result.markers.iter().any(|m| m.category == "unsafe"));
     }
 
     #[test]
@@ -2794,8 +2535,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             end_line: 2,
             text: "use std::fs::File;\nlet f = File::open(\"foo\");".to_string(),
         };
-        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
-        assert!(markers.iter().any(|m| m.category == "filesystem"));
+        let result = super::super::lsp_security::scan_risk_markers(&excerpt, &None, 80);
+        assert!(result.markers.iter().any(|m| m.category == "filesystem"));
     }
 
     #[test]
@@ -2805,8 +2546,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             end_line: 2,
             text: "use axum::Router;\nlet app = Router::new();".to_string(),
         };
-        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
-        assert!(markers.iter().any(|m| m.category == "network"));
+        let result = super::super::lsp_security::scan_risk_markers(&excerpt, &None, 80);
+        assert!(result.markers.iter().any(|m| m.category == "network"));
     }
 
     #[test]
@@ -2816,12 +2557,32 @@ diff --git a/src/lib.rs b/src/lib.rs
             end_line: 3,
             text: "use std::process::Command;\nuse std::fs::File;\nfn main() {}".to_string(),
         };
-        let markers = LspTool::scan_risk_markers(&excerpt, &Some(vec!["process".to_string()]), 80);
-        assert!(markers.iter().all(|m| m.category == "process"));
+        let result = super::super::lsp_security::scan_risk_markers(
+            &excerpt,
+            &Some(vec!["process".to_string()]),
+            80,
+        );
+        assert!(result.markers.iter().all(|m| m.category == "process"));
     }
 
     #[test]
-    fn security_risk_scanner_caps_results() {
+    fn security_risk_scanner_exact_cap_not_truncated() {
+        let mut lines = Vec::new();
+        for i in 0..5 {
+            lines.push(format!("Command::new(\"{i}\");"));
+        }
+        let excerpt = SourceExcerpt {
+            start_line: 1,
+            end_line: 5,
+            text: lines.join("\n"),
+        };
+        let result = super::super::lsp_security::scan_risk_markers(&excerpt, &None, 5);
+        assert_eq!(result.markers.len(), 5);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn security_risk_scanner_over_cap_truncated() {
         let mut lines = Vec::new();
         for i in 0..200 {
             lines.push(format!("Command::new(\"{i}\");"));
@@ -2831,8 +2592,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             end_line: 200,
             text: lines.join("\n"),
         };
-        let markers = LspTool::scan_risk_markers(&excerpt, &None, 5);
-        assert!(markers.len() <= 5);
+        let result = super::super::lsp_security::scan_risk_markers(&excerpt, &None, 3);
+        assert!(result.markers.len() <= 3);
+        assert!(result.truncated);
     }
 
     #[test]
@@ -2842,8 +2604,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             end_line: 12,
             text: "fn main() {}\nunsafe { }\nfn foo() {}".to_string(),
         };
-        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
-        let unsafe_marker = markers.iter().find(|m| m.category == "unsafe");
+        let result = super::super::lsp_security::scan_risk_markers(&excerpt, &None, 80);
+        let unsafe_marker = result.markers.iter().find(|m| m.category == "unsafe");
         assert!(unsafe_marker.is_some());
         assert_eq!(unsafe_marker.unwrap().line, 11);
     }
@@ -2855,7 +2617,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             end_line: 2,
             text: "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}".to_string(),
         };
-        let markers = LspTool::scan_risk_markers(&excerpt, &None, 80);
-        assert!(markers.is_empty());
+        let result = super::super::lsp_security::scan_risk_markers(&excerpt, &None, 80);
+        assert!(result.markers.is_empty());
     }
 }

@@ -258,21 +258,27 @@ All sections bounded: diagnostics (100), symbols (120), references (80), overlay
 
 ### securityContext operation
 
-`securityContext` is a security-review context packet. It provides:
+`securityContext` is a read-only context-gathering operation for security review. It is not a vulnerability scanner and does not produce vulnerability verdicts. It provides:
 
-- Bounded source excerpt with configurable radius
+- Bounded source excerpt with configurable radius (default 80, max 200)
 - Deterministic risk markers via pattern matching (11 categories: auth, crypto, filesystem, network, process, unsafe, serialization, sql, secrets, path_traversal, concurrency)
-- Security-relevant symbols and diagnostics (filtered by keyword matching and proximity to risk markers)
+- Security-relevant symbols and diagnostics (filtered by keyword matching and proximity to risk markers; filtered before capping so relevant items are not dropped)
 - Optional definitions, references, call hierarchy, and overlay diagnostics
-- Risk marker category filtering and configurable caps
+- Risk marker category filtering and configurable caps (default 80, max 200)
+- Nonfatal error notes when LSP subrequests fail (diagnostics, symbols, definitions, references)
 
 **Key properties:**
-- Read-only: never writes files
+- Read-only: never writes files; patch/content input is applied only in memory through the overlay path
 - Deterministic: same input produces same output
 - Bounded: all sections have configurable caps
 - Context, not verdict: provides risk markers with rationale, not vulnerability assessments
+- Precise truncation: flags reflect filtered counts, not raw counts
+
+**Limits:** risk markers (default 80, max 200), excerpt radius (default 80, max 200 lines), security diagnostics (80), security symbols (80), references (80).
 
 **Input parameters:** `file_path` (required), `line`/`column` (optional, both required together), `radius` (default 80, max 200), `security_categories` (optional filter), `max_risk_markers` (default 80, max 200), `content`/`patch` (optional overlay, mutually exclusive), `include_call_hierarchy` (default true when position provided).
+
+**Implementation:** Risk marker scanning, pattern tables, and security-relevant filtering helpers live in `src/tool/lsp_security.rs`.
 
 ### Hierarchy Output Shapes
 

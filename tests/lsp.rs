@@ -2149,3 +2149,80 @@ async fn security_context_filters_by_category() {
         );
     }
 }
+
+#[tokio::test]
+async fn security_context_limits_risk_markers_precise() {
+    let tool = make_tool();
+    let result = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1,
+            "column": 1,
+            "max_risk_markers": 2
+        }))
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let markers = parsed["results"]["risk_markers"].as_array().unwrap();
+    let truncated = parsed["results"]["limits"]["risk_markers_truncated"]
+        .as_bool()
+        .unwrap();
+    if markers.len() <= 2 {
+        assert!(
+            !truncated,
+            "should not be truncated when markers <= max_risk_markers"
+        );
+    } else {
+        assert!(
+            truncated,
+            "should be truncated when markers > max_risk_markers"
+        );
+    }
+}
+
+#[tokio::test]
+async fn security_context_limits_symbols_precise() {
+    let tool = make_tool();
+    let result = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": "src/tool/mod.rs",
+            "line": 1,
+            "column": 1
+        }))
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let syms = parsed["results"]["security_relevant_symbols"]
+        .as_array()
+        .unwrap();
+    let truncated = parsed["results"]["limits"]["symbols_truncated"]
+        .as_bool()
+        .unwrap();
+    if syms.len() <= 80 {
+        assert!(!truncated, "should not be truncated when symbols <= 80");
+    } else {
+        assert!(truncated, "should be truncated when symbols > 80");
+    }
+}
+
+#[tokio::test]
+async fn security_context_notes_include_no_position_message() {
+    let tool = make_tool();
+    let result = tool
+        .execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": "src/tool/mod.rs"
+        }))
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let notes = parsed["results"]["notes"].as_array().unwrap();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.as_str().unwrap().contains("no target position")),
+        "notes should mention missing target position"
+    );
+}
