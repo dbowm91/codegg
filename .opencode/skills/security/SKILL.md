@@ -481,13 +481,25 @@ The security workflow separates review prompts from findings. Risk markers remai
 
 - `evidence_from_target()` converts `SecurityReviewTarget` to structured evidence
 - `evidence_from_review_prompt()` converts `SecurityReviewPrompt` to structured evidence (RiskMarker for securityContext source, ChangedHunk for diff source)
-- `run_content_preflight_checks()` runs local, deterministic content scans for hardcoded secrets, unsafe keywords, process execution APIs, SQL interpolation, and weak crypto
+- `run_content_preflight_checks()` runs local, deterministic content scans for hardcoded secrets, unsafe keywords, process execution APIs, SQL interpolation, and weak crypto, populating `SecurityPreflightEvidence` with file paths and line numbers
+- `run_content_preflight_checks_for_targets()` provides locality-aware scanning that only checks a line window (radius=10) around positioned targets
 
 #### Finding synthesis
 
-`synthesize_evidence_based_findings()` groups evidence by file and nearby line, applies the eligibility gate, and emits findings only for eligible groups. Ineligible prompts are preserved.
+`synthesize_evidence_based_findings()` groups evidence by file and nearby line bucket, applies the eligibility gate, and emits findings only for eligible groups. Preflight evidence is converted via structured `SecurityPreflightEvidence` with file-scoped paths — different-file evidence never supports a finding. `evidence_matches_group()` enforces same-file + nearby-line (+/-5) grouping for positioned groups. Legacy string-only preflight evidence is not finding-eligible. Ineligible prompts are preserved.
+
+`synthesize_review_prompts_only()` is the renamed prompt-only synthesis (marker-only → prompts, findings always empty). `synthesize_findings()` is a deprecated wrapper.
 
 `classify_finding()` deterministically maps category + evidence to severity/confidence. Truncation reduces confidence by one level. No Critical findings by default.
+
+#### Evidence scoping
+
+Evidence-based findings only combine evidence from the same file and nearby changed-hunk context:
+- `SecurityPreflightEvidence` carries `file_path` and optional `line` — structured preflight evidence is always file-scoped
+- `evidence_matches_group()` checks that evidence matches the group's file path and is within the same line bucket or +/-5 lines for positioned groups
+- Filename-only hints remain prompts unless supported by additional same-file evidence
+- Content preflight is local and deterministic; it is heuristic and not proof of exploitability
+- Legacy string-only preflight evidence cannot globally support findings
 
 #### Conservative semantics
 
@@ -496,6 +508,9 @@ The security workflow separates review prompts from findings. Risk markers remai
 - All preflight checks are local and deterministic (no network, no external scanner)
 - Recommendations are defensive (no exploit instructions)
 - Tests are concrete regression tests, not offensive payload recipes
+- Evidence-based findings only combine evidence from the same file and nearby changed-hunk context
+- Filename-only hints remain prompts unless supported by additional same-file evidence
+- Content preflight is local and deterministic; it is heuristic and not proof of exploitability
 
 ### Invoking the workflow
 

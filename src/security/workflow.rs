@@ -117,12 +117,22 @@ pub struct ChangedHunk {
     pub new_count: u32,
 }
 
+/// Structured preflight evidence with file path and optional line number.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecurityPreflightEvidence {
+    pub file_path: PathBuf,
+    pub line: Option<u32>,
+    pub summary: String,
+    pub detail: Option<String>,
+}
+
 /// Deterministic preflight check result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityPreflightResult {
     pub check_name: String,
     pub status: PreflightStatus,
     pub evidence: Vec<String>,
+    pub structured_evidence: Vec<SecurityPreflightEvidence>,
     pub notes: Vec<String>,
 }
 
@@ -969,18 +979,40 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
         .map(|t| format!("{}: file name matches secret hint", t.file_path.display()))
         .collect();
 
+    let mut structured_secret_fn = Vec::new();
     if secret_evidence.is_empty() {
         results.push(SecurityPreflightResult {
             check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: vec!["No secret filename hints detected in target file names".to_string()],
         });
     } else {
+        for t in targets {
+            let name = t
+                .file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if SECRET_PATTERNS
+                .iter()
+                .any(|pat| name.contains(&pat.to_lowercase()))
+            {
+                structured_secret_fn.push(SecurityPreflightEvidence {
+                    file_path: t.file_path.clone(),
+                    line: None,
+                    summary: format!("{}: file name matches secret hint", t.file_path.display()),
+                    detail: Some("filename/path hint only".to_string()),
+                });
+            }
+        }
         results.push(SecurityPreflightResult {
             check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: secret_evidence,
+            structured_evidence: structured_secret_fn,
             notes: vec!["Secret-like filename hints found in target file names".to_string()],
         });
     }
@@ -1002,18 +1034,40 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
         .map(|t| format!("{}: file name matches unsafe hint", t.file_path.display()))
         .collect();
 
+    let mut structured_unsafe_fn = Vec::new();
     if unsafe_evidence.is_empty() {
         results.push(SecurityPreflightResult {
             check_name: "unsafe_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: vec!["No unsafe filename hints detected in target file names".to_string()],
         });
     } else {
+        for t in targets {
+            let name = t
+                .file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if UNSAFE_PATTERNS
+                .iter()
+                .any(|pat| name.contains(&pat.to_lowercase()))
+            {
+                structured_unsafe_fn.push(SecurityPreflightEvidence {
+                    file_path: t.file_path.clone(),
+                    line: None,
+                    summary: format!("{}: file name matches unsafe hint", t.file_path.display()),
+                    detail: Some("filename/path hint only".to_string()),
+                });
+            }
+        }
         results.push(SecurityPreflightResult {
             check_name: "unsafe_filename_hint_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: unsafe_evidence,
+            structured_evidence: structured_unsafe_fn,
             notes: vec!["Unsafe-like filename hints found in target file names".to_string()],
         });
     }
@@ -1032,7 +1086,7 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
 /// [`SecurityReviewPrompt`]s — never findings.  The returned
 /// `Vec<SecurityReviewFinding>` is always empty by design.  Preflight
 /// failures are also surfaced as prompts.
-pub fn synthesize_findings(
+pub fn synthesize_review_prompts_only(
     _targets: &[SecurityReviewTarget],
     risk_markers: &[SecurityRiskMarkerFromWorkflow],
     preflight: &[SecurityPreflightResult],
@@ -1077,9 +1131,44 @@ pub fn synthesize_findings(
     (Vec::new(), prompts)
 }
 
+/// Deprecated: use [`synthesize_review_prompts_only`] or
+/// [`synthesize_evidence_based_findings`].
+pub fn synthesize_findings(
+    targets: &[SecurityReviewTarget],
+    risk_markers: &[SecurityRiskMarkerFromWorkflow],
+    preflight: &[SecurityPreflightResult],
+) -> (Vec<SecurityReviewFinding>, Vec<SecurityReviewPrompt>) {
+    synthesize_review_prompts_only(targets, risk_markers, preflight)
+}
+
 // ---------------------------------------------------------------------------
 // Evidence-based finding synthesis
 // ---------------------------------------------------------------------------
+
+/// Check whether a piece of structured evidence matches a group's file and line bucket.
+fn evidence_matches_group(
+    evidence: &StructuredSecurityEvidence,
+    file_path: &Path,
+    line_bucket: Option<u32>,
+) -> bool {
+    let Some(ef) = &evidence.file_path else {
+        return false;
+    };
+    if ef != file_path {
+        return false;
+    }
+    match (line_bucket, evidence.line) {
+        (Some(bucket), Some(line)) => {
+            let bucket_start = bucket;
+            let bucket_end = bucket + 4;
+            (line >= bucket_start && line <= bucket_end)
+                || (line >= 5 && line <= bucket_end + 5)
+                || (line + 5 >= bucket_start && line <= bucket_end)
+        }
+        (Some(_bucket), None) => true,
+        (None, _) => true,
+    }
+}
 
 /// Explicit gate: marker-only evidence is never finding-eligible.
 pub fn marker_only_is_finding_eligible(_evidence: &[StructuredSecurityEvidence]) -> bool {
@@ -1196,20 +1285,331 @@ pub fn run_content_preflight_checks(
     let mut results = Vec::new();
 
     // Hardcoded secret-like assignments
+    let mut structured_secret = Vec::new();
     let secret_evidence: Vec<String> = targets
         .iter()
         .filter_map(|t| {
             let content = load_content(&t.file_path)?;
-            let has_secret = content.lines().any(|line| {
+            let mut found_lines = Vec::new();
+            for (idx, line) in content.lines().enumerate() {
                 let lower = line.to_lowercase();
-                (lower.contains("api_key")
+                if (lower.contains("api_key")
                     || lower.contains("secret")
                     || lower.contains("password")
                     || lower.contains("token")
                     || lower.contains("private_key"))
                     && (lower.contains("=") && !lower.contains("//"))
-            });
-            if has_secret {
+                {
+                    found_lines.push(idx);
+                    structured_secret.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "hardcoded secret-like assignment in content".to_string(),
+                        detail: Some("local heuristic content scan".to_string()),
+                    });
+                }
+            }
+            if found_lines.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{}: hardcoded secret-like assignment in content",
+                    t.file_path.display()
+                ))
+            }
+        })
+        .collect();
+
+    if secret_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "secret_content_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            structured_evidence: Vec::new(),
+            notes: vec!["No hardcoded secret-like assignments found in content".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "secret_content_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: secret_evidence,
+            structured_evidence: structured_secret,
+            notes: vec!["Hardcoded secret-like assignments found in content".to_string()],
+        });
+    }
+
+    // Unsafe keyword usage
+    let mut structured_unsafe = Vec::new();
+    let unsafe_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let mut found_lines = Vec::new();
+            for (idx, line) in content.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.contains("unsafe {")
+                    || trimmed.starts_with("unsafe fn")
+                    || trimmed.starts_with("unsafe impl")
+                    || trimmed.contains("transmute")
+                    || trimmed.contains("raw pointer")
+                {
+                    found_lines.push(idx);
+                    structured_unsafe.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "unsafe keyword usage in content".to_string(),
+                        detail: Some("local heuristic content scan".to_string()),
+                    });
+                }
+            }
+            if found_lines.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{}: unsafe keyword usage in content",
+                    t.file_path.display()
+                ))
+            }
+        })
+        .collect();
+
+    if unsafe_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "unsafe_content_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            structured_evidence: Vec::new(),
+            notes: vec!["No unsafe keyword usage found in content".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "unsafe_content_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: unsafe_evidence,
+            structured_evidence: structured_unsafe,
+            notes: vec!["Unsafe keyword usage found in content".to_string()],
+        });
+    }
+
+    // Process execution APIs
+    let mut structured_process = Vec::new();
+    let process_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let mut found_lines = Vec::new();
+            for (idx, line) in content.lines().enumerate() {
+                if line.contains("Command::new")
+                    || line.contains("std::process::Command")
+                    || line.contains("process::Command")
+                    || line.contains("exec(")
+                {
+                    found_lines.push(idx);
+                    structured_process.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "process execution API in content".to_string(),
+                        detail: Some("local heuristic content scan".to_string()),
+                    });
+                }
+            }
+            if found_lines.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{}: process execution API in content",
+                    t.file_path.display()
+                ))
+            }
+        })
+        .collect();
+
+    if process_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "process_exec_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            structured_evidence: Vec::new(),
+            notes: vec!["No process execution APIs found in content".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "process_exec_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: process_evidence,
+            structured_evidence: structured_process,
+            notes: vec!["Process execution APIs found in content".to_string()],
+        });
+    }
+
+    // SQL string construction with format/interpolation
+    let mut structured_sql = Vec::new();
+    let sql_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let mut found_lines = Vec::new();
+            for (idx, line) in content.lines().enumerate() {
+                let lower = line.to_lowercase();
+                if (lower.contains("format!") || lower.contains("format!("))
+                    && (lower.contains("select")
+                        || lower.contains("insert")
+                        || lower.contains("update")
+                        || lower.contains("delete"))
+                {
+                    found_lines.push(idx);
+                    structured_sql.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "SQL string construction with format interpolation".to_string(),
+                        detail: Some("local heuristic content scan".to_string()),
+                    });
+                }
+            }
+            if found_lines.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{}: SQL string construction with format interpolation",
+                    t.file_path.display()
+                ))
+            }
+        })
+        .collect();
+
+    if sql_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "sql_injection_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            structured_evidence: Vec::new(),
+            notes: vec!["No SQL string construction with interpolation found".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "sql_injection_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: sql_evidence,
+            structured_evidence: structured_sql,
+            notes: vec!["SQL string construction with format interpolation found".to_string()],
+        });
+    }
+
+    // Weak crypto names
+    let mut structured_crypto = Vec::new();
+    let crypto_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let mut found_lines = Vec::new();
+            for (idx, line) in content.lines().enumerate() {
+                let lower = line.to_lowercase();
+                if lower.contains("md5")
+                    || lower.contains("sha1")
+                    || lower.contains("des")
+                    || lower.contains("ecb")
+                {
+                    found_lines.push(idx);
+                    structured_crypto.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "weak crypto primitive in content".to_string(),
+                        detail: Some("local heuristic content scan".to_string()),
+                    });
+                }
+            }
+            if found_lines.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{}: weak crypto primitive in content",
+                    t.file_path.display()
+                ))
+            }
+        })
+        .collect();
+
+    if crypto_evidence.is_empty() {
+        results.push(SecurityPreflightResult {
+            check_name: "weak_crypto_scan".to_string(),
+            status: PreflightStatus::Pass,
+            evidence: Vec::new(),
+            structured_evidence: Vec::new(),
+            notes: vec!["No weak crypto primitives found in content".to_string()],
+        });
+    } else {
+        results.push(SecurityPreflightResult {
+            check_name: "weak_crypto_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: crypto_evidence,
+            structured_evidence: structured_crypto,
+            notes: vec!["Weak crypto primitives found in content".to_string()],
+        });
+    }
+
+    results
+}
+
+/// Locality-aware content preflight checks that scan only a window around
+/// positioned targets.  For unpositioned targets, the full file is scanned
+/// but evidence is marked as file-level.
+pub fn run_content_preflight_checks_for_targets(
+    targets: &[SecurityReviewTarget],
+    load_content: impl Fn(&Path) -> Option<String>,
+) -> Vec<SecurityPreflightResult> {
+    const WINDOW_RADIUS: u32 = 10;
+    let mut results = Vec::new();
+
+    fn scan_lines_window(
+        content: &str,
+        target_line: Option<u32>,
+        radius: u32,
+    ) -> Vec<(usize, &str)> {
+        match target_line {
+            Some(line) => {
+                let start = if line > radius {
+                    (line - radius) as usize
+                } else {
+                    0
+                };
+                let end = (line + radius) as usize;
+                content
+                    .lines()
+                    .enumerate()
+                    .filter(|(i, _)| *i >= start && *i <= end)
+                    .collect()
+            }
+            None => content.lines().enumerate().collect(),
+        }
+    }
+
+    // secret_content_scan
+    let mut structured_secret = Vec::new();
+    let secret_evidence: Vec<String> = targets
+        .iter()
+        .filter_map(|t| {
+            let content = load_content(&t.file_path)?;
+            let lines = scan_lines_window(&content, t.line, WINDOW_RADIUS);
+            let mut found = false;
+            for (idx, line) in lines {
+                let lower = line.to_lowercase();
+                if (lower.contains("api_key")
+                    || lower.contains("secret")
+                    || lower.contains("password")
+                    || lower.contains("token")
+                    || lower.contains("private_key"))
+                    && (lower.contains("=") && !lower.contains("//"))
+                {
+                    found = true;
+                    structured_secret.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "hardcoded secret-like assignment in content".to_string(),
+                        detail: Some("local heuristic content scan (hunk-local)".to_string()),
+                    });
+                }
+            }
+            if found {
                 Some(format!(
                     "{}: hardcoded secret-like assignment in content",
                     t.file_path.display()
@@ -1225,6 +1625,7 @@ pub fn run_content_preflight_checks(
             check_name: "secret_content_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: vec!["No hardcoded secret-like assignments found in content".to_string()],
         });
     } else {
@@ -1232,24 +1633,37 @@ pub fn run_content_preflight_checks(
             check_name: "secret_content_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: secret_evidence,
+            structured_evidence: structured_secret,
             notes: vec!["Hardcoded secret-like assignments found in content".to_string()],
         });
     }
 
-    // Unsafe keyword usage
+    // unsafe_content_scan
+    let mut structured_unsafe = Vec::new();
     let unsafe_evidence: Vec<String> = targets
         .iter()
         .filter_map(|t| {
             let content = load_content(&t.file_path)?;
-            let has_unsafe = content.lines().any(|line| {
+            let lines = scan_lines_window(&content, t.line, WINDOW_RADIUS);
+            let mut found = false;
+            for (idx, line) in lines {
                 let trimmed = line.trim();
-                trimmed.contains("unsafe {")
+                if trimmed.contains("unsafe {")
                     || trimmed.starts_with("unsafe fn")
                     || trimmed.starts_with("unsafe impl")
                     || trimmed.contains("transmute")
                     || trimmed.contains("raw pointer")
-            });
-            if has_unsafe {
+                {
+                    found = true;
+                    structured_unsafe.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "unsafe keyword usage in content".to_string(),
+                        detail: Some("local heuristic content scan (hunk-local)".to_string()),
+                    });
+                }
+            }
+            if found {
                 Some(format!(
                     "{}: unsafe keyword usage in content",
                     t.file_path.display()
@@ -1265,6 +1679,7 @@ pub fn run_content_preflight_checks(
             check_name: "unsafe_content_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: vec!["No unsafe keyword usage found in content".to_string()],
         });
     } else {
@@ -1272,22 +1687,35 @@ pub fn run_content_preflight_checks(
             check_name: "unsafe_content_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: unsafe_evidence,
+            structured_evidence: structured_unsafe,
             notes: vec!["Unsafe keyword usage found in content".to_string()],
         });
     }
 
-    // Process execution APIs
+    // process_exec_scan
+    let mut structured_process = Vec::new();
     let process_evidence: Vec<String> = targets
         .iter()
         .filter_map(|t| {
             let content = load_content(&t.file_path)?;
-            let has_process = content.lines().any(|line| {
-                line.contains("Command::new")
+            let lines = scan_lines_window(&content, t.line, WINDOW_RADIUS);
+            let mut found = false;
+            for (idx, line) in lines {
+                if line.contains("Command::new")
                     || line.contains("std::process::Command")
                     || line.contains("process::Command")
                     || line.contains("exec(")
-            });
-            if has_process {
+                {
+                    found = true;
+                    structured_process.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "process execution API in content".to_string(),
+                        detail: Some("local heuristic content scan (hunk-local)".to_string()),
+                    });
+                }
+            }
+            if found {
                 Some(format!(
                     "{}: process execution API in content",
                     t.file_path.display()
@@ -1303,6 +1731,7 @@ pub fn run_content_preflight_checks(
             check_name: "process_exec_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: vec!["No process execution APIs found in content".to_string()],
         });
     } else {
@@ -1310,24 +1739,37 @@ pub fn run_content_preflight_checks(
             check_name: "process_exec_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: process_evidence,
+            structured_evidence: structured_process,
             notes: vec!["Process execution APIs found in content".to_string()],
         });
     }
 
-    // SQL string construction with format/interpolation
+    // sql_injection_scan
+    let mut structured_sql = Vec::new();
     let sql_evidence: Vec<String> = targets
         .iter()
         .filter_map(|t| {
             let content = load_content(&t.file_path)?;
-            let has_sql = content.lines().any(|line| {
+            let lines = scan_lines_window(&content, t.line, WINDOW_RADIUS);
+            let mut found = false;
+            for (idx, line) in lines {
                 let lower = line.to_lowercase();
-                (lower.contains("format!") || lower.contains("format!("))
+                if (lower.contains("format!") || lower.contains("format!("))
                     && (lower.contains("select")
                         || lower.contains("insert")
                         || lower.contains("update")
                         || lower.contains("delete"))
-            });
-            if has_sql {
+                {
+                    found = true;
+                    structured_sql.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "SQL string construction with format interpolation".to_string(),
+                        detail: Some("local heuristic content scan (hunk-local)".to_string()),
+                    });
+                }
+            }
+            if found {
                 Some(format!(
                     "{}: SQL string construction with format interpolation",
                     t.file_path.display()
@@ -1343,6 +1785,7 @@ pub fn run_content_preflight_checks(
             check_name: "sql_injection_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: vec!["No SQL string construction with interpolation found".to_string()],
         });
     } else {
@@ -1350,23 +1793,36 @@ pub fn run_content_preflight_checks(
             check_name: "sql_injection_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: sql_evidence,
+            structured_evidence: structured_sql,
             notes: vec!["SQL string construction with format interpolation found".to_string()],
         });
     }
 
-    // Weak crypto names
+    // weak_crypto_scan
+    let mut structured_crypto = Vec::new();
     let crypto_evidence: Vec<String> = targets
         .iter()
         .filter_map(|t| {
             let content = load_content(&t.file_path)?;
-            let has_weak = content.lines().any(|line| {
+            let lines = scan_lines_window(&content, t.line, WINDOW_RADIUS);
+            let mut found = false;
+            for (idx, line) in lines {
                 let lower = line.to_lowercase();
-                lower.contains("md5")
+                if lower.contains("md5")
                     || lower.contains("sha1")
                     || lower.contains("des")
                     || lower.contains("ecb")
-            });
-            if has_weak {
+                {
+                    found = true;
+                    structured_crypto.push(SecurityPreflightEvidence {
+                        file_path: t.file_path.clone(),
+                        line: Some((idx + 1) as u32),
+                        summary: "weak crypto primitive in content".to_string(),
+                        detail: Some("local heuristic content scan (hunk-local)".to_string()),
+                    });
+                }
+            }
+            if found {
                 Some(format!(
                     "{}: weak crypto primitive in content",
                     t.file_path.display()
@@ -1382,6 +1838,7 @@ pub fn run_content_preflight_checks(
             check_name: "weak_crypto_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: vec!["No weak crypto primitives found in content".to_string()],
         });
     } else {
@@ -1389,6 +1846,7 @@ pub fn run_content_preflight_checks(
             check_name: "weak_crypto_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: crypto_evidence,
+            structured_evidence: structured_crypto,
             notes: vec!["Weak crypto primitives found in content".to_string()],
         });
     }
@@ -1412,18 +1870,25 @@ pub fn synthesize_evidence_based_findings(
     let mut findings = Vec::new();
     let remaining_prompts: Vec<SecurityReviewPrompt> = prompts.to_vec();
 
-    // Collect preflight evidence
+    // Collect structured preflight evidence (file-scoped)
     let preflight_evidence: Vec<StructuredSecurityEvidence> = preflight
         .iter()
         .filter(|p| p.status == PreflightStatus::Fail)
         .flat_map(|p| {
-            p.evidence.iter().map(move |e| StructuredSecurityEvidence {
-                kind: SecurityEvidenceKind::Preflight,
-                file_path: None,
-                line: None,
-                summary: format!("{}: {}", p.check_name, e),
-                detail: Some(p.notes.join("; ")),
-            })
+            if !p.structured_evidence.is_empty() {
+                p.structured_evidence
+                    .iter()
+                    .map(move |se| StructuredSecurityEvidence {
+                        kind: SecurityEvidenceKind::Preflight,
+                        file_path: Some(se.file_path.clone()),
+                        line: se.line,
+                        summary: format!("{}: {}", p.check_name, se.summary),
+                        detail: se.detail.clone().or_else(|| Some(p.notes.join("; "))),
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
         })
         .collect();
 
@@ -1461,7 +1926,7 @@ pub fn synthesize_evidence_based_findings(
 
         // Add preflight evidence for this file
         for pe in &preflight_evidence {
-            if pe.file_path.as_deref() == Some(&key.file_path) || pe.file_path.is_none() {
+            if evidence_matches_group(pe, &key.file_path, key.line_bucket) {
                 group_evidence.push(pe.clone());
             }
         }
@@ -2512,6 +2977,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
             check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: Vec::new(),
         }];
 
@@ -2548,6 +3014,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
             check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: Vec::new(),
         }];
 
@@ -2566,6 +3033,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
             check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: vec!["api_key.rs: secret pattern in name".to_string()],
+            structured_evidence: Vec::new(),
             notes: vec!["Secret-like patterns found".to_string()],
         }];
 
@@ -2584,6 +3052,7 @@ diff --git a/src/unsafe_block.rs b/src/unsafe_block.rs
             check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: Vec::new(),
         }];
 
@@ -3016,6 +3485,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: Vec::new(),
         }];
 
@@ -3054,6 +3524,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Pass,
             evidence: Vec::new(),
+            structured_evidence: Vec::new(),
             notes: Vec::new(),
         }];
 
@@ -3082,6 +3553,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             check_name: "secret_filename_hint_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: vec!["api_key.rs: file name matches secret hint".to_string()],
+            structured_evidence: Vec::new(),
             notes: vec!["Secret-like filename".to_string()],
         }];
 
@@ -3116,6 +3588,12 @@ diff --git a/src/lib.rs b/src/lib.rs
             check_name: "sql_injection_scan".to_string(),
             status: PreflightStatus::Fail,
             evidence: vec!["src/db.rs: SQL format interpolation".to_string()],
+            structured_evidence: vec![SecurityPreflightEvidence {
+                file_path: PathBuf::from("src/db.rs"),
+                line: Some(15),
+                summary: "SQL string construction with format interpolation".to_string(),
+                detail: Some("test".to_string()),
+            }],
             notes: vec!["SQL found".to_string()],
         }];
 
@@ -3387,5 +3865,303 @@ diff --git a/src/lib.rs b/src/lib.rs
             .notes
             .iter()
             .any(|n| n.contains("additional evidence")));
+    }
+
+    #[test]
+    fn security_preflight_structured_evidence_has_file_path() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("src/secret.rs"),
+            line: Some(10),
+            column: Some(1),
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+        let results = run_content_preflight_checks(&targets, |path| {
+            if path == Path::new("src/secret.rs") {
+                Some("api_key = \"test\"\n".to_string())
+            } else {
+                None
+            }
+        });
+        let secret_result = results
+            .iter()
+            .find(|r| r.check_name == "secret_content_scan")
+            .unwrap();
+        assert_eq!(secret_result.status, PreflightStatus::Fail);
+        assert!(!secret_result.structured_evidence.is_empty());
+        for se in &secret_result.structured_evidence {
+            assert_eq!(se.file_path, PathBuf::from("src/secret.rs"));
+        }
+    }
+
+    #[test]
+    fn security_preflight_structured_evidence_has_line_for_content_match() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(1),
+            column: Some(1),
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+        let results = run_content_preflight_checks(&targets, |path| {
+            if path == Path::new("src/auth.rs") {
+                Some("let x = 1;\napi_key = \"test\"\nlet y = 2;\n".to_string())
+            } else {
+                None
+            }
+        });
+        let secret_result = results
+            .iter()
+            .find(|r| r.check_name == "secret_content_scan")
+            .unwrap();
+        assert_eq!(secret_result.status, PreflightStatus::Fail);
+        let se = &secret_result.structured_evidence[0];
+        assert_eq!(se.line, Some(2));
+    }
+
+    #[test]
+    fn security_synthesis_preflight_different_file_does_not_support_finding() {
+        let targets = vec![];
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("file_a.rs"),
+            line: Some(10),
+            preset: "rust_server".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth: test".to_string(),
+            rationale: "test".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+        let preflight = vec![SecurityPreflightResult {
+            check_name: "secret_content_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: vec!["file_b.rs: hardcoded secret".to_string()],
+            structured_evidence: vec![SecurityPreflightEvidence {
+                file_path: PathBuf::from("file_b.rs"),
+                line: Some(5),
+                summary: "hardcoded secret-like assignment".to_string(),
+                detail: Some("test".to_string()),
+            }],
+            notes: vec!["test".to_string()],
+        }];
+        let (findings, _prompts) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        assert!(
+            findings.is_empty(),
+            "File A should not get a finding from File B evidence"
+        );
+    }
+
+    #[test]
+    fn security_synthesis_preflight_same_file_supports_finding() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            column: Some(1),
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            preset: "rust_server".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth: test".to_string(),
+            rationale: "test".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+        let preflight = vec![SecurityPreflightResult {
+            check_name: "secret_content_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: vec!["src/auth.rs: hardcoded secret".to_string()],
+            structured_evidence: vec![SecurityPreflightEvidence {
+                file_path: PathBuf::from("src/auth.rs"),
+                line: Some(12),
+                summary: "hardcoded secret-like assignment".to_string(),
+                detail: Some("test".to_string()),
+            }],
+            notes: vec!["test".to_string()],
+        }];
+        let (findings, _prompts) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        assert!(
+            !findings.is_empty(),
+            "Same-file preflight should support a finding"
+        );
+    }
+
+    #[test]
+    fn security_synthesis_preflight_same_file_distant_line_does_not_support_positioned_group() {
+        let targets = vec![];
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            preset: "rust_server".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth: test".to_string(),
+            rationale: "test".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+        let preflight = vec![SecurityPreflightResult {
+            check_name: "secret_content_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: vec!["src/auth.rs: hardcoded secret".to_string()],
+            structured_evidence: vec![SecurityPreflightEvidence {
+                file_path: PathBuf::from("src/auth.rs"),
+                line: Some(500),
+                summary: "hardcoded secret-like assignment".to_string(),
+                detail: Some("test".to_string()),
+            }],
+            notes: vec!["test".to_string()],
+        }];
+        let (findings, _prompts) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        assert!(
+            findings.is_empty(),
+            "Distant-line preflight should not support positioned finding"
+        );
+    }
+
+    #[test]
+    fn security_synthesis_preflight_same_file_nearby_line_supports_positioned_group() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            column: Some(1),
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            preset: "rust_server".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth: test".to_string(),
+            rationale: "test".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+        let preflight = vec![SecurityPreflightResult {
+            check_name: "secret_content_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: vec!["src/auth.rs: hardcoded secret".to_string()],
+            structured_evidence: vec![SecurityPreflightEvidence {
+                file_path: PathBuf::from("src/auth.rs"),
+                line: Some(12),
+                summary: "hardcoded secret-like assignment".to_string(),
+                detail: Some("test".to_string()),
+            }],
+            notes: vec!["test".to_string()],
+        }];
+        let (findings, _prompts) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+        assert!(
+            !findings.is_empty(),
+            "Nearby-line preflight should support positioned finding"
+        );
+    }
+
+    #[test]
+    fn security_synthesis_legacy_string_preflight_does_not_globally_support_group() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            column: Some(1),
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            preset: "rust_server".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth: test".to_string(),
+            rationale: "test".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+        let preflight = vec![SecurityPreflightResult {
+            check_name: "secret_content_scan".to_string(),
+            status: PreflightStatus::Fail,
+            evidence: vec!["src/auth.rs: hardcoded secret".to_string()],
+            structured_evidence: Vec::new(),
+            notes: vec!["test".to_string()],
+        }];
+        let (_findings, _prompts) =
+            synthesize_evidence_based_findings(&targets, &prompts, &preflight);
+    }
+
+    #[test]
+    fn security_content_preflight_hunk_local_ignores_distant_secret() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("src/app.rs"),
+            line: Some(50),
+            column: Some(1),
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+        let results = run_content_preflight_checks_for_targets(&targets, |path| {
+            if path == Path::new("src/app.rs") {
+                let mut lines = vec!["let x = 1;".to_string(); 199];
+                lines.push("api_key = \"secret_value\"".to_string());
+                Some(lines.join("\n"))
+            } else {
+                None
+            }
+        });
+        let secret_result = results
+            .iter()
+            .find(|r| r.check_name == "secret_content_scan")
+            .unwrap();
+        assert_eq!(
+            secret_result.status,
+            PreflightStatus::Pass,
+            "Distant secret should not be detected by hunk-local scan"
+        );
+    }
+
+    #[test]
+    fn security_content_preflight_hunk_local_detects_nearby_secret() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("src/app.rs"),
+            line: Some(5),
+            column: Some(1),
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+        let results = run_content_preflight_checks_for_targets(&targets, |path| {
+            if path == Path::new("src/app.rs") {
+                Some("let x = 1;\nlet y = 2;\napi_key = \"secret\"\nlet z = 3;\n".to_string())
+            } else {
+                None
+            }
+        });
+        let secret_result = results
+            .iter()
+            .find(|r| r.check_name == "secret_content_scan")
+            .unwrap();
+        assert_eq!(
+            secret_result.status,
+            PreflightStatus::Fail,
+            "Nearby secret should be detected"
+        );
+    }
+
+    #[test]
+    fn security_prompt_only_synthesis_name_preserves_marker_only_behavior() {
+        let targets = vec![];
+        let markers = vec![SecurityRiskMarkerFromWorkflow {
+            category: "auth".to_string(),
+            label: "test marker".to_string(),
+            file_path: PathBuf::from("src/auth.rs"),
+            line: 10,
+            column: 1,
+            matched_text: "test".to_string(),
+            rationale: "test marker".to_string(),
+        }];
+        let preflight = vec![];
+        let (findings, prompts) = synthesize_review_prompts_only(&targets, &markers, &preflight);
+        assert!(
+            findings.is_empty(),
+            "Prompt-only synthesis should never produce findings"
+        );
+        assert_eq!(prompts.len(), 1);
     }
 }
