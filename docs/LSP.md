@@ -4,18 +4,15 @@ codegg integrates with Language Server Protocol (LSP) to provide IDE-like featur
 
 ## Architecture
 
-The LSP module (`src/lsp/`) consists of:
+The authoritative LSP implementation is in **`crates/egglsp/`**. The `src/lsp/` directory is a thin shim that re-exports from egglsp.
 
-- **`mod.rs`** - Main `Lsp` struct exposing service, operations, and diagnostics
-- **`service.rs`** - `LspService` managing LSP client lifecycle
-- **`client.rs`** - Low-level LSP client implementation
-- **`server.rs`** - Server management (download, launch, process handling)
-- **`launch.rs`** - Language server launch configuration
-- **`download.rs`** - Automatic server binary downloads
-- **`language.rs`** - Language detection and server mapping
-- **`root.rs`** - Project root detection
-- **`operations.rs`** - `LspOperations` for code actions (goto definition, find references, etc.)
-- **`diagnostics.rs`** - `DiagnosticsCollector` for collecting and debouncing diagnostics
+The egglsp crate consists of:
+
+- **`src/server.rs`** - Server definitions (39 servers: clangd, rust-analyzer, gopls, pyright, typescript-language-server, etc.)
+- **`src/service.rs`** - `LspService` managing LSP client lifecycle
+- **`src/client.rs`** - Low-level LSP client implementation
+- **`src/operations.rs`** - `LspOperations` for code actions (goto definition, find references, etc.), `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview`
+- **`src/diagnostics.rs`** - `DiagnosticsCollector` for collecting and debouncing diagnostics
 
 ## Key Components
 

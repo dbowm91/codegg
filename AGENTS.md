@@ -10,7 +10,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - **Axum** for HTTP server (feature-gated)
 - **Wasmtime** for WASM plugins (feature-gated)
 
-## Module Reference (36 Modules)
+## Module Reference (38 Modules)
 
 | Module | Purpose |
 |--------|---------|
@@ -24,7 +24,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `crypto/` | AES-256-GCM encryption with Argon2id key derivation |
 | `error/` | Centralized `AppError` enum with `ProviderError::is_retryable()`, `ToolError::is_retryable()`, `CircuitError` conversion — error enums now in `crates/codegg-core` (`codegg-core` crate), axum wrappers stay root-side |
 | `exec/` | Non-interactive exec mode for CI/CD with JSON I/O |
-| `git/` | **Removed** in 2026 native crate extraction. Read-only git facts now in `crates/egggit/` (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`); mutating worktree operations in `src/worktree/`. The `git` tool wrapper still lives at `src/tool/git.rs` |
+| `git/` | **Removed** in 2026 native crate extraction. Read-only git facts now in `crates/egggit/` (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`). Mutating worktree operations removed (worktree is now read-only in codegg-core). The `git` tool wrapper still lives at `src/tool/git.rs` |
 | `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering — now in `crates/codegg-core` (`codegg-core` crate) |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
@@ -38,8 +38,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `protocol/` | Shared `CoreRequest`/`CoreResponse` and `TuiMessage` protocol envelopes — now in `crates/codegg-protocol` (`codegg-protocol` crate), re-exported as `codegg::protocol` |
 | `shell_session/` | Shell session metadata management (in-memory, no actual PTY) |
 | `resilience/` | Circuit breaker, retry mechanisms, and rate limiting — now in `crates/codegg-core` (`codegg-core` crate) |
-| `search/` | Legacy in-tree web search providers (used as `builtin` fallback) |
-| `search_backend/` | Pluggable backend layer for the native `websearch`/`webfetch` tools. Default backend is the external `eggsearch` MCP server; legacy in-tree providers are retained as an explicit fallback. |
+| `research/` | Research pipeline for claims verification, source fetching, synthesis, and handoff |
 | `security/` | SSRF protection, internal IP validation, Landlock sandboxing |
 | `server/` | HTTP server (Axum) with WebSocket support for remote TUIs and replay buffering |
 | `session/` | Session storage, message history, and checkpointing (SQLite) — now in `crates/codegg-core` (`codegg-core` crate) |
@@ -52,7 +51,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `tui/` | Terminal user interface (widgets, handlers, input processing, diff viewer, notifications, image support, CoreClient-backed flows) |
 | `upgrade/` | Self-upgrade functionality via GitHub releases |
 | `util/` | Utility functions (clipboard, fuzzy search, pricing, etc.) |
-| `worktree/` | Git worktree support for project management — now in `crates/codegg-core` (`codegg-core` crate) |
+| `worktree/` | Git worktree support for project management — now in `crates/codegg-core` (`codegg-core` crate), read-only. Mutating operations removed. |
 
 ## Architecture Index
 
@@ -63,7 +62,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
 - `architecture/native_crates.md`: Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers), backend contract, raw MCP exposure policy, diagnostics
-- `architecture/git.md`: Git session management, git info injection, worktree per session (now in `crates/egggit` + `src/worktree`)
+- `architecture/git.md`: Git session management, git info injection, worktree per session (now in `crates/egggit`; worktree is read-only in codegg-core, mutating operations removed)
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
 - `architecture/context-ledger.md`: Context artifact storage, tool-output projection, ContextLedgerState, context_read tool, and config options
@@ -83,7 +82,7 @@ These items are important for future agents to know when working with the codeba
 
 - **protocol_conversions split**: Core conversions (session, message, provider, config) live in `crates/codegg-core/src/protocol_conversions.rs`. Agent-specific conversions remain in root `src/protocol_conversions.rs`. Root re-exports core conversions via `pub use codegg_core::protocol_conversions::*;`.
 
-- **PermissionDecision vs PermissionChoice**: `PermissionDecision` is the bus-owned DTO in `src/bus/mod.rs`. `PermissionChoice` is the domain type in `src/permission/mod.rs`. Bidirectional `From` impls allow conversion. The `PermissionRegistry` API uses `PermissionDecision`; use it when calling `respond()` or registering permissions through the bus.
+- **PermissionDecision vs PermissionChoice**: `PermissionDecision` is the bus-owned DTO in `crates/codegg-core/src/bus/mod.rs`. `PermissionChoice` is the domain type in `src/permission/mod.rs`. Bidirectional `From` impls allow conversion. The `PermissionRegistry` API uses `PermissionDecision`; use it when calling `respond()` or registering permissions through the bus.
 
 - **Tool factory**: `src/tool/factory.rs` provides `build_session_tool_registry()` which consolidates tool construction (base registry + task tool + goal tools). Used by `core/daemon.rs` to reduce direct tool module coupling.
 
@@ -132,7 +131,7 @@ These items are important for future agents to know when working with the codeba
 
 - **DialogType is in component.rs**: Not in `types.rs`. FocusManager is in `component/focus.rs`.
 
-- **AgentLoop has 26 fields**: The struct at `src/agent/loop.rs:1183+` has 26 fields (added base_request_tools + context_policy_runtime for hardened tool-palette policy); many docs list only 15.
+- **AgentLoop has 49 fields**: The struct at `src/agent/loop.rs:1380` has 49 fields (added base_request_tools + context_policy_runtime for hardened tool-palette policy); many docs list only 15.
 
 - **Exec mode question behavior**: `setup_question_channel_for_exec()` at `src/exec.rs:121` DOES set `question_rx`, meaning exec mode waits up to 300s before timing out. The "[question not supported]" string is in the `else` branch (non-exec path when `question_rx` is None).
 
@@ -160,7 +159,7 @@ These items are important for future agents to know when working with the codeba
 
 2. **Documentation can become stale** - Struct fields get added/removed; always compare architecture docs against actual source code.
 
-3. **Counts should be verified** - Component/dialog counts (TUI), server counts (LSP), command counts can drift from reality. When fixing documentation, count from actual source files, not from other documentation. **UiState has 26 fields** (not 25 as some docs claim). `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct.
+3. **Counts should be verified** - Component/dialog counts (TUI), server counts (LSP), command counts can drift from reality. When fixing documentation, count from actual source files, not from other documentation. **UiState has 27 fields** (not 25 as some docs claim). `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 74-76), NOT `App` struct.
 
 4. **Line numbers in docs are fragile** - References like `watcher.rs:157-158` should be verified; they can be off by several lines. Use code search to find exact locations.
 
@@ -172,7 +171,7 @@ These items are important for future agents to know when working with the codeba
 
 8. **LSP server count is 39** (verified 2026-05-27) - count entries in `server_definitions()` array at `crates/egglsp/src/server.rs` (moved from `src/lsp/server.rs:27-383`). cmake-language-server is NOT in the list despite some review claims. clangd, rust-analyzer, gopls, etc. are included.
 
-9. **Permission mode documentation corrected** - `architecture/permission.md:202` (docs mode) now correctly shows restricted tools as `bash, task, todowrite` (without `write`). Code at `modes.rs:174-178` correctly excludes `write`.
+9. **Permission mode documentation** - `architecture/permission.md:202` (docs mode) shows restricted tools as `bash, task` (without `write`). Code at `modes.rs:220-227` shows docs mode restricted_tools as `bash, terminal, git, commit, task, image` (6 tools). Verify against actual code.
 
 ### Verified Codebase Facts
 
@@ -196,22 +195,22 @@ These items were verified during review sessions:
 | TaskToolRuntime | Narrow DTO for task tool construction | `src/agent/task_tool_runtime.rs` |
 | Plugin fuel logic | Fixed - all early returns correctly return fuel | `src/plugin/loader.rs` |
 | CoreEvent mapping | Complete - all events including Subagent* properly mapped | `src/core/mod.rs` |
-| CommandRegistry location | Line 72 | `src/tui/command.rs:72` |
-| UiState fields | 26 fields | `src/tui/app/state/ui.rs:27-76` |
+| CommandRegistry location | Line 77 | `src/tui/command.rs:77` |
+| UiState fields | 27 fields | `src/tui/app/state/ui.rs:40-92` |
 | Subagent event types | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `crates/codegg-core/src/bus/events.rs:120-141` |
 | CoreEvent has subagent variants | SubagentStarted, SubagentProgress, SubagentCompleted, SubagentFailed | `crates/codegg-protocol/src/core.rs:244-268` |
 | map_app_event_to_core_event | All Subagent events mapped | `src/core/mod.rs` |
 | SessionCompacting hook | IS dispatched in AgentLoop::compact_if_needed() | `src/agent/loop.rs:1216-1220` |
 | hook_timeout vs WASM_HOOK_TIMEOUT | Outer 5s, inner 30s | `src/plugin/service.rs:18`, `src/plugin/loader.rs:14` |
-| Backoff formula | `2^i` (no jitter) | `crates/codegg-providers/src/provider/fallback.rs:107` |
-| Client backoff formula | 1s, 2s, 4s (attempt 1,2,3) | `src/client/attach.rs:39` |
+| Backoff formula | `2^i` (no jitter) | `crates/codegg-providers/src/fallback.rs:107` |
+| Client backoff formula | 1s, 2s (attempt 1, 2) | `src/client/attach.rs:39` — formula is `2^(attempt-1)`, only attempts 1 and 2 apply (attempt 0 is the first connection, no backoff) |
 | Protocol version | 1 | `crates/codegg-protocol/src/core.rs:3` |
-| AppEvent count | 36 | `crates/codegg-core/src/bus/events.rs:5-147` |
-| Built-in command count | 46 (includes /tts, /pr, /issue, /checkpoint) | `src/tui/command.rs:79-182` |
-| ToolDefCache | `(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions | `src/agent/loop.rs:60-67` |
+| AppEvent count | 41 | `crates/codegg-core/src/bus/events.rs:5-147` |
+| Built-in command count | 60 (includes /tts, /pr, /issue, /checkpoint, /revert, /research, /research-runs, /research-open, /research-show, /doctor, /tool-backends) | `src/tui/command.rs:84-213` |
+| ToolDefCache | `(Option<String>, bool, bool, usize, u64, bool, Vec<ToolDefinition>, Vec<ToolDefinition>)` - model, plan_mode, lsp_enabled, mcp_count, perm_ver, exec_policy_enabled, definitions, deferred_definitions | `src/agent/loop.rs:64-73` |
 | Timeline fields location | `timeline_visible` and `timeline_selected` are in `UiState` struct (lines 62-63), NOT `App` struct | `src/tui/app/state/ui.rs:62-63` |
 | Snapshot hash | Uses SHA256 consistently | `crates/codegg-core/src/snapshot/mod.rs` |
-| Git module | removed in 2026 native crate extraction; read-only facts now in `crates/egggit/` (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`). Mutating worktree operations remain in `src/worktree/` (sync `create_worktree`/`remove_worktree`) | `crates/egggit/src/{lib,status,diff,worktree}.rs`, `src/worktree/mod.rs` |
+| Git module | removed in 2026 native crate extraction; read-only facts now in `crates/egggit/` (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`). Mutating worktree operations removed (worktree is now read-only in codegg-core). The git tool wrapper still lives at `src/tool/git.rs` | `crates/egggit/src/{lib,status,diff,worktree}.rs`, `crates/codegg-core/src/worktree.rs` |
 | Pricing service | `src/util/pricing.rs` - ModelPricing, calculate_cost | `src/util/pricing.rs` |
 | Auto-compact wrapper | Both `auto_compact()` and `auto_compact_sync()` exist | `src/agent/compaction.rs:550,594` |
 | ImageTool | IS registered in ToolRegistry::with_defaults() | `src/tool/mod.rs:102` |
@@ -222,13 +221,13 @@ These items were verified during review sessions:
 | Structured execution smoke test | `tests/tool_structured_execution.rs` locks down `ToolProvenance` shape, disabled/MCP-fallback semantics, and definition visibility | `tests/tool_structured_execution.rs` |
 | Live dispatcher wiring tests | `test_live_dispatcher_uses_execute_capture`, `test_live_dispatcher_passes_native_backend_in_context`, `test_live_dispatcher_model_output_shape_is_plain_string` prove the agent loop routes native calls through `execute_capture` and the model-facing tool content is a plain string (no provenance JSON) | `tests/agent_loop_harness.rs` |
 | Dialog::Stats | EXISTS in Dialog enum | `src/tui/app/types.rs:21` |
-| Provider auth resolver | `AuthResolver::resolve` is sync; `register_builtin_with_config` threads a shared `Arc<CredentialStore>` through `register_credential_provider` / `register_api_key_provider` / `register_config_provider`. All three helpers go through the centralized `resolve_provider_credential` helper. | `crates/codegg-providers/src/provider/mod.rs`, `crates/codegg-providers/src/auth/resolver.rs` |
+| Provider auth resolver | `AuthResolver::resolve` is sync; `register_builtin_with_config` threads a shared `Arc<CredentialStore>` through `register_credential_provider` / `register_api_key_provider` / `register_config_provider`. All three helpers go through the centralized `resolve_provider_credential` helper. | `crates/codegg-providers/src/provider_core.rs`, `crates/codegg-providers/src/auth_types.rs` |
 | OpenAI-compatible factories | `create_xai`, `create_mistral`, `create_groq`, `create_deepinfra`, `create_cerebras`, `create_cohere`, `create_together`, `create_perplexity`, `create_venice`, `create_generalcompute`, `create_opencode_go` all take `Credential`; `create_minimax` takes `String` (Anthropic-compatible). Backed by `OpenAiCompatibleProvider::simple_with_credential`; the legacy `simple(id, name, api_key, base_url)` is a backwards-compatible shim. | `crates/codegg-providers/src/provider/additional.rs`, `crates/codegg-providers/src/provider/openai_compatible.rs` |
-| ExternalCommand in resolver | Disabled in the synchronous resolver. Returns `AuthError::Unsupported("ExternalCommand")` because the existing `std::process::Command`-based `ExternalCommandProvider::fetch` does not enforce its timeout. Async timeout plumbing is a follow-up. | `crates/codegg-providers/src/auth/resolver.rs`, `crates/codegg-providers/src/auth/external.rs` |
-| ExternalCommandProvider::fetch | Returns `AuthError::Unsupported("ExternalCommand requires async timeout plumbing")` for any non-empty command; an empty command yields `AuthError::Invalid`. The previous `std::process::Command` shell-out path has been removed; no safe code path can accidentally execute a configured command. | `crates/codegg-providers/src/auth/external.rs` |
-| Provider credential resolution path | Single resolution path: every helper in `src/provider/mod.rs` (`register_credential_provider`, `register_api_key_provider`, `register_config_provider`) goes through `resolve_provider_credential()` → `AuthResolver::resolve()`. Legacy `cfg.api_key` is honored by the resolver via `ctx.legacy_api_key`; no helper reads `cfg.api_key` directly. | `crates/codegg-providers/src/provider/mod.rs`, `crates/codegg-providers/src/auth/resolver.rs` |
+| ExternalCommand in resolver | Disabled in the synchronous resolver. Returns `AuthError::Unsupported("ExternalCommand")` because the existing `ExternalCommandProvider::fetch` does not enforce its timeout. Async timeout plumbing is a follow-up. | `crates/codegg-providers/src/auth_types.rs`, `src/auth/external.rs` |
+| ExternalCommandProvider::fetch | Returns `AuthError::Unsupported("ExternalCommand requires async timeout plumbing")` for any non-empty command; an empty command yields `AuthError::Invalid`. The previous `std::process::Command` shell-out path has been removed; no safe code path can accidentally execute a configured command. | `src/auth/external.rs:48` |
+| Provider credential resolution path | Single resolution path: every helper in `crates/codegg-providers/src/provider_core.rs` (`register_credential_provider`, `register_api_key_provider`, `register_config_provider`) goes through `resolve_provider_credential()` → `AuthResolver::resolve()`. Legacy `cfg.api_key` is honored by the resolver via `ctx.legacy_api_key`; no helper reads `cfg.api_key` directly. | `crates/codegg-providers/src/provider_core.rs`, `crates/codegg-providers/src/auth_types.rs` |
 | `codegg providers` and `codegg models` | Both commands now use `register_builtin_with_config`, so they see the same set of providers (including those backed by the user credential store). | `src/main.rs` |
-| Stored bearer-token policy | `AuthConfig::Stored` and the no-auth fallback's store lookup both filter to `CredentialKind::ApiKey`. A future OAuth/bearer-token refresh flow will need a separate `kind` selector or policy module. `codegg auth set-key` only writes `ApiKey` records. | `crates/codegg-providers/src/auth/resolver.rs` |
+| Stored bearer-token policy | `AuthConfig::Stored` and the no-auth fallback's store lookup both filter to `CredentialKind::ApiKey`. A future OAuth/bearer-token refresh flow will need a separate `kind` selector or policy module. `codegg auth set-key` only writes `ApiKey` records. | `crates/codegg-providers/src/auth_types.rs` |
 | `codegg auth` CLI validation | `AuthCli::set_key` and `AuthCli::logout` validate provider and account ids up-front to contain only `[A-Za-z0-9_-]`. The wildcard `*` is accepted **only** by `logout`. `set_key` never echoes the key, key length, or any prefix/suffix. `status` never prints ciphertext, plaintext, or secret-derived fingerprints. | `src/auth/cli.rs` |
 | `codegg auth` CLI | `codegg auth status`, `codegg auth set-key <provider>` (stdin), `codegg auth logout <provider>` are wired in `src/main.rs` and backed by `auth::cli::AuthCli`. | `src/main.rs`, `src/auth/cli.rs` |
 | Goal module | Goal, GoalStatus, GoalBudget, GoalUsage, GoalStore, runtime | `crates/codegg-core/src/goal/` |
@@ -264,7 +263,7 @@ These items were verified during review sessions:
 
 - **Auth middleware allows requests without token when none configured**: At `src/server/middleware/auth.rs:37-39`, when `expected_token` is `None`, requests are allowed through. This may be intentional for development but should be reviewed for production.
 - **WebSocket auth is consistent with HTTP**: Both `src/server/ws.rs:103-106` and `middleware/auth.rs:37-39` return Ok when no token is configured.
-- **ExternalCommand is disabled in the synchronous resolver**: `AuthConfig::ExternalCommand` is recognized but `AuthResolver::resolve` returns `AuthError::Unsupported("ExternalCommand")` because the underlying `ExternalCommandProvider::fetch` uses `std::process::Command` and does not enforce its timeout. Re-enable only when async timeout plumbing is in place. See `crates/codegg-providers/src/auth/resolver.rs:173-181`.
+- **ExternalCommand is disabled in the synchronous resolver**: `AuthConfig::ExternalCommand` is recognized but `AuthResolver::resolve` returns `AuthError::Unsupported("ExternalCommand")` because the underlying `ExternalCommandProvider::fetch` uses `std::process::Command` and does not enforce its timeout. Re-enable only when async timeout plumbing is in place. See `crates/codegg-providers/src/auth_types.rs:227-237`.
 - **Provider registration logging policy**: `register_credential_provider` / `register_api_key_provider` / `register_config_provider` log only `ResolvedAuthSource::as_str()` and the env var name. They never log secret prefix / suffix / length. New log lines that touch auth must follow the same rule.
 
 ### CoreRequest Handler Attention Points
@@ -277,7 +276,7 @@ These items were verified during review sessions:
 ## Helpful Patterns for Future Agents
 
 ### Provider Auto-Registration
-- `register_builtin_with_config()` at `crates/codegg-providers/src/provider/mod.rs:501` registers providers via env vars, the typed `auth` block, and the user credential store. It builds a single `Arc<CredentialStore>` and threads it into the per-provider helpers.
+- `register_builtin_with_config()` at `crates/codegg-providers/src/provider_core.rs:610` registers providers via env vars, the typed `auth` block, and the user credential store. It builds a single `Arc<CredentialStore>` and threads it into the per-provider helpers.
 - Per-provider helpers:
   - `register_credential_provider` — OpenAI-compatible providers that accept a full `Credential` envelope (mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, opencode_go, generalcompute).
   - `register_api_key_provider` — providers that genuinely need a static API-key string (opencode_zen, minimax). Rejects `CredentialKind::BearerToken` with a `tracing::warn!`.
@@ -285,7 +284,7 @@ These items were verified during review sessions:
 - All three go through the centralized `resolve_provider_credential(provider_id, cfg, env_var, store)` helper.
 - Adding ANY provider via config disables all env-var auto-registration (intentional design)
 - SAP AI Core, Zenmux, Kilo, Vercel AI Gateway are config-only, NOT auto-registered
-- Check `crates/codegg-providers/src/provider/mod.rs:register_builtin_with_config()` for details
+- Check `crates/codegg-providers/src/provider_core.rs:register_builtin_with_config()` for details
 
 ## Documentation Structure
 
@@ -325,15 +324,12 @@ These items were verified during review sessions:
 ├── resilience/          # Circuit breaker, FallbackProvider
 ├── router/             # Model auto-routing
 ├── sandbox/            # Landlock filesystem sandboxing
-├── search/             # Legacy in-tree web search providers (builtin fallback)
-├── search_backend/     # Pluggable backend for `websearch`/`webfetch` (eggsearch MCP)
 ├── security/           # SSRF, symlink protection, Landlock
 ├── server/             # HTTP/WebSocket server for remote TUI
 ├── session/            # Session storage, database schema
 ├── skills/             # Skill loading, activation, SkillIndex
 ├── snapshot/           # File state capture and restore
 ├── storage/            # SQLite initialization, pragmas
-├── theme/              # Theme registry, semantic schema, Halloy compat, projections
 ├── subagent/           # SubAgentPool, SubAgentSpawner
 ├── team/               # Multi-agent team coordination
 ├── testing/            # Testing guide (unit, integration, E2E)
@@ -373,7 +369,6 @@ When adding guidance for a new module:
 | Event Bus (GlobalEventBus, PermissionRegistry, QuestionRegistry) | `.opencode/skills/event-bus/SKILL.md` |
 | TUI (keyboard shortcuts, FocusManager, Component trait) | `.opencode/skills/tui/SKILL.md` |
 | Core (CoreClient facade, transports, protocol envelopes) | `.opencode/skills/core/SKILL.md` |
-| Search Backend (eggsearch MCP, `websearch`/`webfetch`, trust framing) | `.opencode/skills/search_backend/SKILL.md` |
 | Security (SSRF, symlinks, Landlock) | `.opencode/skills/security/SKILL.md` |
 | WASM plugins | `.opencode/skills/plugin/SKILL.md` |
 | MCP (Model Context Protocol) | `.opencode/skills/mcp/SKILL.md` |
@@ -395,14 +390,12 @@ When adding guidance for a new module:
 | Server (HTTP, WebSocket, REST API, SSE) | `.opencode/skills/server/SKILL.md` |
 | Snapshot (file state capture and restore) | `.opencode/skills/snapshot/SKILL.md` |
 | Skills (skill system overview) | `.opencode/skills/skills/SKILL.md` |
-| Command (slash commands, templates, execution) | `.opencode/skills/command/SKILL.md`
-| Git (git session, git info in prompts) | `.opencode/skills/git/SKILL.md` |
+| Command (slash commands, templates, execution) | `.opencode/skills/command/SKILL.md` |
 | IDE (VS Code, JetBrains detection, diff viewing) | `.opencode/skills/ide/SKILL.md` |
 | Config (loading, validation, encryption, watching) | `.opencode/skills/config/SKILL.md` |
 | Memory (session-to-session learning, consolidation) | `.opencode/skills/memory/SKILL.md` |
 | Session (storage, SQLite, checkpoint, import/export) | `.opencode/skills/session/SKILL.md` |
 | Storage (SQLite initialization, pragmas, pooling) | `.opencode/skills/storage/SKILL.md` |
-| Theme (registry, semantic schema, Halloy compat, projections) | `.opencode/skills/theme/SKILL.md` |
 | Upgrade (GitHub releases, self-upgrade) | `.opencode/skills/upgrade/SKILL.md` |
 | Worktree (git worktrees, find_git_root) | `.opencode/skills/worktree/SKILL.md` |
 | Subagent (SubAgentPool, SubAgentSpawner, worker) | `.opencode/skills/subagent/SKILL.md` |
@@ -410,6 +403,7 @@ When adding guidance for a new module:
 | Router (model auto-routing) | `.opencode/skills/router/SKILL.md` |
 | Util (clipboard, fuzzy matching, truncation, metrics) | `.opencode/skills/util/SKILL.md` |
 | Context (artifact storage, projection, context_read, cache-aware packer observation layer, `NormalizedProviderUsage`, `EffectiveCostAnalysis`, volatile-tail compaction) | `.opencode/skills/context/SKILL.md` |
+| Architecture Review (guide for reviewing architecture docs against actual source code) | `.opencode/skills/architecture-review/SKILL.md` |
 
 ## Testing Commands
 
@@ -449,7 +443,7 @@ cargo ckprotocol   # check -p codegg-protocol
 cargo ckconfig     # check -p codegg-config
 cargo ckproviders  # check -p codegg-providers
 cargo ckcore        # check -p codegg-core
-cargo cksplit      # check all split crates + root
+cargo cksplit      # check split crates (protocol, config, providers) + root (codegg)
 ```
 
 ## Security Reminders

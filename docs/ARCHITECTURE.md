@@ -116,8 +116,6 @@ src/
 │   ├── app/              # Main TUI application
 │   │   ├── mod.rs         # App struct, TuiCommand enum (17 variants), run_event_loop()
 │   │   ├── handlers.rs    # Input handling (107KB, on_key, mouse, dialogs, @ mention completion)
-│   │   ├── commands.rs    # Slash command processing (36KB, /model, /commit, etc.)
-│   │   ├── render.rs      # Rendering logic (39KB, message rendering, layout)
 │   │   ├── types.rs       # CompletionType, Dialog, HistoryEntry, SessionStatus, TodoEntry
 │   │   └── state/         # UiState, SessionState, and other UI state management
 │   ├── components/       # UI widgets
@@ -158,8 +156,15 @@ src/
 ├── util/               # Utility functions
 │   ├── fuzzy.rs        # Fuzzy matching for search
 │   └── time.rs         # Time utilities
-└── worktree/          # Git worktree support
 ```
+
+**Note**: Several modules have been extracted to workspace crates:
+- `bus/`, `memory/`, `session/`, `storage/`, `snapshot/`, `worktree/`, `resilience/` → `crates/codegg-core/`
+- `config/` → `crates/codegg-config/`
+- `provider/` → `crates/codegg-providers/` (re-exported at root as `codegg::provider`)
+- `error/` → `crates/codegg-core/src/error.rs` (re-exported at root)
+- `lsp/` → `crates/egglsp/` (src/lsp/ is now a thin shim)
+- `git/` → `crates/egggit/` (src/git/ removed, src/tool/git.rs remains)
 
 ## Key Architectural Patterns
 

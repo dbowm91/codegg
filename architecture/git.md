@@ -1,18 +1,18 @@
 # Git Module
 
-The `git` module previously provided Git session management for tracking repository state and worktree operations. As of the [native tool crate extraction](native_crates.md), this module has been **removed** from `src/`. Read-only git facts (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`) now live in the `egggit` workspace crate (`crates/egggit/`). Mutating worktree operations live in `src/worktree/`.
+The `git` module previously provided Git session management for tracking repository state and worktree operations. As of the [native tool crate extraction](native_crates.md), this module has been **removed** from `src/`. Read-only git facts (`repo_status`, `diff_summary`, `changed_files`, `file_diff`, `validate_patch`, `list_worktrees`) now live in the `egggit` workspace crate (`crates/egggit/`). **Mutating worktree operations have been removed** — worktree is now read-only in `codegg-core`.
 
 The Codegg `git` tool (`src/tool/git.rs`) remains a low-level command wrapper and continues to expose the model-facing `git` name unchanged. The `commit` and `review` tools consume `egggit` for diff facts and keep their mutation/permission flow in codegg. Native tool calls (including `git`, `commit`, and `review`) execute through `ToolRegistry::execute_capture(...)` in `AgentLoop::execute_tool_calls`; structured provenance is recorded via `tracing::debug!` without changing the model-facing string output.
 
 ## Overview
 
-**Location**: `crates/egggit/` (read-only git facts) and `src/worktree/` (mutating worktree operations)
+**Location**: `crates/egggit/` (read-only git facts) and `crates/codegg-core/src/worktree.rs` (read-only)
 
 **Key Responsibilities**:
 - Read-only git facts via the `egggit` crate (status, diff summary, changed files, file diff, patch validation, worktree list)
-- Per-session worktree management (creation/removal) in `src/worktree/`
+- Read-only worktree support in `codegg-core` (list worktrees via `egggit::list_worktrees`)
 - Git status information for prompt injection (consumed from `egggit::repo_status`)
-- Mutating operations (commit, worktree create/remove) stay in codegg under the permission flow
+- Mutating operations (commit) stay in codegg under the permission flow
 
 ## Key Types
 

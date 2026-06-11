@@ -815,7 +815,7 @@ src/
 ├── tui/          # Terminal UI
 ├── upgrade/      # Self-upgrade functionality
 ├── util/         # Utilities
-└── worktree/     # Git worktree support
+└── research/     # Research pipeline
 
 crates/
 ├── codegg-config/      # Configuration schema, paths, loading, validation, watching
