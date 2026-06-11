@@ -216,6 +216,7 @@ struct SecurityContextPacket {
     references: Vec<LocationSummary>,
     call_hierarchy: Option<CallHierarchySummary>,
     overlay: Option<SemanticOverlaySummary>,
+    preset: Option<String>,
     notes: Vec<String>,
     limits: SecurityContextLimits,
 }
@@ -268,6 +269,8 @@ struct LspInput {
     security_categories: Option<Vec<String>>,
     #[serde(default)]
     max_risk_markers: Option<usize>,
+    #[serde(default)]
+    security_preset: Option<String>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -393,6 +396,55 @@ impl LspTool {
         }
 
         Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn resolve_security_context_settings(
+        parsed: &LspInput,
+        has_position: bool,
+    ) -> Result<(Option<Vec<String>>, u32, usize, bool, Option<String>), ToolError> {
+        let mut categories: Option<Vec<String>> = None;
+        let mut radius = DEFAULT_SECURITY_CONTEXT_RADIUS;
+        let mut max_risk_markers = DEFAULT_MAX_RISK_MARKERS;
+        let mut include_call_hierarchy = has_position;
+        let mut preset_note: Option<String> = None;
+
+        if let Some(ref preset_str) = parsed.security_preset {
+            let preset = super::lsp_security::parse_security_preset(Some(preset_str.as_str()))
+                .map_err(ToolError::Execution)?;
+            if let Some(preset) = preset {
+                let defaults = super::lsp_security::preset_defaults(preset);
+                categories = Some(defaults.categories);
+                radius = defaults.radius;
+                max_risk_markers = defaults.max_risk_markers;
+                include_call_hierarchy = defaults.include_call_hierarchy;
+                preset_note = Some(defaults.note.to_string());
+            }
+        }
+
+        if let Some(ref cats) = parsed.security_categories {
+            categories = Some(cats.clone());
+        }
+        if let Some(r) = parsed.radius {
+            radius = r;
+        }
+        if let Some(m) = parsed.max_risk_markers {
+            max_risk_markers = m;
+        }
+        if let Some(h) = parsed.include_call_hierarchy {
+            include_call_hierarchy = h;
+        }
+
+        radius = radius.min(MAX_SECURITY_CONTEXT_RADIUS);
+        max_risk_markers = max_risk_markers.min(MAX_RISK_MARKERS);
+
+        Ok((
+            categories,
+            radius,
+            max_risk_markers,
+            include_call_hierarchy,
+            preset_note,
+        ))
     }
 
     async fn resolve_semantic_check_content(
@@ -927,6 +979,11 @@ impl Tool for LspTool {
                 "max_risk_markers": {
                     "type": "number",
                     "description": "Maximum risk markers to return for securityContext. Default 80, max 200."
+                },
+                "security_preset": {
+                    "type": "string",
+                    "enum": ["rust_server", "rust_cli", "web_backend", "dependency_review", "unsafe_review"],
+                    "description": "Optional securityContext preset that sets default risk categories, radius, marker limits, and call-hierarchy behavior. Explicit inputs override preset defaults."
                 }
             },
             "required": ["operation"]
@@ -1695,16 +1752,11 @@ impl Tool for LspTool {
                 }
 
                 let file_str = file.to_string_lossy().to_string();
-                let radius = parsed
-                    .radius
-                    .unwrap_or(DEFAULT_SECURITY_CONTEXT_RADIUS)
-                    .min(MAX_SECURITY_CONTEXT_RADIUS);
                 let has_position = parsed.line.is_some() && parsed.column.is_some();
                 let has_proposed = parsed.content.is_some() || parsed.patch.is_some();
-                let max_risk_markers = parsed
-                    .max_risk_markers
-                    .unwrap_or(DEFAULT_MAX_RISK_MARKERS)
-                    .min(MAX_RISK_MARKERS);
+
+                let (categories, radius, max_risk_markers, include_call_hierarchy, preset_note) =
+                    Self::resolve_security_context_settings(&parsed, has_position)?;
 
                 let target = if has_position {
                     Some(SemanticContextTarget {
@@ -1720,8 +1772,6 @@ impl Tool for LspTool {
                     None
                 };
 
-                let include_call_hierarchy = parsed.include_call_hierarchy.unwrap_or(has_position);
-
                 if include_call_hierarchy && !has_position {
                     return Err(ToolError::Execution(
                         "securityContext call hierarchy requires both line and column".to_string(),
@@ -1734,11 +1784,8 @@ impl Tool for LspTool {
                     Self::build_source_excerpt(&file, None, radius)?
                 };
 
-                let risk_scan = super::lsp_security::scan_risk_markers(
-                    &excerpt,
-                    &parsed.security_categories,
-                    max_risk_markers,
-                );
+                let risk_scan =
+                    super::lsp_security::scan_risk_markers(&excerpt, &categories, max_risk_markers);
                 let risk_markers = risk_scan.markers;
                 let risk_markers_truncated = risk_scan.truncated;
 
@@ -1964,6 +2011,9 @@ impl Tool for LspTool {
                 if let Some(err) = refs_error {
                     notes.push(format!("references unavailable: {err}"));
                 }
+                if let Some(note) = preset_note {
+                    notes.push(note);
+                }
 
                 let security_diag_count = security_diags.len();
                 let security_sym_count = security_syms.len();
@@ -1989,6 +2039,7 @@ impl Tool for LspTool {
                     references,
                     call_hierarchy,
                     overlay,
+                    preset: parsed.security_preset.clone(),
                     notes,
                     limits: SecurityContextLimits {
                         risk_markers_truncated,
@@ -2177,6 +2228,11 @@ mod tests {
                 "max_risk_markers": {
                     "type": "number",
                     "description": "Maximum risk markers to return for securityContext. Default 80, max 200."
+                },
+                "security_preset": {
+                    "type": "string",
+                    "enum": ["rust_server", "rust_cli", "web_backend", "dependency_review", "unsafe_review"],
+                    "description": "Optional securityContext preset that sets default risk categories, radius, marker limits, and call-hierarchy behavior. Explicit inputs override preset defaults."
                 }
             },
             "required": ["operation"]
@@ -2756,5 +2812,141 @@ diff --git a/src/lib.rs b/src/lib.rs
             hierarchy_desc.contains("securityContext"),
             "include_call_hierarchy description should mention securityContext: {hierarchy_desc}"
         );
+    }
+
+    // ── securityContext preset tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn security_context_no_preset_preserves_defaults() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        // No preset → preset field should be null
+        assert!(v["results"]["preset"].is_null());
+    }
+
+    #[tokio::test]
+    async fn security_context_preset_sets_categories() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "security_preset": "rust_cli"
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(v["results"]["preset"], "rust_cli");
+        // Notes should mention the preset
+        let notes = v["results"]["notes"].as_array().unwrap();
+        assert!(notes
+            .iter()
+            .any(|n| n.as_str().unwrap().contains("rust_cli")));
+    }
+
+    #[tokio::test]
+    async fn security_context_explicit_categories_override_preset() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "security_preset": "rust_server",
+                "security_categories": ["auth"]
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let markers = v["results"]["risk_markers"].as_array().unwrap();
+        for marker in markers {
+            assert_eq!(
+                marker["category"].as_str().unwrap(),
+                "auth",
+                "explicit categories should override preset"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn security_context_invalid_preset_rejected() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "security_preset": "bogus_preset"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("unknown security_preset")),
+            "expected unknown preset error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_context_preset_visible_in_output() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "security_preset": "unsafe_review"
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(v["results"]["preset"], "unsafe_review");
+    }
+
+    #[test]
+    fn security_preset_schema_includes_enum() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let params = tool.parameters();
+        let prop = params["properties"]["security_preset"]
+            .as_object()
+            .expect("security_preset property should be an object");
+        assert_eq!(prop["type"], "string");
+        let enum_vals = prop["enum"]
+            .as_array()
+            .expect("security_preset.enum should be an array");
+        assert!(enum_vals.iter().any(|v| v.as_str() == Some("rust_server")));
+        assert!(enum_vals.iter().any(|v| v.as_str() == Some("rust_cli")));
+        assert!(enum_vals.iter().any(|v| v.as_str() == Some("web_backend")));
+        assert!(enum_vals
+            .iter()
+            .any(|v| v.as_str() == Some("dependency_review")));
+        assert!(enum_vals
+            .iter()
+            .any(|v| v.as_str() == Some("unsafe_review")));
     }
 }

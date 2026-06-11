@@ -307,6 +307,130 @@ pub(crate) fn scan_risk_markers(
     RiskScanResult { markers, truncated }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SecurityPreset {
+    RustServer,
+    RustCli,
+    WebBackend,
+    DependencyReview,
+    UnsafeReview,
+}
+
+pub(crate) fn parse_security_preset(input: Option<&str>) -> Result<Option<SecurityPreset>, String> {
+    match input {
+        None => Ok(None),
+        Some("rust_server") => Ok(Some(SecurityPreset::RustServer)),
+        Some("rust_cli") => Ok(Some(SecurityPreset::RustCli)),
+        Some("web_backend") => Ok(Some(SecurityPreset::WebBackend)),
+        Some("dependency_review") => Ok(Some(SecurityPreset::DependencyReview)),
+        Some("unsafe_review") => Ok(Some(SecurityPreset::UnsafeReview)),
+        Some(other) => Err(format!(
+            "unknown security_preset \"{other}\": supported values are rust_server, rust_cli, web_backend, dependency_review, unsafe_review"
+        )),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SecurityPresetDefaults {
+    pub categories: Vec<String>,
+    pub radius: u32,
+    pub max_risk_markers: usize,
+    pub include_call_hierarchy: bool,
+    pub note: &'static str,
+}
+
+pub(crate) fn preset_defaults(preset: SecurityPreset) -> SecurityPresetDefaults {
+    match preset {
+        SecurityPreset::RustServer => SecurityPresetDefaults {
+            categories: vec![
+                "auth",
+                "network",
+                "serialization",
+                "filesystem",
+                "process",
+                "secrets",
+                "sql",
+                "path_traversal",
+                "crypto",
+                "unsafe",
+                "concurrency",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            radius: 120,
+            max_risk_markers: 120,
+            include_call_hierarchy: true,
+            note: "security preset rust_server applied: tuned for Rust network service review",
+        },
+        SecurityPreset::RustCli => SecurityPresetDefaults {
+            categories: vec![
+                "process",
+                "filesystem",
+                "secrets",
+                "path_traversal",
+                "serialization",
+                "crypto",
+                "unsafe",
+                "concurrency",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            radius: 100,
+            max_risk_markers: 100,
+            include_call_hierarchy: true,
+            note: "security preset rust_cli applied: tuned for CLI and local automation review",
+        },
+        SecurityPreset::WebBackend => SecurityPresetDefaults {
+            categories: vec![
+                "auth",
+                "network",
+                "serialization",
+                "sql",
+                "secrets",
+                "filesystem",
+                "path_traversal",
+                "crypto",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            radius: 120,
+            max_risk_markers: 120,
+            include_call_hierarchy: true,
+            note: "security preset web_backend applied: tuned for web handler and database review",
+        },
+        SecurityPreset::DependencyReview => SecurityPresetDefaults {
+            categories: vec![
+                "secrets",
+                "filesystem",
+                "process",
+                "network",
+                "serialization",
+                "crypto",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            radius: 80,
+            max_risk_markers: 80,
+            include_call_hierarchy: false,
+            note: "security preset dependency_review applied: tuned for dependency-sensitive files",
+        },
+        SecurityPreset::UnsafeReview => SecurityPresetDefaults {
+            categories: vec!["unsafe", "concurrency", "filesystem", "process"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            radius: 160,
+            max_risk_markers: 120,
+            include_call_hierarchy: true,
+            note: "security preset unsafe_review applied: focused on unsafe and concurrency review",
+        },
+    }
+}
+
 use serde::Serialize;
 
 #[cfg(test)]
@@ -558,5 +682,92 @@ mod tests {
             end_column: 1,
         }];
         assert!(is_security_relevant_symbol(&syms[0], &markers, None));
+    }
+
+    #[test]
+    fn security_preset_parse_accepts_all_known_presets() {
+        assert_eq!(parse_security_preset(None).unwrap(), None);
+        assert_eq!(
+            parse_security_preset(Some("rust_server")).unwrap(),
+            Some(SecurityPreset::RustServer)
+        );
+        assert_eq!(
+            parse_security_preset(Some("rust_cli")).unwrap(),
+            Some(SecurityPreset::RustCli)
+        );
+        assert_eq!(
+            parse_security_preset(Some("web_backend")).unwrap(),
+            Some(SecurityPreset::WebBackend)
+        );
+        assert_eq!(
+            parse_security_preset(Some("dependency_review")).unwrap(),
+            Some(SecurityPreset::DependencyReview)
+        );
+        assert_eq!(
+            parse_security_preset(Some("unsafe_review")).unwrap(),
+            Some(SecurityPreset::UnsafeReview)
+        );
+    }
+
+    #[test]
+    fn security_preset_parse_rejects_unknown() {
+        let err = parse_security_preset(Some("bogus")).unwrap_err();
+        assert!(err.contains("unknown security_preset"));
+        assert!(err.contains("bogus"));
+    }
+
+    #[test]
+    fn rust_server_preset_defaults_match_expected() {
+        let d = preset_defaults(SecurityPreset::RustServer);
+        assert_eq!(d.radius, 120);
+        assert_eq!(d.max_risk_markers, 120);
+        assert!(d.include_call_hierarchy);
+        assert!(d.categories.contains(&"auth".to_string()));
+        assert!(d.categories.contains(&"network".to_string()));
+        assert!(d.categories.contains(&"sql".to_string()));
+        assert_eq!(d.categories.len(), 11);
+    }
+
+    #[test]
+    fn rust_cli_preset_defaults_match_expected() {
+        let d = preset_defaults(SecurityPreset::RustCli);
+        assert_eq!(d.radius, 100);
+        assert_eq!(d.max_risk_markers, 100);
+        assert!(d.include_call_hierarchy);
+        assert!(d.categories.contains(&"process".to_string()));
+        assert!(!d.categories.contains(&"auth".to_string()));
+        assert_eq!(d.categories.len(), 8);
+    }
+
+    #[test]
+    fn web_backend_preset_defaults_match_expected() {
+        let d = preset_defaults(SecurityPreset::WebBackend);
+        assert_eq!(d.radius, 120);
+        assert_eq!(d.max_risk_markers, 120);
+        assert!(d.include_call_hierarchy);
+        assert!(d.categories.contains(&"auth".to_string()));
+        assert!(d.categories.contains(&"sql".to_string()));
+        assert_eq!(d.categories.len(), 8);
+    }
+
+    #[test]
+    fn dependency_review_preset_disables_call_hierarchy_by_default() {
+        let d = preset_defaults(SecurityPreset::DependencyReview);
+        assert!(!d.include_call_hierarchy);
+        assert_eq!(d.radius, 80);
+        assert_eq!(d.max_risk_markers, 80);
+        assert!(d.categories.contains(&"secrets".to_string()));
+        assert_eq!(d.categories.len(), 6);
+    }
+
+    #[test]
+    fn unsafe_review_preset_focuses_unsafe_and_concurrency() {
+        let d = preset_defaults(SecurityPreset::UnsafeReview);
+        assert!(d.categories.contains(&"unsafe".to_string()));
+        assert!(d.categories.contains(&"concurrency".to_string()));
+        assert_eq!(d.radius, 160);
+        assert_eq!(d.max_risk_markers, 120);
+        assert!(d.include_call_hierarchy);
+        assert_eq!(d.categories.len(), 4);
     }
 }

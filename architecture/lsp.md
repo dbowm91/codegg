@@ -409,6 +409,7 @@ It combines:
 | `security_categories` | string[] | all | Filter risk marker categories |
 | `max_risk_markers` | number | 80 | Max risk markers (max 200) |
 | `include_call_hierarchy` | bool | true when position | Include call hierarchy when line+column provided |
+| `security_preset` | string | none | Optional preset: rust_server, rust_cli, web_backend, dependency_review, unsafe_review |
 
 **Risk marker categories:** `auth`, `crypto`, `filesystem`, `network`, `process`, `unsafe`, `serialization`, `sql`, `secrets`, `path_traversal`, `concurrency`
 
@@ -428,6 +429,20 @@ It combines:
 **Error visibility:** Nonfatal LSP subrequest failures (diagnostics, document symbols, definitions, references) are surfaced in the `notes` array rather than failing the whole packet. This allows partial results when individual LSP operations fail.
 
 **Implementation:** Risk marker scanning, pattern tables, and security-relevant filtering helpers live in `src/tool/lsp_security.rs`. The scanner collects all markers then caps, ensuring precise truncation flags. Diagnostics and symbols are filtered for security relevance before capping, so relevant items after many irrelevant ones are not dropped.
+
+### Security context presets
+
+`securityContext` supports optional presets through `security_preset`. Presets tune default risk categories, excerpt radius, marker count, and call-hierarchy inclusion. Explicit input fields override preset defaults.
+
+| Preset | Use case | Categories | Radius | Max markers | Call hierarchy |
+|--------|----------|------------|--------|-------------|----------------|
+| `rust_server` | Rust services/APIs/daemons | auth, network, serialization, filesystem, process, secrets, sql, path_traversal, crypto, unsafe, concurrency | 120 | 120 | true when positioned |
+| `rust_cli` | CLI/local automation | process, filesystem, secrets, path_traversal, serialization, crypto, unsafe, concurrency | 100 | 100 | true when positioned |
+| `web_backend` | Web handlers/auth/database | auth, network, serialization, sql, secrets, filesystem, path_traversal, crypto | 120 | 120 | true when positioned |
+| `dependency_review` | manifests/build/dependency-sensitive files | secrets, filesystem, process, network, serialization, crypto | 80 | 80 | false by default |
+| `unsafe_review` | unsafe/FFI/concurrency review | unsafe, concurrency, filesystem, process | 160 | 120 | true when positioned |
+
+Preset defaults are retrieval defaults, not vulnerability policies. They do not change the read-only contract or add external scanners. Explicit user inputs (`security_categories`, `radius`, `max_risk_markers`, `include_call_hierarchy`) always override preset defaults.
 
 ### Position Convention
 
