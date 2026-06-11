@@ -247,8 +247,8 @@ Input parameters:
 - `line`, `column` (optional, both-or-neither): 1-indexed target position
 - `radius` (optional, default 40, max 120): lines above/below for excerpt
 - `include_references` / `include_definitions` / `include_overlay` / `include_source_actions` (optional booleans)
-- `include_call_hierarchy` (optional, default false): include call hierarchy information (requires line+column)
-- `include_type_hierarchy` (optional, default false): include type hierarchy information (requires line+column)
+- `include_call_hierarchy` (optional, default false): include call hierarchy information (requires line+column); requests without a target position are rejected rather than silently omitted
+- `include_type_hierarchy` (optional, default false): include type hierarchy information (requires line+column); requests without a target position are rejected rather than silently omitted
 - `content` / `patch` (optional, mutually exclusive): for overlay diagnostics
 
 Source-action hints: when `include_source_actions` is true, `semanticContext` includes a `source_actions` array of `SemanticSourceActionHint` objects. Each hint has `action` (string identifier), `available` (bool), `preview` (Option\<WorkspaceEditPreview\>), and `error` (Option\<String\>). Currently only `source.organizeImports` is supported. Hints reuse the existing `sourceActionPreview` behavior (preview-only, no command execution, no mutation). Source-action failures are non-fatal; they set `error` on the individual hint but do not fail the whole packet. Available hints affect `result_count`. A pure helper `source_action_hint_from_result` converts results to hints, and `collect_source_action_hints` iterates the hardcoded allowlist.
@@ -264,7 +264,9 @@ Hierarchy operations (`callHierarchy`, `typeHierarchy`) follow a consistent shap
 - `"outgoing"` — callees / subtypes only
 - `"both"` (default) — both directions
 
-Invalid values fall back to `"both"` with a warning.
+Invalid values return an error.
+
+Hierarchy operations are shallow and non-recursive — they prepare the target item and request only immediate relationships. Unsupported language servers may return empty sections or error fields. Prepare operations open/sync the file from disk before requesting.
 
 #### CallHierarchySummary
 

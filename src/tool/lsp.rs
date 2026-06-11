@@ -260,6 +260,14 @@ fn uri_to_path(uri: &crate::lsp::lsp_types::Uri) -> String {
         .unwrap_or(raw)
 }
 
+/// Pure helper: cap a vector to a maximum length, returning the capped
+/// vector and whether truncation occurred.
+#[allow(dead_code)]
+fn take_capped<T>(items: Vec<T>, max: usize) -> (Vec<T>, bool) {
+    let truncated = items.len() > max;
+    (items.into_iter().take(max).collect(), truncated)
+}
+
 fn symbol_kind_to_string(kind: crate::lsp::lsp_types::SymbolKind) -> String {
     match kind {
         crate::lsp::lsp_types::SymbolKind::FILE => "file",
@@ -574,6 +582,7 @@ impl LspTool {
             }
         };
 
+        let items_truncated = items.len() > MAX_HIERARCHY_ITEMS;
         let item_summaries: Vec<HierarchyItemSummary> = items
             .iter()
             .take(MAX_HIERARCHY_ITEMS)
@@ -595,8 +604,10 @@ impl LspTool {
         let primary = &items[0];
         let mut incoming = Vec::new();
         let mut incoming_error = None;
+        let mut incoming_raw_len = 0usize;
         let mut outgoing = Vec::new();
         let mut outgoing_error = None;
+        let mut outgoing_raw_len = 0usize;
 
         if matches!(
             direction,
@@ -605,6 +616,7 @@ impl LspTool {
         ) {
             match ops.incoming_calls(primary.clone()).await {
                 Ok(calls) => {
+                    incoming_raw_len = calls.len();
                     let capped: Vec<_> = calls.into_iter().take(MAX_HIERARCHY_EDGES).collect();
                     incoming = capped
                         .iter()
@@ -632,6 +644,7 @@ impl LspTool {
         ) {
             match ops.outgoing_calls(primary.clone()).await {
                 Ok(calls) => {
+                    outgoing_raw_len = calls.len();
                     let capped: Vec<_> = calls.into_iter().take(MAX_HIERARCHY_EDGES).collect();
                     outgoing = capped
                         .iter()
@@ -652,9 +665,9 @@ impl LspTool {
             }
         }
 
-        let truncated = item_summaries.len() >= MAX_HIERARCHY_ITEMS
-            || incoming.len() >= MAX_HIERARCHY_EDGES
-            || outgoing.len() >= MAX_HIERARCHY_EDGES;
+        let truncated = items_truncated
+            || incoming_raw_len > MAX_HIERARCHY_EDGES
+            || outgoing_raw_len > MAX_HIERARCHY_EDGES;
 
         CallHierarchySummary {
             items: item_summaries,
@@ -691,6 +704,7 @@ impl LspTool {
             }
         };
 
+        let items_truncated = items.len() > MAX_HIERARCHY_ITEMS;
         let item_summaries: Vec<HierarchyItemSummary> = items
             .iter()
             .take(MAX_HIERARCHY_ITEMS)
@@ -712,8 +726,10 @@ impl LspTool {
         let primary = &items[0];
         let mut supertypes = Vec::new();
         let mut supertypes_error = None;
+        let mut supertypes_raw_len = 0usize;
         let mut subtypes = Vec::new();
         let mut subtypes_error = None;
+        let mut subtypes_raw_len = 0usize;
 
         if matches!(
             direction,
@@ -722,6 +738,7 @@ impl LspTool {
         ) {
             match ops.supertypes(primary.clone()).await {
                 Ok(items) => {
+                    supertypes_raw_len = items.len();
                     let capped: Vec<_> = items.into_iter().take(MAX_HIERARCHY_ITEMS).collect();
                     supertypes = capped
                         .iter()
@@ -741,6 +758,7 @@ impl LspTool {
         ) {
             match ops.subtypes(primary.clone()).await {
                 Ok(items) => {
+                    subtypes_raw_len = items.len();
                     let capped: Vec<_> = items.into_iter().take(MAX_HIERARCHY_ITEMS).collect();
                     subtypes = capped
                         .iter()
@@ -753,9 +771,9 @@ impl LspTool {
             }
         }
 
-        let truncated = item_summaries.len() >= MAX_HIERARCHY_ITEMS
-            || supertypes.len() >= MAX_HIERARCHY_ITEMS
-            || subtypes.len() >= MAX_HIERARCHY_ITEMS;
+        let truncated = items_truncated
+            || supertypes_raw_len > MAX_HIERARCHY_ITEMS
+            || subtypes_raw_len > MAX_HIERARCHY_ITEMS;
 
         TypeHierarchySummary {
             items: item_summaries,
@@ -1327,6 +1345,17 @@ impl Tool for LspTool {
                     None
                 };
 
+                // Hierarchy flags require a full position
+                let include_call_hierarchy = parsed.include_call_hierarchy.unwrap_or(false);
+                let include_type_hierarchy = parsed.include_type_hierarchy.unwrap_or(false);
+
+                if (include_call_hierarchy || include_type_hierarchy) && !has_position {
+                    return Err(ToolError::Execution(
+                        "semanticContext hierarchy sections require both line and column"
+                            .to_string(),
+                    ));
+                }
+
                 // Phase 3: source excerpt
                 let (excerpt, excerpt_truncated) = if has_position {
                     Self::build_source_excerpt(&file, parsed.line, radius)?
@@ -1523,10 +1552,7 @@ impl Tool for LspTool {
                 let source_action_count =
                     source_actions.iter().filter(|hint| hint.available).count();
 
-                // Call and type hierarchy (opt-in)
-                let include_call_hierarchy = parsed.include_call_hierarchy.unwrap_or(false);
-                let include_type_hierarchy = parsed.include_type_hierarchy.unwrap_or(false);
-
+                // Call and type hierarchy (opt-in, position validated above)
                 let call_hierarchy = if include_call_hierarchy && has_position {
                     Some(
                         self.build_call_hierarchy_summary(
@@ -2058,5 +2084,37 @@ diff --git a/src/lib.rs b/src/lib.rs
         let (_dir, path) = temp_rs_file(&content);
         let (_excerpt, truncated) = LspTool::build_source_excerpt(&path, Some(25), 40).unwrap();
         assert!(truncated);
+    }
+
+    #[test]
+    fn take_capped_exact_cap_not_truncated() {
+        let items: Vec<i32> = (0..32).collect();
+        let (capped, truncated) = take_capped(items, 32);
+        assert_eq!(capped.len(), 32);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn take_capped_over_cap_truncated() {
+        let items: Vec<i32> = (0..33).collect();
+        let (capped, truncated) = take_capped(items, 32);
+        assert_eq!(capped.len(), 32);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn take_capped_under_cap_not_truncated() {
+        let items: Vec<i32> = (0..10).collect();
+        let (capped, truncated) = take_capped(items, 32);
+        assert_eq!(capped.len(), 10);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn take_capped_empty_not_truncated() {
+        let items: Vec<i32> = Vec::new();
+        let (capped, truncated) = take_capped(items, 32);
+        assert!(capped.is_empty());
+        assert!(!truncated);
     }
 }

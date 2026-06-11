@@ -14,6 +14,7 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 - Compact semantic context packets (semanticContext) — combines source excerpt, diagnostics, symbols, optional definition/reference/overlay information into a bounded pre-edit/pre-review context packet
 - Language detection from file extensions
 - Project root detection
+- Shallow call/type hierarchy queries (`callHierarchy`, `typeHierarchy`) — read-only, bounded, non-recursive relationship summaries for the symbol at a target position.
 - Compact agent-facing output DTOs (not raw LSP JSON)
 
 ## Architecture
@@ -320,6 +321,22 @@ Operation-level root enforcement: `semantic_check_preview` accepts `allowed_root
 
 Restore runs even if diagnostics or symbol collection fails. Restore failures are logged and surfaced via `restore_error: Option<String>` in the response (and `restored_disk_view: false`). `SemanticCheckPreview` also includes `diagnostics_error: Option<String>` and `symbols_error: Option<String>` — each is non-None when the corresponding LSP request fails, replacing previously swallowed empty-vector fallbacks. `diagnostics_may_still_be_warming` indicates the LSP server may not have fully processed the overlay yet. Diagnostics may be warming or stale (publishDiagnostics is async). The operation is single-file in the first pass; multi-file overlays are unsupported in this pass.
 
+### Hierarchy operations
+
+`callHierarchy` and `typeHierarchy` are read-only code-intelligence operations. They require `file_path`, `line`, and `column`. Both operations default to `direction="both"`.
+
+`callHierarchy` maps:
+- `incoming` → callers of the target symbol
+- `outgoing` → calls made by the target symbol
+
+`typeHierarchy` maps:
+- `incoming` → supertypes
+- `outgoing` → subtypes
+
+The first pass is shallow and non-recursive. It prepares the target hierarchy item and requests only the immediate incoming/outgoing or super/subtype relationships. Unsupported language servers may return empty sections or error fields.
+
+Hierarchy prepare operations use `ensure_file_open_from_disk` to open/sync the file from disk before sending the prepare request, ensuring position-sensitive behavior against a document view known to the server.
+
 ### Semantic context packets
 
 `semanticContext` is the preferred agent-facing pre-edit/pre-review context operation. It combines a bounded source excerpt with current diagnostics, document symbols, optional definition/reference information, optional overlay diagnostics for proposed content or a single-file patch, optional source-action hints, and optional call/type hierarchy information. It is read-only and never applies changes.
@@ -332,8 +349,8 @@ Input parameters:
 - `include_definitions` (optional, default true when line+column): include goToDefinition results
 - `include_overlay` (optional, default true when content/patch provided): include overlay diagnostics
 - `include_source_actions` (optional, default false): include source-action hints (e.g. `source.organizeImports`) in the packet; each hint is a `SemanticSourceActionHint` with `action`, `available`, `preview` (optional `WorkspaceEditPreview`), and `error` (optional); failures are per-hint and do not fail the whole packet
-- `include_call_hierarchy` (optional, default false): include call hierarchy information (requires line+column); returns incoming and outgoing callers/callees
-- `include_type_hierarchy` (optional, default false): include type hierarchy information (requires line+column); returns supertypes and subtypes
+- `include_call_hierarchy` (optional, default false): include call hierarchy information (requires line+column); requests without a target position are rejected with a validation error
+- `include_type_hierarchy` (optional, default false): include type hierarchy information (requires line+column); requests without a target position are rejected with a validation error
 - `content` / `patch` (optional, mutually exclusive): proposed content for overlay diagnostics
 
 All output sections are bounded:
@@ -404,7 +421,7 @@ pub enum LspError {
 }
 ```
 
-`HierarchyDirection` parsing is available via `HierarchyDirection::parse(direction)` — accepts `"incoming"`, `"outgoing"`, `"both"`, or omitted (defaults to `"both"`). Invalid values fall back to `"both"` with a warning.
+`HierarchyDirection` parsing is available via `HierarchyDirection::parse(direction)` — accepts `"incoming"`, `"outgoing"`, `"both"`, or omitted (defaults to `"both"`). Invalid values return an error.
 
 ## Implementation Notes
 

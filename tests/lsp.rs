@@ -1745,20 +1745,86 @@ fn semanticContext_hierarchy_requires_line_column() {
     let tool = make_tool();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        // include_call_hierarchy without line+column should not fail -
-        // it just won't produce hierarchy results
-        let result = tool
+        let err = tool
             .execute(serde_json::json!({
                 "operation": "semanticContext",
                 "file_path": "src/tool/mod.rs",
                 "include_call_hierarchy": true,
                 "include_type_hierarchy": true
             }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("hierarchy sections require both line and column")),
+            "expected hierarchy position error, got: {err:?}"
+        );
+    });
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semanticContext_hierarchy_rejects_line_without_column() {
+    let tool = make_tool();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "semanticContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "include_call_hierarchy": true
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("both line and column")),
+            "expected partial position error, got: {err:?}"
+        );
+    });
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semanticContext_hierarchy_rejects_column_without_line() {
+    let tool = make_tool();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "semanticContext",
+                "file_path": "src/tool/mod.rs",
+                "column": 1,
+                "include_type_hierarchy": true
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("both line and column")),
+            "expected partial position error, got: {err:?}"
+        );
+    });
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn semanticContext_hierarchy_with_position_accepts_flags() {
+    let tool = make_tool();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "semanticContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "include_call_hierarchy": true,
+                "include_type_hierarchy": true
+            }))
             .await;
-        // Should succeed - hierarchy flags without position just produce None sections
+        // Should succeed (hierarchy sections may have errors but validation passes)
         assert!(
             result.is_ok(),
-            "hierarchy flags without position should not fail: {result:?}"
+            "hierarchy flags with position should not fail validation: {result:?}"
         );
     });
 }

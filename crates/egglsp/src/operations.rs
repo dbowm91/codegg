@@ -823,7 +823,7 @@ impl LspOperations {
         line: u32,
         column: u32,
     ) -> Result<Vec<CallHierarchyItem>, LspError> {
-        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        let (key, _root) = self.service.ensure_file_open_from_disk(file_path).await?;
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?;
@@ -912,7 +912,7 @@ impl LspOperations {
         line: u32,
         column: u32,
     ) -> Result<Vec<TypeHierarchyItem>, LspError> {
-        let (key, _root) = self.service.get_or_create_client(file_path).await?;
+        let (key, _root) = self.service.ensure_file_open_from_disk(file_path).await?;
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?;
