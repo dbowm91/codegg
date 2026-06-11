@@ -119,6 +119,23 @@ async fn lsp_schema_includes_renamePreview_and_formatPreview() {
 
 #[tokio::test]
 #[allow(non_snake_case)]
+async fn lsp_schema_includes_sourceActionPreview() {
+    let tool = make_tool();
+    let params = tool.parameters();
+    let ops = params["properties"]["operation"]["enum"]
+        .as_array()
+        .expect("operation.enum should be an array");
+    assert!(ops
+        .iter()
+        .any(|v| v.as_str() == Some("sourceActionPreview")));
+    let action_param = params["properties"]["action"]
+        .as_object()
+        .expect("action property should be an object");
+    assert!(action_param.get("description").is_some());
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
 async fn renamePreview_requires_new_name() {
     let tool = make_tool();
     let err = tool
@@ -854,6 +871,150 @@ fn select_source_action_rejects_ambiguous_multiple_edits() {
         matches!(err, codegg::lsp::LspError::AmbiguousSourceAction(_, _)),
         "expected AmbiguousSourceAction, got: {err:?}"
     );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn select_source_action_rejects_code_action_command_only() {
+    use codegg::lsp::lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, Command};
+    use codegg::lsp::operations::{select_source_action_edit, SourceActionPreviewKind};
+    let actions = vec![CodeActionOrCommand::CodeAction(CodeAction {
+        title: "organize imports".into(),
+        kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+        edit: None,
+        command: Some(Command {
+            title: "organize imports".into(),
+            command: "source.organizeImports".into(),
+            arguments: None,
+        }),
+        ..Default::default()
+    })];
+    let err =
+        select_source_action_edit(SourceActionPreviewKind::OrganizeImports, actions).unwrap_err();
+    assert!(
+        matches!(err, codegg::lsp::LspError::CommandOnlySourceAction(_)),
+        "expected CommandOnlySourceAction for CodeAction with command but no edit, got: {err:?}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn select_source_action_ignores_nonmatching_actions() {
+    use codegg::lsp::lsp_types::{
+        CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit,
+    };
+    use codegg::lsp::operations::{select_source_action_edit, SourceActionPreviewKind};
+    use std::collections::HashMap;
+    let mut changes = HashMap::new();
+    changes.insert(
+        "file:///tmp/test.rs".parse().unwrap(),
+        vec![TextEdit {
+            range: codegg::lsp::lsp_types::Range::default(),
+            new_text: "// organized".into(),
+        }],
+    );
+    let actions = vec![
+        CodeActionOrCommand::CodeAction(CodeAction {
+            title: "quickfix something".into(),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        CodeActionOrCommand::CodeAction(CodeAction {
+            title: "organize imports".into(),
+            kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    ];
+    let ws_edit =
+        select_source_action_edit(SourceActionPreviewKind::OrganizeImports, actions).unwrap();
+    assert!(ws_edit.changes.as_ref().unwrap().len() == 1);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn select_source_action_accepts_child_kind() {
+    use codegg::lsp::lsp_types::{
+        CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit,
+    };
+    use codegg::lsp::operations::{select_source_action_edit, SourceActionPreviewKind};
+    use std::collections::HashMap;
+    let mut changes = HashMap::new();
+    changes.insert(
+        "file:///tmp/test.rs".parse().unwrap(),
+        vec![TextEdit {
+            range: codegg::lsp::lsp_types::Range::default(),
+            new_text: "// organized".into(),
+        }],
+    );
+    let actions = vec![CodeActionOrCommand::CodeAction(CodeAction {
+        title: "organize imports (rustfmt)".into(),
+        kind: Some(CodeActionKind::new("source.organizeImports.rustfmt")),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })];
+    let ws_edit =
+        select_source_action_edit(SourceActionPreviewKind::OrganizeImports, actions).unwrap();
+    assert!(ws_edit.changes.as_ref().unwrap().len() == 1);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn document_end_position_utf16_empty() {
+    use codegg::lsp::operations::document_end_position_utf16;
+    let pos = document_end_position_utf16("");
+    assert_eq!(pos.line, 0);
+    assert_eq!(pos.character, 0);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn document_end_position_utf16_single_line_ascii() {
+    use codegg::lsp::operations::document_end_position_utf16;
+    let pos = document_end_position_utf16("hello");
+    assert_eq!(pos.line, 0);
+    assert_eq!(pos.character, 5);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn document_end_position_utf16_ends_with_newline() {
+    use codegg::lsp::operations::document_end_position_utf16;
+    let pos = document_end_position_utf16("hello\n");
+    assert_eq!(pos.line, 1);
+    assert_eq!(pos.character, 0);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn document_end_position_utf16_multiline() {
+    use codegg::lsp::operations::document_end_position_utf16;
+    let pos = document_end_position_utf16("line1\nline2\nline3");
+    assert_eq!(pos.line, 2);
+    assert_eq!(pos.character, 5);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn document_end_position_utf16_unicode() {
+    use codegg::lsp::operations::document_end_position_utf16;
+    // emoji is 2 UTF-16 code units, 'a' is 1
+    let pos = document_end_position_utf16("a");
+    assert_eq!(pos.line, 0);
+    assert_eq!(pos.character, 1);
+    let pos = document_end_position_utf16("\u{1F600}");
+    assert_eq!(pos.line, 0);
+    assert_eq!(pos.character, 2);
 }
 
 #[tokio::test]

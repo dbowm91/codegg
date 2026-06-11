@@ -41,12 +41,14 @@ impl SourceActionPreviewKind {
 /// responses, select the single best edit-bearing `WorkspaceEdit`.
 ///
 /// Rules:
-/// - `Command` variants are rejected.
-/// - `CodeAction` values without `edit` are rejected.
+/// - Raw `Command` variants are rejected.
+/// - `CodeAction` with `command: Some(_)` but `edit: None` is command-only
+///   (command execution is disabled).
+/// - `CodeAction` values without `edit` or `command` are rejected.
 /// - Actions whose kind is not hierarchically compatible with the
 ///   requested kind are rejected.
 /// - Exactly one edit-bearing match is returned.
-/// - Zero matches → `NoEditForSourceAction`.
+/// - Zero matches → `NoEditForSourceAction` or `CommandOnlySourceAction`.
 /// - Multiple matches → `AmbiguousSourceAction`.
 pub fn select_source_action_edit(
     requested: SourceActionPreviewKind,
@@ -56,11 +58,15 @@ pub fn select_source_action_edit(
     let title = requested.title();
 
     let mut edit_bearing: Vec<(&CodeAction, &str)> = Vec::new();
+    let mut matching_command_only = 0usize;
 
     for action in &actions {
         match action {
             CodeActionOrCommand::Command(cmd) => {
-                trace!("source action: rejecting command variant: {}", cmd.command);
+                trace!(
+                    "source action: rejecting raw Command variant: {}",
+                    cmd.command
+                );
             }
             CodeActionOrCommand::CodeAction(ca) => {
                 let kind_matches = match &ca.kind {
@@ -82,8 +88,17 @@ pub fn select_source_action_edit(
                 }
                 if let Some(_edit) = &ca.edit {
                     edit_bearing.push((ca, title));
+                } else if ca.command.is_some() {
+                    trace!(
+                        "source action: rejecting action '{}' (command-only, no edit)",
+                        ca.title
+                    );
+                    matching_command_only += 1;
                 } else {
-                    trace!("source action: rejecting action '{}' (no edit)", ca.title);
+                    trace!(
+                        "source action: rejecting action '{}' (no edit, no command)",
+                        ca.title
+                    );
                 }
             }
         }
@@ -91,10 +106,10 @@ pub fn select_source_action_edit(
 
     match edit_bearing.len() {
         0 => {
-            let cmd_only = actions
+            let has_raw_command = actions
                 .iter()
-                .all(|a| matches!(a, CodeActionOrCommand::Command(_)));
-            if cmd_only && !actions.is_empty() {
+                .any(|a| matches!(a, CodeActionOrCommand::Command(_)));
+            if has_raw_command || matching_command_only > 0 {
                 Err(LspError::CommandOnlySourceAction(title.to_string()))
             } else {
                 Err(LspError::NoEditForSourceAction(title.to_string()))
@@ -115,6 +130,38 @@ pub fn select_source_action_edit(
             ))
         }
     }
+}
+
+/// Compute the LSP `Position` at the end of a document, using UTF-16 code
+/// units for the character offset (as required by the LSP specification).
+///
+/// - empty string → `(0, 0)`
+/// - one-line ASCII text → `(0, len)`
+/// - text ending in newline → final line is the empty line after the
+///   newline, character `0`
+/// - unicode text counts UTF-16 code units, not bytes or chars
+pub fn document_end_position_utf16(text: &str) -> Position {
+    if text.is_empty() {
+        return Position {
+            line: 0,
+            character: 0,
+        };
+    }
+    let mut line: u32 = 0;
+    let mut character: u32 = 0;
+    for c in text.chars() {
+        if c == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += c.len_utf16() as u32;
+        }
+    }
+    // If the text ends with a newline, the cursor is at the start of the
+    // next (empty) line — which is already correct from the loop.
+    // If it does not end with a newline, character points to the end of
+    // the last line.
+    Position { line, character }
 }
 
 pub struct LspOperations {
@@ -626,6 +673,15 @@ impl LspOperations {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?;
 
+        let text = tokio::fs::read_to_string(file_path).await.map_err(|e| {
+            LspError::RequestFailed(format!(
+                "failed to read file {}: {}",
+                file_path.display(),
+                e
+            ))
+        })?;
+        let end = document_end_position_utf16(&text);
+
         let params = serde_json::to_value(CodeActionParams {
             text_document: TextDocumentIdentifier {
                 uri: url_to_uri(&uri)?,
@@ -635,10 +691,7 @@ impl LspOperations {
                     line: 0,
                     character: 0,
                 },
-                end: Position {
-                    line: u32::MAX,
-                    character: u32::MAX,
-                },
+                end,
             },
             context: CodeActionContext {
                 diagnostics: vec![],

@@ -284,7 +284,7 @@ Only these operations are model-facing:
 | `diagnostics` | (via DiagnosticsCollector) | `Vec<DiagnosticSummary>` (plus warming flag) |
 | `renamePreview` | `textDocument/rename` (after ensure open + optional prepareRename) | `WorkspaceEditPreview` (unified diff patches + metadata; preview-only) |
 | `formatPreview` | `textDocument/formatting` | `WorkspaceEditPreview` (unified diff patches; preview-only) |
-| `sourceActionPreview` | `textDocument/codeAction` (filtered to `source.organizeImports`) | `WorkspaceEditPreview` (unified diff patches; preview-only) |
+| `sourceActionPreview` | `textDocument/codeAction` (filtered to `source.organizeImports`; full-document range computed from synced file contents) | `WorkspaceEditPreview` (unified diff patches; preview-only) |
 
 `codeLens` is intentionally not exposed in the model-facing schema (remains available in `egglsp::operations` only).
 
@@ -292,9 +292,9 @@ Only these operations are model-facing:
 
 ### Preview-only edits
 
-`renamePreview`, `formatPreview`, and `sourceActionPreview` request semantic edits from the language server, convert them into `WorkspaceEditPreview`, and return unified diff patches. They never write files. `sourceActionPreview` only accepts `source.organizeImports` (with aliases `organizeImports` and `organize_imports`); arbitrary code actions, command-only actions, and command execution are intentionally rejected. `format_preview` enforces `allowed_root` at the crate layer — paths outside the root are rejected with `LspError::PathOutsideRoot`. Large patches are structurally marked via `FileEditPreview.patch_omitted` (not by string matching). Applying a preview requires the existing mutating `apply_patch` tool and therefore follows normal Codegg permission handling.
+`renamePreview`, `formatPreview`, and `sourceActionPreview` request semantic edits from the language server, convert them into `WorkspaceEditPreview`, and return unified diff patches. They never write files. `sourceActionPreview` currently supports only `source.organizeImports` (with aliases `organizeImports` and `organize_imports`); arbitrary code actions and command execution are intentionally rejected. `CodeAction` values with `command: Some(_)` but `edit: None` are classified as command-only and rejected (command execution is disabled for safety). `format_preview` enforces `allowed_root` at the crate layer — paths outside the root are rejected with `LspError::PathOutsideRoot`. Large patches are structurally marked via `FileEditPreview.patch_omitted` (not by string matching). Applying a preview requires the existing mutating `apply_patch` tool and therefore follows normal Codegg permission handling.
 
-Hidden operations (in `egglsp::operations` for future use): `completion`, `signatureHelp`, `codeAction`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `goToImplementation`, and arbitrary non-organize-import source actions (follow-up).
+Hidden operations (in `egglsp::operations` for internal use only, not model-facing): `completion`, `signatureHelp`, `codeAction` (arbitrary code actions), `codeLens`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, and `goToImplementation`. The `source.organizeImports` source action is the only source action exposed to the model via `sourceActionPreview`.
 
 ### Position Convention
 

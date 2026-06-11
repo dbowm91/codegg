@@ -315,14 +315,12 @@ pub struct LspTool {
 | `hover` | Get hover information |
 | `documentSymbol` | List symbols in a document |
 | `workspaceSymbol` | Search symbols across workspace |
-| `goToImplementation` | Jump to implementation |
-| `prepareCallHierarchy` | Prepare call hierarchy |
-| `incomingCalls` | List incoming calls |
-| `outgoingCalls` | List outgoing calls |
-| `codeAction` | Get code actions |
-| `codeLens` | Get code lenses |
+| `diagnostics` | Get diagnostics for a file |
+| `renamePreview` | Preview rename as unified diff (read-only) |
+| `formatPreview` | Preview formatting as unified diff (read-only) |
+| `sourceActionPreview` | Preview source action (currently only `source.organizeImports`) as unified diff (read-only) |
 
-Parameters: `operation` (required), `file_path`, `line`, `column`, `end_line`, `end_column`, `symbol`
+Parameters: `operation` (required), `file_path`, `line`, `column`, `end_line`, `end_column`, `symbol`, `action` (for `sourceActionPreview`)
 
 ### Formatter (`src/tool/formatter.rs`)
 

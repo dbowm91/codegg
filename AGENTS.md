@@ -256,6 +256,9 @@ These items were verified during review sessions:
 | ContextLedgerState limits | 20 files, 10 commands, 10 test results, 10 errors; empty handles rejected | `src/agent/context_frame.rs` |
 | context_read registration | Registered when `artifact_store = true`, regardless of `project_tool_outputs` | `src/tool/factory.rs` |
 | Handle building | Only `ContextHandle::build_tool()` (checked) exists; raw `build_handle()` has been removed entirely | `src/context/handle.rs` |
+| `sourceActionPreview` full-document range | Uses `document_end_position_utf16()` to compute real UTF-16 end position from synced file contents (no `u32::MAX`) | `crates/egglsp/src/operations.rs` |
+| `select_source_action_edit` command-only | `CodeAction` with `command: Some(_)` but `edit: None` is classified as `CommandOnlySourceAction` (command execution disabled) | `crates/egglsp/src/operations.rs` |
+| `document_end_position_utf16` | Pure helper computing LSP Position at end of document using UTF-16 code units; handles empty, single-line, multiline, unicode, and trailing-newline cases | `crates/egglsp/src/operations.rs` |
 
 ### Security Notes
 
