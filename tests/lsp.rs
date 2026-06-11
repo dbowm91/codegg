@@ -1388,3 +1388,18 @@ async fn semanticContext_with_line_column_returns_excerpt() {
     assert!(v["results"]["target"]["column"] == 1);
     assert!(v["results"]["limits"].is_object());
 }
+
+#[test]
+#[allow(non_snake_case)]
+fn semantic_context_excerpt_truncates_on_utf8_boundary() {
+    // "é" is 2 bytes in UTF-8; if byte limit lands in the middle, it should back up
+    let content = "a".repeat(100) + "é" + &"b".repeat(100);
+    let (_dir, path) = temp_rs_file(&content);
+    let (excerpt, _truncated) =
+        codegg::tool::lsp::LspTool::build_source_excerpt(&path, None, 40).unwrap();
+    // The excerpt should not contain replacement characters
+    assert!(
+        !excerpt.text.contains('\u{FFFD}'),
+        "excerpt contains replacement characters from split UTF-8"
+    );
+}

@@ -90,7 +90,9 @@ struct SemanticContextPacket {
     symbols: Vec<SymbolSummary>,
     current_symbols_error: Option<String>,
     definitions: Vec<LocationSummary>,
+    definitions_error: Option<String>,
     references: Vec<LocationSummary>,
+    references_error: Option<String>,
     limits: SemanticContextLimits,
 }
 
@@ -101,10 +103,10 @@ struct SemanticContextTarget {
 }
 
 #[derive(Serialize)]
-struct SourceExcerpt {
-    start_line: u32,
-    end_line: u32,
-    text: String,
+pub struct SourceExcerpt {
+    pub start_line: u32,
+    pub end_line: u32,
+    pub text: String,
 }
 
 #[derive(Serialize)]
@@ -124,6 +126,7 @@ struct SemanticContextLimits {
     diagnostics_truncated: bool,
     symbols_truncated: bool,
     references_truncated: bool,
+    overlay_diagnostics_truncated: bool,
     excerpt_truncated: bool,
 }
 
@@ -161,6 +164,17 @@ pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Positio
         line: line.saturating_sub(1),
         character: column.saturating_sub(1),
     }
+}
+
+pub fn truncate_to_byte_limit_on_char_boundary(text: &str, max_bytes: usize) -> (&str, bool) {
+    if text.len() <= max_bytes {
+        return (text, false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&text[..end], true)
 }
 
 fn uri_to_path(uri: &crate::lsp::lsp_types::Uri) -> String {
@@ -312,7 +326,7 @@ impl LspTool {
         Ok((l, c))
     }
 
-    fn build_source_excerpt(
+    pub fn build_source_excerpt(
         file: &Path,
         target_line: Option<u32>,
         radius: u32,
@@ -337,15 +351,12 @@ impl LspTool {
         let text: String = content
             .lines()
             .skip(start_idx)
-            .take((end_idx - start_idx).max(0) as usize)
+            .take(end_idx - start_idx)
             .collect::<Vec<_>>()
             .join("\n");
-        let truncated = text.len() > MAX_CONTEXT_EXCERPT_BYTES;
-        let display = if truncated {
-            String::from_utf8_lossy(&text.as_bytes()[..MAX_CONTEXT_EXCERPT_BYTES]).to_string()
-        } else {
-            text
-        };
+        let (display, truncated) =
+            truncate_to_byte_limit_on_char_boundary(&text, MAX_CONTEXT_EXCERPT_BYTES);
+        let display = display.to_string();
         Ok((
             SourceExcerpt {
                 start_line,
@@ -890,9 +901,11 @@ impl Tool for LspTool {
                 // Phase 4: current diagnostics
                 let collector =
                     crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
-                let (current_diags, current_diag_err) =
+                let (current_diags, current_diag_err, diagnostics_truncated) =
                     match collector.get_diagnostics_for_file(&file).await {
                         Ok(diag_output) => {
+                            let raw_diag_len = diag_output.diagnostics.len();
+                            let diagnostics_truncated = raw_diag_len > MAX_CONTEXT_DIAGNOSTICS;
                             let diags: Vec<DiagnosticSummary> = diag_output
                                 .diagnostics
                                 .iter()
@@ -907,70 +920,81 @@ impl Tool for LspTool {
                                     message: d.message.clone(),
                                 })
                                 .collect();
-                            (diags, None)
+                            (diags, None, diagnostics_truncated)
                         }
-                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}"))),
+                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}")), false),
                     };
 
                 // Phase 4: current document symbols
-                let (current_syms, current_sym_err) = match ops.document_symbols(&file).await {
-                    Ok(syms) => {
-                        let mut remaining = MAX_CONTEXT_SYMBOLS;
-                        let mut summaries = Vec::new();
-                        Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
-                        (summaries, None)
-                    }
-                    Err(e) => (Vec::new(), Some(format!("documentSymbol: {e}"))),
-                };
+                let (current_syms, current_sym_err, symbols_truncated) =
+                    match ops.document_symbols(&file).await {
+                        Ok(syms) => {
+                            let mut remaining = MAX_CONTEXT_SYMBOLS;
+                            let mut summaries = Vec::new();
+                            Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
+                            (summaries, None, remaining == 0)
+                        }
+                        Err(e) => (Vec::new(), Some(format!("documentSymbol: {e}")), false),
+                    };
 
                 // Phase 5: definitions + references
                 let mut definitions = Vec::new();
+                let mut definitions_error = None;
                 let mut references = Vec::new();
+                let mut references_error = None;
                 let mut refs_truncated = false;
                 if has_position {
                     let pos = to_lsp_position(parsed.line.unwrap(), parsed.column.unwrap());
                     if want_defs {
-                        if let Ok(defs) = ops.go_to_definition(&file, pos.line, pos.character).await
-                        {
-                            definitions = defs
-                                .iter()
-                                .map(|loc| {
-                                    let range = loc.target_range;
-                                    LocationSummary {
-                                        file: uri_to_path(&loc.target_uri),
-                                        start_line: range.start.line + 1,
-                                        start_column: range.start.character + 1,
-                                        end_line: range.end.line + 1,
-                                        end_column: range.end.character + 1,
-                                    }
-                                })
-                                .collect();
+                        match ops.go_to_definition(&file, pos.line, pos.character).await {
+                            Ok(defs) => {
+                                definitions = defs
+                                    .iter()
+                                    .map(|loc| {
+                                        let range = loc.target_range;
+                                        LocationSummary {
+                                            file: uri_to_path(&loc.target_uri),
+                                            start_line: range.start.line + 1,
+                                            start_column: range.start.character + 1,
+                                            end_line: range.end.line + 1,
+                                            end_column: range.end.character + 1,
+                                        }
+                                    })
+                                    .collect();
+                            }
+                            Err(e) => {
+                                definitions_error = Some(format!("goToDefinition: {e}"));
+                            }
                         }
                     }
                     if want_refs {
-                        if let Ok(refs) = ops.find_references(&file, pos.line, pos.character).await
-                        {
-                            refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
-                            references = refs
-                                .into_iter()
-                                .take(MAX_CONTEXT_REFERENCES)
-                                .map(|loc| {
-                                    let range = loc.range;
-                                    LocationSummary {
-                                        file: uri_to_path(&loc.uri),
-                                        start_line: range.start.line + 1,
-                                        start_column: range.start.character + 1,
-                                        end_line: range.end.line + 1,
-                                        end_column: range.end.character + 1,
-                                    }
-                                })
-                                .collect();
+                        match ops.find_references(&file, pos.line, pos.character).await {
+                            Ok(refs) => {
+                                refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
+                                references = refs
+                                    .into_iter()
+                                    .take(MAX_CONTEXT_REFERENCES)
+                                    .map(|loc| {
+                                        let range = loc.range;
+                                        LocationSummary {
+                                            file: uri_to_path(&loc.uri),
+                                            start_line: range.start.line + 1,
+                                            start_column: range.start.character + 1,
+                                            end_line: range.end.line + 1,
+                                            end_column: range.end.character + 1,
+                                        }
+                                    })
+                                    .collect();
+                            }
+                            Err(e) => {
+                                references_error = Some(format!("findReferences: {e}"));
+                            }
                         }
                     }
                 }
 
                 // Phase 6: overlay
-                let overlay = if want_overlay {
+                let (overlay, overlay_diagnostics_truncated) = if want_overlay {
                     match self
                         .resolve_semantic_check_content(
                             &file,
@@ -985,9 +1009,12 @@ impl Tool for LspTool {
                                 .await
                             {
                                 Ok(preview) => {
+                                    let overlay_diag_truncated =
+                                        preview.diagnostics.len() > MAX_CONTEXT_DIAGNOSTICS;
                                     let diag_summaries: Vec<DiagnosticSummary> = preview
                                         .diagnostics
                                         .iter()
+                                        .take(MAX_CONTEXT_DIAGNOSTICS)
                                         .map(|d| DiagnosticSummary {
                                             file: d.file.clone(),
                                             line: d.line + 1,
@@ -998,48 +1025,63 @@ impl Tool for LspTool {
                                             message: d.message.clone(),
                                         })
                                         .collect();
+                                    (
+                                        Some(SemanticOverlaySummary {
+                                            used: true,
+                                            diagnostics_may_still_be_warming: preview
+                                                .diagnostics_may_still_be_warming,
+                                            diagnostics: diag_summaries,
+                                            diagnostics_error: preview.diagnostics_error,
+                                            symbols: preview.symbols,
+                                            symbols_error: preview.symbols_error,
+                                            restored_disk_view: preview.restored_disk_view,
+                                            restore_error: preview.restore_error,
+                                        }),
+                                        overlay_diag_truncated,
+                                    )
+                                }
+                                Err(e) => (
                                     Some(SemanticOverlaySummary {
                                         used: true,
-                                        diagnostics_may_still_be_warming: preview
-                                            .diagnostics_may_still_be_warming,
-                                        diagnostics: diag_summaries,
-                                        diagnostics_error: preview.diagnostics_error,
-                                        symbols: preview.symbols,
-                                        symbols_error: preview.symbols_error,
-                                        restored_disk_view: preview.restored_disk_view,
-                                        restore_error: preview.restore_error,
-                                    })
-                                }
-                                Err(e) => Some(SemanticOverlaySummary {
-                                    used: true,
-                                    diagnostics_may_still_be_warming: false,
-                                    diagnostics: Vec::new(),
-                                    diagnostics_error: Some(format!("overlay: {e}")),
-                                    symbols: Vec::new(),
-                                    symbols_error: None,
-                                    restored_disk_view: false,
-                                    restore_error: None,
-                                }),
+                                        diagnostics_may_still_be_warming: false,
+                                        diagnostics: Vec::new(),
+                                        diagnostics_error: Some(format!("overlay: {e}")),
+                                        symbols: Vec::new(),
+                                        symbols_error: None,
+                                        restored_disk_view: false,
+                                        restore_error: None,
+                                    }),
+                                    false,
+                                ),
                             }
                         }
-                        Err(_) if !has_proposed => None,
-                        Err(e) => Some(SemanticOverlaySummary {
-                            used: true,
-                            diagnostics_may_still_be_warming: false,
-                            diagnostics: Vec::new(),
-                            diagnostics_error: Some(format!("overlay content: {e}")),
-                            symbols: Vec::new(),
-                            symbols_error: None,
-                            restored_disk_view: false,
-                            restore_error: None,
-                        }),
+                        Err(_) if !has_proposed => (None, false),
+                        Err(e) => (
+                            Some(SemanticOverlaySummary {
+                                used: true,
+                                diagnostics_may_still_be_warming: false,
+                                diagnostics: Vec::new(),
+                                diagnostics_error: Some(format!("overlay content: {e}")),
+                                symbols: Vec::new(),
+                                symbols_error: None,
+                                restored_disk_view: false,
+                                restore_error: None,
+                            }),
+                            false,
+                        ),
                     }
                 } else {
-                    None
+                    (None, false)
                 };
 
-                let result_count =
-                    current_diags.len() + current_syms.len() + definitions.len() + references.len();
+                let overlay_diag_count = overlay.as_ref().map(|o| o.diagnostics.len()).unwrap_or(0);
+                let overlay_sym_count = overlay.as_ref().map(|o| o.symbols.len()).unwrap_or(0);
+                let result_count = current_diags.len()
+                    + current_syms.len()
+                    + definitions.len()
+                    + references.len()
+                    + overlay_diag_count
+                    + overlay_sym_count;
                 let packet = SemanticContextPacket {
                     file: file_str,
                     target,
@@ -1050,11 +1092,14 @@ impl Tool for LspTool {
                     symbols: current_syms,
                     current_symbols_error: current_sym_err,
                     definitions,
+                    definitions_error,
                     references,
+                    references_error,
                     limits: SemanticContextLimits {
-                        diagnostics_truncated: false,
-                        symbols_truncated: false,
+                        diagnostics_truncated,
+                        symbols_truncated,
                         references_truncated: refs_truncated,
+                        overlay_diagnostics_truncated,
                         excerpt_truncated,
                     },
                 };
@@ -1091,10 +1136,17 @@ impl Tool for LspTool {
             trust: ToolTrust::LocalUntrusted,
         };
         let success = match serde_json::from_str::<serde_json::Value>(&output) {
-            Ok(v) => v
-                .pointer("/results/restore_error")
-                .and_then(|e| e.as_str())
-                .is_none(),
+            Ok(v) => {
+                let top_restore_error = v
+                    .pointer("/results/restore_error")
+                    .and_then(|e| e.as_str())
+                    .is_some();
+                let overlay_restore_error = v
+                    .pointer("/results/overlay/restore_error")
+                    .and_then(|e| e.as_str())
+                    .is_some();
+                !(top_restore_error || overlay_restore_error)
+            }
             Err(_) => true,
         };
         Ok(StructuredToolResult::with_provenance(
@@ -1345,7 +1397,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     // ── semanticContext tests ──────────────────────────────────────────
 
     #[tokio::test]
-    async fn semantic_context_requires_file_path() {
+    async fn semantic_context_schema_includes_operation() {
         let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
         )));
@@ -1354,6 +1406,23 @@ diff --git a/src/lib.rs b/src/lib.rs
             .as_array()
             .unwrap();
         assert!(ops.iter().any(|v| v.as_str() == Some("semanticContext")));
+    }
+
+    #[tokio::test]
+    async fn semantic_context_requires_file_path_execution() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .execute(json!({
+                "operation": "semanticContext"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("file_path")),
+            "expected file_path error, got: {err:?}"
+        );
     }
 
     #[tokio::test]

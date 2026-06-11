@@ -335,9 +335,10 @@ All output sections are bounded:
 - Diagnostics: capped at 100
 - Symbols: capped at 120
 - References: capped at 80
+- Overlay diagnostics: capped at 100 (included in `overlay_diagnostics_truncated` limit)
 - Source excerpt: capped at 32KB text
 
-The operation gathers existing read-only semantic facts, optionally runs an overlay semantic check, and returns a stable JSON DTO. Failures in individual sections (diagnostics, symbols, definitions, references) do not prevent the rest of the packet from being returned.
+The operation gathers existing read-only semantic facts, optionally runs an overlay semantic check, and returns a stable JSON DTO. All sections are best-effort: individual failures do not prevent the rest of the packet from being returned. Per-section errors are surfaced as `definitions_error: Option<String>` and `references_error: Option<String>` (non-None when the corresponding LSP request fails). `result_count` includes overlay diagnostics and overlay symbols in addition to the base counts. Source excerpt truncation is UTF-8-safe — it cuts at character boundaries using `truncate_to_byte_limit_on_char_boundary`, avoiding replacement characters or partial-codepoint corruption. `execute_structured` checks both `/results/restore_error` and `/results/overlay/restore_error` for success detection.
 
 ### Position Convention
 
@@ -345,7 +346,7 @@ Model-facing line and column are **1-indexed**. The wrapper converts to LSP 0-in
 
 ### Compact DTOs
 
-All output is wrapped in `LspToolOutput<T>` with `operation`, `file_path`, `result_count`, `truncated`, and `results` fields. Individual results use `LocationSummary`, `DiagnosticSummary`, `SymbolSummary`, or `HoverSummary` with 1-indexed positions and file paths (not URIs). Additionally, `SemanticContextPacket` wraps a bounded source excerpt (`SourceExcerpt` with `start_line`, `end_line`, `text`), diagnostics, symbols, definitions, references, and a `SemanticContextLimits` struct tracking truncation.
+All output is wrapped in `LspToolOutput<T>` with `operation`, `file_path`, `result_count`, `truncated`, and `results` fields. Individual results use `LocationSummary`, `DiagnosticSummary`, `SymbolSummary`, or `HoverSummary` with 1-indexed positions and file paths (not URIs). Additionally, `SemanticContextPacket` wraps a bounded source excerpt (`SourceExcerpt` with `start_line`, `end_line`, `text`), diagnostics, symbols, definitions, references, optional per-section error fields (`definitions_error`, `references_error`), and a `SemanticContextLimits` struct tracking truncation (including `overlay_diagnostics_truncated`).
 
 ### Diagnostics
 
