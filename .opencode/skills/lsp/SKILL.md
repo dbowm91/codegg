@@ -294,7 +294,7 @@ It provides:
 - `max_call_nodes`: 32 (default), max 64. Caps total nodes.
 - `call_direction`: `"incoming"`, `"outgoing"`, or `"both"` (default).
 
-Expansion uses BFS with cycle detection (HashSet dedup). Edges to already-seen nodes are preserved. Errors are nonfatal and collected in `call_expansion.errors`.
+Expansion uses BFS with cycle detection (HashSet dedup). Edges to already-seen nodes are preserved. When caps are reached, expansion prefers returning a partial graph with `truncated=true` rather than failing the entire packet. `call_expansion.truncated` is true when nodes, edges, or per-edge ranges are dropped due to configured or internal caps (`capped_call_ranges`, `push_call_expansion_edge`, `push_call_expansion_node`). Errors are nonfatal and collected in `call_expansion.errors`.
 
 Presets do NOT enable expansion. Only explicit `call_depth > 0` activates it.
 

@@ -270,7 +270,7 @@ These items were verified during review sessions:
 | Security presets | 5 (rust_server, rust_cli, web_backend, dependency_review, unsafe_review) | `src/tool/lsp_security.rs`, `src/tool/lsp.rs` |
 | `callHierarchy` / `typeHierarchy` operation | Read-only, shallow, bounded hierarchy summaries. Require `file_path`, `line`, and `column`. `callHierarchy` maps incoming (callers) and outgoing (calls made). `typeHierarchy` maps incoming (supertypes) and outgoing (subtypes). Non-recursive; unsupported servers may return empty sections. | `crates/egglsp/src/operations.rs`, `src/tool/lsp.rs` |
 | Hierarchy `from_ranges` truncation | Capped at `MAX_HIERARCHY_RANGES = 32` per call; included in summary `truncated` flag alongside item and edge truncation | `src/tool/lsp.rs` |
-| SecurityContext call expansion | Optional bounded recursive call expansion for securityContext | `src/tool/lsp.rs` — `build_call_expansion_summary()`, constants `DEFAULT_CALL_EXPANSION_DEPTH` etc. |
+| SecurityContext call expansion | Optional bounded recursive call expansion for securityContext with precise truncation via cap helpers (`capped_call_ranges`, `push_call_expansion_edge`, `push_call_expansion_node`). When caps are reached, returns partial graph with `truncated=true` rather than failing. | `src/tool/lsp.rs` — `build_call_expansion_summary()`, cap helpers, constants `DEFAULT_CALL_EXPANSION_DEPTH` etc. |
 
 ### Security Notes
 

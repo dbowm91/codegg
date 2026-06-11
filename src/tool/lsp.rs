@@ -1032,7 +1032,7 @@ impl LspTool {
             }
             if nodes.len() >= max_nodes {
                 truncated = true;
-                break;
+                continue;
             }
 
             if matches!(
@@ -1049,25 +1049,25 @@ impl LspTool {
                             }
                             let child_id = Self::call_expansion_node_id(&call.from);
                             let child_depth = depth + 1;
-                            let ranges: Vec<HierarchyRangeSummary> = call
-                                .from_ranges
-                                .iter()
-                                .take(MAX_HIERARCHY_RANGES)
-                                .map(|r| Self::convert_lsp_range(*r))
-                                .collect();
-                            if edges.len() < MAX_CALL_EDGES {
-                                edges.push(CallExpansionEdge {
-                                    from: child_id.clone(),
-                                    to: Self::call_expansion_node_id(&item),
-                                    direction: "incoming".to_string(),
-                                    ranges,
-                                });
-                            }
+                            let (ranges, ranges_truncated) =
+                                Self::capped_call_ranges(&call.from_ranges);
+                            truncated |= ranges_truncated;
+                            let edge = CallExpansionEdge {
+                                from: child_id.clone(),
+                                to: Self::call_expansion_node_id(&item),
+                                direction: "incoming".to_string(),
+                                ranges,
+                            };
+                            truncated |= Self::push_call_expansion_edge(&mut edges, edge);
                             if seen.insert(child_id.clone()) {
                                 let node =
                                     Self::call_expansion_node_from_item(&call.from, child_depth);
-                                nodes.push(node);
-                                queue.push_back((call.from, child_depth));
+                                let node_truncated =
+                                    Self::push_call_expansion_node(&mut nodes, node, max_nodes);
+                                truncated |= node_truncated;
+                                if !node_truncated {
+                                    queue.push_back((call.from, child_depth));
+                                }
                             }
                         }
                     }
@@ -1082,7 +1082,7 @@ impl LspTool {
 
             if nodes.len() >= max_nodes {
                 truncated = true;
-                break;
+                continue;
             }
 
             if matches!(
@@ -1099,25 +1099,25 @@ impl LspTool {
                             }
                             let child_id = Self::call_expansion_node_id(&call.to);
                             let child_depth = depth + 1;
-                            let ranges: Vec<HierarchyRangeSummary> = call
-                                .from_ranges
-                                .iter()
-                                .take(MAX_HIERARCHY_RANGES)
-                                .map(|r| Self::convert_lsp_range(*r))
-                                .collect();
-                            if edges.len() < MAX_CALL_EDGES {
-                                edges.push(CallExpansionEdge {
-                                    from: Self::call_expansion_node_id(&item),
-                                    to: child_id.clone(),
-                                    direction: "outgoing".to_string(),
-                                    ranges,
-                                });
-                            }
+                            let (ranges, ranges_truncated) =
+                                Self::capped_call_ranges(&call.from_ranges);
+                            truncated |= ranges_truncated;
+                            let edge = CallExpansionEdge {
+                                from: Self::call_expansion_node_id(&item),
+                                to: child_id.clone(),
+                                direction: "outgoing".to_string(),
+                                ranges,
+                            };
+                            truncated |= Self::push_call_expansion_edge(&mut edges, edge);
                             if seen.insert(child_id.clone()) {
                                 let node =
                                     Self::call_expansion_node_from_item(&call.to, child_depth);
-                                nodes.push(node);
-                                queue.push_back((call.to, child_depth));
+                                let node_truncated =
+                                    Self::push_call_expansion_node(&mut nodes, node, max_nodes);
+                                truncated |= node_truncated;
+                                if !node_truncated {
+                                    queue.push_back((call.to, child_depth));
+                                }
                             }
                         }
                     }
@@ -1168,6 +1168,41 @@ impl LspTool {
             detail: item.detail.clone(),
             depth,
         }
+    }
+
+    fn capped_call_ranges(
+        ranges: &[crate::lsp::lsp_types::Range],
+    ) -> (Vec<HierarchyRangeSummary>, bool) {
+        let truncated = ranges.len() > MAX_HIERARCHY_RANGES;
+        let capped = ranges
+            .iter()
+            .take(MAX_HIERARCHY_RANGES)
+            .map(|r| Self::convert_lsp_range(*r))
+            .collect();
+        (capped, truncated)
+    }
+
+    fn push_call_expansion_edge(
+        edges: &mut Vec<CallExpansionEdge>,
+        edge: CallExpansionEdge,
+    ) -> bool {
+        if edges.len() >= MAX_CALL_EDGES {
+            return true;
+        }
+        edges.push(edge);
+        false
+    }
+
+    fn push_call_expansion_node(
+        nodes: &mut Vec<CallExpansionNode>,
+        node: CallExpansionNode,
+        max_nodes: usize,
+    ) -> bool {
+        if nodes.len() >= max_nodes {
+            return true;
+        }
+        nodes.push(node);
+        false
     }
 }
 
@@ -3756,5 +3791,246 @@ diff --git a/src/lib.rs b/src/lib.rs
             params["properties"].get("call_direction").is_some(),
             "schema should include call_direction"
         );
+    }
+
+    // ── Cap helper tests (Phase 4) ──────────────────────────────────
+
+    #[test]
+    fn call_expansion_capped_ranges_exact_cap_not_truncated() {
+        use crate::lsp::lsp_types::{Position, Range};
+        let ranges: Vec<Range> = (0..MAX_HIERARCHY_RANGES)
+            .map(|i| Range {
+                start: Position {
+                    line: i as u32,
+                    character: 0,
+                },
+                end: Position {
+                    line: i as u32,
+                    character: 5,
+                },
+            })
+            .collect();
+        let (capped, truncated) = LspTool::capped_call_ranges(&ranges);
+        assert_eq!(capped.len(), MAX_HIERARCHY_RANGES);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn call_expansion_capped_ranges_over_cap_truncated() {
+        use crate::lsp::lsp_types::{Position, Range};
+        let ranges: Vec<Range> = (0..=MAX_HIERARCHY_RANGES)
+            .map(|i| Range {
+                start: Position {
+                    line: i as u32,
+                    character: 0,
+                },
+                end: Position {
+                    line: i as u32,
+                    character: 5,
+                },
+            })
+            .collect();
+        let (capped, truncated) = LspTool::capped_call_ranges(&ranges);
+        assert_eq!(capped.len(), MAX_HIERARCHY_RANGES);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn call_expansion_push_edge_exact_cap_not_truncated() {
+        let mut edges: Vec<CallExpansionEdge> = Vec::new();
+        for _ in 0..MAX_CALL_EDGES {
+            let edge = CallExpansionEdge {
+                from: "a".into(),
+                to: "b".into(),
+                direction: "incoming".into(),
+                ranges: Vec::new(),
+            };
+            assert!(!LspTool::push_call_expansion_edge(&mut edges, edge));
+        }
+        assert_eq!(edges.len(), MAX_CALL_EDGES);
+    }
+
+    #[test]
+    fn call_expansion_push_edge_over_cap_truncated() {
+        let mut edges: Vec<CallExpansionEdge> = Vec::new();
+        for _ in 0..MAX_CALL_EDGES {
+            let edge = CallExpansionEdge {
+                from: "a".into(),
+                to: "b".into(),
+                direction: "incoming".into(),
+                ranges: Vec::new(),
+            };
+            let _ = LspTool::push_call_expansion_edge(&mut edges, edge);
+        }
+        let overflow = CallExpansionEdge {
+            from: "c".into(),
+            to: "d".into(),
+            direction: "outgoing".into(),
+            ranges: Vec::new(),
+        };
+        assert!(LspTool::push_call_expansion_edge(&mut edges, overflow));
+        assert_eq!(edges.len(), MAX_CALL_EDGES);
+    }
+
+    #[test]
+    fn call_expansion_push_node_exact_cap_not_truncated() {
+        let mut nodes: Vec<CallExpansionNode> = Vec::new();
+        let max = 8;
+        for _ in 0..max {
+            let node = CallExpansionNode {
+                id: "n".into(),
+                name: "f".into(),
+                kind: "function".into(),
+                file: None,
+                range: HierarchyRangeSummary {
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 5,
+                },
+                selection_range: HierarchyRangeSummary {
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 5,
+                },
+                detail: None,
+                depth: 0,
+            };
+            assert!(!LspTool::push_call_expansion_node(&mut nodes, node, max));
+        }
+        assert_eq!(nodes.len(), max);
+    }
+
+    #[test]
+    fn call_expansion_push_node_over_cap_truncated() {
+        let mut nodes: Vec<CallExpansionNode> = Vec::new();
+        let max = 8;
+        for _ in 0..max {
+            let node = CallExpansionNode {
+                id: "n".into(),
+                name: "f".into(),
+                kind: "function".into(),
+                file: None,
+                range: HierarchyRangeSummary {
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 5,
+                },
+                selection_range: HierarchyRangeSummary {
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 5,
+                },
+                detail: None,
+                depth: 0,
+            };
+            let _ = LspTool::push_call_expansion_node(&mut nodes, node, max);
+        }
+        let overflow = CallExpansionNode {
+            id: "overflow".into(),
+            name: "g".into(),
+            kind: "function".into(),
+            file: None,
+            range: HierarchyRangeSummary {
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 5,
+            },
+            selection_range: HierarchyRangeSummary {
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 5,
+            },
+            detail: None,
+            depth: 1,
+        };
+        assert!(LspTool::push_call_expansion_node(&mut nodes, overflow, max));
+        assert_eq!(nodes.len(), max);
+    }
+
+    // ── Expansion semantics tests (Phase 5) ─────────────────────────
+
+    #[test]
+    fn call_expansion_node_id_differs_by_selection_position() {
+        use crate::lsp::lsp_types::{CallHierarchyItem, Range, SymbolKind, Uri};
+        use std::str::FromStr;
+        let uri = Uri::from_str("file:///tmp/test.rs").unwrap();
+        let make_item = |sel_line: u32, sel_char: u32| CallHierarchyItem {
+            name: "test_fn".to_string(),
+            kind: SymbolKind::FUNCTION,
+            uri: uri.clone(),
+            range: Range {
+                start: crate::lsp::lsp_types::Position {
+                    line: 9,
+                    character: 0,
+                },
+                end: crate::lsp::lsp_types::Position {
+                    line: 9,
+                    character: 20,
+                },
+            },
+            selection_range: Range {
+                start: crate::lsp::lsp_types::Position {
+                    line: sel_line,
+                    character: sel_char,
+                },
+                end: crate::lsp::lsp_types::Position {
+                    line: sel_line,
+                    character: sel_char + 5,
+                },
+            },
+            detail: None,
+            tags: None,
+            data: None,
+        };
+        let id1 = LspTool::call_expansion_node_id(&make_item(9, 3));
+        let id2 = LspTool::call_expansion_node_id(&make_item(10, 3));
+        assert_ne!(
+            id1, id2,
+            "different selection positions should produce different IDs"
+        );
+    }
+
+    // ── Operation-level tests (Phase 6) ─────────────────────────────
+
+    #[test]
+    fn security_context_max_call_nodes_clamps_in_settings() {
+        let mut input = security_context_input();
+        input.max_call_nodes = Some(200);
+        let s = LspTool::resolve_security_context_settings(&input, true).unwrap();
+        assert_eq!(
+            s.max_call_nodes, MAX_CALL_NODES,
+            "max_call_nodes should be clamped to MAX_CALL_NODES"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_context_call_expansion_truncated_limit_field_present() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "call_depth": 0
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            v["results"]["limits"]
+                .get("call_expansion_truncated")
+                .is_some(),
+            "limits.call_expansion_truncated should always be present"
+        );
+        assert_eq!(v["results"]["limits"]["call_expansion_truncated"], false);
     }
 }
