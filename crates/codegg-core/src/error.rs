@@ -226,6 +226,12 @@ impl From<egglsp::LspError> for LspError {
             egglsp::LspError::OverlappingEdits => {
                 LspError::RequestFailed("overlapping edits".to_string())
             }
+            egglsp::LspError::UnsupportedSourceAction(s) => LspError::UnsupportedSourceAction(s),
+            egglsp::LspError::CommandOnlySourceAction(s) => LspError::CommandOnlySourceAction(s),
+            egglsp::LspError::NoEditForSourceAction(s) => LspError::NoEditForSourceAction(s),
+            egglsp::LspError::AmbiguousSourceAction(kind, titles) => {
+                LspError::AmbiguousSourceAction(kind, titles)
+            }
         }
     }
 }
@@ -258,6 +264,18 @@ pub enum LspError {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("unsupported source action: {0}")]
+    UnsupportedSourceAction(String),
+
+    #[error("source action returned only command actions: {0}")]
+    CommandOnlySourceAction(String),
+
+    #[error("source action returned no edit-bearing actions: {0}")]
+    NoEditForSourceAction(String),
+
+    #[error("source action returned multiple edit-bearing actions: {0}: {1}")]
+    AmbiguousSourceAction(String, String),
 }
 
 impl LspError {

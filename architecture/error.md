@@ -199,7 +199,7 @@ impl McpError {
 // Note: McpError::Encryption is NOT retryable (distinct from Connection/Server/ToolCall/OAuth/Timeout).
 // This is intentional because encryption failures typically require manual intervention.
 
-- **LspError**: ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json
+- **LspError**: ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json, UnsupportedEdit, PathOutsideRoot, Utf16Position, OverlappingEdits, UnsupportedSourceAction, CommandOnlySourceAction, NoEditForSourceAction, AmbiguousSourceAction
 
 impl LspError {
     pub fn is_retryable(&self) -> bool {

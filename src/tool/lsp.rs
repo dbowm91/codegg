@@ -85,6 +85,8 @@ struct LspInput {
     symbol: Option<String>,
     #[serde(default)]
     new_name: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -225,7 +227,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview. LSP edits are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -237,7 +239,7 @@ impl Tool for LspTool {
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
-                        "renamePreview", "formatPreview"
+                        "renamePreview", "formatPreview", "sourceActionPreview"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -260,6 +262,10 @@ impl Tool for LspTool {
                 "new_name": {
                     "type": "string",
                     "description": "New name for renamePreview operation"
+                },
+                "action": {
+                    "type": "string",
+                    "description": "Allowlisted source action for sourceActionPreview. Initially supports source.organizeImports."
                 }
             },
             "required": ["operation"]
@@ -573,6 +579,27 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "sourceActionPreview" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let action_str = parsed.action.as_deref().ok_or_else(|| {
+                    ToolError::Execution("action required for sourceActionPreview".to_string())
+                })?;
+                let kind = crate::lsp::operations::SourceActionPreviewKind::parse(action_str)
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                let preview = ops
+                    .source_action_preview(&file, kind, Some(&self.allowed_root))
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("sourceActionPreview: {e}")))?;
+                let output = LspToolOutput {
+                    operation: "sourceActionPreview".to_string(),
+                    file_path: file_path_str,
+                    result_count: preview.total_edits,
+                    truncated: preview.truncated,
+                    results: preview,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
 
@@ -629,7 +656,7 @@ mod tests {
                     "enum": [
                         "goToDefinition", "findReferences", "hover",
                         "documentSymbol", "workspaceSymbol", "diagnostics",
-                        "renamePreview", "formatPreview"
+                        "renamePreview", "formatPreview", "sourceActionPreview"
                     ],
                     "description": "LSP operation to perform"
                 },
@@ -652,6 +679,10 @@ mod tests {
                 "new_name": {
                     "type": "string",
                     "description": "New name for renamePreview operation"
+                },
+                "action": {
+                    "type": "string",
+                    "description": "Allowlisted source action for sourceActionPreview. Initially supports source.organizeImports."
                 }
             },
             "required": ["operation"]

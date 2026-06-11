@@ -202,6 +202,11 @@ let preview = lsp.operations.rename_preview(file_path, line, column, "new_name",
 
 // Preview-only format
 let preview = lsp.operations.format_preview(file_path, Some(allowed_root)).await
+
+// Preview-only source action (organize imports)
+use egglsp::operations::SourceActionPreviewKind;
+let kind = SourceActionPreviewKind::parse("source.organizeImports")?;
+let preview = lsp.operations.source_action_preview(file_path, kind, Some(allowed_root)).await
 ```
 
 ## Tool Integration
@@ -224,8 +229,9 @@ Operations available via tool:
 - `diagnostics` (returns `diagnostics_may_still_be_warming: bool` to indicate if the server may not have responded yet after a recent `didOpen`/`didChange`)
 - `renamePreview` (preview-only; returns `WorkspaceEditPreview` {title, files:[{file, original_hash, edits, patch}], total_*, truncated}; never mutates)
 - `formatPreview` (preview-only; same `WorkspaceEditPreview` shape)
+- `sourceActionPreview` (preview-only; same `WorkspaceEditPreview` shape; accepts `action` parameter — initially only `source.organizeImports` with aliases `organizeImports`/`organize_imports`)
 
-**Preview-only contract**: `renamePreview` / `formatPreview` (and future edit previews) produce bounded unified-diff patches for review via `WorkspaceEditPreview`. `format_preview` enforces `allowed_root` at the crate layer. Large patches are structurally flagged via `FileEditPreview.patch_omitted` (not string matching). They are `ToolCategory::ReadOnly`. Actual file changes require the separate mutating `apply_patch` tool (or equivalent). `codeLens` is not exposed in the model-facing schema.
+**Preview-only contract**: `renamePreview` / `formatPreview` / `sourceActionPreview` (and future edit previews) produce bounded unified-diff patches for review via `WorkspaceEditPreview`. `sourceActionPreview` only accepts `source.organizeImports`; arbitrary code actions, command-only actions, and command execution are intentionally rejected. `format_preview` enforces `allowed_root` at the crate layer. Large patches are structurally flagged via `FileEditPreview.patch_omitted` (not string matching). They are `ToolCategory::ReadOnly`. Actual file changes require the separate mutating `apply_patch` tool (or equivalent). `codeLens` is not exposed in the model-facing schema.
 
 ## Project Root Detection
 
@@ -401,10 +407,18 @@ pub enum LspError {
     LaunchFailed(String),
     NotInitialized(String),
     RequestFailed(String),
-    RequestTimeout(String),  // Added 2026-05-22
+    RequestTimeout(String),
     UnsupportedLanguage(String),
     Io(std::io::Error),
     Json(serde_json::Error),
+    UnsupportedEdit(String),
+    PathOutsideRoot(String),
+    Utf16Position(String),
+    OverlappingEdits,
+    UnsupportedSourceAction(String),
+    CommandOnlySourceAction(String),
+    NoEditForSourceAction(String),
+    AmbiguousSourceAction(String, String),
 }
 ```
 

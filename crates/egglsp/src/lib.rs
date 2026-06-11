@@ -20,7 +20,9 @@ pub mod service;
 pub use config::{LspConfig, LspRule};
 pub use diagnostics::{DiagnosticsCollector, DiagnosticsOutput};
 pub use error::LspError;
+pub use operations::select_source_action_edit;
 pub use operations::LspOperations;
+pub use operations::SourceActionPreviewKind;
 pub use service::LspService;
 
 pub use edit::{FileEditPreview, TextEditPreview, WorkspaceEditPreview};

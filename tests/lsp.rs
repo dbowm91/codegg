@@ -85,6 +85,7 @@ fn lsp_tool_schema_operation_enum() {
         "diagnostics",
         "renamePreview",
         "formatPreview",
+        "sourceActionPreview",
     ];
     assert_eq!(ops.len(), expected.len());
     for name in &expected {
@@ -685,4 +686,224 @@ fn stale_launch_read_helpers_removed() {
     // read_response and read_notification were removed in the hardening pass.
     // This test ensures they don't exist as public items in the launch module.
     let _ = std::any::type_name::<codegg::lsp::launch::LspProcess>(); // still exists
+}
+
+// ── 12. sourceActionPreview tests ─────────────────────────────────────
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_kind_accepts_source_organize_imports() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    let kind = SourceActionPreviewKind::parse("source.organizeImports").unwrap();
+    assert_eq!(kind, SourceActionPreviewKind::OrganizeImports);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_kind_accepts_aliases() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    assert_eq!(
+        SourceActionPreviewKind::parse("organizeImports").unwrap(),
+        SourceActionPreviewKind::OrganizeImports
+    );
+    assert_eq!(
+        SourceActionPreviewKind::parse("organize_imports").unwrap(),
+        SourceActionPreviewKind::OrganizeImports
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_kind_rejects_fix_all() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    let err = SourceActionPreviewKind::parse("source.fixAll").unwrap_err();
+    assert!(
+        matches!(err, codegg::lsp::LspError::UnsupportedSourceAction(ref m) if m == "source.fixAll"),
+        "expected UnsupportedSourceAction for source.fixAll, got: {err:?}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_kind_rejects_quickfix() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    let err = SourceActionPreviewKind::parse("quickfix").unwrap_err();
+    assert!(
+        matches!(err, codegg::lsp::LspError::UnsupportedSourceAction(ref m) if m == "quickfix"),
+        "expected UnsupportedSourceAction for quickfix, got: {err:?}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn source_action_kind_rejects_unknown() {
+    use codegg::lsp::operations::SourceActionPreviewKind;
+    let err = SourceActionPreviewKind::parse("source.someFutureThing").unwrap_err();
+    assert!(
+        matches!(err, codegg::lsp::LspError::UnsupportedSourceAction(_)),
+        "expected UnsupportedSourceAction, got: {err:?}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn select_source_action_rejects_command_only() {
+    use codegg::lsp::lsp_types::{CodeActionOrCommand, Command};
+    use codegg::lsp::operations::{select_source_action_edit, SourceActionPreviewKind};
+    let actions = vec![CodeActionOrCommand::Command(Command {
+        title: "organize imports".into(),
+        command: "source.organizeImports".into(),
+        arguments: None,
+    })];
+    let err =
+        select_source_action_edit(SourceActionPreviewKind::OrganizeImports, actions).unwrap_err();
+    assert!(
+        matches!(err, codegg::lsp::LspError::CommandOnlySourceAction(_)),
+        "expected CommandOnlySourceAction, got: {err:?}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn select_source_action_rejects_no_edit() {
+    use codegg::lsp::lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand};
+    use codegg::lsp::operations::{select_source_action_edit, SourceActionPreviewKind};
+    let actions = vec![CodeActionOrCommand::CodeAction(CodeAction {
+        title: "organize imports".into(),
+        kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+        edit: None,
+        ..Default::default()
+    })];
+    let err =
+        select_source_action_edit(SourceActionPreviewKind::OrganizeImports, actions).unwrap_err();
+    assert!(
+        matches!(err, codegg::lsp::LspError::NoEditForSourceAction(_)),
+        "expected NoEditForSourceAction, got: {err:?}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn select_source_action_selects_single_edit_bearing() {
+    use codegg::lsp::lsp_types::{
+        CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit,
+    };
+    use codegg::lsp::operations::{select_source_action_edit, SourceActionPreviewKind};
+    use std::collections::HashMap;
+    let mut changes = HashMap::new();
+    changes.insert(
+        "file:///tmp/test.rs".parse().unwrap(),
+        vec![TextEdit {
+            range: codegg::lsp::lsp_types::Range::default(),
+            new_text: "// organized".into(),
+        }],
+    );
+    let actions = vec![CodeActionOrCommand::CodeAction(CodeAction {
+        title: "organize imports".into(),
+        kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })];
+    let ws_edit =
+        select_source_action_edit(SourceActionPreviewKind::OrganizeImports, actions).unwrap();
+    assert!(ws_edit.changes.as_ref().unwrap().len() == 1);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn select_source_action_rejects_ambiguous_multiple_edits() {
+    use codegg::lsp::lsp_types::{
+        CodeAction, CodeActionKind, CodeActionOrCommand, TextEdit, WorkspaceEdit,
+    };
+    use codegg::lsp::operations::{select_source_action_edit, SourceActionPreviewKind};
+    use std::collections::HashMap;
+    let make_edit = || {
+        let mut changes = HashMap::new();
+        changes.insert(
+            "file:///tmp/test.rs".parse().unwrap(),
+            vec![TextEdit {
+                range: codegg::lsp::lsp_types::Range::default(),
+                new_text: "// organized".into(),
+            }],
+        );
+        WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }
+    };
+    let actions = vec![
+        CodeActionOrCommand::CodeAction(CodeAction {
+            title: "organize imports (rustfmt)".into(),
+            kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+            edit: Some(make_edit()),
+            ..Default::default()
+        }),
+        CodeActionOrCommand::CodeAction(CodeAction {
+            title: "organize imports (rust-analyzer)".into(),
+            kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+            edit: Some(make_edit()),
+            ..Default::default()
+        }),
+    ];
+    let err =
+        select_source_action_edit(SourceActionPreviewKind::OrganizeImports, actions).unwrap_err();
+    assert!(
+        matches!(err, codegg::lsp::LspError::AmbiguousSourceAction(_, _)),
+        "expected AmbiguousSourceAction, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn sourceActionPreview_requires_action() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "sourceActionPreview",
+            "file_path": "src/main.rs"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("action")),
+        "expected action error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn sourceActionPreview_requires_file_path() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "sourceActionPreview",
+            "action": "source.organizeImports"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("file_path")),
+        "expected file_path error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn sourceActionPreview_rejects_unsupported_action_without_lsp_request() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "sourceActionPreview",
+            "file_path": "src/main.rs",
+            "action": "source.fixAll"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("unsupported source action")),
+        "expected unsupported action error, got: {err:?}"
+    );
 }

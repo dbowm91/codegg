@@ -9,6 +9,114 @@ use crate::edit::{preview_text_edits_for_file, preview_workspace_edit, Workspace
 use crate::error::LspError;
 use crate::service::LspService;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceActionPreviewKind {
+    OrganizeImports,
+}
+
+impl SourceActionPreviewKind {
+    pub fn parse(input: &str) -> Result<Self, LspError> {
+        match input {
+            "source.organizeImports" | "organizeImports" | "organize_imports" => {
+                Ok(Self::OrganizeImports)
+            }
+            other => Err(LspError::UnsupportedSourceAction(other.to_string())),
+        }
+    }
+
+    pub fn lsp_kind(self) -> CodeActionKind {
+        match self {
+            Self::OrganizeImports => CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::OrganizeImports => "organize imports",
+        }
+    }
+}
+
+/// Pure helper: given a requested action kind and the raw LSP code action
+/// responses, select the single best edit-bearing `WorkspaceEdit`.
+///
+/// Rules:
+/// - `Command` variants are rejected.
+/// - `CodeAction` values without `edit` are rejected.
+/// - Actions whose kind is not hierarchically compatible with the
+///   requested kind are rejected.
+/// - Exactly one edit-bearing match is returned.
+/// - Zero matches → `NoEditForSourceAction`.
+/// - Multiple matches → `AmbiguousSourceAction`.
+pub fn select_source_action_edit(
+    requested: SourceActionPreviewKind,
+    actions: Vec<CodeActionOrCommand>,
+) -> Result<WorkspaceEdit, LspError> {
+    let requested_kind = requested.lsp_kind();
+    let title = requested.title();
+
+    let mut edit_bearing: Vec<(&CodeAction, &str)> = Vec::new();
+
+    for action in &actions {
+        match action {
+            CodeActionOrCommand::Command(cmd) => {
+                trace!("source action: rejecting command variant: {}", cmd.command);
+            }
+            CodeActionOrCommand::CodeAction(ca) => {
+                let kind_matches = match &ca.kind {
+                    Some(kind) => {
+                        kind == &requested_kind
+                            || kind
+                                .as_str()
+                                .starts_with(&format!("{}.", requested_kind.as_str()))
+                    }
+                    None => false,
+                };
+                if !kind_matches {
+                    trace!(
+                        "source action: rejecting action '{}' with kind {:?}",
+                        ca.title,
+                        ca.kind
+                    );
+                    continue;
+                }
+                if let Some(_edit) = &ca.edit {
+                    edit_bearing.push((ca, title));
+                } else {
+                    trace!("source action: rejecting action '{}' (no edit)", ca.title);
+                }
+            }
+        }
+    }
+
+    match edit_bearing.len() {
+        0 => {
+            let cmd_only = actions
+                .iter()
+                .all(|a| matches!(a, CodeActionOrCommand::Command(_)));
+            if cmd_only && !actions.is_empty() {
+                Err(LspError::CommandOnlySourceAction(title.to_string()))
+            } else {
+                Err(LspError::NoEditForSourceAction(title.to_string()))
+            }
+        }
+        1 => {
+            let (ca, _title) = edit_bearing.remove(0);
+            Ok(ca.edit.clone().expect("checked above"))
+        }
+        _ => {
+            let titles: Vec<&str> = edit_bearing
+                .iter()
+                .map(|(ca, _)| ca.title.as_str())
+                .collect();
+            Err(LspError::AmbiguousSourceAction(
+                title.to_string(),
+                titles.join(", "),
+            ))
+        }
+    }
+}
+
 pub struct LspOperations {
     service: std::sync::Arc<LspService>,
 }
@@ -505,6 +613,54 @@ impl LspOperations {
         }
 
         preview_text_edits_for_file("format", file_path, edits, allowed_root)
+    }
+
+    pub async fn source_action_preview(
+        &self,
+        file_path: &Path,
+        action: SourceActionPreviewKind,
+        allowed_root: Option<&Path>,
+    ) -> Result<WorkspaceEditPreview, LspError> {
+        let (key, _uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+
+        let params = serde_json::to_value(CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: url_to_uri(&uri)?,
+            },
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: u32::MAX,
+                    character: u32::MAX,
+                },
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: Some(vec![action.lsp_kind()]),
+                trigger_kind: Some(CodeActionTriggerKind::INVOKED),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let resp = self
+            .service
+            .send_request(&key, "textDocument/codeAction", params)
+            .await?;
+
+        if resp.is_null() {
+            return Err(LspError::NoEditForSourceAction(action.title().to_string()));
+        }
+
+        let actions: Vec<CodeActionOrCommand> = serde_json::from_value(resp)?;
+        let ws_edit = crate::operations::select_source_action_edit(action, actions)?;
+        preview_workspace_edit(action.title(), ws_edit, allowed_root)
     }
 }
 

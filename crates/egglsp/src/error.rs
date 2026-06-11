@@ -43,6 +43,18 @@ pub enum LspError {
 
     #[error("overlapping edits")]
     OverlappingEdits,
+
+    #[error("unsupported source action: '{0}'; supported actions: source.organizeImports")]
+    UnsupportedSourceAction(String),
+
+    #[error("source action '{0}' returned only command actions; command execution is disabled")]
+    CommandOnlySourceAction(String),
+
+    #[error("source action '{0}' returned no edit-bearing actions")]
+    NoEditForSourceAction(String),
+
+    #[error("source action '{0}' returned multiple edit-bearing actions: {1}")]
+    AmbiguousSourceAction(String, String),
 }
 
 impl LspError {

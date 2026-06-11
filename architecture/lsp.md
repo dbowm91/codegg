@@ -9,7 +9,7 @@ The `lsp` module provides Language Server Protocol support for IDE-like features
 - LSP server lifecycle management (download, launch, initialize)
 - Diagnostics collection via publishDiagnostics notifications
 - Code operations (goto definition, find references, hover, document symbols, workspace symbols, diagnostics)
-- Preview-only semantic edits (renamePreview, formatPreview) — returns unified-diff patches, never writes files
+- Preview-only semantic edits (renamePreview, formatPreview, sourceActionPreview) — returns unified-diff patches, never writes files
 - Language detection from file extensions
 - Project root detection
 - Compact agent-facing output DTOs (not raw LSP JSON)
@@ -56,7 +56,8 @@ pub struct LspService {
 impl LspService {
     pub async fn get_or_create_client(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
     pub async fn get_or_create_client_for_file(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
-    pub async fn get_or_create_client_for_root_hint(&self, root_hint: Option<&Path>, server_id: Option<&str>) -> Result<(String, PathBuf), LspError>
+    pub async fn ensure_file_open_from_disk(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
+    pub async fn find_existing_client_for_root_hint(&self, root_hint: Option<&Path>, server_id: Option<&str>) -> Result<(String, PathBuf), LspError>
     pub async fn open_file(&self, file_path: &Path, text: &str) -> Result<(), LspError>
     pub async fn update_file(&self, file_path: &Path, text: &str) -> Result<(), LspError>
     pub async fn close_file(&self, file_path: &Path) -> Result<(), LspError>
@@ -114,6 +115,7 @@ impl LspOperations {
     pub async fn prepare_rename(&self, file_path: &Path, line: u32, column: u32) -> Result<Option<PrepareRenameResponse>, LspError>
     pub async fn rename_preview(&self, file_path: &Path, line: u32, column: u32, new_name: &str, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
     pub async fn format_preview(&self, file_path: &Path, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
+    pub async fn source_action_preview(&self, file_path: &Path, action: SourceActionPreviewKind, allowed_root: Option<&Path>) -> Result<WorkspaceEditPreview, LspError>
 }
 ```
 
@@ -282,6 +284,7 @@ Only these operations are model-facing:
 | `diagnostics` | (via DiagnosticsCollector) | `Vec<DiagnosticSummary>` (plus warming flag) |
 | `renamePreview` | `textDocument/rename` (after ensure open + optional prepareRename) | `WorkspaceEditPreview` (unified diff patches + metadata; preview-only) |
 | `formatPreview` | `textDocument/formatting` | `WorkspaceEditPreview` (unified diff patches; preview-only) |
+| `sourceActionPreview` | `textDocument/codeAction` (filtered to `source.organizeImports`) | `WorkspaceEditPreview` (unified diff patches; preview-only) |
 
 `codeLens` is intentionally not exposed in the model-facing schema (remains available in `egglsp::operations` only).
 
@@ -289,9 +292,9 @@ Only these operations are model-facing:
 
 ### Preview-only edits
 
-`renamePreview` and `formatPreview` request semantic edits from the language server, convert them into `WorkspaceEditPreview`, and return unified diff patches. They never write files. `format_preview` enforces `allowed_root` at the crate layer — paths outside the root are rejected with `LspError::PathOutsideRoot`. Large patches are structurally marked via `FileEditPreview.patch_omitted` (not by string matching). Applying a preview requires the existing mutating `apply_patch` tool and therefore follows normal Codegg permission handling.
+`renamePreview`, `formatPreview`, and `sourceActionPreview` request semantic edits from the language server, convert them into `WorkspaceEditPreview`, and return unified diff patches. They never write files. `sourceActionPreview` only accepts `source.organizeImports` (with aliases `organizeImports` and `organize_imports`); arbitrary code actions, command-only actions, and command execution are intentionally rejected. `format_preview` enforces `allowed_root` at the crate layer — paths outside the root are rejected with `LspError::PathOutsideRoot`. Large patches are structurally marked via `FileEditPreview.patch_omitted` (not by string matching). Applying a preview requires the existing mutating `apply_patch` tool and therefore follows normal Codegg permission handling.
 
-Hidden operations (in `egglsp::operations` for future use): `completion`, `signatureHelp`, `codeAction`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `goToImplementation`, and arbitrary `sourceAction*` (follow-up).
+Hidden operations (in `egglsp::operations` for future use): `completion`, `signatureHelp`, `codeAction`, `prepareCallHierarchy`, `incomingCalls`, `outgoingCalls`, `goToImplementation`, and arbitrary non-organize-import source actions (follow-up).
 
 ### Position Convention
 
@@ -339,6 +342,14 @@ pub enum LspError {
     UnsupportedLanguage(String),
     Io(std::io::Error),
     Json(serde_json::Error),
+    UnsupportedEdit(String),
+    PathOutsideRoot(String),
+    Utf16Position(String),
+    OverlappingEdits,
+    UnsupportedSourceAction(String),
+    CommandOnlySourceAction(String),
+    NoEditForSourceAction(String),
+    AmbiguousSourceAction(String, String),
 }
 ```
 

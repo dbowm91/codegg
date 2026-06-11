@@ -293,7 +293,7 @@ There are now two report sources:
 - `dispatch_notification(diagnostics, method, params)` — notification-driven diagnostics (no request ownership required)
 - Background stdout dispatcher: `LspClient._reader_task` continuously reads framed messages and routes responses to pending senders or dispatches notifications; `fail_all_pending` drains the pending map when the reader exits
 - `launch::read_response` / `launch::read_notification` have been removed — stdout is exclusively owned by the background reader
-- `LspError { ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json }`
+- `LspError { ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json, UnsupportedEdit, PathOutsideRoot, Utf16Position, OverlappingEdits, UnsupportedSourceAction, CommandOnlySourceAction, NoEditForSourceAction, AmbiguousSourceAction }`
 
 ## Codegg-side bridge files
 
