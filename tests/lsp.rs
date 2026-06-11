@@ -1089,7 +1089,7 @@ async fn sourceActionPreview_rejects_unsupported_action_without_lsp_request() {
 
 #[tokio::test]
 #[allow(non_snake_case)]
-async fn semanticCheckPreview_requires_content() {
+async fn semanticCheckPreview_requires_content_or_patch() {
     let tool = make_tool();
     let err = tool
         .execute(serde_json::json!({
@@ -1099,8 +1099,8 @@ async fn semanticCheckPreview_requires_content() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, ToolError::Execution(ref m) if m.contains("content")),
-        "expected content error, got: {err:?}"
+        matches!(err, ToolError::Execution(ref m) if m.contains("content or patch")),
+        "expected content-or-patch error, got: {err:?}"
     );
 }
 
@@ -1111,13 +1111,109 @@ async fn semanticCheckPreview_requires_file_path() {
     let err = tool
         .execute(serde_json::json!({
             "operation": "semanticCheckPreview",
-            "content": "fn main() {}"
+            "patch": "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() {}\n"
         }))
         .await
         .unwrap_err();
     assert!(
         matches!(err, ToolError::Execution(ref m) if m.contains("file_path")),
         "expected file_path error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticCheckPreview_rejects_content_and_patch() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "semanticCheckPreview",
+            "file_path": "src/main.rs",
+            "content": "fn main() {}",
+            "patch": "@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() {}\n"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("either content or patch, not both")),
+        "expected content-and-patch error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticCheckPreview_rejects_invalid_patch() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "semanticCheckPreview",
+            "file_path": "src/main.rs",
+            "patch": "@@ -1,1 +1,1 @@\n x\n"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("semanticCheckPreview patch failed")),
+        "expected invalid patch error, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticCheckPreview_rejects_multi_file_patch() {
+    let tool = make_tool();
+    let err = tool
+        .execute(serde_json::json!({
+            "operation": "semanticCheckPreview",
+            "file_path": "src/main.rs",
+            "patch": "\
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,1 +1,1 @@
+-fn main() {}
++fn main() {}
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,1 +1,1 @@
+-fn lib() {}
++fn lib() {}
+"
+        }))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref m) if m.contains("single-file patches")),
+        "expected single-file patch guardrail, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[allow(non_snake_case)]
+async fn semanticCheckPreview_does_not_mutate_disk() {
+    let (_dir, path) = temp_rs_file("fn main() {\n    println!(\"old\");\n}\n");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let tool = make_tool_with_root(_dir.path());
+    let _ = tool
+        .execute(serde_json::json!({
+            "operation": "semanticCheckPreview",
+            "file_path": path.to_str().unwrap(),
+            "patch": "\
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,3 @@
+ fn main() {
+-    println!(\"old\");
++    println!(\"new\");
+ }
+"
+        }))
+        .await;
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after, original,
+        "semanticCheckPreview must not write patched content to disk"
     );
 }
 
@@ -1137,4 +1233,11 @@ fn semanticCheckPreview_schema_includes_error_fields() {
         .as_array()
         .unwrap();
     assert!(op_enum.iter().any(|v| v == "semanticCheckPreview"));
+    assert!(schema["properties"]["content"].is_object());
+    let patch = schema["properties"]["patch"].as_object().unwrap();
+    assert!(patch
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("Single-file unified diff"));
 }

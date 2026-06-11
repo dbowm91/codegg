@@ -260,7 +260,8 @@ These items were verified during review sessions:
 | `select_source_action_edit` command-only | `CodeAction` with `command: Some(_)` but `edit: None` is classified as `CommandOnlySourceAction` (command execution disabled) | `crates/egglsp/src/operations.rs` |
 | `document_end_position_utf16` | Pure helper computing LSP Position at end of document using UTF-16 code units; handles empty, single-line, multiline, unicode, and trailing-newline cases | `crates/egglsp/src/operations.rs` |
 | Overlay module | `crates/egglsp/src/overlay.rs` | OverlaySession (apply_overlay/restore), OverlayRestoreToken, SemanticCheckPreview (with diagnostics_error, symbols_error, restore_error), SemanticSymbolSummary |
-| `semanticCheckPreview` error fields | `diagnostics_error`, `symbols_error`, `restore_error` are `Option<String>` — non-None when the corresponding LSP request or restore fails; previously returned empty vectors or a bare bool | `crates/egglsp/src/overlay.rs` |
+| `semanticCheckPreview` overlay input | Accepts either full proposed content or a single-file unified diff patch; patch input is applied in memory against `file_path`, never written to disk, and the overlay is restored after the check | `crates/egglsp/src/overlay.rs`, `src/tool/lsp.rs` |
+| `semanticCheckPreview` error fields | `diagnostics_error`, `symbols_error`, `restore_error` are `Option<String>` — non-None when the corresponding LSP request or restore fails; `restored_disk_view` reflects restore success; previously returned empty vectors or a bare bool | `crates/egglsp/src/overlay.rs` |
 | `semanticCheckPreview` root enforcement | Operation-level `allowed_root: Option<&Path>` param; rejects files outside root with `LspError::PathOutsideRoot` | `crates/egglsp/src/operations.rs` |
 | LspTool `execute_structured` success | `success=false` when `restore_error` is present in the JSON response; checks `/results/restore_error` pointer | `src/tool/lsp.rs` |
 

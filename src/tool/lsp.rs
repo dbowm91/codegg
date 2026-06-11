@@ -5,7 +5,7 @@ use crate::tool::{
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -89,6 +89,8 @@ struct LspInput {
     action: Option<String>,
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    patch: Option<String>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -182,6 +184,59 @@ impl LspTool {
             .map_err(|e| ToolError::Execution(e.to_string()))
     }
 
+    fn reject_probable_multi_file_patch(&self, patch: &str) -> Result<(), ToolError> {
+        let diff_git_count = patch
+            .lines()
+            .filter(|line| line.starts_with("diff --git "))
+            .count();
+        let old_header_count = patch
+            .lines()
+            .filter(|line| line.starts_with("--- "))
+            .count();
+        let new_header_count = patch
+            .lines()
+            .filter(|line| line.starts_with("+++ "))
+            .count();
+
+        if diff_git_count > 1 || old_header_count > 1 || new_header_count > 1 {
+            return Err(ToolError::Execution(
+                "semanticCheckPreview only supports single-file patches".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn resolve_semantic_check_content(
+        &self,
+        file: &Path,
+        content: Option<&String>,
+        patch: Option<&String>,
+    ) -> Result<String, ToolError> {
+        match (content, patch) {
+            (Some(_), Some(_)) => Err(ToolError::Execution(
+                "semanticCheckPreview accepts either content or patch, not both".to_string(),
+            )),
+            (None, None) => Err(ToolError::Execution(
+                "content or patch required for semanticCheckPreview".to_string(),
+            )),
+            (Some(content), None) => Ok(content.clone()),
+            (None, Some(patch)) => {
+                let original = tokio::fs::read_to_string(file).await.map_err(|e| {
+                    ToolError::Execution(format!(
+                        "semanticCheckPreview patch failed: failed to read file {}: {}",
+                        file.display(),
+                        e
+                    ))
+                })?;
+                self.reject_probable_multi_file_patch(patch)?;
+                crate::tool::patch_util::apply_unified_diff(&original, patch).map_err(|e| {
+                    ToolError::Execution(format!("semanticCheckPreview patch failed: {e}"))
+                })
+            }
+        }
+    }
+
     fn require_line_col(
         &self,
         line: &Option<u32>,
@@ -229,7 +284,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -244,7 +299,7 @@ impl Tool for LspTool {
                         "renamePreview", "formatPreview", "sourceActionPreview",
                         "semanticCheckPreview"
                     ],
-                    "description": "LSP operation to perform"
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch."
                 },
                 "file_path": {
                     "type": "string",
@@ -272,7 +327,11 @@ impl Tool for LspTool {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Proposed full file content for semanticCheckPreview operation"
+                    "description": "Proposed full file content for semanticCheckPreview. Mutually exclusive with patch."
+                },
+                "patch": {
+                    "type": "string",
+                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview. Mutually exclusive with content."
                 }
             },
             "required": ["operation"]
@@ -609,12 +668,15 @@ impl Tool for LspTool {
             }
             "semanticCheckPreview" => {
                 let file = self.resolve_file(&parsed.file_path)?;
-                let content = parsed.content.as_ref().ok_or_else(|| {
-                    ToolError::Execution("content required for semanticCheckPreview".to_string())
-                })?;
-                let ops = crate::lsp::operations::LspOperations::new(self.service.clone());
+                let content = self
+                    .resolve_semantic_check_content(
+                        &file,
+                        parsed.content.as_ref(),
+                        parsed.patch.as_ref(),
+                    )
+                    .await?;
                 let preview = ops
-                    .semantic_check_preview(&file, content.clone(), Some(&self.allowed_root))
+                    .semantic_check_preview(&file, content, Some(&self.allowed_root))
                     .await
                     .map_err(|e| ToolError::Execution(format!("semanticCheckPreview: {e}")))?;
                 let diag_summaries: Vec<DiagnosticSummary> = preview
@@ -699,6 +761,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn temp_rs_file(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.rs");
+        std::fs::write(&path, content).unwrap();
+        (dir, path)
+    }
+
     #[test]
     fn lsp_tool_name() {
         let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
@@ -725,7 +794,7 @@ mod tests {
                         "renamePreview", "formatPreview", "sourceActionPreview",
                         "semanticCheckPreview"
                     ],
-                    "description": "LSP operation to perform"
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch."
                 },
                 "file_path": {
                     "type": "string",
@@ -753,12 +822,135 @@ mod tests {
                 },
                 "content": {
                     "type": "string",
-                    "description": "Proposed full file content for semanticCheckPreview operation"
+                    "description": "Proposed full file content for semanticCheckPreview. Mutually exclusive with patch."
+                },
+                "patch": {
+                    "type": "string",
+                    "description": "Single-file unified diff patch to apply in memory for semanticCheckPreview. Mutually exclusive with content."
                 }
             },
             "required": ["operation"]
         });
         assert_eq!(params, expected);
+    }
+
+    #[tokio::test]
+    async fn semantic_check_content_accepts_content() {
+        let (_dir, path) = temp_rs_file("fn main() {}\n");
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let content = "fn main() { println!(\"hi\"); }".to_string();
+        let resolved = tool
+            .resolve_semantic_check_content(&path, Some(&content), None)
+            .await
+            .unwrap();
+        assert_eq!(resolved, content);
+    }
+
+    #[tokio::test]
+    async fn semantic_check_content_rejects_content_and_patch() {
+        let (_dir, path) = temp_rs_file("fn main() {}\n");
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .resolve_semantic_check_content(
+                &path,
+                Some(&"fn main() {}".to_string()),
+                Some(&"@@ -1,1 +1,1 @@\n-fn main() {}\n+fn main() {}\n".to_string()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref msg) if msg.contains("either content or patch, not both"))
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_check_content_rejects_missing_content_and_patch() {
+        let (_dir, path) = temp_rs_file("fn main() {}\n");
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .resolve_semantic_check_content(&path, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref msg) if msg.contains("content or patch required"))
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_check_patch_applies_in_memory() {
+        let (_dir, path) = temp_rs_file("fn main() {\n    println!(\"old\");\n}\n");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let patch = "\
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,3 @@
+ fn main() {
+-    println!(\"old\");
++    println!(\"new\");
+ }
+"
+        .to_string();
+        let resolved = tool
+            .resolve_semantic_check_content(&path, None, Some(&patch))
+            .await
+            .unwrap();
+        assert!(resolved.contains("new"));
+        let disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(disk, original);
+    }
+
+    #[tokio::test]
+    async fn semantic_check_patch_rejects_invalid_patch() {
+        let (_dir, path) = temp_rs_file("fn main() {}\n");
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .resolve_semantic_check_content(&path, None, Some(&"@@ -1,1 +1,1 @@\n x\n".to_string()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref msg) if msg.contains("semanticCheckPreview patch failed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn semantic_check_patch_rejects_probable_multi_file_patch() {
+        let (_dir, path) = temp_rs_file("fn main() {}\n");
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let patch = "\
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,1 +1,1 @@
+-fn main() {}
++fn main() {}
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,1 +1,1 @@
+-fn lib() {}
++fn lib() {}
+"
+        .to_string();
+        let err = tool
+            .resolve_semantic_check_content(&path, None, Some(&patch))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref msg) if msg.contains("single-file patches"))
+        );
     }
 
     #[test]

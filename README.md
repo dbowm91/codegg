@@ -6,7 +6,7 @@ A lightweight, pure-Rust implementation of an AI coding agent.
 
 - **Pure Rust** - No runtime dependencies, fast compilation and execution
 - **Multiple Providers** - Use Anthropic, OpenAI, Google, Azure, Bedrock, and more
-- **LSP Support** - Built-in Language Server Protocol support for code intelligence
+- **LSP Support** - Built-in Language Server Protocol support for code intelligence and preview-only semantic checks from full content or a single-file patch
 - **Plugin System** - WASM-based plugin extensibility
 - **TUI Interface** - Terminal user interface with syntax highlighting
 - **Server Mode** - Headless HTTP server for remote access

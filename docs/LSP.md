@@ -93,6 +93,7 @@ The `lsp` tool in the tool registry allows the agent to:
 3. **Hover** - Get type information
 4. **Document symbols** - List file symbols
 5. **Code actions** - Get quick fixes
+6. **Semantic checks** - Run `semanticCheckPreview` with either full proposed content or a single-file unified diff patch; the patch is applied in memory only, the overlay is restored after the check, and diagnostics/restore errors stay surfaced in the result
 
 Example usage in agent prompts:
 ```
