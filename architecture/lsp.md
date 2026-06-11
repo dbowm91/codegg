@@ -430,6 +430,52 @@ It combines:
 
 **Implementation:** Risk marker scanning, pattern tables, and security-relevant filtering helpers live in `src/tool/lsp_security.rs`. The scanner collects all markers then caps, ensuring precise truncation flags. Diagnostics and symbols are filtered for security relevance before capping, so relevant items after many irrelevant ones are not dropped.
 
+### Security call expansion
+
+`securityContext` can optionally include a bounded call expansion with `call_depth`. The default is `0`, which disables recursive expansion. Supported depths are `1` and `2`; higher depths are rejected with a clear error. Expansion is breadth-first, dedupes repeated nodes, preserves edges to already-seen nodes, and is capped by `max_call_nodes` (default 32, max 64) and internal edge/range limits (`MAX_CALL_EDGES = 128`, `MAX_HIERARCHY_RANGES = 32`).
+
+This is not whole-program analysis. It is a shallow LSP-backed neighborhood around the target symbol for review triage.
+
+**Input fields:**
+
+| Field | Type | Default | Max | Description |
+|-------|------|---------|-----|-------------|
+| `call_depth` | number | 0 (off) | 2 | Call expansion depth. Requires `line`+`column`. |
+| `max_call_nodes` | number | 32 | 64 | Maximum nodes in expansion graph. |
+| `call_direction` | string | "both" | — | `"incoming"` (callers), `"outgoing"` (callees), or `"both"`. |
+
+**Validation rules:**
+
+- `call_depth > 2` → `ToolError::Execution` (rejected, not clamped)
+- `call_depth > 0` without `line`+`column` → `ToolError::Execution`
+- `max_call_nodes > 64` → clamped to 64
+- Invalid `call_direction` → `ToolError::Execution`
+
+**Read-only boundary:** Call expansion only sends LSP hierarchy requests (`prepareCallHierarchy`, `callHierarchy/incomingCalls`, `callHierarchy/outgoingCalls`). It never writes files or executes code.
+
+**Error handling:** Expansion errors are nonfatal and collected in `call_expansion.errors`. A failure in one child request does not abort the entire expansion. The packet still returns risk markers, diagnostics, and other context even if expansion fails.
+
+**Presets:** No preset enables call expansion by default. All presets keep `call_depth = 0`. Expansion is only activated through explicit `call_depth > 0`.
+
+### SecurityContextPacket fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file` | string | File path |
+| `target` | object/null | Target position (line, column) |
+| `excerpt` | object | Source excerpt |
+| `risk_markers` | array | Security risk markers |
+| `security_relevant_symbols` | array | Security-relevant symbols |
+| `security_relevant_diagnostics` | array | Security-relevant diagnostics |
+| `definitions` | array | Go-to-definition results |
+| `references` | array | Find-references results |
+| `call_hierarchy` | object/null | Shallow call hierarchy summary |
+| `call_expansion` | object/null | Bounded recursive call expansion (when `call_depth > 0`) |
+| `overlay` | object/null | Overlay diagnostics (when content/patch provided) |
+| `preset` | string/null | Applied security preset name |
+| `notes` | array | Informational notes |
+| `limits` | object | Truncation flags |
+
 ### Security context presets
 
 `securityContext` supports optional presets through `security_preset`. Presets tune default risk categories, excerpt radius, marker count, and call-hierarchy inclusion. Explicit input fields override preset defaults.

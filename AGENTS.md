@@ -270,6 +270,7 @@ These items were verified during review sessions:
 | Security presets | 5 (rust_server, rust_cli, web_backend, dependency_review, unsafe_review) | `src/tool/lsp_security.rs`, `src/tool/lsp.rs` |
 | `callHierarchy` / `typeHierarchy` operation | Read-only, shallow, bounded hierarchy summaries. Require `file_path`, `line`, and `column`. `callHierarchy` maps incoming (callers) and outgoing (calls made). `typeHierarchy` maps incoming (supertypes) and outgoing (subtypes). Non-recursive; unsupported servers may return empty sections. | `crates/egglsp/src/operations.rs`, `src/tool/lsp.rs` |
 | Hierarchy `from_ranges` truncation | Capped at `MAX_HIERARCHY_RANGES = 32` per call; included in summary `truncated` flag alongside item and edge truncation | `src/tool/lsp.rs` |
+| SecurityContext call expansion | Optional bounded recursive call expansion for securityContext | `src/tool/lsp.rs` — `build_call_expansion_summary()`, constants `DEFAULT_CALL_EXPANSION_DEPTH` etc. |
 
 ### Security Notes
 
@@ -394,7 +395,7 @@ When adding guidance for a new module:
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `.opencode/skills/resilience/SKILL.md` |
 | Permission (mode system, PermissionChecker, DoomLoop, PermissionRegistry) | `.opencode/skills/permission/SKILL.md` |
-| LSP (Language Server Protocol, diagnostics, code operations, semantic context packets) | `.opencode/skills/lsp/SKILL.md` |
+| LSP (Language Server Protocol, diagnostics, code operations, semantic context packets, securityContext call expansion) | `.opencode/skills/lsp/SKILL.md` |
 | Tool (path validation, async command, ToolExecutor, ToolCatalog) | `.opencode/skills/tool/SKILL.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |

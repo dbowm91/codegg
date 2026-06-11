@@ -286,6 +286,20 @@ It provides:
 
 **Security context presets:** `securityContext` supports optional presets via `security_preset`. Presets tune default risk categories, excerpt radius, marker count, and call-hierarchy inclusion. Supported presets: `rust_server`, `rust_cli`, `web_backend`, `dependency_review`, `unsafe_review`. Explicit input fields (`security_categories`, `radius`, `max_risk_markers`, `include_call_hierarchy`) override preset defaults. See `architecture/lsp.md` for the full preset table.
 
+### Security call expansion
+
+`securityContext` supports optional bounded recursive call expansion via `call_depth`:
+
+- `call_depth`: 0 (default/off), 1, or 2. Higher values rejected.
+- `max_call_nodes`: 32 (default), max 64. Caps total nodes.
+- `call_direction`: `"incoming"`, `"outgoing"`, or `"both"` (default).
+
+Expansion uses BFS with cycle detection (HashSet dedup). Edges to already-seen nodes are preserved. Errors are nonfatal and collected in `call_expansion.errors`.
+
+Presets do NOT enable expansion. Only explicit `call_depth > 0` activates it.
+
+Read-only: only LSP hierarchy requests, never writes files.
+
 ### Hierarchy Output Shapes
 
 Hierarchy operations (`callHierarchy`, `typeHierarchy`) follow a consistent shape. Both require `file_path`, `line`, and `column` (1-indexed). An optional `direction` parameter controls which callsites/type sites to retrieve.

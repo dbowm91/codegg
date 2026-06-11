@@ -32,6 +32,12 @@ const MAX_RISK_MARKERS: usize = 200;
 const MAX_SECURITY_SYMBOLS: usize = 80;
 const MAX_SECURITY_DIAGNOSTICS: usize = 80;
 
+const DEFAULT_CALL_EXPANSION_DEPTH: u8 = 0;
+const MAX_CALL_EXPANSION_DEPTH: u8 = 2;
+const DEFAULT_MAX_CALL_NODES: usize = 32;
+const MAX_CALL_NODES: usize = 64;
+const MAX_CALL_EDGES: usize = 128;
+
 #[derive(Serialize)]
 struct LspToolOutput<T> {
     operation: String,
@@ -152,7 +158,7 @@ pub struct SemanticSourceActionHint {
     pub error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct HierarchyRangeSummary {
     start_line: u32,
     start_column: u32,
@@ -193,6 +199,37 @@ struct CallHierarchySummary {
     truncated: bool,
 }
 
+#[derive(Serialize, Clone)]
+struct CallExpansionNode {
+    id: String,
+    name: String,
+    kind: String,
+    file: Option<String>,
+    range: HierarchyRangeSummary,
+    selection_range: HierarchyRangeSummary,
+    detail: Option<String>,
+    depth: u8,
+}
+
+#[derive(Serialize)]
+struct CallExpansionEdge {
+    from: String,
+    to: String,
+    direction: String,
+    ranges: Vec<HierarchyRangeSummary>,
+}
+
+#[derive(Serialize)]
+struct CallExpansionSummary {
+    root: Option<CallExpansionNode>,
+    direction: String,
+    depth: u8,
+    nodes: Vec<CallExpansionNode>,
+    edges: Vec<CallExpansionEdge>,
+    truncated: bool,
+    errors: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct TypeHierarchySummary {
     items: Vec<HierarchyItemSummary>,
@@ -215,6 +252,7 @@ struct SecurityContextPacket {
     definitions: Vec<LocationSummary>,
     references: Vec<LocationSummary>,
     call_hierarchy: Option<CallHierarchySummary>,
+    call_expansion: Option<CallExpansionSummary>,
     overlay: Option<SemanticOverlaySummary>,
     preset: Option<String>,
     notes: Vec<String>,
@@ -228,6 +266,7 @@ struct SecurityContextLimits {
     symbols_truncated: bool,
     references_truncated: bool,
     excerpt_truncated: bool,
+    call_expansion_truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +277,9 @@ pub(crate) struct EffectiveSecurityContextSettings {
     pub(crate) include_call_hierarchy: bool,
     pub(crate) preset_note: Option<String>,
     pub(crate) preset_name: Option<String>,
+    pub(crate) call_depth: u8,
+    pub(crate) max_call_nodes: usize,
+    pub(crate) call_direction: crate::lsp::operations::HierarchyDirection,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,6 +323,12 @@ struct LspInput {
     max_risk_markers: Option<usize>,
     #[serde(default)]
     security_preset: Option<String>,
+    #[serde(default)]
+    call_depth: Option<u8>,
+    #[serde(default)]
+    max_call_nodes: Option<usize>,
+    #[serde(default)]
+    call_direction: Option<String>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -341,6 +389,14 @@ fn symbol_kind_to_string(kind: crate::lsp::lsp_types::SymbolKind) -> String {
         _ => "unknown",
     }
     .to_string()
+}
+
+fn format_direction(d: crate::lsp::operations::HierarchyDirection) -> String {
+    match d {
+        crate::lsp::operations::HierarchyDirection::Incoming => "incoming".to_string(),
+        crate::lsp::operations::HierarchyDirection::Outgoing => "outgoing".to_string(),
+        crate::lsp::operations::HierarchyDirection::Both => "both".to_string(),
+    }
 }
 
 fn severity_to_string(severity: crate::lsp::lsp_types::DiagnosticSeverity) -> String {
@@ -449,6 +505,29 @@ impl LspTool {
         radius = radius.min(MAX_SECURITY_CONTEXT_RADIUS);
         max_risk_markers = max_risk_markers.min(MAX_RISK_MARKERS);
 
+        let mut call_depth = DEFAULT_CALL_EXPANSION_DEPTH;
+        let mut max_call_nodes = DEFAULT_MAX_CALL_NODES;
+        let mut call_direction = crate::lsp::operations::HierarchyDirection::Both;
+
+        // Presets do not enable call expansion (all keep call_depth = 0)
+        // Explicit fields override
+        if let Some(d) = parsed.call_depth {
+            if d > MAX_CALL_EXPANSION_DEPTH {
+                return Err(ToolError::Execution(format!(
+                    "call_depth {d} exceeds maximum {MAX_CALL_EXPANSION_DEPTH}"
+                )));
+            }
+            call_depth = d;
+        }
+        if let Some(n) = parsed.max_call_nodes {
+            max_call_nodes = n.min(MAX_CALL_NODES);
+        }
+        if let Some(ref dir_str) = parsed.call_direction {
+            call_direction =
+                crate::lsp::operations::HierarchyDirection::parse(Some(dir_str.as_str()))
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+        }
+
         Ok(EffectiveSecurityContextSettings {
             categories,
             radius,
@@ -456,6 +535,9 @@ impl LspTool {
             include_call_hierarchy,
             preset_note,
             preset_name,
+            call_depth,
+            max_call_nodes,
+            call_direction,
         })
     }
 
@@ -890,6 +972,203 @@ impl LspTool {
             truncated,
         }
     }
+
+    async fn build_call_expansion_summary(
+        &self,
+        ops: &crate::lsp::operations::LspOperations,
+        file: &Path,
+        line: u32,
+        column: u32,
+        direction: crate::lsp::operations::HierarchyDirection,
+        max_depth: u8,
+        max_nodes: usize,
+    ) -> CallExpansionSummary {
+        use std::collections::{HashSet, VecDeque};
+
+        let root_items = match ops.prepare_call_hierarchy(file, line, column).await {
+            Ok(items) => items,
+            Err(e) => {
+                return CallExpansionSummary {
+                    root: None,
+                    direction: format_direction(direction),
+                    depth: max_depth,
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                    truncated: false,
+                    errors: vec![format!("prepare_call_hierarchy: {e}")],
+                };
+            }
+        };
+
+        let Some(root_item) = root_items.first() else {
+            return CallExpansionSummary {
+                root: None,
+                direction: format_direction(direction),
+                depth: max_depth,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                truncated: false,
+                errors: Vec::new(),
+            };
+        };
+
+        let root_node = Self::call_expansion_node_from_item(root_item, 0);
+        let root_id = root_node.id.clone();
+
+        let mut nodes: Vec<CallExpansionNode> = vec![root_node.clone()];
+        let mut edges: Vec<CallExpansionEdge> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        seen.insert(root_id.clone());
+
+        let mut queue: VecDeque<(crate::lsp::lsp_types::CallHierarchyItem, u8)> = VecDeque::new();
+        queue.push_back((root_item.clone(), 0));
+
+        let mut truncated = false;
+
+        while let Some((item, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            if nodes.len() >= max_nodes {
+                truncated = true;
+                break;
+            }
+
+            if matches!(
+                direction,
+                crate::lsp::operations::HierarchyDirection::Incoming
+                    | crate::lsp::operations::HierarchyDirection::Both
+            ) {
+                match ops.incoming_calls(item.clone()).await {
+                    Ok(calls) => {
+                        for call in calls {
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break;
+                            }
+                            let child_id = Self::call_expansion_node_id(&call.from);
+                            let child_depth = depth + 1;
+                            let ranges: Vec<HierarchyRangeSummary> = call
+                                .from_ranges
+                                .iter()
+                                .take(MAX_HIERARCHY_RANGES)
+                                .map(|r| Self::convert_lsp_range(*r))
+                                .collect();
+                            if edges.len() < MAX_CALL_EDGES {
+                                edges.push(CallExpansionEdge {
+                                    from: child_id.clone(),
+                                    to: Self::call_expansion_node_id(&item),
+                                    direction: "incoming".to_string(),
+                                    ranges,
+                                });
+                            }
+                            if seen.insert(child_id.clone()) {
+                                let node =
+                                    Self::call_expansion_node_from_item(&call.from, child_depth);
+                                nodes.push(node);
+                                queue.push_back((call.from, child_depth));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!(
+                            "incoming_calls for {}: {e}",
+                            Self::call_expansion_node_id(&item)
+                        ));
+                    }
+                }
+            }
+
+            if nodes.len() >= max_nodes {
+                truncated = true;
+                break;
+            }
+
+            if matches!(
+                direction,
+                crate::lsp::operations::HierarchyDirection::Outgoing
+                    | crate::lsp::operations::HierarchyDirection::Both
+            ) {
+                match ops.outgoing_calls(item.clone()).await {
+                    Ok(calls) => {
+                        for call in calls {
+                            if nodes.len() >= max_nodes {
+                                truncated = true;
+                                break;
+                            }
+                            let child_id = Self::call_expansion_node_id(&call.to);
+                            let child_depth = depth + 1;
+                            let ranges: Vec<HierarchyRangeSummary> = call
+                                .from_ranges
+                                .iter()
+                                .take(MAX_HIERARCHY_RANGES)
+                                .map(|r| Self::convert_lsp_range(*r))
+                                .collect();
+                            if edges.len() < MAX_CALL_EDGES {
+                                edges.push(CallExpansionEdge {
+                                    from: Self::call_expansion_node_id(&item),
+                                    to: child_id.clone(),
+                                    direction: "outgoing".to_string(),
+                                    ranges,
+                                });
+                            }
+                            if seen.insert(child_id.clone()) {
+                                let node =
+                                    Self::call_expansion_node_from_item(&call.to, child_depth);
+                                nodes.push(node);
+                                queue.push_back((call.to, child_depth));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!(
+                            "outgoing_calls for {}: {e}",
+                            Self::call_expansion_node_id(&item)
+                        ));
+                    }
+                }
+            }
+        }
+
+        CallExpansionSummary {
+            root: Some(root_node),
+            direction: format_direction(direction),
+            depth: max_depth,
+            nodes,
+            edges,
+            truncated,
+            errors,
+        }
+    }
+
+    fn call_expansion_node_id(item: &crate::lsp::lsp_types::CallHierarchyItem) -> String {
+        let file = uri_to_path(&item.uri);
+        let sel = &item.selection_range;
+        format!(
+            "{}:{}:{}:{}",
+            file,
+            item.name,
+            sel.start.line + 1,
+            sel.start.character + 1
+        )
+    }
+
+    fn call_expansion_node_from_item(
+        item: &crate::lsp::lsp_types::CallHierarchyItem,
+        depth: u8,
+    ) -> CallExpansionNode {
+        CallExpansionNode {
+            id: Self::call_expansion_node_id(item),
+            name: item.name.clone(),
+            kind: symbol_kind_to_string(item.kind),
+            file: Some(uri_to_path(&item.uri)),
+            range: Self::convert_lsp_range(item.range),
+            selection_range: Self::convert_lsp_range(item.selection_range),
+            detail: item.detail.clone(),
+            depth,
+        }
+    }
 }
 
 #[async_trait]
@@ -996,6 +1275,19 @@ impl Tool for LspTool {
                     "type": "string",
                     "enum": ["rust_server", "rust_cli", "web_backend", "dependency_review", "unsafe_review"],
                     "description": "Optional securityContext preset that sets default risk categories, radius, marker limits, and call-hierarchy behavior. Explicit inputs override preset defaults."
+                },
+                "call_depth": {
+                    "type": "number",
+                    "description": "Optional securityContext call expansion depth. Default 0/off. Max 2. Requires line+column."
+                },
+                "max_call_nodes": {
+                    "type": "number",
+                    "description": "Maximum call expansion nodes for securityContext. Default 32, max 64."
+                },
+                "call_direction": {
+                    "type": "string",
+                    "enum": ["incoming", "outgoing", "both"],
+                    "description": "Direction for securityContext call expansion. incoming=callers, outgoing=callees, both=both. Default both."
                 }
             },
             "required": ["operation"]
@@ -1789,6 +2081,12 @@ impl Tool for LspTool {
                     ));
                 }
 
+                if settings.call_depth > 0 && !has_position {
+                    return Err(ToolError::Execution(
+                        "securityContext call_depth requires both line and column".to_string(),
+                    ));
+                }
+
                 let (excerpt, excerpt_truncated) = if has_position {
                     Self::build_source_excerpt(&file, parsed.line, settings.radius)?
                 } else {
@@ -2003,6 +2301,23 @@ impl Tool for LspTool {
                     None
                 };
 
+                let call_expansion = if settings.call_depth > 0 && has_position {
+                    Some(
+                        self.build_call_expansion_summary(
+                            &ops,
+                            &file,
+                            parsed.line.unwrap(),
+                            parsed.column.unwrap(),
+                            settings.call_direction,
+                            settings.call_depth,
+                            settings.max_call_nodes,
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                };
+
                 let mut notes = Vec::new();
                 if risk_markers.is_empty() {
                     notes.push("no risk markers detected in excerpt".to_string());
@@ -2036,12 +2351,18 @@ impl Tool for LspTool {
                     .as_ref()
                     .map(|c| c.items.len() + c.incoming.len() + c.outgoing.len())
                     .unwrap_or(0);
+                let call_expansion_count = call_expansion
+                    .as_ref()
+                    .map(|c| c.nodes.len() + c.edges.len())
+                    .unwrap_or(0);
+                let call_expansion_truncated = call_expansion.as_ref().is_some_and(|c| c.truncated);
                 let result_count = risk_markers_len
                     + security_diag_count
                     + security_sym_count
                     + definitions.len()
                     + references.len()
-                    + call_hierarchy_count;
+                    + call_hierarchy_count
+                    + call_expansion_count;
                 let packet = SecurityContextPacket {
                     file: file_str,
                     target,
@@ -2052,6 +2373,7 @@ impl Tool for LspTool {
                     definitions,
                     references,
                     call_hierarchy,
+                    call_expansion,
                     overlay,
                     preset: settings.preset_name,
                     notes,
@@ -2061,13 +2383,15 @@ impl Tool for LspTool {
                         symbols_truncated,
                         references_truncated: refs_truncated,
                         excerpt_truncated,
+                        call_expansion_truncated,
                     },
                 };
                 let truncated = risk_markers_truncated
                     || diagnostics_truncated
                     || symbols_truncated
                     || refs_truncated
-                    || excerpt_truncated;
+                    || excerpt_truncated
+                    || call_expansion_truncated;
 
                 let output = LspToolOutput {
                     operation: "securityContext".to_string(),
@@ -2247,6 +2571,19 @@ mod tests {
                     "type": "string",
                     "enum": ["rust_server", "rust_cli", "web_backend", "dependency_review", "unsafe_review"],
                     "description": "Optional securityContext preset that sets default risk categories, radius, marker limits, and call-hierarchy behavior. Explicit inputs override preset defaults."
+                },
+                "call_depth": {
+                    "type": "number",
+                    "description": "Optional securityContext call expansion depth. Default 0/off. Max 2. Requires line+column."
+                },
+                "max_call_nodes": {
+                    "type": "number",
+                    "description": "Maximum call expansion nodes for securityContext. Default 32, max 64."
+                },
+                "call_direction": {
+                    "type": "string",
+                    "enum": ["incoming", "outgoing", "both"],
+                    "description": "Direction for securityContext call expansion. incoming=callers, outgoing=callees, both=both. Default both."
                 }
             },
             "required": ["operation"]
@@ -2713,6 +3050,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             symbols_truncated: false,
             references_truncated: false,
             excerpt_truncated: false,
+            call_expansion_truncated: false,
         };
         let truncated = limits.risk_markers_truncated
             || limits.diagnostics_truncated
@@ -2730,6 +3068,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             symbols_truncated: false,
             references_truncated: false,
             excerpt_truncated: false,
+            call_expansion_truncated: false,
         };
         let truncated = limits.risk_markers_truncated
             || limits.diagnostics_truncated
@@ -2755,6 +3094,7 @@ diff --git a/src/lib.rs b/src/lib.rs
                 symbols_truncated: flag[2],
                 references_truncated: flag[3],
                 excerpt_truncated: flag[4],
+                call_expansion_truncated: false,
             };
             let truncated = limits.risk_markers_truncated
                 || limits.diagnostics_truncated
@@ -2988,6 +3328,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             security_categories: None,
             max_risk_markers: None,
             security_preset: None,
+            call_depth: None,
+            max_call_nodes: None,
+            call_direction: None,
         }
     }
 
@@ -3138,6 +3481,280 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert!(
             v["results"]["call_hierarchy"].is_null(),
             "dependency_review should omit call_hierarchy by default"
+        );
+    }
+
+    // ── Call expansion settings tests ──────────────────────────────────
+
+    #[test]
+    fn security_context_settings_default_call_depth_zero() {
+        let input = security_context_input();
+        let s = LspTool::resolve_security_context_settings(&input, true).unwrap();
+        assert_eq!(s.call_depth, 0);
+        assert_eq!(s.max_call_nodes, 32);
+        assert!(matches!(
+            s.call_direction,
+            crate::lsp::operations::HierarchyDirection::Both
+        ));
+    }
+
+    #[test]
+    fn security_context_settings_call_depth_one_enabled() {
+        let mut input = security_context_input();
+        input.call_depth = Some(1);
+        let s = LspTool::resolve_security_context_settings(&input, true).unwrap();
+        assert_eq!(s.call_depth, 1);
+    }
+
+    #[test]
+    fn security_context_settings_call_depth_two_enabled() {
+        let mut input = security_context_input();
+        input.call_depth = Some(2);
+        let s = LspTool::resolve_security_context_settings(&input, true).unwrap();
+        assert_eq!(s.call_depth, 2);
+    }
+
+    #[test]
+    fn security_context_settings_call_depth_over_max_rejected() {
+        let mut input = security_context_input();
+        input.call_depth = Some(3);
+        let err = LspTool::resolve_security_context_settings(&input, true).unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("call_depth") && m.contains("exceeds maximum")),
+            "expected call_depth over max error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn security_context_settings_max_call_nodes_clamps() {
+        let mut input = security_context_input();
+        input.max_call_nodes = Some(999);
+        let s = LspTool::resolve_security_context_settings(&input, true).unwrap();
+        assert_eq!(s.max_call_nodes, 64);
+    }
+
+    #[test]
+    fn security_context_settings_call_direction_defaults_both() {
+        let input = security_context_input();
+        let s = LspTool::resolve_security_context_settings(&input, true).unwrap();
+        assert!(matches!(
+            s.call_direction,
+            crate::lsp::operations::HierarchyDirection::Both
+        ));
+    }
+
+    #[test]
+    fn security_context_settings_call_direction_incoming() {
+        let mut input = security_context_input();
+        input.call_direction = Some("incoming".to_string());
+        let s = LspTool::resolve_security_context_settings(&input, true).unwrap();
+        assert!(matches!(
+            s.call_direction,
+            crate::lsp::operations::HierarchyDirection::Incoming
+        ));
+    }
+
+    #[test]
+    fn security_context_settings_call_direction_outgoing() {
+        let mut input = security_context_input();
+        input.call_direction = Some("outgoing".to_string());
+        let s = LspTool::resolve_security_context_settings(&input, true).unwrap();
+        assert!(matches!(
+            s.call_direction,
+            crate::lsp::operations::HierarchyDirection::Outgoing
+        ));
+    }
+
+    #[test]
+    fn security_context_settings_call_direction_rejects_invalid() {
+        let mut input = security_context_input();
+        input.call_direction = Some("bogus".to_string());
+        let err = LspTool::resolve_security_context_settings(&input, true).unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("unsupported hierarchy direction")),
+            "expected invalid direction error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn security_context_settings_preset_does_not_enable_call_expansion() {
+        let mut input = security_context_input();
+        input.security_preset = Some("rust_server".to_string());
+        let s = LspTool::resolve_security_context_settings(&input, true).unwrap();
+        assert_eq!(s.call_depth, 0, "presets should not enable call expansion");
+    }
+
+    // ── Call expansion DTO tests ──────────────────────────────────────
+
+    #[test]
+    fn call_expansion_node_id_is_deterministic() {
+        use crate::lsp::lsp_types::{CallHierarchyItem, Range, SymbolKind, Uri};
+        use std::str::FromStr;
+        let uri = Uri::from_str("file:///tmp/test.rs").unwrap();
+        let item = CallHierarchyItem {
+            name: "test_fn".to_string(),
+            kind: SymbolKind::FUNCTION,
+            uri,
+            range: Range {
+                start: crate::lsp::lsp_types::Position {
+                    line: 9,
+                    character: 0,
+                },
+                end: crate::lsp::lsp_types::Position {
+                    line: 9,
+                    character: 20,
+                },
+            },
+            selection_range: Range {
+                start: crate::lsp::lsp_types::Position {
+                    line: 9,
+                    character: 3,
+                },
+                end: crate::lsp::lsp_types::Position {
+                    line: 9,
+                    character: 10,
+                },
+            },
+            detail: None,
+            tags: None,
+            data: None,
+        };
+        let id1 = LspTool::call_expansion_node_id(&item);
+        let id2 = LspTool::call_expansion_node_id(&item);
+        assert_eq!(id1, id2);
+        assert!(id1.contains("test_fn"));
+        assert!(id1.contains("10:4")); // 1-indexed line:col
+    }
+
+    // ── Call expansion operation-level tests ──────────────────────────
+
+    #[tokio::test]
+    async fn security_context_call_depth_zero_omits_call_expansion() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "call_depth": 0
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            v["results"]["call_expansion"].is_null(),
+            "call_depth=0 should omit call_expansion"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_context_call_depth_requires_line_column() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "call_depth": 1
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("call_depth") && m.contains("line and column")),
+            "expected call_depth requires position error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_context_call_depth_over_max_rejected() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "call_depth": 3
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("call_depth") && m.contains("exceeds maximum")),
+            "expected call_depth over max error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_context_call_direction_invalid_rejected() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let err = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "call_direction": "bogus"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::Execution(ref m) if m.contains("unsupported hierarchy direction")),
+            "expected invalid direction error, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_context_call_depth_one_with_position_returns_expansion_or_errors() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "call_depth": 1
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        // call_expansion should be present (not null)
+        assert!(
+            !v["results"]["call_expansion"].is_null(),
+            "call_depth=1 should produce call_expansion section"
+        );
+        // Should have direction field
+        assert_eq!(v["results"]["call_expansion"]["direction"], "both");
+        // Should have depth field
+        assert_eq!(v["results"]["call_expansion"]["depth"], 1);
+    }
+
+    #[test]
+    fn security_context_schema_includes_call_expansion_inputs() {
+        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
+        )));
+        let params = tool.parameters();
+        assert!(
+            params["properties"].get("call_depth").is_some(),
+            "schema should include call_depth"
+        );
+        assert!(
+            params["properties"].get("max_call_nodes").is_some(),
+            "schema should include max_call_nodes"
+        );
+        assert!(
+            params["properties"].get("call_direction").is_some(),
+            "schema should include call_direction"
         );
     }
 }
