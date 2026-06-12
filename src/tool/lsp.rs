@@ -415,6 +415,21 @@ pub struct LspTool {
     allowed_root: PathBuf,
 }
 
+impl std::fmt::Debug for LspTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LspTool")
+            .field("service", &Arc::as_ptr(&self.service))
+            .field("allowed_root", &self.allowed_root)
+            .finish()
+    }
+}
+
+impl PartialEq for LspTool {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.service, &other.service) && self.allowed_root == other.allowed_root
+    }
+}
+
 impl LspTool {
     pub fn new(service: Arc<crate::lsp::service::LspService>) -> Self {
         Self {

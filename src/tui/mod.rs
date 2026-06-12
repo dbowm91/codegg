@@ -2146,6 +2146,53 @@ async fn handle_run_doctor(app: &mut app::App) {
     app.messages_state.toasts.info(&summary);
 }
 
+async fn handle_security_review_run(
+    app: &mut app::App,
+    id: String,
+    root: std::path::PathBuf,
+    args: crate::security::workflow::SecurityReviewCommandArgs,
+    lsp_tool: Option<std::sync::Arc<crate::tool::lsp::LspTool>>,
+) {
+    use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
+
+    let result =
+        crate::security::workflow::run_security_review_background(root, args, lsp_tool).await;
+
+    // Always clear the reentrancy guard, even on failure.
+    if app.security_review_running.as_deref() == Some(id.as_str()) {
+        app.security_review_running = None;
+    }
+
+    match result {
+        Ok(report) => {
+            // Push the full report into the message timeline as an
+            // Assistant message. The toast gives immediate confirmation;
+            // the timeline holds the full multi-section report (summary,
+            // findings, prompts) so it isn't truncated.
+            let labeled = format!("[Security Review]\n{}", report);
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            app.messages_state.messages.messages.push(UIMessage {
+                role: MessageRole::Assistant,
+                parts: vec![MsgPart::Text { content: labeled }],
+                timestamp: Some(timestamp),
+                is_plan_mode: None,
+            });
+            app.messages_state.messages.scroll_to_bottom();
+            app.messages_state
+                .toasts
+                .success("Security review complete — see message log for the full report.");
+        }
+        Err(e) => {
+            app.messages_state
+                .toasts
+                .error(&format!("Security review failed: {e}"));
+        }
+    }
+}
+
 async fn handle_research_list_runs(app: &mut app::App) {
     let project_dir = app.session_state.project_dir.clone();
     let service =
@@ -3088,6 +3135,14 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                     }
                     TuiCommand::RunDoctor => {
                         handle_run_doctor(app).await;
+                    }
+                    TuiCommand::SecurityReviewRun {
+                        id,
+                        root,
+                        args,
+                        lsp_tool,
+                    } => {
+                        handle_security_review_run(app, id, root, args, lsp_tool).await;
                     }
                 }
                 needs_render = true;

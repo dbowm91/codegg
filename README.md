@@ -848,7 +848,7 @@ The async orchestrator `run_security_review_workflow(root, base, options)` runs 
 
 An optional LSP enrichment pass (`--enrich`) executes bounded, read-only `securityContext` requests for escalated targets via the `SecurityContextExecutor` trait and reruns finding synthesis with enriched evidence. The `LspSecurityContextExecutor` adapter wraps `LspTool` for real LSP delegation; `validate_security_context_request()` guards request payloads. No-executor runtimes fail soft with clear notes. Enrichment is opt-in, read-only, bounded, and never mutates files.
 
-The `/security-review` TUI command exposes the workflow with flags: `--changed`, `--base <ref>`, `--json`, `--prompts-only`, `--findings-only`, `--no-content`, `--no-filename`, `--max-findings N`, `--max-prompts N`, `--enrich`, `--max-enriched-targets N`, `--lsp-timeout-ms N`.
+The `/security-review` TUI command exposes the workflow with flags: `--changed`, `--base <ref>`, `--json`, `--prompts-only`, `--findings-only`, `--no-content`, `--no-filename`, `--max-findings N`, `--max-prompts N`, `--enrich`, `--max-enriched-targets N`, `--lsp-timeout-ms N`. The command runs asynchronously in the TUI so the UI remains responsive while the review is in flight; a reentrancy guard (`App.security_review_running`) blocks repeated invocations and the full report is delivered via the message timeline as an Assistant message with a `[Security Review]` label, plus a brief toast confirming completion.
 
 ### Best Practices
 

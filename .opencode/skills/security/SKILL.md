@@ -585,6 +585,8 @@ Usage examples:
 - Internal: call `discover_targets_from_diff()` + `run_preflight_checks()` + `synthesize_findings()` directly
 - Internal: call `synthesize_evidence_based_findings()` for evidence-based finding synthesis
 
+The TUI command dispatches asynchronously via `TuiCommand::SecurityReviewRun`; the UI stays responsive while the review runs. A reentrancy guard (`App.security_review_running`) prevents concurrent runs. The full report is pushed to the message timeline as an Assistant message; a brief toast confirms completion. The local-mode `LspSecurityContextExecutor` and the remote/socket deterministic fallback (with `note_lsp_enrichment_unavailable`) are both preserved.
+
 #### LSP Executor Integration
 
 `/security-review --enrich` can execute bounded, read-only `securityContext` LSP requests when an executor is available. The executor hierarchy:
@@ -593,7 +595,7 @@ Usage examples:
 - `FixtureSecurityContextExecutor`: Pre-configured responses keyed by file path. Used in unit tests.
 - `LspSecurityContextExecutor`: Real adapter wrapping `Arc<LspTool>`. Validates requests via `validate_security_context_request()`, injects the `"operation": "securityContext"` field, delegates to `LspTool::execute()`, and parses the JSON string response.
 
-**Injection plumbing**: `run_security_review_command_with_executor(root, args, executor)` accepts `Option<&dyn SecurityContextExecutor>` — the injection point for an executor. `run_security_review_command(root, args)` delegates to it with `None`. In local mode the TUI creates a shared `LspTool` at startup (`App.lsp_tool`) and passes a `LspSecurityContextExecutor` to the command handler for `--enrich`. In socket/remote mode `lsp_tool` is `None` and `--enrich` falls back to deterministic stage-1 with an unavailable note.
+**Injection plumbing**: `run_security_review_command_with_executor(root, args, executor)` accepts `Option<&dyn SecurityContextExecutor>` — the injection point for an executor. `run_security_review_command(root, args)` delegates to it with `None`. In local mode the TUI creates a shared `LspTool` at startup (`App.lsp_tool`) and passes a `LspSecurityContextExecutor` to the command handler for `--enrich`. In socket/remote mode `lsp_tool` is `None` and `--enrich` falls back to deterministic stage-1 with an unavailable note. The new `run_security_review_background(root: PathBuf, args: SecurityReviewCommandArgs, lsp_tool: Option<Arc<LspTool>>)` helper (also in `src/security/workflow/report.rs`) is the TUI-facing entry point: it owns its inputs (no borrowed `&self` survives the await) and constructs the `LspSecurityContextExecutor` internally when `lsp_tool` is `Some`, so the caller can spawn it from `handle_security_review_run` in `src/tui/mod.rs`.
 
 The `SecurityContextExecutorProvider` trait exists (providing `fn security_context_executor(&self) -> Option<Arc<dyn SecurityContextExecutor>>`) but has **zero implementations** — no struct implements it yet. It is available as a future wiring pattern.
 

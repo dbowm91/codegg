@@ -1496,12 +1496,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // socket mode has no LspTool on the client side.
     if !is_socket_mode {
         let lsp_service = std::sync::Arc::new(codegg::lsp::LspService::new(
-            codegg::lsp::config_lsp_to_egglsp(
-                config
-                    .lsp
-                    .clone()
-                    .unwrap_or_default(),
-            ),
+            codegg::lsp::config_lsp_to_egglsp(config.lsp.clone().unwrap_or_default()),
         ));
         app.lsp_tool = Some(std::sync::Arc::new(
             codegg::tool::lsp::LspTool::new(lsp_service)

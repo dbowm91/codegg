@@ -55,6 +55,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 use std::collections::HashMap;
+use std::path::PathBuf;
 #[allow(unused_imports)]
 use std::process::Command;
 use std::sync::Arc;
@@ -226,6 +227,19 @@ pub enum TuiCommand {
     /// logged at `codegg::doctor` and surfaced as a toast. The
     /// handler in `tui_cmd.rs` performs the actual async work.
     RunDoctor,
+    /// Run `/security-review` asynchronously. Dispatched from the slash
+    /// command handler in `execute_command` so the TUI renderer stays
+    /// responsive while diff discovery, preflight, and optional LSP
+    /// enrichment run. The handler in `src/tui/mod.rs` awaits
+    /// `run_security_review_background` and surfaces the result via the
+    /// message timeline + a toast. See
+    /// `plans/security_review_async_dispatch.md`.
+    SecurityReviewRun {
+        id: String,
+        root: PathBuf,
+        args: crate::security::workflow::SecurityReviewCommandArgs,
+        lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
+    },
 }
 
 /// Main application state for the TUI.
@@ -330,6 +344,12 @@ pub struct App {
     /// LSP-backed operations.  Created once at startup in local
     /// (non-socket) mode; `None` in remote/socket mode.
     pub lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
+    /// Reentrancy guard for the `/security-review` slash command.
+    /// `Some(id)` while a background review is in flight; `None` when
+    /// idle. Prevents the user from accidentally spawning unbounded
+    /// concurrent reviews by repeating the command. Cleared on both
+    /// success and failure by the handler in `src/tui/mod.rs`.
+    pub security_review_running: Option<String>,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -647,6 +667,7 @@ impl App {
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
             lsp_tool: None,
+            security_review_running: None,
         }
     }
 
@@ -847,6 +868,7 @@ impl App {
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
             lsp_tool: None,
+            security_review_running: None,
         }
     }
 
@@ -4093,38 +4115,43 @@ impl App {
                 let root =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
+                // Reentrancy guard: only one security review runs at a
+                // time. The flag is cleared by the handler in
+                // `src/tui/mod.rs` on both success and failure.
+                if self.security_review_running.is_some() {
+                    self.messages_state.toasts.warning(
+                        "Security review already running. Wait for it to finish or cancel it.",
+                    );
+                    return;
+                }
+
+                let id = crate::security::workflow::SecurityReviewRunId::new();
+                self.security_review_running = Some(id.0.clone());
+
                 self.messages_state
                     .toasts
-                    .info("Running security review...");
+                    .info("Security review started. The result will appear in the message log when complete.");
 
-                // Build an LSP executor from the App's shared LspTool
-                // when available.  In socket/remote mode lsp_tool is
-                // None and the deterministic stage-1 path is used.
-                let executor = self.lsp_tool.as_ref().map(|tool| {
-                    crate::security::lsp_executor::LspSecurityContextExecutor::new(Arc::clone(tool))
-                });
-                let executor_ref = executor.as_ref().map(|e| e as &dyn crate::security::workflow::context::SecurityContextExecutor);
-
-                let result = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        crate::security::workflow::run_security_review_command_with_executor(
-                            &root,
-                            &parsed_args,
-                            executor_ref,
-                        )
-                        .await
-                    })
-                });
-
-                match result {
-                    Ok(report) => {
-                        self.messages_state.toasts.info(&report);
-                    }
-                    Err(e) => {
-                        self.messages_state
-                            .toasts
-                            .error(&format!("Security review failed: {e}"));
-                    }
+                // Clone everything the background task needs; the
+                // TuiCommand handler in `src/tui/mod.rs` awaits the
+                // workflow and surfaces the result. We must not borrow
+                // `self` across the dispatch.
+                let lsp_tool = self.lsp_tool.clone();
+                let tx = self.tui_cmd_tx.clone();
+                if let Some(tx) = tx {
+                    let _ = tx.try_send(TuiCommand::SecurityReviewRun {
+                        id: id.0,
+                        root,
+                        args: parsed_args,
+                        lsp_tool,
+                    });
+                } else {
+                    // Fallback: no channel available (e.g. test fixture).
+                    // Clear the guard and surface a clear error.
+                    self.security_review_running = None;
+                    self.messages_state
+                        .toasts
+                        .error("TUI command channel unavailable; cannot run security review");
                 }
             }
             _ => {}

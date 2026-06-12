@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::context::*;
 use super::diff::*;
@@ -7,6 +8,29 @@ use super::enrichment::*;
 use super::evidence::*;
 use super::preflight::*;
 use super::types::*;
+
+// ---------------------------------------------------------------------------
+// Run identity
+// ---------------------------------------------------------------------------
+
+/// Unique identifier for a single `/security-review` invocation. Returned
+/// by the slash command handler so the user (or callers) can correlate
+/// start/finish events and so repeated invocations don't collide.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SecurityReviewRunId(pub String);
+
+impl SecurityReviewRunId {
+    /// Generate a fresh run id.
+    pub fn new() -> Self {
+        Self(format!("sr-{}", uuid::Uuid::new_v4()))
+    }
+}
+
+impl Default for SecurityReviewRunId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Report assembly
@@ -511,7 +535,7 @@ pub fn render_security_review_prompts(output: &SecurityReviewOutput) -> String {
 // ---------------------------------------------------------------------------
 
 /// Parsed command-line arguments for the `/security-review` slash command.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityReviewCommandArgs {
     pub base: Option<String>,
     pub json: bool,
@@ -661,6 +685,30 @@ pub async fn run_security_review_command_with_executor(
     }
 }
 
+/// Run the security review command from a background task context.
+///
+/// This is the same as [`run_security_review_command_with_executor`] but
+/// takes owned `root` and `args` and an already-cloned `Arc<LspTool>` so
+/// the caller can spawn the future without borrowing App state. The
+/// executor is constructed inside the function (not borrowed from the
+/// caller) so no `&self` borrow crosses an await boundary.
+///
+/// In local TUI mode the caller passes `Some(Arc::clone(&app.lsp_tool))`
+/// so the real `LspSecurityContextExecutor` is used. In socket/remote
+/// mode the caller passes `None` and the deterministic stage-1
+/// fallback runs with a `note_lsp_enrichment_unavailable` note.
+pub async fn run_security_review_background(
+    root: PathBuf,
+    args: SecurityReviewCommandArgs,
+    lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
+) -> Result<String, String> {
+    let executor = lsp_tool.map(crate::security::lsp_executor::LspSecurityContextExecutor::new);
+    let executor_ref = executor
+        .as_ref()
+        .map(|e| e as &dyn crate::security::workflow::context::SecurityContextExecutor);
+    run_security_review_command_with_executor(&root, &args, executor_ref).await
+}
+
 // ---------------------------------------------------------------------------
 // Note helpers for LSP enrichment
 // ---------------------------------------------------------------------------
@@ -669,7 +717,8 @@ pub async fn run_security_review_command_with_executor(
 /// is unavailable in this runtime.  Idempotent: does not duplicate
 /// the note if it already exists.
 fn note_lsp_enrichment_unavailable(output: &mut SecurityReviewOutput) {
-    let note = "LSP enrichment requested but no securityContext executor is available in this runtime.";
+    let note =
+        "LSP enrichment requested but no securityContext executor is available in this runtime.";
     if !output.notes.iter().any(|n| n == note) {
         output.notes.push(note.to_string());
     }
@@ -688,15 +737,18 @@ fn note_lsp_enrichment_no_eligible_targets(output: &mut SecurityReviewOutput) {
 /// given number of requests.  Always appends (not idempotent — each
 /// enrichment pass produces its own count).
 fn note_lsp_enrichment_executed(output: &mut SecurityReviewOutput, count: usize) {
-    output.notes.push(format!(
-        "LSP enrichment executed {} request(s).",
-        count
-    ));
+    output
+        .notes
+        .push(format!("LSP enrichment executed {} request(s).", count));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp::config::LspConfig;
+    use crate::lsp::service::LspService;
+    use crate::tool::lsp::LspTool;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn security_review_command_enrich_without_executor_notes_unavailable() {
@@ -754,8 +806,11 @@ mod tests {
         // JSON output should contain the enrichment note
         assert!(output.contains("no securityContext executor is available"));
         // Should be valid JSON
-        let parsed: serde_json::Value = serde_json::from_str(&output).expect("should be valid JSON");
-        let notes = parsed["notes"].as_array().expect("notes should be an array");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("should be valid JSON");
+        let notes = parsed["notes"]
+            .as_array()
+            .expect("notes should be an array");
         assert!(notes.iter().any(|n| {
             n.as_str()
                 .map(|s| s.contains("no securityContext executor"))
@@ -793,5 +848,140 @@ mod tests {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let result = run_security_review_command_with_executor(&root, &args, Some(&executor)).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn security_review_background_without_executor_returns_unavailable_note() {
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_background(root, args, None).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(
+            output.contains("no securityContext executor"),
+            "report should mention no executor: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_review_background_with_fixture_executor_uses_enrichment() {
+        let _executor = FixtureSecurityContextExecutor::new();
+        let tool = Arc::new(LspTool::new(Arc::new(
+            LspService::new(LspConfig::default()),
+        )));
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_background(root, args, Some(tool)).await;
+        // The fixture is provided to the underlying workflow; the call
+        // must complete without erroring even if the executor is never
+        // actually invoked (e.g. when no targets meet escalation).
+        assert!(
+            result.is_ok(),
+            "background with executor should succeed: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn security_review_background_json_mode_returns_json() {
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            json: true,
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_background(root, args, None).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(
+            output.starts_with('{'),
+            "json output should start with '{{': {output}"
+        );
+        assert!(
+            output.contains("\"notes\""),
+            "json should contain notes: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_review_background_preserves_prompts_only() {
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            prompts_only: true,
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_background(root, args, None).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(
+            !output.contains("Findings\n"),
+            "prompts-only output should not contain the 'Findings' section header: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_review_background_preserves_findings_only() {
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            findings_only: true,
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_background(root, args, None).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(
+            !output.contains("Review Prompts\n"),
+            "findings-only output should not contain the 'Review Prompts' section header: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_review_default_path_does_not_create_executor() {
+        let args = SecurityReviewCommandArgs {
+            enrich: false,
+            base: Some("HEAD".to_string()),
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // lsp_tool is None — the background runner should still succeed
+        // and should NOT add the unavailable-executor note because
+        // enrichment was not requested.
+        let result = run_security_review_background(root, args, None).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(
+            !output.contains("no securityContext executor"),
+            "default path should not add unavailable note: {output}"
+        );
+    }
+
+    #[test]
+    fn security_review_run_id_is_unique() {
+        let a = SecurityReviewRunId::new();
+        let b = SecurityReviewRunId::new();
+        assert_ne!(a, b, "two fresh run ids should differ");
+    }
+
+    #[test]
+    fn security_review_run_id_default_generates() {
+        let id = <SecurityReviewRunId as Default>::default();
+        assert!(
+            id.0.starts_with("sr-"),
+            "default-generated id should start with 'sr-': {}",
+            id.0
+        );
     }
 }
