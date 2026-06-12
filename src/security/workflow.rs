@@ -107,6 +107,24 @@ pub struct SecurityReviewTarget {
     pub reason: SecurityTargetReason,
 }
 
+impl SecurityReviewTarget {
+    /// Human-readable string for the target reason.
+    pub fn reason_str(&self) -> &str {
+        match self.reason {
+            SecurityTargetReason::ChangedHunk => "changed hunk",
+            SecurityTargetReason::DependencyMetadata => "dependency metadata",
+            SecurityTargetReason::RiskMarker => "risk marker",
+            SecurityTargetReason::PublicBoundary => "public boundary",
+            SecurityTargetReason::UnsafeCode => "unsafe code",
+            SecurityTargetReason::ProcessExecution => "process execution",
+            SecurityTargetReason::FilesystemAccess => "filesystem access",
+            SecurityTargetReason::NetworkBoundary => "network boundary",
+            SecurityTargetReason::AuthOrSecretHandling => "auth/secret handling",
+            SecurityTargetReason::Unknown => "unknown",
+        }
+    }
+}
+
 /// A parsed hunk from a unified diff.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChangedHunk {
@@ -1145,14 +1163,24 @@ pub fn synthesize_findings(
 // Evidence-based finding synthesis
 // ---------------------------------------------------------------------------
 
-/// Check whether a piece of structured evidence matches a group's file and line bucket.
-/// Returns true if `line` falls within `radius` of any position in
-/// `[bucket_start, bucket_end]`.  Uses saturating arithmetic to avoid
-/// overflow on small bucket values.
-fn line_within_window(line: u32, bucket_start: u32, bucket_end: u32, radius: u32) -> bool {
-    let window_start = bucket_start.saturating_sub(radius);
+/// Compute the start of a 5-line bucket containing `line`.
+fn line_bucket_start(line: u32) -> u32 {
+    line / 5 * 5
+}
+
+/// Check whether `evidence_line` falls within the group window.
+/// The group spans `[group_bucket, group_bucket + bucket_width - 1]`
+/// with an additional `radius` on each side.
+fn line_within_group_window(
+    evidence_line: u32,
+    group_bucket: u32,
+    bucket_width: u32,
+    radius: u32,
+) -> bool {
+    let bucket_end = group_bucket + bucket_width.saturating_sub(1);
+    let window_start = group_bucket.saturating_sub(radius);
     let window_end = bucket_end.saturating_add(radius);
-    line >= window_start && line <= window_end
+    evidence_line >= window_start && evidence_line <= window_end
 }
 
 fn evidence_matches_group(
@@ -1167,7 +1195,7 @@ fn evidence_matches_group(
         return false;
     }
     match (line_bucket, evidence.line) {
-        (Some(bucket), Some(line)) => line_within_window(line, bucket, bucket + 4, 5),
+        (Some(bucket), Some(line)) => line_within_group_window(line, bucket, 5, 5),
         (Some(_), None) => true,
         (None, _) => true,
     }
@@ -1906,7 +1934,7 @@ pub fn synthesize_evidence_based_findings(
         std::collections::HashMap::new();
 
     for (idx, prompt) in remaining_prompts.iter().enumerate() {
-        let line_bucket = prompt.line.map(|l| l / 5 * 5); // bucket by 5-line ranges
+        let line_bucket = prompt.line.map(line_bucket_start);
         let key = GroupKey {
             file_path: prompt.file_path.clone(),
             line_bucket,
@@ -2252,6 +2280,389 @@ pub fn assemble_security_review_report_with_findings(
         preflight_results,
         notes,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Security review orchestrator
+// ---------------------------------------------------------------------------
+
+/// Options controlling the security review workflow orchestrator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityReviewWorkflowOptions {
+    /// Include review prompts in output (default: true).
+    pub include_prompts: bool,
+    /// Include evidence-based findings in output (default: true).
+    pub include_findings: bool,
+    /// Run filename-hint preflight checks (default: true).
+    pub run_filename_preflight: bool,
+    /// Run hunk-local content preflight checks (default: true).
+    pub run_content_preflight: bool,
+    /// Use hunk-local (radius=10) content scanning instead of full-file (default: true).
+    pub hunk_local_content_preflight: bool,
+    /// Maximum findings to include (default: 50).
+    pub max_findings: usize,
+    /// Maximum prompts to include (default: 100).
+    pub max_prompts: usize,
+}
+
+impl Default for SecurityReviewWorkflowOptions {
+    fn default() -> Self {
+        Self {
+            include_prompts: true,
+            include_findings: true,
+            run_filename_preflight: true,
+            run_content_preflight: true,
+            hunk_local_content_preflight: true,
+            max_findings: 50,
+            max_prompts: 100,
+        }
+    }
+}
+
+/// Run the security review workflow against changed files.
+///
+/// This is the main orchestration entry point.  It runs the existing
+/// security review phases in order and returns a stable report object.
+///
+/// Pipeline:
+/// 1. `discover_targets_from_diff(root, base)`
+/// 2. Build changed-hunk planning prompts from targets
+/// 3. Run filename preflight checks (if enabled)
+/// 4. Run hunk-local content preflight checks (if enabled)
+/// 5. Call `synthesize_evidence_based_findings`
+/// 6. Assemble `SecurityReviewOutput`
+///
+/// This function does NOT execute `securityContext` LSP requests.
+/// It only uses the deterministic planning and preflight phases.
+pub async fn run_security_review_workflow(
+    root: &Path,
+    base: Option<&str>,
+    options: SecurityReviewWorkflowOptions,
+) -> Result<SecurityReviewOutput, String> {
+    // Phase 1: Discover targets from diff
+    let targets = discover_targets_from_diff(root, base).await?;
+
+    // Phase 2: Build planning prompts from targets
+    let planning_prompts: Vec<SecurityReviewPrompt> = targets
+        .iter()
+        .map(|target| {
+            let title = format!(
+                "Review {} at {}",
+                target.file_path.display(),
+                target.reason_str()
+            );
+            let rationale = format!(
+                "Changed hunk in {} requires security review (preset: {})",
+                target.file_path.display(),
+                target.preset
+            );
+            SecurityReviewPrompt {
+                file_path: target.file_path.clone(),
+                line: target.line,
+                preset: target.preset.clone(),
+                category: None,
+                title,
+                rationale,
+                evidence: vec!["source: changed_hunk".to_string()],
+            }
+        })
+        .collect();
+
+    // Phase 3: Filename preflight checks
+    let filename_preflight = if options.run_filename_preflight {
+        run_preflight_checks(&targets)
+    } else {
+        Vec::new()
+    };
+
+    // Phase 4: Content preflight checks
+    let content_preflight = if options.run_content_preflight {
+        if options.hunk_local_content_preflight {
+            run_content_preflight_checks_for_targets(&targets, |p| {
+                std::fs::read_to_string(p).ok()
+            })
+        } else {
+            run_content_preflight_checks(&targets, |p| std::fs::read_to_string(p).ok())
+        }
+    } else {
+        Vec::new()
+    };
+
+    let mut all_preflight = filename_preflight;
+    all_preflight.extend(content_preflight);
+
+    // Phase 5: Evidence-based finding synthesis
+    let (findings, remaining_prompts) =
+        synthesize_evidence_based_findings(&targets, &planning_prompts, &all_preflight);
+
+    // Phase 6: Assemble output
+    let mut notes = Vec::new();
+    if !options.include_findings {
+        notes.push("findings disabled by workflow options".to_string());
+    }
+    if !options.include_prompts {
+        notes.push("prompts disabled by workflow options".to_string());
+    }
+
+    let output = assemble_security_review_report_with_findings(
+        targets,
+        remaining_prompts,
+        findings,
+        all_preflight,
+        notes,
+    );
+
+    // Apply limits
+    let mut final_output = output;
+    if final_output.findings.len() > options.max_findings {
+        final_output.findings.truncate(options.max_findings);
+        final_output
+            .notes
+            .push(format!("findings truncated to {}", options.max_findings));
+    }
+    if final_output.review_prompts.len() > options.max_prompts {
+        final_output
+            .review_prompts
+            .truncate(options.max_prompts);
+        final_output
+            .notes
+            .push(format!("prompts truncated to {}", options.max_prompts));
+    }
+
+    // Filter by options
+    if !options.include_findings {
+        final_output.findings.clear();
+    }
+    if !options.include_prompts {
+        final_output.review_prompts.clear();
+    }
+
+    Ok(final_output)
+}
+
+// ---------------------------------------------------------------------------
+// Security context escalation
+// ---------------------------------------------------------------------------
+
+/// Escalation level for securityContext requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SecurityContextEscalationLevel {
+    /// Do not request securityContext.
+    None,
+    /// Basic context with call_depth=0.
+    Basic,
+    /// Call expansion with depth=1.
+    CallDepth1,
+    /// Call expansion with depth=2.
+    CallDepth2,
+}
+
+impl std::fmt::Display for SecurityContextEscalationLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::Basic => write!(f, "basic"),
+            Self::CallDepth1 => write!(f, "call_depth_1"),
+            Self::CallDepth2 => write!(f, "call_depth_2"),
+        }
+    }
+}
+
+/// Decide the escalation level for a securityContext request based on
+/// the target, any preliminary finding, and any review prompt.
+///
+/// Rules:
+/// - `None`: low-risk changed hunk with no prompt/finding.
+/// - `Basic`: marker prompt with no finding, or dependency review target.
+/// - `CallDepth1`: eligible finding with Medium+ severity, or target reason
+///   is AuthOrSecretHandling, ProcessExecution, NetworkBoundary, or UnsafeCode.
+/// - `CallDepth2`: only for High severity with Medium+ confidence and category
+///   auth, process, unsafe, secret, or sql.
+pub fn choose_security_context_escalation(
+    target: &SecurityReviewTarget,
+    finding: Option<&SecurityReviewFinding>,
+    prompt: Option<&SecurityReviewPrompt>,
+) -> SecurityContextEscalationLevel {
+    // CallDepth2: highest severity finding with strong confidence
+    if let Some(f) = finding {
+        if f.severity >= SecuritySeverity::High && f.confidence >= SecurityConfidence::Medium {
+            let eligible_category = matches!(
+                f.category.as_deref(),
+                Some("auth" | "process" | "unsafe" | "secret" | "sql")
+            );
+            if eligible_category {
+                return SecurityContextEscalationLevel::CallDepth2;
+            }
+        }
+    }
+
+    // CallDepth1: Medium+ severity finding, or high-risk target reason
+    if let Some(f) = finding {
+        if f.severity >= SecuritySeverity::Medium {
+            return SecurityContextEscalationLevel::CallDepth1;
+        }
+    }
+
+    let high_risk_reason = matches!(
+        target.reason,
+        SecurityTargetReason::AuthOrSecretHandling
+            | SecurityTargetReason::ProcessExecution
+            | SecurityTargetReason::NetworkBoundary
+            | SecurityTargetReason::UnsafeCode
+    );
+    if high_risk_reason {
+        return SecurityContextEscalationLevel::CallDepth1;
+    }
+
+    // Basic: marker prompt present, or dependency review target
+    if prompt.is_some() {
+        return SecurityContextEscalationLevel::Basic;
+    }
+    if target.reason == SecurityTargetReason::DependencyMetadata {
+        return SecurityContextEscalationLevel::Basic;
+    }
+
+    // None: low-risk with no signal
+    SecurityContextEscalationLevel::None
+}
+
+/// Build a securityContext request JSON payload for an escalated target.
+///
+/// Maps escalation level to LSP parameters:
+/// - `None`: returns empty object (caller should skip the request)
+/// - `Basic`: call_depth=0, default caps
+/// - `CallDepth1`: call_depth=1, max_call_nodes=32
+/// - `CallDepth2`: call_depth=2, max_call_nodes=64
+pub fn build_escalated_security_context_request(
+    target: &SecurityReviewTarget,
+    level: SecurityContextEscalationLevel,
+) -> serde_json::Value {
+    let mut request = serde_json::json!({
+        "file_path": target.file_path,
+        "security_preset": target.preset,
+    });
+
+    if let Some(line) = target.line {
+        request["line"] = serde_json::json!(line);
+    }
+    if let Some(col) = target.column {
+        request["column"] = serde_json::json!(col);
+    }
+
+    match level {
+        SecurityContextEscalationLevel::None => {}
+        SecurityContextEscalationLevel::Basic => {
+            request["call_depth"] = serde_json::json!(0);
+            request["max_risk_markers"] = serde_json::json!(80);
+        }
+        SecurityContextEscalationLevel::CallDepth1 => {
+            request["call_depth"] = serde_json::json!(1);
+            request["max_risk_markers"] = serde_json::json!(80);
+            request["max_call_nodes"] = serde_json::json!(32);
+        }
+        SecurityContextEscalationLevel::CallDepth2 => {
+            request["call_depth"] = serde_json::json!(2);
+            request["max_risk_markers"] = serde_json::json!(80);
+            request["max_call_nodes"] = serde_json::json!(64);
+        }
+    }
+
+    request
+}
+
+// ---------------------------------------------------------------------------
+// Report rendering
+// ---------------------------------------------------------------------------
+
+/// Render a compact summary of the security review output.
+pub fn render_security_review_summary(output: &SecurityReviewOutput) -> String {
+    let mut lines = Vec::new();
+    lines.push("Security Review Summary".to_string());
+    lines.push(format!("- Targets: {}", output.targets.len()));
+    lines.push(format!("- Findings: {}", output.findings.len()));
+    lines.push(format!("- Review prompts: {}", output.review_prompts.len()));
+
+    let pass_count = output
+        .preflight_results
+        .iter()
+        .filter(|p| p.status == PreflightStatus::Pass)
+        .count();
+    let fail_count = output
+        .preflight_results
+        .iter()
+        .filter(|p| p.status == PreflightStatus::Fail)
+        .count();
+    lines.push(format!(
+        "- Preflight checks: {} pass, {} fail",
+        pass_count, fail_count
+    ));
+
+    if !output.notes.is_empty() {
+        lines.push("- Notes:".to_string());
+        for note in &output.notes {
+            lines.push(format!("  - {}", note));
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Render findings with severity/confidence labels.
+pub fn render_security_review_findings(output: &SecurityReviewOutput) -> String {
+    if output.findings.is_empty() {
+        return "No findings.\n".to_string();
+    }
+
+    let mut lines = Vec::new();
+    lines.push("Findings".to_string());
+    lines.push(String::new());
+
+    for finding in &output.findings {
+        let location = if let Some(line) = finding.line {
+            format!("{}:{}", finding.file_path.display(), line)
+        } else {
+            finding.file_path.display().to_string()
+        };
+        lines.push(format!(
+            "[{}/{}] {} {}",
+            finding.severity, finding.confidence, location, finding.title
+        ));
+        lines.push(format!("  Evidence: {} items", finding.evidence.len()));
+        lines.push(format!("  Recommendation: {}", finding.recommendation));
+        if !finding.tests.is_empty() {
+            lines.push(format!(
+                "  Suggested tests: {}",
+                finding.tests.join(", ")
+            ));
+        }
+        lines.push(String::new());
+    }
+
+    lines.join("\n")
+}
+
+/// Render review prompts (risk-marker based, not confirmed findings).
+pub fn render_security_review_prompts(output: &SecurityReviewOutput) -> String {
+    if output.review_prompts.is_empty() {
+        return "No review prompts.\n".to_string();
+    }
+
+    let mut lines = Vec::new();
+    lines.push("Review Prompts".to_string());
+    lines.push(String::new());
+
+    for prompt in &output.review_prompts {
+        let location = if let Some(line) = prompt.line {
+            format!("{}:{}", prompt.file_path.display(), line)
+        } else {
+            prompt.file_path.display().to_string()
+        };
+        lines.push(format!("[{}] {}", location, prompt.title));
+        lines.push(format!("  Rationale: {}", prompt.rationale));
+        lines.push(String::new());
+    }
+
+    lines.join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -4166,5 +4577,290 @@ diff --git a/src/lib.rs b/src/lib.rs
             "Prompt-only synthesis should never produce findings"
         );
         assert_eq!(prompts.len(), 1);
+    }
+
+    // -- Orchestrator tests --
+
+    #[test]
+    fn security_workflow_default_options_are_bounded() {
+        let opts = super::SecurityReviewWorkflowOptions::default();
+        assert!(opts.include_prompts);
+        assert!(opts.include_findings);
+        assert!(opts.run_filename_preflight);
+        assert!(opts.run_content_preflight);
+        assert!(opts.hunk_local_content_preflight);
+        assert!(opts.max_findings <= 100);
+        assert!(opts.max_prompts <= 200);
+    }
+
+    // -- Escalation tests --
+
+    #[test]
+    fn security_context_escalation_none_for_low_risk_changed_hunk() {
+        let target = super::SecurityReviewTarget {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(10),
+            column: Some(5),
+            preset: "rust_server".to_string(),
+            reason: super::SecurityTargetReason::ChangedHunk,
+        };
+        let level = super::choose_security_context_escalation(&target, None, None);
+        assert_eq!(level, super::SecurityContextEscalationLevel::None);
+    }
+
+    #[test]
+    fn security_context_escalation_basic_for_marker_prompt() {
+        let target = super::SecurityReviewTarget {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(10),
+            column: Some(5),
+            preset: "rust_server".to_string(),
+            reason: super::SecurityTargetReason::ChangedHunk,
+        };
+        let prompt = super::SecurityReviewPrompt {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(10),
+            preset: "rust_server".to_string(),
+            category: Some("auth".to_string()),
+            title: "auth marker".to_string(),
+            rationale: "found auth pattern".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        };
+        let level = super::choose_security_context_escalation(&target, None, Some(&prompt));
+        assert_eq!(level, super::SecurityContextEscalationLevel::Basic);
+    }
+
+    #[test]
+    fn security_context_escalation_depth1_for_medium_finding() {
+        let target = super::SecurityReviewTarget {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(10),
+            column: Some(5),
+            preset: "rust_server".to_string(),
+            reason: super::SecurityTargetReason::ChangedHunk,
+        };
+        let finding = super::SecurityReviewFinding {
+            severity: super::SecuritySeverity::Medium,
+            confidence: super::SecurityConfidence::Medium,
+            title: "test finding".to_string(),
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(10),
+            category: Some("auth".to_string()),
+            evidence: vec![],
+            reasoning: "test".to_string(),
+            recommendation: "test".to_string(),
+            tests: vec![],
+        };
+        let level = super::choose_security_context_escalation(&target, Some(&finding), None);
+        assert_eq!(level, super::SecurityContextEscalationLevel::CallDepth1);
+    }
+
+    #[test]
+    fn security_context_escalation_depth2_for_high_confident_auth_finding() {
+        let target = super::SecurityReviewTarget {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            column: Some(5),
+            preset: "rust_server".to_string(),
+            reason: super::SecurityTargetReason::AuthOrSecretHandling,
+        };
+        let finding = super::SecurityReviewFinding {
+            severity: super::SecuritySeverity::High,
+            confidence: super::SecurityConfidence::High,
+            title: "auth bypass".to_string(),
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            category: Some("auth".to_string()),
+            evidence: vec![],
+            reasoning: "test".to_string(),
+            recommendation: "test".to_string(),
+            tests: vec![],
+        };
+        let level = super::choose_security_context_escalation(&target, Some(&finding), None);
+        assert_eq!(level, super::SecurityContextEscalationLevel::CallDepth2);
+    }
+
+    #[test]
+    fn security_context_escalation_never_depth2_for_low_confidence() {
+        let target = super::SecurityReviewTarget {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            column: Some(5),
+            preset: "rust_server".to_string(),
+            reason: super::SecurityTargetReason::AuthOrSecretHandling,
+        };
+        let finding = super::SecurityReviewFinding {
+            severity: super::SecuritySeverity::High,
+            confidence: super::SecurityConfidence::Low,
+            title: "auth bypass".to_string(),
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(10),
+            category: Some("auth".to_string()),
+            evidence: vec![],
+            reasoning: "test".to_string(),
+            recommendation: "test".to_string(),
+            tests: vec![],
+        };
+        let level = super::choose_security_context_escalation(&target, Some(&finding), None);
+        assert_eq!(level, super::SecurityContextEscalationLevel::CallDepth1);
+    }
+
+    #[test]
+    fn security_context_request_sets_call_depth_and_caps() {
+        let target = super::SecurityReviewTarget {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(10),
+            column: Some(5),
+            preset: "rust_server".to_string(),
+            reason: super::SecurityTargetReason::ChangedHunk,
+        };
+
+        let req = super::build_escalated_security_context_request(
+            &target,
+            super::SecurityContextEscalationLevel::CallDepth1,
+        );
+        assert_eq!(req["call_depth"], 1);
+        assert_eq!(req["max_call_nodes"], 32);
+        assert_eq!(req["max_risk_markers"], 80);
+
+        let req = super::build_escalated_security_context_request(
+            &target,
+            super::SecurityContextEscalationLevel::CallDepth2,
+        );
+        assert_eq!(req["call_depth"], 2);
+        assert_eq!(req["max_call_nodes"], 64);
+    }
+
+    // -- Rendering tests --
+
+    #[test]
+    fn security_review_summary_renders_counts() {
+        let output = super::SecurityReviewOutput {
+            targets: vec![],
+            findings: vec![],
+            review_prompts: vec![],
+            preflight_results: vec![],
+            notes: vec!["test note".to_string()],
+        };
+        let rendered = super::render_security_review_summary(&output);
+        assert!(rendered.contains("Targets: 0"));
+        assert!(rendered.contains("Findings: 0"));
+        assert!(rendered.contains("Review prompts: 0"));
+        assert!(rendered.contains("test note"));
+    }
+
+    #[test]
+    fn security_review_finding_render_shows_severity_confidence() {
+        let output = super::SecurityReviewOutput {
+            targets: vec![],
+            findings: vec![super::SecurityReviewFinding {
+                severity: super::SecuritySeverity::High,
+                confidence: super::SecurityConfidence::Medium,
+                title: "test finding".to_string(),
+                file_path: PathBuf::from("src/lib.rs"),
+                line: Some(10),
+                category: Some("auth".to_string()),
+                evidence: vec![],
+                reasoning: "test".to_string(),
+                recommendation: "use validation".to_string(),
+                tests: vec!["test_auth".to_string()],
+            }],
+            review_prompts: vec![],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+        let rendered = super::render_security_review_findings(&output);
+        assert!(rendered.contains("[high/medium]"));
+        assert!(rendered.contains("test finding"));
+        assert!(rendered.contains("use validation"));
+    }
+
+    #[test]
+    fn security_review_prompt_render_has_no_severity() {
+        let output = super::SecurityReviewOutput {
+            targets: vec![],
+            findings: vec![],
+            review_prompts: vec![super::SecurityReviewPrompt {
+                file_path: PathBuf::from("src/lib.rs"),
+                line: Some(10),
+                preset: "rust_server".to_string(),
+                category: None,
+                title: "check auth".to_string(),
+                rationale: "auth marker found".to_string(),
+                evidence: vec![],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+        let rendered = super::render_security_review_prompts(&output);
+        assert!(rendered.contains("check auth"));
+        assert!(rendered.contains("auth marker found"));
+        assert!(!rendered.contains("high/medium")); // no severity for prompts
+    }
+
+    // -- Evidence window tests --
+
+    #[test]
+    fn security_evidence_window_rejects_different_file() {
+        let evidence = super::StructuredSecurityEvidence {
+            kind: super::SecurityEvidenceKind::Preflight,
+            file_path: Some(PathBuf::from("src/other.rs")),
+            line: Some(10),
+            summary: "test".to_string(),
+            detail: None,
+        };
+        assert!(!super::evidence_matches_group(
+            &evidence,
+            &PathBuf::from("src/lib.rs"),
+            Some(10)
+        ));
+    }
+
+    #[test]
+    fn security_evidence_window_accepts_same_file_no_line() {
+        let evidence = super::StructuredSecurityEvidence {
+            kind: super::SecurityEvidenceKind::Preflight,
+            file_path: Some(PathBuf::from("src/lib.rs")),
+            line: None,
+            summary: "test".to_string(),
+            detail: None,
+        };
+        assert!(super::evidence_matches_group(
+            &evidence,
+            &PathBuf::from("src/lib.rs"),
+            Some(10)
+        ));
+    }
+
+    #[test]
+    fn security_evidence_window_accepts_nearby_line() {
+        let evidence = super::StructuredSecurityEvidence {
+            kind: super::SecurityEvidenceKind::Preflight,
+            file_path: Some(PathBuf::from("src/lib.rs")),
+            line: Some(12),
+            summary: "test".to_string(),
+            detail: None,
+        };
+        assert!(super::evidence_matches_group(
+            &evidence,
+            &PathBuf::from("src/lib.rs"),
+            Some(10)
+        ));
+    }
+
+    #[test]
+    fn security_evidence_window_rejects_distant_line() {
+        let evidence = super::StructuredSecurityEvidence {
+            kind: super::SecurityEvidenceKind::Preflight,
+            file_path: Some(PathBuf::from("src/lib.rs")),
+            line: Some(30),
+            summary: "test".to_string(),
+            detail: None,
+        };
+        assert!(!super::evidence_matches_group(
+            &evidence,
+            &PathBuf::from("src/lib.rs"),
+            Some(10)
+        ));
     }
 }

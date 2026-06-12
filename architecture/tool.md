@@ -177,6 +177,10 @@ the dispatch logic, config schema, and trust framing.
 
 The `security` tool is also used by the `security-review` agent as part of a structured workflow (`src/security/workflow.rs`). The workflow discovers changed hunks via git diff, selects presets via path heuristics, runs deterministic filename-hint preflight checks (`secret_filename_hint_scan`, `unsafe_filename_hint_scan`), and synthesizes prompts from risk markers and evidence. Risk markers always produce review prompts, never confirmed findings. Planned target prompts include `source: changed_hunk` evidence; risk-marker prompts include `source: securityContext.risk_marker` evidence, making the two sources distinguishable.
 
+The async orchestrator `run_security_review_workflow(root, base, options)` runs the full pipeline (discover → preflight → evidence-based synthesis → assemble) without executing `securityContext` LSP requests. `SecurityReviewWorkflowOptions` controls stages and output caps. The escalation policy (`choose_security_context_escalation`) maps risk signals to bounded `SecurityContextEscalationLevel` values (None/Basic/CallDepth1/CallDepth2) for selective LSP call expansion.
+
+The `/security-review` TUI command exposes the workflow with flags: `--changed`, `--json`, `--prompts-only`, `--findings-only`.
+
 ### Meta Operations
 
 | Tool | File | Description |

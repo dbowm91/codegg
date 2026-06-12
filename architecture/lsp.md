@@ -497,13 +497,22 @@ The security agent uses `securityContext` as evidence-gathering input for defens
 1. **Target discovery** — Uses `egggit` diff APIs to identify changed files and hunks. Binary/deleted files are skipped. Generated/vendor paths (`target/`, `node_modules/`, etc.) are excluded. Async discovery reuses `build_security_review_targets` and `build_file_level_security_review_target` for consistent positioned targets (`column: Some(1)`).
 2. **Preset selection** — Each file is classified into a `securityContext` preset (`rust_server`, `rust_cli`, `web_backend`, `dependency_review`, `unsafe_review`) based on path heuristics and optional content hints.
 3. **Preflight checks** — Filename-hint scans (`secret_filename_hint_scan`, `unsafe_filename_hint_scan`) run on target file names (not contents).
-4. **Context gathering** — `securityContext` is requested around changed hunks with bounded settings. Call expansion is opt-in (depth 0 by default, escalated to 1 only for high-risk targets).
+4. **Context gathering** — `securityContext` is requested around changed hunks with bounded settings. Call expansion is opt-in (depth 0 by default, escalated to 1 only for high-risk targets via `choose_security_context_escalation`).
 5. **Prompt synthesis** — Risk markers always become *review prompts*, never findings. Planned target prompts use `source: changed_hunk` evidence; risk-marker prompts use `source: securityContext.risk_marker` evidence.
-6. **Output** — Review prompts are returned separately. Findings are always empty in this vertical slice — confirmed finding synthesis is deferred to a later phase.
+6. **Evidence-based synthesis** — `synthesize_evidence_based_findings()` groups evidence by file/line bucket, applies the eligibility gate (2+ dimensions required), and emits findings for eligible groups. Marker-only evidence never creates findings. Findings are heuristic defensive review outputs, not proof of exploitability.
+7. **Output** — Review prompts and findings are returned separately. The `/security-review` command and `run_security_review_workflow` orchestrator produce both.
 
 Key types live in `src/security/workflow.rs`. The workflow is read-only and never mutates files.
 
-The security review vertical slice (`src/security/workflow.rs`) provides a standalone entry point `plan_security_review_from_diff(diff, repo_root)` that orchestrates the full pipeline from unified diff to report. It parses changed hunks via `parse_changed_hunks`, applies path exclusions (`is_security_review_excluded_path` — excludes `vendor/`, `third_party/`, `target/`, `dist/`, `build/`, `node_modules/`, `*.min.js`; notably does NOT exclude `Cargo.toml`, `Cargo.lock`, `build.rs`), selects presets via `select_security_preset`, builds `securityContext` request payloads via `build_security_context_request`, converts risk markers to review prompts via `prompts_from_security_context`, and assembles reports with an explicit "not confirmed findings" note via `assemble_security_review_report`. In this vertical slice, `call_depth` is always 0 and findings are always empty — risk markers become review prompts only.
+#### Orchestrator
+
+`run_security_review_workflow(root, base, options)` is an async entry point that runs the full pipeline (discover targets → build prompts → preflight checks → evidence-based synthesis → assemble output). It does NOT execute `securityContext` LSP requests — those are deferred to a subsequent phase. `SecurityReviewWorkflowOptions` controls which stages run and caps output counts.
+
+The legacy entry point `plan_security_review_from_diff(diff, repo_root)` remains available. It parses changed hunks via `parse_changed_hunks`, applies path exclusions (`is_security_review_excluded_path` — excludes `vendor/`, `third_party/`, `target/`, `dist/`, `build/`, `node_modules/`, `*.min.js`; notably does NOT exclude `Cargo.toml`, `Cargo.lock`, `build.rs`), selects presets via `select_security_preset`, builds `securityContext` request payloads via `build_security_context_request`, converts risk markers to review prompts via `prompts_from_security_context`, and assembles reports with an explicit "not confirmed findings" note via `assemble_security_review_report`.
+
+#### Escalation policy
+
+`choose_security_context_escalation(target, finding, prompt)` maps risk signals to `SecurityContextEscalationLevel` (None, Basic, CallDepth1, CallDepth2). `build_escalated_security_context_request(target, level)` builds the `securityContext` payload with the chosen depth. Escalation is read-only, bounded (max depth 2), and never writes files.
 
 ### Position Convention
 

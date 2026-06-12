@@ -512,9 +512,44 @@ Evidence-based findings only combine evidence from the same file and nearby chan
 - Filename-only hints remain prompts unless supported by additional same-file evidence
 - Content preflight is local and deterministic; it is heuristic and not proof of exploitability
 
+### Security context escalation
+
+`SecurityContextEscalationLevel` controls selective LSP call expansion for `securityContext` requests:
+
+| Level | Meaning |
+|-------|---------|
+| `None` | No call expansion (default for most targets) |
+| `Basic` | Shallow call hierarchy (depth 1) for targets near auth/crypto/network boundaries |
+| `CallDepth1` | Depth-1 expansion for moderate-risk targets |
+| `CallDepth2` | Depth-2 expansion for high-risk targets (e.g. process execution, unsafe blocks) |
+
+`choose_security_context_escalation(target, finding, prompt)` is a pure decision helper that maps risk signals (target reason, finding category, prompt risk markers) to an escalation level. The rules are deterministic and bounded — escalation never exceeds depth 2.
+
+`build_escalated_security_context_request(target, level)` builds the JSON payload for `securityContext` with appropriate `call_depth` and node caps. The request is read-only — it sends LSP hierarchy queries but never writes files or executes code.
+
+Escalation is always read-only and bounded. No preset enables depth 2 by default; escalation is activated through explicit risk signals only.
+
 ### Invoking the workflow
 
-- Slash command: `/security-review [--changed] [--file <path>] [--preset <name>] [--deep]`
+**Async orchestrator**: `run_security_review_workflow(root, base, options)` runs the full pipeline (discover targets → build prompts → preflight checks → evidence-based synthesis → assemble output). It does NOT execute `securityContext` LSP requests — those are deferred to a subsequent phase.
+
+`SecurityReviewWorkflowOptions` configures the orchestrator:
+- `include_prompts` / `include_findings` — toggle output sections
+- `run_filename_preflight` / `run_content_preflight` / `hunk_local_content_preflight` — toggle preflight check stages
+- `max_findings` / `max_prompts` — cap output counts
+
+**Rendering helpers**:
+- `render_security_review_summary(output)` — compact summary with counts
+- `render_security_review_findings(output)` — findings with severity/confidence labels
+- `render_security_review_prompts(output)` — review prompts without severity
+
+**TUI command**: `/security-review` with flags:
+- `--changed` — only review changed files (from git diff)
+- `--json` — output as JSON
+- `--prompts-only` — only output review prompts
+- `--findings-only` — only output evidence-based findings
+
+**Other invocation paths**:
 - Subagent: spawn `security-review` agent via task tool
 - Internal: call `discover_targets_from_diff()` + `run_preflight_checks()` + `synthesize_findings()` directly
 - Internal: call `synthesize_evidence_based_findings()` for evidence-based finding synthesis
