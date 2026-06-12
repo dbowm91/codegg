@@ -144,7 +144,7 @@ pub struct LspClient {
     pub root: PathBuf,
     pub process: tokio::sync::Mutex<LspProcess>,
     pub request_id: AtomicU64,
-    pub capabilities: Mutex<Option<ServerCapabilities>>,
+    pub capabilities: Arc<Mutex<Option<ServerCapabilities>>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
     /// Tracks when each file was last opened or changed, for diagnostics warm-up detection.
     pub last_opened_at: Mutex<HashMap<String, Instant>>,
@@ -196,7 +196,7 @@ impl LspClient {
             root: root.to_path_buf(),
             process: tokio::sync::Mutex::new(process),
             request_id: AtomicU64::new(0),
-            capabilities: Mutex::new(None),
+            capabilities: Arc::new(Mutex::new(None)),
             opened_files: Mutex::new(HashMap::new()),
             last_opened_at: Mutex::new(HashMap::new()),
             diagnostics,

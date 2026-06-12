@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +25,64 @@ pub struct FileDiagnostic {
     pub severity: DiagnosticSeverity,
     pub source: Option<String>,
     pub code: Option<String>,
+}
+
+/// How a diagnostics snapshot was obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LspDiagnosticSource {
+    /// Server pushed via `publishDiagnostics`.
+    Pushed,
+    /// Pulled via a `textDocument/diagnostic` request.
+    Pulled,
+    /// Unknown or mixed provenance.
+    Unknown,
+}
+
+/// Freshness label for diagnostics metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LspDiagnosticFreshness {
+    /// Diagnostics reflect the latest file content.
+    Fresh,
+    /// File content changed since the last diagnostics push; data may
+    /// be stale but is still the most recent available.
+    PossiblyStale,
+    /// Server restarted or workspace root changed; cached diagnostics
+    /// are definitively stale.
+    Stale,
+    /// No diagnostics are available for this file.
+    Unavailable,
+}
+
+/// A diagnostics snapshot with explicit freshness metadata.
+///
+/// Consumers may display stale diagnostics with appropriate labels but
+/// should never treat them as high-confidence evidence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspDiagnosticSnapshot {
+    pub file_path: PathBuf,
+    pub diagnostics: Vec<FileDiagnostic>,
+    pub generated_at_ms: i64,
+    pub source: LspDiagnosticSource,
+    pub freshness: LspDiagnosticFreshness,
+}
+
+impl LspDiagnosticSnapshot {
+    pub fn unavailable(file_path: PathBuf) -> Self {
+        Self {
+            file_path,
+            diagnostics: Vec::new(),
+            generated_at_ms: 0,
+            source: LspDiagnosticSource::Unknown,
+            freshness: LspDiagnosticFreshness::Unavailable,
+        }
+    }
+
+    pub fn is_usable_evidence(&self) -> bool {
+        matches!(
+            self.freshness,
+            LspDiagnosticFreshness::Fresh | LspDiagnosticFreshness::PossiblyStale
+        )
+    }
 }
 
 pub struct DiagnosticsOutput {

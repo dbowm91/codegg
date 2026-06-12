@@ -1228,7 +1228,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. securityContext returns a security-review context packet with risk markers. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1243,9 +1243,9 @@ impl Tool for LspTool {
                         "renamePreview", "formatPreview", "sourceActionPreview",
                         "semanticCheckPreview", "semanticContext",
                         "callHierarchy", "typeHierarchy",
-                        "securityContext"
+                        "securityContext", "capabilities"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",
@@ -2453,6 +2453,33 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&output)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "capabilities" => {
+                let file = self.resolve_file(&parsed.file_path)?;
+                let (key, _root) = self
+                    .service
+                    .get_or_create_client(&file)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("capabilities: {e}")))?;
+
+                let caps = self.service.get_capabilities_for_key(&key).await;
+
+                let snapshot = match caps {
+                    Some(server_caps) => {
+                        let lang =
+                            crate::lsp::language::detect_language(file.to_str().unwrap_or(""));
+                        let server_name = key.split(':').next_back().map(String::from);
+                        egglsp::LspCapabilitySnapshot::from_capabilities(
+                            &server_caps,
+                            server_name.as_deref(),
+                            lang,
+                        )
+                    }
+                    None => egglsp::LspCapabilitySnapshot::default(),
+                };
+
+                serde_json::to_string_pretty(&snapshot)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
 
@@ -2539,9 +2566,9 @@ mod tests {
                         "renamePreview", "formatPreview", "sourceActionPreview",
                         "semanticCheckPreview", "semanticContext",
                         "callHierarchy", "typeHierarchy",
-                        "securityContext"
+                        "securityContext", "capabilities"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",

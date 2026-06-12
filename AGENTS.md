@@ -28,7 +28,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering — now in `crates/codegg-core` (`codegg-core` crate) |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
-| `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits, temporary overlays, semantic context packets) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp |
+| `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits, temporary overlays, semantic context packets, capability discovery and normalization, diagnostics cache lifecycle with freshness metadata, shared semantic context API) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
 | `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation — `src/core/` is the transport layer; domain modules (bus, error, goal, memory, session, storage, snapshot, worktree, resilience, task_state, model_profile, protocol_conversions) live in `crates/codegg-core`. Also contains `runtime_deps` (`CoreRuntimeDeps`) for bundling runtime dependencies. |
 | `memory/` | Persistent memory system for session learning and namespace management — now in `crates/codegg-core` (`codegg-core` crate) |
@@ -62,7 +62,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
 - `architecture/native_crates.md`: Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers), backend contract, raw MCP exposure policy, diagnostics
-- `architecture/lsp.md`: LSP client, diagnostics, code operations, preview-only semantic edits, temporary overlays (semanticCheckPreview)
+- `architecture/lsp.md`: LSP client, diagnostics, code operations, preview-only semantic edits, temporary overlays (semanticCheckPreview), capability discovery and normalization, diagnostics cache lifecycle with freshness metadata, shared semantic context API, remote/core ownership model
 - `architecture/git.md`: Git session management, git info injection, worktree per session (now in `crates/egggit`; worktree is read-only in codegg-core, mutating operations removed)
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
@@ -188,6 +188,12 @@ These items were verified during review sessions:
 |------|-------|----------|
 | Tool count | 27 | `src/tool/mod.rs:90-122` (27 registrations in with_defaults()) |
 | LSP server count | 39 | `crates/egglsp/src/server.rs` (moved from `src/lsp/server.rs:27-383`) |
+| LSP capability snapshot | `LspCapabilitySnapshot` | `crates/egglsp/src/capability.rs` — normalized boolean view from `ServerCapabilities` |
+| LSP semantic operation enum | `LspSemanticOperation` | `crates/egglsp/src/capability.rs` — Diagnostics, DocumentSymbols, WorkspaceSymbols, Definition, References, Hover, Completion, CallHierarchy, TypeHierarchy, SemanticTokens, SecurityContext |
+| LSP unavailable response | `LspUnavailable` | `crates/egglsp/src/capability.rs` — structured fallback for unsupported operations |
+| LSP diagnostics snapshot | `LspDiagnosticSnapshot` | `crates/egglsp/src/diagnostics.rs` — freshness metadata (Fresh, PossiblyStale, Stale, Unavailable) |
+| Semantic context API | `SemanticContextRequest`/`SemanticContextResponse` | `crates/egglsp/src/semantic_context.rs` — domain-agnostic semantic queries with intent enum |
+| `capabilities` LspTool operation | `capabilities` | `src/tool/lsp.rs` — returns `LspCapabilitySnapshot` for the file's server |
 | Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` — see `architecture/native_crates.md` |
 | Extracted workspace crates | 4 (+1 new) | `crates/codegg-config`, `crates/codegg-protocol`, `crates/codegg-providers`, `crates/codegg-core` |
 | Tool backend contract | `src/tool/backend.rs` | `ToolBackendKind`, `ToolProvenance`, `StructuredToolResult`, `build_report()` for `/tool-backends` |
@@ -447,7 +453,7 @@ When adding guidance for a new module:
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `.opencode/skills/resilience/SKILL.md` |
 | Permission (mode system, PermissionChecker, DoomLoop, PermissionRegistry) | `.opencode/skills/permission/SKILL.md` |
-| LSP (Language Server Protocol, diagnostics, code operations, semantic context packets, securityContext call expansion) | `.opencode/skills/lsp/SKILL.md` |
+| LSP (Language Server Protocol, diagnostics, code operations, semantic context packets, securityContext call expansion, capability discovery, diagnostics freshness, shared semantic context API) | `.opencode/skills/lsp/SKILL.md` |
 | Tool (path validation, async command, ToolExecutor, ToolCatalog) | `.opencode/skills/tool/SKILL.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |

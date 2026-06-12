@@ -371,6 +371,22 @@ impl LspService {
         clients.keys().cloned().collect()
     }
 
+    /// Return a snapshot of the server capabilities for the given client key.
+    ///
+    /// Returns `None` if the client is not initialized or the key is unknown.
+    pub async fn get_capabilities_for_key(
+        &self,
+        key: &str,
+    ) -> Option<lsp_types::ServerCapabilities> {
+        let cap_ref = {
+            let clients = self.clients.read().await;
+            let entry = clients.get(key)?;
+            entry.client.capabilities.clone()
+        };
+        let x = cap_ref.lock().await.clone();
+        x
+    }
+
     pub async fn get_or_create_client_for_file(
         &self,
         file_path: &Path,

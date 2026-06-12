@@ -91,6 +91,7 @@ fn lsp_tool_schema_operation_enum() {
         "callHierarchy",
         "typeHierarchy",
         "securityContext",
+        "capabilities",
     ];
     assert_eq!(ops.len(), expected.len());
     for name in &expected {

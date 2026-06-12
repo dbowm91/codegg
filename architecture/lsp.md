@@ -543,6 +543,173 @@ All output is wrapped in `LspToolOutput<T>` with `operation`, `file_path`, `resu
 
 The `diagnostics` operation is first-class. It reads from the shared diagnostics cache populated by `publishDiagnostics` notifications. Diagnostics use 1-indexed line/column in output. If no diagnostics have arrived yet, an empty list is returned.
 
+### Capability Discovery and Normalization
+
+`LspCapabilitySnapshot` provides a normalized boolean view of a server's capabilities after initialization. Each boolean field corresponds to a specific LSP feature or operation, derived from the `ServerCapabilities` reported by the server during the `initialize` handshake.
+
+```rust
+pub struct LspCapabilitySnapshot {
+    pub publish_diagnostics: bool,
+    pub document_symbols: bool,
+    pub workspace_symbols: bool,
+    pub goto_definition: bool,
+    pub find_references: bool,
+    pub hover: bool,
+    pub completion: bool,
+    pub call_hierarchy: bool,
+    pub type_hierarchy: bool,
+    pub semantic_tokens: bool,
+    pub code_actions: bool,
+    pub formatting: bool,
+    pub rename: bool,
+    pub signature_help: bool,
+}
+```
+
+`LspSemanticOperation` enumerates the semantic operations available through the tool interface:
+
+```rust
+pub enum LspSemanticOperation {
+    Diagnostics,
+    DocumentSymbols,
+    WorkspaceSymbols,
+    Definition,
+    References,
+    Hover,
+    Completion,
+    CallHierarchy,
+    TypeHierarchy,
+    SemanticTokens,
+    SecurityContext,
+}
+```
+
+`LspUnavailable` is a structured fallback response returned when an operation is not supported by the server:
+
+```rust
+pub struct LspUnavailable {
+    pub operation: LspSemanticOperation,
+    pub reason: String,
+    pub server_id: String,
+}
+```
+
+The `capabilities` LspTool operation returns the snapshot for the server associated with a given file path. Capability detection uses actual initialized server capabilities where available; if the server has not yet initialized, the snapshot reflects the server definition's known defaults. `SecurityContext` is always treated as available — it is a composite operation that relies on multiple underlying LSP requests and risk marker scanning, not a single capability.
+
+### Diagnostics Cache Lifecycle
+
+`LspDiagnosticSnapshot` represents a point-in-time view of diagnostics for a single file:
+
+```rust
+pub struct LspDiagnosticSnapshot {
+    pub file_path: String,
+    pub diagnostics: Vec<DiagnosticSummary>,
+    pub generated_at_ms: u64,
+    pub source: LspDiagnosticSource,
+    pub freshness: LspDiagnosticFreshness,
+}
+```
+
+`LspDiagnosticFreshness` indicates how current the cached diagnostics are:
+
+```rust
+pub enum LspDiagnosticFreshness {
+    Fresh,
+    PossiblyStale,
+    Stale,
+    Unavailable,
+}
+```
+
+`LspDiagnosticSource` tracks how diagnostics were obtained:
+
+```rust
+pub enum LspDiagnosticSource {
+    Pushed,
+    Pulled,
+    Unknown,
+}
+```
+
+**Invalidation rules:**
+
+- Diagnostics transition to `PossiblyStale` on file content changes (the server has not yet republished after the change).
+- Diagnostics transition to `Stale` on server restart (the cache is cleared and repopulated asynchronously).
+- `Unavailable` indicates no diagnostics have been received for the file.
+
+`PossiblyStale` and `Stale` diagnostics should not be treated as high-confidence evidence for code analysis or security findings. The freshness field allows consumers to make informed decisions about diagnostic reliability.
+
+### Shared Semantic Context API
+
+`SemanticContextRequest` is the structured input for requesting semantic context about a file position:
+
+```rust
+pub struct SemanticContextRequest {
+    pub file_path: String,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub intent: SemanticContextIntent,
+    pub max_symbols: Option<usize>,
+    pub max_references: Option<usize>,
+    pub max_diagnostics: Option<usize>,
+    pub call_depth: Option<u32>,
+}
+```
+
+`SemanticContextIntent` describes the caller's purpose, enabling intent-aware response shaping:
+
+```rust
+pub enum SemanticContextIntent {
+    Explain,
+    EditPlanning,
+    Review,
+    SecurityReview,
+    TestPlanning,
+    Navigation,
+}
+```
+
+`SemanticContextResponse` is the structured output:
+
+```rust
+pub struct SemanticContextResponse {
+    pub file_path: String,
+    pub symbol: Option<SymbolSummary>,
+    pub diagnostics: Vec<DiagnosticSummary>,
+    pub definitions: Vec<LocationSummary>,
+    pub references: Vec<LocationSummary>,
+    pub call_hierarchy: Option<CallHierarchySummary>,
+    pub type_hierarchy: Option<TypeHierarchySummary>,
+    pub notes: Vec<String>,
+    pub truncated: bool,
+    pub unavailable: Vec<LspUnavailable>,
+}
+```
+
+`SemanticContextCaps` enforces request caps, ensuring bounded output:
+
+```rust
+pub struct SemanticContextCaps {
+    pub max_symbols: usize,
+    pub max_references: usize,
+    pub max_diagnostics: usize,
+    pub max_call_nodes: usize,
+}
+```
+
+The shared semantic context API provides a unified interface for frontends and agents to request structured LSP-derived context. `securityContext` is a specialized wrapper that uses `SecurityReview` intent internally, adding risk marker scanning and security-relevant filtering on top of the base semantic context.
+
+### Remote/Core Ownership Model (Phase 7)
+
+In the headless-core architecture:
+
+- The **headless core** owns all LSP server processes, capability snapshots, diagnostics caches, and file synchronization state. LSP servers are spawned and managed exclusively by the core.
+- **Frontends** (TUI, web, IDE extensions) request semantic context over the core protocol (`CoreRequest::SemanticContext` or equivalent). They never start their own LSP server processes for the same workspace unless explicitly configured as local-only.
+- All requests pass through **root authorization** — the core enforces that requested file paths fall within an allowed root directory before dispatching to LSP.
+- A remote frontend that connects to a headless core with no LSP support for the requested language receives a structured `LspUnavailable` response rather than an opaque error. The response includes the server ID and a human-readable reason.
+- When the core has no LSP server for the file's language (e.g., unsupported language, no server configured), the `SemanticContextResponse.unavailable` field contains one or more `LspUnavailable` entries. The frontend can render these as informational notes.
+- Diagnostics cache ownership remains with the core. Frontends receive `LspDiagnosticSnapshot` with freshness metadata and can display staleness indicators.
+
 ### Backend config (MCP fallback semantics)
 
 The `lsp` tool's registration is decided by `[tool_backends.lsp]` in

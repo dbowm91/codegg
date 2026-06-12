@@ -553,6 +553,153 @@ pub enum LspError {
 }
 ```
 
+## Capability Discovery
+
+`egglsp::capability` provides a normalized boolean view of `ServerCapabilities` returned by the initialized LSP server.
+
+### LspCapabilitySnapshot
+
+```rust
+pub struct LspCapabilitySnapshot {
+    // Boolean flags for common operations
+    pub goto_definition: bool,
+    pub hover: bool,
+    pub completion: bool,
+    pub references: bool,
+    pub document_symbols: bool,
+    pub workspace_symbols: bool,
+    pub rename: bool,
+    pub code_actions: bool,
+    pub signature_help: bool,
+    pub formatting: bool,
+    pub call_hierarchy: bool,
+    pub type_hierarchy: bool,
+    // ... additional flags
+}
+```
+
+Built via `LspCapabilitySnapshot::from_capabilities(&ServerCapabilities)` which derives the snapshot from live server capabilities reported during `initialize`.
+
+### Querying Support
+
+- `snapshot.supports(LspSemanticOperation::GotoDefinition)` → `bool`
+- `snapshot.fallback_reason(LspSemanticOperation::Rename)` → `Option<&'static str>` — returns `Some("server does not support rename")` when unsupported, `None` when supported
+
+### LspSemanticOperation
+
+Enum covering all semantic operations the tool supports. Used for querying capability snapshots and for building fallback responses.
+
+### LspUnavailable
+
+Structured fallback response returned when an operation is not supported by the server. Constructed via `LspCapabilitySnapshot::unavailable(op)`.
+
+### capabilities LspTool Operation
+
+The `capabilities` operation on `LspTool` returns a `LspCapabilitySnapshot` for the active server. Callers can use it to decide whether to attempt an operation before investing in a full request.
+
+## Diagnostics Freshness
+
+`egglsp::diagnostics` provides diagnostics with freshness metadata so callers can judge reliability.
+
+### LspDiagnosticSnapshot
+
+```rust
+pub struct LspDiagnosticSnapshot {
+    pub file_path: String,
+    pub freshness: LspDiagnosticFreshness,
+    pub source: LspDiagnosticSource,
+    pub diagnostics: Vec<lsp_types::Diagnostic>,
+}
+```
+
+### LspDiagnosticFreshness
+
+| Variant | Meaning |
+|---------|---------|
+| `Fresh` | Diagnostics arrived after the most recent `didOpen`/`didChange`/`didSave` |
+| `PossiblyStale` | No response received yet; server may still be processing |
+| `Stale` | File was modified after diagnostics were last received |
+| `Unavailable` | No diagnostics are available (server not started, no `publishDiagnostics` received) |
+
+### LspDiagnosticSource
+
+| Variant | Meaning |
+|---------|---------|
+| `Pushed` | Received via `textDocument/publishDiagnostics` notification |
+| `Pulled` | Retrieved via `textDocument/diagnostic` request |
+| `Unknown` | Source not tracked |
+
+### Usability
+
+- `snapshot.is_usable_evidence()` → `true` for `Fresh` and `PossiblyStale` (callers may choose to treat `PossiblyStale` as usable with a warning)
+- `Stale` and `Unavailable` are explicitly flagged so callers can decide whether to re-request or skip
+
+### Invalidation Rules
+
+- A `didOpen` or `didChange` resets the freshness to `PossiblyStale` until the next `publishDiagnostics`
+- A `didSave` resets freshness; the next `publishDiagnostics` marks it `Fresh`
+- File modifications tracked via `last_opened_at` timestamps drive the `Stale` classification
+- The `diagnostics_may_still_be_warming` flag on the `diagnostics` tool operation is derived from `PossiblyStale` freshness
+
+## Shared Semantic Context API
+
+`egglsp::semantic_context` provides request/response types shared across multiple tool operations that gather context for a file position.
+
+### SemanticContextRequest / SemanticContextResponse
+
+```rust
+pub struct SemanticContextRequest {
+    pub file_path: String,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub intent: SemanticContextIntent,
+    pub radius: Option<u32>,
+    pub caps: SemanticContextCaps,
+    // ... additional fields
+}
+
+pub struct SemanticContextResponse {
+    pub excerpt: Option<String>,
+    pub diagnostics: Vec<lsp_types::Diagnostic>,
+    pub symbols: Vec<DocumentSymbol>,
+    pub definitions: Option<Vec<Location>>,
+    pub references: Option<Vec<Location>>,
+    // ... additional sections
+}
+```
+
+### SemanticContextIntent
+
+| Variant | Usage |
+|---------|-------|
+| `Explain` | General code explanation; fetch hover, definitions, references |
+| `EditPlanning` | Pre-edit context; diagnostics, symbols, definitions, references |
+| `Review` | Code review context; diagnostics, symbols, call/type hierarchy |
+| `SecurityReview` | Security review; risk markers, security diagnostics, call hierarchy |
+| `TestPlanning` | Test generation context; symbols, definitions, references |
+| `Navigation` | Code navigation; definitions, references, symbols |
+
+The intent drives which optional sections are populated and which caps are applied.
+
+### SemanticContextCaps
+
+```rust
+pub struct SemanticContextCaps {
+    pub max_diagnostics: usize,
+    pub max_symbols: usize,
+    pub max_references: usize,
+    pub max_definitions: usize,
+    pub max_excerpt_lines: u32,
+    // ... additional caps
+}
+```
+
+Enforces bounded output. Defaults are conservative and aligned with the existing `semanticContext` operation limits.
+
+### Unavailable Responses
+
+`LspCapabilitySnapshot::unavailable(op)` builds a structured fallback for unsupported operations. Used internally when a requested semantic context operation cannot be served because the server lacks the required capability.
+
 ## Architecture Notes
 
 ### Client-Per-Root Pattern

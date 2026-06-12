@@ -3,7 +3,20 @@
 //! This crate owns the LSP client, server registry, file sync, and
 //! diagnostics collection. Codegg wires this behind its native `lsp`
 //! tool and config types via `From` impls at the boundary.
+//!
+//! # Capability, Cache, and Semantic Context
+//!
+//! Beyond the core LSP client, this crate provides:
+//!
+//! - [`capability`] — normalized server capability snapshots and
+//!   structured [`capability::LspUnavailable`] fallback responses.
+//! - [`diagnostics`] — debounced diagnostics collection with
+//!   [`diagnostics::LspDiagnosticSnapshot`] freshness metadata.
+//! - [`semantic_context`] — reusable [`semantic_context::SemanticContextRequest`]
+//!   / [`semantic_context::SemanticContextResponse`] API for
+//!   domain-agnostic semantic queries.
 
+pub mod capability;
 pub mod client;
 pub mod config;
 pub mod diagnostics;
@@ -15,15 +28,24 @@ pub mod launch;
 pub mod operations;
 pub mod overlay;
 pub mod root;
+pub mod semantic_context;
 pub mod server;
 pub mod service;
 
+pub use capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
 pub use config::{LspConfig, LspRule};
-pub use diagnostics::{DiagnosticsCollector, DiagnosticsOutput};
+pub use diagnostics::{
+    DiagnosticsCollector, DiagnosticsOutput, LspDiagnosticFreshness, LspDiagnosticSnapshot,
+    LspDiagnosticSource,
+};
 pub use error::LspError;
 pub use operations::select_source_action_edit;
 pub use operations::LspOperations;
 pub use operations::SourceActionPreviewKind;
+pub use semantic_context::{
+    SemanticContextCaps, SemanticContextIntent, SemanticContextRequest, SemanticContextResponse,
+    SemanticLocation,
+};
 pub use service::LspService;
 
 pub use edit::{FileEditPreview, TextEditPreview, WorkspaceEditPreview};
