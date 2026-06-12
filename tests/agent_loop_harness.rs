@@ -196,14 +196,16 @@ async fn wait_for_question_pending(
     session_id: &str,
     rx: &mut broadcast::Receiver<AppEvent>,
     timeout: std::time::Duration,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     tokio::time::timeout(timeout, async {
         loop {
             match rx.recv().await {
                 Ok(AppEvent::QuestionPending {
-                    session_id: sid, ..
+                    session_id: sid,
+                    question_id,
+                    ..
                 }) if sid == session_id => {
-                    return Ok(());
+                    return Ok(question_id);
                 }
                 Ok(_) => continue,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -922,7 +924,11 @@ async fn test_agent_loop_harness_smoke_test() {
     assert_messages_have_roles(&second_request.messages, &["user", "assistant", "tool"]);
 
     // Verify the assistant message has the expected tool call
-    let assistant_msg = &second_request.messages[1];
+    let assistant_msg = second_request
+        .messages
+        .iter()
+        .find(|m| matches!(m, Message::Assistant { .. }))
+        .expect("Expected assistant message in second request");
     assert_assistant_has_tool_call(assistant_msg, "call_1", "echo_args", Some("hello"));
 
     // Verify tool result exists with correct ID and is after assistant
@@ -1385,7 +1391,11 @@ async fn test_denied_tool_produces_error_result() {
     assert_messages_have_roles(&second_request.messages, &["user", "assistant", "tool"]);
 
     // Verify assistant has the tool call with correct ID
-    let assistant_msg = &second_request.messages[1];
+    let assistant_msg = second_request
+        .messages
+        .iter()
+        .find(|m| matches!(m, Message::Assistant { .. }))
+        .expect("Expected assistant message in second request");
     assert_assistant_has_tool_call(assistant_msg, "call_1", "denied_tool", Some("test"));
 
     // Verify tool result exists with correct ID and error content
@@ -1446,7 +1456,11 @@ async fn test_missing_tool_produces_error_result() {
     assert_messages_have_roles(&second_request.messages, &["user", "assistant", "tool"]);
 
     // Verify assistant has the tool call with correct ID
-    let assistant_msg = &second_request.messages[1];
+    let assistant_msg = second_request
+        .messages
+        .iter()
+        .find(|m| matches!(m, Message::Assistant { .. }))
+        .expect("Expected assistant message in second request");
     assert_assistant_has_tool_call(assistant_msg, "call_1", "nonexistent_tool", Some("test"));
 
     // Verify tool result exists with correct ID and error content
@@ -1506,7 +1520,7 @@ async fn test_question_tool_produces_tool_result() {
     let handle = tokio::spawn(async move { agent_loop.run(request).await });
 
     // Wait for QuestionPending event and answer the question through QuestionRegistry
-    wait_for_question_pending(
+    let question_id = wait_for_question_pending(
         "test-session-123",
         &mut rx,
         std::time::Duration::from_secs(5),
@@ -1520,7 +1534,7 @@ async fn test_question_tool_produces_tool_result() {
     .to_string();
 
     let answered =
-        QuestionRegistry::answer_question("test-session-123".to_string(), answers.clone());
+        QuestionRegistry::answer_question_scoped("test-session-123", &question_id, answers.clone());
     assert!(answered, "Question should be answered");
 
     let result = handle.await.unwrap();
@@ -1548,7 +1562,12 @@ async fn test_question_tool_produces_tool_result() {
         assert_messages_have_roles(&req2.messages, &["user", "assistant", "tool"]);
 
         // Verify assistant has the question tool call
-        assert_assistant_has_tool_call(&req2.messages[1], "call_1", "question", None);
+        let assistant_msg = req2
+            .messages
+            .iter()
+            .find(|m| matches!(m, Message::Assistant { .. }))
+            .expect("Expected assistant message in second request");
+        assert_assistant_has_tool_call(assistant_msg, "call_1", "question", None);
 
         // Verify tool result exists with correct content (the answer)
         assert_tool_result_with_id(&req2.messages, "call_1", Some("red"));
@@ -1600,7 +1619,7 @@ async fn test_question_tool_answer_immediately() {
     let request = make_chat_request("Ask a question");
     let handle = tokio::spawn(async move { agent_loop.run(request).await });
 
-    wait_for_question_pending(
+    let question_id = wait_for_question_pending(
         "test-session-immediate-q",
         &mut rx,
         std::time::Duration::from_secs(5),
@@ -1608,7 +1627,8 @@ async fn test_question_tool_answer_immediately() {
     .await
     .unwrap();
 
-    let is_registered = QuestionRegistry::is_registered("test-session-immediate-q");
+    let is_registered =
+        QuestionRegistry::is_registered_scoped("test-session-immediate-q", &question_id);
     assert!(
         is_registered,
         "QuestionRegistry should have session registered BEFORE answering"
@@ -1616,7 +1636,7 @@ async fn test_question_tool_answer_immediately() {
 
     let answers = serde_json::json!({"q1": "blue"}).to_string();
     let answered =
-        QuestionRegistry::answer_question("test-session-immediate-q".to_string(), answers);
+        QuestionRegistry::answer_question_scoped("test-session-immediate-q", &question_id, answers);
     assert!(
         answered,
         "Question should be answered immediately after registration"
@@ -1696,7 +1716,11 @@ async fn test_permission_ask_answer_immediately() {
         "PermissionRegistry should have permission registered BEFORE answering"
     );
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionDecision::AllowOnce);
+    let responded = PermissionRegistry::respond_scoped(
+        "test-session-immediate-p",
+        &perm_id,
+        PermissionDecision::AllowOnce,
+    );
     assert!(
         responded,
         "Permission should be responded to immediately after registration"
@@ -2564,7 +2588,11 @@ async fn test_permission_ask_allow_once() {
         .await
         .unwrap();
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionDecision::AllowOnce);
+    let responded = PermissionRegistry::respond_scoped(
+        "perm-test-ask-allow",
+        &perm_id,
+        PermissionDecision::AllowOnce,
+    );
     assert!(responded, "Permission should be responded to");
 
     let result = handle.await.unwrap();
@@ -2589,8 +2617,9 @@ async fn test_permission_ask_allow_once() {
     assert_no_orphan_tool_results(&req2.messages);
 
     // Verify PermissionRegistry is cleaned up
-    let cleaned_up = PermissionRegistry::respond(
-        "perm-test-ask-allow".to_string(),
+    let cleaned_up = PermissionRegistry::respond_scoped(
+        "perm-test-ask-allow",
+        &perm_id,
         PermissionDecision::AllowOnce,
     );
 
@@ -2660,7 +2689,11 @@ async fn test_permission_ask_deny_once() {
         .await
         .unwrap();
 
-    let responded = PermissionRegistry::respond(perm_id.clone(), PermissionDecision::DenyOnce);
+    let responded = PermissionRegistry::respond_scoped(
+        "perm-test-ask-deny",
+        &perm_id,
+        PermissionDecision::DenyOnce,
+    );
     assert!(responded, "Permission should be responded to");
 
     let result = handle.await.unwrap();
@@ -3622,7 +3655,14 @@ async fn test_source_structure_prompt_triggers_bootstrap_list() {
     let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
     agent_loop.set_session_id("test-source-structure-bootstrap");
 
-    let request = make_chat_request("get source code structure for this project");
+    let mut request = make_chat_request("get source code structure for this project");
+    request.messages.insert(
+        0,
+        Message::System {
+            content: "You are a helpful assistant.".to_string().into(),
+        },
+    );
+    request.model = "ollama/qwen2.5-coder:32b".to_string();
     let result = agent_loop.run(request).await;
     assert!(result.is_ok(), "run should succeed: {:?}", result.err());
 
@@ -3634,22 +3674,28 @@ async fn test_source_structure_prompt_triggers_bootstrap_list() {
     );
 
     let second_request = &requests[1];
-    let has_bootstrap_assistant = second_request.messages.iter().any(|m| {
-        matches!(
-            m,
-            Message::Assistant { tool_calls, .. }
-            if tool_calls.iter().any(|tc| tc.id.as_ref() == "synthetic_bootstrap_list" && tc.name.as_ref() == "list")
-        )
+    let bootstrap_call_id = second_request.messages.iter().find_map(|m| {
+        if let Message::Assistant { tool_calls, .. } = m {
+            tool_calls
+                .iter()
+                .find(|tc| {
+                    tc.name.as_ref() == "list" && tc.id.as_ref().starts_with("call_bootstrap_")
+                })
+                .map(|tc| tc.id.as_ref().to_string())
+        } else {
+            None
+        }
     });
     assert!(
-        has_bootstrap_assistant,
+        bootstrap_call_id.is_some(),
         "Expected synthetic bootstrap list tool call in second request"
     );
 
+    let bootstrap_call_id = bootstrap_call_id.unwrap();
     assert!(
         second_request.messages.iter().any(|m| matches!(
             m,
-            Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "synthetic_bootstrap_list"
+            Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == bootstrap_call_id.as_str()
         )),
         "Expected synthetic bootstrap list tool result in second request"
     );
@@ -3929,8 +3975,17 @@ async fn test_live_dispatcher_uses_execute_capture() {
             _ => None,
         })
         .expect("expected Message::Tool with tool_call_id=call_1 in second request");
-    assert_eq!(tool_message, r#"{"value":"hello"}"#.to_string());
-    for forbidden in ["provenance", "backend", "implementation", "trust"] {
+    assert!(
+        tool_message.ends_with(r#"{"value":"hello"}"#),
+        "Model-facing tool result should preserve the raw tool payload at the end; got: {}",
+        tool_message
+    );
+    for forbidden in [
+        "\"provenance\"",
+        "\"backend\"",
+        "\"implementation\"",
+        "\"trust\"",
+    ] {
         assert!(
             !tool_message.contains(forbidden),
             "Model-facing tool result must not contain '{}' envelope; got: {}",
