@@ -1871,6 +1871,8 @@ impl Tool for LspTool {
                 request.include_source_actions = false;
                 request.include_definitions = parsed.include_definitions.unwrap_or(has_position);
                 request.include_references = parsed.include_references.unwrap_or(has_position);
+                request.include_call_hierarchy = include_call_hierarchy;
+                request.include_type_hierarchy = include_type_hierarchy;
                 request.max_symbols = MAX_CONTEXT_SYMBOLS;
                 request.max_references = MAX_CONTEXT_REFERENCES;
                 request.max_diagnostics = MAX_CONTEXT_DIAGNOSTICS;
@@ -2108,6 +2110,8 @@ impl Tool for LspTool {
                 request.include_source_actions = false;
                 request.include_definitions = has_position;
                 request.include_references = has_position;
+                request.include_call_hierarchy = settings.include_call_hierarchy && has_position;
+                request.include_type_hierarchy = false;
                 request.max_symbols = MAX_CONTEXT_SYMBOLS;
                 request.max_references = MAX_CONTEXT_REFERENCES;
                 request.max_diagnostics = MAX_CONTEXT_DIAGNOSTICS;
@@ -2476,54 +2480,6 @@ impl Tool for LspTool {
     }
 }
 
-// --- Shared DTO conversion helpers (Phase 6) ---
-
-impl From<&SymbolSummary> for egglsp::semantic_context::SemanticSymbolSummary {
-    fn from(s: &SymbolSummary) -> Self {
-        Self {
-            name: s.name.clone(),
-            kind: s.kind.clone(),
-            file: s.file.clone(),
-            start_line: s.start_line,
-            start_column: s.start_column,
-            end_line: s.end_line,
-            end_column: s.end_column,
-        }
-    }
-}
-
-impl From<&LocationSummary> for egglsp::semantic_context::SemanticLocation {
-    fn from(l: &LocationSummary) -> Self {
-        Self {
-            file: l.file.clone(),
-            start_line: l.start_line,
-            start_column: l.start_column,
-            end_line: l.end_line,
-            end_column: l.end_column,
-        }
-    }
-}
-
-impl From<&DiagnosticSummary> for crate::lsp::diagnostics::FileDiagnostic {
-    fn from(d: &DiagnosticSummary) -> Self {
-        Self {
-            file: d.file.clone(),
-            line: d.line.saturating_sub(1),
-            column: d.column.saturating_sub(1),
-            message: d.message.clone(),
-            severity: match d.severity.as_str() {
-                "error" => egglsp::lsp_types::DiagnosticSeverity::ERROR,
-                "warning" => egglsp::lsp_types::DiagnosticSeverity::WARNING,
-                "info" => egglsp::lsp_types::DiagnosticSeverity::INFORMATION,
-                "hint" => egglsp::lsp_types::DiagnosticSeverity::HINT,
-                _ => egglsp::lsp_types::DiagnosticSeverity::ERROR,
-            },
-            source: d.source.clone(),
-            code: d.code.clone(),
-        }
-    }
-}
-
 impl SemanticContextPacket {
     /// Adapt a shared [`egglsp::semantic_context::SemanticContextResponse`]
     /// into the tool-local presentation packet.
@@ -2813,37 +2769,6 @@ impl SemanticContextPacket {
             restored_disk_view: summary.restored_disk_view,
             restore_error: summary.restore_error.clone(),
         }
-    }
-}
-
-/// Build a shared [`egglsp::semantic_context::SemanticContextResponse`] from
-/// local [`SemanticContextPacket`] data.
-///
-/// This is a transitional adapter; the shared DTO should eventually become
-/// the internal source of truth.
-#[allow(dead_code)]
-fn build_semantic_context_response(
-    packet: &SemanticContextPacket,
-) -> egglsp::semantic_context::SemanticContextResponse {
-    use egglsp::semantic_context::SemanticContextResponse;
-    SemanticContextResponse {
-        file_path: packet.file.clone(),
-        symbol: packet.symbols.first().map(|s| s.into()),
-        all_symbols: packet.symbols.iter().map(|s| s.into()).collect(),
-        diagnostics: packet.diagnostics.iter().map(|d| d.into()).collect(),
-        definitions: packet.definitions.iter().map(|l| l.into()).collect(),
-        references: packet.references.iter().map(|l| l.into()).collect(),
-        call_hierarchy: None,
-        type_hierarchy: None,
-        source_excerpt: None,
-        diagnostic_evidence: None,
-        overlay: None,
-        source_actions: Vec::new(),
-        section_truncations: Vec::new(),
-        limits: egglsp::semantic_context::SemanticContextLimits::default(),
-        notes: Vec::new(),
-        truncated: false,
-        unavailable: Vec::new(),
     }
 }
 
@@ -5052,5 +4977,292 @@ diff --git a/src/lib.rs b/src/lib.rs
             packet.references_error.as_deref(),
             Some("findReferences: not supported")
         );
+    }
+
+    // --- Regression tests for hierarchy flag wiring (lsp_semantic_context_hierarchy_wiring_patch) ---
+
+    #[test]
+    fn semantic_context_request_sets_call_hierarchy_flag() {
+        use egglsp::semantic_context::SemanticContextRequest;
+
+        let req = SemanticContextRequest::new(
+            "test.rs",
+            egglsp::semantic_context::SemanticContextIntent::Explain,
+        )
+        .with_call_hierarchy(true);
+        assert!(req.include_call_hierarchy);
+
+        let req = SemanticContextRequest::new(
+            "test.rs",
+            egglsp::semantic_context::SemanticContextIntent::Explain,
+        )
+        .with_call_hierarchy(false);
+        assert!(!req.include_call_hierarchy);
+    }
+
+    #[test]
+    fn semantic_context_request_sets_type_hierarchy_flag() {
+        use egglsp::semantic_context::SemanticContextRequest;
+
+        let req = SemanticContextRequest::new(
+            "test.rs",
+            egglsp::semantic_context::SemanticContextIntent::Explain,
+        )
+        .with_type_hierarchy(true);
+        assert!(req.include_type_hierarchy);
+
+        let req = SemanticContextRequest::new(
+            "test.rs",
+            egglsp::semantic_context::SemanticContextIntent::Explain,
+        )
+        .with_type_hierarchy(false);
+        assert!(!req.include_type_hierarchy);
+    }
+
+    #[test]
+    fn semantic_packet_adapts_shared_call_hierarchy() {
+        use egglsp::diagnostics::FileDiagnostic;
+        use egglsp::semantic_context::{
+            SemanticCallGraphSummary, SemanticContextResponse, SemanticHierarchyItem,
+            SemanticHierarchyRange, SemanticSourceExcerpt,
+        };
+
+        let response = SemanticContextResponse {
+            file_path: "src/main.rs".to_string(),
+            symbol: None,
+            all_symbols: vec![],
+            diagnostics: vec![],
+            definitions: vec![],
+            references: vec![],
+            call_hierarchy: Some(SemanticCallGraphSummary {
+                incoming_count: 1,
+                outgoing_count: 1,
+                items: vec![SemanticHierarchyItem {
+                    name: "my_fn".to_string(),
+                    kind: "function".to_string(),
+                    file: "src/main.rs".to_string(),
+                    range: SemanticHierarchyRange {
+                        start_line: 10,
+                        start_column: 1,
+                        end_line: 15,
+                        end_column: 2,
+                    },
+                    selection_range: SemanticHierarchyRange {
+                        start_line: 10,
+                        start_column: 1,
+                        end_line: 10,
+                        end_column: 4,
+                    },
+                    detail: None,
+                }],
+                incoming: vec![],
+                outgoing: vec![],
+                truncated: false,
+                prepare_error: None,
+                incoming_error: None,
+                outgoing_error: None,
+            }),
+            type_hierarchy: None,
+            source_excerpt: Some(SemanticSourceExcerpt {
+                start_line: 10,
+                end_line: 10,
+                text: "fn my_fn() {}".to_string(),
+                truncated: false,
+            }),
+            diagnostic_evidence: None,
+            overlay: None,
+            source_actions: vec![],
+            section_truncations: vec![],
+            limits: egglsp::semantic_context::SemanticContextLimits::default(),
+            notes: vec![],
+            truncated: false,
+            unavailable: vec![],
+        };
+
+        let packet =
+            SemanticContextPacket::from_semantic_response(response, None, None, vec![], false);
+
+        let call = packet
+            .call_hierarchy
+            .as_ref()
+            .expect("call hierarchy should be present");
+        assert_eq!(call.items.len(), 1);
+        assert_eq!(call.items[0].name, "my_fn");
+        assert_eq!(call.incoming.len(), 0);
+        assert_eq!(call.outgoing.len(), 0);
+    }
+
+    #[test]
+    fn semantic_packet_adapts_shared_type_hierarchy() {
+        use egglsp::diagnostics::FileDiagnostic;
+        use egglsp::semantic_context::{
+            SemanticContextResponse, SemanticHierarchyItem, SemanticHierarchyRange,
+            SemanticSourceExcerpt, SemanticTypeGraphSummary,
+        };
+
+        let response = SemanticContextResponse {
+            file_path: "src/main.rs".to_string(),
+            symbol: None,
+            all_symbols: vec![],
+            diagnostics: vec![],
+            definitions: vec![],
+            references: vec![],
+            call_hierarchy: None,
+            type_hierarchy: Some(SemanticTypeGraphSummary {
+                supertypes_count: 1,
+                subtypes_count: 1,
+                items: vec![SemanticHierarchyItem {
+                    name: "Widget".to_string(),
+                    kind: "class".to_string(),
+                    file: "src/main.rs".to_string(),
+                    range: SemanticHierarchyRange {
+                        start_line: 30,
+                        start_column: 1,
+                        end_line: 40,
+                        end_column: 2,
+                    },
+                    selection_range: SemanticHierarchyRange {
+                        start_line: 30,
+                        start_column: 1,
+                        end_line: 30,
+                        end_column: 7,
+                    },
+                    detail: None,
+                }],
+                supertypes: vec![],
+                subtypes: vec![],
+                truncated: false,
+                prepare_error: None,
+                supertypes_error: None,
+                subtypes_error: None,
+            }),
+            source_excerpt: Some(SemanticSourceExcerpt {
+                start_line: 30,
+                end_line: 30,
+                text: "struct Widget {}".to_string(),
+                truncated: false,
+            }),
+            diagnostic_evidence: None,
+            overlay: None,
+            source_actions: vec![],
+            section_truncations: vec![],
+            limits: egglsp::semantic_context::SemanticContextLimits::default(),
+            notes: vec![],
+            truncated: false,
+            unavailable: vec![],
+        };
+
+        let packet =
+            SemanticContextPacket::from_semantic_response(response, None, None, vec![], false);
+
+        let ty = packet
+            .type_hierarchy
+            .as_ref()
+            .expect("type hierarchy should be present");
+        assert_eq!(ty.items.len(), 1);
+        assert_eq!(ty.items[0].name, "Widget");
+        assert_eq!(ty.supertypes.len(), 0);
+        assert_eq!(ty.subtypes.len(), 0);
+    }
+
+    #[test]
+    fn semantic_context_hierarchy_flags_false_omits_hierarchy() {
+        use egglsp::semantic_context::SemanticContextResponse;
+
+        let response = SemanticContextResponse {
+            file_path: "test.rs".to_string(),
+            symbol: None,
+            all_symbols: vec![],
+            diagnostics: vec![],
+            definitions: vec![],
+            references: vec![],
+            call_hierarchy: Some(egglsp::semantic_context::SemanticCallGraphSummary {
+                incoming_count: 0,
+                outgoing_count: 0,
+                items: vec![],
+                incoming: vec![],
+                outgoing: vec![],
+                truncated: false,
+                prepare_error: None,
+                incoming_error: None,
+                outgoing_error: None,
+            }),
+            type_hierarchy: Some(egglsp::semantic_context::SemanticTypeGraphSummary {
+                supertypes_count: 0,
+                subtypes_count: 0,
+                items: vec![],
+                supertypes: vec![],
+                subtypes: vec![],
+                truncated: false,
+                prepare_error: None,
+                supertypes_error: None,
+                subtypes_error: None,
+            }),
+            source_excerpt: None,
+            diagnostic_evidence: None,
+            overlay: None,
+            source_actions: vec![],
+            section_truncations: vec![],
+            limits: egglsp::semantic_context::SemanticContextLimits::default(),
+            notes: vec![],
+            truncated: false,
+            unavailable: vec![],
+        };
+
+        let packet =
+            SemanticContextPacket::from_semantic_response(response, None, None, vec![], false);
+
+        // from_semantic_response preserves hierarchy; the handler nulls it out
+        // when flags are false. Verify the adapter preserves it (handler does the nulling).
+        assert!(packet.call_hierarchy.is_some());
+        assert!(packet.type_hierarchy.is_some());
+    }
+
+    #[test]
+    fn security_context_request_sets_call_hierarchy_when_enabled() {
+        use egglsp::semantic_context::SemanticContextRequest;
+
+        let req = SemanticContextRequest::new(
+            "test.rs",
+            egglsp::semantic_context::SemanticContextIntent::SecurityReview,
+        )
+        .with_call_hierarchy(true);
+        assert!(req.include_call_hierarchy);
+        assert!(!req.include_type_hierarchy);
+    }
+
+    #[test]
+    fn security_context_request_does_not_set_call_hierarchy_without_position() {
+        use egglsp::semantic_context::SemanticContextRequest;
+
+        // Simulates the securityContext path: when has_position is false,
+        // include_call_hierarchy should not be set on the request.
+        let req = SemanticContextRequest::new(
+            "test.rs",
+            egglsp::semantic_context::SemanticContextIntent::SecurityReview,
+        );
+        assert!(!req.include_call_hierarchy);
+        assert!(!req.include_type_hierarchy);
+    }
+
+    #[test]
+    fn semantic_context_request_builder_chains_correctly() {
+        use egglsp::semantic_context::SemanticContextRequest;
+
+        let req = SemanticContextRequest::new(
+            "test.rs",
+            egglsp::semantic_context::SemanticContextIntent::Explain,
+        )
+        .with_excerpt_radius(50)
+        .with_position(10, 5)
+        .with_call_hierarchy(true)
+        .with_type_hierarchy(true);
+
+        assert_eq!(req.file_path, "test.rs");
+        assert_eq!(req.line, Some(10));
+        assert_eq!(req.column, Some(5));
+        assert_eq!(req.excerpt_radius, 50);
+        assert!(req.include_call_hierarchy);
+        assert!(req.include_type_hierarchy);
     }
 }

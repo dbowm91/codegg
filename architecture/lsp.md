@@ -380,7 +380,7 @@ Hierarchy prepare operations use `ensure_file_open_from_disk` to open/sync the f
 
 `semanticContext` can include hierarchy sections with `include_call_hierarchy=true` or `include_type_hierarchy=true`. These flags require `line` and `column`; requests without a target position are rejected.
 
-`securityContext` includes call hierarchy by default when a target position is supplied unless disabled by input behavior in future presets. Both `semanticContext` and `securityContext` gate hierarchy calls through `LspCapabilitySnapshot`; unsupported operations are skipped and surfaced as notes or empty sections rather than failing the packet.
+`securityContext` requests shared call hierarchy from `SemanticContextCollector` when `include_call_hierarchy` is enabled and a target position is supplied; type hierarchy is not currently part of security context. Both `semanticContext` and `securityContext` gate hierarchy calls through `LspCapabilitySnapshot`; unsupported operations are skipped and surfaced as notes or empty sections rather than failing the packet.
 
 ### Semantic context packets
 

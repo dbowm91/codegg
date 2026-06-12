@@ -336,7 +336,7 @@ The vertical slice entry point is `plan_security_review_from_diff(diff, repo_roo
 
 ### Hierarchy Output Shapes
 
-Hierarchy operations (`callHierarchy`, `typeHierarchy`) follow a consistent shape. Both require `file_path`, `line`, and `column` (1-indexed). An optional `direction` parameter controls which callsites/type sites to retrieve. `semanticContext` can request them via `include_call_hierarchy` / `include_type_hierarchy`, and `securityContext` enables call hierarchy by default when a target position is provided.
+Hierarchy operations (`callHierarchy`, `typeHierarchy`) follow a consistent shape. Both require `file_path`, `line`, and `column` (1-indexed). An optional `direction` parameter controls which callsites/type sites to retrieve. `semanticContext` can request them via `include_call_hierarchy` / `include_type_hierarchy`, and `securityContext` requests shared call hierarchy from `SemanticContextCollector` when a target position is provided.
 
 **`HierarchyDirection`** accepts:
 - `"incoming"` — callers / supertypes only
