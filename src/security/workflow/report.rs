@@ -341,7 +341,9 @@ pub async fn run_security_review_workflow(
 ///
 /// If LSP is unavailable, unsupported, slow, or truncated, stage-1
 /// output is returned with clear notes.
-pub async fn run_security_review_workflow_with_lsp_enrichment<E: SecurityContextExecutor>(
+pub async fn run_security_review_workflow_with_lsp_enrichment<
+    E: SecurityContextExecutor + ?Sized,
+>(
     root: &Path,
     base: Option<&str>,
     options: SecurityReviewWorkflowOptions,
@@ -568,11 +570,28 @@ pub fn parse_security_review_args(input: &str) -> SecurityReviewCommandArgs {
 
 /// Run the security review command from parsed arguments.
 ///
-/// Builds [`SecurityReviewWorkflowOptions`] from the args, runs the
-/// orchestrator, and renders the output as either JSON or human-readable text.
+/// Delegates to [`run_security_review_command_with_executor`] with no executor.
 pub async fn run_security_review_command(
     root: &Path,
     args: &SecurityReviewCommandArgs,
+) -> Result<String, String> {
+    run_security_review_command_with_executor(root, args, None).await
+}
+
+/// Run the security review command with an optional LSP executor.
+///
+/// Builds [`SecurityReviewWorkflowOptions`] from the args, runs the
+/// orchestrator, and renders the output as either JSON or human-readable text.
+///
+/// When `executor` is `Some` and `args.enrich` is true, the enriched
+/// workflow is used with the provided executor.  When `executor` is
+/// `None` and `args.enrich` is true, a `NoopSecurityContextExecutor` is
+/// used and a note is appended to the output indicating that no executor
+/// was available.
+pub async fn run_security_review_command_with_executor(
+    root: &Path,
+    args: &SecurityReviewCommandArgs,
+    executor: Option<&dyn SecurityContextExecutor>,
 ) -> Result<String, String> {
     let base = args.base.as_deref();
 
@@ -598,12 +617,24 @@ pub async fn run_security_review_command(
         options.lsp_request_timeout_ms = timeout;
     }
 
-    let output = if options.enable_lsp_enrichment {
-        // Use the enriched workflow with a no-op executor.
-        // The no-op executor will fail soft, returning stage-1 output
-        // with notes about missing executor.
-        let executor = NoopSecurityContextExecutor;
-        run_security_review_workflow_with_lsp_enrichment(root, base, options, &executor).await?
+    let include_findings = options.include_findings;
+    let include_prompts = options.include_prompts;
+
+    let mut output = if options.enable_lsp_enrichment {
+        if let Some(exec) = executor {
+            run_security_review_workflow_with_lsp_enrichment(root, base, options, exec).await?
+        } else {
+            // No executor available — run with no-op and append a note.
+            let noop = NoopSecurityContextExecutor;
+            let mut result =
+                run_security_review_workflow_with_lsp_enrichment(root, base, options, &noop)
+                    .await?;
+            result.notes.push(
+                "LSP enrichment requested but no securityContext executor is available in this runtime."
+                    .to_string(),
+            );
+            result
+        }
     } else {
         run_security_review_workflow(root, base, options).await?
     };
@@ -611,6 +642,14 @@ pub async fn run_security_review_command(
     if args.json {
         serde_json::to_string_pretty(&output).map_err(|e| format!("JSON serialization failed: {e}"))
     } else {
+        // Filter before rendering to match the filtering applied in the JSON path.
+        if !include_findings {
+            output.findings.clear();
+        }
+        if !include_prompts {
+            output.review_prompts.clear();
+        }
+
         let mut report = render_security_review_summary(&output);
         if !args.findings_only {
             report.push_str("\n\n");
@@ -621,5 +660,37 @@ pub async fn run_security_review_command(
             report.push_str(&render_security_review_prompts(&output));
         }
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn security_review_command_enrich_without_executor_notes_unavailable() {
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_command_with_executor(&root, &args, None).await;
+        // Should succeed (not error) even without executor
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("no securityContext executor"));
+    }
+
+    #[tokio::test]
+    async fn security_review_command_default_does_not_request_executor() {
+        let args = SecurityReviewCommandArgs {
+            enrich: false,
+            base: Some("HEAD".to_string()),
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_command_with_executor(&root, &args, None).await;
+        assert!(result.is_ok());
     }
 }

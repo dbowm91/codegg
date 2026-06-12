@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::types::*;
 
@@ -518,4 +518,15 @@ pub fn plan_security_context_escalations(
     }
 
     plans
+}
+
+// ---------------------------------------------------------------------------
+// Executor provider abstraction
+// ---------------------------------------------------------------------------
+
+/// Provider abstraction for obtaining a security context executor at
+/// command execution time.  This avoids hardwiring `NoopSecurityContextExecutor`
+/// inside the command handler.
+pub trait SecurityContextExecutorProvider {
+    fn security_context_executor(&self) -> Option<Arc<dyn SecurityContextExecutor>>;
 }

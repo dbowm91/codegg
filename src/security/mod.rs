@@ -23,6 +23,7 @@
 //! should prefer direct `eggsentry::...` imports. See
 //! `plans/native_tool_crates_hardening.md` Phase 8.
 
+pub mod lsp_executor;
 pub mod policy;
 pub mod sandbox;
 pub mod service;

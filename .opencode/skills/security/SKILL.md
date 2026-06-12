@@ -585,6 +585,29 @@ Usage examples:
 - Internal: call `discover_targets_from_diff()` + `run_preflight_checks()` + `synthesize_findings()` directly
 - Internal: call `synthesize_evidence_based_findings()` for evidence-based finding synthesis
 
+#### LSP Executor Integration
+
+`/security-review --enrich` can execute bounded, read-only `securityContext` LSP requests when an executor is available. The executor hierarchy:
+
+- `NoopSecurityContextExecutor`: Always returns an error. Used when no LSP is available (default behavior).
+- `FixtureSecurityContextExecutor`: Pre-configured responses keyed by file path. Used in unit tests.
+- `LspSecurityContextExecutor`: Real adapter wrapping `LspTool`. Validates requests via `validate_security_context_request()`, injects the `"operation": "securityContext"` field, delegates to `LspTool::execute()`, and parses the JSON string response.
+
+The `SecurityContextExecutorProvider` trait and `run_security_review_command_with_executor()` enable executor injection at the command level. The TUI currently passes `None` (noop) because it doesn't hold a direct reference to `LspTool`; when LSP state becomes accessible, a real executor can be injected.
+
+Request validation (`validate_security_context_request`) checks:
+- `file_path` exists and is a non-empty string
+- `security_preset` exists and is a non-empty string
+- `call_depth` is 0, 1, or 2 if present
+- `max_call_nodes` is within cap (64) if present
+- No mutation fields (apply, write, edit, patch, command, execute, shell) are present
+
+All enrichment is:
+- Opt-in via `--enrich` flag
+- Read-only (never mutates files)
+- Bounded (max depth 2, max nodes 64, per-request timeout)
+- Fail-soft (returns stage-1 output on any failure)
+
 ## Security Checklist
 
 When implementing new tools or modifying existing ones:

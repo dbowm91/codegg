@@ -33,7 +33,7 @@ pub struct SecurityContextEnrichmentResult {
 ///
 /// Failures and timeouts are recorded as notes — they never fail the
 /// whole review.
-pub async fn run_security_context_enrichment<E: SecurityContextExecutor>(
+pub async fn run_security_context_enrichment<E: SecurityContextExecutor + ?Sized>(
     output: &SecurityReviewOutput,
     executor: &E,
     options: &SecurityReviewWorkflowOptions,

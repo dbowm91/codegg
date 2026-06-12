@@ -4091,10 +4091,18 @@ impl App {
                     .toasts
                     .info("Running security review...");
 
+                // NOTE: The TUI App does not hold a direct reference to the
+                // LspTool, so we pass `None` as the executor.  When LSP
+                // state becomes accessible from the App, inject a real
+                // executor here.
                 let result = tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
-                        crate::security::workflow::run_security_review_command(&root, &parsed_args)
-                            .await
+                        crate::security::workflow::run_security_review_command_with_executor(
+                            &root,
+                            &parsed_args,
+                            None,
+                        )
+                        .await
                     })
                 });
 
