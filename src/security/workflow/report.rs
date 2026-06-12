@@ -584,9 +584,9 @@ pub async fn run_security_review_command(
 ///
 /// When `executor` is `Some` and `args.enrich` is true, the enriched
 /// workflow is used with the provided executor.  When `executor` is
-/// `None` and `args.enrich` is true, a `NoopSecurityContextExecutor` is
-/// used and a note is appended to the output indicating that no executor
-/// was available.
+/// `None` and `args.enrich` is true, enrichment is skipped (deterministic
+/// stage-1 only) and a note is appended indicating that no executor is
+/// available in this runtime.
 pub async fn run_security_review_command_with_executor(
     root: &Path,
     args: &SecurityReviewCommandArgs,
@@ -623,11 +623,13 @@ pub async fn run_security_review_command_with_executor(
         if let Some(exec) = executor {
             run_security_review_workflow_with_lsp_enrichment(root, base, options, exec).await?
         } else {
-            // No executor available — run with no-op and append a note.
-            let noop = NoopSecurityContextExecutor;
-            let mut result =
-                run_security_review_workflow_with_lsp_enrichment(root, base, options, &noop)
-                    .await?;
+            // No executor available — skip enrichment, run deterministic
+            // stage-1 only, and append a clear unavailable note.
+            let stage1_options = SecurityReviewWorkflowOptions {
+                enable_lsp_enrichment: false,
+                ..options
+            };
+            let mut result = run_security_review_workflow(root, base, stage1_options).await?;
             note_lsp_enrichment_unavailable(&mut result);
             result
         }
