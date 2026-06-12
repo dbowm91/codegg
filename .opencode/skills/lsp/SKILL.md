@@ -174,6 +174,8 @@ lsp.service.save_file(path, None).await
 lsp.service.close_file(path).await
 ```
 
+When `save_file` is called with text content (`text: Some(...)`), it updates the `last_content_change_at` timestamp for the file, marking diagnostics as potentially stale. A bare save (`text: None`) sends the `didSave` notification without affecting freshness.
+
 ### Code Intelligence
 
 ```rust
@@ -578,7 +580,7 @@ pub struct LspCapabilitySnapshot {
 }
 ```
 
-Built via `LspCapabilitySnapshot::from_capabilities(&ServerCapabilities)` which derives the snapshot from live server capabilities reported during `initialize`.
+Built via `LspCapabilitySnapshot::from_capabilities(&ServerCapabilities, server_name, language_id)` which derives the snapshot from live server capabilities reported during `initialize`. The snapshot carries real `server_name` and `language_id` metadata from the initialized server.
 
 ### Querying Support
 
@@ -669,12 +671,12 @@ Both `SemanticContextPacket` and `SecurityContextPacket` include an optional `di
 struct DiagnosticEvidenceMeta {
     freshness: LspDiagnosticFreshness,
     source: LspDiagnosticSource,
-    generated_at_ms: i64,
+    age_ms: i64,
     usable_evidence: bool,
 }
 ```
 
-The `usable_evidence` field is `true` when freshness is `Fresh` or `PossiblyStale`. The `securityContext` handler appends notes for stale/unavailable diagnostics:
+The `age_ms` field is the age in milliseconds since diagnostics were received from the language server, not an absolute generation timestamp. The `usable_evidence` field is `true` when freshness is `Fresh` or `PossiblyStale`. The `securityContext` handler appends notes for stale/unavailable diagnostics:
 - `"diagnostics stale: treating diagnostics as low-confidence evidence"` (Stale)
 - `"diagnostics unavailable: no LSP diagnostic evidence available"` (Unavailable)
 

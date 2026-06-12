@@ -57,13 +57,16 @@ pub enum LspDiagnosticFreshness {
 
 /// A diagnostics snapshot with explicit freshness metadata.
 ///
+/// `age_ms` is the elapsed time (in milliseconds) since diagnostics were
+/// received from the language server, not an absolute generation timestamp.
+///
 /// Consumers may display stale diagnostics with appropriate labels but
 /// should never treat them as high-confidence evidence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspDiagnosticSnapshot {
     pub file_path: PathBuf,
     pub diagnostics: Vec<FileDiagnostic>,
-    pub generated_at_ms: i64,
+    pub age_ms: i64,
     pub source: LspDiagnosticSource,
     pub freshness: LspDiagnosticFreshness,
 }
@@ -73,7 +76,7 @@ impl LspDiagnosticSnapshot {
         Self {
             file_path,
             diagnostics: Vec::new(),
-            generated_at_ms: 0,
+            age_ms: 0,
             source: LspDiagnosticSource::Unknown,
             freshness: LspDiagnosticFreshness::Unavailable,
         }
@@ -142,30 +145,21 @@ impl DiagnosticsCollector {
             });
         }
 
-        let warming = self
+        let snapshot = self
             .service
-            .diagnostics_may_still_be_warming(&key, &uri_str)
-            .await;
+            .get_diagnostic_snapshot_for_key(&key, &uri_str)
+            .await?;
 
-        let raw = self.service.get_diagnostics_for_key(&key, &uri_str).await?;
+        // Derive warming from snapshot freshness: if PossiblyStale and no
+        // diagnostics, the server may still be computing.
+        let warming = matches!(
+            snapshot.freshness,
+            crate::diagnostics::LspDiagnosticFreshness::PossiblyStale
+        ) && snapshot.diagnostics.is_empty();
 
         Ok(DiagnosticsOutput {
             diagnostics_may_still_be_warming: warming,
-            diagnostics: raw
-                .into_iter()
-                .map(|d| FileDiagnostic {
-                    file: uri_str.clone(),
-                    line: d.range.start.line,
-                    column: d.range.start.character,
-                    message: d.message,
-                    severity: d.severity.unwrap_or(DiagnosticSeverity::ERROR),
-                    source: d.source,
-                    code: d.code.as_ref().map(|c| match c {
-                        NumberOrString::Number(n) => n.to_string(),
-                        NumberOrString::String(s) => s.clone(),
-                    }),
-                })
-                .collect(),
+            diagnostics: snapshot.diagnostics,
         })
     }
 
@@ -216,5 +210,59 @@ impl DiagnosticsCollector {
             .diagnostics
             .iter()
             .any(|d| d.severity >= DiagnosticSeverity::ERROR))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn snapshot_unavailable_has_zero_age() {
+        let snap = LspDiagnosticSnapshot::unavailable(PathBuf::from("/tmp/test.rs"));
+        assert_eq!(snap.age_ms, 0);
+        assert_eq!(snap.freshness, LspDiagnosticFreshness::Unavailable);
+        assert!(snap.diagnostics.is_empty());
+        assert_eq!(snap.source, LspDiagnosticSource::Unknown);
+    }
+
+    #[test]
+    fn usable_evidence_fresh_and_possibly_stale() {
+        let fresh = LspDiagnosticSnapshot {
+            file_path: PathBuf::from("/tmp/a.rs"),
+            diagnostics: vec![],
+            age_ms: 0,
+            source: LspDiagnosticSource::Pushed,
+            freshness: LspDiagnosticFreshness::Fresh,
+        };
+        assert!(fresh.is_usable_evidence());
+
+        let possibly_stale = LspDiagnosticSnapshot {
+            file_path: PathBuf::from("/tmp/b.rs"),
+            diagnostics: vec![],
+            age_ms: 100,
+            source: LspDiagnosticSource::Pushed,
+            freshness: LspDiagnosticFreshness::PossiblyStale,
+        };
+        assert!(possibly_stale.is_usable_evidence());
+
+        let stale = LspDiagnosticSnapshot {
+            file_path: PathBuf::from("/tmp/c.rs"),
+            diagnostics: vec![],
+            age_ms: 0,
+            source: LspDiagnosticSource::Pushed,
+            freshness: LspDiagnosticFreshness::Stale,
+        };
+        assert!(!stale.is_usable_evidence());
+
+        let unavailable = LspDiagnosticSnapshot::unavailable(PathBuf::from("/tmp/d.rs"));
+        assert!(!unavailable.is_usable_evidence());
+    }
+
+    #[test]
+    fn snapshot_age_is_non_negative() {
+        let snap = LspDiagnosticSnapshot::unavailable(PathBuf::from("/tmp/test.rs"));
+        assert!(snap.age_ms >= 0);
     }
 }

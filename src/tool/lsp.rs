@@ -247,7 +247,7 @@ struct TypeHierarchySummary {
 struct DiagnosticEvidenceMeta {
     freshness: crate::lsp::diagnostics::LspDiagnosticFreshness,
     source: crate::lsp::diagnostics::LspDiagnosticSource,
-    generated_at_ms: i64,
+    age_ms: i64,
     usable_evidence: bool,
 }
 
@@ -488,6 +488,21 @@ impl LspTool {
         }
 
         Ok(())
+    }
+
+    async fn capability_snapshot_for_file(
+        &self,
+        file: &std::path::Path,
+    ) -> Option<egglsp::LspCapabilitySnapshot> {
+        let (key, _) = self.service.get_or_create_client(file).await.ok()?;
+        let caps = self.service.get_capabilities_for_key(&key).await?;
+        let lang = crate::lsp::language::detect_language(file.to_str().unwrap_or(""));
+        let server_name = key.split(':').next_back().map(String::from);
+        Some(egglsp::LspCapabilitySnapshot::from_capabilities(
+            &caps,
+            server_name.as_deref(),
+            lang,
+        ))
     }
 
     fn resolve_security_context_settings(
@@ -1516,7 +1531,7 @@ impl Tool for LspTool {
                     diagnostics_may_still_be_warming: bool,
                     freshness: crate::lsp::diagnostics::LspDiagnosticFreshness,
                     source: crate::lsp::diagnostics::LspDiagnosticSource,
-                    generated_at_ms: i64,
+                    age_ms: i64,
                     usable_evidence: bool,
                     diagnostics: Vec<DiagnosticSummary>,
                 }
@@ -1524,7 +1539,7 @@ impl Tool for LspTool {
                     diagnostics_may_still_be_warming: warming,
                     freshness: snapshot.freshness,
                     source: snapshot.source,
-                    generated_at_ms: snapshot.generated_at_ms,
+                    age_ms: snapshot.age_ms,
                     usable_evidence: snapshot.is_usable_evidence(),
                     diagnostics: summaries,
                 };
@@ -1877,7 +1892,7 @@ impl Tool for LspTool {
                             let evidence = DiagnosticEvidenceMeta {
                                 freshness: snapshot.freshness,
                                 source: snapshot.source,
-                                generated_at_ms: snapshot.generated_at_ms,
+                                age_ms: snapshot.age_ms,
                                 usable_evidence: snapshot.is_usable_evidence(),
                             };
                             (diags, None, diagnostics_truncated, Some(evidence))
@@ -1898,16 +1913,7 @@ impl Tool for LspTool {
                     };
 
                 // Phase 4.5: fetch capability snapshot for fail-soft gating
-                let caps_snapshot = if let Ok((cap_key, _)) = self.service.get_or_create_client(&file).await {
-                    self.service.get_capabilities_for_key(&cap_key).await
-                        .map(|caps| egglsp::LspCapabilitySnapshot::from_capabilities(
-                            &caps,
-                            Some("lsp"),
-                            None,
-                        ))
-                } else {
-                    None
-                };
+                let caps_snapshot = self.capability_snapshot_for_file(&file).await;
 
                 // Phase 5: definitions + references (capability-gated)
                 let mut definitions = Vec::new();
@@ -1918,7 +1924,8 @@ impl Tool for LspTool {
                 if has_position {
                     let pos = to_lsp_position(parsed.line.unwrap(), parsed.column.unwrap());
                     if want_defs {
-                        let supported = caps_snapshot.as_ref()
+                        let supported = caps_snapshot
+                            .as_ref()
                             .map(|c| c.supports(egglsp::LspSemanticOperation::Definition))
                             .unwrap_or(true);
                         if supported {
@@ -1943,11 +1950,13 @@ impl Tool for LspTool {
                                 }
                             }
                         } else {
-                            definitions_error = Some("definition not supported by server".to_string());
+                            definitions_error =
+                                Some("definition not supported by server".to_string());
                         }
                     }
                     if want_refs {
-                        let supported = caps_snapshot.as_ref()
+                        let supported = caps_snapshot
+                            .as_ref()
                             .map(|c| c.supports(egglsp::LspSemanticOperation::References))
                             .unwrap_or(true);
                         if supported {
@@ -1974,7 +1983,8 @@ impl Tool for LspTool {
                                 }
                             }
                         } else {
-                            references_error = Some("references not supported by server".to_string());
+                            references_error =
+                                Some("references not supported by server".to_string());
                         }
                     }
                 }
@@ -2075,7 +2085,8 @@ impl Tool for LspTool {
 
                 // Call and type hierarchy (opt-in, position validated above, capability-gated)
                 let call_hierarchy = if include_call_hierarchy && has_position {
-                    let supported = caps_snapshot.as_ref()
+                    let supported = caps_snapshot
+                        .as_ref()
                         .map(|c| c.supports(egglsp::LspSemanticOperation::CallHierarchy))
                         .unwrap_or(true);
                     if supported {
@@ -2097,7 +2108,8 @@ impl Tool for LspTool {
                 };
 
                 let type_hierarchy = if include_type_hierarchy && has_position {
-                    let supported = caps_snapshot.as_ref()
+                    let supported = caps_snapshot
+                        .as_ref()
                         .map(|c| c.supports(egglsp::LspSemanticOperation::TypeHierarchy))
                         .unwrap_or(true);
                     if supported {
@@ -2233,7 +2245,7 @@ impl Tool for LspTool {
                             let evidence = DiagnosticEvidenceMeta {
                                 freshness: snapshot.freshness,
                                 source: snapshot.source,
-                                generated_at_ms: snapshot.generated_at_ms,
+                                age_ms: snapshot.age_ms,
                                 usable_evidence: snapshot.is_usable_evidence(),
                             };
                             let diags: Vec<DiagnosticSummary> = snapshot
@@ -2293,20 +2305,12 @@ impl Tool for LspTool {
                 let mut refs_error: Option<String> = None;
 
                 // Fetch capability snapshot for fail-soft gating in securityContext
-                let caps_snapshot = if let Ok((cap_key, _)) = self.service.get_or_create_client(&file).await {
-                    self.service.get_capabilities_for_key(&cap_key).await
-                        .map(|caps| egglsp::LspCapabilitySnapshot::from_capabilities(
-                            &caps,
-                            Some("lsp"),
-                            None,
-                        ))
-                } else {
-                    None
-                };
+                let caps_snapshot = self.capability_snapshot_for_file(&file).await;
 
                 if has_position {
                     let pos = to_lsp_position(parsed.line.unwrap(), parsed.column.unwrap());
-                    let defs_supported = caps_snapshot.as_ref()
+                    let defs_supported = caps_snapshot
+                        .as_ref()
                         .map(|c| c.supports(egglsp::LspSemanticOperation::Definition))
                         .unwrap_or(true);
                     if defs_supported {
@@ -2333,7 +2337,8 @@ impl Tool for LspTool {
                     } else {
                         defs_error = Some("definition not supported by server".to_string());
                     }
-                    let refs_supported = caps_snapshot.as_ref()
+                    let refs_supported = caps_snapshot
+                        .as_ref()
                         .map(|c| c.supports(egglsp::LspSemanticOperation::References))
                         .unwrap_or(true);
                     if refs_supported {
@@ -2455,7 +2460,8 @@ impl Tool for LspTool {
                 }
 
                 let call_hierarchy = if settings.include_call_hierarchy && has_position {
-                    let supported = caps_snapshot.as_ref()
+                    let supported = caps_snapshot
+                        .as_ref()
                         .map(|c| c.supports(egglsp::LspSemanticOperation::CallHierarchy))
                         .unwrap_or(true);
                     if supported {
@@ -2478,7 +2484,8 @@ impl Tool for LspTool {
                 };
 
                 let call_expansion = if settings.call_depth > 0 && has_position {
-                    let supported = caps_snapshot.as_ref()
+                    let supported = caps_snapshot
+                        .as_ref()
                         .map(|c| c.supports(egglsp::LspSemanticOperation::CallHierarchy))
                         .unwrap_or(true);
                     if supported {
@@ -2495,7 +2502,10 @@ impl Tool for LspTool {
                             .await,
                         )
                     } else {
-                        notes.push("call expansion not supported by server (call hierarchy required)".to_string());
+                        notes.push(
+                            "call expansion not supported by server (call hierarchy required)"
+                                .to_string(),
+                        );
                         None
                     }
                 } else {
@@ -2522,8 +2532,11 @@ impl Tool for LspTool {
                         crate::lsp::diagnostics::LspDiagnosticFreshness::Stale => {
                             notes.push("diagnostics stale: treating diagnostics as low-confidence evidence".to_string());
                         }
+                        crate::lsp::diagnostics::LspDiagnosticFreshness::PossiblyStale => {
+                            notes.push("diagnostics possibly stale: file changed since last diagnostics push; evidence is best-effort".to_string());
+                        }
                         crate::lsp::diagnostics::LspDiagnosticFreshness::Unavailable => {
-                            notes.push("diagnostics unavailable: no LSP diagnostic evidence available".to_string());
+                            notes.push("diagnostics unavailable: no LSP diagnostic evidence available; absence of diagnostics is not evidence of absence".to_string());
                         }
                         _ => {}
                     }

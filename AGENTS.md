@@ -330,7 +330,7 @@ These items were verified during review sessions:
 | `LspClient::diagnostic_snapshot()` | Classifies diagnostics freshness based on cache entry metadata | `crates/egglsp/src/client.rs` |
 | `DiagnosticsCollector::get_diagnostic_snapshot_for_file()` | Primary API for obtaining `LspDiagnosticSnapshot` with freshness metadata | `crates/egglsp/src/diagnostics.rs` |
 | `LspDiagnosticFreshness` enum variants | `Fresh`, `PossiblyStale`, `Stale`, `Unavailable` — freshness classification for diagnostics | `crates/egglsp/src/diagnostics.rs` |
-| `DiagnosticEvidenceMeta` struct | Carries `freshness`, `source`, `generated_at_ms`, `usable_evidence` for semantic/security context packets | `src/tool/lsp.rs` |
+| `DiagnosticEvidenceMeta` struct | Carries `freshness`, `source`, `age_ms`, `usable_evidence` for semantic/security context packets; `age_ms` is age in milliseconds since diagnostics were received | `src/tool/lsp.rs` |
 | Capability-gated operations | `semanticContext` and `securityContext` check `LspCapabilitySnapshot` before optional expensive LSP calls (definitions, references, call hierarchy, type hierarchy); unsupported ops append notes instead of failing | `src/tool/lsp.rs` |
 
 ### Security Notes

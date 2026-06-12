@@ -70,6 +70,8 @@ impl LspService {
 }
 ```
 
+**`save_file` freshness tracking**: When `save_file` is called with text content (`text: Some(...)`), it updates the `last_content_change_at` timestamp for the file, marking diagnostics as potentially stale since the server may recompute diagnostics for the new content. A bare save (`text: None`) sends the `didSave` notification without affecting freshness.
+
 ### client.rs - LSP Client
 
 Manages JSON-RPC communication with a single LSP server process. A dedicated background reader task owns stdout and routes responses via the `pending` map while independently dispatching notifications (e.g. `publishDiagnostics`):
@@ -543,7 +545,7 @@ All output is wrapped in `LspToolOutput<T>` with `operation`, `file_path`, `resu
 
 The `diagnostics` operation is first-class. It reads from the shared diagnostics cache populated by `publishDiagnostics` notifications. Diagnostics use 1-indexed line/column in output. If no diagnostics have arrived yet, an empty list is returned.
 
-The `diagnostics` tool output includes freshness metadata (`freshness`, `source`, `generated_at_ms`, `usable_evidence`) so callers can judge diagnostic reliability. Freshness is classified as `Fresh`, `PossiblyStale`, `Stale`, or `Unavailable`. See the Diagnostics Cache Lifecycle section below for details.
+The `diagnostics` tool output includes freshness metadata (`freshness`, `source`, `age_ms`, `usable_evidence`) so callers can judge diagnostic reliability. `age_ms` is the age in milliseconds since diagnostics were received from the language server. Freshness is classified as `Fresh`, `PossiblyStale`, `Stale`, or `Unavailable`. See the Diagnostics Cache Lifecycle section below for details.
 
 ### Capability-Gated Operations
 
@@ -609,7 +611,7 @@ pub struct LspUnavailable {
 }
 ```
 
-The `capabilities` LspTool operation returns the snapshot for the server associated with a given file path. Capability detection uses actual initialized server capabilities where available; if the server has not yet initialized, the snapshot reflects the server definition's known defaults. `SecurityContext` is always treated as available — it is a composite operation that relies on multiple underlying LSP requests and risk marker scanning, not a single capability.
+The `capabilities` LspTool operation returns the snapshot for the server associated with a given file path. Capability detection uses actual initialized server capabilities where available; if the server has not yet initialized, the snapshot reflects the server definition's known defaults. The snapshot carries real `server_name` and `language_id` metadata from the initialized server, not placeholders. `SecurityContext` is always treated as available — it is a composite operation that relies on multiple underlying LSP requests and risk marker scanning, not a single capability.
 
 ### Diagnostics Cache Lifecycle
 
@@ -623,7 +625,7 @@ The `capabilities` LspTool operation returns the snapshot for the server associa
 pub struct LspDiagnosticSnapshot {
     pub file_path: String,
     pub diagnostics: Vec<DiagnosticSummary>,
-    pub generated_at_ms: u64,
+    pub age_ms: i64,
     pub source: LspDiagnosticSource,
     pub freshness: LspDiagnosticFreshness,
 }
@@ -668,12 +670,12 @@ Both `SemanticContextPacket` and `SecurityContextPacket` include an optional `di
 struct DiagnosticEvidenceMeta {
     freshness: LspDiagnosticFreshness,
     source: LspDiagnosticSource,
-    generated_at_ms: i64,
+    age_ms: i64,
     usable_evidence: bool,
 }
 ```
 
-The `usable_evidence` field is `true` when freshness is `Fresh` or `PossiblyStale`. Consumers should treat stale/unavailable diagnostic evidence as low-confidence. The `securityContext` handler appends notes when diagnostics are stale or unavailable:
+The `age_ms` field is the age in milliseconds since diagnostics were received from the language server, not an absolute generation timestamp. The `usable_evidence` field is `true` when freshness is `Fresh` or `PossiblyStale`. Consumers should treat stale/unavailable diagnostic evidence as low-confidence. The `securityContext` handler appends notes when diagnostics are stale or unavailable:
 
 - `"diagnostics stale: treating diagnostics as low-confidence evidence"` (for `Stale`)
 - `"diagnostics unavailable: no LSP diagnostic evidence available"` (for `Unavailable`)

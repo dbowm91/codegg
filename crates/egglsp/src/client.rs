@@ -114,7 +114,10 @@ pub async fn dispatch_notification(
 ) {
     if method == "textDocument/publishDiagnostics" {
         if let Some(uri) = params.get("uri").and_then(|v| v.as_str()) {
-            let version = params.get("version").and_then(|v| v.as_i64()).map(|v| v as i32);
+            let version = params
+                .get("version")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32);
             if let Some(diags_value) = params.get("diagnostics") {
                 match serde_json::from_value::<Vec<lsp_types::Diagnostic>>(diags_value.clone()) {
                     Ok(diags) => {
@@ -144,7 +147,11 @@ pub fn url_to_uri(url: &Url) -> Result<Uri, LspError> {
 }
 
 fn uri_to_path_str(uri: &str) -> String {
-    uri.strip_prefix("file://").unwrap_or(uri).to_string()
+    url::Url::parse(uri)
+        .ok()
+        .and_then(|u| u.to_file_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| uri.to_string())
 }
 
 pub struct DiagnosticEntry {
@@ -444,7 +451,19 @@ impl LspClient {
             text: text.map(|s| s.to_string()),
         };
         self.send_notification("textDocument/didSave", serde_json::to_value(params)?)
-            .await
+            .await?;
+
+        // When save includes text content, mark diagnostics as potentially stale
+        // because the server may recompute diagnostics for the new content.
+        if text.is_some() {
+            let uri_str = uri.to_string();
+            self.last_content_change_at
+                .lock()
+                .await
+                .insert(uri_str, Instant::now());
+        }
+
+        Ok(())
     }
 
     pub async fn go_to_definition(
@@ -779,7 +798,10 @@ impl LspClient {
     }
 
     /// Return a fresh diagnostic snapshot with freshness metadata.
-    pub async fn diagnostic_snapshot(&self, uri: &str) -> crate::diagnostics::LspDiagnosticSnapshot {
+    pub async fn diagnostic_snapshot(
+        &self,
+        uri: &str,
+    ) -> crate::diagnostics::LspDiagnosticSnapshot {
         let file_path = uri_to_path_str(uri);
 
         // Check if server has been invalidated
@@ -807,7 +829,7 @@ impl LspClient {
                                 }),
                             })
                             .collect(),
-                        generated_at_ms: 0,
+                        age_ms: 0,
                         source: entry.source,
                         freshness: crate::diagnostics::LspDiagnosticFreshness::Stale,
                     };
@@ -819,12 +841,7 @@ impl LspClient {
         }
 
         // Check if content changed after diagnostics were received
-        let last_change = self
-            .last_content_change_at
-            .lock()
-            .await
-            .get(uri)
-            .copied();
+        let last_change = self.last_content_change_at.lock().await.get(uri).copied();
         let entry = self.diagnostics.lock().await.get(uri).cloned();
 
         match entry {
@@ -852,9 +869,7 @@ impl LspClient {
                             line: d.range.start.line,
                             column: d.range.start.character,
                             message: d.message,
-                            severity: d
-                                .severity
-                                .unwrap_or(lsp_types::DiagnosticSeverity::ERROR),
+                            severity: d.severity.unwrap_or(lsp_types::DiagnosticSeverity::ERROR),
                             source: d.source,
                             code: d.code.as_ref().map(|c| match c {
                                 lsp_types::NumberOrString::Number(n) => n.to_string(),
@@ -862,7 +877,7 @@ impl LspClient {
                             }),
                         })
                         .collect(),
-                    generated_at_ms: entry.received_at.elapsed().as_millis() as i64,
+                    age_ms: entry.received_at.elapsed().as_millis() as i64,
                     source: entry.source,
                     freshness,
                 }
@@ -1069,7 +1084,10 @@ mod tests {
         let entry = map.get("file:///test.rs").expect("entry should exist");
         assert_eq!(entry.diagnostics.len(), 1);
         assert_eq!(entry.diagnostics[0].message, "test error");
-        assert_eq!(entry.source, crate::diagnostics::LspDiagnosticSource::Pushed);
+        assert_eq!(
+            entry.source,
+            crate::diagnostics::LspDiagnosticSource::Pushed
+        );
     }
 
     #[tokio::test]
@@ -1275,5 +1293,111 @@ mod tests {
         let params = serde_json::json!({"method": "other/notification"});
         dispatch_notification(&diags, "other/notification", params).await;
         assert!(diags.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn diagnostic_snapshot_unavailable_when_no_entry() {
+        let diags: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let uri = "file:///tmp/test.rs";
+        let params = serde_json::json!({
+            "uri": uri,
+            "diagnostics": []
+        });
+        dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
+
+        let entry = diags.lock().await.get(uri).cloned();
+        assert!(entry.is_some(), "cache entry should exist after dispatch");
+
+        let entry = entry.unwrap();
+        assert!(entry.diagnostics.is_empty());
+        assert_eq!(
+            entry.source,
+            crate::diagnostics::LspDiagnosticSource::Pushed
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostic_snapshot_fresh_when_no_content_change() {
+        let diags: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let uri = "file:///tmp/fresh.rs";
+        let params = serde_json::json!({
+            "uri": uri,
+            "diagnostics": [{
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 10}},
+                "message": "test error",
+                "severity": 1
+            }]
+        });
+        dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
+
+        let entry = diags.lock().await.get(uri).cloned().unwrap();
+        assert_eq!(entry.diagnostics.len(), 1);
+        assert!(entry.received_at.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn dispatch_notification_records_cache_metadata() {
+        let diags: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let uri = "file:///tmp/meta.rs";
+        let params = serde_json::json!({
+            "uri": uri,
+            "diagnostics": [],
+            "version": 5
+        });
+        dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
+
+        let entry = diags.lock().await.get(uri).cloned().unwrap();
+        assert_eq!(entry.content_version, Some(5));
+        assert_eq!(
+            entry.source,
+            crate::diagnostics::LspDiagnosticSource::Pushed
+        );
+        assert!(entry.received_at.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn dispatch_empty_diagnostics_inserts_empty_vec_v2() {
+        let diags: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let uri = "file:///tmp/empty.rs";
+        let params = serde_json::json!({
+            "uri": uri,
+            "diagnostics": []
+        });
+        dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
+
+        let entry = diags.lock().await.get(uri).cloned().unwrap();
+        assert!(entry.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn uri_to_path_str_handles_percent_encoding() {
+        let result = uri_to_path_str("file:///tmp/a%20b.rs");
+        assert!(
+            result.contains("a b.rs"),
+            "expected decoded space, got: {result}"
+        );
+    }
+
+    #[test]
+    fn uri_to_path_str_falls_back_for_non_uri() {
+        let result = uri_to_path_str("/tmp/plain.rs");
+        assert_eq!(result, "/tmp/plain.rs");
+    }
+
+    #[test]
+    fn uri_to_path_str_normal_file_uri() {
+        let result = uri_to_path_str("file:///tmp/test.rs");
+        assert!(
+            result.ends_with("test.rs"),
+            "expected path ending in test.rs, got: {result}"
+        );
     }
 }
