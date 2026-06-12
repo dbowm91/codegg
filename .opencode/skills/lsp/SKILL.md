@@ -137,7 +137,7 @@ pub struct LspServerDef {
 
 **Location:** `src/lsp/semantic_context.rs`
 
-A shared semantic-read-model builder for `semanticContext`. Produces `SemanticContextResponse` by collecting diagnostics, symbols, definitions, references, source-action hints, and hierarchy data; overlay resolution stays handler-local because patch/content handling is tool-specific.
+A shared semantic-read-model builder for `semanticContext`. Produces `SemanticContextResponse` by collecting diagnostics, symbols, definitions, references, and hierarchy data. Overlay translation and source-action hints remain handler-local by design: patch/content expansion is tool-specific, and source-action hints produce `WorkspaceEditPreview` payloads that are preview-rich and tool-specific, so the collector never handles either.
 
 ```rust
 pub struct SemanticContextCollector { ... }
@@ -148,7 +148,7 @@ impl SemanticContextCollector {
 }
 ```
 
-The collector handles: source excerpt construction, diagnostic snapshots with freshness metadata, document symbol flattening, definition/reference gathering with capability gating, source-action hints, call/type hierarchy summaries, per-section truncation, and structured unavailable metadata. It does not own the final overlay request/response translation used by the tool layer.
+The collector handles: source excerpt construction, diagnostic snapshots with freshness metadata, document symbol flattening, definition/reference gathering with capability gating, call/type hierarchy summaries, per-section truncation, and structured unavailable metadata. Overlay translation and source-action hints are intentionally excluded — the tool handler owns both because overlay patch/content handling and source-action `WorkspaceEditPreview` payloads are tool-specific.
 
 ## Supported LSP Servers
 
@@ -309,7 +309,7 @@ It provides:
 
 ### Security call expansion
 
-`securityContext` supports optional bounded recursive call expansion via `call_depth`:
+`securityContext` supports optional bounded recursive call expansion via `call_depth`. This is separate from the shared compact call hierarchy collected by `SemanticContextCollector`: the shared hierarchy provides only immediate incoming/outgoing relationships, while call expansion performs its own recursive BFS expansion handler-locally via `build_call_expansion_summary`.
 
 - `call_depth`: 0 (default/off), 1, or 2. Higher values rejected.
 - `max_call_nodes`: 32 (default), max 64. Caps total nodes.

@@ -251,7 +251,7 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
 
 **Location:** `src/lsp/semantic_context.rs`
 
-A collector/builder that assembles the shared semantic read model for `semanticContext`. It produces `egglsp::semantic_context::SemanticContextResponse` by collecting the shared evidence needed for source excerpt, diagnostics, symbols, definitions, references, source-action hints, and hierarchy summaries from LSP services.
+A collector/builder that assembles the shared semantic read model for `semanticContext`. It produces `egglsp::semantic_context::SemanticContextResponse` by collecting the shared evidence needed for source excerpt, diagnostics, symbols, definitions, references, and hierarchy summaries from LSP services. Source-action hints and overlay translation are not part of the collector — they remain handler-local.
 
 ```rust
 pub struct SemanticContextCollector {
@@ -280,7 +280,7 @@ The collector handles:
 
 Overlay resolution stays handler-local because patch/content expansion is tool-specific; the shared semantic read model carries the resulting overlay summary when the handler chooses to attach one.
 
-Unit tests use fake/static inputs and do not require live LSP servers.
+Unit tests use fake/static inputs and do not require live LSP servers. Hierarchy flag wiring tests (`semantic_context_request_sets_call_hierarchy_flag`, etc.) are unit-level: they verify request construction and `SemanticContextPacket::from_semantic_response` adapter behavior with static `SemanticContextResponse` fixtures. Full execution-path tests through `LspTool::execute` would require a running language server, so the regression coverage for this area is intentionally adapter-level. This is acceptable given the no-live-LSP constraint; the adapter tests prove that flags propagate into requests and that shared hierarchy data flows through the packet correctly.
 
 ## Supported Languages (39 servers)
 
@@ -339,7 +339,7 @@ Only these operations are model-facing:
 
 ### Preview-only edits
 
-`renamePreview`, `formatPreview`, and `sourceActionPreview` request semantic edits from the language server, convert them into `WorkspaceEditPreview`, and return unified diff patches. They never write files. `sourceActionPreview` currently supports only `source.organizeImports` (with aliases `organizeImports` and `organize_imports`); arbitrary code actions and command execution are intentionally rejected. `CodeAction` values with `command: Some(_)` but `edit: None` are classified as command-only and rejected (command execution is disabled for safety). `format_preview` enforces `allowed_root` at the crate layer — paths outside the root are rejected with `LspError::PathOutsideRoot`. Large patches are structurally marked via `FileEditPreview.patch_omitted` (not by string matching). Applying a preview requires the existing mutating `apply_patch` tool and therefore follows normal Codegg permission handling. `semanticContext` can also include source-action hints (currently limited to `source.organizeImports`) when `include_source_actions` is true, reusing the same preview-only semantics described above.
+`renamePreview`, `formatPreview`, and `sourceActionPreview` request semantic edits from the language server, convert them into `WorkspaceEditPreview`, and return unified diff patches. They never write files. `sourceActionPreview` currently supports only `source.organizeImports` (with aliases `organizeImports` and `organize_imports`); arbitrary code actions and command execution are intentionally rejected. `CodeAction` values with `command: Some(_)` but `edit: None` are classified as command-only and rejected (command execution is disabled for safety). `format_preview` enforces `allowed_root` at the crate layer — paths outside the root are rejected with `LspError::PathOutsideRoot`. Large patches are structurally marked via `FileEditPreview.patch_omitted` (not by string matching). Applying a preview requires the existing mutating `apply_patch` tool and therefore follows normal Codegg permission handling. `semanticContext` can also include source-action hints (currently limited to `source.organizeImports`) when `include_source_actions` is true, reusing the same preview-only semantics described above. Source-action hints are collected handler-locally by `LspTool::collect_source_action_hints`, not by the shared `SemanticContextCollector`, because they produce `WorkspaceEditPreview` payloads that are preview-rich and tool-specific.
 
 Hidden operations (in `egglsp::operations` for internal use only, not model-facing): `completion`, `signatureHelp`, `codeAction` (arbitrary code actions), `codeLens`, and `goToImplementation`. The `source.organizeImports` source action is the only source action exposed to the model via `sourceActionPreview`.
 
@@ -386,7 +386,7 @@ Hierarchy prepare operations use `ensure_file_open_from_disk` to open/sync the f
 
 `semanticContext` is the preferred agent-facing pre-edit/pre-review context operation. It combines a bounded source excerpt with current diagnostics, document symbols, optional definition/reference information, optional overlay diagnostics for proposed content or a single-file patch, optional source-action hints, and optional call/type hierarchy information. It is read-only and never applies changes.
 
-The shared semantic read model is assembled by `SemanticContextCollector`; the handler keeps overlay resolution local because patch/content handling is specific to `semanticCheckPreview`. `securityContext` reuses the same diagnostic freshness evidence and capability snapshot, but filters results into a security-specific packet instead of a general semantic summary.
+The shared semantic read model is assembled by `SemanticContextCollector`. Overlay translation remains handler-local by design: patch/content expansion is tool-specific (the handler resolves the overlay via `semanticCheckPreview` and attaches the resulting summary), so the collector never handles overlay requests or responses. `securityContext` reuses the same diagnostic freshness evidence and capability snapshot, but filters results into a security-specific packet instead of a general semantic summary.
 
 Input parameters:
 - `file_path` (required): file to analyze
@@ -475,7 +475,7 @@ It combines:
 
 ### Security call expansion
 
-`securityContext` can optionally include a bounded call expansion with `call_depth`. The default is `0`, which disables recursive expansion. Supported depths are `1` and `2`; higher depths are rejected with a clear error. Expansion is breadth-first, dedupes repeated nodes, preserves edges to already-seen nodes, and is capped by `max_call_nodes` (default 32, max 64) and internal edge/range limits (`MAX_CALL_EDGES = 128`, `MAX_HIERARCHY_RANGES = 32`). When caps are reached, expansion prefers returning a partial graph with `truncated=true` rather than failing the entire packet. `call_expansion.truncated` is true when nodes, edges, or per-edge ranges are dropped due to configured or internal caps.
+`securityContext` can optionally include a bounded call expansion with `call_depth`. This is separate from the shared compact call hierarchy collected by `SemanticContextCollector`: the shared hierarchy provides only immediate incoming/outgoing relationships, while call expansion performs its own recursive BFS expansion handler-locally via `build_call_expansion_summary`. The default is `0`, which disables recursive expansion. Supported depths are `1` and `2`; higher depths are rejected with a clear error. Expansion is breadth-first, dedupes repeated nodes, preserves edges to already-seen nodes, and is capped by `max_call_nodes` (default 32, max 64) and internal edge/range limits (`MAX_CALL_EDGES = 128`, `MAX_HIERARCHY_RANGES = 32`). When caps are reached, expansion prefers returning a partial graph with `truncated=true` rather than failing the entire packet. `call_expansion.truncated` is true when nodes, edges, or per-edge ranges are dropped due to configured or internal caps.
 
 This is not whole-program analysis. It is a shallow LSP-backed neighborhood around the target symbol for review triage.
 
