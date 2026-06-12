@@ -306,3 +306,53 @@ pub struct SecurityReviewTaskState {
 // `tokio::task::AbortHandle` does not implement `Clone`, but it is
 // `Send` and cheap to keep as a single field. `Debug` is fine because
 // `AbortHandle` itself implements `Debug`.
+
+// ---------------------------------------------------------------------------
+// Root-aware path resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve a panel item's file path against the receipt root with
+/// traversal guards. Returns the canonicalized absolute path on
+/// success, or a human-readable error on failure.
+pub fn resolve_security_review_item_path(
+    receipt: &SecurityReviewReceipt,
+    item: &SecurityReviewPanelItem,
+) -> Result<PathBuf, String> {
+    let raw = item
+        .file_path
+        .as_ref()
+        .ok_or_else(|| "Item has no file path".to_string())?;
+
+    let resolved = if raw.is_absolute() {
+        raw.clone()
+    } else {
+        receipt.root.join(raw)
+    };
+
+    let canonical = if resolved.exists() {
+        std::fs::canonicalize(&resolved)
+            .map_err(|e| format!("Cannot canonicalize {}: {e}", resolved.display()))?
+    } else {
+        let parent = resolved.parent().unwrap_or(&resolved);
+        let canon_parent = std::fs::canonicalize(parent)
+            .map_err(|e| format!("Cannot canonicalize parent of {}: {e}", resolved.display()))?;
+        canon_parent.join(resolved.file_name().unwrap_or_default())
+    };
+
+    let canon_root = std::fs::canonicalize(&receipt.root).map_err(|e| {
+        format!(
+            "Cannot canonicalize review root {}: {e}",
+            receipt.root.display()
+        )
+    })?;
+
+    if !canonical.starts_with(&canon_root) {
+        return Err(format!(
+            "Path {} escapes review root {}",
+            canonical.display(),
+            canon_root.display()
+        ));
+    }
+
+    Ok(canonical)
+}

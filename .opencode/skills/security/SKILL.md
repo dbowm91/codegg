@@ -572,6 +572,7 @@ Escalation is always read-only and bounded. No preset enables depth 2 by default
 - `--no-filename` — skip filename preflight checks
 - `--max-findings N` — cap findings count
 - `--max-prompts N` — cap prompts count
+- `--panel` — auto-open the result panel on completion
 
 Usage examples:
 ```
@@ -580,6 +581,7 @@ Usage examples:
 /security-review --base main --findings-only
 /security-review --prompts-only
 /security-review --base HEAD --no-content --max-findings 5
+/security-review --changed --panel
 ```
 
 **Other invocation paths**:
@@ -587,7 +589,7 @@ Usage examples:
 - Internal: call `discover_targets_from_diff()` + `run_preflight_checks()` + `synthesize_findings()` directly
 - Internal: call `synthesize_evidence_based_findings()` for evidence-based finding synthesis
 
-The TUI command dispatches asynchronously via `TuiCommand::SecurityReviewRun`; the UI stays responsive while the review runs. A reentrancy guard (`App.security_review_running`) prevents concurrent runs. The full report is pushed to the message timeline as an Assistant message; a brief toast confirms completion. The local-mode `LspSecurityContextExecutor` and the remote/socket deterministic fallback (with `note_lsp_enrichment_unavailable`) are both preserved.
+The TUI command dispatches asynchronously via `TuiCommand::SecurityReviewRun`; the UI stays responsive while the review runs. A reentrancy guard (`App.security_review_running`) prevents concurrent runs. By default the report goes to the timeline and the result panel can be reopened with `/security-review-show`. The `--panel` flag auto-opens the result panel on completion. The local-mode `LspSecurityContextExecutor` and the remote/socket deterministic fallback (with `note_lsp_enrichment_unavailable`) are both preserved. Receipt persistence is in-memory only (cleared on app restart).
 
 #### LSP Executor Integration
 
@@ -636,7 +638,7 @@ The `src/security/workflow/receipt.rs` submodule holds:
 - Header: `Security Review — <root> | Findings: N | Prompts: N | Notes: N | Enrichment: local-lsp|unavailable|off`.
 - List: `[FINDING]`, `[PROMPT]`, `[NOTE]`, `[PREFLIGHT]` markers; severity-colored findings.
 - Detail: title, location, summary, structured evidence, recommendation, suggested tests.
-- Keybindings: `j`/`k` (or `↑`/`↓`) move selection; `PgUp`/`PgDn` scroll detail; `f` cycle filter; `n` toggle notes-only; `p` toggle prompts-only; `Enter` jump to file (emits `TuiMsg::SecurityReviewJump { path, line }` which `App::process_msg` at `src/tui/app/mod.rs:2474` handles by copying `path[:line]` to the clipboard — read-only, the file is never opened or mutated); `Esc`/`q` close.
+- Keybindings: `j`/`k` (or `↑`/`↓`) move selection; `PgUp`/`PgDn` scroll detail; `f` cycle filter; `n` toggle notes-only; `p` toggle prompts-only; `Enter` opens a read-only source preview dialog for the finding's file (root-scoped via `resolve_security_review_item_path` in `receipt.rs`; falls back to clipboard if the file cannot be opened); `Esc`/`q` close.
 - Constructed on demand in `App::open_dialog` (`src/tui/app/mod.rs:5379`) and registered as `Some(Dialog::SecurityReview)` so command-mode completion opens the dialog.
 
 Commands:

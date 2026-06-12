@@ -848,13 +848,14 @@ The async orchestrator `run_security_review_workflow(root, base, options)` runs 
 
 An optional LSP enrichment pass (`--enrich`) executes bounded, read-only `securityContext` requests for escalated targets via the `SecurityContextExecutor` trait and reruns finding synthesis with enriched evidence. The `LspSecurityContextExecutor` adapter wraps `LspTool` for real LSP delegation; `validate_security_context_request()` guards request payloads. No-executor runtimes fail soft with clear notes. Enrichment is opt-in, read-only, bounded, and never mutates files.
 
-The `/security-review` TUI command exposes the workflow with flags: `--changed`, `--base <ref>`, `--json`, `--prompts-only`, `--findings-only`, `--no-content`, `--no-filename`, `--max-findings N`, `--max-prompts N`, `--enrich`, `--max-enriched-targets N`, `--lsp-timeout-ms N`. The command runs asynchronously in the TUI so the UI remains responsive while the review is in flight; a reentrancy guard (`App.security_review_running`) blocks repeated invocations and the full report is delivered via the message timeline as an Assistant message with a `[Security Review]` label, plus a brief toast confirming completion.
+The `/security-review` TUI command exposes the workflow with flags: `--changed`, `--base <ref>`, `--json`, `--prompts-only`, `--findings-only`, `--no-content`, `--no-filename`, `--max-findings N`, `--max-prompts N`, `--enrich`, `--max-enriched-targets N`, `--lsp-timeout-ms N`, `--panel`. By default the report goes to the timeline and the result panel can be reopened with `/security-review-show`. The `--panel` flag auto-opens the result panel on completion. The command runs asynchronously in the TUI so the UI remains responsive while the review is in flight; a reentrancy guard (`App.security_review_running`) blocks repeated invocations and the full report is delivered via the message timeline as an Assistant message with a `[Security Review]` label, plus a brief toast confirming completion.
 
 Each successful run stores a structured `SecurityReviewReceipt` on the App so the result can be reopened later without rerunning the review:
 
 - `/security-review-show` reopens the latest result panel (`Dialog::SecurityReview`) from the in-memory receipt.
 - `/security-review-cancel` aborts an in-flight review via `AbortHandle::abort()`; cancellation is best-effort and stale completions are ignored.
-- The result panel supports master/detail navigation (`j`/`k` or `↑`/`↓`, `PgUp`/`PgDn`), filter cycling (`f`), notes toggle (`n`), prompts toggle (`p`), and `Enter` to copy a finding's `path[:line]` to the clipboard. The review itself is read-only by design — no file mutations.
+- The result panel supports master/detail navigation (`j`/`k` or `↑`/`↓`, `PgUp`/`PgDn`), filter cycling (`f`), notes toggle (`n`), prompts toggle (`p`), and `Enter` to open a read-only source preview dialog for the finding's file. The source preview is root-scoped and falls back to copying `path[:line]` to the clipboard if the file cannot be opened. The review itself is read-only by design — no file mutations.
+- Receipt persistence is in-memory only (`App.latest_security_review`); cleared on app restart.
 
 ### Best Practices
 

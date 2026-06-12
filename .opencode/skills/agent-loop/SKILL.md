@@ -473,7 +473,7 @@ loop {
 ```
 
 ### Background command cancellation (security review pattern)
-Long-running slash commands that spawn tokio tasks (e.g. `/security-review`) use `tokio::task::AbortHandle` for best-effort cancellation. The TUI stores a `SecurityReviewTaskState { id, abort_handle }` on `App` for the lifetime of the background work so the user can cancel via a dedicated slash command. The completion path must compare the incoming run id against the active guard before mutating state so a stale completion (id mismatch) cannot reinstate the guard or push a stale receipt. See `App::cancel_security_review` (`src/tui/app/mod.rs:936`) and `handle_security_review_finished` (`src/tui/mod.rs:2205`) for the canonical pattern.
+Long-running slash commands that spawn tokio tasks (e.g. `/security-review`) use `tokio::task::AbortHandle` for best-effort cancellation. The TUI stores a `SecurityReviewTaskState { id, abort_handle }` on `App` for the lifetime of the background work so the user can cancel via a dedicated slash command. The completion path must compare the incoming run id against the active guard before mutating state so a stale completion (id mismatch) cannot reinstate the guard or push a stale receipt. The `--panel` flag auto-opens the result panel on completion; default behavior sends the report to the timeline. The `Enter` key in the result panel opens a read-only source preview dialog (root-scoped via `resolve_security_review_item_path`), falling back to clipboard. See `App::cancel_security_review` (`src/tui/app/mod.rs:936`) and `handle_security_review_finished` (`src/tui/mod.rs:2205`) for the canonical pattern.
 
 ## Common Issues
 

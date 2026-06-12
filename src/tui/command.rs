@@ -211,7 +211,7 @@ impl CommandRegistry {
                 .with_aliases(&["/tools", "/backends"])
                 .with_description("Show resolved backend for each model-facing tool (Native / MCP / Builtin / Disabled)"),
             Command::new("/security-review", CommandCategory::Agent, None)
-                .with_description("Security review of changed files (/security-review [--changed] [--base <ref>] [--json] [--prompts-only] [--findings-only] [--no-content] [--no-filename] [--max-findings N] [--max-prompts N])"),
+                .with_description("Security review of changed files (/security-review [--changed] [--base <ref>] [--json] [--prompts-only] [--findings-only] [--no-content] [--no-filename] [--max-findings N] [--max-prompts N] [--enrich] [--panel])"),
             Command::new("/security-review-show", CommandCategory::Agent, Some(Dialog::SecurityReview))
                 .with_description("Reopen the latest security review result panel (no rerun)"),
             Command::new("/security-review-cancel", CommandCategory::Agent, None)

@@ -552,6 +552,8 @@ pub struct SecurityReviewCommandArgs {
     pub max_enriched_targets: Option<usize>,
     /// Timeout per LSP securityContext request in milliseconds.
     pub lsp_timeout_ms: Option<u64>,
+    /// Open the result panel automatically on successful completion.
+    pub open_panel_on_complete: bool,
 }
 
 /// Parse a space-separated argument string into [`SecurityReviewCommandArgs`].
@@ -585,6 +587,7 @@ pub fn parse_security_review_args(input: &str) -> SecurityReviewCommandArgs {
             "--lsp-timeout-ms" => {
                 args.lsp_timeout_ms = iter.next().and_then(|s| s.parse::<u64>().ok());
             }
+            "--panel" | "--open-panel" => args.open_panel_on_complete = true,
             _ => {}
         }
     }

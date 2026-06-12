@@ -2180,6 +2180,7 @@ fn apply_security_review_receipt(
     receipt: crate::security::workflow::SecurityReviewReceipt,
 ) {
     use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
+    let open_panel = receipt.args.open_panel_on_complete;
     let labeled = format!("[Security Review]\n{}", receipt.rendered_report);
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2193,9 +2194,16 @@ fn apply_security_review_receipt(
     });
     app.messages_state.messages.scroll_to_bottom();
     app.set_latest_security_review(receipt);
-    app.messages_state
-        .toasts
-        .success("Security review complete — see message log for the full report.");
+    if open_panel {
+        app.open_dialog(crate::tui::Dialog::SecurityReview);
+        app.messages_state
+            .toasts
+            .success("Security review complete — result panel opened.");
+    } else {
+        app.messages_state.toasts.success(
+            "Security review complete — run /security-review-show to open the result panel.",
+        );
+    }
 }
 
 /// Handle a `TuiCommand::SecurityReviewFinished` notification from the

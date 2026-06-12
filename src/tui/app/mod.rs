@@ -368,7 +368,12 @@ pub struct App {
     pub security_review_running: Option<crate::security::workflow::SecurityReviewTaskState>,
     /// Latest completed security review receipt, kept in memory so the
     /// user can reopen the result panel via `/security-review-show`.
-    /// No database persistence in this pass.
+    ///
+    /// Persistence is intentionally deferred: the codebase lacks a
+    /// generic session-artifact or message-metadata mechanism that would
+    /// make schema-less storage trivial. A future pass could attach the
+    /// structured receipt as a JSON blob on the assistant message row
+    /// once such a mechanism exists. No schema migration in this pass.
     pub latest_security_review: Option<crate::security::workflow::SecurityReviewReceipt>,
 }
 
@@ -628,6 +633,7 @@ impl App {
                 diff_dialog: None,
                 review_dialog: None,
                 security_review_dialog: None,
+                source_preview_dialog: None,
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
@@ -835,6 +841,7 @@ impl App {
                 diff_dialog: None,
                 review_dialog: None,
                 security_review_dialog: None,
+                source_preview_dialog: None,
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
@@ -2470,6 +2477,16 @@ impl App {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = tx.try_send(TuiCommand::ResearchLoadSection { run_id, section });
                 }
+            }
+            TuiMsg::OpenSourcePreview { path, line } => {
+                use crate::tui::components::dialogs::source_preview::SourcePreviewDialog;
+                let dialog = SourcePreviewDialog::new(Arc::clone(&self.ui_state.theme), path, line);
+                self.dialog_state.source_preview_dialog = Some(dialog);
+                if let Some(ref mut dlg) = self.dialog_state.source_preview_dialog {
+                    dlg.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(dlg.clone()));
+                }
+                self.ui_state.dialog = crate::tui::Dialog::SourcePreview;
             }
             TuiMsg::SecurityReviewJump { path, line } => {
                 // Read-only: copy the file path to the clipboard and
@@ -5392,6 +5409,12 @@ impl App {
                     }
                 }
                 if let Some(ref mut dialog) = self.dialog_state.security_review_dialog {
+                    dialog.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(dialog.clone()));
+                }
+            }
+            Dialog::SourcePreview => {
+                if let Some(ref mut dialog) = self.dialog_state.source_preview_dialog {
                     dialog.set_theme(&self.ui_state.theme);
                     self.focus_manager.push(Box::new(dialog.clone()));
                 }

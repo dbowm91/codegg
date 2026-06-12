@@ -11,8 +11,9 @@ use ratatui::Frame;
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use crate::security::workflow::{
-    filter_panel_items, project_receipt_to_panel_items, SecurityReviewFilter,
-    SecurityReviewPanelItem, SecurityReviewPanelItemKind, SecurityReviewReceipt,
+    filter_panel_items, project_receipt_to_panel_items, resolve_security_review_item_path,
+    SecurityReviewFilter, SecurityReviewPanelItem, SecurityReviewPanelItemKind,
+    SecurityReviewReceipt,
 };
 use crate::tui::app::TuiMsg;
 
@@ -161,11 +162,25 @@ impl Component for SecurityReviewDialog {
             }
             crossterm::event::KeyCode::Enter => {
                 if let Some(item) = self.selected_item() {
-                    if let Some(path) = &item.file_path {
-                        return Some(TuiMsg::SecurityReviewJump {
-                            path: path.display().to_string(),
-                            line: item.line,
-                        });
+                    if item.file_path.is_some() {
+                        if let Some(ref receipt) = self.receipt {
+                            match resolve_security_review_item_path(receipt, item) {
+                                Ok(resolved) => {
+                                    return Some(TuiMsg::OpenSourcePreview {
+                                        path: resolved,
+                                        line: item.line,
+                                    });
+                                }
+                                Err(_) => {
+                                    return item.file_path.as_ref().map(|p| {
+                                        TuiMsg::SecurityReviewJump {
+                                            path: p.display().to_string(),
+                                            line: item.line,
+                                        }
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
                 None
@@ -325,9 +340,12 @@ impl SecurityReviewDialog {
                         };
                         Span::styled("[FINDING] ", Style::default().fg(color))
                     }
-                    SecurityReviewPanelItemKind::Prompt => {
-                        Span::styled("[PROMPT] ", Style::default().fg(self.theme.muted))
-                    }
+                    SecurityReviewPanelItemKind::Prompt => Span::styled(
+                        "⚠ [PROMPT] ",
+                        Style::default()
+                            .fg(self.theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     SecurityReviewPanelItemKind::Note => {
                         Span::styled("[NOTE] ", Style::default().fg(self.theme.muted))
                     }
@@ -363,12 +381,25 @@ impl SecurityReviewDialog {
         };
 
         let mut lines: Vec<Line> = Vec::new();
+
+        if item.kind == SecurityReviewPanelItemKind::Prompt {
+            lines.push(Line::from(Span::styled(
+                "⚠ Review prompt only — not a confirmed finding",
+                Style::default()
+                    .fg(self.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+
         lines.push(Line::from(Span::styled(
             item.title.clone(),
             Style::default()
                 .fg(self.theme.primary)
                 .add_modifier(Modifier::BOLD),
         )));
+
+        lines.push(Line::from(""));
+
         if let Some(path) = &item.file_path {
             let line_str = item.line.map(|l| format!(":{}", l)).unwrap_or_default();
             lines.push(Line::from(Span::styled(
@@ -382,10 +413,30 @@ impl SecurityReviewDialog {
                 Style::default().fg(self.theme.foreground),
             )));
         }
+
+        if !item.detail.is_empty() {
+            lines.push(Line::from(""));
+        }
+
         for d in &item.detail {
+            let color = if d.starts_with("Severity:") || d.starts_with("Confidence:") {
+                self.theme.secondary
+            } else if d.starts_with("Category:") {
+                self.theme.muted
+            } else if d.starts_with("Recommendation:") {
+                self.theme.success
+            } else if d.starts_with("Evidence") {
+                self.theme.secondary
+            } else if d.starts_with("Not a confirmed finding") {
+                self.theme.warning
+            } else if d.starts_with("Preset:") || d.starts_with("Rationale:") {
+                self.theme.muted
+            } else {
+                self.theme.foreground
+            };
             lines.push(Line::from(Span::styled(
                 d.clone(),
-                Style::default().fg(self.theme.foreground),
+                Style::default().fg(color),
             )));
         }
 

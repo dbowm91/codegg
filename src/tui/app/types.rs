@@ -26,6 +26,7 @@ pub enum Dialog {
     Review,
     ResearchBrowser,
     SecurityReview,
+    SourcePreview,
 }
 
 impl Dialog {
@@ -57,6 +58,7 @@ impl Dialog {
                 | Self::Review
                 | Self::ResearchBrowser
                 | Self::SecurityReview
+                | Self::SourcePreview
         )
     }
 }
@@ -215,6 +217,10 @@ pub enum TuiMsg {
         path: String,
         line: Option<u32>,
     },
+    OpenSourcePreview {
+        path: PathBuf,
+        line: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -257,6 +263,8 @@ fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+use std::path::PathBuf;
 
 use crate::config::schema::SessionTemplate;
 use crate::session::models::Session;
