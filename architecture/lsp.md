@@ -612,6 +612,58 @@ The legacy entry point `plan_security_review_from_diff(diff, repo_root)` remains
 
 **Implementation:** Diff parsing (`parse_unified_diff`) produces `HunkDescriptor` values. Range primitives (`hunk_nav_ranges`) handle overlap, containment, and symbol/diagnostic matching. `HunkSourceNavigator` assembles per-hunk evidence. `HunkSourceNavigationCollector` coordinates parsing + semantic collection.
 
+#### Hunk evidence routing policy
+
+`HunkSourceContextPolicy` (in `src/lsp/hunk_nav_policy.rs`) controls when `hunkSourceContext` is invoked. The policy is conservative by default: definitions and references are on, hierarchy is off, and multi-file / oversized patches are skipped.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Master switch |
+| `max_patch_bytes` | 64 KB | Maximum patch size before skipping |
+| `max_hunks` | 20 | Maximum hunk count per file before skipping |
+| `include_definitions` | `true` | Include definitions intersecting hunks |
+| `include_references` | `true` | Include references intersecting hunks |
+| `include_call_hierarchy` | `false` | Include call hierarchy |
+| `include_type_hierarchy` | `false` | Include type hierarchy |
+
+`decide_hunk_source_context(policy, patch, file_path)` returns `HunkSourceContextDecision::Use` or `Skip { reason }`. Skip reasons include: disabled policy, no file path, unsupported file extension (checked against `LSP_LIKELY_EXTENSIONS` — ~25 extensions including rs, py, ts, js, go, java, c, cpp, rb, swift, kt), no extension, oversized patch, zero hunks, or too many hunks. The decision is explicit and testable; skip reasons are logged, never silently swallowed.
+
+#### Compact summary formatter
+
+`format_hunk_source_context_summary(response)` (in `src/lsp/hunk_nav_prompt.rs`) formats a `HunkSourceNavigationResponse` into a compact, deterministic, bounded text summary suitable for agent-facing review/edit-planning prompts. Output includes: file path, diagnostic freshness metadata, per-hunk focus range, enclosing symbol, related symbols (capped at 5), diagnostics in hunk (capped at 5 messages), nearby diagnostics count, definitions count, references count, call/type hierarchy summaries, truncation flags, and per-hunk notes. Does not dump raw JSON.
+
+#### Security review workflow integration
+
+`SecurityReviewWorkflowOptions.enable_hunk_source_context` (default `false`) opts into hunk source context evidence collection during `run_security_review_workflow`. When enabled:
+
+1. `collect_hunk_source_context_all_files()` groups `ChangedHunk`s by file path and invokes the `HunkSourceContextPolicy` per file.
+2. `evidence_from_hunk_source_context()` converts `HunkSourceNavigationResponse` into `StructuredSecurityEvidence` items with kind `HunkNavigation` (enclosing symbols, definitions, reference counts) or `Diagnostic` (in-hunk and nearby diagnostics).
+3. Evidence is injected into `synthesize_evidence_based_findings_with_extra_evidence()` for eligibility gating (2+ dimensions required).
+
+Fail-open: per-file errors are noted (appended to output `notes`) and never block the workflow.
+
+#### HunkNavigation evidence kind
+
+`SecurityEvidenceKind::HunkNavigation` (in `src/security/workflow/types.rs`) represents evidence from `hunkSourceContext`: enclosing symbols, definitions intersecting changed ranges, and reference counts. Each item carries `file_path`, `line`, `summary`, and `detail` (hunk id). `HunkNavigation` evidence participates in the same-file evidence eligibility gate alongside `Diagnostic`, `CallPath`, and `TruncationNotice`.
+
+#### ChangedHunk → HunkDescriptor conversion
+
+`ChangedHunk::to_hunk_descriptor(hunk_index)` (in `src/security/workflow/types.rs`) converts a security-workflow `ChangedHunk` into an egglsp `HunkDescriptor` for `hunkSourceContext` consumption. The `old_range` and `new_range` are computed from the hunk's start/count fields. The `hunk_index` parameter provides the deterministic hunk id prefix.
+
+#### Fail-open behavior
+
+All hunk source context operations are fail-open: errors during policy evaluation, semantic collection, or evidence conversion are recorded as notes in the output and do not prevent the rest of the security review from completing. Policy skip reasons are logged at debug level.
+
+#### Default caps
+
+- `max_patch_bytes`: 64 KB (patch size limit)
+- `max_hunks`: 20 (per-file hunk count limit)
+
+#### Known limitations
+
+- **Single-file hunk context only**: `hunkSourceContext` processes one file's hunks at a time. Multi-file patches are grouped by file path and processed independently.
+- **First-hunk-centered semantic collection**: Semantic context (definitions, references, hierarchy) is collected centered on the first hunk's position. Results are distributed to all hunks via range matching. Hunks far from the first may have less precise context.
+
 ### Position Convention
 
 Model-facing line and column are **1-indexed**. The wrapper converts to LSP 0-indexed via `to_lsp_position()`. Missing required fields return clear `ToolError::Execution` messages.

@@ -1,7 +1,7 @@
 ---
 name: lsp
 description: LSP client-side integration for Language Server Protocol support
-version: 1.2.0
+version: 1.3.0
 tags:
   - lsp
   - language-server
@@ -321,9 +321,50 @@ It provides:
 - Pure navigator: `HunkSourceNavigator` consumes `SemanticContextResponse` and does not call LSP directly
 - Bounded: per-hunk caps on symbols, diagnostics, references; global cap on hunk count
 - Diagnostic freshness is preserved per hunk from the semantic response
+- Fail-open: policy skips and LSP errors produce notes, never block the caller
+- Recommendation-based: the tool is invoked by the model when reviewing diffs; no automatic invocation
+
+**Known limitations:**
+- Single-file only: accepts `file_path` + `patch`, not a multi-file patch. Multi-file diffs require separate calls per file.
 - First-hunk-centered: semantic context (definitions, references, hierarchy) is collected centered on the first hunk and shared across all hunks via range matching. A note is appended when multiple hunks are present.
+- No cross-file references: definitions and references are limited to the single file; cross-file analysis requires `securityContext` or `semanticContext`.
 
 **Implementation:** Diff parsing (`parse_unified_diff`) produces `HunkDescriptor` values. Range primitives (`hunk_nav_ranges`) handle overlap, containment, and symbol/diagnostic matching. `HunkSourceNavigator` assembles per-hunk evidence. `HunkSourceNavigationCollector` coordinates parsing + semantic collection.
+
+### HunkSourceContextPolicy
+
+`HunkSourceContextPolicy` (`src/lsp/hunk_nav_policy.rs`) controls when `hunkSourceContext` should be invoked. It is used by the security review workflow to decide whether to collect hunk navigation evidence for a given file.
+
+```rust
+pub struct HunkSourceContextPolicy {
+    pub enabled: bool,                // master switch (default: true)
+    pub max_patch_bytes: usize,       // skip patches larger than this (default: 64KB)
+    pub max_hunks: usize,             // skip files with more hunks than this (default: 20)
+    pub include_definitions: bool,    // (default: true)
+    pub include_references: bool,     // (default: true)
+    pub include_call_hierarchy: bool, // (default: false)
+    pub include_type_hierarchy: bool, // (default: false)
+}
+```
+
+`decide_hunk_source_context(policy, patch, file_path)` returns `HunkSourceContextDecision::Use { file_path, patch }` or `HunkSourceContextDecision::Skip { reason }`. Skip reasons include: disabled policy, no file path, unsupported file extension, oversized patch, no hunk headers, too many hunks. Supported extensions are LSP-covered languages (`.rs`, `.py`, `.ts`, `.js`, `.go`, `.java`, `.c`, `.cpp`, `.rb`, `.kt`, etc.).
+
+### Compact summary formatter
+
+`format_hunk_source_context_summary` (`src/lsp/hunk_nav_prompt.rs`) formats a `HunkSourceNavigationResponse` into a compact, deterministic, agent-facing text summary. The output is bounded (max 5 symbols, 5 diagnostics, 5 references per hunk) and preserves freshness/truncation metadata. Used for prompt injection and security review notes.
+
+### Security review workflow integration
+
+The security review workflow (`src/security/workflow/report.rs`) optionally collects hunk source context evidence via `enable_hunk_source_context: bool` (default: false) on `SecurityReviewWorkflowOptions`.
+
+When enabled:
+1. Hunks are grouped by file path
+2. `decide_hunk_source_context` is called per file with a synthetic patch
+3. Per-file evidence (enclosing symbols, diagnostics, definitions, references) is collected via `collect_hunk_source_context_all_files`
+4. Evidence is injected into the evidence-based synthesis as `HunkNavigation` and `Diagnostic` evidence items
+5. `evidence_from_hunk_source_context` converts `HunkSourceNavigationResponse` into `StructuredSecurityEvidence`
+
+Fail-open: per-file errors produce notes, never block the workflow. The policy skips unsupported file extensions, oversized patches, and files with too many hunks.
 
 ### Security call expansion
 

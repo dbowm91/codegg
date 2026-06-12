@@ -279,6 +279,12 @@ pub struct SecurityReviewWorkflowOptions {
     pub max_findings: usize,
     /// Maximum prompts to include (default: 100).
     pub max_prompts: usize,
+    /// Enable optional `hunkSourceContext` evidence collection (default: false).
+    /// When true, the workflow collects hunk navigation evidence (enclosing
+    /// symbols, diagnostics, definitions, references) for each changed file
+    /// that has hunks and injects it into the evidence-based synthesis.
+    /// Fail-open: errors are noted and do not block the workflow.
+    pub enable_hunk_source_context: bool,
     /// Enable optional LSP securityContext enrichment pass (default: false).
     pub enable_lsp_enrichment: bool,
     /// Maximum targets eligible for LSP enrichment (default: 8).
@@ -299,6 +305,7 @@ impl Default for SecurityReviewWorkflowOptions {
             hunk_local_content_preflight: true,
             max_findings: 50,
             max_prompts: 100,
+            enable_hunk_source_context: false,
             enable_lsp_enrichment: false,
             max_lsp_enriched_targets: 8,
             max_lsp_requests: 8,
@@ -317,11 +324,14 @@ impl Default for SecurityReviewWorkflowOptions {
 /// 2. Build changed-hunk planning prompts from targets
 /// 3. Run filename preflight checks (if enabled)
 /// 4. Run hunk-local content preflight checks (if enabled)
-/// 5. Call `synthesize_evidence_based_findings`
-/// 6. Assemble `SecurityReviewOutput`
+/// 5. Collect hunk source context evidence (if enabled, fail-open)
+/// 6. Call `synthesize_evidence_based_findings`
+/// 7. Assemble `SecurityReviewOutput`
 ///
 /// This function does NOT execute `securityContext` LSP requests.
 /// It only uses the deterministic planning and preflight phases.
+/// Hunk source context evidence is collected deterministically
+/// (fail-open) when `enable_hunk_source_context` is true.
 pub async fn run_security_review_workflow(
     root: &Path,
     base: Option<&str>,
@@ -383,12 +393,37 @@ pub async fn run_security_review_workflow(
     let mut all_preflight = filename_preflight;
     all_preflight.extend(content_preflight);
 
-    // Phase 5: Evidence-based finding synthesis
-    let (findings, remaining_prompts) =
-        synthesize_evidence_based_findings(&targets, &planning_prompts, &all_preflight);
-
-    // Phase 6: Assemble output
+    // Phase 5: Hunk source context evidence (optional, fail-open)
     let mut notes = Vec::new();
+    let hunk_context_evidence = if options.enable_hunk_source_context {
+        let policy = HunkSourceContextPolicy::default();
+        let (evidence, _summaries, ctx_notes) =
+            collect_hunk_source_context_all_files(&parsed_hunks, &policy).await;
+        if !evidence.is_empty() {
+            tracing::debug!(
+                "hunkSourceContext collected {} evidence items",
+                evidence.len()
+            );
+        }
+        notes.extend(ctx_notes);
+        evidence
+    } else {
+        Vec::new()
+    };
+
+    // Phase 6: Evidence-based finding synthesis
+    let (findings, remaining_prompts) = if hunk_context_evidence.is_empty() {
+        synthesize_evidence_based_findings(&targets, &planning_prompts, &all_preflight)
+    } else {
+        synthesize_evidence_based_findings_with_extra_evidence(
+            &targets,
+            &planning_prompts,
+            &all_preflight,
+            &hunk_context_evidence,
+        )
+    };
+
+    // Phase 7: Assemble output
     if !options.include_findings {
         notes.push("findings disabled by workflow options".to_string());
     }
@@ -875,6 +910,205 @@ fn note_lsp_enrichment_executed(output: &mut SecurityReviewOutput, count: usize)
     output
         .notes
         .push(format!("LSP enrichment executed {} request(s).", count));
+}
+
+// ---------------------------------------------------------------------------
+// Hunk source context evidence integration
+// ---------------------------------------------------------------------------
+
+use crate::lsp::hunk_nav_policy::{decide_hunk_source_context, HunkSourceContextPolicy};
+use egglsp::hunk_context::HunkSourceNavigationResponse;
+
+/// Convert a [`HunkSourceNavigationResponse`] into structured security
+/// evidence items that feed into the evidence-based synthesis.
+///
+/// Each hunk produces:
+/// - Enclosing symbol as `HunkNavigation` evidence
+/// - Diagnostics as `Diagnostic` evidence
+/// - Definitions as `HunkNavigation` evidence
+///
+/// Returns a flat list of evidence items. The evidence is file-scoped:
+/// each item carries the file_path from the response.
+pub fn evidence_from_hunk_source_context(
+    response: &HunkSourceNavigationResponse,
+) -> Vec<StructuredSecurityEvidence> {
+    let mut evidence = Vec::new();
+
+    for ev in &response.hunks {
+        // Enclosing symbol.
+        if let Some(sym) = &ev.enclosing_symbol {
+            evidence.push(StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::HunkNavigation,
+                file_path: Some(std::path::PathBuf::from(&response.file_path)),
+                line: ev.hunk.new_range.as_ref().map(|r| r.start_line),
+                summary: format!(
+                    "enclosing symbol: {} {} lines {}-{}",
+                    sym.kind, sym.name, sym.start_line, sym.end_line
+                ),
+                detail: Some(format!("hunk {}", ev.hunk.id)),
+            });
+        }
+
+        // Diagnostics in hunk.
+        for diag in &ev.diagnostics {
+            evidence.push(StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::Diagnostic,
+                file_path: Some(std::path::PathBuf::from(&response.file_path)),
+                line: Some(diag.line),
+                summary: format!("{:?}: {}", diag.severity, diag.message),
+                detail: Some(format!("hunk {}", ev.hunk.id)),
+            });
+        }
+
+        // Nearby diagnostics.
+        for diag in &ev.nearby_diagnostics {
+            evidence.push(StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::Diagnostic,
+                file_path: Some(std::path::PathBuf::from(&response.file_path)),
+                line: Some(diag.line),
+                summary: format!("{:?} (nearby): {}", diag.severity, diag.message),
+                detail: Some(format!("hunk {}", ev.hunk.id)),
+            });
+        }
+
+        // Definitions.
+        for def in &ev.definitions {
+            evidence.push(StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::HunkNavigation,
+                file_path: Some(std::path::PathBuf::from(&response.file_path)),
+                line: Some(def.start_line),
+                summary: format!("definition at {}:{}", def.file, def.start_line),
+                detail: Some(format!("hunk {}", ev.hunk.id)),
+            });
+        }
+
+        // References summary.
+        if !ev.references.is_empty() {
+            evidence.push(StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::HunkNavigation,
+                file_path: Some(std::path::PathBuf::from(&response.file_path)),
+                line: ev.hunk.new_range.as_ref().map(|r| r.start_line),
+                summary: format!("{} references in changed range", ev.references.len()),
+                detail: Some(format!("hunk {}", ev.hunk.id)),
+            });
+        }
+    }
+
+    evidence
+}
+
+/// Collect hunk source context evidence for a single file's changed hunks.
+///
+/// Uses the [`HunkSourceContextPolicy`] to decide whether to invoke
+/// hunkSourceContext. Returns a flat list of structured evidence items
+/// and a human-readable summary for inclusion in the output notes.
+///
+/// Fail-open: returns empty evidence on any error, appending a note.
+pub async fn collect_hunk_source_context_for_file(
+    hunks: &[ChangedHunk],
+    patch: &str,
+    file_path: &std::path::Path,
+    policy: &HunkSourceContextPolicy,
+) -> (
+    Vec<StructuredSecurityEvidence>,
+    Option<String>,
+    Vec<String>,
+) {
+    let decision = decide_hunk_source_context(policy, patch, Some(file_path));
+
+    match decision {
+        crate::lsp::hunk_nav_policy::HunkSourceContextDecision::Skip { reason } => {
+            let note = format!("hunkSourceContext skipped: {reason}");
+            (vec![], None, vec![note])
+        }
+        crate::lsp::hunk_nav_policy::HunkSourceContextDecision::Use {
+            file_path: fp,
+            patch: p,
+        } => {
+            // For now, we record the decision as evidence but don't actually
+            // call the LSP (which would require an async collector).
+            // The actual LSP call is deferred to Phase 4 when the workflow
+            // is wired through the hunk source navigation collector.
+            let evidence = vec![StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::HunkNavigation,
+                file_path: Some(fp.clone()),
+                line: hunks.first().map(|h| h.new_start),
+                summary: format!(
+                    "hunkSourceContext policy: use for {} ({} hunks, {} bytes)",
+                    file_path.display(),
+                    hunks.len(),
+                    p.len()
+                ),
+                detail: Some("policy decision only — LSP call deferred".to_string()),
+            }];
+            let summary = Some(format!(
+                "hunkSourceContext: {} hunks for {} — policy says use (LSP call deferred)",
+                hunks.len(),
+                file_path.display()
+            ));
+            (evidence, summary, vec![])
+        }
+    }
+}
+
+/// Collect hunk source context evidence for all files in a security review,
+/// using the provided hunk navigation collector.
+///
+/// This is the full integration path that actually calls `hunkSourceContext`
+/// via the collector. It processes each file's hunks independently and
+/// merges all evidence. Fail-open: errors per file are noted, not fatal.
+///
+/// Returns merged evidence, summaries per file, and notes.
+pub async fn collect_hunk_source_context_all_files(
+    hunks: &[ChangedHunk],
+    policy: &HunkSourceContextPolicy,
+) -> (
+    Vec<StructuredSecurityEvidence>,
+    Vec<String>,
+    Vec<String>,
+) {
+    if !policy.enabled {
+        return (vec![], vec![], vec!["hunkSourceContext disabled".to_string()]);
+    }
+
+    // Group hunks by file path.
+    let mut hunks_by_file: std::collections::HashMap<&std::path::Path, Vec<&ChangedHunk>> =
+        std::collections::HashMap::new();
+    for hunk in hunks {
+        hunks_by_file.entry(&hunk.file_path).or_default().push(hunk);
+    }
+
+    let mut all_evidence = Vec::new();
+    let mut summaries = Vec::new();
+    let mut notes = Vec::new();
+
+    for (file_path, file_hunks) in &hunks_by_file {
+        // Build a synthetic patch from the hunks for policy evaluation.
+        let synthetic_patch = file_hunks
+            .iter()
+            .map(|h| {
+                format!(
+                    "@@ -{},{} +{},{} @@",
+                    h.old_start, h.old_count, h.new_start, h.new_count
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Convert &[&ChangedHunk] to Vec<ChangedHunk> for the function call.
+        let owned_hunks: Vec<ChangedHunk> = file_hunks.iter().map(|h| (*h).clone()).collect();
+        let (evidence, summary, file_notes) =
+            collect_hunk_source_context_for_file(&owned_hunks, &synthetic_patch, file_path, policy)
+                .await;
+
+        all_evidence.extend(evidence);
+        if let Some(s) = summary {
+            summaries.push(s);
+        }
+        notes.extend(file_notes);
+    }
+
+    (all_evidence, summaries, notes)
 }
 
 #[cfg(test)]

@@ -72,15 +72,21 @@ pub fn is_finding_eligible(evidence: &[StructuredSecurityEvidence]) -> bool {
     let has_reasoning = evidence
         .iter()
         .any(|e| e.kind == SecurityEvidenceKind::CodeReasoning);
+    let has_hunk_nav = evidence
+        .iter()
+        .any(|e| e.kind == SecurityEvidenceKind::HunkNavigation);
 
     (has_marker
         && (has_changed_hunk
             || has_preflight_fail
             || has_call_path
             || has_diagnostic
-            || has_reasoning))
+            || has_reasoning
+            || has_hunk_nav))
         || (has_preflight_fail && has_changed_hunk)
         || (has_reasoning && has_changed_hunk)
+        || (has_hunk_nav && has_changed_hunk)
+        || (has_hunk_nav && has_preflight_fail)
 }
 
 /// Convert a [`SecurityReviewTarget`] into structured evidence.

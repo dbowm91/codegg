@@ -55,6 +55,9 @@ pub enum SecurityEvidenceKind {
     Preflight,
     CodeReasoning,
     TruncationNotice,
+    /// Evidence from `hunkSourceContext` LSP operation: enclosing symbols,
+    /// diagnostics in changed ranges, definitions, and references.
+    HunkNavigation,
 }
 
 /// A single piece of structured evidence supporting a finding.
@@ -319,3 +322,53 @@ pub use SecurityReviewTarget as ReviewTarget;
 pub use SecurityTargetReason as TargetReason;
 #[allow(unused_imports)]
 pub use StructuredSecurityEvidence as Evidence;
+
+// ---------------------------------------------------------------------------
+// ChangedHunk → HunkDescriptor conversion
+// ---------------------------------------------------------------------------
+
+impl ChangedHunk {
+    /// Convert a [`ChangedHunk`] into an egglsp [`HunkDescriptor`] for use
+    /// with `hunkSourceContext`.
+    ///
+    /// The `old_range` and `new_range` are computed from the hunk's
+    /// start/count fields. The `hunk_index` parameter provides the
+    /// deterministic hunk id prefix.
+    pub fn to_hunk_descriptor(&self, hunk_index: usize) -> egglsp::hunk_context::HunkDescriptor {
+        let old_range = if self.old_count > 0 {
+            Some(egglsp::hunk_context::HunkLineRange {
+                start_line: self.old_start,
+                end_line: self.old_start + self.old_count - 1,
+            })
+        } else {
+            None
+        };
+        let new_range = if self.new_count > 0 {
+            Some(egglsp::hunk_context::HunkLineRange {
+                start_line: self.new_start,
+                end_line: self.new_start + self.new_count - 1,
+            })
+        } else {
+            None
+        };
+        let file_str = self.file_path.to_string_lossy().to_string();
+        let header = format!(
+            "@@ -{},{} +{},{} @@",
+            self.old_start, self.old_count, self.new_start, self.new_count
+        );
+        let added_lines = self.lines.iter().filter(|l| l.kind == DiffLineKind::Added).count();
+        let removed_lines = self.lines.iter().filter(|l| l.kind == DiffLineKind::Removed).count();
+        let context_lines = self.lines.iter().filter(|l| l.kind == DiffLineKind::Context).count();
+
+        egglsp::hunk_context::HunkDescriptor {
+            id: format!("{file_str}:{hunk_index}:{}-{}", self.new_start, self.new_start + self.new_count.saturating_sub(1)),
+            file_path: file_str,
+            old_range,
+            new_range,
+            header: Some(header),
+            added_lines,
+            removed_lines,
+            context_lines,
+        }
+    }
+}

@@ -50,6 +50,8 @@ pub mod overlay {
 pub mod hunk_nav;
 pub mod hunk_nav_collector;
 pub mod hunk_nav_parser;
+pub mod hunk_nav_policy;
+pub mod hunk_nav_prompt;
 pub mod hunk_nav_ranges;
 pub mod semantic_context;
 pub mod service {
