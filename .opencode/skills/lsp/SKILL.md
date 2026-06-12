@@ -631,10 +631,18 @@ pub struct LspDiagnosticSnapshot {
 | `Pulled` | Retrieved via `textDocument/diagnostic` request |
 | `Unknown` | Source not tracked |
 
+### age_ms Semantics
+
+`age_ms` is zero for `Unavailable` snapshots and elapsed diagnostic age (milliseconds since `received_at`) for all cached diagnostic snapshots, including `Stale` cached snapshots.
+
 ### Usability
 
 - `snapshot.is_usable_evidence()` → `true` for `Fresh` and `PossiblyStale` (callers may choose to treat `PossiblyStale` as usable with a warning)
 - `Stale` and `Unavailable` are explicitly flagged so callers can decide whether to re-request or skip
+
+### Warming Detection
+
+`LspDiagnosticSnapshot::diagnostics_may_still_be_warming()` is a derived method that returns `true` when freshness is `PossiblyStale` and diagnostics are empty, indicating the server may still be processing.
 
 ### Invalidation Rules
 
@@ -648,6 +656,12 @@ pub struct LspDiagnosticSnapshot {
 `DiagnosticCacheEntry` (in `crates/egglsp/src/client.rs`) stores per-file diagnostics with `received_at`, `source`, and `content_version` metadata. `LspClient::diagnostic_snapshot()` classifies freshness based on these fields.
 
 `DiagnosticsCollector::get_diagnostic_snapshot_for_file()` is the primary API for obtaining a snapshot with freshness metadata.
+
+`DiagnosticsCollector::get_all_diagnostic_snapshots()` returns a `HashMap<String, LspDiagnosticSnapshot>` for freshness-aware bulk diagnostics. `get_all_diagnostics()` is a legacy freshness-blind view that returns raw diagnostics without freshness metadata.
+
+### capabilities operation
+
+The `capabilities` LspTool operation uses the shared `capability_snapshot_for_file()` helper, the same code path used by `semanticContext` and `securityContext`.
 
 ## Capability-Gated Operations
 

@@ -327,8 +327,11 @@ These items were verified during review sessions:
 | `synthesize_evidence_based_findings_with_extra_evidence` | Enriched synthesis: combines base prompts with enriched evidence for a second pass. Injects matching CallPath/Diagnostic/TruncationNotice evidence into findings and re-classifies. | `src/security/workflow/evidence.rs` |
 | `run_security_review_workflow_with_lsp_enrichment` | Enriched orchestrator: runs deterministic stage-1, then optional LSP enrichment via executor, reruns synthesis with enriched evidence. Fail-soft: returns stage-1 output on any failure. | `src/security/workflow/report.rs` |
 | `DiagnosticCacheEntry` | Stores per-file diagnostics with `received_at`, `source`, `content_version` metadata for freshness classification | `crates/egglsp/src/client.rs` |
-| `LspClient::diagnostic_snapshot()` | Classifies diagnostics freshness based on cache entry metadata | `crates/egglsp/src/client.rs` |
+| `LspClient::diagnostic_snapshot()` | Classifies diagnostics freshness based on cache entry metadata; stale cached diagnostics preserve their actual `age_ms` (not zero) | `crates/egglsp/src/client.rs` |
 | `DiagnosticsCollector::get_diagnostic_snapshot_for_file()` | Primary API for obtaining `LspDiagnosticSnapshot` with freshness metadata | `crates/egglsp/src/diagnostics.rs` |
+| `DiagnosticsCollector::get_all_diagnostic_snapshots()` | Freshness-aware bulk diagnostic snapshots API, returns `HashMap<String, LspDiagnosticSnapshot>` | `crates/egglsp/src/diagnostics.rs` |
+| `LspDiagnosticSnapshot::diagnostics_may_still_be_warming()` | Derived from snapshot freshness: `PossiblyStale` + empty diagnostics = warming | `crates/egglsp/src/diagnostics.rs` |
+| `capabilities` operation | Uses `capability_snapshot_for_file()` shared with `semanticContext` and `securityContext` | `src/tool/lsp.rs` |
 | `LspDiagnosticFreshness` enum variants | `Fresh`, `PossiblyStale`, `Stale`, `Unavailable` — freshness classification for diagnostics | `crates/egglsp/src/diagnostics.rs` |
 | `DiagnosticEvidenceMeta` struct | Carries `freshness`, `source`, `age_ms`, `usable_evidence` for semantic/security context packets; `age_ms` is age in milliseconds since diagnostics were received | `src/tool/lsp.rs` |
 | Capability-gated operations | `semanticContext` and `securityContext` check `LspCapabilitySnapshot` before optional expensive LSP calls (definitions, references, call hierarchy, type hierarchy); unsupported ops append notes instead of failing | `src/tool/lsp.rs` |

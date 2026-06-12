@@ -88,6 +88,13 @@ impl LspDiagnosticSnapshot {
             LspDiagnosticFreshness::Fresh | LspDiagnosticFreshness::PossiblyStale
         )
     }
+
+    pub fn diagnostics_may_still_be_warming(&self) -> bool {
+        matches!(
+            self.freshness,
+            LspDiagnosticFreshness::PossiblyStale
+        ) && self.diagnostics.is_empty()
+    }
 }
 
 pub struct DiagnosticsOutput {
@@ -150,12 +157,7 @@ impl DiagnosticsCollector {
             .get_diagnostic_snapshot_for_key(&key, &uri_str)
             .await?;
 
-        // Derive warming from snapshot freshness: if PossiblyStale and no
-        // diagnostics, the server may still be computing.
-        let warming = matches!(
-            snapshot.freshness,
-            crate::diagnostics::LspDiagnosticFreshness::PossiblyStale
-        ) && snapshot.diagnostics.is_empty();
+        let warming = snapshot.diagnostics_may_still_be_warming();
 
         Ok(DiagnosticsOutput {
             diagnostics_may_still_be_warming: warming,
@@ -163,6 +165,11 @@ impl DiagnosticsCollector {
         })
     }
 
+    /// Returns a legacy freshness-blind bulk view of diagnostics.
+    ///
+    /// This method does not include freshness metadata. Callers that need
+    /// reliability metadata (freshness, age_ms, source) should use
+    /// [`get_all_diagnostic_snapshots`] or per-file snapshots instead.
     pub async fn get_all_diagnostics(
         &self,
     ) -> Result<HashMap<String, Vec<FileDiagnostic>>, LspError> {
@@ -192,6 +199,26 @@ impl DiagnosticsCollector {
         }
 
         Ok(all)
+    }
+
+    pub async fn get_all_diagnostic_snapshots(
+        &self,
+    ) -> Result<HashMap<String, LspDiagnosticSnapshot>, LspError> {
+        let keys = self.service.client_keys().await;
+        let mut snapshots = HashMap::new();
+
+        for key in keys {
+            let raw = self.service.get_all_diagnostics_for_key(&key).await?;
+            for uri in raw.keys() {
+                let snapshot = self
+                    .service
+                    .get_diagnostic_snapshot_for_key(&key, uri)
+                    .await?;
+                snapshots.insert(uri.clone(), snapshot);
+            }
+        }
+
+        Ok(snapshots)
     }
 
     pub async fn get_diagnostic_snapshot_for_file(

@@ -619,6 +619,8 @@ The `capabilities` LspTool operation returns the snapshot for the server associa
 
 `LspClient::diagnostic_snapshot()` classifies freshness based on these fields:
 
+`age_ms` is zero for unavailable snapshots and elapsed diagnostic age for all cached diagnostic snapshots, including stale cached snapshots.
+
 `LspDiagnosticSnapshot` represents a point-in-time view of diagnostics for a single file:
 
 ```rust
@@ -661,6 +663,10 @@ pub enum LspDiagnosticSource {
 `PossiblyStale` and `Stale` diagnostics should not be treated as high-confidence evidence for code analysis or security findings. The freshness field allows consumers to make informed decisions about diagnostic reliability.
 
 `DiagnosticsCollector::get_diagnostic_snapshot_for_file()` is the primary API for obtaining a snapshot. It ensures the file is open from disk, then delegates to `LspService::get_diagnostic_snapshot_for_key()` which consults the client's diagnostic cache.
+
+`DiagnosticsCollector::get_all_diagnostic_snapshots()` returns a `HashMap<String, LspDiagnosticSnapshot>` for freshness-aware bulk diagnostics. `get_all_diagnostics()` is a legacy freshness-blind view that returns raw diagnostics without freshness metadata.
+
+`LspDiagnosticSnapshot::diagnostics_may_still_be_warming()` is a derived method that returns `true` when freshness is `PossiblyStale` and diagnostics are empty, indicating the server may still be processing.
 
 ### Diagnostic Evidence in Context Packets
 

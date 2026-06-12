@@ -2604,27 +2604,10 @@ impl Tool for LspTool {
             }
             "capabilities" => {
                 let file = self.resolve_file(&parsed.file_path)?;
-                let (key, _root) = self
-                    .service
-                    .get_or_create_client(&file)
+                let snapshot = self
+                    .capability_snapshot_for_file(&file)
                     .await
-                    .map_err(|e| ToolError::Execution(format!("capabilities: {e}")))?;
-
-                let caps = self.service.get_capabilities_for_key(&key).await;
-
-                let snapshot = match caps {
-                    Some(server_caps) => {
-                        let lang =
-                            crate::lsp::language::detect_language(file.to_str().unwrap_or(""));
-                        let server_name = key.split(':').next_back().map(String::from);
-                        egglsp::LspCapabilitySnapshot::from_capabilities(
-                            &server_caps,
-                            server_name.as_deref(),
-                            lang,
-                        )
-                    }
-                    None => egglsp::LspCapabilitySnapshot::default(),
-                };
+                    .unwrap_or_default();
 
                 serde_json::to_string_pretty(&snapshot)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
