@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use super::context::*;
 use super::diff::*;
+use super::enrichment::*;
 use super::evidence::*;
 use super::preflight::*;
 use super::types::*;
@@ -177,6 +179,14 @@ pub struct SecurityReviewWorkflowOptions {
     pub max_findings: usize,
     /// Maximum prompts to include (default: 100).
     pub max_prompts: usize,
+    /// Enable optional LSP securityContext enrichment pass (default: false).
+    pub enable_lsp_enrichment: bool,
+    /// Maximum targets eligible for LSP enrichment (default: 8).
+    pub max_lsp_enriched_targets: usize,
+    /// Maximum LSP securityContext requests to execute (default: 8).
+    pub max_lsp_requests: usize,
+    /// Timeout per LSP securityContext request in milliseconds (default: 2500).
+    pub lsp_request_timeout_ms: u64,
 }
 
 impl Default for SecurityReviewWorkflowOptions {
@@ -189,6 +199,10 @@ impl Default for SecurityReviewWorkflowOptions {
             hunk_local_content_preflight: true,
             max_findings: 50,
             max_prompts: 100,
+            enable_lsp_enrichment: false,
+            max_lsp_enriched_targets: 8,
+            max_lsp_requests: 8,
+            lsp_request_timeout_ms: 2500,
         }
     }
 }
@@ -314,6 +328,92 @@ pub async fn run_security_review_workflow(
 }
 
 // ---------------------------------------------------------------------------
+// Enriched security review workflow (with optional LSP enrichment)
+// ---------------------------------------------------------------------------
+
+/// Run the security review workflow with optional LSP `securityContext`
+/// enrichment.
+///
+/// Executes the deterministic stage-1 review first. If
+/// `enable_lsp_enrichment` is true and an executor is provided, runs
+/// bounded LSP requests for escalated targets and reruns finding
+/// synthesis with enriched evidence.
+///
+/// If LSP is unavailable, unsupported, slow, or truncated, stage-1
+/// output is returned with clear notes.
+pub async fn run_security_review_workflow_with_lsp_enrichment<E: SecurityContextExecutor>(
+    root: &Path,
+    base: Option<&str>,
+    options: SecurityReviewWorkflowOptions,
+    executor: &E,
+) -> Result<SecurityReviewOutput, String> {
+    // Stage 1: deterministic review (enrichment disabled in options for this pass)
+    let stage1_options = SecurityReviewWorkflowOptions {
+        enable_lsp_enrichment: false,
+        ..options.clone()
+    };
+    let mut output = run_security_review_workflow(root, base, stage1_options).await?;
+
+    if !options.enable_lsp_enrichment {
+        return Ok(output);
+    }
+
+    // Stage 2: LSP enrichment
+    let enrichment_results = run_security_context_enrichment(&output, executor, &options).await;
+
+    let (merged_prompts, extra_evidence, enrichment_notes) =
+        merge_enrichment_results(&output, &enrichment_results);
+
+    if !extra_evidence.is_empty() {
+        // Rerun synthesis with enriched evidence
+        let (enriched_findings, remaining_prompts) =
+            synthesize_evidence_based_findings_with_extra_evidence(
+                &output.targets,
+                &merged_prompts,
+                &output.preflight_results,
+                &extra_evidence,
+            );
+
+        output.findings = enriched_findings;
+        output.review_prompts = remaining_prompts;
+    } else {
+        output.review_prompts = merged_prompts;
+    }
+
+    // Append enrichment notes
+    output.notes.extend(enrichment_notes);
+    if !enrichment_results.is_empty() {
+        output.notes.push(format!(
+            "LSP enrichment executed {} request(s)",
+            enrichment_results.len()
+        ));
+    }
+
+    // Re-apply limits
+    if output.findings.len() > options.max_findings {
+        output.findings.truncate(options.max_findings);
+        output
+            .notes
+            .push(format!("findings truncated to {}", options.max_findings));
+    }
+    if output.review_prompts.len() > options.max_prompts {
+        output.review_prompts.truncate(options.max_prompts);
+        output
+            .notes
+            .push(format!("prompts truncated to {}", options.max_prompts));
+    }
+
+    if !options.include_findings {
+        output.findings.clear();
+    }
+    if !options.include_prompts {
+        output.review_prompts.clear();
+    }
+
+    Ok(output)
+}
+
+// ---------------------------------------------------------------------------
 // Report rendering
 // ---------------------------------------------------------------------------
 
@@ -420,6 +520,12 @@ pub struct SecurityReviewCommandArgs {
     pub no_filename: bool,
     pub max_findings: Option<usize>,
     pub max_prompts: Option<usize>,
+    /// Enable optional LSP securityContext enrichment pass.
+    pub enrich: bool,
+    /// Maximum targets eligible for LSP enrichment.
+    pub max_enriched_targets: Option<usize>,
+    /// Timeout per LSP securityContext request in milliseconds.
+    pub lsp_timeout_ms: Option<u64>,
 }
 
 /// Parse a space-separated argument string into [`SecurityReviewCommandArgs`].
@@ -437,6 +543,7 @@ pub fn parse_security_review_args(input: &str) -> SecurityReviewCommandArgs {
             "--no-content" => args.no_content = true,
             "--no-filename" => args.no_filename = true,
             "--changed" => args.base = Some("HEAD".to_string()),
+            "--enrich" => args.enrich = true,
             "--base" => {
                 args.base = iter.next().map(|s| s.to_string());
             }
@@ -445,6 +552,12 @@ pub fn parse_security_review_args(input: &str) -> SecurityReviewCommandArgs {
             }
             "--max-prompts" => {
                 args.max_prompts = iter.next().and_then(|s| s.parse::<usize>().ok());
+            }
+            "--max-enriched-targets" => {
+                args.max_enriched_targets = iter.next().and_then(|s| s.parse::<usize>().ok());
+            }
+            "--lsp-timeout-ms" => {
+                args.lsp_timeout_ms = iter.next().and_then(|s| s.parse::<u64>().ok());
             }
             _ => {}
         }
@@ -468,6 +581,7 @@ pub async fn run_security_review_command(
         include_findings: !args.prompts_only,
         run_filename_preflight: !args.no_filename,
         run_content_preflight: !args.no_content,
+        enable_lsp_enrichment: args.enrich,
         ..Default::default()
     };
 
@@ -477,8 +591,22 @@ pub async fn run_security_review_command(
     if let Some(max_p) = args.max_prompts {
         options.max_prompts = max_p;
     }
+    if let Some(max_e) = args.max_enriched_targets {
+        options.max_lsp_enriched_targets = max_e;
+    }
+    if let Some(timeout) = args.lsp_timeout_ms {
+        options.lsp_request_timeout_ms = timeout;
+    }
 
-    let output = run_security_review_workflow(root, base, options).await?;
+    let output = if options.enable_lsp_enrichment {
+        // Use the enriched workflow with a no-op executor.
+        // The no-op executor will fail soft, returning stage-1 output
+        // with notes about missing executor.
+        let executor = NoopSecurityContextExecutor;
+        run_security_review_workflow_with_lsp_enrichment(root, base, options, &executor).await?
+    } else {
+        run_security_review_workflow(root, base, options).await?
+    };
 
     if args.json {
         serde_json::to_string_pretty(&output).map_err(|e| format!("JSON serialization failed: {e}"))

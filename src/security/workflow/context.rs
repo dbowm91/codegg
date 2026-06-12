@@ -1,7 +1,110 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use super::types::*;
+
+// ---------------------------------------------------------------------------
+// SecurityContext executor boundary
+// ---------------------------------------------------------------------------
+
+/// Trait for executing bounded, read-only `securityContext` LSP requests.
+///
+/// Implementations must be `Send + Sync` so enrichment can run concurrently.
+/// Errors are captured as notes, never panics.
+#[async_trait::async_trait]
+pub trait SecurityContextExecutor: Send + Sync {
+    async fn security_context(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value, String>;
+}
+
+/// No-op executor for deterministic tests and when no LSP is available.
+pub struct NoopSecurityContextExecutor;
+
+#[async_trait::async_trait]
+impl SecurityContextExecutor for NoopSecurityContextExecutor {
+    async fn security_context(
+        &self,
+        _request: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err("no securityContext executor available".to_string())
+    }
+}
+
+/// Fixture executor for unit tests. Returns pre-configured responses or
+/// failures keyed by file path.
+pub struct FixtureSecurityContextExecutor {
+    pub responses: HashMap<PathBuf, serde_json::Value>,
+    pub failures: HashMap<PathBuf, String>,
+    /// Track which requests were made (file_path -> request).
+    pub requests: Mutex<Vec<serde_json::Value>>,
+}
+
+impl Default for FixtureSecurityContextExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FixtureSecurityContextExecutor {
+    pub fn new() -> Self {
+        Self {
+            responses: HashMap::new(),
+            failures: HashMap::new(),
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn with_response(path: PathBuf, response: serde_json::Value) -> Self {
+        let mut responses = HashMap::new();
+        responses.insert(path, response);
+        Self {
+            responses,
+            failures: HashMap::new(),
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn with_failure(path: PathBuf, error: String) -> Self {
+        let mut failures = HashMap::new();
+        failures.insert(path, error);
+        Self {
+            responses: HashMap::new(),
+            failures,
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SecurityContextExecutor for FixtureSecurityContextExecutor {
+    async fn security_context(
+        &self,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        if let Ok(mut reqs) = self.requests.lock() {
+            reqs.push(request.clone());
+        }
+
+        let file_path = request
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_default();
+
+        if let Some(err) = self.failures.get(&file_path) {
+            return Err(err.clone());
+        }
+
+        self.responses
+            .get(&file_path)
+            .cloned()
+            .ok_or_else(|| format!("no fixture response for {}", file_path.display()))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Build securityContext request payloads

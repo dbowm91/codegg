@@ -842,11 +842,13 @@ This tool provides an agent system with access to powerful tools including shell
 
 ### Security Review Workflow
 
-The agent includes a built-in security review workflow (`src/security/workflow.rs`) for defensive code review. It parses unified diffs, applies path exclusions, selects `securityContext` presets per file, builds context-gathering requests, and converts risk markers into review prompts. The workflow is read-only and never mutates files. Risk markers are review prompts, not confirmed findings.
+The agent includes a built-in security review workflow (`src/security/workflow/`) for defensive code review. It parses unified diffs, applies path exclusions, selects `securityContext` presets per file, builds context-gathering requests, and converts risk markers into review prompts. The workflow is read-only and never mutates files. Risk markers are review prompts, not confirmed findings.
 
 The async orchestrator `run_security_review_workflow(root, base, options)` runs the full pipeline (discover targets → preflight checks → evidence-based synthesis → assemble output). It does not execute `securityContext` LSP requests. `SecurityReviewWorkflowOptions` controls which stages run and caps output counts. Evidence-based findings are heuristic defensive review outputs, not proof of exploitability.
 
-The `/security-review` TUI command exposes the workflow with flags: `--changed`, `--json`, `--prompts-only`, `--findings-only`.
+An optional LSP enrichment pass (`--enrich`) executes bounded, read-only `securityContext` requests for escalated targets and reruns finding synthesis with enriched evidence. Enrichment is opt-in, fail-soft (returns stage-1 output on any failure), and never mutates files.
+
+The `/security-review` TUI command exposes the workflow with flags: `--changed`, `--base <ref>`, `--json`, `--prompts-only`, `--findings-only`, `--no-content`, `--no-filename`, `--max-findings N`, `--max-prompts N`, `--enrich`, `--max-enriched-targets N`, `--lsp-timeout-ms N`.
 
 ### Best Practices
 

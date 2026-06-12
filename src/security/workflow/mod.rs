@@ -10,6 +10,7 @@
 
 pub mod context;
 pub mod diff;
+pub mod enrichment;
 pub mod evidence;
 pub mod preflight;
 pub mod report;
@@ -17,6 +18,7 @@ pub mod types;
 
 pub use context::*;
 pub use diff::*;
+pub use enrichment::*;
 pub use evidence::*;
 pub use preflight::*;
 pub use report::*;
@@ -2438,5 +2440,718 @@ diff --git a/src/lib.rs b/src/lib.rs
         let rendered = render_security_review_summary(&output);
         assert!(rendered.contains("Security Review Summary"));
         assert!(rendered.contains("test note"));
+    }
+
+    // -- Enrichment option tests --
+
+    #[test]
+    fn security_enrichment_options_default_disabled() {
+        let opts = SecurityReviewWorkflowOptions::default();
+        assert!(!opts.enable_lsp_enrichment);
+        assert_eq!(opts.max_lsp_enriched_targets, 8);
+        assert_eq!(opts.max_lsp_requests, 8);
+        assert_eq!(opts.lsp_request_timeout_ms, 2500);
+    }
+
+    // -- Enrich command parsing tests --
+
+    #[test]
+    fn security_review_command_enrich_flag_parses() {
+        let args = parse_security_review_args("--enrich");
+        assert!(args.enrich);
+    }
+
+    #[test]
+    fn security_review_command_enrich_with_caps_parses() {
+        let args =
+            parse_security_review_args("--enrich --max-enriched-targets 4 --lsp-timeout-ms 5000");
+        assert!(args.enrich);
+        assert_eq!(args.max_enriched_targets, Some(4));
+        assert_eq!(args.lsp_timeout_ms, Some(5000));
+    }
+
+    #[test]
+    fn security_review_command_default_does_not_enrich() {
+        let args = parse_security_review_args("");
+        assert!(!args.enrich);
+    }
+
+    // -- Executor tests --
+
+    #[tokio::test]
+    async fn security_enrichment_skips_none_plans() {
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("low_risk.rs"),
+                line: Some(10),
+                column: None,
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::ChangedHunk,
+            }],
+            findings: vec![],
+            review_prompts: vec![],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let executor = NoopSecurityContextExecutor;
+        let opts = SecurityReviewWorkflowOptions::default();
+        let results = run_security_context_enrichment(&output, &executor, &opts).await;
+        // No plans have non-None level for low-risk target with no findings/prompts
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn security_enrichment_caps_request_count() {
+        let mut targets = Vec::new();
+        let mut prompts = Vec::new();
+        for i in 0..20 {
+            let path = PathBuf::from(format!("file_{}.rs", i));
+            targets.push(SecurityReviewTarget {
+                file_path: path.clone(),
+                line: Some(10),
+                column: None,
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::UnsafeCode,
+            });
+            prompts.push(SecurityReviewPrompt {
+                file_path: path,
+                line: Some(10),
+                preset: "rust_server".to_string(),
+                category: Some("unsafe".to_string()),
+                title: "Review unsafe".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            });
+        }
+
+        let output = SecurityReviewOutput {
+            targets,
+            findings: vec![],
+            review_prompts: prompts,
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let executor = FixtureSecurityContextExecutor::new();
+        let opts = SecurityReviewWorkflowOptions {
+            max_lsp_enriched_targets: 3,
+            max_lsp_requests: 2,
+            ..Default::default()
+        };
+        let results = run_security_context_enrichment(&output, &executor, &opts).await;
+        // Should be capped at max_lsp_requests
+        assert!(results.len() <= 2);
+    }
+
+    #[tokio::test]
+    async fn security_enrichment_records_executor_failure_as_note() {
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("auth.rs"),
+                line: Some(5),
+                column: None,
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::AuthOrSecretHandling,
+            }],
+            findings: vec![],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("auth.rs"),
+                line: Some(5),
+                preset: "rust_server".to_string(),
+                category: Some("auth".to_string()),
+                title: "Review auth".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let executor = FixtureSecurityContextExecutor::with_failure(
+            PathBuf::from("auth.rs"),
+            "LSP crashed".to_string(),
+        );
+        let opts = SecurityReviewWorkflowOptions::default();
+        let results = run_security_context_enrichment(&output, &executor, &opts).await;
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].notes.is_empty());
+        assert!(results[0].notes[0].contains("executor error"));
+    }
+
+    #[tokio::test]
+    async fn security_enrichment_records_timeout_as_note() {
+        use std::time::Duration;
+
+        struct SlowExecutor;
+
+        #[async_trait::async_trait]
+        impl SecurityContextExecutor for SlowExecutor {
+            async fn security_context(
+                &self,
+                _request: serde_json::Value,
+            ) -> Result<serde_json::Value, String> {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok(serde_json::json!({}))
+            }
+        }
+
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("net.rs"),
+                line: Some(1),
+                column: None,
+                preset: "web_backend".to_string(),
+                reason: SecurityTargetReason::NetworkBoundary,
+            }],
+            findings: vec![],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("net.rs"),
+                line: Some(1),
+                preset: "web_backend".to_string(),
+                category: Some("network".to_string()),
+                title: "Review network".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let executor = SlowExecutor;
+        let opts = SecurityReviewWorkflowOptions {
+            lsp_request_timeout_ms: 50,
+            ..Default::default()
+        };
+        let results = run_security_context_enrichment(&output, &executor, &opts).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].notes.iter().any(|n| n.contains("timed out")));
+    }
+
+    #[tokio::test]
+    async fn security_enrichment_converts_marker_response_to_prompt() {
+        let response = serde_json::json!({
+            "risk_markers": [
+                {
+                    "category": "auth",
+                    "label": "hardcoded token",
+                    "line": 42,
+                    "matched_text": "api_key = \"secret\"",
+                    "rationale": "hardcoded secret"
+                }
+            ]
+        });
+
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("auth.rs"),
+                line: Some(40),
+                column: None,
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::AuthOrSecretHandling,
+            }],
+            findings: vec![],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("auth.rs"),
+                line: Some(40),
+                preset: "rust_server".to_string(),
+                category: Some("auth".to_string()),
+                title: "Review auth".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let executor =
+            FixtureSecurityContextExecutor::with_response(PathBuf::from("auth.rs"), response);
+        let opts = SecurityReviewWorkflowOptions::default();
+        let results = run_security_context_enrichment(&output, &executor, &opts).await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].prompts.len(), 1);
+        assert!(results[0].prompts[0].title.contains("hardcoded token"));
+        assert!(!results[0].evidence.is_empty());
+    }
+
+    #[tokio::test]
+    async fn security_enrichment_converts_call_graph_to_call_path_evidence() {
+        let response = serde_json::json!({
+            "call_expansion": {
+                "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+                "edges": [{"from": "a", "to": "b"}, {"from": "b", "to": "c"}],
+                "depth": 1
+            }
+        });
+
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("proc.rs"),
+                line: Some(10),
+                column: None,
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::ProcessExecution,
+            }],
+            findings: vec![],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("proc.rs"),
+                line: Some(10),
+                preset: "rust_server".to_string(),
+                category: Some("process".to_string()),
+                title: "Review process".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let executor =
+            FixtureSecurityContextExecutor::with_response(PathBuf::from("proc.rs"), response);
+        let opts = SecurityReviewWorkflowOptions::default();
+        let results = run_security_context_enrichment(&output, &executor, &opts).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0]
+            .evidence
+            .iter()
+            .any(|e| e.kind == SecurityEvidenceKind::CallPath));
+        let call_path = results[0]
+            .evidence
+            .iter()
+            .find(|e| e.kind == SecurityEvidenceKind::CallPath)
+            .unwrap();
+        assert!(call_path.summary.contains("3 nodes"));
+        assert!(call_path.summary.contains("2 edges"));
+    }
+
+    #[tokio::test]
+    async fn security_enrichment_converts_diagnostic_to_diagnostic_evidence() {
+        let response = serde_json::json!({
+            "security_relevant_diagnostics": [
+                {"message": "unused variable", "line": 42}
+            ]
+        });
+
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("code.rs"),
+                line: Some(40),
+                column: None,
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::ChangedHunk,
+            }],
+            findings: vec![],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("code.rs"),
+                line: Some(40),
+                preset: "rust_server".to_string(),
+                category: None,
+                title: "Review code".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let executor =
+            FixtureSecurityContextExecutor::with_response(PathBuf::from("code.rs"), response);
+        let opts = SecurityReviewWorkflowOptions::default();
+        let results = run_security_context_enrichment(&output, &executor, &opts).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0]
+            .evidence
+            .iter()
+            .any(|e| e.kind == SecurityEvidenceKind::Diagnostic));
+    }
+
+    #[tokio::test]
+    async fn security_enrichment_converts_truncation_to_truncation_notice() {
+        let response = serde_json::json!({
+            "truncated": true,
+            "limits": {"call_expansion_truncated": true}
+        });
+
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("big.rs"),
+                line: Some(1),
+                column: None,
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::ChangedHunk,
+            }],
+            findings: vec![],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("big.rs"),
+                line: Some(1),
+                preset: "rust_server".to_string(),
+                category: None,
+                title: "Review big".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let executor =
+            FixtureSecurityContextExecutor::with_response(PathBuf::from("big.rs"), response);
+        let opts = SecurityReviewWorkflowOptions::default();
+        let results = run_security_context_enrichment(&output, &executor, &opts).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0]
+            .evidence
+            .iter()
+            .any(|e| e.kind == SecurityEvidenceKind::TruncationNotice));
+        assert!(results[0].notes.iter().any(|n| n.contains("truncated")));
+    }
+
+    // -- Evidence conversion tests --
+
+    #[test]
+    fn security_evidence_from_security_context_extracts_risk_markers() {
+        let target = SecurityReviewTarget {
+            file_path: PathBuf::from("auth.rs"),
+            line: Some(10),
+            column: None,
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::AuthOrSecretHandling,
+        };
+        let json = serde_json::json!({
+            "risk_markers": [
+                {
+                    "category": "auth",
+                    "label": "token",
+                    "file": "auth.rs",
+                    "line": 42,
+                    "matched_text": "token"
+                }
+            ]
+        });
+        let evidence = evidence_from_security_context(&target, &json);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].kind, SecurityEvidenceKind::RiskMarker);
+        assert_eq!(evidence[0].file_path, Some(PathBuf::from("auth.rs")));
+        assert_eq!(evidence[0].line, Some(42));
+    }
+
+    #[test]
+    fn security_evidence_from_security_context_accepts_file_path_field() {
+        let target = SecurityReviewTarget {
+            file_path: PathBuf::from("code.rs"),
+            line: Some(5),
+            column: None,
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        };
+        let json = serde_json::json!({
+            "risk_markers": [
+                {
+                    "category": "sql",
+                    "label": "injection",
+                    "file_path": "code.rs",
+                    "line": 20,
+                    "matched_text": "query"
+                }
+            ]
+        });
+        let evidence = evidence_from_security_context(&target, &json);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].file_path, Some(PathBuf::from("code.rs")));
+    }
+
+    // -- Enriched synthesis tests --
+
+    #[test]
+    fn security_enriched_call_path_plus_marker_promotes_finding() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("auth.rs"),
+            line: Some(10),
+            column: None,
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::AuthOrSecretHandling,
+        }];
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("auth.rs"),
+            line: Some(10),
+            preset: "rust_server".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth".to_string(),
+            rationale: "test".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+        let extra_evidence = vec![StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::CallPath,
+            file_path: Some(PathBuf::from("auth.rs")),
+            line: Some(10),
+            summary: "call expansion returned 3 nodes and 2 edges at depth 1".to_string(),
+            detail: None,
+        }];
+
+        let (findings, _) = synthesize_evidence_based_findings_with_extra_evidence(
+            &targets,
+            &prompts,
+            &[],
+            &extra_evidence,
+        );
+        // Marker + CallPath = eligible finding
+        assert!(!findings.is_empty());
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|e| e.kind == SecurityEvidenceKind::CallPath));
+    }
+
+    #[test]
+    fn security_enriched_diagnostic_plus_marker_promotes_finding() {
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("code.rs"),
+            line: Some(5),
+            column: None,
+            preset: "rust_server".to_string(),
+            reason: SecurityTargetReason::ChangedHunk,
+        }];
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("code.rs"),
+            line: Some(5),
+            preset: "rust_server".to_string(),
+            category: Some("sql".to_string()),
+            title: "Review sql".to_string(),
+            rationale: "test".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+        let extra_evidence = vec![StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::Diagnostic,
+            file_path: Some(PathBuf::from("code.rs")),
+            line: Some(5),
+            summary: "LSP diagnostic: sql injection risk".to_string(),
+            detail: None,
+        }];
+
+        let (findings, _) = synthesize_evidence_based_findings_with_extra_evidence(
+            &targets,
+            &prompts,
+            &[],
+            &extra_evidence,
+        );
+        // Marker + Diagnostic = eligible finding
+        assert!(!findings.is_empty());
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|e| e.kind == SecurityEvidenceKind::Diagnostic));
+    }
+
+    #[test]
+    fn security_enriched_marker_only_still_not_finding_without_support() {
+        // No matching target in the same file, so only RiskMarker evidence exists.
+        // RiskMarker alone is not finding-eligible.
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("other_target.rs"),
+            line: Some(5),
+            column: None,
+            preset: "dependency_review".to_string(),
+            reason: SecurityTargetReason::DependencyMetadata,
+        }];
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("code.rs"),
+            line: Some(5),
+            preset: "dependency_review".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth".to_string(),
+            rationale: "test".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+        // Extra evidence is for a different file
+        let extra_evidence = vec![StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::CallPath,
+            file_path: Some(PathBuf::from("other.rs")),
+            line: Some(1),
+            summary: "call expansion in other file".to_string(),
+            detail: None,
+        }];
+
+        let (findings, _) = synthesize_evidence_based_findings_with_extra_evidence(
+            &targets,
+            &prompts,
+            &[],
+            &extra_evidence,
+        );
+        // Marker-only for code.rs, no matching target, extra evidence for other.rs => no finding
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn security_enriched_different_file_evidence_does_not_promote() {
+        // Target for a different file so no target evidence in the auth.rs group.
+        let targets = vec![SecurityReviewTarget {
+            file_path: PathBuf::from("other_target.rs"),
+            line: Some(10),
+            column: None,
+            preset: "dependency_review".to_string(),
+            reason: SecurityTargetReason::DependencyMetadata,
+        }];
+        let prompts = vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("auth.rs"),
+            line: Some(10),
+            preset: "dependency_review".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth".to_string(),
+            rationale: "test".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }];
+        let extra_evidence = vec![StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::Diagnostic,
+            file_path: Some(PathBuf::from("unrelated.rs")),
+            line: Some(99),
+            summary: "diagnostic in unrelated file".to_string(),
+            detail: None,
+        }];
+
+        let (findings, _) = synthesize_evidence_based_findings_with_extra_evidence(
+            &targets,
+            &prompts,
+            &[],
+            &extra_evidence,
+        );
+        // Different file evidence doesn't support finding for auth.rs
+        assert!(findings.is_empty());
+    }
+
+    // -- Enrichment runner integration tests --
+
+    #[tokio::test]
+    async fn security_enrichment_with_fixture_executor_returns_prompts_and_evidence() {
+        let response = serde_json::json!({
+            "risk_markers": [
+                {
+                    "category": "process",
+                    "label": "command injection",
+                    "line": 15,
+                    "matched_text": "Command::new(shell)"
+                }
+            ],
+            "security_relevant_diagnostics": [
+                {"message": "unused import", "line": 3}
+            ]
+        });
+
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("cmd.rs"),
+                line: Some(10),
+                column: None,
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::ProcessExecution,
+            }],
+            findings: vec![],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("cmd.rs"),
+                line: Some(10),
+                preset: "rust_server".to_string(),
+                category: Some("process".to_string()),
+                title: "Review process".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let executor =
+            FixtureSecurityContextExecutor::with_response(PathBuf::from("cmd.rs"), response);
+        let opts = SecurityReviewWorkflowOptions::default();
+        let results = run_security_context_enrichment(&output, &executor, &opts).await;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].prompts.len(), 1);
+        assert!(results[0].prompts[0].title.contains("command injection"));
+        // Should have RiskMarker + Diagnostic evidence
+        assert!(results[0]
+            .evidence
+            .iter()
+            .any(|e| e.kind == SecurityEvidenceKind::RiskMarker));
+        assert!(results[0]
+            .evidence
+            .iter()
+            .any(|e| e.kind == SecurityEvidenceKind::Diagnostic));
+    }
+
+    // -- Merge enrichment results tests --
+
+    #[test]
+    fn security_merge_enrichment_deduplicates_prompts() {
+        let output = SecurityReviewOutput {
+            targets: vec![],
+            findings: vec![],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("auth.rs"),
+                line: Some(10),
+                preset: "rust_server".to_string(),
+                category: Some("auth".to_string()),
+                title: "Review auth: token".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec![],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+        };
+
+        let enrichment = vec![SecurityContextEnrichmentResult {
+            target: output
+                .targets
+                .first()
+                .cloned()
+                .unwrap_or(SecurityReviewTarget {
+                    file_path: PathBuf::from("auth.rs"),
+                    line: Some(10),
+                    column: None,
+                    preset: "rust_server".to_string(),
+                    reason: SecurityTargetReason::AuthOrSecretHandling,
+                }),
+            level: SecurityContextEscalationLevel::Basic,
+            request: serde_json::json!({}),
+            response: None,
+            prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("auth.rs"),
+                line: Some(10),
+                preset: "rust_server".to_string(),
+                category: Some("auth".to_string()),
+                title: "Review auth: token".to_string(),
+                rationale: "test".to_string(),
+                evidence: vec![],
+            }],
+            evidence: vec![],
+            notes: vec![],
+        }];
+
+        let (merged_prompts, _, _) = merge_enrichment_results(&output, &enrichment);
+        // Should not duplicate the existing prompt
+        let count = merged_prompts
+            .iter()
+            .filter(|p| p.title == "Review auth: token")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    // -- Noop executor test --
+
+    #[tokio::test]
+    async fn security_noop_executor_always_errors() {
+        let executor = NoopSecurityContextExecutor;
+        let result = executor.security_context(serde_json::json!({})).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no securityContext executor"));
+    }
+
+    // -- Fixture executor request tracking test --
+
+    #[tokio::test]
+    async fn security_fixture_executor_tracks_requests() {
+        let executor = FixtureSecurityContextExecutor::new();
+        let req = serde_json::json!({"file_path": "missing.rs"});
+        let _ = executor.security_context(req).await;
+        let requests = executor.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
     }
 }

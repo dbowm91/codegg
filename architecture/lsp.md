@@ -502,11 +502,24 @@ The security agent uses `securityContext` as evidence-gathering input for defens
 6. **Evidence-based synthesis** — `synthesize_evidence_based_findings()` groups evidence by file/line bucket, applies the eligibility gate (2+ dimensions required), and emits findings for eligible groups. Marker-only evidence never creates findings. Findings are heuristic defensive review outputs, not proof of exploitability.
 7. **Output** — Review prompts and findings are returned separately. The `/security-review` command and `run_security_review_workflow` orchestrator produce both.
 
-Key types live in `src/security/workflow/` (split into submodules: `mod.rs`, `types.rs`, `diff.rs`, `preflight.rs`, `evidence.rs`, `context.rs`, `report.rs`). The workflow is read-only and never mutates files.
+Key types live in `src/security/workflow/` (split into submodules: `mod.rs`, `types.rs`, `diff.rs`, `preflight.rs`, `evidence.rs`, `context.rs`, `report.rs`, `enrichment.rs`). The workflow is read-only and never mutates files.
 
 #### Orchestrator
 
 `run_security_review_workflow(root, base, options)` is an async entry point that runs the full pipeline (discover targets → build prompts → preflight checks → evidence-based synthesis → assemble output). It does NOT execute `securityContext` LSP requests — those are deferred to a subsequent phase. Content preflight uses `root.join(p)` for repo-root-relative reads, so it works correctly when launched from any working directory. `SecurityReviewWorkflowOptions` controls which stages run and caps output counts.
+
+#### LSP enrichment (optional)
+
+`run_security_review_workflow_with_lsp_enrichment(root, base, options, executor)` extends the deterministic stage-1 review with an optional LSP enrichment pass. When `enable_lsp_enrichment` is true, it:
+
+1. Runs deterministic stage-1 review.
+2. Calls `run_security_context_enrichment()` which filters escalation plans to non-None levels, caps requests at `max_lsp_requests`, and executes each via a `SecurityContextExecutor` trait with per-request timeout (`lsp_request_timeout_ms`).
+3. Converts responses to enriched prompts via `prompts_from_security_context()` and structured evidence via `evidence_from_security_context()` (extracting risk markers, diagnostics, call graph summaries, truncation notices).
+4. Reruns synthesis via `synthesize_evidence_based_findings_with_extra_evidence()` with enriched CallPath/Diagnostic/TruncationNotice evidence injected into eligible findings.
+
+Failures, timeouts, and truncation are recorded as notes — they never fail the whole review. The `SecurityContextExecutor` trait enables mockable testing via `NoopSecurityContextExecutor` (always errors) and `FixtureSecurityContextExecutor` (pre-configured responses). Real LSP wiring is deferred pending clean TUI-core boundary.
+
+The `/security-review --enrich` command flag opts into enrichment. Without it, behavior is unchanged (deterministic, no LSP execution).
 
 The legacy entry point `plan_security_review_from_diff(diff, repo_root)` remains available. It parses changed hunks via `parse_changed_hunks`, applies path exclusions (`is_security_review_excluded_path` — excludes `vendor/`, `third_party/`, `target/`, `dist/`, `build/`, `node_modules/`, `*.min.js`; notably does NOT exclude `Cargo.toml`, `Cargo.lock`, `build.rs`), selects presets via `select_security_preset`, builds `securityContext` request payloads via `build_security_context_request`, converts risk markers to review prompts via `prompts_from_security_context`, and assembles reports with an explicit "not confirmed findings" note via `assemble_security_review_report`.
 

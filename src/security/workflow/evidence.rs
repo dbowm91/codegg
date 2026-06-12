@@ -278,6 +278,225 @@ pub fn synthesize_evidence_based_findings(
 }
 
 // ---------------------------------------------------------------------------
+// Enriched context to structured evidence
+// ---------------------------------------------------------------------------
+
+/// Convert `securityContext` JSON response into structured evidence.
+///
+/// Extracts risk markers, diagnostics, call graph summaries, and
+/// truncation notices. Evidence is always file-scoped and compact —
+/// no large raw JSON payloads are included.
+pub fn evidence_from_security_context(
+    target: &SecurityReviewTarget,
+    context_json: &serde_json::Value,
+) -> Vec<StructuredSecurityEvidence> {
+    let mut evidence = Vec::new();
+
+    // Risk markers
+    if let Some(serde_json::Value::Array(markers)) = context_json.get("risk_markers") {
+        for marker in markers {
+            let category = marker
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let label = marker
+                .get("label")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let matched_text = marker
+                .get("matched_text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let file_path = marker
+                .get("file")
+                .or_else(|| marker.get("file_path"))
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| target.file_path.clone());
+
+            let line = marker
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .map(|l| l as u32)
+                .or(target.line);
+
+            evidence.push(StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::RiskMarker,
+                file_path: Some(file_path),
+                line,
+                summary: format!("{}: {}", category, label),
+                detail: Some(matched_text.to_string()),
+            });
+        }
+    }
+
+    // Diagnostics
+    if let Some(serde_json::Value::Array(diags)) = context_json.get("security_relevant_diagnostics")
+    {
+        for diag in diags {
+            let message = diag
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("diagnostic");
+            let line = diag
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .map(|l| l as u32)
+                .or(target.line);
+
+            evidence.push(StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::Diagnostic,
+                file_path: Some(target.file_path.clone()),
+                line,
+                summary: format!("LSP diagnostic: {}", message),
+                detail: None,
+            });
+        }
+    }
+
+    // Call expansion / call graph summary
+    if let Some(call_expansion) = context_json.get("call_expansion") {
+        let node_count = call_expansion
+            .get("nodes")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let edge_count = call_expansion
+            .get("edges")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let depth = call_expansion
+            .get("depth")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        if node_count > 0 || edge_count > 0 {
+            evidence.push(StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::CallPath,
+                file_path: Some(target.file_path.clone()),
+                line: target.line,
+                summary: format!(
+                    "securityContext call expansion returned {} nodes and {} edges at depth {}",
+                    node_count, edge_count, depth
+                ),
+                detail: None,
+            });
+        }
+    }
+
+    // Truncation notice
+    let truncated = context_json
+        .get("truncated")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let limits_truncated = context_json
+        .get("limits")
+        .and_then(|l| l.get("call_expansion_truncated"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if truncated || limits_truncated {
+        evidence.push(StructuredSecurityEvidence {
+            kind: SecurityEvidenceKind::TruncationNotice,
+            file_path: Some(target.file_path.clone()),
+            line: target.line,
+            summary: "securityContext response was truncated".to_string(),
+            detail: None,
+        });
+    }
+
+    evidence
+}
+
+// ---------------------------------------------------------------------------
+// Enriched finding synthesis (with extra evidence)
+// ---------------------------------------------------------------------------
+
+/// Synthesize findings with additional enriched evidence from LSP
+/// securityContext responses.
+///
+/// Combines the original targets, prompts, and preflight results with
+/// extra evidence from the enrichment pass. The eligibility gate and
+/// classification logic remain identical to the base synthesis.
+pub fn synthesize_evidence_based_findings_with_extra_evidence(
+    targets: &[SecurityReviewTarget],
+    prompts: &[SecurityReviewPrompt],
+    preflight: &[SecurityPreflightResult],
+    extra_evidence: &[StructuredSecurityEvidence],
+) -> (Vec<SecurityReviewFinding>, Vec<SecurityReviewPrompt>) {
+    // Combine base prompts with any enriched prompts
+    let mut all_prompts = prompts.to_vec();
+
+    // Convert extra evidence into prompts for synthesis grouping
+    for ev in extra_evidence {
+        if ev.kind == SecurityEvidenceKind::RiskMarker {
+            let file_path = ev
+                .file_path
+                .clone()
+                .unwrap_or_else(|| target_file_path(targets, &ev.file_path));
+            all_prompts.push(SecurityReviewPrompt {
+                file_path,
+                line: ev.line,
+                preset: String::new(),
+                category: ev.summary.split(':').next().map(|s| s.to_string()),
+                title: ev.summary.clone(),
+                rationale: ev.detail.clone().unwrap_or_default(),
+                evidence: vec![
+                    "source: securityContext.risk_marker".to_string(),
+                    ev.summary.clone(),
+                ],
+            });
+        }
+    }
+
+    let (mut findings, remaining_prompts) =
+        synthesize_evidence_based_findings(targets, &all_prompts, preflight);
+
+    // For findings that were created, inject any matching extra evidence
+    // (CallPath, Diagnostic, TruncationNotice) into their evidence lists
+    // and re-classify
+    for finding in &mut findings {
+        let matching_extra: Vec<StructuredSecurityEvidence> = extra_evidence
+            .iter()
+            .filter(|ev| {
+                ev.file_path.as_deref() == Some(&finding.file_path)
+                    && matches!(
+                        ev.kind,
+                        SecurityEvidenceKind::CallPath
+                            | SecurityEvidenceKind::Diagnostic
+                            | SecurityEvidenceKind::TruncationNotice
+                    )
+            })
+            .cloned()
+            .collect();
+
+        if !matching_extra.is_empty() {
+            finding.evidence.extend(matching_extra);
+            let truncated = finding
+                .evidence
+                .iter()
+                .any(|e| e.kind == SecurityEvidenceKind::TruncationNotice);
+            let (severity, confidence) =
+                classify_finding(finding.category.as_deref(), &finding.evidence, truncated);
+            finding.severity = severity;
+            finding.confidence = confidence;
+        }
+    }
+
+    (findings, remaining_prompts)
+}
+
+fn target_file_path(targets: &[SecurityReviewTarget], fallback: &Option<PathBuf>) -> PathBuf {
+    targets
+        .first()
+        .map(|t| t.file_path.clone())
+        .or_else(|| fallback.clone())
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
 // Severity and confidence classification
 // ---------------------------------------------------------------------------
 
