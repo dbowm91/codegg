@@ -90,10 +90,8 @@ impl LspDiagnosticSnapshot {
     }
 
     pub fn diagnostics_may_still_be_warming(&self) -> bool {
-        matches!(
-            self.freshness,
-            LspDiagnosticFreshness::PossiblyStale
-        ) && self.diagnostics.is_empty()
+        matches!(self.freshness, LspDiagnosticFreshness::PossiblyStale)
+            && self.diagnostics.is_empty()
     }
 }
 

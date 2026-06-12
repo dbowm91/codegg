@@ -807,40 +807,34 @@ impl LspClient {
         let entry = self.diagnostics.lock().await.get(uri).cloned();
         let last_change = self.last_content_change_at.lock().await.get(uri).copied();
 
-        let (entry, freshness) = classify_diagnostic_freshness(
-            entry,
-            last_change,
-            invalidated_at,
-        );
+        let (entry, freshness) = classify_diagnostic_freshness(entry, last_change, invalidated_at);
 
         match (entry, freshness) {
-            (Some(entry), freshness) => {
-                crate::diagnostics::LspDiagnosticSnapshot {
-                    file_path: PathBuf::from(file_path),
-                    diagnostics: entry
-                        .diagnostics
-                        .into_iter()
-                        .map(|d| crate::diagnostics::FileDiagnostic {
-                            file: uri.to_string(),
-                            line: d.range.start.line,
-                            column: d.range.start.character,
-                            message: d.message,
-                            severity: d.severity.unwrap_or(lsp_types::DiagnosticSeverity::ERROR),
-                            source: d.source,
-                            code: d.code.as_ref().map(|c| match c {
-                                lsp_types::NumberOrString::Number(n) => n.to_string(),
-                                lsp_types::NumberOrString::String(s) => s.clone(),
-                            }),
-                        })
-                        .collect(),
-                    age_ms: entry.received_at.elapsed().as_millis() as i64,
-                    source: entry.source,
-                    freshness,
-                }
+            (Some(entry), freshness) => crate::diagnostics::LspDiagnosticSnapshot {
+                file_path: PathBuf::from(file_path),
+                diagnostics: entry
+                    .diagnostics
+                    .into_iter()
+                    .map(|d| crate::diagnostics::FileDiagnostic {
+                        file: uri.to_string(),
+                        line: d.range.start.line,
+                        column: d.range.start.character,
+                        message: d.message,
+                        severity: d.severity.unwrap_or(lsp_types::DiagnosticSeverity::ERROR),
+                        source: d.source,
+                        code: d.code.as_ref().map(|c| match c {
+                            lsp_types::NumberOrString::Number(n) => n.to_string(),
+                            lsp_types::NumberOrString::String(s) => s.clone(),
+                        }),
+                    })
+                    .collect(),
+                age_ms: entry.received_at.elapsed().as_millis() as i64,
+                source: entry.source,
+                freshness,
+            },
+            (None, _) => {
+                crate::diagnostics::LspDiagnosticSnapshot::unavailable(PathBuf::from(file_path))
             }
-            (None, _) => crate::diagnostics::LspDiagnosticSnapshot::unavailable(PathBuf::from(
-                file_path,
-            )),
         }
     }
 }
@@ -854,18 +848,28 @@ pub(crate) fn classify_diagnostic_freshness(
     entry: Option<DiagnosticCacheEntry>,
     last_content_change: Option<Instant>,
     invalidated_at: Option<Instant>,
-) -> (Option<DiagnosticCacheEntry>, crate::diagnostics::LspDiagnosticFreshness) {
+) -> (
+    Option<DiagnosticCacheEntry>,
+    crate::diagnostics::LspDiagnosticFreshness,
+) {
     if let Some(invalidated_at) = invalidated_at {
         return match entry {
-            Some(entry) if entry.received_at < invalidated_at => {
-                (Some(entry), crate::diagnostics::LspDiagnosticFreshness::Stale)
-            }
-            _ => (None, crate::diagnostics::LspDiagnosticFreshness::Unavailable),
+            Some(entry) if entry.received_at < invalidated_at => (
+                Some(entry),
+                crate::diagnostics::LspDiagnosticFreshness::Stale,
+            ),
+            _ => (
+                None,
+                crate::diagnostics::LspDiagnosticFreshness::Unavailable,
+            ),
         };
     }
 
     match entry {
-        None => (None, crate::diagnostics::LspDiagnosticFreshness::Unavailable),
+        None => (
+            None,
+            crate::diagnostics::LspDiagnosticFreshness::Unavailable,
+        ),
         Some(entry) => {
             let freshness = match last_content_change {
                 Some(changed_at) if changed_at > entry.received_at => {
@@ -941,8 +945,8 @@ fn parse_content_length(header: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use crate::LspDiagnosticFreshness;
+    use std::time::Duration;
 
     #[test]
     fn classify_response_message() {
@@ -1507,10 +1511,7 @@ mod tests {
         let entry = out_entry.unwrap();
         assert_eq!(freshness, LspDiagnosticFreshness::Stale);
         let age_ms = entry.received_at.elapsed().as_millis() as i64;
-        assert!(
-            age_ms >= 2900,
-            "expected age_ms >= 2900, got {age_ms}"
-        );
+        assert!(age_ms >= 2900, "expected age_ms >= 2900, got {age_ms}");
         assert_eq!(entry.diagnostics.len(), 1);
         assert_eq!(entry.diagnostics[0].message, "old warning");
     }
