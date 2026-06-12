@@ -2478,9 +2478,21 @@ impl App {
                     let _ = tx.try_send(TuiCommand::ResearchLoadSection { run_id, section });
                 }
             }
-            TuiMsg::OpenSourcePreview { path, line } => {
+            TuiMsg::OpenSourcePreview {
+                path,
+                line,
+                origin_label,
+            } => {
                 use crate::tui::components::dialogs::source_preview::SourcePreviewDialog;
-                let dialog = SourcePreviewDialog::new(Arc::clone(&self.ui_state.theme), path, line);
+                let dialog = match origin_label {
+                    Some(label) => SourcePreviewDialog::with_origin(
+                        Arc::clone(&self.ui_state.theme),
+                        path,
+                        line,
+                        label,
+                    ),
+                    None => SourcePreviewDialog::new(Arc::clone(&self.ui_state.theme), path, line),
+                };
                 self.dialog_state.source_preview_dialog = Some(dialog);
                 if let Some(ref mut dlg) = self.dialog_state.source_preview_dialog {
                     dlg.set_theme(&self.ui_state.theme);

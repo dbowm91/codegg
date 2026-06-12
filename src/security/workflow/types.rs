@@ -154,13 +154,16 @@ pub struct SecurityReviewHunkRef {
 }
 
 /// A single line within a hunk, with line numbers and kind.
+///
+/// Focus (highlight) is computed at render time by comparing the
+/// panel item's line number against `new_line`, so it is not stored
+/// here.  This keeps hunks shared across multiple panel items.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityReviewHunkLine {
     pub old_line: Option<u32>,
     pub new_line: Option<u32>,
     pub kind: SecurityReviewHunkLineKind,
     pub text: String,
-    pub is_focus: bool,
 }
 
 /// Whether a hunk line is added, removed, or unchanged context.
@@ -169,6 +172,27 @@ pub enum SecurityReviewHunkLineKind {
     Added,
     Removed,
     Context,
+}
+
+impl SecurityReviewHunkRef {
+    /// Check whether the hunk covers a given new-side line number.
+    ///
+    /// Prefers actual parsed line entries: any line with
+    /// `new_line == Some(line)`.  Falls back to the range
+    /// `new_start .. new_start + new_lines`.  Returns `false` if
+    /// neither is available (removed-only hunks with no new-side
+    /// lines).
+    pub fn contains_new_line(&self, line: u32) -> bool {
+        // Prefer actual parsed line entries.
+        if self.lines.iter().any(|hl| hl.new_line == Some(line)) {
+            return true;
+        }
+        // Fallback to range.
+        if let (Some(start), Some(count)) = (self.new_start, self.new_lines) {
+            return line >= start && line < start + count;
+        }
+        false
+    }
 }
 
 /// Structured preflight evidence with file path and optional line number.

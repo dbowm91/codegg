@@ -136,6 +136,8 @@ pub fn project_receipt_to_panel_items(
 
     // Build a hunk index: (file_path, line range) -> SecurityReviewHunkRef
     // for matching findings/prompts to their source hunk context.
+    // Matching uses new-side line numbers: exact match in parsed lines
+    // first, then range fallback.
     let hunk_index: Vec<(&SecurityReviewHunkRef, PathBuf, u32, u32)> = receipt
         .output
         .hunks
@@ -182,15 +184,30 @@ pub fn project_receipt_to_panel_items(
             }
         }
 
-        // Try to find a matching hunk for this finding
-        let hunk = finding.line.and_then(|line| {
-            hunk_index
-                .iter()
-                .find(|(_, fp, start, end)| {
-                    *fp == finding.file_path && line >= *start && line < *end
-                })
-                .map(|(h, _, _, _)| (*h).clone())
-        });
+        // Try to find a matching hunk for this finding.
+        // 1. Same file + exact new_line match in parsed lines.
+        // 2. Same file + line inside hunk new range.
+        // 3. Same file + evidence line inside hunk new range (fallback).
+        let hunk = finding
+            .line
+            .and_then(|line| {
+                hunk_index
+                    .iter()
+                    .find(|(h, fp, _, _)| *fp == finding.file_path && h.contains_new_line(line))
+                    .map(|(h, _, _, _)| (*h).clone())
+            })
+            .or_else(|| {
+                // Evidence fallback: find any evidence line that falls inside a hunk range.
+                let ev_line = finding
+                    .evidence
+                    .iter()
+                    .filter(|ev| ev.file_path.as_ref() == Some(&finding.file_path))
+                    .find_map(|ev| ev.line)?;
+                hunk_index
+                    .iter()
+                    .find(|(h, fp, _, _)| *fp == finding.file_path && h.contains_new_line(ev_line))
+                    .map(|(h, _, _, _)| (*h).clone())
+            });
 
         items.push(SecurityReviewPanelItem {
             kind: SecurityReviewPanelItemKind::Finding,
@@ -223,13 +240,11 @@ pub fn project_receipt_to_panel_items(
             detail.push(format!("Evidence: {}", prompt.evidence.join("; ")));
         }
 
-        // Try to find a matching hunk for this prompt
+        // Try to find a matching hunk for this prompt (line-based only)
         let hunk = prompt.line.and_then(|line| {
             hunk_index
                 .iter()
-                .find(|(_, fp, start, end)| {
-                    *fp == prompt.file_path && line >= *start && line < *end
-                })
+                .find(|(h, fp, _, _)| *fp == prompt.file_path && h.contains_new_line(line))
                 .map(|(h, _, _, _)| (*h).clone())
         });
 

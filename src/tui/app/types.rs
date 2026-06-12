@@ -220,6 +220,7 @@ pub enum TuiMsg {
     OpenSourcePreview {
         path: PathBuf,
         line: Option<u32>,
+        origin_label: Option<String>,
     },
 }
 

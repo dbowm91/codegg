@@ -665,21 +665,18 @@ fn sample_hunk_ref() -> SecurityReviewHunkRef {
                 new_line: Some(10),
                 kind: SecurityReviewHunkLineKind::Context,
                 text: "let x = 1;".to_string(),
-                is_focus: false,
             },
             SecurityReviewHunkLine {
                 old_line: None,
                 new_line: Some(11),
                 kind: SecurityReviewHunkLineKind::Added,
                 text: "let z = x + y;".to_string(),
-                is_focus: true,
             },
             SecurityReviewHunkLine {
                 old_line: Some(9),
                 new_line: Some(12),
                 kind: SecurityReviewHunkLineKind::Context,
                 text: "let y = 2;".to_string(),
-                is_focus: false,
             },
         ],
     }
@@ -825,7 +822,6 @@ fn security_review_hunk_context_is_bounded() {
             new_line: Some(i),
             kind: SecurityReviewHunkLineKind::Context,
             text: format!("context line {i}"),
-            is_focus: false,
         });
     }
     // 50 context lines is well under the 100 bound

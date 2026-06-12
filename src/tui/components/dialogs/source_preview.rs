@@ -23,6 +23,9 @@ pub struct SourcePreviewDialog {
     pub lines: Vec<SourcePreviewLine>,
     pub error: Option<String>,
     pub scroll: u16,
+    /// Optional label indicating where the preview was opened from,
+    /// e.g. "Security Review Finding".
+    pub origin_label: Option<String>,
     pub theme: Arc<Theme>,
 }
 
@@ -44,6 +47,27 @@ impl SourcePreviewDialog {
             lines,
             error,
             scroll: 0,
+            origin_label: None,
+            theme,
+        }
+    }
+
+    pub fn with_origin(
+        theme: Arc<Theme>,
+        path: PathBuf,
+        line: Option<u32>,
+        origin_label: String,
+    ) -> Self {
+        let context_radius = 10;
+        let (lines, error) = Self::read_file(&path, line, context_radius);
+        Self {
+            path,
+            line,
+            context_radius,
+            lines,
+            error,
+            scroll: 0,
+            origin_label: Some(origin_label),
             theme,
         }
     }
@@ -193,7 +217,11 @@ impl Component for SourcePreviewDialog {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| self.path.display().to_string());
         let line_str = self.line.map(|l| format!(":{}", l)).unwrap_or_default();
-        let header_text = format!("{}{}", filename, line_str);
+        let header_text = if let Some(ref origin) = self.origin_label {
+            format!("{}{} — {}", filename, line_str, origin)
+        } else {
+            format!("{}{}", filename, line_str)
+        };
         let header_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.theme.border))

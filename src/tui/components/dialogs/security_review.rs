@@ -17,6 +17,13 @@ use crate::security::workflow::{
 };
 use crate::tui::app::TuiMsg;
 
+/// Which section of the detail pane is currently focused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityReviewDetailSection {
+    Summary,
+    Hunk,
+}
+
 #[derive(Clone)]
 pub struct SecurityReviewDialog {
     pub receipt: Box<Option<SecurityReviewReceipt>>,
@@ -24,6 +31,7 @@ pub struct SecurityReviewDialog {
     pub visible_items: Vec<SecurityReviewPanelItem>,
     pub selected_index: usize,
     pub detail_scroll: u16,
+    pub detail_section: SecurityReviewDetailSection,
     pub filter: SecurityReviewFilter,
     pub theme: Arc<Theme>,
 }
@@ -36,6 +44,7 @@ impl SecurityReviewDialog {
             visible_items: Vec::new(),
             selected_index: 0,
             detail_scroll: 0,
+            detail_section: SecurityReviewDetailSection::Summary,
             filter: SecurityReviewFilter::All,
             theme,
         }
@@ -50,6 +59,7 @@ impl SecurityReviewDialog {
             visible_items,
             selected_index: 0,
             detail_scroll: 0,
+            detail_section: SecurityReviewDetailSection::Summary,
             filter: SecurityReviewFilter::All,
             theme,
         }
@@ -102,6 +112,95 @@ impl SecurityReviewDialog {
     fn cycle_filter(&mut self) {
         self.filter = self.filter.next();
         self.recompute_visible();
+    }
+
+    /// Jump detail scroll to the first hunk line in the current detail rendering.
+    fn jump_to_hunk(&mut self) {
+        let Some(item) = self.selected_item() else {
+            return;
+        };
+        if item.hunk.is_none() {
+            return;
+        }
+        // The hunk header appears after summary lines. Count lines to reach it.
+        // Summary: prompt marker (0-1) + title + blank + location + summary + blank + details...
+        // Hunk starts after a blank line following the last detail line.
+        let mut line_count: u16 = 0;
+        // prompt marker
+        if item.kind == SecurityReviewPanelItemKind::Prompt {
+            line_count += 1;
+        }
+        // title
+        line_count += 1;
+        // blank
+        line_count += 1;
+        // location (if present)
+        if item.file_path.is_some() {
+            line_count += 1;
+        }
+        // summary
+        if !item.summary.is_empty() {
+            line_count += 1;
+        }
+        // blank before details
+        if !item.detail.is_empty() {
+            line_count += 1;
+        }
+        // detail lines
+        line_count += item.detail.len() as u16;
+        // blank before hunk
+        line_count += 1;
+        // hunk header
+        line_count += 1;
+        // scroll to hunk header (first hunk line is at line_count - 1)
+        self.detail_scroll = line_count.saturating_sub(1);
+        self.detail_section = SecurityReviewDetailSection::Hunk;
+    }
+
+    /// Navigate to the next hunk-backed item (wraps around).
+    fn select_next_hunk(&mut self) {
+        if self.visible_items.is_empty() {
+            return;
+        }
+        let start = self.selected_index;
+        let mut idx = start;
+        loop {
+            idx = (idx + 1) % self.visible_items.len();
+            if self.visible_items[idx].hunk.is_some() {
+                self.selected_index = idx;
+                self.detail_scroll = 0;
+                self.detail_section = SecurityReviewDetailSection::Summary;
+                return;
+            }
+            if idx == start {
+                return; // wrapped all the way around
+            }
+        }
+    }
+
+    /// Navigate to the previous hunk-backed item (wraps around).
+    fn select_prev_hunk(&mut self) {
+        if self.visible_items.is_empty() {
+            return;
+        }
+        let start = self.selected_index;
+        let mut idx = start;
+        loop {
+            idx = if idx == 0 {
+                self.visible_items.len() - 1
+            } else {
+                idx - 1
+            };
+            if self.visible_items[idx].hunk.is_some() {
+                self.selected_index = idx;
+                self.detail_scroll = 0;
+                self.detail_section = SecurityReviewDetailSection::Summary;
+                return;
+            }
+            if idx == start {
+                return; // wrapped all the way around
+            }
+        }
     }
 
     fn counts(receipt: &SecurityReviewReceipt) -> (usize, usize, usize) {
@@ -165,9 +264,19 @@ impl Component for SecurityReviewDialog {
                         if let Some(ref receipt) = *self.receipt {
                             match resolve_security_review_item_path(receipt, item) {
                                 Ok(resolved) => {
+                                    let origin = match item.kind {
+                                        SecurityReviewPanelItemKind::Finding => {
+                                            Some("Security Review Finding".to_string())
+                                        }
+                                        SecurityReviewPanelItemKind::Prompt => {
+                                            Some("Security Review Prompt".to_string())
+                                        }
+                                        _ => None,
+                                    };
                                     return Some(TuiMsg::OpenSourcePreview {
                                         path: resolved,
                                         line: item.line,
+                                        origin_label: origin,
                                     });
                                 }
                                 Err(_) => {
@@ -182,6 +291,47 @@ impl Component for SecurityReviewDialog {
                         }
                     }
                 }
+                None
+            }
+            // h: jump detail scroll to hunk section
+            crossterm::event::KeyCode::Char('h') if key.modifiers.is_empty() => {
+                self.jump_to_hunk();
+                None
+            }
+            // H: copy hunk text to clipboard
+            crossterm::event::KeyCode::Char('H') if key.modifiers.is_empty() => {
+                if let Some(item) = self.selected_item() {
+                    if let Some(ref hunk) = item.hunk {
+                        let mut text = format!("{}\n", hunk.header);
+                        for hl in &hunk.lines {
+                            let prefix = match hl.kind {
+                                SecurityReviewHunkLineKind::Added => "+",
+                                SecurityReviewHunkLineKind::Removed => "-",
+                                SecurityReviewHunkLineKind::Context => " ",
+                            };
+                            text.push_str(&format!("{}{}\n", prefix, hl.text));
+                        }
+                        if text.len() > 4096 {
+                            text.truncate(4096);
+                            text.push_str("\n... (truncated)");
+                        }
+                        let _ = crate::util::clipboard::copy_to_clipboard(&text);
+                        return Some(TuiMsg::SecurityReviewJump {
+                            path: String::new(),
+                            line: None,
+                        });
+                    }
+                }
+                None
+            }
+            // ]: next hunk-backed item
+            crossterm::event::KeyCode::Char(']') if key.modifiers.is_empty() => {
+                self.select_next_hunk();
+                None
+            }
+            // [: previous hunk-backed item
+            crossterm::event::KeyCode::Char('[') if key.modifiers.is_empty() => {
+                self.select_prev_hunk();
                 None
             }
             crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('q') => {
@@ -263,7 +413,7 @@ impl Component for SecurityReviewDialog {
         self.render_detail(frame, split[1]);
 
         let footer_text = format!(
-            "j/k move | f filter ({}) | n notes | p prompts | PgUp/PgDn scroll | Enter jump | Esc close",
+            "j/k move | f filter ({}) | ]/[ hunk nav | h jump hunk | H copy hunk | Enter preview | Esc close",
             self.filter.label(),
         );
         let footer = Paragraph::new(Line::from(Span::styled(
@@ -459,7 +609,10 @@ impl SecurityReviewDialog {
                     (None, Some(n)) => format!("     {:>4}", n),
                     (None, None) => "         ".to_string(),
                 };
-                let style = if hunk_line.is_focus {
+                let is_focus = item
+                    .line
+                    .is_some_and(|line| hunk_line.new_line == Some(line));
+                let style = if is_focus {
                     Style::default()
                         .fg(self.theme.primary)
                         .add_modifier(Modifier::BOLD)

@@ -215,7 +215,6 @@ fn build_hunk_refs_from_changed_hunks(chunks: &[ChangedHunk]) -> Vec<SecurityRev
                         new_line: new,
                         kind,
                         text: dl.text.clone(),
-                        is_focus: false,
                     }
                 })
                 .collect();

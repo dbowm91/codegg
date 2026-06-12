@@ -657,21 +657,18 @@ fn security_review_receipt_projects_diff_hunk_context_from_fixture_diff() {
                     new_line: Some(10),
                     kind: SecurityReviewHunkLineKind::Context,
                     text: "let x = 1;".to_string(),
-                    is_focus: false,
                 },
                 SecurityReviewHunkLine {
                     old_line: None,
                     new_line: Some(11),
                     kind: SecurityReviewHunkLineKind::Added,
                     text: "let z = x + y;".to_string(),
-                    is_focus: true,
                 },
                 SecurityReviewHunkLine {
                     old_line: Some(9),
                     new_line: Some(12),
                     kind: SecurityReviewHunkLineKind::Context,
                     text: "let y = 2;".to_string(),
-                    is_focus: false,
                 },
             ],
         }],
@@ -787,21 +784,18 @@ fn security_review_hunk_ref_render_marks_added_removed_context_lines() {
                     new_line: Some(10),
                     kind: SecurityReviewHunkLineKind::Context,
                     text: "unchanged".to_string(),
-                    is_focus: false,
                 },
                 SecurityReviewHunkLine {
                     old_line: None,
                     new_line: Some(11),
                     kind: SecurityReviewHunkLineKind::Added,
                     text: "new code".to_string(),
-                    is_focus: true,
                 },
                 SecurityReviewHunkLine {
                     old_line: Some(9),
                     new_line: None,
                     kind: SecurityReviewHunkLineKind::Removed,
                     text: "old code".to_string(),
-                    is_focus: false,
                 },
             ],
         }],
@@ -842,9 +836,347 @@ fn security_review_hunk_ref_render_marks_added_removed_context_lines() {
     assert_eq!(hunk.lines[1].new_line, Some(11));
     assert_eq!(hunk.lines[2].old_line, Some(9));
     assert_eq!(hunk.lines[2].new_line, None);
+}
 
-    // Verify is_focus is set on the added line
-    assert!(!hunk.lines[0].is_focus);
-    assert!(hunk.lines[1].is_focus);
-    assert!(!hunk.lines[2].is_focus);
+// ---------------------------------------------------------------------------
+// Hunk navigation improvement tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn security_review_hunk_focus_is_item_specific() {
+    // Two findings at different lines in the same hunk should each get
+    // the correct hunk attached with their specific line matching a
+    // new_line in the hunk's lines.
+    let hunk = SecurityReviewHunkRef {
+        file_path: PathBuf::from("src/lib.rs"),
+        old_start: Some(8),
+        old_lines: Some(8),
+        new_start: Some(10),
+        new_lines: Some(8),
+        header: "@@ -8,8 +10,8 @@".to_string(),
+        lines: vec![
+            SecurityReviewHunkLine {
+                old_line: Some(8),
+                new_line: Some(10),
+                kind: SecurityReviewHunkLineKind::Context,
+                text: "let x = 1;".to_string(),
+            },
+            SecurityReviewHunkLine {
+                old_line: None,
+                new_line: Some(11),
+                kind: SecurityReviewHunkLineKind::Added,
+                text: "let a = x + 1;".to_string(),
+            },
+            SecurityReviewHunkLine {
+                old_line: Some(9),
+                new_line: Some(12),
+                kind: SecurityReviewHunkLineKind::Context,
+                text: "let y = 2;".to_string(),
+            },
+            SecurityReviewHunkLine {
+                old_line: None,
+                new_line: Some(13),
+                kind: SecurityReviewHunkLineKind::Added,
+                text: "let b = y + 2;".to_string(),
+            },
+        ],
+    };
+
+    let output = SecurityReviewOutput {
+        targets: vec![target("src/lib.rs", 11)],
+        findings: vec![
+            finding("src/lib.rs", 11, SecuritySeverity::High),
+            finding("src/lib.rs", 13, SecuritySeverity::Medium),
+        ],
+        review_prompts: vec![],
+        preflight_results: vec![],
+        notes: vec![],
+        hunks: vec![hunk],
+    };
+
+    let receipt = SecurityReviewReceipt::now(
+        "sr-hunk-focus".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+    let findings: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == SecurityReviewPanelItemKind::Finding)
+        .collect();
+    assert_eq!(findings.len(), 2);
+
+    // Finding at line 11 should have a hunk with new_line=11
+    let f11 = findings.iter().find(|f| f.line == Some(11)).unwrap();
+    let h11 = f11
+        .hunk
+        .as_ref()
+        .expect("finding at line 11 should have hunk");
+    assert!(
+        h11.lines.iter().any(|l| l.new_line == Some(11)),
+        "hunk for line-11 finding should contain new_line=11"
+    );
+
+    // Finding at line 13 should have a hunk with new_line=13
+    let f13 = findings.iter().find(|f| f.line == Some(13)).unwrap();
+    let h13 = f13
+        .hunk
+        .as_ref()
+        .expect("finding at line 13 should have hunk");
+    assert!(
+        h13.lines.iter().any(|l| l.new_line == Some(13)),
+        "hunk for line-13 finding should contain new_line=13"
+    );
+}
+
+#[test]
+fn security_review_hunk_contains_new_line_uses_actual_lines() {
+    // Create a hunk with specific Added lines and verify contains_new_line
+    // returns true for those exact lines.
+    let hunk = SecurityReviewHunkRef {
+        file_path: PathBuf::from("src/lib.rs"),
+        old_start: Some(10),
+        old_lines: Some(5),
+        new_start: Some(10),
+        new_lines: Some(6),
+        header: "@@ -10,5 +10,6 @@".to_string(),
+        lines: vec![
+            SecurityReviewHunkLine {
+                old_line: None,
+                new_line: Some(11),
+                kind: SecurityReviewHunkLineKind::Added,
+                text: "new line A".to_string(),
+            },
+            SecurityReviewHunkLine {
+                old_line: Some(10),
+                new_line: Some(12),
+                kind: SecurityReviewHunkLineKind::Context,
+                text: "context".to_string(),
+            },
+            SecurityReviewHunkLine {
+                old_line: None,
+                new_line: Some(13),
+                kind: SecurityReviewHunkLineKind::Added,
+                text: "new line B".to_string(),
+            },
+        ],
+    };
+
+    assert!(
+        hunk.contains_new_line(11),
+        "should match Added line at new_line=11"
+    );
+    assert!(
+        hunk.contains_new_line(12),
+        "should match Context line at new_line=12"
+    );
+    assert!(
+        hunk.contains_new_line(13),
+        "should match Added line at new_line=13"
+    );
+}
+
+#[test]
+fn security_review_hunk_contains_new_line_falls_back_to_range() {
+    // Create a hunk with new_start=10, new_lines=5 but no parsed lines
+    // (empty lines vec). contains_new_line(12) should return true via
+    // the range fallback.
+    let hunk = SecurityReviewHunkRef {
+        file_path: PathBuf::from("src/lib.rs"),
+        old_start: Some(8),
+        old_lines: Some(4),
+        new_start: Some(10),
+        new_lines: Some(5),
+        header: "@@ -8,4 +10,5 @@".to_string(),
+        lines: vec![], // empty — no parsed lines
+    };
+
+    assert!(
+        hunk.contains_new_line(12),
+        "range fallback should match line 12 inside [10, 15)"
+    );
+    assert!(
+        hunk.contains_new_line(10),
+        "range fallback should match first line (10)"
+    );
+    assert!(
+        hunk.contains_new_line(14),
+        "range fallback should match last line (14)"
+    );
+}
+
+#[test]
+fn security_review_hunk_contains_new_line_returns_false_for_outside() {
+    let hunk = SecurityReviewHunkRef {
+        file_path: PathBuf::from("src/lib.rs"),
+        old_start: Some(10),
+        old_lines: Some(5),
+        new_start: Some(10),
+        new_lines: Some(5),
+        header: "@@ -10,5 +10,5 @@".to_string(),
+        lines: vec![SecurityReviewHunkLine {
+            old_line: Some(10),
+            new_line: Some(10),
+            kind: SecurityReviewHunkLineKind::Context,
+            text: "context".to_string(),
+        }],
+    };
+
+    assert!(
+        !hunk.contains_new_line(9),
+        "should not match line before hunk range"
+    );
+    assert!(
+        !hunk.contains_new_line(15),
+        "should not match line at end of range (exclusive)"
+    );
+    assert!(
+        !hunk.contains_new_line(100),
+        "should not match line far outside range"
+    );
+}
+
+#[test]
+fn security_review_finding_evidence_line_can_attach_hunk() {
+    // Create a finding with line: None but with evidence that has
+    // line: Some(11) and file_path matching a hunk. The evidence
+    // fallback should attach the hunk.
+    let output = SecurityReviewOutput {
+        targets: vec![target("src/lib.rs", 10)],
+        findings: vec![SecurityReviewFinding {
+            severity: SecuritySeverity::Medium,
+            confidence: SecurityConfidence::High,
+            title: "Evidence-only finding".to_string(),
+            file_path: PathBuf::from("src/lib.rs"),
+            line: None, // no direct line
+            category: Some("auth".to_string()),
+            evidence: vec![StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::RiskMarker,
+                file_path: Some(PathBuf::from("src/lib.rs")),
+                line: Some(11), // evidence line inside hunk
+                summary: "marker".to_string(),
+                detail: None,
+            }],
+            reasoning: "reasoning".to_string(),
+            recommendation: "recommendation".to_string(),
+            tests: vec!["test_regression".to_string()],
+        }],
+        review_prompts: vec![],
+        preflight_results: vec![],
+        notes: vec![],
+        hunks: vec![SecurityReviewHunkRef {
+            file_path: PathBuf::from("src/lib.rs"),
+            old_start: Some(8),
+            old_lines: Some(6),
+            new_start: Some(10),
+            new_lines: Some(5),
+            header: "@@ -8,6 +10,5 @@".to_string(),
+            lines: vec![SecurityReviewHunkLine {
+                old_line: None,
+                new_line: Some(11),
+                kind: SecurityReviewHunkLineKind::Added,
+                text: "new code".to_string(),
+            }],
+        }],
+    };
+
+    let receipt = SecurityReviewReceipt::now(
+        "sr-evidence-fallback".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+    let finding = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Finding)
+        .expect("should have a finding");
+    assert!(
+        finding.hunk.is_some(),
+        "finding with evidence line inside hunk should get hunk via evidence fallback"
+    );
+    assert_eq!(finding.line, None, "finding.line should remain None");
+}
+
+#[test]
+fn security_review_removed_only_hunk_has_no_new_side_focus() {
+    // Create a hunk with only Removed lines (no new-side lines).
+    // contains_new_line should return false for any line since
+    // there are no parsed lines with new_line and new_start is None.
+    let hunk = SecurityReviewHunkRef {
+        file_path: PathBuf::from("src/lib.rs"),
+        old_start: Some(10),
+        old_lines: Some(5),
+        new_start: None, // no new side
+        new_lines: None,
+        header: "@@ -10,5 +10,0 @@".to_string(),
+        lines: vec![
+            SecurityReviewHunkLine {
+                old_line: Some(10),
+                new_line: None,
+                kind: SecurityReviewHunkLineKind::Removed,
+                text: "removed A".to_string(),
+            },
+            SecurityReviewHunkLine {
+                old_line: Some(11),
+                new_line: None,
+                kind: SecurityReviewHunkLineKind::Removed,
+                text: "removed B".to_string(),
+            },
+        ],
+    };
+
+    assert!(
+        !hunk.contains_new_line(10),
+        "removed-only hunk should not match any new-side line"
+    );
+    assert!(!hunk.contains_new_line(11));
+
+    // Items matching this hunk should not get hunk attached since
+    // new_start is None (hunk_index filters it out).
+    let output = SecurityReviewOutput {
+        targets: vec![],
+        findings: vec![],
+        review_prompts: vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(10),
+            preset: "rust_server".to_string(),
+            category: None,
+            title: "Review removed code".to_string(),
+            rationale: "code was removed".to_string(),
+            evidence: vec!["source: changed_hunk".to_string()],
+        }],
+        preflight_results: vec![],
+        notes: vec![],
+        hunks: vec![hunk],
+    };
+
+    let receipt = SecurityReviewReceipt::now(
+        "sr-removed-only".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+    let prompt_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Prompt)
+        .expect("should have a prompt");
+    assert!(
+        prompt_item.hunk.is_none(),
+        "prompt matching removed-only hunk should have no hunk (new_start is None)"
+    );
 }

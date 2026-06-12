@@ -446,8 +446,8 @@ The `src/security/workflow/` module provides a structured security review workfl
 - `SecurityReviewPrompt` — Marker-only triage prompt (not a confirmed finding)
 - `SecurityPreflightResult` — Deterministic check result (pass/fail/skipped)
 - `SecurityReviewOutput` — Complete workflow output combining all of the above; includes `hunks: Vec<SecurityReviewHunkRef>` for TUI hunk display
-- `SecurityReviewHunkRef` — Compact hunk context for TUI display, carrying `file_path`, line ranges, header, and `lines: Vec<SecurityReviewHunkLine>`
-- `SecurityReviewHunkLine` — Single line within a hunk with `old_line`/`new_line` numbers, `kind: SecurityReviewHunkLineKind`, and `text`
+- `SecurityReviewHunkRef` — Compact hunk context for TUI display, carrying `file_path`, line ranges, header, and `lines: Vec<SecurityReviewHunkLine>`. Has a `contains_new_line(line: u32) -> bool` method that checks whether the hunk covers a given new-side line (actual line match first, range fallback).
+- `SecurityReviewHunkLine` — Single line within a hunk with `old_line`/`new_line` numbers, `kind: SecurityReviewHunkLineKind`, and `text`. Focus (highlight) is computed at render time by comparing the panel item's line number against `new_line`, not stored on the struct.
 - `SecurityReviewHunkLineKind` — Enum (`Added`, `Removed`, `Context`) for hunk line display styling
 - `ChangedHunk` — Now includes `lines: Vec<DiffLine>` with `DiffLine { kind: DiffLineKind, text }` — the diff parser preserves individual line content
 
@@ -633,7 +633,7 @@ After a successful `/security-review`, the TUI stores a structured `SecurityRevi
 
 The `src/security/workflow/receipt.rs` submodule holds:
 - `SecurityReviewReceipt` — DTO with `id`, `root`, `args`, `output`, `rendered_report`, `completed_at_ms`, `enriched`, `lsp_available`.
-- `SecurityReviewPanelItem` / `SecurityReviewPanelItemKind` — flat projection of findings, prompts, notes, and preflight results. Each item has `hunk: Option<SecurityReviewHunkRef>` — findings/prompts are matched to hunks by `file_path` + line in the new range via `hunk_index` in `project_receipt_to_panel_items()`.
+- `SecurityReviewPanelItem` / `SecurityReviewPanelItemKind` — flat projection of findings, prompts, notes, and preflight results. Each item has `hunk: Option<SecurityReviewHunkRef>` — findings/prompts are matched to hunks by `file_path` + new-side line via `hunk.contains_new_line()` in `project_receipt_to_panel_items()`. Findings also have an evidence-line fallback: if the finding has no direct line but structured evidence has a same-file line inside a hunk, the hunk is still attached. Focus (highlight) is computed at render time by comparing `item.line` against `hunk_line.new_line`, so two items sharing one hunk can highlight different lines.
 - `SecurityReviewFilter` (`All`, `Findings`, `Prompts`, `Notes`, `HighConfidence`, `MediumOrHigherSeverity`, `HunkBacked`) with `next()` for cycling. The `HunkBacked` filter shows only items with a matching hunk context (`item.hunk.is_some()`).
 - `project_receipt_to_panel_items(receipt)` / `filter_panel_items(items, filter)` — pure helpers for the panel.
 - `SecurityReviewTaskState { id, abort_handle }` — the reentrancy guard for an in-flight review. Held by `App.security_review_running`.
@@ -642,7 +642,7 @@ The `src/security/workflow/receipt.rs` submodule holds:
 - Header: `Security Review — <root> | Findings: N | Prompts: N | Notes: N | Enrichment: local-lsp|unavailable|off`.
 - List: `[FINDING]`, `[PROMPT]`, `[NOTE]`, `[PREFLIGHT]` markers; severity-colored findings.
 - Detail: title, location, summary, structured evidence, recommendation, suggested tests. When a finding or prompt has a matching hunk, the detail section renders hunk context with added/removed/context line styling (green/red/neutral).
-- Keybindings: `j`/`k` (or `↑`/`↓`) move selection; `PgUp`/`PgDn` scroll detail; `f` cycle filter (including `HunkBacked`); `n` toggle notes-only; `p` toggle prompts-only; `Enter` opens a read-only source preview dialog for the finding's file (root-scoped via `resolve_security_review_item_path` in `receipt.rs`; falls back to clipboard if the file cannot be opened); `Esc`/`q` close.
+- Keybindings: `j`/`k` (or `↑`/`↓`) move selection; `PgUp`/`PgDn` scroll detail; `f` cycle filter (including `HunkBacked`); `n` toggle notes-only; `p` toggle prompts-only; `h` jump detail scroll to hunk section; `H` copy hunk text to clipboard (bounded, 4KB); `]`/`[` navigate to next/previous hunk-backed item (wraps); `Enter` opens a read-only source preview dialog for the finding's file (root-scoped via `resolve_security_review_item_path` in `receipt.rs`; shows "Security Review Finding/Prompt" origin label; falls back to clipboard if the file cannot be opened); `Esc`/`q` close.
 - Constructed on demand in `App::open_dialog` (`src/tui/app/mod.rs:5379`) and registered as `Some(Dialog::SecurityReview)` so command-mode completion opens the dialog.
 
 Commands:
