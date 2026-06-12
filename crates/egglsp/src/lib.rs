@@ -33,6 +33,7 @@ pub mod server;
 pub mod service;
 
 pub use capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
+pub use client::DiagnosticCacheEntry;
 pub use config::{LspConfig, LspRule};
 pub use diagnostics::{
     DiagnosticsCollector, DiagnosticsOutput, LspDiagnosticFreshness, LspDiagnosticSnapshot,

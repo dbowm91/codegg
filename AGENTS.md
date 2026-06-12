@@ -28,7 +28,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering — now in `crates/codegg-core` (`codegg-core` crate) |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
-| `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits, temporary overlays, semantic context packets, capability discovery and normalization, diagnostics cache lifecycle with freshness metadata, shared semantic context API) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp |
+| `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits, temporary overlays, semantic context packets, securityContext call expansion, capability discovery and normalization, diagnostics cache lifecycle with freshness metadata, capability-gated operations, diagnostic evidence in context packets, shared semantic context API) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
 | `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation — `src/core/` is the transport layer; domain modules (bus, error, goal, memory, session, storage, snapshot, worktree, resilience, task_state, model_profile, protocol_conversions) live in `crates/codegg-core`. Also contains `runtime_deps` (`CoreRuntimeDeps`) for bundling runtime dependencies. |
 | `memory/` | Persistent memory system for session learning and namespace management — now in `crates/codegg-core` (`codegg-core` crate) |
@@ -62,7 +62,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 - `architecture/server.md`: WebSocket TUI server, replay buffer, and REST/SSE routes
 - `architecture/skills.md`: Runtime skill loader plus the repo-maintained `.skills/` copy
 - `architecture/native_crates.md`: Workspace crates (egglsp, egggit, eggsentry, eggcontext, codegg-config, codegg-protocol, codegg-providers), backend contract, raw MCP exposure policy, diagnostics
-- `architecture/lsp.md`: LSP client, diagnostics, code operations, preview-only semantic edits, temporary overlays (semanticCheckPreview), capability discovery and normalization, diagnostics cache lifecycle with freshness metadata, shared semantic context API, remote/core ownership model
+- `architecture/lsp.md`: LSP client, diagnostics, code operations, preview-only semantic edits, temporary overlays (semanticCheckPreview), capability discovery and normalization, diagnostics cache lifecycle with freshness metadata, capability-gated operations, diagnostic evidence in context packets, shared semantic context API, remote/core ownership model
 - `architecture/git.md`: Git session management, git info injection, worktree per session (now in `crates/egggit`; worktree is read-only in codegg-core, mutating operations removed)
 - `architecture/goal.md`: Goal runtime, budget enforcement, auto-continuation, TUI status bar
 - `architecture/auth.md`: Typed AuthConfig, Credential, AuthResolver, user-level credential store, ExternalCommand safety, OAuth scaffolding, and CLI surface (`codegg auth ...`) — auth types now live in `codegg-providers`
@@ -133,6 +133,8 @@ These items are important for future agents to know when working with the codeba
 - **ToolCatalog::register() takes `&dyn Tool`**: Not `Box<dyn Tool>`. Document in architecture but often overlooked.
 
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` contains shared patch utility functions used by both `apply_patch` tool and LSP preview operations. Extracted to avoid duplication between the mutating `apply_patch` tool and the read-only `WorkspaceEditPreview` path.
+
+- **Capability-gated LSP operations**: `semanticContext` and `securityContext` now check `LspCapabilitySnapshot` before optional expensive LSP calls (definitions, references, call hierarchy, type hierarchy). When a capability is unsupported, the operation is skipped and an error/note is appended instead of failing. When no snapshot is available (server not initialized), operations default to attempting the call (fail-open). `DiagnosticEvidenceMeta` carries freshness metadata for semantic/security context packets, with `usable_evidence` indicating whether diagnostics are reliable. The `securityContext` handler appends notes for stale/unavailable diagnostics.
 
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum at `types.rs:2-25`.
 
@@ -324,6 +326,12 @@ These items were verified during review sessions:
 | `evidence_from_security_context` | Converts `securityContext` JSON into `StructuredSecurityEvidence`: risk markers (accepts `file`/`file_path`), diagnostics, call graph summaries, truncation notices. Always file-scoped, compact. | `src/security/workflow/evidence.rs` |
 | `synthesize_evidence_based_findings_with_extra_evidence` | Enriched synthesis: combines base prompts with enriched evidence for a second pass. Injects matching CallPath/Diagnostic/TruncationNotice evidence into findings and re-classifies. | `src/security/workflow/evidence.rs` |
 | `run_security_review_workflow_with_lsp_enrichment` | Enriched orchestrator: runs deterministic stage-1, then optional LSP enrichment via executor, reruns synthesis with enriched evidence. Fail-soft: returns stage-1 output on any failure. | `src/security/workflow/report.rs` |
+| `DiagnosticCacheEntry` | Stores per-file diagnostics with `received_at`, `source`, `content_version` metadata for freshness classification | `crates/egglsp/src/client.rs` |
+| `LspClient::diagnostic_snapshot()` | Classifies diagnostics freshness based on cache entry metadata | `crates/egglsp/src/client.rs` |
+| `DiagnosticsCollector::get_diagnostic_snapshot_for_file()` | Primary API for obtaining `LspDiagnosticSnapshot` with freshness metadata | `crates/egglsp/src/diagnostics.rs` |
+| `LspDiagnosticFreshness` enum variants | `Fresh`, `PossiblyStale`, `Stale`, `Unavailable` — freshness classification for diagnostics | `crates/egglsp/src/diagnostics.rs` |
+| `DiagnosticEvidenceMeta` struct | Carries `freshness`, `source`, `generated_at_ms`, `usable_evidence` for semantic/security context packets | `src/tool/lsp.rs` |
+| Capability-gated operations | `semanticContext` and `securityContext` check `LspCapabilitySnapshot` before optional expensive LSP calls (definitions, references, call hierarchy, type hierarchy); unsupported ops append notes instead of failing | `src/tool/lsp.rs` |
 
 ### Security Notes
 
@@ -453,7 +461,7 @@ When adding guidance for a new module:
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `.opencode/skills/resilience/SKILL.md` |
 | Permission (mode system, PermissionChecker, DoomLoop, PermissionRegistry) | `.opencode/skills/permission/SKILL.md` |
-| LSP (Language Server Protocol, diagnostics, code operations, semantic context packets, securityContext call expansion, capability discovery, diagnostics freshness, shared semantic context API) | `.opencode/skills/lsp/SKILL.md` |
+| LSP (Language Server Protocol, diagnostics, code operations, semantic context packets, securityContext call expansion, capability discovery, diagnostics freshness, capability-gated operations, diagnostic evidence in context packets, shared semantic context API) | `.opencode/skills/lsp/SKILL.md` |
 | Tool (path validation, async command, ToolExecutor, ToolCatalog) | `.opencode/skills/tool/SKILL.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |

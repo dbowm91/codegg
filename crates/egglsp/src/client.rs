@@ -108,17 +108,26 @@ pub fn classify_json_rpc_message(value: serde_json::Value) -> JsonRpcMessage {
 
 /// Dispatch a notification by method. Currently handles diagnostics.
 pub async fn dispatch_notification(
-    diagnostics: &tokio::sync::Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>,
+    diagnostics: &tokio::sync::Mutex<HashMap<String, DiagnosticCacheEntry>>,
     method: &str,
     params: serde_json::Value,
 ) {
     if method == "textDocument/publishDiagnostics" {
         if let Some(uri) = params.get("uri").and_then(|v| v.as_str()) {
+            let version = params.get("version").and_then(|v| v.as_i64()).map(|v| v as i32);
             if let Some(diags_value) = params.get("diagnostics") {
                 match serde_json::from_value::<Vec<lsp_types::Diagnostic>>(diags_value.clone()) {
                     Ok(diags) => {
                         let count = diags.len();
-                        diagnostics.lock().await.insert(uri.to_string(), diags);
+                        diagnostics.lock().await.insert(
+                            uri.to_string(),
+                            DiagnosticCacheEntry {
+                                diagnostics: diags,
+                                received_at: std::time::Instant::now(),
+                                source: crate::diagnostics::LspDiagnosticSource::Pushed,
+                                content_version: version,
+                            },
+                        );
                         debug!(uri, count, "received diagnostics via background reader");
                     }
                     Err(e) => {
@@ -134,9 +143,21 @@ pub fn url_to_uri(url: &Url) -> Result<Uri, LspError> {
     Uri::from_str(url.as_str()).map_err(|e| LspError::RequestFailed(format!("invalid URL: {e}")))
 }
 
+fn uri_to_path_str(uri: &str) -> String {
+    uri.strip_prefix("file://").unwrap_or(uri).to_string()
+}
+
 pub struct DiagnosticEntry {
     pub uri: String,
     pub diagnostic: lsp_types::Diagnostic,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticCacheEntry {
+    pub diagnostics: Vec<lsp_types::Diagnostic>,
+    pub received_at: std::time::Instant,
+    pub source: crate::diagnostics::LspDiagnosticSource,
+    pub content_version: Option<i32>,
 }
 
 pub struct LspClient {
@@ -147,8 +168,9 @@ pub struct LspClient {
     pub capabilities: Arc<Mutex<Option<ServerCapabilities>>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
     /// Tracks when each file was last opened or changed, for diagnostics warm-up detection.
-    pub last_opened_at: Mutex<HashMap<String, Instant>>,
-    pub diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,
+    pub last_content_change_at: Mutex<HashMap<String, Instant>>,
+    pub diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>>,
+    pub diagnostics_invalidated_at: Arc<Mutex<Option<Instant>>>,
     pub pending: PendingMap,
     _reader_task: tokio::task::JoinHandle<()>,
 }
@@ -179,7 +201,7 @@ impl LspClient {
             .take()
             .ok_or_else(|| LspError::LaunchFailed("stdout not available".to_string()))?;
 
-        let diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>> =
+        let diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
 
@@ -198,8 +220,9 @@ impl LspClient {
             request_id: AtomicU64::new(0),
             capabilities: Arc::new(Mutex::new(None)),
             opened_files: Mutex::new(HashMap::new()),
-            last_opened_at: Mutex::new(HashMap::new()),
+            last_content_change_at: Mutex::new(HashMap::new()),
             diagnostics,
+            diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
             pending,
             _reader_task: reader_task,
         };
@@ -211,7 +234,7 @@ impl LspClient {
     /// and routes them to pending request senders or notification handlers.
     async fn background_reader(
         mut stdout: tokio::process::ChildStdout,
-        diagnostics: Arc<Mutex<HashMap<String, Vec<lsp_types::Diagnostic>>>>,
+        diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>>,
         pending: PendingMap,
         server_id: String,
     ) {
@@ -366,7 +389,7 @@ impl LspClient {
             .lock()
             .await
             .insert(uri_str.clone(), version);
-        self.last_opened_at
+        self.last_content_change_at
             .lock()
             .await
             .insert(uri_str, Instant::now());
@@ -393,7 +416,7 @@ impl LspClient {
             .lock()
             .await
             .insert(uri_str.clone(), version);
-        self.last_opened_at
+        self.last_content_change_at
             .lock()
             .await
             .insert(uri_str, Instant::now());
@@ -710,18 +733,23 @@ impl LspClient {
             .lock()
             .await
             .get(uri)
-            .cloned()
+            .map(|e| e.diagnostics.clone())
             .unwrap_or_default()
     }
 
     pub async fn get_all_diagnostics(&self) -> HashMap<String, Vec<lsp_types::Diagnostic>> {
-        self.diagnostics.lock().await.clone()
+        self.diagnostics
+            .lock()
+            .await
+            .iter()
+            .map(|(k, e)| (k.clone(), e.diagnostics.clone()))
+            .collect()
     }
 
     /// Returns true if the file was opened or changed very recently and
     /// no diagnostics have been received yet for it.
     pub async fn diagnostics_may_still_be_warming(&self, uri: &str) -> bool {
-        let last = self.last_opened_at.lock().await;
+        let last = self.last_content_change_at.lock().await;
         if let Some(instant) = last.get(uri) {
             let elapsed = instant.elapsed();
             if elapsed < std::time::Duration::from_secs(2) {
@@ -737,11 +765,108 @@ impl LspClient {
             let uri = diags.0;
             let diagnostics = diags.1;
             let count = diagnostics.len();
-            self.diagnostics
-                .lock()
-                .await
-                .insert(uri.clone(), diagnostics);
+            self.diagnostics.lock().await.insert(
+                uri.clone(),
+                DiagnosticCacheEntry {
+                    diagnostics,
+                    received_at: std::time::Instant::now(),
+                    source: crate::diagnostics::LspDiagnosticSource::Pushed,
+                    content_version: None,
+                },
+            );
             debug!(uri, count, "received diagnostics");
+        }
+    }
+
+    /// Return a fresh diagnostic snapshot with freshness metadata.
+    pub async fn diagnostic_snapshot(&self, uri: &str) -> crate::diagnostics::LspDiagnosticSnapshot {
+        let file_path = uri_to_path_str(uri);
+
+        // Check if server has been invalidated
+        if let Some(invalidated_at) = *self.diagnostics_invalidated_at.lock().await {
+            let entry = self.diagnostics.lock().await.get(uri).cloned();
+            if let Some(entry) = entry {
+                if entry.received_at < invalidated_at {
+                    return crate::diagnostics::LspDiagnosticSnapshot {
+                        file_path: PathBuf::from(file_path),
+                        diagnostics: entry
+                            .diagnostics
+                            .into_iter()
+                            .map(|d| crate::diagnostics::FileDiagnostic {
+                                file: uri.to_string(),
+                                line: d.range.start.line,
+                                column: d.range.start.character,
+                                message: d.message,
+                                severity: d
+                                    .severity
+                                    .unwrap_or(lsp_types::DiagnosticSeverity::ERROR),
+                                source: d.source,
+                                code: d.code.as_ref().map(|c| match c {
+                                    lsp_types::NumberOrString::Number(n) => n.to_string(),
+                                    lsp_types::NumberOrString::String(s) => s.clone(),
+                                }),
+                            })
+                            .collect(),
+                        generated_at_ms: 0,
+                        source: entry.source,
+                        freshness: crate::diagnostics::LspDiagnosticFreshness::Stale,
+                    };
+                }
+            }
+            return crate::diagnostics::LspDiagnosticSnapshot::unavailable(PathBuf::from(
+                file_path,
+            ));
+        }
+
+        // Check if content changed after diagnostics were received
+        let last_change = self
+            .last_content_change_at
+            .lock()
+            .await
+            .get(uri)
+            .copied();
+        let entry = self.diagnostics.lock().await.get(uri).cloned();
+
+        match entry {
+            None => {
+                crate::diagnostics::LspDiagnosticSnapshot::unavailable(PathBuf::from(file_path))
+            }
+            Some(entry) => {
+                let freshness = if let Some(changed_at) = last_change {
+                    if changed_at > entry.received_at {
+                        crate::diagnostics::LspDiagnosticFreshness::PossiblyStale
+                    } else {
+                        crate::diagnostics::LspDiagnosticFreshness::Fresh
+                    }
+                } else {
+                    crate::diagnostics::LspDiagnosticFreshness::Fresh
+                };
+
+                crate::diagnostics::LspDiagnosticSnapshot {
+                    file_path: PathBuf::from(file_path),
+                    diagnostics: entry
+                        .diagnostics
+                        .into_iter()
+                        .map(|d| crate::diagnostics::FileDiagnostic {
+                            file: uri.to_string(),
+                            line: d.range.start.line,
+                            column: d.range.start.character,
+                            message: d.message,
+                            severity: d
+                                .severity
+                                .unwrap_or(lsp_types::DiagnosticSeverity::ERROR),
+                            source: d.source,
+                            code: d.code.as_ref().map(|c| match c {
+                                lsp_types::NumberOrString::Number(n) => n.to_string(),
+                                lsp_types::NumberOrString::String(s) => s.clone(),
+                            }),
+                        })
+                        .collect(),
+                    generated_at_ms: entry.received_at.elapsed().as_millis() as i64,
+                    source: entry.source,
+                    freshness,
+                }
+            }
         }
     }
 }
@@ -941,9 +1066,10 @@ mod tests {
         });
         dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
         let map = diags.lock().await;
-        assert!(map.contains_key("file:///test.rs"));
-        assert_eq!(map["file:///test.rs"].len(), 1);
-        assert_eq!(map["file:///test.rs"][0].message, "test error");
+        let entry = map.get("file:///test.rs").expect("entry should exist");
+        assert_eq!(entry.diagnostics.len(), 1);
+        assert_eq!(entry.diagnostics[0].message, "test error");
+        assert_eq!(entry.source, crate::diagnostics::LspDiagnosticSource::Pushed);
     }
 
     #[tokio::test]
@@ -999,13 +1125,47 @@ mod tests {
         });
         dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
         let map = diags.lock().await;
-        assert!(map.contains_key("file:///test.rs"));
-        assert!(map["file:///test.rs"].is_empty());
+        let entry = map.get("file:///test.rs").expect("entry should exist");
+        assert!(entry.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_stores_version_metadata() {
+        let diags = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let params = serde_json::json!({
+            "uri": "file:///test.rs",
+            "version": 5,
+            "diagnostics": [{
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}},
+                "severity": 1,
+                "message": "test error"
+            }]
+        });
+        dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
+        let map = diags.lock().await;
+        let entry = map.get("file:///test.rs").expect("entry should exist");
+        assert_eq!(entry.content_version, Some(5));
+    }
+
+    #[tokio::test]
+    async fn dispatch_stores_received_at_timestamp() {
+        let diags = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let before = std::time::Instant::now();
+        let params = serde_json::json!({
+            "uri": "file:///test.rs",
+            "diagnostics": []
+        });
+        dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
+        let after = std::time::Instant::now();
+        let map = diags.lock().await;
+        let entry = map.get("file:///test.rs").expect("entry should exist");
+        assert!(entry.received_at >= before);
+        assert!(entry.received_at <= after);
     }
 
     #[tokio::test]
     async fn warming_logic_no_cache_entry_means_warming() {
-        let last_opened_at =
+        let last_content_change_at =
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
                 String,
                 Instant,
@@ -1013,11 +1173,11 @@ mod tests {
         let diagnostics =
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
                 String,
-                Vec<lsp_types::Diagnostic>,
+                DiagnosticCacheEntry,
             >::new()));
         let uri = "file:///test.rs";
 
-        last_opened_at
+        last_content_change_at
             .lock()
             .await
             .insert(uri.to_string(), Instant::now());
@@ -1030,11 +1190,19 @@ mod tests {
         let diagnostics =
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
                 String,
-                Vec<lsp_types::Diagnostic>,
+                DiagnosticCacheEntry,
             >::new()));
         let uri = "file:///test.rs";
 
-        diagnostics.lock().await.insert(uri.to_string(), Vec::new());
+        diagnostics.lock().await.insert(
+            uri.to_string(),
+            DiagnosticCacheEntry {
+                diagnostics: Vec::new(),
+                received_at: std::time::Instant::now(),
+                source: crate::diagnostics::LspDiagnosticSource::Pushed,
+                content_version: None,
+            },
+        );
         let has_received = diagnostics.lock().await.contains_key(uri);
         assert!(
             has_received,
@@ -1047,29 +1215,65 @@ mod tests {
         let diagnostics =
             std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
                 String,
-                Vec<lsp_types::Diagnostic>,
+                DiagnosticCacheEntry,
             >::new()));
         let uri = "file:///test.rs";
 
         diagnostics.lock().await.insert(
             uri.to_string(),
-            vec![lsp_types::Diagnostic {
-                range: lsp_types::Range {
-                    start: lsp_types::Position {
-                        line: 0,
-                        character: 0,
+            DiagnosticCacheEntry {
+                diagnostics: vec![lsp_types::Diagnostic {
+                    range: lsp_types::Range {
+                        start: lsp_types::Position {
+                            line: 0,
+                            character: 0,
+                        },
+                        end: lsp_types::Position {
+                            line: 0,
+                            character: 5,
+                        },
                     },
-                    end: lsp_types::Position {
-                        line: 0,
-                        character: 5,
-                    },
-                },
-                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-                message: "test".to_string(),
-                ..Default::default()
-            }],
+                    severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                    message: "test".to_string(),
+                    ..Default::default()
+                }],
+                received_at: std::time::Instant::now(),
+                source: crate::diagnostics::LspDiagnosticSource::Pushed,
+                content_version: None,
+            },
         );
         let has_received = diagnostics.lock().await.contains_key(uri);
         assert!(has_received, "nonempty vec entry means server responded");
+    }
+
+    #[tokio::test]
+    async fn dispatch_notification_stores_metadata() {
+        let diags = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let params = serde_json::json!({
+            "uri": "file:///test.rs",
+            "version": 5,
+            "diagnostics": [{
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}},
+                "severity": 1,
+                "message": "test error"
+            }]
+        });
+        dispatch_notification(&diags, "textDocument/publishDiagnostics", params).await;
+        let lock = diags.lock().await;
+        let entry = lock.get("file:///test.rs").expect("entry should exist");
+        assert_eq!(entry.diagnostics.len(), 1);
+        assert_eq!(entry.content_version, Some(5));
+        assert_eq!(
+            entry.source,
+            crate::diagnostics::LspDiagnosticSource::Pushed
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_notification_ignores_non_diagnostics() {
+        let diags = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let params = serde_json::json!({"method": "other/notification"});
+        dispatch_notification(&diags, "other/notification", params).await;
+        assert!(diags.lock().await.is_empty());
     }
 }

@@ -353,6 +353,18 @@ impl LspService {
         }
     }
 
+    pub async fn get_diagnostic_snapshot_for_key(
+        &self,
+        key: &str,
+        uri_str: &str,
+    ) -> Result<crate::diagnostics::LspDiagnosticSnapshot, LspError> {
+        let clients = self.clients.read().await;
+        let entry = clients
+            .get(key)
+            .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?;
+        Ok(entry.client.diagnostic_snapshot(uri_str).await)
+    }
+
     pub async fn send_request(
         &self,
         key: &str,

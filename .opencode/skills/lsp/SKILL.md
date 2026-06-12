@@ -1,7 +1,7 @@
 ---
 name: lsp
 description: LSP client-side integration for Language Server Protocol support
-version: 1.1.0
+version: 1.2.0
 tags:
   - lsp
   - language-server
@@ -640,6 +640,43 @@ pub struct LspDiagnosticSnapshot {
 - A `didSave` resets freshness; the next `publishDiagnostics` marks it `Fresh`
 - File modifications tracked via `last_opened_at` timestamps drive the `Stale` classification
 - The `diagnostics_may_still_be_warming` flag on the `diagnostics` tool operation is derived from `PossiblyStale` freshness
+
+### DiagnosticCacheEntry
+
+`DiagnosticCacheEntry` (in `crates/egglsp/src/client.rs`) stores per-file diagnostics with `received_at`, `source`, and `content_version` metadata. `LspClient::diagnostic_snapshot()` classifies freshness based on these fields.
+
+`DiagnosticsCollector::get_diagnostic_snapshot_for_file()` is the primary API for obtaining a snapshot with freshness metadata.
+
+## Capability-Gated Operations
+
+The `semanticContext` and `securityContext` handlers check `LspCapabilitySnapshot` before making optional expensive LSP calls. When a capability is unsupported, the operation is skipped and an error/note is appended instead of failing:
+
+| Operation | Gated On | Unsupported Behavior |
+|-----------|----------|---------------------|
+| definitions | `LspSemanticOperation::Definition` | `definitions_error` set; no LSP request |
+| references | `LspSemanticOperation::References` | `references_error` set; no LSP request |
+| call hierarchy | `LspSemanticOperation::CallHierarchy` | semanticContext: `call_hierarchy` = None; securityContext: note appended |
+| type hierarchy | `LspSemanticOperation::TypeHierarchy` | `type_hierarchy` = None |
+| call expansion | `LspSemanticOperation::CallHierarchy` | securityContext: note appended; `call_expansion` = None |
+
+When no capability snapshot is available (server not yet initialized), operations default to attempting the call (fail-open).
+
+## Diagnostic Evidence in Context Packets
+
+Both `SemanticContextPacket` and `SecurityContextPacket` include an optional `diagnostic_evidence` field:
+
+```rust
+struct DiagnosticEvidenceMeta {
+    freshness: LspDiagnosticFreshness,
+    source: LspDiagnosticSource,
+    generated_at_ms: i64,
+    usable_evidence: bool,
+}
+```
+
+The `usable_evidence` field is `true` when freshness is `Fresh` or `PossiblyStale`. The `securityContext` handler appends notes for stale/unavailable diagnostics:
+- `"diagnostics stale: treating diagnostics as low-confidence evidence"` (Stale)
+- `"diagnostics unavailable: no LSP diagnostic evidence available"` (Unavailable)
 
 ## Shared Semantic Context API
 

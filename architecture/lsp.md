@@ -543,6 +543,21 @@ All output is wrapped in `LspToolOutput<T>` with `operation`, `file_path`, `resu
 
 The `diagnostics` operation is first-class. It reads from the shared diagnostics cache populated by `publishDiagnostics` notifications. Diagnostics use 1-indexed line/column in output. If no diagnostics have arrived yet, an empty list is returned.
 
+The `diagnostics` tool output includes freshness metadata (`freshness`, `source`, `generated_at_ms`, `usable_evidence`) so callers can judge diagnostic reliability. Freshness is classified as `Fresh`, `PossiblyStale`, `Stale`, or `Unavailable`. See the Diagnostics Cache Lifecycle section below for details.
+
+### Capability-Gated Operations
+
+The `semanticContext` and `securityContext` handlers check `LspCapabilitySnapshot` before making optional expensive LSP calls (definitions, references, call hierarchy, type hierarchy). When a capability is unsupported:
+
+- **definitions**: `definitions_error` is set to `"definition not supported by server"` and no LSP request is made.
+- **references**: `references_error` is set to `"references not supported by server"` and no LSP request is made.
+- **call hierarchy** (semanticContext): the `call_hierarchy` field is `None` (no request made).
+- **call hierarchy** (securityContext): a note `"call hierarchy not supported by server"` is appended.
+- **call expansion** (securityContext): a note `"call expansion not supported by server (call hierarchy required)"` is appended and `call_expansion` is `None`.
+- **type hierarchy** (semanticContext): the `type_hierarchy` field is `None` (no request made).
+
+When no capability snapshot is available (e.g., server not yet initialized), operations default to attempting the call (fail-open). This ensures degraded-but-functional behavior when capabilities cannot be determined.
+
 ### Capability Discovery and Normalization
 
 `LspCapabilitySnapshot` provides a normalized boolean view of a server's capabilities after initialization. Each boolean field corresponds to a specific LSP feature or operation, derived from the `ServerCapabilities` reported by the server during the `initialize` handshake.
@@ -598,6 +613,10 @@ The `capabilities` LspTool operation returns the snapshot for the server associa
 
 ### Diagnostics Cache Lifecycle
 
+`DiagnosticCacheEntry` (in `crates/egglsp/src/client.rs`) stores per-file diagnostics with `received_at`, `source`, and `content_version` metadata. The cache is updated asynchronously when `publishDiagnostics` notifications arrive from the LSP server.
+
+`LspClient::diagnostic_snapshot()` classifies freshness based on these fields:
+
 `LspDiagnosticSnapshot` represents a point-in-time view of diagnostics for a single file:
 
 ```rust
@@ -638,6 +657,28 @@ pub enum LspDiagnosticSource {
 - `Unavailable` indicates no diagnostics have been received for the file.
 
 `PossiblyStale` and `Stale` diagnostics should not be treated as high-confidence evidence for code analysis or security findings. The freshness field allows consumers to make informed decisions about diagnostic reliability.
+
+`DiagnosticsCollector::get_diagnostic_snapshot_for_file()` is the primary API for obtaining a snapshot. It ensures the file is open from disk, then delegates to `LspService::get_diagnostic_snapshot_for_key()` which consults the client's diagnostic cache.
+
+### Diagnostic Evidence in Context Packets
+
+Both `SemanticContextPacket` and `SecurityContextPacket` include an optional `diagnostic_evidence` field carrying freshness metadata:
+
+```rust
+struct DiagnosticEvidenceMeta {
+    freshness: LspDiagnosticFreshness,
+    source: LspDiagnosticSource,
+    generated_at_ms: i64,
+    usable_evidence: bool,
+}
+```
+
+The `usable_evidence` field is `true` when freshness is `Fresh` or `PossiblyStale`. Consumers should treat stale/unavailable diagnostic evidence as low-confidence. The `securityContext` handler appends notes when diagnostics are stale or unavailable:
+
+- `"diagnostics stale: treating diagnostics as low-confidence evidence"` (for `Stale`)
+- `"diagnostics unavailable: no LSP diagnostic evidence available"` (for `Unavailable`)
+
+This allows the security review workflow to make informed decisions about diagnostic reliability when synthesizing findings.
 
 ### Shared Semantic Context API
 

@@ -12,6 +12,8 @@ use tracing::debug;
 use crate::error::LspError;
 use crate::service::LspService;
 
+pub use crate::client::DiagnosticCacheEntry;
+
 const DEBOUNCE_MS: u64 = 150;
 const MAX_ENTRIES: usize = 1000;
 const TTL_MS: u64 = 60_000;
@@ -196,6 +198,16 @@ impl DiagnosticsCollector {
         }
 
         Ok(all)
+    }
+
+    pub async fn get_diagnostic_snapshot_for_file(
+        &self,
+        file_path: &Path,
+    ) -> Result<LspDiagnosticSnapshot, LspError> {
+        let (key, uri_str) = self.service.ensure_file_open_from_disk(file_path).await?;
+        self.service
+            .get_diagnostic_snapshot_for_key(&key, &uri_str)
+            .await
     }
 
     pub async fn has_errors(&self, file_path: &Path) -> Result<bool, LspError> {

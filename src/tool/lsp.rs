@@ -103,6 +103,7 @@ struct SemanticContextPacket {
     excerpt: SourceExcerpt,
     diagnostics: Vec<DiagnosticSummary>,
     current_diagnostics_error: Option<String>,
+    diagnostic_evidence: Option<DiagnosticEvidenceMeta>,
     overlay: Option<SemanticOverlaySummary>,
     symbols: Vec<SymbolSummary>,
     current_symbols_error: Option<String>,
@@ -241,6 +242,15 @@ struct TypeHierarchySummary {
     truncated: bool,
 }
 
+/// Diagnostic freshness metadata for semantic/security context packets.
+#[derive(Debug, Clone, Serialize)]
+struct DiagnosticEvidenceMeta {
+    freshness: crate::lsp::diagnostics::LspDiagnosticFreshness,
+    source: crate::lsp::diagnostics::LspDiagnosticSource,
+    generated_at_ms: i64,
+    usable_evidence: bool,
+}
+
 #[derive(Serialize)]
 struct SecurityContextPacket {
     file: String,
@@ -249,6 +259,7 @@ struct SecurityContextPacket {
     risk_markers: Vec<SecurityRiskMarker>,
     security_relevant_symbols: Vec<SymbolSummary>,
     security_relevant_diagnostics: Vec<DiagnosticSummary>,
+    diagnostic_evidence: Option<DiagnosticEvidenceMeta>,
     definitions: Vec<LocationSummary>,
     references: Vec<LocationSummary>,
     call_hierarchy: Option<CallHierarchySummary>,
@@ -1473,13 +1484,21 @@ impl Tool for LspTool {
             }
             "diagnostics" => {
                 let file = self.resolve_file(&parsed.file_path)?;
-                let collector =
-                    crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
-                let diag_output = collector
-                    .get_diagnostics_for_file(&file)
+                let (key, uri_str) = self
+                    .service
+                    .ensure_file_open_from_disk(&file)
                     .await
                     .map_err(|e| ToolError::Execution(format!("diagnostics: {e}")))?;
-                let summaries: Vec<DiagnosticSummary> = diag_output
+                let snapshot = self
+                    .service
+                    .get_diagnostic_snapshot_for_key(&key, &uri_str)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("diagnostics: {e}")))?;
+                let warming = self
+                    .service
+                    .diagnostics_may_still_be_warming(&key, &uri_str)
+                    .await;
+                let summaries: Vec<DiagnosticSummary> = snapshot
                     .diagnostics
                     .iter()
                     .map(|d| DiagnosticSummary {
@@ -1495,10 +1514,18 @@ impl Tool for LspTool {
                 #[derive(Serialize)]
                 struct DiagnosticsResult {
                     diagnostics_may_still_be_warming: bool,
+                    freshness: crate::lsp::diagnostics::LspDiagnosticFreshness,
+                    source: crate::lsp::diagnostics::LspDiagnosticSource,
+                    generated_at_ms: i64,
+                    usable_evidence: bool,
                     diagnostics: Vec<DiagnosticSummary>,
                 }
                 let result = DiagnosticsResult {
-                    diagnostics_may_still_be_warming: diag_output.diagnostics_may_still_be_warming,
+                    diagnostics_may_still_be_warming: warming,
+                    freshness: snapshot.freshness,
+                    source: snapshot.source,
+                    generated_at_ms: snapshot.generated_at_ms,
+                    usable_evidence: snapshot.is_usable_evidence(),
                     diagnostics: summaries,
                 };
                 let output = LspToolOutput {
@@ -1828,12 +1855,12 @@ impl Tool for LspTool {
                 // Phase 4: current diagnostics
                 let collector =
                     crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
-                let (current_diags, current_diag_err, diagnostics_truncated) =
-                    match collector.get_diagnostics_for_file(&file).await {
-                        Ok(diag_output) => {
-                            let raw_diag_len = diag_output.diagnostics.len();
+                let (current_diags, current_diag_err, diagnostics_truncated, diag_evidence) =
+                    match collector.get_diagnostic_snapshot_for_file(&file).await {
+                        Ok(snapshot) => {
+                            let raw_diag_len = snapshot.diagnostics.len();
                             let diagnostics_truncated = raw_diag_len > MAX_CONTEXT_DIAGNOSTICS;
-                            let diags: Vec<DiagnosticSummary> = diag_output
+                            let diags: Vec<DiagnosticSummary> = snapshot
                                 .diagnostics
                                 .iter()
                                 .take(MAX_CONTEXT_DIAGNOSTICS)
@@ -1847,9 +1874,15 @@ impl Tool for LspTool {
                                     message: d.message.clone(),
                                 })
                                 .collect();
-                            (diags, None, diagnostics_truncated)
+                            let evidence = DiagnosticEvidenceMeta {
+                                freshness: snapshot.freshness,
+                                source: snapshot.source,
+                                generated_at_ms: snapshot.generated_at_ms,
+                                usable_evidence: snapshot.is_usable_evidence(),
+                            };
+                            (diags, None, diagnostics_truncated, Some(evidence))
                         }
-                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}")), false),
+                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}")), false, None),
                     };
 
                 // Phase 4: current document symbols
@@ -1864,7 +1897,19 @@ impl Tool for LspTool {
                         Err(e) => (Vec::new(), Some(format!("documentSymbol: {e}")), false),
                     };
 
-                // Phase 5: definitions + references
+                // Phase 4.5: fetch capability snapshot for fail-soft gating
+                let caps_snapshot = if let Ok((cap_key, _)) = self.service.get_or_create_client(&file).await {
+                    self.service.get_capabilities_for_key(&cap_key).await
+                        .map(|caps| egglsp::LspCapabilitySnapshot::from_capabilities(
+                            &caps,
+                            Some("lsp"),
+                            None,
+                        ))
+                } else {
+                    None
+                };
+
+                // Phase 5: definitions + references (capability-gated)
                 let mut definitions = Vec::new();
                 let mut definitions_error = None;
                 let mut references = Vec::new();
@@ -1873,49 +1918,63 @@ impl Tool for LspTool {
                 if has_position {
                     let pos = to_lsp_position(parsed.line.unwrap(), parsed.column.unwrap());
                     if want_defs {
-                        match ops.go_to_definition(&file, pos.line, pos.character).await {
-                            Ok(defs) => {
-                                definitions = defs
-                                    .iter()
-                                    .map(|loc| {
-                                        let range = loc.target_range;
-                                        LocationSummary {
-                                            file: uri_to_path(&loc.target_uri),
-                                            start_line: range.start.line + 1,
-                                            start_column: range.start.character + 1,
-                                            end_line: range.end.line + 1,
-                                            end_column: range.end.character + 1,
-                                        }
-                                    })
-                                    .collect();
+                        let supported = caps_snapshot.as_ref()
+                            .map(|c| c.supports(egglsp::LspSemanticOperation::Definition))
+                            .unwrap_or(true);
+                        if supported {
+                            match ops.go_to_definition(&file, pos.line, pos.character).await {
+                                Ok(defs) => {
+                                    definitions = defs
+                                        .iter()
+                                        .map(|loc| {
+                                            let range = loc.target_range;
+                                            LocationSummary {
+                                                file: uri_to_path(&loc.target_uri),
+                                                start_line: range.start.line + 1,
+                                                start_column: range.start.character + 1,
+                                                end_line: range.end.line + 1,
+                                                end_column: range.end.character + 1,
+                                            }
+                                        })
+                                        .collect();
+                                }
+                                Err(e) => {
+                                    definitions_error = Some(format!("goToDefinition: {e}"));
+                                }
                             }
-                            Err(e) => {
-                                definitions_error = Some(format!("goToDefinition: {e}"));
-                            }
+                        } else {
+                            definitions_error = Some("definition not supported by server".to_string());
                         }
                     }
                     if want_refs {
-                        match ops.find_references(&file, pos.line, pos.character).await {
-                            Ok(refs) => {
-                                refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
-                                references = refs
-                                    .into_iter()
-                                    .take(MAX_CONTEXT_REFERENCES)
-                                    .map(|loc| {
-                                        let range = loc.range;
-                                        LocationSummary {
-                                            file: uri_to_path(&loc.uri),
-                                            start_line: range.start.line + 1,
-                                            start_column: range.start.character + 1,
-                                            end_line: range.end.line + 1,
-                                            end_column: range.end.character + 1,
-                                        }
-                                    })
-                                    .collect();
+                        let supported = caps_snapshot.as_ref()
+                            .map(|c| c.supports(egglsp::LspSemanticOperation::References))
+                            .unwrap_or(true);
+                        if supported {
+                            match ops.find_references(&file, pos.line, pos.character).await {
+                                Ok(refs) => {
+                                    refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
+                                    references = refs
+                                        .into_iter()
+                                        .take(MAX_CONTEXT_REFERENCES)
+                                        .map(|loc| {
+                                            let range = loc.range;
+                                            LocationSummary {
+                                                file: uri_to_path(&loc.uri),
+                                                start_line: range.start.line + 1,
+                                                start_column: range.start.character + 1,
+                                                end_line: range.end.line + 1,
+                                                end_column: range.end.character + 1,
+                                            }
+                                        })
+                                        .collect();
+                                }
+                                Err(e) => {
+                                    references_error = Some(format!("findReferences: {e}"));
+                                }
                             }
-                            Err(e) => {
-                                references_error = Some(format!("findReferences: {e}"));
-                            }
+                        } else {
+                            references_error = Some("references not supported by server".to_string());
                         }
                     }
                 }
@@ -2014,33 +2073,47 @@ impl Tool for LspTool {
                 let source_action_count =
                     source_actions.iter().filter(|hint| hint.available).count();
 
-                // Call and type hierarchy (opt-in, position validated above)
+                // Call and type hierarchy (opt-in, position validated above, capability-gated)
                 let call_hierarchy = if include_call_hierarchy && has_position {
-                    Some(
-                        self.build_call_hierarchy_summary(
-                            &ops,
-                            &file,
-                            parsed.line.unwrap(),
-                            parsed.column.unwrap(),
-                            crate::lsp::operations::HierarchyDirection::Both,
+                    let supported = caps_snapshot.as_ref()
+                        .map(|c| c.supports(egglsp::LspSemanticOperation::CallHierarchy))
+                        .unwrap_or(true);
+                    if supported {
+                        Some(
+                            self.build_call_hierarchy_summary(
+                                &ops,
+                                &file,
+                                parsed.line.unwrap(),
+                                parsed.column.unwrap(),
+                                crate::lsp::operations::HierarchyDirection::Both,
+                            )
+                            .await,
                         )
-                        .await,
-                    )
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
 
                 let type_hierarchy = if include_type_hierarchy && has_position {
-                    Some(
-                        self.build_type_hierarchy_summary(
-                            &ops,
-                            &file,
-                            parsed.line.unwrap(),
-                            parsed.column.unwrap(),
-                            crate::lsp::operations::HierarchyDirection::Both,
+                    let supported = caps_snapshot.as_ref()
+                        .map(|c| c.supports(egglsp::LspSemanticOperation::TypeHierarchy))
+                        .unwrap_or(true);
+                    if supported {
+                        Some(
+                            self.build_type_hierarchy_summary(
+                                &ops,
+                                &file,
+                                parsed.line.unwrap(),
+                                parsed.column.unwrap(),
+                                crate::lsp::operations::HierarchyDirection::Both,
+                            )
+                            .await,
                         )
-                        .await,
-                    )
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -2068,6 +2141,7 @@ impl Tool for LspTool {
                     excerpt,
                     diagnostics: current_diags,
                     current_diagnostics_error: current_diag_err,
+                    diagnostic_evidence: diag_evidence,
                     overlay,
                     symbols: current_syms,
                     current_symbols_error: current_sym_err,
@@ -2153,10 +2227,16 @@ impl Tool for LspTool {
 
                 let collector =
                     crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
-                let (raw_diags, current_diag_err) =
-                    match collector.get_diagnostics_for_file(&file).await {
-                        Ok(diag_output) => {
-                            let diags: Vec<DiagnosticSummary> = diag_output
+                let (raw_diags, current_diag_err, diag_evidence) =
+                    match collector.get_diagnostic_snapshot_for_file(&file).await {
+                        Ok(snapshot) => {
+                            let evidence = DiagnosticEvidenceMeta {
+                                freshness: snapshot.freshness,
+                                source: snapshot.source,
+                                generated_at_ms: snapshot.generated_at_ms,
+                                usable_evidence: snapshot.is_usable_evidence(),
+                            };
+                            let diags: Vec<DiagnosticSummary> = snapshot
                                 .diagnostics
                                 .iter()
                                 .map(|d| DiagnosticSummary {
@@ -2169,9 +2249,9 @@ impl Tool for LspTool {
                                     message: d.message.clone(),
                                 })
                                 .collect();
-                            (diags, None)
+                            (diags, None, Some(evidence))
                         }
-                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}"))),
+                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}")), None),
                     };
 
                 let security_diags: Vec<DiagnosticSummary> = raw_diags
@@ -2211,49 +2291,76 @@ impl Tool for LspTool {
                 let mut refs_truncated = false;
                 let mut defs_error: Option<String> = None;
                 let mut refs_error: Option<String> = None;
+
+                // Fetch capability snapshot for fail-soft gating in securityContext
+                let caps_snapshot = if let Ok((cap_key, _)) = self.service.get_or_create_client(&file).await {
+                    self.service.get_capabilities_for_key(&cap_key).await
+                        .map(|caps| egglsp::LspCapabilitySnapshot::from_capabilities(
+                            &caps,
+                            Some("lsp"),
+                            None,
+                        ))
+                } else {
+                    None
+                };
+
                 if has_position {
                     let pos = to_lsp_position(parsed.line.unwrap(), parsed.column.unwrap());
-                    match ops.go_to_definition(&file, pos.line, pos.character).await {
-                        Ok(defs) => {
-                            definitions = defs
-                                .iter()
-                                .map(|loc| {
-                                    let range = loc.target_range;
-                                    LocationSummary {
-                                        file: uri_to_path(&loc.target_uri),
-                                        start_line: range.start.line + 1,
-                                        start_column: range.start.character + 1,
-                                        end_line: range.end.line + 1,
-                                        end_column: range.end.character + 1,
-                                    }
-                                })
-                                .collect();
+                    let defs_supported = caps_snapshot.as_ref()
+                        .map(|c| c.supports(egglsp::LspSemanticOperation::Definition))
+                        .unwrap_or(true);
+                    if defs_supported {
+                        match ops.go_to_definition(&file, pos.line, pos.character).await {
+                            Ok(defs) => {
+                                definitions = defs
+                                    .iter()
+                                    .map(|loc| {
+                                        let range = loc.target_range;
+                                        LocationSummary {
+                                            file: uri_to_path(&loc.target_uri),
+                                            start_line: range.start.line + 1,
+                                            start_column: range.start.character + 1,
+                                            end_line: range.end.line + 1,
+                                            end_column: range.end.character + 1,
+                                        }
+                                    })
+                                    .collect();
+                            }
+                            Err(e) => {
+                                defs_error = Some(format!("definitions: {e}"));
+                            }
                         }
-                        Err(e) => {
-                            defs_error = Some(format!("definitions: {e}"));
-                        }
+                    } else {
+                        defs_error = Some("definition not supported by server".to_string());
                     }
-                    match ops.find_references(&file, pos.line, pos.character).await {
-                        Ok(refs) => {
-                            refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
-                            references = refs
-                                .into_iter()
-                                .take(MAX_CONTEXT_REFERENCES)
-                                .map(|loc| {
-                                    let range = loc.range;
-                                    LocationSummary {
-                                        file: uri_to_path(&loc.uri),
-                                        start_line: range.start.line + 1,
-                                        start_column: range.start.character + 1,
-                                        end_line: range.end.line + 1,
-                                        end_column: range.end.character + 1,
-                                    }
-                                })
-                                .collect();
+                    let refs_supported = caps_snapshot.as_ref()
+                        .map(|c| c.supports(egglsp::LspSemanticOperation::References))
+                        .unwrap_or(true);
+                    if refs_supported {
+                        match ops.find_references(&file, pos.line, pos.character).await {
+                            Ok(refs) => {
+                                refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
+                                references = refs
+                                    .into_iter()
+                                    .take(MAX_CONTEXT_REFERENCES)
+                                    .map(|loc| {
+                                        let range = loc.range;
+                                        LocationSummary {
+                                            file: uri_to_path(&loc.uri),
+                                            start_line: range.start.line + 1,
+                                            start_column: range.start.character + 1,
+                                            end_line: range.end.line + 1,
+                                            end_column: range.end.character + 1,
+                                        }
+                                    })
+                                    .collect();
+                            }
+                            Err(e) => {
+                                refs_error = Some(format!("references: {e}"));
+                            }
                         }
-                        Err(e) => {
-                            refs_error = Some(format!("references: {e}"));
-                        }
+                    } else {
+                        refs_error = Some("references not supported by server".to_string());
                     }
                 }
 
@@ -2336,38 +2443,6 @@ impl Tool for LspTool {
                     (None, false)
                 };
 
-                let call_hierarchy = if settings.include_call_hierarchy && has_position {
-                    Some(
-                        self.build_call_hierarchy_summary(
-                            &ops,
-                            &file,
-                            parsed.line.unwrap(),
-                            parsed.column.unwrap(),
-                            crate::lsp::operations::HierarchyDirection::Both,
-                        )
-                        .await,
-                    )
-                } else {
-                    None
-                };
-
-                let call_expansion = if settings.call_depth > 0 && has_position {
-                    Some(
-                        self.build_call_expansion_summary(
-                            &ops,
-                            &file,
-                            parsed.line.unwrap(),
-                            parsed.column.unwrap(),
-                            settings.call_direction,
-                            settings.call_depth,
-                            settings.max_call_nodes,
-                        )
-                        .await,
-                    )
-                } else {
-                    None
-                };
-
                 let mut notes = Vec::new();
                 if risk_markers.is_empty() {
                     notes.push("no risk markers detected in excerpt".to_string());
@@ -2378,6 +2453,55 @@ impl Tool for LspTool {
                             .to_string(),
                     );
                 }
+
+                let call_hierarchy = if settings.include_call_hierarchy && has_position {
+                    let supported = caps_snapshot.as_ref()
+                        .map(|c| c.supports(egglsp::LspSemanticOperation::CallHierarchy))
+                        .unwrap_or(true);
+                    if supported {
+                        Some(
+                            self.build_call_hierarchy_summary(
+                                &ops,
+                                &file,
+                                parsed.line.unwrap(),
+                                parsed.column.unwrap(),
+                                crate::lsp::operations::HierarchyDirection::Both,
+                            )
+                            .await,
+                        )
+                    } else {
+                        notes.push("call hierarchy not supported by server".to_string());
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let call_expansion = if settings.call_depth > 0 && has_position {
+                    let supported = caps_snapshot.as_ref()
+                        .map(|c| c.supports(egglsp::LspSemanticOperation::CallHierarchy))
+                        .unwrap_or(true);
+                    if supported {
+                        Some(
+                            self.build_call_expansion_summary(
+                                &ops,
+                                &file,
+                                parsed.line.unwrap(),
+                                parsed.column.unwrap(),
+                                settings.call_direction,
+                                settings.call_depth,
+                                settings.max_call_nodes,
+                            )
+                            .await,
+                        )
+                    } else {
+                        notes.push("call expansion not supported by server (call hierarchy required)".to_string());
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 if let Some(err) = current_diag_err {
                     notes.push(format!("diagnostics unavailable: {err}"));
                 }
@@ -2392,6 +2516,17 @@ impl Tool for LspTool {
                 }
                 if let Some(note) = settings.preset_note {
                     notes.push(note);
+                }
+                if let Some(ref evidence) = diag_evidence {
+                    match evidence.freshness {
+                        crate::lsp::diagnostics::LspDiagnosticFreshness::Stale => {
+                            notes.push("diagnostics stale: treating diagnostics as low-confidence evidence".to_string());
+                        }
+                        crate::lsp::diagnostics::LspDiagnosticFreshness::Unavailable => {
+                            notes.push("diagnostics unavailable: no LSP diagnostic evidence available".to_string());
+                        }
+                        _ => {}
+                    }
                 }
 
                 let security_diag_count = security_diags.len();
@@ -2420,6 +2555,7 @@ impl Tool for LspTool {
                     risk_markers,
                     security_relevant_symbols: security_syms,
                     security_relevant_diagnostics: security_diags,
+                    diagnostic_evidence: diag_evidence,
                     definitions,
                     references,
                     call_hierarchy,
@@ -2525,6 +2661,78 @@ impl Tool for LspTool {
         Ok(StructuredToolResult::with_provenance(
             output, success, provenance,
         ))
+    }
+}
+
+// --- Shared DTO conversion helpers (Phase 6) ---
+
+impl From<&SymbolSummary> for egglsp::semantic_context::SemanticSymbolSummary {
+    fn from(s: &SymbolSummary) -> Self {
+        Self {
+            name: s.name.clone(),
+            kind: s.kind.clone(),
+            file: s.file.clone(),
+            start_line: s.start_line,
+            start_column: s.start_column,
+            end_line: s.end_line,
+            end_column: s.end_column,
+        }
+    }
+}
+
+impl From<&LocationSummary> for egglsp::semantic_context::SemanticLocation {
+    fn from(l: &LocationSummary) -> Self {
+        Self {
+            file: l.file.clone(),
+            start_line: l.start_line,
+            start_column: l.start_column,
+            end_line: l.end_line,
+            end_column: l.end_column,
+        }
+    }
+}
+
+impl From<&DiagnosticSummary> for crate::lsp::diagnostics::FileDiagnostic {
+    fn from(d: &DiagnosticSummary) -> Self {
+        Self {
+            file: d.file.clone(),
+            line: d.line.saturating_sub(1),
+            column: d.column.saturating_sub(1),
+            message: d.message.clone(),
+            severity: match d.severity.as_str() {
+                "error" => egglsp::lsp_types::DiagnosticSeverity::ERROR,
+                "warning" => egglsp::lsp_types::DiagnosticSeverity::WARNING,
+                "info" => egglsp::lsp_types::DiagnosticSeverity::INFORMATION,
+                "hint" => egglsp::lsp_types::DiagnosticSeverity::HINT,
+                _ => egglsp::lsp_types::DiagnosticSeverity::ERROR,
+            },
+            source: d.source.clone(),
+            code: d.code.clone(),
+        }
+    }
+}
+
+/// Build a shared [`egglsp::semantic_context::SemanticContextResponse`] from
+/// local [`SemanticContextPacket`] data.
+///
+/// This is a transitional adapter; the shared DTO should eventually become
+/// the internal source of truth.
+#[allow(dead_code)]
+fn build_semantic_context_response(
+    packet: &SemanticContextPacket,
+) -> egglsp::semantic_context::SemanticContextResponse {
+    use egglsp::semantic_context::SemanticContextResponse;
+    SemanticContextResponse {
+        file_path: packet.file.clone(),
+        symbol: packet.symbols.first().map(|s| s.into()),
+        diagnostics: packet.diagnostics.iter().map(|d| d.into()).collect(),
+        definitions: packet.definitions.iter().map(|l| l.into()).collect(),
+        references: packet.references.iter().map(|l| l.into()).collect(),
+        call_hierarchy: None,
+        type_hierarchy: None,
+        notes: Vec::new(),
+        truncated: false,
+        unavailable: Vec::new(),
     }
 }
 
