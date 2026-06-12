@@ -135,6 +135,7 @@ These items are important for future agents to know when working with the codeba
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` contains shared patch utility functions used by both `apply_patch` tool and LSP preview operations. Extracted to avoid duplication between the mutating `apply_patch` tool and the read-only `WorkspaceEditPreview` path.
 
 - **Capability-gated LSP operations**: `semanticContext` and `securityContext` now check `LspCapabilitySnapshot` before optional expensive LSP calls (definitions, references, call hierarchy, type hierarchy). When a capability is unsupported, the operation is skipped and an error/note is appended instead of failing. When no snapshot is available (server not initialized), operations default to attempting the call (fail-open). `DiagnosticEvidenceMeta` carries freshness metadata for semantic/security context packets, with `usable_evidence` indicating whether diagnostics are reliable. The `securityContext` handler appends notes for stale/unavailable diagnostics.
+- **Semantic context consolidation**: `SemanticContextResponse` (in `egglsp`) is the internal semantic read model. `SemanticContextCollector` (`src/lsp/semantic_context.rs`) owns domain assembly and produces the response. `SemanticContextPacket::from_semantic_response()` adapts the shared response into the tool-local presentation packet for `semanticContext`. The `semanticContext` handler no longer directly owns diagnostics/symbols/definitions/references assembly. Overlay handling with patch resolution remains handler-local. `securityContext` still duplicates some collection work (Phase 5 of the consolidation plan).
 
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum at `types.rs:2-25`.
 
@@ -194,7 +195,9 @@ These items were verified during review sessions:
 | LSP semantic operation enum | `LspSemanticOperation` | `crates/egglsp/src/capability.rs` — Diagnostics, DocumentSymbols, WorkspaceSymbols, Definition, References, Hover, Completion, CallHierarchy, TypeHierarchy, SemanticTokens, SecurityContext |
 | LSP unavailable response | `LspUnavailable` | `crates/egglsp/src/capability.rs` — structured fallback for unsupported operations |
 | LSP diagnostics snapshot | `LspDiagnosticSnapshot` | `crates/egglsp/src/diagnostics.rs` — freshness metadata (Fresh, PossiblyStale, Stale, Unavailable) |
-| Semantic context API | `SemanticContextRequest`/`SemanticContextResponse` | `crates/egglsp/src/semantic_context.rs` — domain-agnostic semantic queries with intent enum |
+| Semantic context API | `SemanticContextRequest`/`SemanticContextResponse` | `crates/egglsp/src/semantic_context.rs` — domain-agnostic semantic queries with intent enum; `SemanticContextResponse` is the internal semantic read model |
+| Semantic context collector | `SemanticContextCollector` | `src/lsp/semantic_context.rs` — owns domain assembly, produces `SemanticContextResponse` from LSP services |
+| Semantic context adapter | `SemanticContextPacket::from_semantic_response()` | `src/tool/lsp.rs` — adapts shared response into tool-local presentation packet |
 | `capabilities` LspTool operation | `capabilities` | `src/tool/lsp.rs` — returns `LspCapabilitySnapshot` for the file's server |
 | Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` — see `architecture/native_crates.md` |
 | Extracted workspace crates | 4 (+1 new) | `crates/codegg-config`, `crates/codegg-protocol`, `crates/codegg-providers`, `crates/codegg-core` |

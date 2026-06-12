@@ -1,5 +1,6 @@
 use super::lsp_security::SecurityRiskMarker;
 use crate::error::ToolError;
+use crate::lsp::semantic_context::SemanticContextCollector;
 use crate::tool::{
     StructuredToolResult, Tool, ToolBackendKind, ToolCategory, ToolExecutionContext,
     ToolProvenance, ToolTrust,
@@ -1821,14 +1822,11 @@ impl Tool for LspTool {
                     ));
                 }
 
-                let file_str = file.to_string_lossy().to_string();
                 let radius = parsed
                     .radius
                     .unwrap_or(DEFAULT_SEMANTIC_CONTEXT_RADIUS)
                     .min(MAX_SEMANTIC_CONTEXT_RADIUS);
                 let has_position = parsed.line.is_some() && parsed.column.is_some();
-                let want_defs = parsed.include_definitions.unwrap_or(has_position);
-                let want_refs = parsed.include_references.unwrap_or(has_position);
                 let has_proposed = parsed.content.is_some() || parsed.patch.is_some();
                 let want_overlay = parsed.include_overlay.unwrap_or(has_proposed);
 
@@ -1857,136 +1855,45 @@ impl Tool for LspTool {
                     ));
                 }
 
-                // Phase 3: source excerpt
-                let (excerpt, excerpt_truncated) = if has_position {
-                    Self::build_source_excerpt(&file, parsed.line, radius)?
-                } else {
-                    Self::build_source_excerpt(&file, None, radius)?
-                };
-
-                // Phase 4: current diagnostics
-                let collector =
-                    crate::lsp::diagnostics::DiagnosticsCollector::new(self.service.clone());
-                let (current_diags, current_diag_err, diagnostics_truncated, diag_evidence) =
-                    match collector.get_diagnostic_snapshot_for_file(&file).await {
-                        Ok(snapshot) => {
-                            let raw_diag_len = snapshot.diagnostics.len();
-                            let diagnostics_truncated = raw_diag_len > MAX_CONTEXT_DIAGNOSTICS;
-                            let diags: Vec<DiagnosticSummary> = snapshot
-                                .diagnostics
-                                .iter()
-                                .take(MAX_CONTEXT_DIAGNOSTICS)
-                                .map(|d| DiagnosticSummary {
-                                    file: d.file.clone(),
-                                    line: d.line + 1,
-                                    column: d.column + 1,
-                                    severity: severity_to_string(d.severity),
-                                    source: d.source.clone(),
-                                    code: d.code.clone(),
-                                    message: d.message.clone(),
-                                })
-                                .collect();
-                            let evidence = DiagnosticEvidenceMeta {
-                                freshness: snapshot.freshness,
-                                source: snapshot.source,
-                                age_ms: snapshot.age_ms,
-                                usable_evidence: snapshot.is_usable_evidence(),
-                            };
-                            (diags, None, diagnostics_truncated, Some(evidence))
-                        }
-                        Err(e) => (Vec::new(), Some(format!("diagnostics: {e}")), false, None),
-                    };
-
-                // Phase 4: current document symbols
-                let (current_syms, current_sym_err, symbols_truncated) =
-                    match ops.document_symbols(&file).await {
-                        Ok(syms) => {
-                            let mut remaining = MAX_CONTEXT_SYMBOLS;
-                            let mut summaries = Vec::new();
-                            Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
-                            (summaries, None, remaining == 0)
-                        }
-                        Err(e) => (Vec::new(), Some(format!("documentSymbol: {e}")), false),
-                    };
-
-                // Phase 4.5: fetch capability snapshot for fail-soft gating
-                let caps_snapshot = self.capability_snapshot_for_file(&file).await;
-
-                // Phase 5: definitions + references (capability-gated)
-                let mut definitions = Vec::new();
-                let mut definitions_error = None;
-                let mut references = Vec::new();
-                let mut references_error = None;
-                let mut refs_truncated = false;
+                // Build the shared request for the collector
+                let file_str = file.to_string_lossy().to_string();
+                let mut request = egglsp::semantic_context::SemanticContextRequest::new(
+                    &file_str,
+                    egglsp::semantic_context::SemanticContextIntent::Explain,
+                )
+                .with_excerpt_radius(radius);
                 if has_position {
-                    let pos = to_lsp_position(parsed.line.unwrap(), parsed.column.unwrap());
-                    if want_defs {
-                        let supported = caps_snapshot
-                            .as_ref()
-                            .map(|c| c.supports(egglsp::LspSemanticOperation::Definition))
-                            .unwrap_or(true);
-                        if supported {
-                            match ops.go_to_definition(&file, pos.line, pos.character).await {
-                                Ok(defs) => {
-                                    definitions = defs
-                                        .iter()
-                                        .map(|loc| {
-                                            let range = loc.target_range;
-                                            LocationSummary {
-                                                file: uri_to_path(&loc.target_uri),
-                                                start_line: range.start.line + 1,
-                                                start_column: range.start.character + 1,
-                                                end_line: range.end.line + 1,
-                                                end_column: range.end.character + 1,
-                                            }
-                                        })
-                                        .collect();
-                                }
-                                Err(e) => {
-                                    definitions_error = Some(format!("goToDefinition: {e}"));
-                                }
-                            }
-                        } else {
-                            definitions_error =
-                                Some("definition not supported by server".to_string());
-                        }
-                    }
-                    if want_refs {
-                        let supported = caps_snapshot
-                            .as_ref()
-                            .map(|c| c.supports(egglsp::LspSemanticOperation::References))
-                            .unwrap_or(true);
-                        if supported {
-                            match ops.find_references(&file, pos.line, pos.character).await {
-                                Ok(refs) => {
-                                    refs_truncated = refs.len() > MAX_CONTEXT_REFERENCES;
-                                    references = refs
-                                        .into_iter()
-                                        .take(MAX_CONTEXT_REFERENCES)
-                                        .map(|loc| {
-                                            let range = loc.range;
-                                            LocationSummary {
-                                                file: uri_to_path(&loc.uri),
-                                                start_line: range.start.line + 1,
-                                                start_column: range.start.character + 1,
-                                                end_line: range.end.line + 1,
-                                                end_column: range.end.character + 1,
-                                            }
-                                        })
-                                        .collect();
-                                }
-                                Err(e) => {
-                                    references_error = Some(format!("findReferences: {e}"));
-                                }
-                            }
-                        } else {
-                            references_error =
-                                Some("references not supported by server".to_string());
-                        }
-                    }
+                    request = request.with_position(parsed.line.unwrap(), parsed.column.unwrap());
                 }
+                // Let the collector handle diagnostics, symbols, excerpt, defs, refs.
+                // Overlay is handled separately below due to patch resolution logic.
+                request.include_overlay = false;
+                request.include_source_actions = parsed.include_source_actions.unwrap_or(false);
+                request.include_definitions = parsed.include_definitions.unwrap_or(has_position);
+                request.include_references = parsed.include_references.unwrap_or(has_position);
+                request.max_symbols = MAX_CONTEXT_SYMBOLS;
+                request.max_references = MAX_CONTEXT_REFERENCES;
+                request.max_diagnostics = MAX_CONTEXT_DIAGNOSTICS;
 
-                // Phase 6: overlay
+                let ops = Arc::new(crate::lsp::operations::LspOperations::new(
+                    self.service.clone(),
+                ));
+                let diagnostics = Arc::new(crate::lsp::diagnostics::DiagnosticsCollector::new(
+                    self.service.clone(),
+                ));
+                let collector = SemanticContextCollector::new(
+                    self.service.clone(),
+                    ops.clone(),
+                    diagnostics,
+                    self.allowed_root.clone(),
+                );
+
+                let response = collector
+                    .collect(request)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("semanticContext: {e}")))?;
+
+                // Phase 6: overlay (handler-resolved, supports patches)
                 let (overlay, overlay_diagnostics_truncated) = if want_overlay {
                     match self
                         .resolve_semantic_check_content(
@@ -2067,9 +1974,6 @@ impl Tool for LspTool {
                     (None, false)
                 };
 
-                let overlay_diag_count = overlay.as_ref().map(|o| o.diagnostics.len()).unwrap_or(0);
-                let overlay_sym_count = overlay.as_ref().map(|o| o.symbols.len()).unwrap_or(0);
-
                 // Source-action hints (opt-in)
                 let include_source_actions = parsed.include_source_actions.unwrap_or(false);
                 let source_actions = if include_source_actions {
@@ -2077,10 +1981,10 @@ impl Tool for LspTool {
                 } else {
                     Vec::new()
                 };
-                let source_action_count =
-                    source_actions.iter().filter(|hint| hint.available).count();
 
                 // Call and type hierarchy (opt-in, position validated above, capability-gated)
+                let caps_snapshot = self.capability_snapshot_for_file(&file).await;
+
                 let call_hierarchy = if include_call_hierarchy && has_position {
                     let supported = caps_snapshot
                         .as_ref()
@@ -2127,48 +2031,59 @@ impl Tool for LspTool {
                     None
                 };
 
-                let call_hierarchy_count = call_hierarchy
+                // Adapt the shared response into the tool-local packet
+                let mut packet = SemanticContextPacket::from_semantic_response(
+                    response,
+                    target,
+                    overlay,
+                    source_actions,
+                    SemanticContextLimits {
+                        diagnostics_truncated: false,
+                        symbols_truncated: false,
+                        references_truncated: false,
+                        overlay_diagnostics_truncated,
+                        excerpt_truncated: false,
+                    },
+                );
+                packet.call_hierarchy = call_hierarchy;
+                packet.type_hierarchy = type_hierarchy;
+
+                // Compute result_count from packet fields
+                let overlay_diag_count = packet
+                    .overlay
+                    .as_ref()
+                    .map(|o| o.diagnostics.len())
+                    .unwrap_or(0);
+                let overlay_sym_count = packet
+                    .overlay
+                    .as_ref()
+                    .map(|o| o.symbols.len())
+                    .unwrap_or(0);
+                let source_action_count = packet
+                    .source_actions
+                    .iter()
+                    .filter(|hint| hint.available)
+                    .count();
+                let call_hierarchy_count = packet
+                    .call_hierarchy
                     .as_ref()
                     .map(|c| c.items.len() + c.incoming.len() + c.outgoing.len())
                     .unwrap_or(0);
-                let type_hierarchy_count = type_hierarchy
+                let type_hierarchy_count = packet
+                    .type_hierarchy
                     .as_ref()
                     .map(|c| c.items.len() + c.supertypes.len() + c.subtypes.len())
                     .unwrap_or(0);
-                let result_count = current_diags.len()
-                    + current_syms.len()
-                    + definitions.len()
-                    + references.len()
+                let result_count = packet.diagnostics.len()
+                    + packet.symbols.len()
+                    + packet.definitions.len()
+                    + packet.references.len()
                     + overlay_diag_count
                     + overlay_sym_count
                     + source_action_count
                     + call_hierarchy_count
                     + type_hierarchy_count;
-                let packet = SemanticContextPacket {
-                    file: file_str,
-                    target,
-                    excerpt,
-                    diagnostics: current_diags,
-                    current_diagnostics_error: current_diag_err,
-                    diagnostic_evidence: diag_evidence,
-                    overlay,
-                    symbols: current_syms,
-                    current_symbols_error: current_sym_err,
-                    definitions,
-                    definitions_error,
-                    references,
-                    references_error,
-                    source_actions,
-                    call_hierarchy,
-                    type_hierarchy,
-                    limits: SemanticContextLimits {
-                        diagnostics_truncated,
-                        symbols_truncated,
-                        references_truncated: refs_truncated,
-                        overlay_diagnostics_truncated,
-                        excerpt_truncated,
-                    },
-                };
+
                 let output = LspToolOutput {
                     operation: "semanticContext".to_string(),
                     file_path: file_path_str,
@@ -2705,6 +2620,155 @@ impl From<&DiagnosticSummary> for crate::lsp::diagnostics::FileDiagnostic {
     }
 }
 
+impl SemanticContextPacket {
+    /// Adapt a shared [`egglsp::semantic_context::SemanticContextResponse`]
+    /// into the tool-local presentation packet.
+    fn from_semantic_response(
+        response: egglsp::semantic_context::SemanticContextResponse,
+        target: Option<SemanticContextTarget>,
+        overlay: Option<SemanticOverlaySummary>,
+        source_actions: Vec<SemanticSourceActionHint>,
+        limits: SemanticContextLimits,
+    ) -> Self {
+        let excerpt = response
+            .source_excerpt
+            .as_ref()
+            .map(|src| SourceExcerpt {
+                start_line: src.start_line,
+                end_line: src.end_line,
+                text: src.text.clone(),
+            })
+            .unwrap_or(SourceExcerpt {
+                start_line: 1,
+                end_line: 1,
+                text: String::new(),
+            });
+
+        let diagnostics: Vec<DiagnosticSummary> = response
+            .diagnostics
+            .iter()
+            .map(|d| DiagnosticSummary {
+                file: d.file.clone(),
+                line: d.line + 1,
+                column: d.column + 1,
+                severity: severity_to_string(d.severity),
+                source: d.source.clone(),
+                code: d.code.clone(),
+                message: d.message.clone(),
+            })
+            .collect();
+
+        let diagnostic_evidence =
+            response
+                .diagnostic_evidence
+                .as_ref()
+                .map(|e| DiagnosticEvidenceMeta {
+                    freshness: parse_freshness(&e.freshness),
+                    source: parse_source(&e.source),
+                    age_ms: e.age_ms,
+                    usable_evidence: e.usable_evidence,
+                });
+
+        let symbols: Vec<SymbolSummary> = response
+            .all_symbols
+            .iter()
+            .map(|s| SymbolSummary {
+                name: s.name.clone(),
+                kind: s.kind.clone(),
+                file: s.file.clone(),
+                start_line: s.start_line,
+                start_column: s.start_column,
+                end_line: s.end_line,
+                end_column: s.end_column,
+            })
+            .collect();
+
+        let definitions: Vec<LocationSummary> = response
+            .definitions
+            .iter()
+            .map(|l| LocationSummary {
+                file: l.file.clone(),
+                start_line: l.start_line,
+                start_column: l.start_column,
+                end_line: l.end_line,
+                end_column: l.end_column,
+            })
+            .collect();
+
+        let references: Vec<LocationSummary> = response
+            .references
+            .iter()
+            .map(|l| LocationSummary {
+                file: l.file.clone(),
+                start_line: l.start_line,
+                start_column: l.start_column,
+                end_line: l.end_line,
+                end_column: l.end_column,
+            })
+            .collect();
+
+        let current_diagnostics_error = response
+            .notes
+            .iter()
+            .find(|n| n.contains("diagnostics"))
+            .cloned();
+        let current_symbols_error = response
+            .notes
+            .iter()
+            .find(|n| n.contains("documentSymbol"))
+            .cloned();
+        let definitions_error = response
+            .notes
+            .iter()
+            .find(|n| n.contains("goToDefinition"))
+            .cloned();
+        let references_error = response
+            .notes
+            .iter()
+            .find(|n| n.contains("findReferences"))
+            .cloned();
+
+        SemanticContextPacket {
+            file: response.file_path,
+            target,
+            excerpt,
+            diagnostics,
+            current_diagnostics_error,
+            diagnostic_evidence,
+            overlay,
+            symbols,
+            current_symbols_error,
+            definitions,
+            definitions_error,
+            references,
+            references_error,
+            source_actions,
+            call_hierarchy: None,
+            type_hierarchy: None,
+            limits,
+        }
+    }
+}
+
+fn parse_freshness(s: &str) -> crate::lsp::diagnostics::LspDiagnosticFreshness {
+    use crate::lsp::diagnostics::LspDiagnosticFreshness;
+    match s {
+        "Fresh" => LspDiagnosticFreshness::Fresh,
+        "PossiblyStale" => LspDiagnosticFreshness::PossiblyStale,
+        "Stale" => LspDiagnosticFreshness::Stale,
+        _ => LspDiagnosticFreshness::Unavailable,
+    }
+}
+
+fn parse_source(s: &str) -> crate::lsp::diagnostics::LspDiagnosticSource {
+    use crate::lsp::diagnostics::LspDiagnosticSource;
+    match s {
+        "Pushed" => LspDiagnosticSource::Pushed,
+        "Pulled" => LspDiagnosticSource::Pulled,
+        _ => LspDiagnosticSource::Unknown,
+    }
+}
+
 /// Build a shared [`egglsp::semantic_context::SemanticContextResponse`] from
 /// local [`SemanticContextPacket`] data.
 ///
@@ -2718,11 +2782,18 @@ fn build_semantic_context_response(
     SemanticContextResponse {
         file_path: packet.file.clone(),
         symbol: packet.symbols.first().map(|s| s.into()),
+        all_symbols: packet.symbols.iter().map(|s| s.into()).collect(),
         diagnostics: packet.diagnostics.iter().map(|d| d.into()).collect(),
         definitions: packet.definitions.iter().map(|l| l.into()).collect(),
         references: packet.references.iter().map(|l| l.into()).collect(),
         call_hierarchy: None,
         type_hierarchy: None,
+        source_excerpt: None,
+        diagnostic_evidence: None,
+        overlay: None,
+        source_actions: Vec::new(),
+        section_truncations: Vec::new(),
+        limits: egglsp::semantic_context::SemanticContextLimits::default(),
         notes: Vec::new(),
         truncated: false,
         unavailable: Vec::new(),
@@ -4275,5 +4346,261 @@ diff --git a/src/lib.rs b/src/lib.rs
             "limits.call_expansion_truncated should always be present"
         );
         assert_eq!(v["results"]["limits"]["call_expansion_truncated"], false);
+    }
+
+    // ── from_semantic_response adapter tests ─────────────────────────
+
+    #[test]
+    fn semantic_context_packet_from_response_preserves_shape() {
+        use egglsp::diagnostics::FileDiagnostic;
+        use egglsp::lsp_types::DiagnosticSeverity;
+        use egglsp::semantic_context::{
+            SemanticContextResponse, SemanticLocation, SemanticSourceExcerpt, SemanticSymbolSummary,
+        };
+
+        let response = SemanticContextResponse {
+            file_path: "src/main.rs".to_string(),
+            symbol: None,
+            all_symbols: vec![SemanticSymbolSummary {
+                name: "my_fn".to_string(),
+                kind: "function".to_string(),
+                file: "src/main.rs".to_string(),
+                start_line: 10,
+                start_column: 1,
+                end_line: 15,
+                end_column: 2,
+            }],
+            diagnostics: vec![FileDiagnostic {
+                file: "src/main.rs".to_string(),
+                line: 4,
+                column: 7,
+                message: "unused variable".to_string(),
+                severity: DiagnosticSeverity::WARNING,
+                source: Some("rustc".to_string()),
+                code: Some("unused".to_string()),
+            }],
+            definitions: vec![SemanticLocation {
+                file: "src/lib.rs".to_string(),
+                start_line: 20,
+                start_column: 1,
+                end_line: 20,
+                end_column: 10,
+            }],
+            references: vec![SemanticLocation {
+                file: "src/main.rs".to_string(),
+                start_line: 5,
+                start_column: 3,
+                end_line: 5,
+                end_column: 8,
+            }],
+            call_hierarchy: None,
+            type_hierarchy: None,
+            source_excerpt: Some(SemanticSourceExcerpt {
+                start_line: 8,
+                end_line: 12,
+                text: "fn my_fn() {}".to_string(),
+                truncated: false,
+            }),
+            diagnostic_evidence: Some(egglsp::semantic_context::SemanticDiagnosticEvidence {
+                freshness: "Fresh".to_string(),
+                source: "Pushed".to_string(),
+                age_ms: 100,
+                usable_evidence: true,
+            }),
+            overlay: None,
+            source_actions: vec![],
+            section_truncations: vec![],
+            limits: egglsp::semantic_context::SemanticContextLimits::default(),
+            notes: vec![],
+            truncated: false,
+            unavailable: vec![],
+        };
+
+        let packet = SemanticContextPacket::from_semantic_response(
+            response,
+            Some(SemanticContextTarget {
+                line: 10,
+                column: 5,
+            }),
+            None,
+            vec![],
+            SemanticContextLimits {
+                diagnostics_truncated: false,
+                symbols_truncated: false,
+                references_truncated: false,
+                overlay_diagnostics_truncated: false,
+                excerpt_truncated: false,
+            },
+        );
+
+        assert_eq!(packet.file, "src/main.rs");
+        assert!(packet.target.is_some());
+        assert_eq!(packet.target.as_ref().unwrap().line, 10);
+        assert_eq!(packet.excerpt.start_line, 8);
+        assert_eq!(packet.excerpt.end_line, 12);
+        assert_eq!(packet.symbols.len(), 1);
+        assert_eq!(packet.symbols[0].name, "my_fn");
+        assert_eq!(packet.diagnostics.len(), 1);
+        assert_eq!(packet.definitions.len(), 1);
+        assert_eq!(packet.definitions[0].file, "src/lib.rs");
+        assert_eq!(packet.references.len(), 1);
+        assert_eq!(packet.references[0].file, "src/main.rs");
+        assert!(packet.call_hierarchy.is_none());
+        assert!(packet.type_hierarchy.is_none());
+        let ev = packet.diagnostic_evidence.as_ref().unwrap();
+        assert_eq!(ev.age_ms, 100);
+        assert!(ev.usable_evidence);
+    }
+
+    #[test]
+    fn semantic_context_packet_from_response_converts_diagnostics_to_1indexed() {
+        use egglsp::diagnostics::FileDiagnostic;
+        use egglsp::lsp_types::DiagnosticSeverity;
+        use egglsp::semantic_context::SemanticContextResponse;
+
+        let response = SemanticContextResponse {
+            file_path: "test.rs".to_string(),
+            symbol: None,
+            all_symbols: vec![],
+            diagnostics: vec![FileDiagnostic {
+                file: "test.rs".to_string(),
+                line: 0,
+                column: 0,
+                message: "error here".to_string(),
+                severity: DiagnosticSeverity::ERROR,
+                source: None,
+                code: None,
+            }],
+            definitions: vec![],
+            references: vec![],
+            call_hierarchy: None,
+            type_hierarchy: None,
+            source_excerpt: None,
+            diagnostic_evidence: None,
+            overlay: None,
+            source_actions: vec![],
+            section_truncations: vec![],
+            limits: egglsp::semantic_context::SemanticContextLimits::default(),
+            notes: vec![],
+            truncated: false,
+            unavailable: vec![],
+        };
+
+        let packet = SemanticContextPacket::from_semantic_response(
+            response,
+            None,
+            None,
+            vec![],
+            SemanticContextLimits {
+                diagnostics_truncated: false,
+                symbols_truncated: false,
+                references_truncated: false,
+                overlay_diagnostics_truncated: false,
+                excerpt_truncated: false,
+            },
+        );
+
+        assert_eq!(packet.diagnostics.len(), 1);
+        assert_eq!(packet.diagnostics[0].line, 1, "line 0 -> 1-indexed");
+        assert_eq!(packet.diagnostics[0].column, 1, "column 0 -> 1-indexed");
+        assert_eq!(packet.diagnostics[0].severity, "error");
+    }
+
+    #[test]
+    fn parse_freshness_known_variants() {
+        assert_eq!(
+            parse_freshness("Fresh"),
+            crate::lsp::diagnostics::LspDiagnosticFreshness::Fresh
+        );
+        assert_eq!(
+            parse_freshness("PossiblyStale"),
+            crate::lsp::diagnostics::LspDiagnosticFreshness::PossiblyStale
+        );
+        assert_eq!(
+            parse_freshness("Stale"),
+            crate::lsp::diagnostics::LspDiagnosticFreshness::Stale
+        );
+        assert_eq!(
+            parse_freshness("anything_else"),
+            crate::lsp::diagnostics::LspDiagnosticFreshness::Unavailable
+        );
+    }
+
+    #[test]
+    fn parse_source_known_variants() {
+        assert_eq!(
+            parse_source("Pushed"),
+            crate::lsp::diagnostics::LspDiagnosticSource::Pushed
+        );
+        assert_eq!(
+            parse_source("Pulled"),
+            crate::lsp::diagnostics::LspDiagnosticSource::Pulled
+        );
+        assert_eq!(
+            parse_source("other"),
+            crate::lsp::diagnostics::LspDiagnosticSource::Unknown
+        );
+    }
+
+    #[test]
+    fn semantic_context_packet_from_response_notes_become_errors() {
+        use egglsp::semantic_context::SemanticContextResponse;
+
+        let response = SemanticContextResponse {
+            file_path: "test.rs".to_string(),
+            symbol: None,
+            all_symbols: vec![],
+            diagnostics: vec![],
+            definitions: vec![],
+            references: vec![],
+            call_hierarchy: None,
+            type_hierarchy: None,
+            source_excerpt: None,
+            diagnostic_evidence: None,
+            overlay: None,
+            source_actions: vec![],
+            section_truncations: vec![],
+            limits: egglsp::semantic_context::SemanticContextLimits::default(),
+            notes: vec![
+                "diagnostics: server offline".to_string(),
+                "documentSymbol: timeout".to_string(),
+                "goToDefinition: not supported".to_string(),
+                "findReferences: not supported".to_string(),
+                "unrelated note".to_string(),
+            ],
+            truncated: false,
+            unavailable: vec![],
+        };
+
+        let packet = SemanticContextPacket::from_semantic_response(
+            response,
+            None,
+            None,
+            vec![],
+            SemanticContextLimits {
+                diagnostics_truncated: false,
+                symbols_truncated: false,
+                references_truncated: false,
+                overlay_diagnostics_truncated: false,
+                excerpt_truncated: false,
+            },
+        );
+
+        assert_eq!(
+            packet.current_diagnostics_error.as_deref(),
+            Some("diagnostics: server offline")
+        );
+        assert_eq!(
+            packet.current_symbols_error.as_deref(),
+            Some("documentSymbol: timeout")
+        );
+        assert_eq!(
+            packet.definitions_error.as_deref(),
+            Some("goToDefinition: not supported")
+        );
+        assert_eq!(
+            packet.references_error.as_deref(),
+            Some("findReferences: not supported")
+        );
     }
 }

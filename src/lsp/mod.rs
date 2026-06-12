@@ -47,6 +47,7 @@ pub mod server {
 pub mod overlay {
     pub use egglsp::overlay::*;
 }
+pub mod semantic_context;
 pub mod service {
     pub use egglsp::service::*;
 }

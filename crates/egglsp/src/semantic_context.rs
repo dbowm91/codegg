@@ -8,6 +8,12 @@
 //! The security review workflow can adapt these types into
 //! security-specific evidence, but the API is intentionally
 //! domain-agnostic.
+//!
+//! # Indexing conventions
+//!
+//! All line and column values in these DTOs are **1-indexed** for
+//! consistency with the presentation layer. The tool adapter may
+//! convert to/from LSP-native 0-indexed positions as needed.
 
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +31,16 @@ pub struct SemanticContextRequest {
     pub max_references: usize,
     pub max_diagnostics: usize,
     pub call_depth: u8,
+    /// Include overlay diagnostics/symbols when proposed content is available.
+    pub include_overlay: bool,
+    /// Include safe source-action preview hints (e.g. organize imports).
+    pub include_source_actions: bool,
+    /// Include definition results when a position is provided.
+    pub include_definitions: bool,
+    /// Include reference results when a position is provided.
+    pub include_references: bool,
+    /// Radius (lines above/below target) for the source excerpt.
+    pub excerpt_radius: u32,
 }
 
 impl SemanticContextRequest {
@@ -38,6 +54,11 @@ impl SemanticContextRequest {
             max_references: 80,
             max_diagnostics: 100,
             call_depth: 0,
+            include_overlay: false,
+            include_source_actions: false,
+            include_definitions: true,
+            include_references: true,
+            excerpt_radius: 40,
         }
     }
 
@@ -49,6 +70,21 @@ impl SemanticContextRequest {
 
     pub fn with_call_depth(mut self, depth: u8) -> Self {
         self.call_depth = depth.min(2);
+        self
+    }
+
+    pub fn with_overlay(mut self, include: bool) -> Self {
+        self.include_overlay = include;
+        self
+    }
+
+    pub fn with_source_actions(mut self, include: bool) -> Self {
+        self.include_source_actions = include;
+        self
+    }
+
+    pub fn with_excerpt_radius(mut self, radius: u32) -> Self {
+        self.excerpt_radius = radius;
         self
     }
 }
@@ -121,16 +157,138 @@ pub struct SemanticTypeGraphSummary {
     pub subtypes_error: Option<String>,
 }
 
+/// A source text excerpt around the target location.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticSourceExcerpt {
+    /// 1-indexed start line of the excerpt.
+    pub start_line: u32,
+    /// 1-indexed end line of the excerpt (inclusive).
+    pub end_line: u32,
+    /// The excerpt text.
+    pub text: String,
+    /// Whether the excerpt was truncated due to byte limits.
+    pub truncated: bool,
+}
+
+/// Diagnostic freshness metadata carried alongside diagnostic results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticDiagnosticEvidence {
+    /// Freshness classification of the diagnostics.
+    pub freshness: String,
+    /// Source of the diagnostics (pushed/pulled/unknown).
+    pub source: String,
+    /// Age in milliseconds since diagnostics were received.
+    pub age_ms: i64,
+    /// Whether the diagnostics are usable as evidence.
+    pub usable_evidence: bool,
+}
+
+/// Overlay diagnostics/symbols from proposed content preview.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticOverlay {
+    /// Whether an overlay was used.
+    pub used: bool,
+    /// Whether overlay diagnostics may still be warming.
+    pub diagnostics_may_still_be_warming: bool,
+    /// Diagnostics from the proposed content.
+    pub diagnostics: Vec<FileDiagnostic>,
+    /// Error fetching overlay diagnostics, if any.
+    pub diagnostics_error: Option<String>,
+    /// Symbols from the proposed content.
+    pub symbols: Vec<SemanticOverlaySymbol>,
+    /// Error fetching overlay symbols, if any.
+    pub symbols_error: Option<String>,
+    /// Whether the disk view was restored after overlay.
+    pub restored_disk_view: bool,
+    /// Error restoring disk view, if any.
+    pub restore_error: Option<String>,
+}
+
+/// A compact symbol from an overlay preview.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticOverlaySymbol {
+    pub name: String,
+    pub kind: String,
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+/// A source-action preview hint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticSourceActionHint {
+    /// The action identifier (e.g. "source.organizeImports").
+    pub action: String,
+    /// Whether the action is available for this file.
+    pub available: bool,
+    /// Human-readable error if the action could not be resolved.
+    pub error: Option<String>,
+}
+
+/// Per-section truncation metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticSectionTruncation {
+    /// Which section was truncated (e.g. "diagnostics", "symbols", "references").
+    pub section: String,
+    /// Original count before truncation.
+    pub original_count: Option<usize>,
+    /// Number of items emitted after truncation.
+    pub emitted_count: usize,
+    /// The limit that was applied.
+    pub limit: usize,
+}
+
+/// Truncation limits applied during collection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticContextLimits {
+    pub diagnostics_truncated: bool,
+    pub symbols_truncated: bool,
+    pub references_truncated: bool,
+    pub overlay_diagnostics_truncated: bool,
+    pub excerpt_truncated: bool,
+}
+
 /// The assembled semantic context response.
+///
+/// This is the internal semantic read model. Tool adapters convert
+/// this into presentation-specific JSON shapes (e.g. `SemanticContextPacket`
+/// for `semanticContext`, or security-filtered subsets for `securityContext`).
+///
+/// All line/column values are 1-indexed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemanticContextResponse {
     pub file_path: String,
+    /// First symbol (backward-compatible shorthand).
     pub symbol: Option<SemanticSymbolSummary>,
+    /// All document symbols (flattened, capped).
+    #[serde(default)]
+    pub all_symbols: Vec<SemanticSymbolSummary>,
     pub diagnostics: Vec<FileDiagnostic>,
+    #[serde(default)]
     pub definitions: Vec<SemanticLocation>,
+    #[serde(default)]
     pub references: Vec<SemanticLocation>,
     pub call_hierarchy: Option<SemanticCallGraphSummary>,
     pub type_hierarchy: Option<SemanticTypeGraphSummary>,
+    /// Source text excerpt around the target.
+    #[serde(default)]
+    pub source_excerpt: Option<SemanticSourceExcerpt>,
+    /// Diagnostic freshness metadata.
+    #[serde(default)]
+    pub diagnostic_evidence: Option<SemanticDiagnosticEvidence>,
+    /// Overlay diagnostics/symbols from proposed content.
+    #[serde(default)]
+    pub overlay: Option<SemanticOverlay>,
+    /// Source-action preview hints.
+    #[serde(default)]
+    pub source_actions: Vec<SemanticSourceActionHint>,
+    /// Per-section truncation metadata.
+    #[serde(default)]
+    pub section_truncations: Vec<SemanticSectionTruncation>,
+    /// Truncation limits applied during collection.
+    #[serde(default)]
+    pub limits: SemanticContextLimits,
     pub notes: Vec<String>,
     pub truncated: bool,
     pub unavailable: Vec<LspUnavailable>,
@@ -141,11 +299,18 @@ impl SemanticContextResponse {
         Self {
             file_path: file_path.into(),
             symbol: None,
+            all_symbols: Vec::new(),
             diagnostics: Vec::new(),
             definitions: Vec::new(),
             references: Vec::new(),
             call_hierarchy: None,
             type_hierarchy: None,
+            source_excerpt: None,
+            diagnostic_evidence: None,
+            overlay: None,
+            source_actions: Vec::new(),
+            section_truncations: Vec::new(),
+            limits: SemanticContextLimits::default(),
             notes: Vec::new(),
             truncated: false,
             unavailable: Vec::new(),
@@ -158,6 +323,27 @@ impl SemanticContextResponse {
 
     pub fn push_unavailable(&mut self, u: LspUnavailable) {
         self.unavailable.push(u);
+    }
+
+    /// Record a section truncation event.
+    pub fn push_truncation(
+        &mut self,
+        section: impl Into<String>,
+        original_count: Option<usize>,
+        emitted_count: usize,
+        limit: usize,
+    ) {
+        self.section_truncations.push(SemanticSectionTruncation {
+            section: section.into(),
+            original_count,
+            emitted_count,
+            limit,
+        });
+    }
+
+    /// Mark the response as globally truncated.
+    pub fn mark_truncated(&mut self) {
+        self.truncated = true;
     }
 }
 
@@ -251,6 +437,11 @@ mod tests {
         assert_eq!(req.max_references, 80);
         assert_eq!(req.max_diagnostics, 100);
         assert_eq!(req.call_depth, 0);
+        assert!(!req.include_overlay);
+        assert!(!req.include_source_actions);
+        assert!(req.include_definitions);
+        assert!(req.include_references);
+        assert_eq!(req.excerpt_radius, 40);
     }
 
     #[test]
@@ -265,5 +456,47 @@ mod tests {
         assert_eq!(resp.notes.len(), 2);
         assert_eq!(resp.unavailable.len(), 1);
         assert_eq!(resp.unavailable[0].operation, "hover");
+    }
+
+    #[test]
+    fn semantic_context_response_records_truncation() {
+        let mut resp = SemanticContextResponse::new("a.rs");
+        resp.push_truncation("diagnostics", Some(150), 100, 100);
+        resp.push_truncation("references", Some(200), 80, 80);
+        assert_eq!(resp.section_truncations.len(), 2);
+        assert_eq!(resp.section_truncations[0].section, "diagnostics");
+        assert_eq!(resp.section_truncations[0].original_count, Some(150));
+        assert_eq!(resp.section_truncations[0].emitted_count, 100);
+        assert_eq!(resp.section_truncations[1].section, "references");
+    }
+
+    #[test]
+    fn semantic_context_response_new_fields_default_empty() {
+        let resp = SemanticContextResponse::new("a.rs");
+        assert!(resp.all_symbols.is_empty());
+        assert!(resp.source_excerpt.is_none());
+        assert!(resp.diagnostic_evidence.is_none());
+        assert!(resp.overlay.is_none());
+        assert!(resp.source_actions.is_empty());
+        assert!(resp.section_truncations.is_empty());
+        assert_eq!(resp.limits, SemanticContextLimits::default());
+    }
+
+    #[test]
+    fn semantic_context_request_builder_chaining() {
+        let req = SemanticContextRequest::new("f.rs", SemanticContextIntent::Review)
+            .with_position(5, 10)
+            .with_call_depth(1)
+            .with_overlay(true)
+            .with_source_actions(true)
+            .with_excerpt_radius(80);
+        assert!(req.include_overlay);
+        assert!(req.include_source_actions);
+        assert!(req.include_definitions);
+        assert!(req.include_references);
+        assert_eq!(req.excerpt_radius, 80);
+        assert_eq!(req.line, Some(5));
+        assert_eq!(req.column, Some(10));
+        assert_eq!(req.call_depth, 1);
     }
 }

@@ -133,6 +133,23 @@ pub struct LspServerDef {
 }
 ```
 
+### SemanticContextCollector
+
+**Location:** `src/lsp/semantic_context.rs`
+
+Owns domain assembly for semantic context. Produces `SemanticContextResponse` by collecting diagnostics, symbols, definitions, references, overlay, and hierarchy data.
+
+```rust
+pub struct SemanticContextCollector { ... }
+impl SemanticContextCollector {
+    pub fn new(service, operations, diagnostics, allowed_root) -> Self;
+    pub async fn collect(&self, request: SemanticContextRequest)
+        -> Result<SemanticContextResponse, String>;
+}
+```
+
+The collector handles: source excerpt construction, diagnostic snapshots with freshness metadata, document symbol flattening, definition/reference gathering with capability gating, overlay diagnostics/symbols, source-action hints, call/type hierarchy summaries, per-section truncation, and structured unavailable metadata.
+
 ## Supported LSP Servers
 
 | Language | Server ID | Command |
@@ -257,6 +274,8 @@ Input parameters:
 Source-action hints: when `include_source_actions` is true, `semanticContext` includes a `source_actions` array of `SemanticSourceActionHint` objects. Each hint has `action` (string identifier), `available` (bool), `preview` (Option\<WorkspaceEditPreview\>), and `error` (Option\<String\>). Currently only `source.organizeImports` is supported. Hints reuse the existing `sourceActionPreview` behavior (preview-only, no command execution, no mutation). Source-action failures are non-fatal; they set `error` on the individual hint but do not fail the whole packet. Available hints affect `result_count`. A pure helper `source_action_hint_from_result` converts results to hints, and `collect_source_action_hints` iterates the hardcoded allowlist.
 
 All sections bounded: diagnostics (100), symbols (120), references (80), overlay diagnostics (100), excerpt (32KB). Per-section errors (`definitions_error`, `references_error`) are non-None when the corresponding LSP request fails. `overlay_diagnostics_truncated` in limits tracks overlay diagnostics overflow. `result_count` includes overlay diagnostics and overlay symbols. Source excerpt truncation uses `truncate_to_byte_limit_on_char_boundary` (UTF-8-safe, no replacement characters). All sections are best-effort; individual failures do not prevent the packet from being returned.
+
+> **Architecture note:** `SemanticContextPacket` is a presentation adapter type. The domain owner is `SemanticContextCollector` which produces `SemanticContextResponse`. The packet is adapted from the response via `SemanticContextPacket::from_semantic_response()`.
 
 ### securityContext operation
 
@@ -696,9 +715,15 @@ The `age_ms` field is the age in milliseconds since diagnostics were received fr
 
 ## Shared Semantic Context API
 
-`egglsp::semantic_context` provides request/response types shared across multiple tool operations that gather context for a file position.
+`egglsp::semantic_context` provides the domain-agnostic request/response DTOs for gathering semantic context. `SemanticContextResponse` is the internal semantic read model — tool adapters convert it into presentation-specific JSON shapes (e.g. `SemanticContextPacket` for `semanticContext`, or security-filtered subsets for `securityContext`).
 
-### SemanticContextRequest / SemanticContextResponse
+The conversion flow is:
+
+```
+SemanticContextRequest → SemanticContextCollector::collect() → SemanticContextResponse → SemanticContextPacket::from_semantic_response()
+```
+
+### SemanticContextRequest
 
 ```rust
 pub struct SemanticContextRequest {
@@ -706,18 +731,43 @@ pub struct SemanticContextRequest {
     pub line: Option<u32>,
     pub column: Option<u32>,
     pub intent: SemanticContextIntent,
-    pub radius: Option<u32>,
-    pub caps: SemanticContextCaps,
-    // ... additional fields
+    pub max_symbols: usize,
+    pub max_references: usize,
+    pub max_diagnostics: usize,
+    pub call_depth: u8,
+    pub include_overlay: bool,
+    pub include_source_actions: bool,
+    pub include_definitions: bool,
+    pub include_references: bool,
+    pub excerpt_radius: u32,
 }
+```
 
+Builder methods: `with_position(line, column)`, `with_call_depth(depth)`, `with_overlay(bool)`, `with_source_actions(bool)`, `with_excerpt_radius(radius)`.
+
+### SemanticContextResponse
+
+The assembled semantic context response. This is the internal semantic read model that `SemanticContextCollector` produces. Tool adapters convert it into presentation-specific shapes.
+
+```rust
 pub struct SemanticContextResponse {
-    pub excerpt: Option<String>,
-    pub diagnostics: Vec<lsp_types::Diagnostic>,
-    pub symbols: Vec<DocumentSymbol>,
-    pub definitions: Option<Vec<Location>>,
-    pub references: Option<Vec<Location>>,
-    // ... additional sections
+    pub file_path: String,
+    pub symbol: Option<SemanticSymbolSummary>,
+    pub all_symbols: Vec<SemanticSymbolSummary>,
+    pub diagnostics: Vec<FileDiagnostic>,
+    pub definitions: Vec<SemanticLocation>,
+    pub references: Vec<SemanticLocation>,
+    pub call_hierarchy: Option<SemanticCallGraphSummary>,
+    pub type_hierarchy: Option<SemanticTypeGraphSummary>,
+    pub source_excerpt: Option<SemanticSourceExcerpt>,
+    pub diagnostic_evidence: Option<SemanticDiagnosticEvidence>,
+    pub overlay: Option<SemanticOverlay>,
+    pub source_actions: Vec<SemanticSourceActionHint>,
+    pub section_truncations: Vec<SemanticSectionTruncation>,
+    pub limits: SemanticContextLimits,
+    pub notes: Vec<String>,
+    pub truncated: bool,
+    pub unavailable: Vec<LspUnavailable>,
 }
 ```
 
@@ -738,16 +788,25 @@ The intent drives which optional sections are populated and which caps are appli
 
 ```rust
 pub struct SemanticContextCaps {
-    pub max_diagnostics: usize,
     pub max_symbols: usize,
     pub max_references: usize,
-    pub max_definitions: usize,
-    pub max_excerpt_lines: u32,
-    // ... additional caps
+    pub max_diagnostics: usize,
+    pub max_call_depth: u8,
 }
 ```
 
-Enforces bounded output. Defaults are conservative and aligned with the existing `semanticContext` operation limits.
+Enforces bounded output. Defaults are conservative and aligned with the existing `semanticContext` operation limits. `enforce()` clamps the request fields to the configured caps.
+
+### Supporting Types
+
+- `SemanticSymbolSummary` — compact symbol (name, kind, file, start/end line/column)
+- `SemanticLocation` — compact location (file, start/end line/column)
+- `SemanticSourceExcerpt` — source text with start/end lines and truncation flag
+- `SemanticDiagnosticEvidence` — freshness, source, age_ms, usable_evidence
+- `SemanticOverlay` — overlay diagnostics/symbols with restore metadata
+- `SemanticSourceActionHint` — action id, available flag, optional error
+- `SemanticSectionTruncation` — per-section truncation metadata (section, original/emitted counts, limit)
+- `SemanticContextLimits` — boolean flags for each section's truncation state
 
 ### Unavailable Responses
 

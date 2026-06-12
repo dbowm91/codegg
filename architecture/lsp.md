@@ -247,6 +247,40 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
 
 ```
 
+### SemanticContextCollector
+
+**Location:** `src/lsp/semantic_context.rs`
+
+A collector/builder that owns domain assembly for semantic context. It produces `egglsp::semantic_context::SemanticContextResponse` by collecting diagnostics, symbols, definitions, references, overlay, and hierarchy data from LSP services.
+
+```rust
+pub struct SemanticContextCollector {
+    service: Arc<LspService>,
+    operations: Arc<LspOperations>,
+    diagnostics: Arc<DiagnosticsCollector>,
+    allowed_root: PathBuf,
+}
+
+impl SemanticContextCollector {
+    pub fn new(service, operations, diagnostics, allowed_root) -> Self;
+    pub async fn collect(&self, request: SemanticContextRequest)
+        -> Result<SemanticContextResponse, String>;
+}
+```
+
+The collector handles:
+- Source excerpt construction (file reading + byte-limited truncation)
+- Diagnostic snapshot collection with freshness metadata
+- Document symbol flattening and capping
+- Definition/reference gathering with capability gating
+- Overlay diagnostics/symbols from proposed content
+- Source-action preview hints
+- Call/type hierarchy summaries (capability-gated)
+- Per-section truncation metadata
+- Structured unavailable metadata via `LspCapabilitySnapshot`
+
+Unit tests use fake/static inputs and do not require live LSP servers.
+
 ## Supported Languages (40 servers)
 
 | Language | Server | Command |
@@ -371,6 +405,8 @@ All output sections are bounded:
 - Source excerpt: capped at 32KB text
 
 The operation gathers existing read-only semantic facts, optionally runs an overlay semantic check, and returns a stable JSON DTO. All sections are best-effort: individual failures do not prevent the rest of the packet from being returned. Per-section errors are surfaced as `definitions_error: Option<String>` and `references_error: Option<String>` (non-None when the corresponding LSP request fails). `result_count` includes overlay diagnostics and overlay symbols in addition to the base counts. Source excerpt truncation is UTF-8-safe — it cuts at character boundaries using `truncate_to_byte_limit_on_char_boundary`, avoiding replacement characters or partial-codepoint corruption. `execute_structured` checks both `/results/restore_error` and `/results/overlay/restore_error` for success detection.
+
+> **Architecture note:** `SemanticContextPacket` is a tool-local presentation type. The domain owner for semantic assembly is `SemanticContextCollector` which produces `SemanticContextResponse`. The packet is adapted from the response via `SemanticContextPacket::from_semantic_response()`.
 
 ### Security context packets
 
@@ -688,65 +724,82 @@ The `age_ms` field is the age in milliseconds since diagnostics were received fr
 
 This allows the security review workflow to make informed decisions about diagnostic reliability when synthesizing findings.
 
-### Shared Semantic Context API
+## Shared Semantic Context API
 
-`SemanticContextRequest` is the structured input for requesting semantic context about a file position:
+The shared semantic context API provides domain-agnostic DTOs for assembling LSP evidence. `SemanticContextResponse` is the **internal semantic read model** — tool adapters convert it into presentation-specific JSON shapes.
+
+### SemanticContextRequest
+
+Describes what the caller wants to know:
 
 ```rust
 pub struct SemanticContextRequest {
     pub file_path: String,
-    pub line: Option<u32>,
-    pub column: Option<u32>,
+    pub line: Option<u32>,          // 1-indexed
+    pub column: Option<u32>,        // 1-indexed
     pub intent: SemanticContextIntent,
-    pub max_symbols: Option<usize>,
-    pub max_references: Option<usize>,
-    pub max_diagnostics: Option<usize>,
-    pub call_depth: Option<u32>,
+    pub max_symbols: usize,
+    pub max_references: usize,
+    pub max_diagnostics: usize,
+    pub call_depth: u8,
+    pub include_overlay: bool,
+    pub include_source_actions: bool,
+    pub include_definitions: bool,
+    pub include_references: bool,
+    pub excerpt_radius: u32,
 }
 ```
 
-`SemanticContextIntent` describes the caller's purpose, enabling intent-aware response shaping:
+### SemanticContextResponse
 
-```rust
-pub enum SemanticContextIntent {
-    Explain,
-    EditPlanning,
-    Review,
-    SecurityReview,
-    TestPlanning,
-    Navigation,
-}
-```
-
-`SemanticContextResponse` is the structured output:
+The assembled semantic context. This is the internal read model that `semanticContext` and `securityContext` adapt from:
 
 ```rust
 pub struct SemanticContextResponse {
     pub file_path: String,
-    pub symbol: Option<SymbolSummary>,
-    pub diagnostics: Vec<DiagnosticSummary>,
-    pub definitions: Vec<LocationSummary>,
-    pub references: Vec<LocationSummary>,
-    pub call_hierarchy: Option<CallHierarchySummary>,
-    pub type_hierarchy: Option<TypeHierarchySummary>,
+    pub symbol: Option<SemanticSymbolSummary>,        // First symbol (backward-compatible)
+    pub all_symbols: Vec<SemanticSymbolSummary>,      // All document symbols (flattened, capped)
+    pub diagnostics: Vec<FileDiagnostic>,             // 0-indexed diagnostics
+    pub definitions: Vec<SemanticLocation>,
+    pub references: Vec<SemanticLocation>,
+    pub call_hierarchy: Option<SemanticCallGraphSummary>,
+    pub type_hierarchy: Option<SemanticTypeGraphSummary>,
+    pub source_excerpt: Option<SemanticSourceExcerpt>,
+    pub diagnostic_evidence: Option<SemanticDiagnosticEvidence>,
+    pub overlay: Option<SemanticOverlay>,
+    pub source_actions: Vec<SemanticSourceActionHint>,
+    pub section_truncations: Vec<SemanticSectionTruncation>,
+    pub limits: SemanticContextLimits,
     pub notes: Vec<String>,
     pub truncated: bool,
     pub unavailable: Vec<LspUnavailable>,
 }
 ```
 
-`SemanticContextCaps` enforces request caps, ensuring bounded output:
+### Supporting DTOs
+
+- `SemanticSourceExcerpt`: Source text excerpt with `start_line`, `end_line`, `text`, `truncated`
+- `SemanticDiagnosticEvidence`: Freshness metadata (`freshness`, `source`, `age_ms`, `usable_evidence`)
+- `SemanticOverlay`: Overlay diagnostics/symbols from proposed content preview
+- `SemanticSectionTruncation`: Per-section truncation metadata (`section`, `original_count`, `emitted_count`, `limit`)
+- `SemanticContextLimits`: Truncation flags per section
+- `SemanticSymbolSummary`, `SemanticLocation`: Compact symbol/location summaries (1-indexed)
+- `SemanticCallGraphSummary`, `SemanticTypeGraphSummary`: Hierarchy summaries
+
+All line/column values in shared DTOs are **1-indexed** for consistency with the presentation layer.
+
+### Conversion
+
+The `semanticContext` handler follows this flow:
 
 ```rust
-pub struct SemanticContextCaps {
-    pub max_symbols: usize,
-    pub max_references: usize,
-    pub max_diagnostics: usize,
-    pub max_call_nodes: usize,
-}
+let request = SemanticContextRequest::from_tool_input(...)?;
+let response = collector.collect(request).await?;
+let packet = SemanticContextPacket::from_semantic_response(response, target, overlay, source_actions, limits);
+serialize(packet)
 ```
 
-The shared semantic context API provides a unified interface for frontends and agents to request structured LSP-derived context. `securityContext` is a specialized wrapper that uses `SecurityReview` intent internally, adding risk marker scanning and security-relevant filtering on top of the base semantic context.
+`SemanticContextPacket::from_semantic_response()` is the adapter that converts the shared response into the tool-local presentation packet, handling 0→1-indexed diagnostic conversion, excerpt adaptation, and note→error field mapping.
 
 ### Remote/Core Ownership Model (Phase 7)
 
