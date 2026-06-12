@@ -40,8 +40,8 @@ pub fn symbol_to_range(sym: &SemanticSymbolSummary) -> HunkLineRange {
 
 pub fn diagnostic_to_range(diag: &FileDiagnostic) -> HunkLineRange {
     HunkLineRange {
-        start_line: diag.line,
-        end_line: diag.line,
+        start_line: diag.line + 1,
+        end_line: diag.line + 1,
     }
 }
 
@@ -137,6 +137,30 @@ pub fn find_related_symbols<'a>(
 
     related.truncate(max);
     related
+}
+
+pub fn find_related_symbols_with_raw_count<'a>(
+    hunk_range: &HunkLineRange,
+    symbols: &'a [SemanticSymbolSummary],
+    max: usize,
+) -> (Vec<&'a SemanticSymbolSummary>, usize) {
+    let expanded = expand_range(hunk_range, 10, u32::MAX);
+    let mut related: Vec<&SemanticSymbolSummary> = symbols
+        .iter()
+        .filter(|s| {
+            let sr = symbol_to_range(s);
+            !range_contains(&sr, hunk_range) && ranges_overlap(&sr, &expanded)
+        })
+        .collect();
+    let raw_count = related.len();
+
+    related.sort_by_key(|s| {
+        let r = symbol_to_range(s);
+        distance_between_ranges(&r, hunk_range).unsigned_abs()
+    });
+
+    related.truncate(max);
+    (related, raw_count)
 }
 
 pub fn diagnostics_in_range<'a>(
@@ -302,10 +326,21 @@ mod tests {
 
     #[test]
     fn diagnostic_to_range_single_line() {
-        let d = diag(42);
+        let d = diag(42); // 0-indexed
         let r = diagnostic_to_range(&d);
-        assert_eq!(r.start_line, 42);
-        assert_eq!(r.end_line, 42);
+        assert_eq!(r.start_line, 43); // 1-indexed
+        assert_eq!(r.end_line, 43); // 1-indexed
+    }
+
+    #[test]
+    fn diagnostic_to_range_matches_expected_hunk() {
+        // Acceptance: a diagnostic with internal line=9 matches hunk range 10..10
+        let d = diag(9);
+        let r = diagnostic_to_range(&d);
+        assert_eq!(r.start_line, 10);
+        assert_eq!(r.end_line, 10);
+        let hunk_range = range(10, 10);
+        assert!(ranges_overlap(&r, &hunk_range));
     }
 
     #[test]
@@ -374,21 +409,22 @@ mod tests {
     #[test]
     fn diagnostics_in_range_basic() {
         let range = range(5, 10);
-        let d1 = diag(3);
-        let d2 = diag(7);
-        let d3 = diag(12);
+        let d1 = diag(4); // 0-indexed 4 → 1-indexed 5, inside range
+        let d2 = diag(7); // 0-indexed 7 → 1-indexed 8, inside range
+        let d3 = diag(12); // 0-indexed 12 → 1-indexed 13, outside range
         let diags = vec![d1, d2, d3];
 
         let result = diagnostics_in_range(&range, &diags);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].line, 7);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].line, 4);
+        assert_eq!(result[1].line, 7);
     }
 
     #[test]
     fn diagnostics_in_range_boundary() {
         let range = range(5, 10);
-        let d1 = diag(5);
-        let d2 = diag(10);
+        let d1 = diag(4); // 0-indexed 4 → 1-indexed 5 = range start
+        let d2 = diag(9); // 0-indexed 9 → 1-indexed 10 = range end
         let diags = vec![d1, d2];
 
         let result = diagnostics_in_range(&range, &diags);
@@ -398,16 +434,16 @@ mod tests {
     #[test]
     fn test_diagnostics_near_range() {
         let range = range(5, 10);
-        let d1 = diag(3);
-        let d2 = diag(7);
-        let d3 = diag(15);
+        let d1 = diag(2); // 0-indexed 2 → 1-indexed 3, near (distance=1 from range start)
+        let d2 = diag(7); // 0-indexed 7 → 1-indexed 8, inside range (not nearby)
+        let d3 = diag(14); // 0-indexed 14 → 1-indexed 15, near (distance=4 from range end)
         let diags = vec![d1, d2, d3];
 
         let result = diagnostics_near_range(&range, &diags, 5);
         assert_eq!(result.len(), 2);
         let lines: Vec<u32> = result.iter().map(|d| d.line).collect();
-        assert!(lines.contains(&3));
-        assert!(lines.contains(&15));
+        assert!(lines.contains(&2));
+        assert!(lines.contains(&14));
     }
 
     #[test]

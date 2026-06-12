@@ -68,6 +68,8 @@ pub struct HunkDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HunkSourceNavigationRequest {
     pub file_path: String,
+    /// Pre-parsed hunk descriptors. Internal use only; the model-facing
+    /// tool schema exposes only `patch` for unified diff input.
     #[serde(default)]
     pub hunks: Vec<HunkDescriptor>,
     /// Optional raw unified diff text to parse into hunks.
@@ -136,8 +138,9 @@ pub struct HunkSourceNavigationLimits {
 
 /// The assembled hunk source navigation response.
 ///
-/// Wraps per-hunk evidence alongside a base semantic response,
-/// global truncation limits, and informational notes.
+/// Wraps per-hunk evidence derived from a single semantic collection
+/// (centered on the first hunk), global truncation limits, and
+/// informational notes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HunkSourceNavigationResponse {
     pub file_path: String,

@@ -321,6 +321,7 @@ It provides:
 - Pure navigator: `HunkSourceNavigator` consumes `SemanticContextResponse` and does not call LSP directly
 - Bounded: per-hunk caps on symbols, diagnostics, references; global cap on hunk count
 - Diagnostic freshness is preserved per hunk from the semantic response
+- First-hunk-centered: semantic context (definitions, references, hierarchy) is collected centered on the first hunk and shared across all hunks via range matching. A note is appended when multiple hunks are present.
 
 **Implementation:** Diff parsing (`parse_unified_diff`) produces `HunkDescriptor` values. Range primitives (`hunk_nav_ranges`) handle overlap, containment, and symbol/diagnostic matching. `HunkSourceNavigator` assembles per-hunk evidence. `HunkSourceNavigationCollector` coordinates parsing + semantic collection.
 

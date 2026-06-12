@@ -594,11 +594,13 @@ The legacy entry point `plan_security_review_from_diff(diff, repo_root)` remains
 
 **Output shape:**
 
-- `semantic` — full `SemanticContextResponse` for the file
-- `hunks` — per-hunk evidence (enclosing symbol, related symbols, diagnostics, definitions, references, call/type hierarchy, source excerpt, diagnostic freshness)
-- `limits` — truncation flags
+- `file_path` — target file path
+- `hunks` — per-hunk evidence (enclosing symbol, related symbols, diagnostics, definitions, references, call/type hierarchy, source excerpt, diagnostic freshness). When multiple hunks are present, semantic context is collected centered on the first hunk; definitions, references, and hierarchy are shared across all hunks.
+- `limits` — truncation flags (hunks_truncated, symbols_truncated, diagnostics_truncated, references_truncated, excerpt_truncated)
 - `notes` — informational notes
 - `truncated` — whether output was capped
+
+**Note:** The response does NOT include the full `SemanticContextResponse`. Hunk evidence is derived from a single semantic collection centered on the first hunk; definitions, references, and hierarchy from that collection are distributed to all hunks via range matching.
 
 **Key properties:**
 

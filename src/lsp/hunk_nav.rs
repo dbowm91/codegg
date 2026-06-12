@@ -1,6 +1,6 @@
 use crate::lsp::hunk_nav_ranges::{
     diagnostics_in_range, diagnostics_near_range, expand_range, find_enclosing_symbol,
-    find_related_symbols, locations_in_range,
+    find_related_symbols_with_raw_count, locations_in_range,
 };
 use egglsp::hunk_context::{
     HunkDescriptor, HunkEvidence, HunkLineRange, HunkSourceNavigationLimits,
@@ -95,21 +95,25 @@ impl HunkSourceNavigator {
 
         let enclosing_symbol = find_enclosing_symbol(new_range, &semantic.all_symbols).cloned();
 
-        let related =
-            find_related_symbols(new_range, &semantic.all_symbols, self.max_symbols_per_hunk);
-        if related.len() >= self.max_symbols_per_hunk {
+        let (related, raw_related_count) = find_related_symbols_with_raw_count(
+            new_range,
+            &semantic.all_symbols,
+            self.max_symbols_per_hunk,
+        );
+        if raw_related_count > self.max_symbols_per_hunk {
             limits.symbols_truncated = true;
         }
         let related_symbols: Vec<_> = related.into_iter().cloned().collect();
 
-        let intersecting_diags: Vec<_> = diagnostics_in_range(new_range, &semantic.diagnostics)
+        let intersecting_diags_raw: Vec<_> = diagnostics_in_range(new_range, &semantic.diagnostics);
+        if intersecting_diags_raw.len() > self.max_diagnostics_per_hunk {
+            limits.diagnostics_truncated = true;
+        }
+        let intersecting_diags: Vec<_> = intersecting_diags_raw
             .into_iter()
             .take(self.max_diagnostics_per_hunk)
             .cloned()
             .collect();
-        if intersecting_diags.len() >= self.max_diagnostics_per_hunk {
-            limits.diagnostics_truncated = true;
-        }
 
         let nearby_diags: Vec<_> = diagnostics_near_range(new_range, &semantic.diagnostics, 5)
             .into_iter()
@@ -125,14 +129,15 @@ impl HunkSourceNavigator {
             .cloned()
             .collect();
 
-        let refs: Vec<_> = locations_in_range(new_range, &semantic.references)
+        let refs_raw: Vec<_> = locations_in_range(new_range, &semantic.references);
+        if refs_raw.len() > self.max_references_per_hunk {
+            limits.references_truncated = true;
+        }
+        let refs: Vec<_> = refs_raw
             .into_iter()
             .take(self.max_references_per_hunk)
             .cloned()
             .collect();
-        if refs.len() >= self.max_references_per_hunk {
-            limits.references_truncated = true;
-        }
 
         let call_hierarchy = semantic.call_hierarchy.clone();
         let type_hierarchy = semantic.type_hierarchy.clone();
@@ -319,14 +324,14 @@ mod tests {
     fn nearby_diagnostics_outside_hunk() {
         let nav = HunkSourceNavigator::new();
         let mut semantic = base_semantic("test.rs");
-        semantic.diagnostics = vec![diag(3), diag(7), diag(50)];
+        semantic.diagnostics = vec![diag(3), diag(6), diag(50)]; // 0-indexed: 3→4, 6→7, 50→51
         let hunks = vec![hunk("h0", "test.rs", 8, 12)];
         let resp = nav.build(semantic, hunks);
         let ev = &resp.hunks[0];
         assert!(ev.diagnostics.is_empty());
         let lines: Vec<u32> = ev.nearby_diagnostics.iter().map(|d| d.line).collect();
         assert!(lines.contains(&3));
-        assert!(lines.contains(&7));
+        assert!(lines.contains(&6));
         assert!(!lines.contains(&50));
     }
 
@@ -347,12 +352,24 @@ mod tests {
     fn caps_truncate_symbols() {
         let nav = HunkSourceNavigator::new().with_max_symbols_per_hunk(2);
         let mut semantic = base_semantic("test.rs");
-        semantic.all_symbols = (0..5)
-            .map(|i| sym(&format!("s{i}"), 20 + i * 5, 23 + i * 5))
-            .collect();
+        // Place 3 related symbols after the hunk (outside hunk range 25..28, within expanded 15..38)
+        semantic.all_symbols = vec![sym("s0", 30, 31), sym("s1", 33, 34), sym("s2", 36, 37)];
         let hunks = vec![hunk("h0", "test.rs", 25, 28)];
         let resp = nav.build(semantic, hunks);
         assert!(resp.limits.symbols_truncated);
+        assert_eq!(resp.hunks[0].related_symbols.len(), 2);
+    }
+
+    #[test]
+    fn exact_max_symbols_not_truncated() {
+        let nav = HunkSourceNavigator::new().with_max_symbols_per_hunk(3);
+        let mut semantic = base_semantic("test.rs");
+        // Exactly 3 related symbols within expanded range 15..38
+        semantic.all_symbols = vec![sym("s0", 30, 31), sym("s1", 33, 34), sym("s2", 36, 37)];
+        let hunks = vec![hunk("h0", "test.rs", 25, 28)];
+        let resp = nav.build(semantic, hunks);
+        assert!(!resp.limits.symbols_truncated);
+        assert_eq!(resp.hunks[0].related_symbols.len(), 3);
     }
 
     #[test]
@@ -366,6 +383,18 @@ mod tests {
     }
 
     #[test]
+    fn exact_max_diagnostics_not_truncated() {
+        let nav = HunkSourceNavigator::new().with_max_diagnostics_per_hunk(1);
+        let mut semantic = base_semantic("test.rs");
+        // Only 1 diagnostic in range after +1 conversion
+        semantic.diagnostics = vec![diag(8)];
+        let hunks = vec![hunk("h0", "test.rs", 8, 12)];
+        let resp = nav.build(semantic, hunks);
+        assert!(!resp.limits.diagnostics_truncated);
+        assert_eq!(resp.hunks[0].diagnostics.len(), 1);
+    }
+
+    #[test]
     fn caps_truncate_references() {
         let nav = HunkSourceNavigator::new().with_max_references_per_hunk(1);
         let mut semantic = base_semantic("test.rs");
@@ -373,6 +402,18 @@ mod tests {
         let hunks = vec![hunk("h0", "test.rs", 8, 12)];
         let resp = nav.build(semantic, hunks);
         assert!(resp.limits.references_truncated);
+    }
+
+    #[test]
+    fn exact_max_references_not_truncated() {
+        let nav = HunkSourceNavigator::new().with_max_references_per_hunk(3);
+        let mut semantic = base_semantic("test.rs");
+        // Exactly 3 references in range
+        semantic.references = (0..3).map(|i| loc("test.rs", 8 + i, 8 + i)).collect();
+        let hunks = vec![hunk("h0", "test.rs", 8, 12)];
+        let resp = nav.build(semantic, hunks);
+        assert!(!resp.limits.references_truncated);
+        assert_eq!(resp.hunks[0].references.len(), 3);
     }
 
     #[test]

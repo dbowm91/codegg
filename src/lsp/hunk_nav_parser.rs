@@ -33,7 +33,7 @@ pub fn parse_unified_diff(diff_text: &str) -> Result<Vec<HunkDescriptor>, ParseH
             continue;
         }
 
-        if let Some(header_text) = parse_hunk_header(line) {
+        if let Some(header_text) = parse_hunk_header(line)? {
             let file_path = current_file.clone().unwrap_or_default();
             match parse_hunk_header_parts(&header_text) {
                 Ok((old_range, new_range)) => {
@@ -107,12 +107,16 @@ fn strip_diff_prefix(s: &str) -> String {
     s.to_string()
 }
 
-fn parse_hunk_header(line: &str) -> Option<String> {
+fn parse_hunk_header(line: &str) -> Result<Option<String>, ParseHunkError> {
     let trimmed = line.trim_end();
-    if trimmed.starts_with("@@ ") && trimmed.contains(" @@") {
-        return Some(trimmed.to_string());
+    if !trimmed.starts_with("@@ ") {
+        return Ok(None);
     }
-    None
+    if trimmed.contains(" @@") {
+        return Ok(Some(trimmed.to_string()));
+    }
+    // Starts with "@@ " but missing closing " @@" — malformed hunk header
+    Err(ParseHunkError::InvalidHunkHeader(trimmed.to_string()))
 }
 
 fn parse_hunk_header_parts(
@@ -354,8 +358,48 @@ diff --git a/src/b.rs b/src/b.rs
     }
 
     #[test]
-    fn parse_malformed_header_returns_empty() {
+    fn parse_malformed_header_returns_invalid_hunk_header() {
         let diff = "@@ bad header\n";
+        let result = parse_unified_diff(diff);
+        match result {
+            Err(ParseHunkError::InvalidHunkHeader(h)) => {
+                assert!(h.contains("@@ bad header"));
+            }
+            other => panic!("expected InvalidHunkHeader, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_malformed_header_missing_closing_at_at() {
+        let diff = "@@ -1,3 +1,4\n";
+        let result = parse_unified_diff(diff);
+        match result {
+            Err(ParseHunkError::InvalidHunkHeader(h)) => {
+                assert!(h.contains("@@ -1,3 +1,4"));
+            }
+            other => panic!("expected InvalidHunkHeader, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn valid_hunk_header_with_context_still_parses() {
+        let diff = "\
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@ fn main() {
+ line1
++added
+ line2
+ line3
+ ";
+        let hunks = parse_unified_diff(diff).unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert!(hunks[0].header.as_deref().unwrap().contains("fn main()"));
+    }
+
+    #[test]
+    fn non_hunk_text_does_not_error() {
+        let diff = "some random text\nno hunk here\n";
         let result = parse_unified_diff(diff).unwrap();
         assert!(result.is_empty());
     }
