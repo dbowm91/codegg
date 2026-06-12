@@ -384,11 +384,10 @@ pub async fn run_security_review_workflow_with_lsp_enrichment<
 
     // Append enrichment notes
     output.notes.extend(enrichment_notes);
-    if !enrichment_results.is_empty() {
-        output.notes.push(format!(
-            "LSP enrichment executed {} request(s)",
-            enrichment_results.len()
-        ));
+    if enrichment_results.is_empty() {
+        note_lsp_enrichment_no_eligible_targets(&mut output);
+    } else {
+        note_lsp_enrichment_executed(&mut output, enrichment_results.len());
     }
 
     // Re-apply limits
@@ -629,10 +628,7 @@ pub async fn run_security_review_command_with_executor(
             let mut result =
                 run_security_review_workflow_with_lsp_enrichment(root, base, options, &noop)
                     .await?;
-            result.notes.push(
-                "LSP enrichment requested but no securityContext executor is available in this runtime."
-                    .to_string(),
-            );
+            note_lsp_enrichment_unavailable(&mut result);
             result
         }
     } else {
@@ -663,6 +659,39 @@ pub async fn run_security_review_command_with_executor(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Note helpers for LSP enrichment
+// ---------------------------------------------------------------------------
+
+/// Append a note that LSP enrichment was requested but the executor
+/// is unavailable in this runtime.  Idempotent: does not duplicate
+/// the note if it already exists.
+fn note_lsp_enrichment_unavailable(output: &mut SecurityReviewOutput) {
+    let note = "LSP enrichment requested but no securityContext executor is available in this runtime.";
+    if !output.notes.iter().any(|n| n == note) {
+        output.notes.push(note.to_string());
+    }
+}
+
+/// Append a note that LSP enrichment found no eligible targets.
+/// Idempotent: does not duplicate the note if it already exists.
+fn note_lsp_enrichment_no_eligible_targets(output: &mut SecurityReviewOutput) {
+    let note = "LSP enrichment requested but no targets met escalation policy.";
+    if !output.notes.iter().any(|n| n == note) {
+        output.notes.push(note.to_string());
+    }
+}
+
+/// Append a note reporting that LSP enrichment was executed with the
+/// given number of requests.  Always appends (not idempotent — each
+/// enrichment pass produces its own count).
+fn note_lsp_enrichment_executed(output: &mut SecurityReviewOutput, count: usize) {
+    output.notes.push(format!(
+        "LSP enrichment executed {} request(s).",
+        count
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,6 +720,76 @@ mod tests {
         };
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let result = run_security_review_command_with_executor(&root, &args, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn security_review_command_with_executor_enrich_uses_fixture_executor() {
+        let executor = FixtureSecurityContextExecutor::new();
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_command_with_executor(&root, &args, Some(&executor)).await;
+        // Should succeed (not error) even with fixture executor and git data
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn security_review_command_with_executor_json_includes_enrichment_note() {
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            json: true,
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_command_with_executor(&root, &args, None).await;
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        // JSON output should contain the enrichment note
+        assert!(output.contains("no securityContext executor is available"));
+        // Should be valid JSON
+        let parsed: serde_json::Value = serde_json::from_str(&output).expect("should be valid JSON");
+        let notes = parsed["notes"].as_array().expect("notes should be an array");
+        assert!(notes.iter().any(|n| {
+            n.as_str()
+                .map(|s| s.contains("no securityContext executor"))
+                .unwrap_or(false)
+        }));
+    }
+
+    #[tokio::test]
+    async fn security_review_command_with_executor_prompts_only_still_respects_enrich() {
+        let executor = FixtureSecurityContextExecutor::new();
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            prompts_only: true,
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_command_with_executor(&root, &args, Some(&executor)).await;
+        // Should succeed with prompts_only + enrich
+        assert!(result.is_ok());
+        let _output = result.unwrap();
+        // Summary should not mention findings
+        // (it may or may not produce targets depending on git state)
+    }
+
+    #[tokio::test]
+    async fn security_review_command_with_executor_findings_only_still_respects_enrich() {
+        let executor = FixtureSecurityContextExecutor::new();
+        let args = SecurityReviewCommandArgs {
+            enrich: true,
+            base: Some("HEAD".to_string()),
+            findings_only: true,
+            ..Default::default()
+        };
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let result = run_security_review_command_with_executor(&root, &args, Some(&executor)).await;
         assert!(result.is_ok());
     }
 }

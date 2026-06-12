@@ -589,13 +589,22 @@ Usage examples:
 
 `/security-review --enrich` can execute bounded, read-only `securityContext` LSP requests when an executor is available. The executor hierarchy:
 
-- `NoopSecurityContextExecutor`: Always returns an error. Used when no LSP is available (default behavior).
+- `NoopSecurityContextExecutor`: Always returns an error. Used when no LSP is available.
 - `FixtureSecurityContextExecutor`: Pre-configured responses keyed by file path. Used in unit tests.
-- `LspSecurityContextExecutor`: Real adapter wrapping `LspTool`. Validates requests via `validate_security_context_request()`, injects the `"operation": "securityContext"` field, delegates to `LspTool::execute()`, and parses the JSON string response.
+- `LspSecurityContextExecutor`: Real adapter wrapping `Arc<LspTool>`. Validates requests via `validate_security_context_request()`, injects the `"operation": "securityContext"` field, delegates to `LspTool::execute()`, and parses the JSON string response.
 
-The `SecurityContextExecutorProvider` trait and `run_security_review_command_with_executor()` enable executor injection at the command level. The TUI currently passes `None` (noop) because it doesn't hold a direct reference to `LspTool`; when LSP state becomes accessible, a real executor can be injected.
+**Injection plumbing**: `run_security_review_command_with_executor(root, args, executor)` accepts `Option<&dyn SecurityContextExecutor>` — the injection point for an executor. `run_security_review_command(root, args)` delegates to it with `None`. When `args.enrich` is true but the executor is `None`, the command internally creates a `NoopSecurityContextExecutor` and appends an "unavailable" note to the output instead of silently skipping enrichment.
 
-Request validation (`validate_security_context_request`) checks:
+The `SecurityContextExecutorProvider` trait exists (providing `fn security_context_executor(&self) -> Option<Arc<dyn SecurityContextExecutor>>`) but has **zero implementations** — no struct implements it yet. It is available as a future wiring pattern.
+
+The TUI command handler (`src/tui/app/mod.rs:4094-4103`) passes `None` because the TUI `App` does not hold a direct reference to `LspTool`. When LSP state becomes accessible, a real executor can be injected here.
+
+**Enrichment note helpers** produce precise notes:
+- `note_lsp_enrichment_unavailable`: "LSP enrichment requested but no securityContext executor is available in this runtime."
+- `note_lsp_enrichment_no_eligible_targets`: "LSP enrichment requested but no targets met escalation policy."
+- `note_lsp_enrichment_executed`: "LSP enrichment executed N request(s)."
+
+**Request validation** (`validate_security_context_request` in `src/security/lsp_executor.rs`) checks:
 - `file_path` exists and is a non-empty string
 - `security_preset` exists and is a non-empty string
 - `call_depth` is 0, 1, or 2 if present
