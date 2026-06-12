@@ -1509,10 +1509,7 @@ impl Tool for LspTool {
                     .get_diagnostic_snapshot_for_key(&key, &uri_str)
                     .await
                     .map_err(|e| ToolError::Execution(format!("diagnostics: {e}")))?;
-                let warming = self
-                    .service
-                    .diagnostics_may_still_be_warming(&key, &uri_str)
-                    .await;
+                let warming = snapshot.diagnostics_may_still_be_warming();
                 let summaries: Vec<DiagnosticSummary> = snapshot
                     .diagnostics
                     .iter()
