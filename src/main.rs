@@ -1491,6 +1491,24 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     };
     app.set_core_client(core_client);
 
+    // Create a shared LspTool for security-review enrichment and other
+    // LSP-backed TUI operations.  Only in local (non-socket) mode —
+    // socket mode has no LspTool on the client side.
+    if !is_socket_mode {
+        let lsp_service = std::sync::Arc::new(codegg::lsp::LspService::new(
+            codegg::lsp::config_lsp_to_egglsp(
+                config
+                    .lsp
+                    .clone()
+                    .unwrap_or_default(),
+            ),
+        ));
+        app.lsp_tool = Some(std::sync::Arc::new(
+            codegg::tool::lsp::LspTool::new(lsp_service)
+                .with_allowed_root(std::path::PathBuf::from(&project_dir)),
+        ));
+    }
+
     if is_socket_mode {
         let n = app.init_remote_core().await;
         tracing::debug!("RemoteCore init: loaded {} models", n);

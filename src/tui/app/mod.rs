@@ -326,6 +326,10 @@ pub struct App {
     /// table via `AppEvent::GoalUpdated` and friends. Used by the
     /// sidebar, the status bar, and the `/goal show` command.
     pub active_goal: Option<crate::bus::events::GoalSnapshot>,
+    /// LSP tool instance for security-review enrichment and other
+    /// LSP-backed operations.  Created once at startup in local
+    /// (non-socket) mode; `None` in remote/socket mode.
+    pub lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -642,6 +646,7 @@ impl App {
             streaming_active: false,
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
+            lsp_tool: None,
         }
     }
 
@@ -841,6 +846,7 @@ impl App {
             streaming_active: false,
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
+            lsp_tool: None,
         }
     }
 
@@ -4091,16 +4097,20 @@ impl App {
                     .toasts
                     .info("Running security review...");
 
-                // NOTE: The TUI App does not hold a direct reference to the
-                // LspTool, so we pass `None` as the executor.  When LSP
-                // state becomes accessible from the App, inject a real
-                // executor here.
+                // Build an LSP executor from the App's shared LspTool
+                // when available.  In socket/remote mode lsp_tool is
+                // None and the deterministic stage-1 path is used.
+                let executor = self.lsp_tool.as_ref().map(|tool| {
+                    crate::security::lsp_executor::LspSecurityContextExecutor::new(Arc::clone(tool))
+                });
+                let executor_ref = executor.as_ref().map(|e| e as &dyn crate::security::workflow::context::SecurityContextExecutor);
+
                 let result = tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
                         crate::security::workflow::run_security_review_command_with_executor(
                             &root,
                             &parsed_args,
-                            None,
+                            executor_ref,
                         )
                         .await
                     })

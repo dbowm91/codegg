@@ -593,7 +593,7 @@ Usage examples:
 - `FixtureSecurityContextExecutor`: Pre-configured responses keyed by file path. Used in unit tests.
 - `LspSecurityContextExecutor`: Real adapter wrapping `Arc<LspTool>`. Validates requests via `validate_security_context_request()`, injects the `"operation": "securityContext"` field, delegates to `LspTool::execute()`, and parses the JSON string response.
 
-**Injection plumbing**: `run_security_review_command_with_executor(root, args, executor)` accepts `Option<&dyn SecurityContextExecutor>` — the injection point for an executor. `run_security_review_command(root, args)` delegates to it with `None`. When `args.enrich` is true but the executor is `None`, enrichment is skipped entirely (deterministic stage-1 only) and a `note_lsp_enrichment_unavailable` note is appended to the output.
+**Injection plumbing**: `run_security_review_command_with_executor(root, args, executor)` accepts `Option<&dyn SecurityContextExecutor>` — the injection point for an executor. `run_security_review_command(root, args)` delegates to it with `None`. In local mode the TUI creates a shared `LspTool` at startup (`App.lsp_tool`) and passes a `LspSecurityContextExecutor` to the command handler for `--enrich`. In socket/remote mode `lsp_tool` is `None` and `--enrich` falls back to deterministic stage-1 with an unavailable note.
 
 The `SecurityContextExecutorProvider` trait exists (providing `fn security_context_executor(&self) -> Option<Arc<dyn SecurityContextExecutor>>`) but has **zero implementations** — no struct implements it yet. It is available as a future wiring pattern.
 
