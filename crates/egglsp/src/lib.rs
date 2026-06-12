@@ -23,6 +23,7 @@ pub mod diagnostics;
 pub mod download;
 pub mod edit;
 pub mod error;
+pub mod hunk_context;
 pub mod language;
 pub mod launch;
 pub mod operations;
@@ -40,6 +41,10 @@ pub use diagnostics::{
     LspDiagnosticSource,
 };
 pub use error::LspError;
+pub use hunk_context::{
+    HunkDescriptor, HunkEvidence, HunkLineRange, HunkSourceNavigationLimits,
+    HunkSourceNavigationRequest, HunkSourceNavigationResponse,
+};
 pub use operations::select_source_action_edit;
 pub use operations::LspOperations;
 pub use operations::SourceActionPreviewKind;

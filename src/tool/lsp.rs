@@ -343,6 +343,8 @@ struct LspInput {
     max_call_nodes: Option<usize>,
     #[serde(default)]
     call_direction: Option<String>,
+    #[serde(default)]
+    max_hunks: Option<usize>,
 }
 
 pub fn to_lsp_position(line: u32, column: u32) -> crate::lsp::lsp_types::Position {
@@ -1257,7 +1259,7 @@ impl Tool for LspTool {
     }
 
     fn description(&self) -> &str {
-        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+        "Query LSP server for code intelligence and preview-only edits. Operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, diagnostics, renamePreview, formatPreview, sourceActionPreview, semanticCheckPreview, semanticContext, securityContext, callHierarchy, typeHierarchy, capabilities, hunkSourceContext. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet with source excerpt, diagnostics, symbols, and optional definition/reference/overlay information. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. When include_source_actions=true, semanticContext also includes safe source-action preview hints (initially only source.organizeImports). callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1272,9 +1274,10 @@ impl Tool for LspTool {
                         "renamePreview", "formatPreview", "sourceActionPreview",
                         "semanticCheckPreview", "semanticContext",
                         "callHierarchy", "typeHierarchy",
-                        "securityContext", "capabilities"
+                        "securityContext", "capabilities",
+                        "hunkSourceContext"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",
@@ -1367,6 +1370,10 @@ impl Tool for LspTool {
                     "type": "string",
                     "enum": ["incoming", "outgoing", "both"],
                     "description": "Direction for securityContext call expansion. incoming=callers, outgoing=callees, both=both. Default both."
+                },
+                "max_hunks": {
+                    "type": "number",
+                    "description": "Maximum hunks for hunkSourceContext. Default 20."
                 }
             },
             "required": ["operation"]
@@ -2432,6 +2439,74 @@ impl Tool for LspTool {
                 serde_json::to_string_pretty(&snapshot)
                     .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
             }
+            "hunkSourceContext" => {
+                let file_path_str = parsed
+                    .file_path
+                    .clone()
+                    .ok_or_else(|| ToolError::Execution("file_path required".to_string()))?;
+                self.resolve_file(&parsed.file_path)?;
+
+                let radius = parsed
+                    .radius
+                    .unwrap_or(DEFAULT_SEMANTIC_CONTEXT_RADIUS)
+                    .min(MAX_SEMANTIC_CONTEXT_RADIUS);
+                let max_hunks = parsed.max_hunks.unwrap_or(20);
+
+                let ops = Arc::new(crate::lsp::operations::LspOperations::new(
+                    self.service.clone(),
+                ));
+                let diagnostics = Arc::new(crate::lsp::diagnostics::DiagnosticsCollector::new(
+                    self.service.clone(),
+                ));
+                let sem_collector = crate::lsp::semantic_context::SemanticContextCollector::new(
+                    self.service.clone(),
+                    ops.clone(),
+                    diagnostics,
+                    self.allowed_root.clone(),
+                );
+
+                let nav = crate::lsp::hunk_nav::HunkSourceNavigator::new()
+                    .with_excerpt_radius(radius)
+                    .with_max_symbols_per_hunk(MAX_CONTEXT_SYMBOLS)
+                    .with_max_diagnostics_per_hunk(MAX_CONTEXT_DIAGNOSTICS)
+                    .with_max_references_per_hunk(MAX_CONTEXT_REFERENCES);
+
+                let collector = crate::lsp::hunk_nav_collector::HunkSourceNavigationCollector::new(
+                    sem_collector,
+                    nav,
+                );
+
+                let request = egglsp::hunk_context::HunkSourceNavigationRequest {
+                    file_path: file_path_str.clone(),
+                    hunks: vec![],
+                    patch: parsed.patch.clone(),
+                    intent: "navigation".to_string(),
+                    include_definitions: parsed.include_definitions.unwrap_or(true),
+                    include_references: parsed.include_references.unwrap_or(true),
+                    include_call_hierarchy: parsed.include_call_hierarchy.unwrap_or(false),
+                    include_type_hierarchy: parsed.include_type_hierarchy.unwrap_or(false),
+                    excerpt_radius: radius,
+                    max_hunks,
+                    max_symbols_per_hunk: MAX_CONTEXT_SYMBOLS,
+                    max_diagnostics_per_hunk: MAX_CONTEXT_DIAGNOSTICS,
+                    max_references_per_hunk: MAX_CONTEXT_REFERENCES,
+                };
+
+                let response = collector
+                    .collect(request)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("hunkSourceContext: {e}")))?;
+
+                let output = LspToolOutput {
+                    operation: "hunkSourceContext".to_string(),
+                    file_path: Some(file_path_str),
+                    result_count: response.hunks.len(),
+                    truncated: response.truncated,
+                    results: response,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
             op => return Err(ToolError::Execution(format!("unknown LSP operation: {op}"))),
         };
 
@@ -2810,9 +2885,10 @@ mod tests {
                         "renamePreview", "formatPreview", "sourceActionPreview",
                         "semanticCheckPreview", "semanticContext",
                         "callHierarchy", "typeHierarchy",
-                        "securityContext", "capabilities"
+                        "securityContext", "capabilities",
+                        "hunkSourceContext"
                     ],
-                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
+                    "description": "LSP operation to perform. semanticCheckPreview accepts either full proposed content or a single-file unified diff patch. semanticContext returns a compact LSP-backed context packet. securityContext returns a security-review context packet with risk markers. capabilities returns a normalized snapshot of what the server supports. hunkSourceContext returns per-hunk navigation evidence with enclosing symbols, diagnostics, definitions, references, and hierarchy. callHierarchy/typeHierarchy return call/type hierarchy information for the symbol at line+column. Edit operations are previews only; use apply_patch (or other mutating tools) for actual changes."
                 },
                 "file_path": {
                     "type": "string",
@@ -2905,6 +2981,10 @@ mod tests {
                     "type": "string",
                     "enum": ["incoming", "outgoing", "both"],
                     "description": "Direction for securityContext call expansion. incoming=callers, outgoing=callees, both=both. Default both."
+                },
+                "max_hunks": {
+                    "type": "number",
+                    "description": "Maximum hunks for hunkSourceContext. Default 20."
                 }
             },
             "required": ["operation"]
@@ -3659,6 +3739,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             call_depth: None,
             max_call_nodes: None,
             call_direction: None,
+            max_hunks: None,
         }
     }
 
@@ -5021,7 +5102,6 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn semantic_packet_adapts_shared_call_hierarchy() {
-        use egglsp::diagnostics::FileDiagnostic;
         use egglsp::semantic_context::{
             SemanticCallGraphSummary, SemanticContextResponse, SemanticHierarchyItem,
             SemanticHierarchyRange, SemanticSourceExcerpt,
@@ -5094,7 +5174,6 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn semantic_packet_adapts_shared_type_hierarchy() {
-        use egglsp::diagnostics::FileDiagnostic;
         use egglsp::semantic_context::{
             SemanticContextResponse, SemanticHierarchyItem, SemanticHierarchyRange,
             SemanticSourceExcerpt, SemanticTypeGraphSummary,

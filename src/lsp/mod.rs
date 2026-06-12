@@ -47,6 +47,10 @@ pub mod server {
 pub mod overlay {
     pub use egglsp::overlay::*;
 }
+pub mod hunk_nav;
+pub mod hunk_nav_collector;
+pub mod hunk_nav_parser;
+pub mod hunk_nav_ranges;
 pub mod semantic_context;
 pub mod service {
     pub use egglsp::service::*;

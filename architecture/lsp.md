@@ -330,6 +330,7 @@ Only these operations are model-facing:
 | `semanticCheckPreview` | `textDocument/didChange` (OverlaySession + restore) + `textDocument/documentSymbol` | `SemanticCheckPreview` (diagnostics + symbols + error fields; accepts `content` or single-file `patch`, preview-only, no disk writes) |
 | `semanticContext` | (combines multiple LSP requests) | `SemanticContextPacket` (source excerpt + diagnostics + symbols + optional definitions/references/overlay + optional source-action hints + optional call/type hierarchy; read-only, never writes files) |
 | `securityContext` | (combines multiple LSP requests + risk marker scanning) | `SecurityContextPacket` (source excerpt + risk markers + security-relevant diagnostics/symbols + optional definitions/references/call hierarchy + optional overlay; read-only, never writes files) |
+| `hunkSourceContext` | (combines diff parsing + semantic context) | `HunkSourceNavigationResponse` (per-hunk evidence with enclosing symbols, diagnostics, definitions, references; read-only, bounded) |
 | `callHierarchy` | `textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls` + `callHierarchy/outgoingCalls` | `CallHierarchySummary` (items, incoming, outgoing, errors, truncated) |
 | `typeHierarchy` | `textDocument/prepareTypeHierarchy` + `typeHierarchy/supertypes` + `typeHierarchy/subtypes` | `TypeHierarchySummary` (items, supertypes, subtypes, errors, truncated) |
 
@@ -573,6 +574,41 @@ The legacy entry point `plan_security_review_from_diff(diff, repo_root)` remains
 #### Escalation policy
 
 `choose_security_context_escalation(target, finding, prompt)` maps risk signals to `SecurityContextEscalationLevel` (None, Basic, CallDepth1, CallDepth2). `build_escalated_security_context_request(target, level)` builds the `securityContext` payload with the chosen depth. `plan_security_context_escalations(targets, ...)` returns a `SecurityContextEscalationPlan` DTO — a policy output that recommends escalation levels per target without executing LSP requests. The plan is a recommendation, not an execution. Escalation is read-only, bounded (max depth 2), and never writes files.
+
+### Hunk/source navigation
+
+`hunkSourceContext` is a read-only context-gathering operation that provides hunk-aware evidence for code review, edit planning, and navigation. It consumes a unified diff (patch) and maps changed hunks to enclosing symbols, nearby diagnostics, definitions, references, and hierarchy data.
+
+**Input parameters:**
+
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `file_path` | string | required | Target file |
+| `patch` | string | optional | Unified diff text (mutually exclusive with hunks) |
+| `include_definitions` | bool | true | Include definitions intersecting hunks |
+| `include_references` | bool | true | Include references intersecting hunks |
+| `include_call_hierarchy` | bool | false | Include call hierarchy for enclosing symbols |
+| `include_type_hierarchy` | bool | false | Include type hierarchy for enclosing symbols |
+| `radius` | number | 40 | Excerpt radius for source context |
+| `max_hunks` | number | 20 | Maximum hunks to process |
+
+**Output shape:**
+
+- `semantic` — full `SemanticContextResponse` for the file
+- `hunks` — per-hunk evidence (enclosing symbol, related symbols, diagnostics, definitions, references, call/type hierarchy, source excerpt, diagnostic freshness)
+- `limits` — truncation flags
+- `notes` — informational notes
+- `truncated` — whether output was capped
+
+**Key properties:**
+
+- Read-only: never writes files; patch is parsed in memory
+- Pure navigator: `HunkSourceNavigator` consumes `SemanticContextResponse` and does not call LSP directly
+- Bounded: per-hunk caps on symbols, diagnostics, references; global cap on hunk count
+- Diagnostic freshness is preserved per hunk from the semantic response
+- Evidence is best-effort and bounded; not proof of correctness or security
+
+**Implementation:** Diff parsing (`parse_unified_diff`) produces `HunkDescriptor` values. Range primitives (`hunk_nav_ranges`) handle overlap, containment, and symbol/diagnostic matching. `HunkSourceNavigator` assembles per-hunk evidence. `HunkSourceNavigationCollector` coordinates parsing + semantic collection.
 
 ### Position Convention
 
