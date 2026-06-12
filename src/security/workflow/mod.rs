@@ -341,6 +341,7 @@ Binary files a/image.png and b/image.png differ
                 old_count: 3,
                 new_start: 10,
                 new_count: 5,
+                lines: Vec::new(),
             },
             ChangedHunk {
                 file_path: PathBuf::from("src/auth.rs"),
@@ -348,6 +349,7 @@ Binary files a/image.png and b/image.png differ
                 old_count: 2,
                 new_start: 20,
                 new_count: 4,
+                lines: Vec::new(),
             },
         ];
 
@@ -370,6 +372,7 @@ Binary files a/image.png and b/image.png differ
                 old_count: 3,
                 new_start: 10,
                 new_count: 5,
+                lines: Vec::new(),
             },
             ChangedHunk {
                 file_path: PathBuf::from("src/lib.rs"),
@@ -377,6 +380,7 @@ Binary files a/image.png and b/image.png differ
                 old_count: 3,
                 new_start: 10,
                 new_count: 5,
+                lines: Vec::new(),
             },
         ];
 
@@ -393,6 +397,7 @@ Binary files a/image.png and b/image.png differ
                 old_count: 1,
                 new_start: 1,
                 new_count: 2,
+                lines: Vec::new(),
             },
             ChangedHunk {
                 file_path: PathBuf::from("src/unsafe_block.rs"),
@@ -400,6 +405,7 @@ Binary files a/image.png and b/image.png differ
                 old_count: 1,
                 new_start: 5,
                 new_count: 3,
+                lines: Vec::new(),
             },
         ];
 
@@ -431,6 +437,7 @@ Binary files a/image.png and b/image.png differ
                 old_count: 1,
                 new_start: 1,
                 new_count: 2,
+                lines: Vec::new(),
             },
             ChangedHunk {
                 file_path: PathBuf::from("src/lib.rs"),
@@ -438,6 +445,7 @@ Binary files a/image.png and b/image.png differ
                 old_count: 1,
                 new_start: 1,
                 new_count: 2,
+                lines: Vec::new(),
             },
         ];
 
@@ -2081,6 +2089,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             review_prompts: vec![],
             preflight_results: vec![],
             notes: vec!["test note".to_string()],
+            hunks: Vec::new(),
         };
         let rendered = render_security_review_summary(&output);
         assert!(rendered.contains("Targets: 0"));
@@ -2108,6 +2117,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             review_prompts: vec![],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
         let rendered = render_security_review_findings(&output);
         assert!(rendered.contains("[high/medium]"));
@@ -2131,6 +2141,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
         let rendered = render_security_review_prompts(&output);
         assert!(rendered.contains("check auth"));
@@ -2218,6 +2229,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             findings: vec![],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
         let plans = plan_security_context_escalations(&output);
         assert_eq!(plans.len(), 1);
@@ -2247,6 +2259,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             findings: vec![],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
         let plans = plan_security_context_escalations(&output);
         assert_eq!(plans.len(), 1);
@@ -2285,6 +2298,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
         let plans = plan_security_context_escalations(&output);
         assert_eq!(plans.len(), 1);
@@ -2323,6 +2337,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
         let plans = plan_security_context_escalations(&output);
         assert_eq!(plans.len(), 1);
@@ -2371,6 +2386,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
         let plans = plan_security_context_escalations(&output);
         let req = plans[0].request.as_ref().unwrap();
@@ -2438,6 +2454,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             findings: vec![],
             preflight_results: vec![],
             notes: vec!["test note".to_string()],
+            hunks: Vec::new(),
         };
         let rendered = render_security_review_summary(&output);
         assert!(rendered.contains("Security Review Summary"));
@@ -2494,6 +2511,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             review_prompts: vec![],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let executor = NoopSecurityContextExecutor;
@@ -2533,6 +2551,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             review_prompts: prompts,
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let executor = FixtureSecurityContextExecutor::new();
@@ -2568,6 +2587,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let executor = FixtureSecurityContextExecutor::with_failure(
@@ -2618,6 +2638,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let executor = SlowExecutor;
@@ -2664,6 +2685,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let executor =
@@ -2706,6 +2728,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let executor =
@@ -2754,6 +2777,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let executor =
@@ -2794,6 +2818,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let executor =
@@ -3058,6 +3083,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let executor =
@@ -3097,6 +3123,7 @@ diff --git a/src/lib.rs b/src/lib.rs
             }],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         };
 
         let enrichment = vec![SecurityContextEnrichmentResult {
@@ -3155,5 +3182,456 @@ diff --git a/src/lib.rs b/src/lib.rs
         let _ = executor.security_context(req).await;
         let requests = executor.requests.lock().unwrap();
         assert_eq!(requests.len(), 1);
+    }
+
+    // -- Hunk-specific unit tests --
+
+    #[test]
+    fn security_review_parse_hunks_preserves_lines() {
+        let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index abc1234..def5678 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -10,6 +10,8 @@ fn example() {
+     let x = 1;
+     let y = 2;
++    let z = x + y;
++    assert!(z > 0);
+     let w = 3;
+ }
+ ";
+
+        let hunks = parse_changed_hunks(patch);
+        assert_eq!(hunks.len(), 1);
+        let hunk = &hunks[0];
+        // 4 context lines + 2 added lines + 1 empty context line = 7 total
+        assert_eq!(hunk.lines.len(), 7);
+        assert_eq!(hunk.lines[0].kind, DiffLineKind::Context);
+        assert_eq!(hunk.lines[0].text, "    let x = 1;");
+        assert_eq!(hunk.lines[1].kind, DiffLineKind::Context);
+        assert_eq!(hunk.lines[1].text, "    let y = 2;");
+        assert_eq!(hunk.lines[2].kind, DiffLineKind::Added);
+        assert_eq!(hunk.lines[2].text, "    let z = x + y;");
+        assert_eq!(hunk.lines[3].kind, DiffLineKind::Added);
+        assert_eq!(hunk.lines[3].text, "    assert!(z > 0);");
+        assert_eq!(hunk.lines[4].kind, DiffLineKind::Context);
+        assert_eq!(hunk.lines[4].text, "    let w = 3;");
+        assert_eq!(hunk.lines[5].kind, DiffLineKind::Context);
+        assert_eq!(hunk.lines[5].text, "}");
+    }
+
+    #[test]
+    fn security_review_parse_hunks_line_numbers_correct() {
+        let patch = "\
+diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -5,4 +5,6 @@
+ unchanged line 1
++added line 1
++added line 2
+ unchanged line 2
+-removed line 1
+ unchanged line 3
+";
+        let hunks = parse_changed_hunks(patch);
+        assert_eq!(hunks.len(), 1);
+        let hunk = &hunks[0];
+        // DiffLine does not track old_line/new_line, only kind+text
+        assert_eq!(hunk.lines[0].kind, DiffLineKind::Context);
+        assert_eq!(hunk.lines[0].text, "unchanged line 1");
+        assert_eq!(hunk.lines[1].kind, DiffLineKind::Added);
+        assert_eq!(hunk.lines[1].text, "added line 1");
+        assert_eq!(hunk.lines[2].kind, DiffLineKind::Added);
+        assert_eq!(hunk.lines[2].text, "added line 2");
+        assert_eq!(hunk.lines[3].kind, DiffLineKind::Context);
+        assert_eq!(hunk.lines[3].text, "unchanged line 2");
+        assert_eq!(hunk.lines[4].kind, DiffLineKind::Removed);
+        assert_eq!(hunk.lines[4].text, "removed line 1");
+        assert_eq!(hunk.lines[5].kind, DiffLineKind::Context);
+        assert_eq!(hunk.lines[5].text, "unchanged line 3");
+    }
+
+    #[test]
+    fn security_review_parse_hunks_context_lines_stripped() {
+        let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,3 @@
+ context before
+- old content
++ new content
+ context after
+";
+        let hunks = parse_changed_hunks(patch);
+        assert_eq!(hunks.len(), 1);
+        let lines = &hunks[0].lines;
+        // Context line starts with ' ' which is stripped, but rest of indentation remains
+        let ctx = lines.iter().find(|l| l.kind == DiffLineKind::Context);
+        assert!(ctx.is_some(), "should have a context line");
+        assert_eq!(ctx.unwrap().text, "context before");
+        // Verify all 4 lines (2 context + 1 removed + 1 added)
+        assert_eq!(lines.len(), 4);
+    }
+
+    #[test]
+    fn security_review_parse_hunks_added_lines_stripped() {
+        let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,1 +1,2 @@
+ existing
++newly added
+";
+        let hunks = parse_changed_hunks(patch);
+        let added = &hunks[0].lines;
+        let a = added.iter().find(|l| l.kind == DiffLineKind::Added);
+        assert!(a.is_some(), "should have an added line");
+        assert_eq!(a.unwrap().text, "newly added");
+        // Verify leading '+' is not in text
+        assert!(!a.unwrap().text.starts_with('+'));
+    }
+
+    #[test]
+    fn security_review_parse_hunks_removed_lines_stripped() {
+        let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,1 @@
+-removed line
+ kept line
+";
+        let hunks = parse_changed_hunks(patch);
+        let removed = &hunks[0].lines;
+        let r = removed.iter().find(|l| l.kind == DiffLineKind::Removed);
+        assert!(r.is_some(), "should have a removed line");
+        assert_eq!(r.unwrap().text, "removed line");
+        assert!(!r.unwrap().text.starts_with('-'));
+    }
+
+    #[test]
+    fn security_review_parse_hunks_no_newline_marker_skipped() {
+        let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,2 @@
+ existing
++new content
+\\ No newline at end of file
+";
+        let hunks = parse_changed_hunks(patch);
+        assert_eq!(hunks.len(), 1);
+        // The no-newline marker should be skipped, not included in lines
+        let has_marker = hunks[0].lines.iter().any(|l| l.text.contains("No newline"));
+        assert!(!has_marker, "no-newline marker should be skipped");
+        // Should have 2 lines: context + added
+        assert_eq!(hunks[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn security_review_hunk_ref_serializes_roundtrip() {
+        let hunk_ref = SecurityReviewHunkRef {
+            file_path: PathBuf::from("src/lib.rs"),
+            old_start: Some(10),
+            old_lines: Some(6),
+            new_start: Some(10),
+            new_lines: Some(8),
+            header: "@@ -10,6 +10,8 @@ fn example()".to_string(),
+            lines: vec![
+                SecurityReviewHunkLine {
+                    old_line: Some(10),
+                    new_line: Some(10),
+                    kind: SecurityReviewHunkLineKind::Context,
+                    text: "let x = 1;".to_string(),
+                    is_focus: false,
+                },
+                SecurityReviewHunkLine {
+                    old_line: None,
+                    new_line: Some(11),
+                    kind: SecurityReviewHunkLineKind::Added,
+                    text: "let z = x + y;".to_string(),
+                    is_focus: true,
+                },
+                SecurityReviewHunkLine {
+                    old_line: Some(11),
+                    new_line: Some(12),
+                    kind: SecurityReviewHunkLineKind::Removed,
+                    text: "let old = 0;".to_string(),
+                    is_focus: false,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&hunk_ref).expect("serialize hunk ref");
+        let restored: SecurityReviewHunkRef =
+            serde_json::from_str(&json).expect("deserialize hunk ref");
+        assert_eq!(restored.file_path, hunk_ref.file_path);
+        assert_eq!(restored.old_start, hunk_ref.old_start);
+        assert_eq!(restored.new_start, hunk_ref.new_start);
+        assert_eq!(restored.header, hunk_ref.header);
+        assert_eq!(restored.lines.len(), 3);
+        assert_eq!(restored.lines[0].kind, SecurityReviewHunkLineKind::Context);
+        assert!(!restored.lines[0].is_focus);
+        assert_eq!(restored.lines[1].kind, SecurityReviewHunkLineKind::Added);
+        assert!(restored.lines[1].is_focus);
+        assert_eq!(restored.lines[2].kind, SecurityReviewHunkLineKind::Removed);
+    }
+
+    #[test]
+    fn security_review_hunk_filter_selects_only_hunk_backed_items() {
+        let receipt = {
+            let output = SecurityReviewOutput {
+                targets: vec![SecurityReviewTarget {
+                    file_path: PathBuf::from("src/lib.rs"),
+                    line: Some(10),
+                    column: Some(1),
+                    preset: "rust_server".to_string(),
+                    reason: SecurityTargetReason::ChangedHunk,
+                }],
+                findings: vec![SecurityReviewFinding {
+                    severity: SecuritySeverity::High,
+                    confidence: SecurityConfidence::High,
+                    title: "Test finding".to_string(),
+                    file_path: PathBuf::from("src/lib.rs"),
+                    line: Some(10),
+                    category: Some("auth".to_string()),
+                    evidence: vec![StructuredSecurityEvidence {
+                        kind: SecurityEvidenceKind::RiskMarker,
+                        file_path: Some(PathBuf::from("src/lib.rs")),
+                        line: Some(10),
+                        summary: "marker".to_string(),
+                        detail: None,
+                    }],
+                    reasoning: "reasoning".to_string(),
+                    recommendation: "recommendation".to_string(),
+                    tests: vec!["test_regression".to_string()],
+                }],
+                review_prompts: vec![SecurityReviewPrompt {
+                    file_path: PathBuf::from("src/db.rs"),
+                    line: Some(15),
+                    preset: "rust_server".to_string(),
+                    category: Some("unsafe".to_string()),
+                    title: "Review unsafe".to_string(),
+                    rationale: "rationale".to_string(),
+                    evidence: vec!["source: securityContext.risk_marker".to_string()],
+                }],
+                preflight_results: vec![],
+                notes: vec!["risk markers are review prompts, not confirmed findings".to_string()],
+                hunks: vec![SecurityReviewHunkRef {
+                    file_path: PathBuf::from("src/lib.rs"),
+                    old_start: Some(8),
+                    old_lines: Some(6),
+                    new_start: Some(10),
+                    new_lines: Some(5),
+                    header: "@@ -8,6 +10,5 @@".to_string(),
+                    lines: vec![SecurityReviewHunkLine {
+                        old_line: Some(8),
+                        new_line: Some(10),
+                        kind: SecurityReviewHunkLineKind::Context,
+                        text: "unchanged".to_string(),
+                        is_focus: false,
+                    }],
+                }],
+            };
+            SecurityReviewReceipt::now(
+                "sr-hunk-filter".to_string(),
+                PathBuf::from("/tmp/proj"),
+                SecurityReviewCommandArgs::default(),
+                output,
+                "rendered".to_string(),
+                false,
+                false,
+            )
+        };
+
+        let items = project_receipt_to_panel_items(&receipt);
+        let hunk_backed = filter_panel_items(&items, SecurityReviewFilter::HunkBacked);
+
+        // Only the finding at line 10 (inside the hunk range 10..15) should have a hunk
+        for item in &hunk_backed {
+            assert!(
+                item.hunk.is_some(),
+                "HunkBacked filter should only include items with hunk: {:?}",
+                item.title
+            );
+        }
+
+        // The prompt at line 15 is at the boundary (new_start=10, new_lines=5, range 10..15)
+        // line 15 is NOT < 15, so it should NOT match
+        let prompt_hunk_backed: Vec<_> = hunk_backed
+            .iter()
+            .filter(|i| i.kind == SecurityReviewPanelItemKind::Prompt)
+            .collect();
+        assert!(
+            prompt_hunk_backed.is_empty(),
+            "prompt at line 15 should not be hunk-backed (outside 10..15 range)"
+        );
+    }
+
+    #[test]
+    fn security_review_hunk_filter_clamps_selection() {
+        use crate::tui::components::dialogs::security_review::SecurityReviewDialog;
+        use crate::tui::theme::Theme;
+        use std::sync::Arc;
+
+        let theme = Arc::new(Theme::dark());
+        let receipt_output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("src/lib.rs"),
+                line: Some(10),
+                column: Some(1),
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::ChangedHunk,
+            }],
+            findings: vec![SecurityReviewFinding {
+                severity: SecuritySeverity::High,
+                confidence: SecurityConfidence::High,
+                title: "Test finding".to_string(),
+                file_path: PathBuf::from("src/lib.rs"),
+                line: Some(10),
+                category: Some("auth".to_string()),
+                evidence: vec![StructuredSecurityEvidence {
+                    kind: SecurityEvidenceKind::RiskMarker,
+                    file_path: Some(PathBuf::from("src/lib.rs")),
+                    line: Some(10),
+                    summary: "marker".to_string(),
+                    detail: None,
+                }],
+                reasoning: "reasoning".to_string(),
+                recommendation: "recommendation".to_string(),
+                tests: vec!["test_regression".to_string()],
+            }],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("src/db.rs"),
+                line: Some(15),
+                preset: "rust_server".to_string(),
+                category: Some("unsafe".to_string()),
+                title: "Review unsafe".to_string(),
+                rationale: "rationale".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            }],
+            preflight_results: vec![],
+            notes: vec!["risk markers are review prompts, not confirmed findings".to_string()],
+            hunks: vec![SecurityReviewHunkRef {
+                file_path: PathBuf::from("src/lib.rs"),
+                old_start: Some(8),
+                old_lines: Some(6),
+                new_start: Some(10),
+                new_lines: Some(5),
+                header: "@@ -8,6 +10,5 @@".to_string(),
+                lines: vec![],
+            }],
+        };
+        let receipt = SecurityReviewReceipt::now(
+            "sr-hunk-clamp".to_string(),
+            PathBuf::from("/tmp/proj"),
+            SecurityReviewCommandArgs::default(),
+            receipt_output,
+            "rendered".to_string(),
+            false,
+            false,
+        );
+
+        let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt.clone());
+        let all_count = dialog.visible_items.len();
+        assert!(all_count > 0, "should have items");
+
+        // Set selection beyond the hunk-backed subset
+        dialog.selected_index = all_count; // out of bounds
+        dialog.filter = SecurityReviewFilter::HunkBacked;
+        dialog.set_receipt(Some(receipt));
+        // After filter change, selection should be clamped
+        assert!(
+            dialog.selected_index < dialog.visible_items.len(),
+            "selection should be clamped after HunkBacked filter, got {} (len={})",
+            dialog.selected_index,
+            dialog.visible_items.len()
+        );
+    }
+
+    #[test]
+    fn security_review_mapping_does_not_promote_prompt_to_finding() {
+        // Adding hunk context to prompts via project_receipt_to_panel_items
+        // should not change finding synthesis behavior
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("src/lib.rs"),
+                line: Some(10),
+                column: Some(1),
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::ChangedHunk,
+            }],
+            findings: vec![],
+            review_prompts: vec![SecurityReviewPrompt {
+                file_path: PathBuf::from("src/lib.rs"),
+                line: Some(10),
+                preset: "rust_server".to_string(),
+                category: Some("unsafe".to_string()),
+                title: "Review unsafe".to_string(),
+                rationale: "unsafe block found".to_string(),
+                evidence: vec!["source: securityContext.risk_marker".to_string()],
+            }],
+            preflight_results: vec![],
+            notes: vec![],
+            hunks: vec![SecurityReviewHunkRef {
+                file_path: PathBuf::from("src/lib.rs"),
+                old_start: Some(8),
+                old_lines: Some(6),
+                new_start: Some(10),
+                new_lines: Some(5),
+                header: "@@ -8,6 +10,5 @@".to_string(),
+                lines: vec![SecurityReviewHunkLine {
+                    old_line: None,
+                    new_line: Some(10),
+                    kind: SecurityReviewHunkLineKind::Added,
+                    text: "unsafe { ptr::read() }".to_string(),
+                    is_focus: true,
+                }],
+            }],
+        };
+
+        let receipt = SecurityReviewReceipt::now(
+            "sr-no-promote".to_string(),
+            PathBuf::from("/tmp/proj"),
+            SecurityReviewCommandArgs::default(),
+            output,
+            "rendered".to_string(),
+            false,
+            false,
+        );
+
+        let items = project_receipt_to_panel_items(&receipt);
+
+        // The prompt at line 10 is inside hunk range (10..15) so it should have a hunk
+        let prompt_item = items
+            .iter()
+            .find(|i| i.kind == SecurityReviewPanelItemKind::Prompt)
+            .expect("should have a prompt");
+        assert!(
+            prompt_item.hunk.is_some(),
+            "prompt at line 10 should be hunk-backed"
+        );
+
+        // But the item kind should still be Prompt, not Finding
+        assert_eq!(
+            prompt_item.kind,
+            SecurityReviewPanelItemKind::Prompt,
+            "hunk context should not promote prompt to finding"
+        );
+
+        // And there should be no findings
+        let finding_items: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == SecurityReviewPanelItemKind::Finding)
+            .collect();
+        assert!(
+            finding_items.is_empty(),
+            "should have no findings from hunk-enriched prompts"
+        );
     }
 }

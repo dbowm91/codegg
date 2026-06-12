@@ -854,7 +854,7 @@ Each successful run stores a structured `SecurityReviewReceipt` on the App so th
 
 - `/security-review-show` reopens the latest result panel (`Dialog::SecurityReview`) from the in-memory receipt.
 - `/security-review-cancel` aborts an in-flight review via `AbortHandle::abort()`; cancellation is best-effort and stale completions are ignored.
-- The result panel supports master/detail navigation (`j`/`k` or `↑`/`↓`, `PgUp`/`PgDn`), filter cycling (`f`), notes toggle (`n`), prompts toggle (`p`), and `Enter` to open a read-only source preview dialog for the finding's file. The source preview is root-scoped and falls back to copying `path[:line]` to the clipboard if the file cannot be opened. The review itself is read-only by design — no file mutations.
+- The result panel supports master/detail navigation (`j`/`k` or `↑`/`↓`, `PgUp`/`PgDn`), filter cycling (`f` — including `HunkBacked` to show only items with hunk context), notes toggle (`n`), prompts toggle (`p`), and `Enter` to open a read-only source preview dialog for the finding's file. The source preview is root-scoped and falls back to copying `path[:line]` to the clipboard if the file cannot be opened. When a finding or prompt has a matching hunk (derived from the reviewed diff, not live files), the detail section renders hunk context with added/removed/context line styling. Items without matching hunks render gracefully. The review itself is read-only by design — no file mutations.
 - Receipt persistence is in-memory only (`App.latest_security_review`); cleared on app restart.
 
 ### Best Practices

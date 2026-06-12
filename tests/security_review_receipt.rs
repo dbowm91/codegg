@@ -4,6 +4,7 @@ use codegg::security::workflow::{
     filter_panel_items, project_receipt_to_panel_items, run_security_review_background,
     run_security_review_workflow, FixtureSecurityContextExecutor, SecurityConfidence,
     SecurityEvidenceKind, SecurityReviewCommandArgs, SecurityReviewFilter, SecurityReviewFinding,
+    SecurityReviewHunkLine, SecurityReviewHunkLineKind, SecurityReviewHunkRef,
     SecurityReviewOutput, SecurityReviewPanelItemKind, SecurityReviewPrompt, SecurityReviewReceipt,
     SecurityReviewTarget, SecurityReviewWorkflowOptions, SecuritySeverity, SecurityTargetReason,
     StructuredSecurityEvidence,
@@ -68,6 +69,7 @@ fn sample_output() -> SecurityReviewOutput {
         review_prompts: vec![prompt("src/db.rs", 15)],
         preflight_results: Vec::new(),
         notes: vec!["risk markers are review prompts, not confirmed findings".to_string()],
+        hunks: Vec::new(),
     }
 }
 
@@ -176,6 +178,7 @@ fn security_review_receipt_projection_handles_no_findings() {
         review_prompts: vec![prompt("src/lib.rs", 10)],
         preflight_results: Vec::new(),
         notes: vec!["a note".to_string()],
+        hunks: Vec::new(),
     };
     let receipt = SecurityReviewReceipt::now(
         "sr-test-empty".to_string(),
@@ -206,6 +209,7 @@ fn security_review_receipt_projection_handles_completely_empty_output() {
         review_prompts: Vec::new(),
         preflight_results: Vec::new(),
         notes: Vec::new(),
+        hunks: Vec::new(),
     };
     let receipt = SecurityReviewReceipt::now(
         "sr-test-empty".to_string(),
@@ -570,11 +574,11 @@ fn security_review_filter_cycles_through_all_filters() {
         filter = filter.next();
         label.to_string()
     })
-    .take(7)
+    .take(8)
     .collect();
-    // After 6 cycles we should have returned to All.
-    assert_eq!(labels[6], "All");
-    assert_eq!(labels.len(), 7);
+    // After 7 cycles we should have returned to All.
+    assert_eq!(labels[7], "All");
+    assert_eq!(labels.len(), 8);
 }
 
 #[test]
@@ -626,4 +630,221 @@ async fn security_review_background_with_fixture_executor_idempotent() {
         .expect("should succeed");
     assert!(!receipt.lsp_available);
     assert!(!receipt.enriched);
+}
+
+// ---------------------------------------------------------------------------
+// Hunk projection tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn security_review_receipt_projects_diff_hunk_context_from_fixture_diff() {
+    let output = SecurityReviewOutput {
+        targets: vec![target("src/lib.rs", 11)],
+        findings: vec![finding("src/lib.rs", 11, SecuritySeverity::Medium)],
+        review_prompts: vec![prompt("src/lib.rs", 12)],
+        preflight_results: vec![],
+        notes: vec![],
+        hunks: vec![SecurityReviewHunkRef {
+            file_path: PathBuf::from("src/lib.rs"),
+            old_start: Some(8),
+            old_lines: Some(6),
+            new_start: Some(10),
+            new_lines: Some(5),
+            header: "@@ -8,6 +10,5 @@".to_string(),
+            lines: vec![
+                SecurityReviewHunkLine {
+                    old_line: Some(8),
+                    new_line: Some(10),
+                    kind: SecurityReviewHunkLineKind::Context,
+                    text: "let x = 1;".to_string(),
+                    is_focus: false,
+                },
+                SecurityReviewHunkLine {
+                    old_line: None,
+                    new_line: Some(11),
+                    kind: SecurityReviewHunkLineKind::Added,
+                    text: "let z = x + y;".to_string(),
+                    is_focus: true,
+                },
+                SecurityReviewHunkLine {
+                    old_line: Some(9),
+                    new_line: Some(12),
+                    kind: SecurityReviewHunkLineKind::Context,
+                    text: "let y = 2;".to_string(),
+                    is_focus: false,
+                },
+            ],
+        }],
+    };
+
+    let receipt = SecurityReviewReceipt::now(
+        "sr-hunk-projection".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+
+    // Finding at line 11 is inside hunk range 10..15
+    let finding_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Finding)
+        .expect("should have a finding");
+    assert!(
+        finding_item.hunk.is_some(),
+        "finding at line 11 should get hunk from projection"
+    );
+    let hunk = finding_item.hunk.as_ref().unwrap();
+    assert_eq!(hunk.lines.len(), 3);
+    assert_eq!(hunk.lines[1].kind, SecurityReviewHunkLineKind::Added);
+
+    // Prompt at line 12 is also inside hunk range 10..15
+    let prompt_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Prompt)
+        .expect("should have a prompt");
+    assert!(
+        prompt_item.hunk.is_some(),
+        "prompt at line 12 should get hunk from projection"
+    );
+}
+
+#[test]
+fn security_review_changed_file_deleted_has_no_hunk_preview() {
+    // Deleted files have no hunks, so panel items should have hunk: None
+    let output = SecurityReviewOutput {
+        targets: vec![],
+        findings: vec![],
+        review_prompts: vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/old.rs"),
+            line: None,
+            preset: "rust_server".to_string(),
+            category: None,
+            title: "Deleted file review".to_string(),
+            rationale: "file was deleted".to_string(),
+            evidence: vec!["source: changed_hunk".to_string()],
+        }],
+        preflight_results: vec![],
+        notes: vec!["file src/old.rs was deleted".to_string()],
+        hunks: vec![], // no hunks for deleted files
+    };
+
+    let receipt = SecurityReviewReceipt::now(
+        "sr-deleted-hunk".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+    let prompt_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Prompt)
+        .expect("should have a prompt");
+    assert!(
+        prompt_item.hunk.is_none(),
+        "deleted file prompt should have no hunk context"
+    );
+
+    // Notes should also have no hunk
+    let note_items: Vec<_> = items
+        .iter()
+        .filter(|i| i.kind == SecurityReviewPanelItemKind::Note)
+        .collect();
+    for note in &note_items {
+        assert!(
+            note.hunk.is_none(),
+            "note items should never have hunk context"
+        );
+    }
+}
+
+#[test]
+fn security_review_hunk_ref_render_marks_added_removed_context_lines() {
+    let output = SecurityReviewOutput {
+        targets: vec![target("src/lib.rs", 11)],
+        findings: vec![],
+        review_prompts: vec![prompt("src/lib.rs", 11)],
+        preflight_results: vec![],
+        notes: vec![],
+        hunks: vec![SecurityReviewHunkRef {
+            file_path: PathBuf::from("src/lib.rs"),
+            old_start: Some(8),
+            old_lines: Some(6),
+            new_start: Some(10),
+            new_lines: Some(5),
+            header: "@@ -8,6 +10,5 @@".to_string(),
+            lines: vec![
+                SecurityReviewHunkLine {
+                    old_line: Some(8),
+                    new_line: Some(10),
+                    kind: SecurityReviewHunkLineKind::Context,
+                    text: "unchanged".to_string(),
+                    is_focus: false,
+                },
+                SecurityReviewHunkLine {
+                    old_line: None,
+                    new_line: Some(11),
+                    kind: SecurityReviewHunkLineKind::Added,
+                    text: "new code".to_string(),
+                    is_focus: true,
+                },
+                SecurityReviewHunkLine {
+                    old_line: Some(9),
+                    new_line: None,
+                    kind: SecurityReviewHunkLineKind::Removed,
+                    text: "old code".to_string(),
+                    is_focus: false,
+                },
+            ],
+        }],
+    };
+
+    let receipt = SecurityReviewReceipt::now(
+        "sr-hunk-line-kinds".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+    let prompt_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Prompt)
+        .expect("should have a prompt");
+    let hunk = prompt_item.hunk.as_ref().expect("should have hunk");
+
+    // Verify each line kind is correctly represented
+    let kinds: Vec<_> = hunk.lines.iter().map(|l| l.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            SecurityReviewHunkLineKind::Context,
+            SecurityReviewHunkLineKind::Added,
+            SecurityReviewHunkLineKind::Removed,
+        ]
+    );
+
+    // Verify line number tracking
+    assert_eq!(hunk.lines[0].old_line, Some(8));
+    assert_eq!(hunk.lines[0].new_line, Some(10));
+    assert_eq!(hunk.lines[1].old_line, None);
+    assert_eq!(hunk.lines[1].new_line, Some(11));
+    assert_eq!(hunk.lines[2].old_line, Some(9));
+    assert_eq!(hunk.lines[2].new_line, None);
+
+    // Verify is_focus is set on the added line
+    assert!(!hunk.lines[0].is_focus);
+    assert!(hunk.lines[1].is_focus);
+    assert!(!hunk.lines[2].is_focus);
 }

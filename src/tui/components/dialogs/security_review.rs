@@ -12,14 +12,14 @@ use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use crate::security::workflow::{
     filter_panel_items, project_receipt_to_panel_items, resolve_security_review_item_path,
-    SecurityReviewFilter, SecurityReviewPanelItem, SecurityReviewPanelItemKind,
-    SecurityReviewReceipt,
+    SecurityReviewFilter, SecurityReviewHunkLineKind, SecurityReviewPanelItem,
+    SecurityReviewPanelItemKind, SecurityReviewReceipt,
 };
 use crate::tui::app::TuiMsg;
 
 #[derive(Clone)]
 pub struct SecurityReviewDialog {
-    pub receipt: Option<SecurityReviewReceipt>,
+    pub receipt: Box<Option<SecurityReviewReceipt>>,
     pub all_items: Vec<SecurityReviewPanelItem>,
     pub visible_items: Vec<SecurityReviewPanelItem>,
     pub selected_index: usize,
@@ -31,7 +31,7 @@ pub struct SecurityReviewDialog {
 impl SecurityReviewDialog {
     pub fn new(theme: Arc<Theme>) -> Self {
         Self {
-            receipt: None,
+            receipt: Box::new(None),
             all_items: Vec::new(),
             visible_items: Vec::new(),
             selected_index: 0,
@@ -45,7 +45,7 @@ impl SecurityReviewDialog {
         let all_items = project_receipt_to_panel_items(&receipt);
         let visible_items = filter_panel_items(&all_items, SecurityReviewFilter::All);
         Self {
-            receipt: Some(receipt),
+            receipt: Box::new(Some(receipt)),
             all_items,
             visible_items,
             selected_index: 0,
@@ -65,12 +65,11 @@ impl SecurityReviewDialog {
     }
 
     pub fn set_receipt(&mut self, receipt: Option<SecurityReviewReceipt>) {
-        self.receipt = receipt;
-        self.all_items = self
-            .receipt
-            .as_ref()
-            .map(project_receipt_to_panel_items)
-            .unwrap_or_default();
+        *self.receipt = receipt;
+        self.all_items = match *self.receipt {
+            Some(ref receipt) => project_receipt_to_panel_items(receipt),
+            None => Vec::new(),
+        };
         self.recompute_visible();
     }
 
@@ -163,7 +162,7 @@ impl Component for SecurityReviewDialog {
             crossterm::event::KeyCode::Enter => {
                 if let Some(item) = self.selected_item() {
                     if item.file_path.is_some() {
-                        if let Some(ref receipt) = self.receipt {
+                        if let Some(ref receipt) = *self.receipt {
                             match resolve_security_review_item_path(receipt, item) {
                                 Ok(resolved) => {
                                     return Some(TuiMsg::OpenSourcePreview {
@@ -204,7 +203,7 @@ impl Component for SecurityReviewDialog {
         if area.height < 6 || area.width < 20 {
             return;
         }
-        let Some(ref receipt) = self.receipt else {
+        let Some(ref receipt) = *self.receipt else {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(self.theme.border))
@@ -438,6 +437,43 @@ impl SecurityReviewDialog {
                 d.clone(),
                 Style::default().fg(color),
             )));
+        }
+
+        if let Some(hunk) = &item.hunk {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("Hunk: {}", hunk.header),
+                Style::default()
+                    .fg(self.theme.secondary)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            for hunk_line in &hunk.lines {
+                let (prefix, color) = match hunk_line.kind {
+                    SecurityReviewHunkLineKind::Added => ("+", self.theme.success),
+                    SecurityReviewHunkLineKind::Removed => ("-", self.theme.error),
+                    SecurityReviewHunkLineKind::Context => (" ", self.theme.muted),
+                };
+                let line_num = match (hunk_line.old_line, hunk_line.new_line) {
+                    (Some(o), Some(n)) => format!("{:>4} {:>4}", o, n),
+                    (Some(o), None) => format!("{:>4}     ", o),
+                    (None, Some(n)) => format!("     {:>4}", n),
+                    (None, None) => "         ".to_string(),
+                };
+                let style = if hunk_line.is_focus {
+                    Style::default()
+                        .fg(self.theme.primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(color)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{line_num} {prefix} "),
+                        Style::default().fg(self.theme.muted),
+                    ),
+                    Span::styled(hunk_line.text.clone(), style),
+                ]));
+            }
         }
 
         let visible_height = inner.height as usize;

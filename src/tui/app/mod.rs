@@ -252,7 +252,7 @@ pub enum TuiCommand {
     SecurityReviewFinished {
         id: String,
         /// Set on success; the panel data for the latest review.
-        receipt: Option<crate::security::workflow::SecurityReviewReceipt>,
+        receipt: Option<Box<crate::security::workflow::SecurityReviewReceipt>>,
         /// Set on failure; the human-readable error.
         error: Option<String>,
     },
@@ -4248,7 +4248,7 @@ impl App {
                         )
                         .await;
                         let (receipt, error) = match result {
-                            Ok(r) => (Some(r), None),
+                            Ok(r) => (Some(Box::new(r)), None),
                             Err(e) => (None, Some(e)),
                         };
                         let _ = tx.try_send(TuiCommand::SecurityReviewFinished {

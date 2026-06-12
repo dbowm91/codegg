@@ -82,6 +82,7 @@ pub struct SecurityReviewPanelItem {
     pub confidence: Option<SecurityConfidence>,
     pub summary: String,
     pub detail: Vec<String>,
+    pub hunk: Option<SecurityReviewHunkRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,16 +93,18 @@ pub enum SecurityReviewFilter {
     Notes,
     HighConfidence,
     MediumOrHigherSeverity,
+    HunkBacked,
 }
 
 impl SecurityReviewFilter {
-    pub const ALL: [SecurityReviewFilter; 6] = [
+    pub const ALL: [SecurityReviewFilter; 7] = [
         SecurityReviewFilter::All,
         SecurityReviewFilter::Findings,
         SecurityReviewFilter::Prompts,
         SecurityReviewFilter::Notes,
         SecurityReviewFilter::HighConfidence,
         SecurityReviewFilter::MediumOrHigherSeverity,
+        SecurityReviewFilter::HunkBacked,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -112,6 +115,7 @@ impl SecurityReviewFilter {
             SecurityReviewFilter::Notes => "Notes",
             SecurityReviewFilter::HighConfidence => "High confidence",
             SecurityReviewFilter::MediumOrHigherSeverity => "Medium+ severity",
+            SecurityReviewFilter::HunkBacked => "Hunk-backed",
         }
     }
 
@@ -129,6 +133,19 @@ pub fn project_receipt_to_panel_items(
     receipt: &SecurityReviewReceipt,
 ) -> Vec<SecurityReviewPanelItem> {
     let mut items: Vec<SecurityReviewPanelItem> = Vec::new();
+
+    // Build a hunk index: (file_path, line range) -> SecurityReviewHunkRef
+    // for matching findings/prompts to their source hunk context.
+    let hunk_index: Vec<(&SecurityReviewHunkRef, PathBuf, u32, u32)> = receipt
+        .output
+        .hunks
+        .iter()
+        .filter_map(|h| {
+            let new_start = h.new_start?;
+            let new_lines = h.new_lines.unwrap_or(1);
+            Some((h, h.file_path.clone(), new_start, new_start + new_lines))
+        })
+        .collect();
 
     for finding in &receipt.output.findings {
         let location = finding_location(&finding.file_path, finding.line);
@@ -164,6 +181,17 @@ pub fn project_receipt_to_panel_items(
                 }
             }
         }
+
+        // Try to find a matching hunk for this finding
+        let hunk = finding.line.and_then(|line| {
+            hunk_index
+                .iter()
+                .find(|(_, fp, start, end)| {
+                    *fp == finding.file_path && line >= *start && line < *end
+                })
+                .map(|(h, _, _, _)| (*h).clone())
+        });
+
         items.push(SecurityReviewPanelItem {
             kind: SecurityReviewPanelItemKind::Finding,
             file_path: Some(finding.file_path.clone()),
@@ -176,6 +204,7 @@ pub fn project_receipt_to_panel_items(
             confidence: Some(finding.confidence),
             summary: finding.recommendation.clone(),
             detail,
+            hunk,
         });
     }
 
@@ -193,6 +222,17 @@ pub fn project_receipt_to_panel_items(
         if !prompt.evidence.is_empty() {
             detail.push(format!("Evidence: {}", prompt.evidence.join("; ")));
         }
+
+        // Try to find a matching hunk for this prompt
+        let hunk = prompt.line.and_then(|line| {
+            hunk_index
+                .iter()
+                .find(|(_, fp, start, end)| {
+                    *fp == prompt.file_path && line >= *start && line < *end
+                })
+                .map(|(h, _, _, _)| (*h).clone())
+        });
+
         items.push(SecurityReviewPanelItem {
             kind: SecurityReviewPanelItemKind::Prompt,
             file_path: Some(prompt.file_path.clone()),
@@ -202,6 +242,7 @@ pub fn project_receipt_to_panel_items(
             confidence: None,
             summary: prompt.rationale.clone(),
             detail,
+            hunk,
         });
     }
 
@@ -224,6 +265,7 @@ pub fn project_receipt_to_panel_items(
             confidence: None,
             summary: preflight.notes.join("; "),
             detail,
+            hunk: None,
         });
     }
 
@@ -237,6 +279,7 @@ pub fn project_receipt_to_panel_items(
             confidence: None,
             summary: note.clone(),
             detail: Vec::new(),
+            hunk: None,
         });
     }
 
@@ -280,6 +323,7 @@ fn matches_filter(item: &SecurityReviewPanelItem, filter: SecurityReviewFilter) 
                     | Some(SecuritySeverity::Critical)
             ) && item.kind == SecurityReviewPanelItemKind::Finding
         }
+        SecurityReviewFilter::HunkBacked => item.hunk.is_some(),
     }
 }
 

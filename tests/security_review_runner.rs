@@ -486,3 +486,70 @@ fn security_review_arg_parser_handles_changed_and_enrich() {
     assert_eq!(parsed.base.as_deref(), Some("origin/main"));
     assert!(parsed.json);
 }
+
+#[tokio::test]
+async fn security_review_background_produces_receipt_with_hunks() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_git_repo(dir.path());
+
+    // Create a file with content, stage it, then modify it so we have a real diff.
+    let file_path = dir.path().join("src");
+    std::fs::create_dir(&file_path).expect("create src dir");
+    let rs_path = file_path.join("lib.rs");
+    std::fs::write(&rs_path, "fn main() {\n    let x = 1;\n}\n").expect("write initial");
+
+    Command::new("git")
+        .args(["add", "src/lib.rs"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git add");
+    Command::new("git")
+        .args(["commit", "-m", "add lib.rs", "-q"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git commit");
+
+    // Modify the file to create a diff
+    std::fs::write(
+        &rs_path,
+        "fn main() {\n    let x = 1;\n    let y = 2;\n    println!(\"{x} {y}\");\n}\n",
+    )
+    .expect("write modified");
+
+    let args = SecurityReviewCommandArgs {
+        base: Some("HEAD".to_string()),
+        ..Default::default()
+    };
+
+    let receipt = run_security_review_background(dir.path().to_path_buf(), args, None)
+        .await
+        .expect("background should succeed");
+
+    // The receipt should have parsed hunks from the real diff
+    assert!(
+        !receipt.output.hunks.is_empty(),
+        "receipt.output.hunks should be populated from real diff, got: {:?}",
+        receipt.output.hunks
+    );
+
+    // Verify the hunk has file_path and lines
+    let hunk = &receipt.output.hunks[0];
+    assert_eq!(
+        hunk.file_path,
+        std::path::PathBuf::from("src/lib.rs"),
+        "hunk should reference the modified file"
+    );
+    assert!(!hunk.lines.is_empty(), "hunk should have parsed diff lines");
+
+    // Verify line kinds are present
+    let has_added = hunk
+        .lines
+        .iter()
+        .any(|l| l.kind == codegg::security::workflow::SecurityReviewHunkLineKind::Added);
+    let has_context = hunk
+        .lines
+        .iter()
+        .any(|l| l.kind == codegg::security::workflow::SecurityReviewHunkLineKind::Context);
+    assert!(has_added, "hunk should have added lines");
+    assert!(has_context, "hunk should have context lines");
+}

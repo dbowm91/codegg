@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use codegg::security::workflow::{
     filter_panel_items, parse_security_review_args, project_receipt_to_panel_items,
     resolve_security_review_item_path, SecurityConfidence, SecurityEvidenceKind,
-    SecurityReviewCommandArgs, SecurityReviewFilter, SecurityReviewFinding, SecurityReviewOutput,
+    SecurityReviewCommandArgs, SecurityReviewFilter, SecurityReviewFinding, SecurityReviewHunkLine,
+    SecurityReviewHunkLineKind, SecurityReviewHunkRef, SecurityReviewOutput,
     SecurityReviewPanelItem, SecurityReviewPanelItemKind, SecurityReviewPrompt,
     SecurityReviewReceipt, SecurityReviewTarget, SecuritySeverity, SecurityTargetReason,
     StructuredSecurityEvidence,
@@ -66,6 +67,7 @@ fn sample_output() -> SecurityReviewOutput {
         review_prompts: vec![prompt("src/db.rs", 15)],
         preflight_results: Vec::new(),
         notes: vec!["risk markers are review prompts, not confirmed findings".to_string()],
+        hunks: Vec::new(),
     }
 }
 
@@ -141,6 +143,7 @@ fn security_review_source_preview_rejects_outside_root() {
             review_prompts: vec![],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         },
         String::new(),
         false,
@@ -156,6 +159,7 @@ fn security_review_source_preview_rejects_outside_root() {
         confidence: Some(SecurityConfidence::High),
         summary: String::new(),
         detail: vec![],
+        hunk: None,
     };
 
     let result = resolve_security_review_item_path(&receipt, &item);
@@ -186,6 +190,7 @@ fn security_review_source_preview_rejects_absolute_path_outside_root() {
             review_prompts: vec![],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         },
         String::new(),
         false,
@@ -201,6 +206,7 @@ fn security_review_source_preview_rejects_absolute_path_outside_root() {
         confidence: Some(SecurityConfidence::High),
         summary: String::new(),
         detail: vec![],
+        hunk: None,
     };
 
     let result = resolve_security_review_item_path(&receipt, &item);
@@ -231,6 +237,7 @@ fn security_review_source_preview_handles_missing_file() {
             review_prompts: vec![],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         },
         String::new(),
         false,
@@ -247,6 +254,7 @@ fn security_review_source_preview_handles_missing_file() {
         confidence: Some(SecurityConfidence::High),
         summary: String::new(),
         detail: vec![],
+        hunk: None,
     };
 
     let result = resolve_security_review_item_path(&receipt, &item);
@@ -278,6 +286,7 @@ fn security_review_source_preview_rejects_missing_parent() {
             review_prompts: vec![],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         },
         String::new(),
         false,
@@ -293,6 +302,7 @@ fn security_review_source_preview_rejects_missing_parent() {
         confidence: Some(SecurityConfidence::High),
         summary: String::new(),
         detail: vec![],
+        hunk: None,
     };
 
     let result = resolve_security_review_item_path(&receipt, &item);
@@ -318,6 +328,7 @@ fn security_review_source_preview_no_file_path_returns_error() {
         confidence: None,
         summary: "a note".to_string(),
         detail: vec![],
+        hunk: None,
     };
     let result = resolve_security_review_item_path(&receipt, &item);
     assert!(
@@ -443,6 +454,7 @@ fn security_review_preflight_items_stay_under_notes_filter() {
             notes: vec!["Secret-like filename".to_string()],
         }],
         notes: vec!["a regular note".to_string()],
+        hunks: Vec::new(),
     };
 
     let receipt = SecurityReviewReceipt::now(
@@ -503,6 +515,7 @@ fn security_review_preflight_item_title_prefix() {
             notes: vec![],
         }],
         notes: vec![],
+        hunks: Vec::new(),
     };
 
     let receipt = SecurityReviewReceipt::now(
@@ -563,6 +576,7 @@ fn security_review_medium_plus_filter_excludes_low_severity() {
         review_prompts: vec![prompt("src/prompt.rs", 10)],
         preflight_results: vec![],
         notes: vec!["a note".to_string()],
+        hunks: Vec::new(),
     };
 
     let receipt = SecurityReviewReceipt::now(
@@ -607,6 +621,7 @@ fn security_review_source_preview_resolves_existing_file() {
             review_prompts: vec![],
             preflight_results: vec![],
             notes: vec![],
+            hunks: Vec::new(),
         },
         String::new(),
         false,
@@ -622,6 +637,7 @@ fn security_review_source_preview_resolves_existing_file() {
         confidence: Some(SecurityConfidence::High),
         summary: String::new(),
         detail: vec![],
+        hunk: None,
     };
 
     let result = resolve_security_review_item_path(&receipt, &item);
@@ -629,4 +645,233 @@ fn security_review_source_preview_resolves_existing_file() {
     let path = result.unwrap();
     assert!(path.ends_with("src/lib.rs"));
     assert!(path.is_absolute());
+}
+
+// ---------------------------------------------------------------------------
+// Hunk mapping tests
+// ---------------------------------------------------------------------------
+
+fn sample_hunk_ref() -> SecurityReviewHunkRef {
+    SecurityReviewHunkRef {
+        file_path: PathBuf::from("src/lib.rs"),
+        old_start: Some(8),
+        old_lines: Some(6),
+        new_start: Some(10),
+        new_lines: Some(5),
+        header: "@@ -8,6 +10,5 @@".to_string(),
+        lines: vec![
+            SecurityReviewHunkLine {
+                old_line: Some(8),
+                new_line: Some(10),
+                kind: SecurityReviewHunkLineKind::Context,
+                text: "let x = 1;".to_string(),
+                is_focus: false,
+            },
+            SecurityReviewHunkLine {
+                old_line: None,
+                new_line: Some(11),
+                kind: SecurityReviewHunkLineKind::Added,
+                text: "let z = x + y;".to_string(),
+                is_focus: true,
+            },
+            SecurityReviewHunkLine {
+                old_line: Some(9),
+                new_line: Some(12),
+                kind: SecurityReviewHunkLineKind::Context,
+                text: "let y = 2;".to_string(),
+                is_focus: false,
+            },
+        ],
+    }
+}
+
+#[test]
+fn security_review_panel_item_includes_hunk_for_prompt_line_inside_hunk() {
+    let output = SecurityReviewOutput {
+        targets: vec![target("src/lib.rs", 11)],
+        findings: vec![],
+        review_prompts: vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/lib.rs"),
+            line: Some(11),
+            preset: "rust_server".to_string(),
+            category: Some("unsafe".to_string()),
+            title: "Review unsafe block".to_string(),
+            rationale: "unsafe code detected".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }],
+        preflight_results: vec![],
+        notes: vec![],
+        hunks: vec![sample_hunk_ref()],
+    };
+    let receipt = SecurityReviewReceipt::now(
+        "sr-panel-hunk-prompt".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+    let prompt_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Prompt)
+        .expect("should have a prompt");
+
+    // line 11 is inside new_start=10..10+5=15, so hunk should be attached
+    assert!(
+        prompt_item.hunk.is_some(),
+        "prompt at line 11 should have hunk attached (inside range 10..15)"
+    );
+    let hunk = prompt_item.hunk.as_ref().unwrap();
+    assert_eq!(hunk.file_path, PathBuf::from("src/lib.rs"));
+    assert_eq!(hunk.lines.len(), 3);
+}
+
+#[test]
+fn security_review_panel_item_includes_hunk_for_finding_line_inside_hunk() {
+    let output = SecurityReviewOutput {
+        targets: vec![target("src/lib.rs", 12)],
+        findings: vec![finding("src/lib.rs", 12, SecuritySeverity::Medium)],
+        review_prompts: vec![],
+        preflight_results: vec![],
+        notes: vec![],
+        hunks: vec![sample_hunk_ref()],
+    };
+    let receipt = SecurityReviewReceipt::now(
+        "sr-panel-hunk-finding".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+    let finding_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Finding)
+        .expect("should have a finding");
+
+    // line 12 is inside new_start=10..10+5=15, so hunk should be attached
+    assert!(
+        finding_item.hunk.is_some(),
+        "finding at line 12 should have hunk attached (inside range 10..15)"
+    );
+    let hunk = finding_item.hunk.as_ref().unwrap();
+    assert_eq!(hunk.file_path, PathBuf::from("src/lib.rs"));
+}
+
+#[test]
+fn security_review_panel_item_without_matching_hunk_has_none() {
+    let output = SecurityReviewOutput {
+        targets: vec![target("src/auth.rs", 50)],
+        findings: vec![finding("src/auth.rs", 50, SecuritySeverity::High)],
+        review_prompts: vec![SecurityReviewPrompt {
+            file_path: PathBuf::from("src/auth.rs"),
+            line: Some(50),
+            preset: "web_backend".to_string(),
+            category: Some("auth".to_string()),
+            title: "Review auth".to_string(),
+            rationale: "auth code".to_string(),
+            evidence: vec!["source: securityContext.risk_marker".to_string()],
+        }],
+        preflight_results: vec![],
+        notes: vec![],
+        hunks: vec![sample_hunk_ref()], // hunk is for src/lib.rs, not src/auth.rs
+    };
+    let receipt = SecurityReviewReceipt::now(
+        "sr-panel-no-match".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+
+    // Finding at line 50 in src/auth.rs — no matching hunk (hunk is for src/lib.rs)
+    let finding_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Finding)
+        .expect("should have a finding");
+    assert!(
+        finding_item.hunk.is_none(),
+        "finding in src/auth.rs should not have hunk from src/lib.rs"
+    );
+
+    // Prompt at line 50 in src/auth.rs — same
+    let prompt_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Prompt)
+        .expect("should have a prompt");
+    assert!(
+        prompt_item.hunk.is_none(),
+        "prompt in src/auth.rs should not have hunk from src/lib.rs"
+    );
+}
+
+#[test]
+fn security_review_hunk_context_is_bounded() {
+    // Create a hunk with many lines and verify the count is reasonable
+    let mut lines = Vec::new();
+    for i in 0u32..50 {
+        lines.push(SecurityReviewHunkLine {
+            old_line: Some(i),
+            new_line: Some(i),
+            kind: SecurityReviewHunkLineKind::Context,
+            text: format!("context line {i}"),
+            is_focus: false,
+        });
+    }
+    // 50 context lines is well under the 100 bound
+    assert!(
+        lines.len() < 100,
+        "hunk lines count should be under 100, got {}",
+        lines.len()
+    );
+
+    let hunk_ref = SecurityReviewHunkRef {
+        file_path: PathBuf::from("src/big.rs"),
+        old_start: Some(1),
+        old_lines: Some(50),
+        new_start: Some(1),
+        new_lines: Some(50),
+        header: "@@ -1,50 +1,50 @@".to_string(),
+        lines,
+    };
+
+    let output = SecurityReviewOutput {
+        targets: vec![target("src/big.rs", 25)],
+        findings: vec![finding("src/big.rs", 25, SecuritySeverity::Low)],
+        review_prompts: vec![],
+        preflight_results: vec![],
+        notes: vec![],
+        hunks: vec![hunk_ref],
+    };
+    let receipt = SecurityReviewReceipt::now(
+        "sr-hunk-bounded".to_string(),
+        PathBuf::from("/tmp/proj"),
+        SecurityReviewCommandArgs::default(),
+        output,
+        "rendered".to_string(),
+        false,
+        false,
+    );
+
+    let items = project_receipt_to_panel_items(&receipt);
+    let finding_item = items
+        .iter()
+        .find(|i| i.kind == SecurityReviewPanelItemKind::Finding)
+        .expect("should have a finding");
+    let hunk = finding_item.hunk.as_ref().expect("should have hunk");
+    assert!(
+        hunk.lines.len() < 100,
+        "hunk context lines should be bounded, got {}",
+        hunk.lines.len()
+    );
 }

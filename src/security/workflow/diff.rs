@@ -16,9 +16,17 @@ pub fn parse_changed_hunks(diff: &str) -> Vec<ChangedHunk> {
     let mut hunks = Vec::new();
     let mut current_file: Option<PathBuf> = None;
     let mut skip_file = false;
+    let mut current_hunk: Option<ChangedHunk> = None;
+    let mut current_lines: Vec<DiffLine> = Vec::new();
 
     for line in diff.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
+            // Flush previous hunk before starting a new file
+            if let Some(mut hunk) = current_hunk.take() {
+                hunk.lines = std::mem::take(&mut current_lines);
+                hunks.push(hunk);
+            }
+
             // Extract the "b/path" side of "a/path b/path".
             if let Some((a_part, b_part)) = rest.split_once(" b/") {
                 let a_path = a_part.trim();
@@ -60,9 +68,46 @@ pub fn parse_changed_hunks(diff: &str) -> Vec<ChangedHunk> {
             continue;
         }
 
-        if let Some(hunk) = parse_hunk_header(line, current_file.as_deref()) {
-            hunks.push(hunk);
+        // Check if this is a hunk header line
+        if line.starts_with("@@ ") {
+            // Flush previous hunk
+            if let Some(mut hunk) = current_hunk.take() {
+                hunk.lines = std::mem::take(&mut current_lines);
+                hunks.push(hunk);
+            }
+
+            if let Some(hunk) = parse_hunk_header(line, current_file.as_deref()) {
+                current_hunk = Some(hunk);
+            }
+            continue;
         }
+
+        // Collect lines within the current hunk
+        if current_hunk.is_some() {
+            // Skip "\ No newline at end of file" markers
+            if line.starts_with('\\') {
+                continue;
+            }
+
+            if let Some(first_char) = line.chars().next() {
+                let (kind, text) = match first_char {
+                    '+' => (DiffLineKind::Added, &line[1..]),
+                    '-' => (DiffLineKind::Removed, &line[1..]),
+                    ' ' => (DiffLineKind::Context, &line[1..]),
+                    _ => continue,
+                };
+                current_lines.push(DiffLine {
+                    kind,
+                    text: text.to_string(),
+                });
+            }
+        }
+    }
+
+    // Flush the last hunk
+    if let Some(mut hunk) = current_hunk.take() {
+        hunk.lines = std::mem::take(&mut current_lines);
+        hunks.push(hunk);
     }
 
     hunks
@@ -90,6 +135,7 @@ pub(crate) fn parse_hunk_header(line: &str, current_file: Option<&Path>) -> Opti
         old_count,
         new_start,
         new_count,
+        lines: Vec::new(),
     })
 }
 

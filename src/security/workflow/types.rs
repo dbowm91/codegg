@@ -122,6 +122,53 @@ pub struct ChangedHunk {
     pub old_count: u32,
     pub new_start: u32,
     pub new_count: u32,
+    /// Parsed diff lines (when available from full diff text parsing).
+    pub lines: Vec<DiffLine>,
+}
+
+/// A single parsed line from a unified diff hunk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub text: String,
+}
+
+/// Kind of a parsed diff line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffLineKind {
+    Added,
+    Removed,
+    Context,
+}
+
+/// A compact hunk context for TUI display, carrying parsed diff lines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityReviewHunkRef {
+    pub file_path: PathBuf,
+    pub old_start: Option<u32>,
+    pub old_lines: Option<u32>,
+    pub new_start: Option<u32>,
+    pub new_lines: Option<u32>,
+    pub header: String,
+    pub lines: Vec<SecurityReviewHunkLine>,
+}
+
+/// A single line within a hunk, with line numbers and kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityReviewHunkLine {
+    pub old_line: Option<u32>,
+    pub new_line: Option<u32>,
+    pub kind: SecurityReviewHunkLineKind,
+    pub text: String,
+    pub is_focus: bool,
+}
+
+/// Whether a hunk line is added, removed, or unchanged context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecurityReviewHunkLineKind {
+    Added,
+    Removed,
+    Context,
 }
 
 /// Structured preflight evidence with file path and optional line number.
@@ -226,6 +273,8 @@ pub struct SecurityReviewOutput {
     pub review_prompts: Vec<SecurityReviewPrompt>,
     pub preflight_results: Vec<SecurityPreflightResult>,
     pub notes: Vec<String>,
+    /// Parsed diff hunks with line-level detail, for TUI hunk display.
+    pub hunks: Vec<SecurityReviewHunkRef>,
 }
 
 // ---------------------------------------------------------------------------

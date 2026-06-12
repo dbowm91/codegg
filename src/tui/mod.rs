@@ -2213,7 +2213,7 @@ fn apply_security_review_receipt(
 fn handle_security_review_finished(
     app: &mut app::App,
     id: String,
-    receipt: Option<crate::security::workflow::SecurityReviewReceipt>,
+    receipt: Option<Box<crate::security::workflow::SecurityReviewReceipt>>,
     error: Option<String>,
 ) {
     // Stale completion: a different (or cancelled) run is now active.
@@ -2223,7 +2223,7 @@ fn handle_security_review_finished(
     app.security_review_running = None;
     match (receipt, error) {
         (Some(receipt), None) => {
-            apply_security_review_receipt(app, receipt);
+            apply_security_review_receipt(app, *receipt);
         }
         (_, Some(e)) => {
             app.messages_state

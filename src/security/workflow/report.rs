@@ -106,7 +106,7 @@ pub fn plan_security_review_from_diff(diff: &str, _repo_root: &Path) -> Security
 pub async fn discover_targets_from_diff(
     root: &Path,
     base: Option<&str>,
-) -> Result<Vec<SecurityReviewTarget>, String> {
+) -> Result<(Vec<SecurityReviewTarget>, Vec<ChangedHunk>), String> {
     let summary = egggit::diff_summary(root, base)
         .await
         .map_err(|e| e.to_string())?;
@@ -151,12 +151,87 @@ pub async fn discover_targets_from_diff(
         }
     }
 
-    Ok(targets)
+    Ok((targets, all_hunks))
 }
 
 // ---------------------------------------------------------------------------
 // Report assembly (with findings)
 // ---------------------------------------------------------------------------
+
+/// Build [`SecurityReviewHunkRef`]s from parsed [`ChangedHunk`]s for TUI display.
+fn build_hunk_refs_from_changed_hunks(chunks: &[ChangedHunk]) -> Vec<SecurityReviewHunkRef> {
+    chunks
+        .iter()
+        .map(|hunk| {
+            let old_start = Some(hunk.old_start);
+            let old_lines = if hunk.old_count > 0 {
+                Some(hunk.old_count)
+            } else {
+                None
+            };
+            let new_start = Some(hunk.new_start);
+            let new_lines = if hunk.new_count > 0 {
+                Some(hunk.new_count)
+            } else {
+                None
+            };
+            let header = format!(
+                "@@ -{},{} +{},{} @@",
+                hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+            );
+
+            let mut old_line = hunk.old_start;
+            let mut new_line = hunk.new_start;
+            let lines: Vec<SecurityReviewHunkLine> = hunk
+                .lines
+                .iter()
+                .map(|dl| {
+                    let kind = match dl.kind {
+                        DiffLineKind::Added => SecurityReviewHunkLineKind::Added,
+                        DiffLineKind::Removed => SecurityReviewHunkLineKind::Removed,
+                        DiffLineKind::Context => SecurityReviewHunkLineKind::Context,
+                    };
+                    let (old, new) = match dl.kind {
+                        DiffLineKind::Added => {
+                            let n = new_line;
+                            new_line += 1;
+                            (None, Some(n))
+                        }
+                        DiffLineKind::Removed => {
+                            let o = old_line;
+                            old_line += 1;
+                            (Some(o), None)
+                        }
+                        DiffLineKind::Context => {
+                            let o = old_line;
+                            let n = new_line;
+                            old_line += 1;
+                            new_line += 1;
+                            (Some(o), Some(n))
+                        }
+                    };
+                    SecurityReviewHunkLine {
+                        old_line: old,
+                        new_line: new,
+                        kind,
+                        text: dl.text.clone(),
+                        is_focus: false,
+                    }
+                })
+                .collect();
+
+            SecurityReviewHunkRef {
+                file_path: hunk.file_path.clone(),
+                old_start,
+                old_lines,
+                new_start,
+                new_lines,
+                header,
+                lines,
+            }
+        })
+        .collect()
+}
 
 /// Assemble a [`SecurityReviewOutput`] from targets, prompts, findings,
 /// and notes.  Includes mandatory notes about conservative semantics.
@@ -180,6 +255,7 @@ pub fn assemble_security_review_report_with_findings(
         review_prompts: prompts,
         preflight_results,
         notes,
+        hunks: Vec::new(),
     }
 }
 
@@ -253,7 +329,10 @@ pub async fn run_security_review_workflow(
     options: SecurityReviewWorkflowOptions,
 ) -> Result<SecurityReviewOutput, String> {
     // Phase 1: Discover targets from diff
-    let targets = discover_targets_from_diff(root, base).await?;
+    let (targets, parsed_hunks) = discover_targets_from_diff(root, base).await?;
+
+    // Build hunk refs for TUI display
+    let hunk_refs = build_hunk_refs_from_changed_hunks(&parsed_hunks);
 
     // Phase 2: Build planning prompts from targets
     let planning_prompts: Vec<SecurityReviewPrompt> = targets
@@ -318,13 +397,16 @@ pub async fn run_security_review_workflow(
         notes.push("prompts disabled by workflow options".to_string());
     }
 
-    let output = assemble_security_review_report_with_findings(
+    let mut output = assemble_security_review_report_with_findings(
         targets,
         remaining_prompts,
         findings,
         all_preflight,
         notes,
     );
+
+    // Attach parsed hunks for TUI display
+    output.hunks = hunk_refs;
 
     // Apply limits
     let mut final_output = output;
