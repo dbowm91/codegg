@@ -121,7 +121,11 @@ impl IntoResponse for AxumAppError {
             AppError::Lsp(LspError::RequestTimeout(_))
             | AppError::Lsp(LspError::DownloadFailed(_))
             | AppError::Lsp(LspError::LaunchFailed(_))
-            | AppError::Lsp(LspError::RequestFailed(_)) => StatusCode::BAD_GATEWAY,
+            | AppError::Lsp(LspError::RequestFailed(_))
+            | AppError::Lsp(LspError::UnsupportedSourceAction(_))
+            | AppError::Lsp(LspError::CommandOnlySourceAction(_))
+            | AppError::Lsp(LspError::NoEditForSourceAction(_))
+            | AppError::Lsp(LspError::AmbiguousSourceAction(_, _)) => StatusCode::BAD_GATEWAY,
             AppError::Lsp(LspError::Io(_)) | AppError::Lsp(LspError::Json(_)) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }

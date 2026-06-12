@@ -25,6 +25,7 @@ pub enum Dialog {
     Confirm,
     Review,
     ResearchBrowser,
+    SecurityReview,
 }
 
 impl Dialog {
@@ -55,6 +56,7 @@ impl Dialog {
                 | Self::Confirm
                 | Self::Review
                 | Self::ResearchBrowser
+                | Self::SecurityReview
         )
     }
 }
@@ -205,6 +207,13 @@ pub enum TuiMsg {
     ResearchLoadSection {
         run_id: String,
         section: String,
+    },
+    /// Copy a file path to the clipboard and surface a toast.
+    /// Emitted by the security review panel's "jump to file" action;
+    /// the file is never opened or mutated.
+    SecurityReviewJump {
+        path: String,
+        line: Option<u32>,
     },
 }
 

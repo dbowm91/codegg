@@ -15,6 +15,7 @@ pub mod plan;
 pub mod question;
 pub mod research;
 pub mod review;
+pub mod security_review;
 pub mod session;
 pub mod share;
 pub mod template;

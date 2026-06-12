@@ -139,80 +139,60 @@ fn security_review_command_does_not_block_inline() {
     assert!(app.security_review_running.is_none());
 }
 
-#[test]
-fn security_review_command_rejects_second_run_while_active() {
+#[tokio::test]
+async fn security_review_command_rejects_second_run_while_active() {
     let dir = tempfile::tempdir().expect("tempdir");
     init_git_repo(dir.path());
     let mut app = make_test_app(dir.path());
 
-    // Simulate an in-flight review owned by someone else.
-    app.security_review_running = Some("sr-fake-active".to_string());
+    // Simulate an in-flight review owned by someone else by
+    // grabbing a real AbortHandle from a noop tokio task.
+    let join = tokio::spawn(async {});
+    let active_id = "sr-fake-active".to_string();
+    app.security_review_running = Some(codegg::security::workflow::SecurityReviewTaskState {
+        id: active_id.clone(),
+        abort_handle: join.abort_handle(),
+    });
 
     dispatch_security_review(&mut app, "/security-review");
 
     // The dispatch must bail out without touching the guard.
     assert_eq!(
-        app.security_review_running.as_deref(),
-        Some("sr-fake-active"),
+        app.security_review_run_id(),
+        Some(active_id.as_str()),
         "guard should be preserved when a review is already active"
     );
 }
 
 #[tokio::test]
-async fn security_review_command_with_channel_sets_guard_and_sends_command() {
-    // Exercise the real new dispatch path: install a tui_cmd_tx,
-    // dispatch the command, and verify both that the guard is set
-    // and that a `TuiCommand::SecurityReviewRun` message arrived on
-    // the channel. The TUI command handler in `src/tui/mod.rs` is
-    // responsible for clearing the guard when the run completes;
+async fn security_review_command_with_channel_sets_guard_and_spawns_task() {
+    // Exercise the new dispatch path: install a tui_cmd_tx,
+    // dispatch the command, and verify that the guard is set to a
+    // fresh run id with an AbortHandle. The completion path sends
+    // `TuiCommand::SecurityReviewFinished` back on the channel and
     // that handler cannot be invoked from an integration test
-    // without a live TUI event loop, so we leave the guard set here
-    // and assert the message body instead.
+    // without a live TUI event loop, so we leave the guard set
+    // here and assert the guard body instead.
     let dir = tempfile::tempdir().expect("tempdir");
     init_git_repo(dir.path());
     let mut app = make_test_app(dir.path());
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<codegg::tui::TuiCommand>(8);
+    let (tx, _rx) = tokio::sync::mpsc::channel::<codegg::tui::TuiCommand>(8);
     app.tui_cmd_tx = Some(tx);
 
     assert!(app.security_review_running.is_none());
 
     dispatch_security_review(&mut app, "/security-review --changed --enrich");
 
-    // The dispatch sets the guard to a fresh run id and sends a
-    // TuiCommand::SecurityReviewRun on the channel. The guard is
-    // NOT cleared at this point — the TUI handler clears it when
-    // the run completes.
-    let guard = app
+    let state = app
         .security_review_running
-        .as_deref()
+        .as_ref()
         .expect("guard should be set after successful dispatch");
     assert!(
-        guard.starts_with("sr-"),
-        "guard should be a fresh run id, got {guard}"
+        state.id.starts_with("sr-"),
+        "guard should be a fresh run id, got {}",
+        state.id
     );
-
-    let msg = rx
-        .try_recv()
-        .expect("channel should have received the SecurityReviewRun command");
-    match msg {
-        codegg::tui::TuiCommand::SecurityReviewRun {
-            id,
-            root,
-            args,
-            lsp_tool,
-        } => {
-            assert_eq!(id, guard);
-            assert_eq!(args.base.as_deref(), Some("HEAD"));
-            assert!(args.enrich);
-            assert!(lsp_tool.is_none(), "test app has no lsp_tool installed");
-            // The dispatch uses `std::env::current_dir()` for the
-            // project root, which the test runs from the workspace
-            // root. Just check it's a non-empty path.
-            assert!(!root.as_os_str().is_empty());
-        }
-        other => panic!("expected SecurityReviewRun, got {other:?}"),
-    }
 }
 
 #[tokio::test]
@@ -220,9 +200,9 @@ async fn security_review_command_with_channel_clears_guard_on_run_id_match() {
     // The TUI command handler in `src/tui/mod.rs` only clears the
     // guard if its current value matches the dispatched run id.
     // We can simulate the relevant invariant end-to-end by
-    // dispatching through the channel and then running the
-    // background function ourselves with the same id, simulating
-    // what the TUI handler does on success.
+    // dispatching through the channel and then driving the
+    // background work ourselves, simulating what the TUI handler
+    // does on success.
     let dir = tempfile::tempdir().expect("tempdir");
     init_git_repo(dir.path());
     let mut app = make_test_app(dir.path());
@@ -233,35 +213,29 @@ async fn security_review_command_with_channel_clears_guard_on_run_id_match() {
     dispatch_security_review(&mut app, "/security-review");
 
     let dispatched_id = app
-        .security_review_running
-        .clone()
-        .expect("guard should be set after dispatch");
+        .security_review_run_id()
+        .expect("guard should be set after dispatch")
+        .to_string();
 
+    // Drain the completion message that the spawned task sent.
+    // Using `recv().await` lets the runtime drive the spawned task
+    // to completion before we read from the channel.
     let msg = rx
-        .try_recv()
-        .expect("channel should have received the SecurityReviewRun command");
-    let dispatched = match msg {
-        codegg::tui::TuiCommand::SecurityReviewRun {
-            id,
-            root,
-            args,
-            lsp_tool,
-        } => {
+        .recv()
+        .await
+        .expect("channel should have received the SecurityReviewFinished command");
+    match msg {
+        codegg::tui::TuiCommand::SecurityReviewFinished { id, receipt, error } => {
             assert_eq!(id, dispatched_id);
-            (root, args, lsp_tool)
+            assert!(error.is_none(), "expected success, got error: {error:?}");
+            assert!(receipt.is_some(), "expected receipt on success");
         }
-        other => panic!("expected SecurityReviewRun, got {other:?}"),
-    };
-
-    // Drive the background work the same way the TUI handler would.
-    let (root, args, lsp_tool) = dispatched;
-    let result = run_security_review_background(root, args, lsp_tool).await;
-    assert!(result.is_ok(), "background should succeed: {result:?}");
+        other => panic!("expected SecurityReviewFinished, got {other:?}"),
+    }
 
     // The TUI handler's clear-if-matches logic: the guard is only
     // cleared when its current value equals the dispatched run id.
-    // Here, both are the same, so the handler would clear it.
-    if app.security_review_running.as_deref() == Some(dispatched_id.as_str()) {
+    if app.security_review_run_id() == Some(dispatched_id.as_str()) {
         app.security_review_running = None;
     }
 
@@ -292,11 +266,14 @@ async fn security_review_background_without_executor_returns_unavailable_note() 
 
     let result = run_security_review_background(dir.path().to_path_buf(), args, None).await;
     assert!(result.is_ok(), "background without executor should succeed");
-    let output = result.unwrap();
+    let receipt = result.unwrap();
+    let output = receipt.rendered_report.clone();
     assert!(
         output.contains("no securityContext executor"),
         "report should mention no executor: {output}"
     );
+    assert!(!receipt.enriched);
+    assert!(!receipt.lsp_available);
 }
 
 #[tokio::test]
@@ -322,6 +299,9 @@ async fn security_review_background_with_fixture_executor_uses_enrichment() {
         "background with executor should succeed: {:?}",
         result
     );
+    let receipt = result.unwrap();
+    assert!(receipt.lsp_available);
+    assert!(receipt.enriched);
 }
 
 #[tokio::test]
@@ -338,7 +318,8 @@ async fn security_review_background_json_mode_returns_json() {
 
     let result = run_security_review_background(dir.path().to_path_buf(), args, None).await;
     assert!(result.is_ok());
-    let output = result.unwrap();
+    let receipt = result.unwrap();
+    let output = receipt.rendered_report.clone();
     assert!(
         output.starts_with('{'),
         "json output should start with '{{': {output}"
@@ -363,7 +344,8 @@ async fn security_review_background_preserves_prompts_only() {
 
     let result = run_security_review_background(dir.path().to_path_buf(), args, None).await;
     assert!(result.is_ok());
-    let output = result.unwrap();
+    let receipt = result.unwrap();
+    let output = receipt.rendered_report.clone();
     assert!(
         !output.contains("Findings\n"),
         "prompts-only output should not contain the 'Findings' section header: {output}"
@@ -384,7 +366,8 @@ async fn security_review_background_preserves_findings_only() {
 
     let result = run_security_review_background(dir.path().to_path_buf(), args, None).await;
     assert!(result.is_ok());
-    let output = result.unwrap();
+    let receipt = result.unwrap();
+    let output = receipt.rendered_report.clone();
     assert!(
         !output.contains("Review Prompts\n"),
         "findings-only output should not contain the 'Review Prompts' section header: {output}"
@@ -407,7 +390,8 @@ async fn security_review_default_path_does_not_create_executor() {
     // enrichment was not requested.
     let result = run_security_review_background(dir.path().to_path_buf(), args, None).await;
     assert!(result.is_ok());
-    let output = result.unwrap();
+    let receipt = result.unwrap();
+    let output = receipt.rendered_report.clone();
     assert!(
         !output.contains("no securityContext executor"),
         "default path should not add unavailable note: {output}"
@@ -431,7 +415,8 @@ async fn security_review_remote_mode_none_executor_is_deterministic() {
 
     let result = run_security_review_background(dir.path().to_path_buf(), args, None).await;
     assert!(result.is_ok());
-    let output = result.unwrap();
+    let receipt = result.unwrap();
+    let output = receipt.rendered_report.clone();
     assert!(
         output.contains("no securityContext executor"),
         "remote mode with no executor should report unavailable: {output}"

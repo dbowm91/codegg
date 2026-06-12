@@ -2153,42 +2153,79 @@ async fn handle_security_review_run(
     args: crate::security::workflow::SecurityReviewCommandArgs,
     lsp_tool: Option<std::sync::Arc<crate::tool::lsp::LspTool>>,
 ) {
-    use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
-
     let result =
         crate::security::workflow::run_security_review_background(root, args, lsp_tool).await;
 
     // Always clear the reentrancy guard, even on failure.
-    if app.security_review_running.as_deref() == Some(id.as_str()) {
+    if app.security_review_run_id() == Some(id.as_str()) {
         app.security_review_running = None;
     }
 
     match result {
-        Ok(report) => {
-            // Push the full report into the message timeline as an
-            // Assistant message. The toast gives immediate confirmation;
-            // the timeline holds the full multi-section report (summary,
-            // findings, prompts) so it isn't truncated.
-            let labeled = format!("[Security Review]\n{}", report);
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            app.messages_state.messages.messages.push(UIMessage {
-                role: MessageRole::Assistant,
-                parts: vec![MsgPart::Text { content: labeled }],
-                timestamp: Some(timestamp),
-                is_plan_mode: None,
-            });
-            app.messages_state.messages.scroll_to_bottom();
-            app.messages_state
-                .toasts
-                .success("Security review complete — see message log for the full report.");
-        }
+        Ok(receipt) => apply_security_review_receipt(app, receipt),
         Err(e) => {
             app.messages_state
                 .toasts
                 .error(&format!("Security review failed: {e}"));
+        }
+    }
+}
+
+/// Apply a completed security review to the App: store the latest
+/// receipt, push the rendered report into the message timeline, and
+/// surface a success toast. Shared by the inline `SecurityReviewRun`
+/// handler and the `SecurityReviewFinished` completion arm.
+fn apply_security_review_receipt(
+    app: &mut app::App,
+    receipt: crate::security::workflow::SecurityReviewReceipt,
+) {
+    use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
+    let labeled = format!("[Security Review]\n{}", receipt.rendered_report);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    app.messages_state.messages.messages.push(UIMessage {
+        role: MessageRole::Assistant,
+        parts: vec![MsgPart::Text { content: labeled }],
+        timestamp: Some(timestamp),
+        is_plan_mode: None,
+    });
+    app.messages_state.messages.scroll_to_bottom();
+    app.set_latest_security_review(receipt);
+    app.messages_state
+        .toasts
+        .success("Security review complete — see message log for the full report.");
+}
+
+/// Handle a `TuiCommand::SecurityReviewFinished` notification from the
+/// spawned background task. Stale completions (id mismatch) are
+/// silently ignored so cancellation cannot be undone by a late
+/// delivery.
+fn handle_security_review_finished(
+    app: &mut app::App,
+    id: String,
+    receipt: Option<crate::security::workflow::SecurityReviewReceipt>,
+    error: Option<String>,
+) {
+    // Stale completion: a different (or cancelled) run is now active.
+    if app.security_review_run_id() != Some(id.as_str()) {
+        return;
+    }
+    app.security_review_running = None;
+    match (receipt, error) {
+        (Some(receipt), None) => {
+            apply_security_review_receipt(app, receipt);
+        }
+        (_, Some(e)) => {
+            app.messages_state
+                .toasts
+                .error(&format!("Security review failed: {e}"));
+        }
+        _ => {
+            app.messages_state
+                .toasts
+                .error("Security review failed: no result returned");
         }
     }
 }
@@ -3143,6 +3180,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), AppError> {
                         lsp_tool,
                     } => {
                         handle_security_review_run(app, id, root, args, lsp_tool).await;
+                    }
+                    TuiCommand::SecurityReviewFinished { id, receipt, error } => {
+                        handle_security_review_finished(app, id, receipt, error);
                     }
                 }
                 needs_render = true;

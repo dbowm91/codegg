@@ -234,11 +234,27 @@ pub enum TuiCommand {
     /// `run_security_review_background` and surfaces the result via the
     /// message timeline + a toast. See
     /// `plans/security_review_async_dispatch.md`.
+    ///
+    /// Kept for backward compatibility with any older dispatchers; new
+    /// code should use the spawn-and-finished path via
+    /// `SecurityReviewFinished`.
     SecurityReviewRun {
         id: String,
         root: PathBuf,
         args: crate::security::workflow::SecurityReviewCommandArgs,
         lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
+    },
+    /// Notification that a background security review task finished.
+    /// Sent by the spawned tokio task created from
+    /// `App::execute_command`'s `/security-review` branch. The
+    /// `cmd_rx` arm in `run_event_loop` matches the run id against
+    /// the active guard so stale completions are ignored.
+    SecurityReviewFinished {
+        id: String,
+        /// Set on success; the panel data for the latest review.
+        receipt: Option<crate::security::workflow::SecurityReviewReceipt>,
+        /// Set on failure; the human-readable error.
+        error: Option<String>,
     },
 }
 
@@ -345,11 +361,15 @@ pub struct App {
     /// (non-socket) mode; `None` in remote/socket mode.
     pub lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
     /// Reentrancy guard for the `/security-review` slash command.
-    /// `Some(id)` while a background review is in flight; `None` when
-    /// idle. Prevents the user from accidentally spawning unbounded
-    /// concurrent reviews by repeating the command. Cleared on both
+    /// `Some(task_state)` while a background review is in flight;
+    /// `None` when idle. Carries the `tokio::task::AbortHandle` so the
+    /// user can cancel via `/security-review-cancel`. Cleared on both
     /// success and failure by the handler in `src/tui/mod.rs`.
-    pub security_review_running: Option<String>,
+    pub security_review_running: Option<crate::security::workflow::SecurityReviewTaskState>,
+    /// Latest completed security review receipt, kept in memory so the
+    /// user can reopen the result panel via `/security-review-show`.
+    /// No database persistence in this pass.
+    pub latest_security_review: Option<crate::security::workflow::SecurityReviewReceipt>,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -607,6 +627,7 @@ impl App {
                 plan_dialog: None,
                 diff_dialog: None,
                 review_dialog: None,
+                security_review_dialog: None,
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
@@ -668,6 +689,7 @@ impl App {
             active_goal: None,
             lsp_tool: None,
             security_review_running: None,
+            latest_security_review: None,
         }
     }
 
@@ -812,6 +834,7 @@ impl App {
                 plan_dialog: None,
                 diff_dialog: None,
                 review_dialog: None,
+                security_review_dialog: None,
                 research_browser: None,
                 help_dialog: None,
                 info_dialog: None,
@@ -869,6 +892,7 @@ impl App {
             active_goal: None,
             lsp_tool: None,
             security_review_running: None,
+            latest_security_review: None,
         }
     }
 
@@ -882,6 +906,46 @@ impl App {
 
     pub fn set_core_client(&mut self, client: Arc<dyn CoreClient>) {
         self.core_client = Some(client);
+    }
+
+    /// Store the latest completed security review receipt. Subsequent
+    /// calls overwrite the previous one. The user can reopen the result
+    /// panel via `/security-review-show`.
+    pub fn set_latest_security_review(
+        &mut self,
+        receipt: crate::security::workflow::SecurityReviewReceipt,
+    ) {
+        if let Some(ref mut dialog) = self.dialog_state.security_review_dialog {
+            dialog.update_receipt(receipt.clone());
+        }
+        self.latest_security_review = Some(receipt);
+    }
+
+    /// Returns the current security review run id (if a review is
+    /// running) without exposing the `AbortHandle`. Used to check id
+    /// matches without needing to clone the handle.
+    pub fn security_review_run_id(&self) -> Option<&str> {
+        self.security_review_running.as_ref().map(|s| s.id.as_str())
+    }
+
+    /// Cancel the currently running security review, if any. Returns
+    /// `true` if a review was cancelled, `false` if no review is
+    /// running. After this call the guard is cleared; a stale
+    /// completion arriving later (matching the cancelled id) is
+    /// ignored by the handler in `src/tui/mod.rs`.
+    pub fn cancel_security_review(&mut self) -> bool {
+        if let Some(state) = self.security_review_running.take() {
+            state.abort_handle.abort();
+            self.messages_state
+                .toasts
+                .info("Security review cancelled.");
+            true
+        } else {
+            self.messages_state
+                .toasts
+                .warning("No security review is running.");
+            false
+        }
     }
 
     /// Apply a theme by id from the registry. Returns true if applied.
@@ -2405,6 +2469,24 @@ impl App {
             TuiMsg::ResearchLoadSection { run_id, section } => {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = tx.try_send(TuiCommand::ResearchLoadSection { run_id, section });
+                }
+            }
+            TuiMsg::SecurityReviewJump { path, line } => {
+                // Read-only: copy the file path to the clipboard and
+                // surface a toast. The file is never opened or mutated.
+                let mut text = path.clone();
+                if let Some(l) = line {
+                    text.push_str(&format!(":{l}"));
+                }
+                match crate::util::clipboard::copy_to_clipboard(&text) {
+                    Ok(()) => self
+                        .messages_state
+                        .toasts
+                        .info(&format!("Copied {text} to clipboard (file not opened)")),
+                    Err(_) => self
+                        .messages_state
+                        .toasts
+                        .info(&format!("Jump: {text} (clipboard unavailable)")),
                 }
             }
             _ => {}
@@ -4126,33 +4208,63 @@ impl App {
                 }
 
                 let id = crate::security::workflow::SecurityReviewRunId::new();
-                self.security_review_running = Some(id.0.clone());
+                let lsp_tool = self.lsp_tool.clone();
 
                 self.messages_state
                     .toasts
                     .info("Security review started. The result will appear in the message log when complete.");
 
-                // Clone everything the background task needs; the
-                // TuiCommand handler in `src/tui/mod.rs` awaits the
-                // workflow and surfaces the result. We must not borrow
-                // `self` across the dispatch.
-                let lsp_tool = self.lsp_tool.clone();
+                // Spawn the review in a tokio task so the renderer stays
+                // responsive. The completion path sends
+                // `TuiCommand::SecurityReviewFinished` back through
+                // `tui_cmd_tx`. The `AbortHandle` is stored on the App
+                // for the duration of the run so the user can cancel
+                // via `/security-review-cancel`.
                 let tx = self.tui_cmd_tx.clone();
                 if let Some(tx) = tx {
-                    let _ = tx.try_send(TuiCommand::SecurityReviewRun {
-                        id: id.0,
-                        root,
-                        args: parsed_args,
-                        lsp_tool,
+                    let run_id = id.0.clone();
+                    let join = tokio::spawn(async move {
+                        let result = crate::security::workflow::run_security_review_background(
+                            root,
+                            parsed_args,
+                            lsp_tool,
+                        )
+                        .await;
+                        let (receipt, error) = match result {
+                            Ok(r) => (Some(r), None),
+                            Err(e) => (None, Some(e)),
+                        };
+                        let _ = tx.try_send(TuiCommand::SecurityReviewFinished {
+                            id: run_id,
+                            receipt,
+                            error,
+                        });
                     });
+                    self.security_review_running =
+                        Some(crate::security::workflow::SecurityReviewTaskState {
+                            id: id.0,
+                            abort_handle: join.abort_handle(),
+                        });
                 } else {
                     // Fallback: no channel available (e.g. test fixture).
-                    // Clear the guard and surface a clear error.
-                    self.security_review_running = None;
                     self.messages_state
                         .toasts
                         .error("TUI command channel unavailable; cannot run security review");
                 }
+            }
+            "/security-review-show" => {
+                self.ui_state.command_mode = false;
+                if self.latest_security_review.is_some() {
+                    self.open_dialog(Dialog::SecurityReview);
+                } else {
+                    self.messages_state.toasts.warning(
+                        "No security review result available yet. Run /security-review first.",
+                    );
+                }
+            }
+            "/security-review-cancel" => {
+                self.ui_state.command_mode = false;
+                self.cancel_security_review();
             }
             _ => {}
         }
@@ -5262,6 +5374,26 @@ impl App {
                 if let Some(ref mut browser) = self.dialog_state.research_browser {
                     browser.set_theme(&self.ui_state.theme);
                     self.focus_manager.push(Box::new(browser.clone()));
+                }
+            }
+            Dialog::SecurityReview => {
+                if self.dialog_state.security_review_dialog.is_none() {
+                    let mut dialog =
+                        crate::tui::components::dialogs::security_review::SecurityReviewDialog::new(
+                            Arc::clone(&self.ui_state.theme),
+                        );
+                    if let Some(ref receipt) = self.latest_security_review {
+                        dialog.set_receipt(Some(receipt.clone()));
+                    }
+                    self.dialog_state.security_review_dialog = Some(dialog);
+                } else if let Some(ref mut dialog) = self.dialog_state.security_review_dialog {
+                    if let Some(ref receipt) = self.latest_security_review {
+                        dialog.set_receipt(Some(receipt.clone()));
+                    }
+                }
+                if let Some(ref mut dialog) = self.dialog_state.security_review_dialog {
+                    dialog.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(dialog.clone()));
                 }
             }
             _ => {}

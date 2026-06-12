@@ -58,7 +58,7 @@ pub enum SecurityEvidenceKind {
 }
 
 /// A single piece of structured evidence supporting a finding.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuredSecurityEvidence {
     pub kind: SecurityEvidenceKind,
     pub file_path: Option<PathBuf>,
@@ -134,7 +134,7 @@ pub struct SecurityPreflightEvidence {
 }
 
 /// Deterministic preflight check result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityPreflightResult {
     pub check_name: String,
     pub status: PreflightStatus,
@@ -163,7 +163,7 @@ pub struct SecurityEvidence {
 /// Risk markers alone never produce findings — additional evidence is
 /// required.  Severity and confidence are deterministic enums.  Findings
 /// are defensive review outputs, not proof of exploitability.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SecurityReviewFinding {
     pub severity: SecuritySeverity,
     pub confidence: SecurityConfidence,
@@ -219,7 +219,7 @@ pub struct SecurityReviewReport {
 
 /// Complete output from the full security review workflow (includes
 /// preflight results and evidence-based findings).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SecurityReviewOutput {
     pub targets: Vec<SecurityReviewTarget>,
     pub findings: Vec<SecurityReviewFinding>,

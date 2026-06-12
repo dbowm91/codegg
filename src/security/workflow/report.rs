@@ -7,6 +7,7 @@ use super::diff::*;
 use super::enrichment::*;
 use super::evidence::*;
 use super::preflight::*;
+use super::receipt::*;
 use super::types::*;
 
 // ---------------------------------------------------------------------------
@@ -616,6 +617,26 @@ pub async fn run_security_review_command_with_executor(
     args: &SecurityReviewCommandArgs,
     executor: Option<&dyn SecurityContextExecutor>,
 ) -> Result<String, String> {
+    let (output, rendered) = run_security_review_command_inner(root, args, executor, true).await?;
+    if args.json {
+        serde_json::to_string_pretty(&output).map_err(|e| format!("JSON serialization failed: {e}"))
+    } else {
+        Ok(rendered)
+    }
+}
+
+/// Build the structured [`SecurityReviewOutput`] (no rendering) and
+/// optionally a human-readable rendering for the same args.
+///
+/// When `render_human` is true, returns both the structured output and
+/// the human-readable rendering. When false, returns the structured
+/// output and an empty string for the rendering.
+async fn run_security_review_command_inner(
+    root: &Path,
+    args: &SecurityReviewCommandArgs,
+    executor: Option<&dyn SecurityContextExecutor>,
+    render_human: bool,
+) -> Result<(SecurityReviewOutput, String), String> {
     let base = args.base.as_deref();
 
     let mut options = SecurityReviewWorkflowOptions {
@@ -662,17 +683,26 @@ pub async fn run_security_review_command_with_executor(
     };
 
     if args.json {
-        serde_json::to_string_pretty(&output).map_err(|e| format!("JSON serialization failed: {e}"))
-    } else {
-        // Filter before rendering to match the filtering applied in the JSON path.
-        if !include_findings {
-            output.findings.clear();
-        }
-        if !include_prompts {
-            output.review_prompts.clear();
-        }
+        let rendered = if render_human {
+            serde_json::to_string_pretty(&output)
+                .map_err(|e| format!("JSON serialization failed: {e}"))?
+        } else {
+            String::new()
+        };
+        return Ok((output, rendered));
+    }
 
-        let mut report = render_security_review_summary(&output);
+    // Filter before rendering to match the filtering applied in the JSON path.
+    if !include_findings {
+        output.findings.clear();
+    }
+    if !include_prompts {
+        output.review_prompts.clear();
+    }
+
+    let mut report = String::new();
+    if render_human {
+        report.push_str(&render_security_review_summary(&output));
         if !args.findings_only {
             report.push_str("\n\n");
             report.push_str(&render_security_review_findings(&output));
@@ -681,8 +711,9 @@ pub async fn run_security_review_command_with_executor(
             report.push('\n');
             report.push_str(&render_security_review_prompts(&output));
         }
-        Ok(report)
     }
+
+    Ok((output, report))
 }
 
 /// Run the security review command from a background task context.
@@ -697,16 +728,36 @@ pub async fn run_security_review_command_with_executor(
 /// so the real `LspSecurityContextExecutor` is used. In socket/remote
 /// mode the caller passes `None` and the deterministic stage-1
 /// fallback runs with a `note_lsp_enrichment_unavailable` note.
+///
+/// Returns a structured [`SecurityReviewReceipt`] carrying both the
+/// rendered text (for the message timeline) and the structured output
+/// (for the result panel).
 pub async fn run_security_review_background(
     root: PathBuf,
     args: SecurityReviewCommandArgs,
     lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
-) -> Result<String, String> {
+) -> Result<SecurityReviewReceipt, String> {
     let executor = lsp_tool.map(crate::security::lsp_executor::LspSecurityContextExecutor::new);
     let executor_ref = executor
         .as_ref()
         .map(|e| e as &dyn crate::security::workflow::context::SecurityContextExecutor);
-    run_security_review_command_with_executor(&root, &args, executor_ref).await
+
+    let lsp_available = executor.is_some();
+    let enriched = args.enrich && executor.is_some();
+
+    let id = SecurityReviewRunId::new().0;
+    let (output, rendered) =
+        run_security_review_command_inner(&root, &args, executor_ref, true).await?;
+
+    Ok(SecurityReviewReceipt::now(
+        id,
+        root,
+        args,
+        output,
+        rendered,
+        enriched,
+        lsp_available,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -860,10 +911,19 @@ mod tests {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let result = run_security_review_background(root, args, None).await;
         assert!(result.is_ok());
-        let output = result.unwrap();
+        let receipt = result.unwrap();
+        let rendered = receipt.rendered_report.clone();
         assert!(
-            output.contains("no securityContext executor"),
-            "report should mention no executor: {output}"
+            rendered.contains("no securityContext executor"),
+            "report should mention no executor: {rendered}"
+        );
+        assert!(
+            !receipt.enriched,
+            "without an executor the receipt should not claim enrichment"
+        );
+        assert!(
+            !receipt.lsp_available,
+            "without an lsp_tool the receipt should reflect unavailability"
         );
     }
 
@@ -888,6 +948,15 @@ mod tests {
             "background with executor should succeed: {:?}",
             result
         );
+        let receipt = result.unwrap();
+        assert!(
+            receipt.lsp_available,
+            "with an lsp_tool, lsp_available must be true"
+        );
+        assert!(
+            receipt.enriched,
+            "with --enrich and an executor, enriched must be true"
+        );
     }
 
     #[tokio::test]
@@ -901,7 +970,8 @@ mod tests {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let result = run_security_review_background(root, args, None).await;
         assert!(result.is_ok());
-        let output = result.unwrap();
+        let receipt = result.unwrap();
+        let output = receipt.rendered_report.clone();
         assert!(
             output.starts_with('{'),
             "json output should start with '{{': {output}"
@@ -923,7 +993,8 @@ mod tests {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let result = run_security_review_background(root, args, None).await;
         assert!(result.is_ok());
-        let output = result.unwrap();
+        let receipt = result.unwrap();
+        let output = receipt.rendered_report.clone();
         assert!(
             !output.contains("Findings\n"),
             "prompts-only output should not contain the 'Findings' section header: {output}"
@@ -941,7 +1012,8 @@ mod tests {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let result = run_security_review_background(root, args, None).await;
         assert!(result.is_ok());
-        let output = result.unwrap();
+        let receipt = result.unwrap();
+        let output = receipt.rendered_report.clone();
         assert!(
             !output.contains("Review Prompts\n"),
             "findings-only output should not contain the 'Review Prompts' section header: {output}"
@@ -961,10 +1033,15 @@ mod tests {
         // enrichment was not requested.
         let result = run_security_review_background(root, args, None).await;
         assert!(result.is_ok());
-        let output = result.unwrap();
+        let receipt = result.unwrap();
+        let output = receipt.rendered_report.clone();
         assert!(
             !output.contains("no securityContext executor"),
             "default path should not add unavailable note: {output}"
+        );
+        assert!(
+            !receipt.enriched,
+            "default path should not mark the receipt as enriched"
         );
     }
 

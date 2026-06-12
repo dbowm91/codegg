@@ -13,6 +13,7 @@ pub mod diff;
 pub mod enrichment;
 pub mod evidence;
 pub mod preflight;
+pub mod receipt;
 pub mod report;
 pub mod types;
 
@@ -21,6 +22,7 @@ pub use diff::*;
 pub use enrichment::*;
 pub use evidence::*;
 pub use preflight::*;
+pub use receipt::*;
 pub use report::*;
 pub use types::*;
 

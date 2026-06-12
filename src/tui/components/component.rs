@@ -44,6 +44,7 @@ pub enum DialogType {
     Review,
     Confirm,
     ResearchBrowser,
+    SecurityReview,
     None,
 }
 
@@ -80,6 +81,7 @@ impl From<DialogType> for Dialog {
             DialogType::Review => Dialog::Review,
             DialogType::Confirm => Dialog::Confirm,
             DialogType::ResearchBrowser => Dialog::ResearchBrowser,
+            DialogType::SecurityReview => Dialog::SecurityReview,
             DialogType::None => Dialog::None,
         }
     }

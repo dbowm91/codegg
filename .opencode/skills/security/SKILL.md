@@ -435,7 +435,9 @@ The `src/security/workflow/` module provides a structured security review workfl
 | `preflight.rs` | Filename and content preflight checks |
 | `evidence.rs` | Evidence helpers, synthesis, classification |
 | `context.rs` | securityContext payloads, escalation plan |
-| `report.rs` | Assembly, rendering, orchestrator, command handler |
+| `report.rs` | Assembly, rendering, orchestrator, command handler, `run_security_review_background` |
+| `enrichment.rs` | LSP enrichment runner, executor integration |
+| `receipt.rs` | TUI-facing `SecurityReviewReceipt` DTO, panel item projection, `SecurityReviewTaskState` reentrancy guard |
 
 ### Workflow types
 
@@ -618,6 +620,32 @@ All enrichment is:
 - Read-only (never mutates files)
 - Bounded (max depth 2, max nodes 64, per-request timeout)
 - Fail-soft (returns stage-1 output on any failure)
+
+### Result panel + show/cancel commands
+
+After a successful `/security-review`, the TUI stores a structured `SecurityReviewReceipt` on `App.latest_security_review` (set by `App::set_latest_security_review` at `src/tui/app/mod.rs:914`). The receipt carries the structured `SecurityReviewOutput` plus the rendered report and is the input to the result panel.
+
+The `src/security/workflow/receipt.rs` submodule holds:
+- `SecurityReviewReceipt` — DTO with `id`, `root`, `args`, `output`, `rendered_report`, `completed_at_ms`, `enriched`, `lsp_available`.
+- `SecurityReviewPanelItem` / `SecurityReviewPanelItemKind` — flat projection of findings, prompts, notes, and preflight results.
+- `SecurityReviewFilter` (`All`, `Findings`, `Prompts`, `Notes`, `HighConfidence`, `MediumOrHigherSeverity`) with `next()` for cycling.
+- `project_receipt_to_panel_items(receipt)` / `filter_panel_items(items, filter)` — pure helpers for the panel.
+- `SecurityReviewTaskState { id, abort_handle }` — the reentrancy guard for an in-flight review. Held by `App.security_review_running`.
+
+`Dialog::SecurityReview` (the result panel) is a master/detail view at `src/tui/components/dialogs/security_review.rs`:
+- Header: `Security Review — <root> | Findings: N | Prompts: N | Notes: N | Enrichment: local-lsp|unavailable|off`.
+- List: `[FINDING]`, `[PROMPT]`, `[NOTE]`, `[PREFLIGHT]` markers; severity-colored findings.
+- Detail: title, location, summary, structured evidence, recommendation, suggested tests.
+- Keybindings: `j`/`k` (or `↑`/`↓`) move selection; `PgUp`/`PgDn` scroll detail; `f` cycle filter; `n` toggle notes-only; `p` toggle prompts-only; `Enter` jump to file (emits `TuiMsg::SecurityReviewJump { path, line }` which `App::process_msg` at `src/tui/app/mod.rs:2474` handles by copying `path[:line]` to the clipboard — read-only, the file is never opened or mutated); `Esc`/`q` close.
+- Constructed on demand in `App::open_dialog` (`src/tui/app/mod.rs:5379`) and registered as `Some(Dialog::SecurityReview)` so command-mode completion opens the dialog.
+
+Commands:
+- `/security-review-show` — reopens the latest `Dialog::SecurityReview` from `App.latest_security_review`. Does NOT rerun the review. If no receipt exists, shows a "No security review result available yet." warning toast. Registered in `src/tui/command.rs:215`.
+- `/security-review-cancel` — aborts the running task via `App::cancel_security_review` (`src/tui/app/mod.rs:936`) which calls `AbortHandle::abort()` and clears the guard. Idempotent: if no review is running, shows a "No security review is running." warning toast. Registered in `src/tui/command.rs:217`.
+
+The completion handler `handle_security_review_finished` in `src/tui/mod.rs:2205` guards against stale completions by comparing the incoming `id` against `app.security_review_running.id` via `App::security_review_run_id`; mismatches are silently dropped so a cancelled run cannot reinstate its guard or push a stale receipt. Cancellation is best-effort: if the spawned task is in a non-cancellable section (e.g. inside a blocking syscall), its completion may still arrive and is dropped by the id-mismatch guard.
+
+The full review is read-only by design — no file mutations, no exploit generation, no network scanning. The result panel adds navigation over the existing output but does not introduce new behaviors.
 
 ## Security Checklist
 
