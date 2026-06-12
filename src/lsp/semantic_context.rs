@@ -2,11 +2,11 @@ use crate::lsp::diagnostics::DiagnosticsCollector;
 use crate::lsp::lsp_types;
 use crate::lsp::operations::LspOperations;
 use crate::lsp::service::LspService;
-use egglsp::capability::{LspCapabilitySnapshot, LspSemanticOperation};
+use egglsp::capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
 use egglsp::semantic_context::{
-    SemanticContextRequest, SemanticContextResponse, SemanticDiagnosticEvidence, SemanticLocation,
-    SemanticOverlay, SemanticOverlaySymbol, SemanticSourceActionHint, SemanticSourceExcerpt,
-    SemanticSymbolSummary,
+    SemanticContextRequest, SemanticContextResponse, SemanticDiagnosticEvidence,
+    SemanticHierarchyItem, SemanticHierarchyRange, SemanticHierarchyRelation, SemanticLocation,
+    SemanticOverlay, SemanticOverlaySymbol, SemanticSourceExcerpt, SemanticSymbolSummary,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -69,8 +69,6 @@ impl SemanticContextCollector {
                 let raw_len = snapshot.diagnostics.len();
                 let truncated = raw_len > request.max_diagnostics;
                 limits.diagnostics_truncated = truncated;
-                let freshness = format!("{:?}", snapshot.freshness);
-                let source_str = format!("{:?}", snapshot.source);
                 let age_ms = snapshot.age_ms;
                 let usable = snapshot.is_usable_evidence();
                 response.diagnostics = snapshot
@@ -87,8 +85,8 @@ impl SemanticContextCollector {
                     );
                 }
                 response.diagnostic_evidence = Some(SemanticDiagnosticEvidence {
-                    freshness,
-                    source: source_str,
+                    freshness: snapshot.freshness,
+                    source: snapshot.source,
                     age_ms,
                     usable_evidence: usable,
                 });
@@ -233,8 +231,8 @@ impl SemanticContextCollector {
         }
 
         // Phase 6: overlay
-        if request.include_overlay {
-            match resolve_overlay_content(&file, &self.allowed_root).await {
+        if request.include_overlay || request.overlay_content.is_some() {
+            match resolve_overlay_content(&request, &file, &self.allowed_root).await {
                 Ok(content) => {
                     match self
                         .operations
@@ -310,47 +308,70 @@ impl SemanticContextCollector {
             }
         }
 
-        // Phase 7: source actions
-        if request.include_source_actions {
-            response.source_actions =
-                collect_source_action_hints(&self.operations, &file, &self.allowed_root).await;
+        // Phase 7: call/type hierarchy (opt-in, capability-gated)
+        if request.include_call_hierarchy {
+            if has_position {
+                let line = request.line.unwrap();
+                let column = request.column.unwrap();
+                let ch_supported = caps_snapshot
+                    .as_ref()
+                    .map(|c| c.supports(LspSemanticOperation::CallHierarchy))
+                    .unwrap_or(true);
+                if ch_supported {
+                    let summary = build_call_hierarchy_summary(
+                        &self.operations,
+                        &file,
+                        line,
+                        column,
+                        egglsp::operations::HierarchyDirection::Both,
+                    )
+                    .await;
+                    response.call_hierarchy = Some(summary);
+                } else if let Some(u) = caps_snapshot
+                    .as_ref()
+                    .and_then(|c| c.unavailable(LspSemanticOperation::CallHierarchy))
+                {
+                    response.push_unavailable(u);
+                }
+            } else {
+                response.push_note("call hierarchy requested but no position was provided");
+                response.push_unavailable(LspUnavailable::new(
+                    LspSemanticOperation::CallHierarchy,
+                    "call hierarchy requires a position",
+                ));
+            }
         }
 
-        // Phase 8: call hierarchy (opt-in, capability-gated)
-        if has_position {
-            let line = request.line.unwrap();
-            let column = request.column.unwrap();
-
-            let ch_supported = caps_snapshot
-                .as_ref()
-                .map(|c| c.supports(LspSemanticOperation::CallHierarchy))
-                .unwrap_or(true);
-            if ch_supported {
-                let summary = build_call_hierarchy_summary(
-                    &self.operations,
-                    &file,
-                    line,
-                    column,
-                    egglsp::operations::HierarchyDirection::Both,
-                )
-                .await;
-                response.call_hierarchy = Some(summary);
-            }
-
-            let th_supported = caps_snapshot
-                .as_ref()
-                .map(|c| c.supports(LspSemanticOperation::TypeHierarchy))
-                .unwrap_or(true);
-            if th_supported {
-                let summary = build_type_hierarchy_summary(
-                    &self.operations,
-                    &file,
-                    line,
-                    column,
-                    egglsp::operations::HierarchyDirection::Both,
-                )
-                .await;
-                response.type_hierarchy = Some(summary);
+        if request.include_type_hierarchy {
+            if has_position {
+                let line = request.line.unwrap();
+                let column = request.column.unwrap();
+                let th_supported = caps_snapshot
+                    .as_ref()
+                    .map(|c| c.supports(LspSemanticOperation::TypeHierarchy))
+                    .unwrap_or(true);
+                if th_supported {
+                    let summary = build_type_hierarchy_summary(
+                        &self.operations,
+                        &file,
+                        line,
+                        column,
+                        egglsp::operations::HierarchyDirection::Both,
+                    )
+                    .await;
+                    response.type_hierarchy = Some(summary);
+                } else if let Some(u) = caps_snapshot
+                    .as_ref()
+                    .and_then(|c| c.unavailable(LspSemanticOperation::TypeHierarchy))
+                {
+                    response.push_unavailable(u);
+                }
+            } else {
+                response.push_note("type hierarchy requested but no position was provided");
+                response.push_unavailable(LspUnavailable::new(
+                    LspSemanticOperation::TypeHierarchy,
+                    "type hierarchy requires a position",
+                ));
             }
         }
 
@@ -359,7 +380,8 @@ impl SemanticContextCollector {
             || response.limits.symbols_truncated
             || response.limits.references_truncated
             || response.limits.overlay_diagnostics_truncated
-            || response.limits.excerpt_truncated;
+            || response.limits.excerpt_truncated
+            || !response.section_truncations.is_empty();
 
         Ok(response)
     }
@@ -541,44 +563,60 @@ fn severity_to_string(severity: lsp_types::DiagnosticSeverity) -> String {
     .to_string()
 }
 
-#[allow(dead_code)]
-fn convert_hierarchy_range(range: lsp_types::Range) -> (u32, u32, u32, u32) {
-    (
-        range.start.line + 1,
-        range.start.character + 1,
-        range.end.line + 1,
-        range.end.character + 1,
-    )
+fn convert_hierarchy_range(range: lsp_types::Range) -> SemanticHierarchyRange {
+    SemanticHierarchyRange {
+        start_line: range.start.line + 1,
+        start_column: range.start.character + 1,
+        end_line: range.end.line + 1,
+        end_column: range.end.character + 1,
+    }
 }
 
 #[allow(dead_code)]
 fn convert_hierarchy_item_to_symbol(item: &lsp_types::CallHierarchyItem) -> SemanticSymbolSummary {
-    let (sl, sc, el, ec) = convert_hierarchy_range(item.range);
+    let range = convert_hierarchy_range(item.range);
     SemanticSymbolSummary {
         name: item.name.clone(),
         kind: symbol_kind_to_string(item.kind),
         file: uri_to_path(&item.uri),
-        start_line: sl,
-        start_column: sc,
-        end_line: el,
-        end_column: ec,
+        start_line: range.start_line,
+        start_column: range.start_column,
+        end_line: range.end_line,
+        end_column: range.end_column,
     }
 }
 
-#[allow(dead_code)]
-fn convert_type_hierarchy_item_to_symbol(
-    item: &lsp_types::TypeHierarchyItem,
-) -> SemanticSymbolSummary {
-    let (sl, sc, el, ec) = convert_hierarchy_range(item.range);
-    SemanticSymbolSummary {
+fn convert_hierarchy_item(item: &lsp_types::CallHierarchyItem) -> SemanticHierarchyItem {
+    SemanticHierarchyItem {
         name: item.name.clone(),
         kind: symbol_kind_to_string(item.kind),
         file: uri_to_path(&item.uri),
-        start_line: sl,
-        start_column: sc,
-        end_line: el,
-        end_column: ec,
+        range: convert_hierarchy_range(item.range),
+        selection_range: convert_hierarchy_range(item.selection_range),
+        detail: item.detail.clone(),
     }
+}
+
+fn convert_type_hierarchy_item(item: &lsp_types::TypeHierarchyItem) -> SemanticHierarchyItem {
+    SemanticHierarchyItem {
+        name: item.name.clone(),
+        kind: symbol_kind_to_string(item.kind),
+        file: uri_to_path(&item.uri),
+        range: convert_hierarchy_range(item.range),
+        selection_range: convert_hierarchy_range(item.selection_range),
+        detail: item.detail.clone(),
+    }
+}
+
+fn truncate_ranges(ranges: &[lsp_types::Range]) -> (Vec<SemanticHierarchyRange>, bool) {
+    let truncated = ranges.len() > MAX_HIERARCHY_RANGES;
+    let output = ranges
+        .iter()
+        .take(MAX_HIERARCHY_RANGES)
+        .cloned()
+        .map(convert_hierarchy_range)
+        .collect();
+    (output, truncated)
 }
 
 fn count_symbols_recursive(symbols: &[lsp_types::DocumentSymbol]) -> usize {
@@ -592,54 +630,18 @@ fn count_symbols_recursive(symbols: &[lsp_types::DocumentSymbol]) -> usize {
     count
 }
 
-async fn resolve_overlay_content(file: &Path, _allowed_root: &Path) -> Result<String, String> {
+async fn resolve_overlay_content(
+    request: &SemanticContextRequest,
+    file: &Path,
+    _allowed_root: &Path,
+) -> Result<String, String> {
+    if let Some(content) = &request.overlay_content {
+        return Ok(content.clone());
+    }
+
     tokio::fs::read_to_string(file)
         .await
         .map_err(|e| format!("overlay content read: {}", e))
-}
-
-async fn collect_source_action_hints(
-    ops: &LspOperations,
-    file: &Path,
-    allowed_root: &Path,
-) -> Vec<SemanticSourceActionHint> {
-    let actions = [egglsp::operations::SourceActionPreviewKind::OrganizeImports];
-    let mut hints = Vec::with_capacity(actions.len());
-    for action in actions {
-        let result = ops
-            .source_action_preview(file, action, Some(allowed_root))
-            .await;
-        hints.push(source_action_hint_from_result(action, result));
-    }
-    hints
-}
-
-fn source_action_hint_from_result(
-    action: egglsp::operations::SourceActionPreviewKind,
-    result: Result<egglsp::edit::WorkspaceEditPreview, egglsp::error::LspError>,
-) -> SemanticSourceActionHint {
-    let action_str = match action {
-        egglsp::operations::SourceActionPreviewKind::OrganizeImports => {
-            "source.organizeImports".to_string()
-        }
-    };
-    match result {
-        Ok(preview) if preview.total_edits > 0 => SemanticSourceActionHint {
-            action: action_str,
-            available: true,
-            error: None,
-        },
-        Ok(_) => SemanticSourceActionHint {
-            action: action_str,
-            available: false,
-            error: Some("source action produced no edits".to_string()),
-        },
-        Err(e) => SemanticSourceActionHint {
-            action: action_str,
-            available: false,
-            error: Some(e.to_string()),
-        },
-    }
 }
 
 async fn build_call_hierarchy_summary(
@@ -656,6 +658,9 @@ async fn build_call_hierarchy_summary(
             return egglsp::semantic_context::SemanticCallGraphSummary {
                 incoming_count: 0,
                 outgoing_count: 0,
+                items: Vec::new(),
+                incoming: Vec::new(),
+                outgoing: Vec::new(),
                 truncated: false,
                 prepare_error: Some(e.to_string()),
                 incoming_error: None,
@@ -670,6 +675,9 @@ async fn build_call_hierarchy_summary(
         return egglsp::semantic_context::SemanticCallGraphSummary {
             incoming_count: 0,
             outgoing_count: 0,
+            items: Vec::new(),
+            incoming: Vec::new(),
+            outgoing: Vec::new(),
             truncated: false,
             prepare_error: None,
             incoming_error: None,
@@ -677,13 +685,22 @@ async fn build_call_hierarchy_summary(
         };
     }
 
-    let primary = &items[0];
+    let primary = items[0].clone();
+    let items = items
+        .into_iter()
+        .take(MAX_HIERARCHY_ITEMS)
+        .map(|item| convert_hierarchy_item(&item))
+        .collect::<Vec<_>>();
     let mut incoming_count = 0usize;
     let mut incoming_error = None;
     let mut incoming_raw_len = 0usize;
+    let mut incoming = Vec::new();
     let mut outgoing_count = 0usize;
     let mut outgoing_error = None;
     let mut outgoing_raw_len = 0usize;
+    let mut outgoing = Vec::new();
+    let mut incoming_ranges_truncated = false;
+    let mut outgoing_ranges_truncated = false;
 
     if matches!(
         direction,
@@ -694,6 +711,18 @@ async fn build_call_hierarchy_summary(
             Ok(calls) => {
                 incoming_raw_len = calls.len();
                 incoming_count = calls.len().min(MAX_HIERARCHY_EDGES);
+                incoming = calls
+                    .into_iter()
+                    .take(MAX_HIERARCHY_EDGES)
+                    .map(|call| {
+                        let (ranges, truncated) = truncate_ranges(&call.from_ranges);
+                        incoming_ranges_truncated |= truncated;
+                        SemanticHierarchyRelation {
+                            item: convert_hierarchy_item(&call.from),
+                            ranges,
+                        }
+                    })
+                    .collect();
             }
             Err(e) => {
                 incoming_error = Some(e.to_string());
@@ -710,6 +739,18 @@ async fn build_call_hierarchy_summary(
             Ok(calls) => {
                 outgoing_raw_len = calls.len();
                 outgoing_count = calls.len().min(MAX_HIERARCHY_EDGES);
+                outgoing = calls
+                    .into_iter()
+                    .take(MAX_HIERARCHY_EDGES)
+                    .map(|call| {
+                        let (ranges, truncated) = truncate_ranges(&call.from_ranges);
+                        outgoing_ranges_truncated |= truncated;
+                        SemanticHierarchyRelation {
+                            item: convert_hierarchy_item(&call.to),
+                            ranges,
+                        }
+                    })
+                    .collect();
             }
             Err(e) => {
                 outgoing_error = Some(e.to_string());
@@ -719,11 +760,16 @@ async fn build_call_hierarchy_summary(
 
     let truncated = items_truncated
         || incoming_raw_len > MAX_HIERARCHY_EDGES
-        || outgoing_raw_len > MAX_HIERARCHY_EDGES;
+        || outgoing_raw_len > MAX_HIERARCHY_EDGES
+        || incoming_ranges_truncated
+        || outgoing_ranges_truncated;
 
     egglsp::semantic_context::SemanticCallGraphSummary {
         incoming_count,
         outgoing_count,
+        items,
+        incoming,
+        outgoing,
         truncated,
         prepare_error: None,
         incoming_error,
@@ -745,6 +791,9 @@ async fn build_type_hierarchy_summary(
             return egglsp::semantic_context::SemanticTypeGraphSummary {
                 supertypes_count: 0,
                 subtypes_count: 0,
+                items: Vec::new(),
+                supertypes: Vec::new(),
+                subtypes: Vec::new(),
                 truncated: false,
                 prepare_error: Some(e.to_string()),
                 supertypes_error: None,
@@ -759,6 +808,9 @@ async fn build_type_hierarchy_summary(
         return egglsp::semantic_context::SemanticTypeGraphSummary {
             supertypes_count: 0,
             subtypes_count: 0,
+            items: Vec::new(),
+            supertypes: Vec::new(),
+            subtypes: Vec::new(),
             truncated: false,
             prepare_error: None,
             supertypes_error: None,
@@ -766,13 +818,20 @@ async fn build_type_hierarchy_summary(
         };
     }
 
-    let primary = &items[0];
+    let primary = items[0].clone();
+    let items = items
+        .into_iter()
+        .take(MAX_HIERARCHY_ITEMS)
+        .map(|item| convert_type_hierarchy_item(&item))
+        .collect::<Vec<_>>();
     let mut supertypes_count = 0usize;
     let mut supertypes_error = None;
     let mut supertypes_raw_len = 0usize;
+    let mut supertypes = Vec::new();
     let mut subtypes_count = 0usize;
     let mut subtypes_error = None;
     let mut subtypes_raw_len = 0usize;
+    let mut subtypes = Vec::new();
 
     if matches!(
         direction,
@@ -783,6 +842,11 @@ async fn build_type_hierarchy_summary(
             Ok(items) => {
                 supertypes_raw_len = items.len();
                 supertypes_count = items.len();
+                supertypes = items
+                    .into_iter()
+                    .take(MAX_HIERARCHY_ITEMS)
+                    .map(|item| convert_type_hierarchy_item(&item))
+                    .collect();
             }
             Err(e) => {
                 supertypes_error = Some(e.to_string());
@@ -799,6 +863,11 @@ async fn build_type_hierarchy_summary(
             Ok(items) => {
                 subtypes_raw_len = items.len();
                 subtypes_count = items.len();
+                subtypes = items
+                    .into_iter()
+                    .take(MAX_HIERARCHY_ITEMS)
+                    .map(|item| convert_type_hierarchy_item(&item))
+                    .collect();
             }
             Err(e) => {
                 subtypes_error = Some(e.to_string());
@@ -813,6 +882,9 @@ async fn build_type_hierarchy_summary(
     egglsp::semantic_context::SemanticTypeGraphSummary {
         supertypes_count,
         subtypes_count,
+        items,
+        supertypes,
+        subtypes,
         truncated,
         prepare_error: None,
         supertypes_error,
@@ -1075,11 +1147,46 @@ mod tests {
                 character: 2,
             },
         };
-        let (sl, sc, el, ec) = convert_hierarchy_range(range);
-        assert_eq!(sl, 5);
-        assert_eq!(sc, 10);
-        assert_eq!(el, 8);
-        assert_eq!(ec, 3);
+        let converted = convert_hierarchy_range(range);
+        assert_eq!(converted.start_line, 5);
+        assert_eq!(converted.start_column, 10);
+        assert_eq!(converted.end_line, 8);
+        assert_eq!(converted.end_column, 3);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_overlay_content_prefers_request_content() {
+        let request = SemanticContextRequest::new("test.rs", egglsp::SemanticContextIntent::Review)
+            .with_overlay(true)
+            .with_overlay_content("overlay from request");
+
+        let content = resolve_overlay_content(
+            &request,
+            Path::new("/tmp/does-not-exist-for-overlay-test.rs"),
+            Path::new("/tmp"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(content, "overlay from request");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_overlay_content_reads_disk_when_request_missing() {
+        let dir = std::env::temp_dir().join("semantic_context_overlay_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("overlay.rs");
+        std::fs::write(&file, "disk overlay").unwrap();
+
+        let request = SemanticContextRequest::new("test.rs", egglsp::SemanticContextIntent::Review)
+            .with_overlay(true);
+
+        let content = resolve_overlay_content(&request, &file, &dir)
+            .await
+            .unwrap();
+        assert_eq!(content, "disk overlay");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -251,7 +251,7 @@ pub fn find_server_for_extension(ext: &str) -> Option<&'static LspServerDef>
 
 **Location:** `src/lsp/semantic_context.rs`
 
-A collector/builder that owns domain assembly for semantic context. It produces `egglsp::semantic_context::SemanticContextResponse` by collecting diagnostics, symbols, definitions, references, overlay, and hierarchy data from LSP services.
+A collector/builder that assembles the shared semantic read model for `semanticContext`. It produces `egglsp::semantic_context::SemanticContextResponse` by collecting the shared evidence needed for source excerpt, diagnostics, symbols, definitions, references, source-action hints, and hierarchy summaries from LSP services.
 
 ```rust
 pub struct SemanticContextCollector {
@@ -273,15 +273,16 @@ The collector handles:
 - Diagnostic snapshot collection with freshness metadata
 - Document symbol flattening and capping
 - Definition/reference gathering with capability gating
-- Overlay diagnostics/symbols from proposed content
 - Source-action preview hints
 - Call/type hierarchy summaries (capability-gated)
 - Per-section truncation metadata
 - Structured unavailable metadata via `LspCapabilitySnapshot`
 
+Overlay resolution stays handler-local because patch/content expansion is tool-specific; the shared semantic read model carries the resulting overlay summary when the handler chooses to attach one.
+
 Unit tests use fake/static inputs and do not require live LSP servers.
 
-## Supported Languages (40 servers)
+## Supported Languages (39 servers)
 
 | Language | Server | Command |
 |----------|--------|---------|
@@ -379,11 +380,13 @@ Hierarchy prepare operations use `ensure_file_open_from_disk` to open/sync the f
 
 `semanticContext` can include hierarchy sections with `include_call_hierarchy=true` or `include_type_hierarchy=true`. These flags require `line` and `column`; requests without a target position are rejected.
 
-`securityContext` includes call hierarchy by default when a target position is supplied unless disabled by input behavior in future presets.
+`securityContext` includes call hierarchy by default when a target position is supplied unless disabled by input behavior in future presets. Both `semanticContext` and `securityContext` gate hierarchy calls through `LspCapabilitySnapshot`; unsupported operations are skipped and surfaced as notes or empty sections rather than failing the packet.
 
 ### Semantic context packets
 
 `semanticContext` is the preferred agent-facing pre-edit/pre-review context operation. It combines a bounded source excerpt with current diagnostics, document symbols, optional definition/reference information, optional overlay diagnostics for proposed content or a single-file patch, optional source-action hints, and optional call/type hierarchy information. It is read-only and never applies changes.
+
+The shared semantic read model is assembled by `SemanticContextCollector`; the handler keeps overlay resolution local because patch/content handling is specific to `semanticCheckPreview`. `securityContext` reuses the same diagnostic freshness evidence and capability snapshot, but filters results into a security-specific packet instead of a general semantic summary.
 
 Input parameters:
 - `file_path` (required): file to analyze
@@ -406,7 +409,7 @@ All output sections are bounded:
 
 The operation gathers existing read-only semantic facts, optionally runs an overlay semantic check, and returns a stable JSON DTO. All sections are best-effort: individual failures do not prevent the rest of the packet from being returned. Per-section errors are surfaced as `definitions_error: Option<String>` and `references_error: Option<String>` (non-None when the corresponding LSP request fails). `result_count` includes overlay diagnostics and overlay symbols in addition to the base counts. Source excerpt truncation is UTF-8-safe — it cuts at character boundaries using `truncate_to_byte_limit_on_char_boundary`, avoiding replacement characters or partial-codepoint corruption. `execute_structured` checks both `/results/restore_error` and `/results/overlay/restore_error` for success detection.
 
-> **Architecture note:** `SemanticContextPacket` is a tool-local presentation type. The domain owner for semantic assembly is `SemanticContextCollector` which produces `SemanticContextResponse`. The packet is adapted from the response via `SemanticContextPacket::from_semantic_response()`.
+> **Architecture note:** `SemanticContextPacket` is a tool-local presentation type. `SemanticContextCollector` assembles the shared semantic read model, and `SemanticContextPacket::from_semantic_response()` adapts that response into the tool-local packet. Overlay resolution stays handler-local.
 
 ### Security context packets
 
@@ -463,6 +466,8 @@ It combines:
 - `limits` — truncation flags per section (precise: flags reflect filtered counts, not raw counts)
 
 **Read-only contract:** `securityContext` never writes files. Patch-based overlay is applied in memory only and restored after diagnostics collection.
+
+`securityContext` reuses the same freshness metadata and capability gating used by the semantic-context path. When diagnostics are stale or unavailable, the packet keeps that evidence visible in notes and metadata instead of turning the gap into a clean bill of health.
 
 **Error visibility:** Nonfatal LSP subrequest failures (diagnostics, document symbols, definitions, references) are surfaced in the `notes` array rather than failing the whole packet. This allows partial results when individual LSP operations fail.
 
@@ -726,7 +731,7 @@ This allows the security review workflow to make informed decisions about diagno
 
 ## Shared Semantic Context API
 
-The shared semantic context API provides domain-agnostic DTOs for assembling LSP evidence. `SemanticContextResponse` is the **internal semantic read model** — tool adapters convert it into presentation-specific JSON shapes.
+The shared semantic context API provides domain-agnostic DTOs for assembling LSP evidence. `SemanticContextResponse` is the **internal semantic read model** for `semanticContext`; `securityContext` reuses the shared diagnostic evidence and capability snapshot but assembles its own security-filtered packet.
 
 ### SemanticContextRequest
 

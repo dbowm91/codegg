@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::capability::LspUnavailable;
-use crate::diagnostics::FileDiagnostic;
+use crate::diagnostics::{FileDiagnostic, LspDiagnosticFreshness, LspDiagnosticSource};
 
 /// Describes what the caller wants to know.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,8 +33,14 @@ pub struct SemanticContextRequest {
     pub call_depth: u8,
     /// Include overlay diagnostics/symbols when proposed content is available.
     pub include_overlay: bool,
+    /// Optional overlay content to use instead of reading the file from disk.
+    pub overlay_content: Option<String>,
     /// Include safe source-action preview hints (e.g. organize imports).
     pub include_source_actions: bool,
+    /// Include call hierarchy details when a position is provided.
+    pub include_call_hierarchy: bool,
+    /// Include type hierarchy details when a position is provided.
+    pub include_type_hierarchy: bool,
     /// Include definition results when a position is provided.
     pub include_definitions: bool,
     /// Include reference results when a position is provided.
@@ -55,7 +61,10 @@ impl SemanticContextRequest {
             max_diagnostics: 100,
             call_depth: 0,
             include_overlay: false,
+            overlay_content: None,
             include_source_actions: false,
+            include_call_hierarchy: false,
+            include_type_hierarchy: false,
             include_definitions: true,
             include_references: true,
             excerpt_radius: 40,
@@ -78,8 +87,23 @@ impl SemanticContextRequest {
         self
     }
 
+    pub fn with_overlay_content(mut self, content: impl Into<String>) -> Self {
+        self.overlay_content = Some(content.into());
+        self
+    }
+
     pub fn with_source_actions(mut self, include: bool) -> Self {
         self.include_source_actions = include;
+        self
+    }
+
+    pub fn with_call_hierarchy(mut self, include: bool) -> Self {
+        self.include_call_hierarchy = include;
+        self
+    }
+
+    pub fn with_type_hierarchy(mut self, include: bool) -> Self {
+        self.include_type_hierarchy = include;
         self
     }
 
@@ -135,11 +159,44 @@ pub struct SemanticLocation {
     pub end_column: u32,
 }
 
+/// A precise hierarchy range.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemanticHierarchyRange {
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+/// A compact hierarchy item summary with location detail.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemanticHierarchyItem {
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    pub range: SemanticHierarchyRange,
+    pub selection_range: SemanticHierarchyRange,
+    pub detail: Option<String>,
+}
+
+/// A hierarchy relation carrying an item and the contributing ranges.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemanticHierarchyRelation {
+    pub item: SemanticHierarchyItem,
+    pub ranges: Vec<SemanticHierarchyRange>,
+}
+
 /// Call graph summary for a single symbol.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemanticCallGraphSummary {
     pub incoming_count: usize,
     pub outgoing_count: usize,
+    #[serde(default)]
+    pub items: Vec<SemanticHierarchyItem>,
+    #[serde(default)]
+    pub incoming: Vec<SemanticHierarchyRelation>,
+    #[serde(default)]
+    pub outgoing: Vec<SemanticHierarchyRelation>,
     pub truncated: bool,
     pub prepare_error: Option<String>,
     pub incoming_error: Option<String>,
@@ -151,6 +208,12 @@ pub struct SemanticCallGraphSummary {
 pub struct SemanticTypeGraphSummary {
     pub supertypes_count: usize,
     pub subtypes_count: usize,
+    #[serde(default)]
+    pub items: Vec<SemanticHierarchyItem>,
+    #[serde(default)]
+    pub supertypes: Vec<SemanticHierarchyItem>,
+    #[serde(default)]
+    pub subtypes: Vec<SemanticHierarchyItem>,
     pub truncated: bool,
     pub prepare_error: Option<String>,
     pub supertypes_error: Option<String>,
@@ -174,9 +237,9 @@ pub struct SemanticSourceExcerpt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemanticDiagnosticEvidence {
     /// Freshness classification of the diagnostics.
-    pub freshness: String,
+    pub freshness: LspDiagnosticFreshness,
     /// Source of the diagnostics (pushed/pulled/unknown).
-    pub source: String,
+    pub source: LspDiagnosticSource,
     /// Age in milliseconds since diagnostics were received.
     pub age_ms: i64,
     /// Whether the diagnostics are usable as evidence.
@@ -439,6 +502,9 @@ mod tests {
         assert_eq!(req.call_depth, 0);
         assert!(!req.include_overlay);
         assert!(!req.include_source_actions);
+        assert!(!req.include_call_hierarchy);
+        assert!(!req.include_type_hierarchy);
+        assert!(req.overlay_content.is_none());
         assert!(req.include_definitions);
         assert!(req.include_references);
         assert_eq!(req.excerpt_radius, 40);
@@ -488,15 +554,37 @@ mod tests {
             .with_position(5, 10)
             .with_call_depth(1)
             .with_overlay(true)
+            .with_overlay_content("overlay")
+            .with_call_hierarchy(true)
+            .with_type_hierarchy(true)
             .with_source_actions(true)
             .with_excerpt_radius(80);
         assert!(req.include_overlay);
+        assert_eq!(req.overlay_content.as_deref(), Some("overlay"));
         assert!(req.include_source_actions);
+        assert!(req.include_call_hierarchy);
+        assert!(req.include_type_hierarchy);
         assert!(req.include_definitions);
         assert!(req.include_references);
         assert_eq!(req.excerpt_radius, 80);
         assert_eq!(req.line, Some(5));
         assert_eq!(req.column, Some(10));
         assert_eq!(req.call_depth, 1);
+    }
+
+    #[test]
+    fn semantic_diagnostic_evidence_serializes_with_typed_fields() {
+        let evidence = SemanticDiagnosticEvidence {
+            freshness: LspDiagnosticFreshness::Fresh,
+            source: LspDiagnosticSource::Pushed,
+            age_ms: 123,
+            usable_evidence: true,
+        };
+
+        let json = serde_json::to_value(&evidence).unwrap();
+        assert_eq!(json["freshness"], "Fresh");
+        assert_eq!(json["source"], "Pushed");
+        assert_eq!(json["age_ms"], 123);
+        assert_eq!(json["usable_evidence"], true);
     }
 }
