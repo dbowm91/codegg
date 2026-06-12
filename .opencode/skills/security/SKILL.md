@@ -425,7 +425,17 @@ Path extraction from tool arguments:
 
 ## Security review workflow
 
-The `src/security/workflow.rs` module provides a structured security review workflow that ties together the existing security infrastructure.
+The `src/security/workflow/` module provides a structured security review workflow that ties together the existing security infrastructure. The workflow is split into submodules:
+
+| Submodule | Purpose |
+|-----------|---------|
+| `mod.rs` | Facade, re-exports, tests |
+| `types.rs` | DTOs and enums |
+| `diff.rs` | Diff parsing, exclusion, preset selection, target building |
+| `preflight.rs` | Filename and content preflight checks |
+| `evidence.rs` | Evidence helpers, synthesis, classification |
+| `context.rs` | securityContext payloads, escalation plan |
+| `report.rs` | Assembly, rendering, orchestrator, command handler |
 
 ### Workflow types
 
@@ -525,13 +535,15 @@ Evidence-based findings only combine evidence from the same file and nearby chan
 
 `choose_security_context_escalation(target, finding, prompt)` is a pure decision helper that maps risk signals (target reason, finding category, prompt risk markers) to an escalation level. The rules are deterministic and bounded — escalation never exceeds depth 2.
 
+`plan_security_context_escalations(targets, ...)` returns a `SecurityContextEscalationPlan` DTO — a policy output that recommends escalation levels per target without executing LSP requests. The plan is a recommendation, not an execution.
+
 `build_escalated_security_context_request(target, level)` builds the JSON payload for `securityContext` with appropriate `call_depth` and node caps. The request is read-only — it sends LSP hierarchy queries but never writes files or executes code.
 
 Escalation is always read-only and bounded. No preset enables depth 2 by default; escalation is activated through explicit risk signals only.
 
 ### Invoking the workflow
 
-**Async orchestrator**: `run_security_review_workflow(root, base, options)` runs the full pipeline (discover targets → build prompts → preflight checks → evidence-based synthesis → assemble output). It does NOT execute `securityContext` LSP requests — those are deferred to a subsequent phase.
+**Async orchestrator**: `run_security_review_workflow(root, base, options)` runs the full pipeline (discover targets → build prompts → preflight checks → evidence-based synthesis → assemble output). It does NOT execute `securityContext` LSP requests — those are deferred to a subsequent phase. Content preflight uses `root.join(p)` for repo-root-relative reads, so it works correctly when launched from any working directory.
 
 `SecurityReviewWorkflowOptions` configures the orchestrator:
 - `include_prompts` / `include_findings` — toggle output sections
@@ -543,11 +555,30 @@ Escalation is always read-only and bounded. No preset enables depth 2 by default
 - `render_security_review_findings(output)` — findings with severity/confidence labels
 - `render_security_review_prompts(output)` — review prompts without severity
 
+**Testable command functions** (in `src/security/workflow/report.rs`):
+- `SecurityReviewCommandArgs` — parsed CLI arguments struct
+- `parse_security_review_args(input) -> Result<SecurityReviewCommandArgs>` — parse command input
+- `run_security_review_command(args) -> Result<String>` — execute the command
+
 **TUI command**: `/security-review` with flags:
-- `--changed` — only review changed files (from git diff)
+- `--changed` — shorthand for `--base HEAD`, only review changed files
+- `--base <ref>` — specify base ref for diff
 - `--json` — output as JSON
 - `--prompts-only` — only output review prompts
 - `--findings-only` — only output evidence-based findings
+- `--no-content` — skip content preflight checks
+- `--no-filename` — skip filename preflight checks
+- `--max-findings N` — cap findings count
+- `--max-prompts N` — cap prompts count
+
+Usage examples:
+```
+/security-review --changed
+/security-review --changed --json
+/security-review --base main --findings-only
+/security-review --prompts-only
+/security-review --base HEAD --no-content --max-findings 5
+```
 
 **Other invocation paths**:
 - Subagent: spawn `security-review` agent via task tool

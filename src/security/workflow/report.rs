@@ -1,0 +1,497 @@
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+use super::diff::*;
+use super::evidence::*;
+use super::preflight::*;
+use super::types::*;
+
+// ---------------------------------------------------------------------------
+// Report assembly
+// ---------------------------------------------------------------------------
+
+/// Assemble a [`SecurityReviewReport`] from targets, prompts, and notes.
+///
+/// Always includes the note that risk markers are review prompts, not
+/// confirmed findings.  `findings` is always empty in this vertical slice.
+pub fn assemble_security_review_report(
+    targets: Vec<SecurityReviewTarget>,
+    prompts: Vec<SecurityReviewPrompt>,
+    mut notes: Vec<String>,
+) -> SecurityReviewReport {
+    notes.push("risk markers are review prompts, not confirmed findings".to_string());
+
+    SecurityReviewReport {
+        targets,
+        review_prompts: prompts,
+        findings: Vec::new(),
+        notes,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal invocation surface
+// ---------------------------------------------------------------------------
+
+/// Plan a security review from a unified diff string.
+///
+/// Creates targets and request payloads but does **not** execute LSP.
+/// Returns a [`SecurityReviewReport`] with targets, review prompts, and
+/// empty findings.
+pub fn plan_security_review_from_diff(diff: &str, _repo_root: &Path) -> SecurityReviewReport {
+    let hunks = parse_changed_hunks(diff);
+    let targets = build_security_review_targets(&hunks, |_| None);
+    let prompts: Vec<SecurityReviewPrompt> = targets
+        .iter()
+        .map(|t| SecurityReviewPrompt {
+            file_path: t.file_path.clone(),
+            line: t.line,
+            preset: t.preset.clone(),
+            category: None,
+            title: format!("Review changed hunk: {}", t.file_path.display()),
+            rationale: format!("Changed hunk detected (reason: {:?})", t.reason),
+            evidence: vec![
+                "source: changed_hunk".to_string(),
+                format!("preset: {}", t.preset),
+                format!("reason: {:?}", t.reason),
+                "no securityContext executed in this planning step".to_string(),
+            ],
+        })
+        .collect();
+
+    assemble_security_review_report(
+        targets,
+        prompts,
+        vec!["planned from diff — no LSP execution".to_string()],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Target discovery from diff (async, egggit-backed)
+// ---------------------------------------------------------------------------
+
+/// Discover security review targets from a git diff.
+///
+/// Uses `egggit::diff_summary` and `egggit::file_diff` to get changed
+/// files, parse hunks, and create targets with the appropriate preset.
+///
+/// This is a read-only operation — it does not mutate the worktree.
+pub async fn discover_targets_from_diff(
+    root: &Path,
+    base: Option<&str>,
+) -> Result<Vec<SecurityReviewTarget>, String> {
+    let summary = egggit::diff_summary(root, base)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut all_hunks = Vec::new();
+    let mut file_level_paths: Vec<(PathBuf, Option<String>)> = Vec::new();
+
+    for file in &summary.files {
+        if file.kind == egggit::diff::ChangeKind::Deleted {
+            continue;
+        }
+
+        let path = PathBuf::from(&file.path);
+
+        if should_skip_file(&path) {
+            continue;
+        }
+
+        let content_hint = std::fs::read_to_string(root.join(&path)).ok();
+
+        let file_diff = egggit::file_diff(root, &path, base)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let hunks = parse_changed_hunks_for_file(&file_diff.patch, &path);
+
+        if hunks.is_empty() {
+            file_level_paths.push((path, content_hint));
+        } else {
+            all_hunks.extend(hunks);
+        }
+    }
+
+    let mut targets =
+        build_security_review_targets(&all_hunks, |p| std::fs::read_to_string(root.join(p)).ok());
+
+    for (path, content_hint) in file_level_paths {
+        if let Some(target) =
+            build_file_level_security_review_target(&path, content_hint.as_deref())
+        {
+            targets.push(target);
+        }
+    }
+
+    Ok(targets)
+}
+
+// ---------------------------------------------------------------------------
+// Report assembly (with findings)
+// ---------------------------------------------------------------------------
+
+/// Assemble a [`SecurityReviewOutput`] from targets, prompts, findings,
+/// and notes.  Includes mandatory notes about conservative semantics.
+pub fn assemble_security_review_report_with_findings(
+    targets: Vec<SecurityReviewTarget>,
+    prompts: Vec<SecurityReviewPrompt>,
+    findings: Vec<SecurityReviewFinding>,
+    preflight_results: Vec<SecurityPreflightResult>,
+    mut notes: Vec<String>,
+) -> SecurityReviewOutput {
+    notes.push(
+        "risk markers are review prompts unless supported by additional evidence".to_string(),
+    );
+    notes.push(
+        "findings are heuristic defensive review outputs, not proof of exploitability".to_string(),
+    );
+
+    SecurityReviewOutput {
+        targets,
+        findings,
+        review_prompts: prompts,
+        preflight_results,
+        notes,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Security review orchestrator
+// ---------------------------------------------------------------------------
+
+/// Options controlling the security review workflow orchestrator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityReviewWorkflowOptions {
+    /// Include review prompts in output (default: true).
+    pub include_prompts: bool,
+    /// Include evidence-based findings in output (default: true).
+    pub include_findings: bool,
+    /// Run filename-hint preflight checks (default: true).
+    pub run_filename_preflight: bool,
+    /// Run hunk-local content preflight checks (default: true).
+    pub run_content_preflight: bool,
+    /// Use hunk-local (radius=10) content scanning instead of full-file (default: true).
+    pub hunk_local_content_preflight: bool,
+    /// Maximum findings to include (default: 50).
+    pub max_findings: usize,
+    /// Maximum prompts to include (default: 100).
+    pub max_prompts: usize,
+}
+
+impl Default for SecurityReviewWorkflowOptions {
+    fn default() -> Self {
+        Self {
+            include_prompts: true,
+            include_findings: true,
+            run_filename_preflight: true,
+            run_content_preflight: true,
+            hunk_local_content_preflight: true,
+            max_findings: 50,
+            max_prompts: 100,
+        }
+    }
+}
+
+/// Run the security review workflow against changed files.
+///
+/// This is the main orchestration entry point.  It runs the existing
+/// security review phases in order and returns a stable report object.
+///
+/// Pipeline:
+/// 1. `discover_targets_from_diff(root, base)`
+/// 2. Build changed-hunk planning prompts from targets
+/// 3. Run filename preflight checks (if enabled)
+/// 4. Run hunk-local content preflight checks (if enabled)
+/// 5. Call `synthesize_evidence_based_findings`
+/// 6. Assemble `SecurityReviewOutput`
+///
+/// This function does NOT execute `securityContext` LSP requests.
+/// It only uses the deterministic planning and preflight phases.
+pub async fn run_security_review_workflow(
+    root: &Path,
+    base: Option<&str>,
+    options: SecurityReviewWorkflowOptions,
+) -> Result<SecurityReviewOutput, String> {
+    // Phase 1: Discover targets from diff
+    let targets = discover_targets_from_diff(root, base).await?;
+
+    // Phase 2: Build planning prompts from targets
+    let planning_prompts: Vec<SecurityReviewPrompt> = targets
+        .iter()
+        .map(|target| {
+            let title = format!(
+                "Review {} at {}",
+                target.file_path.display(),
+                target.reason_str()
+            );
+            let rationale = format!(
+                "Changed hunk in {} requires security review (preset: {})",
+                target.file_path.display(),
+                target.preset
+            );
+            SecurityReviewPrompt {
+                file_path: target.file_path.clone(),
+                line: target.line,
+                preset: target.preset.clone(),
+                category: None,
+                title,
+                rationale,
+                evidence: vec!["source: changed_hunk".to_string()],
+            }
+        })
+        .collect();
+
+    // Phase 3: Filename preflight checks
+    let filename_preflight = if options.run_filename_preflight {
+        run_preflight_checks(&targets)
+    } else {
+        Vec::new()
+    };
+
+    // Phase 4: Content preflight checks
+    // Use root.join(p) so content reads work regardless of process cwd.
+    let content_preflight = if options.run_content_preflight {
+        if options.hunk_local_content_preflight {
+            run_content_preflight_checks_for_targets(&targets, |p| {
+                std::fs::read_to_string(root.join(p)).ok()
+            })
+        } else {
+            run_content_preflight_checks(&targets, |p| std::fs::read_to_string(root.join(p)).ok())
+        }
+    } else {
+        Vec::new()
+    };
+
+    let mut all_preflight = filename_preflight;
+    all_preflight.extend(content_preflight);
+
+    // Phase 5: Evidence-based finding synthesis
+    let (findings, remaining_prompts) =
+        synthesize_evidence_based_findings(&targets, &planning_prompts, &all_preflight);
+
+    // Phase 6: Assemble output
+    let mut notes = Vec::new();
+    if !options.include_findings {
+        notes.push("findings disabled by workflow options".to_string());
+    }
+    if !options.include_prompts {
+        notes.push("prompts disabled by workflow options".to_string());
+    }
+
+    let output = assemble_security_review_report_with_findings(
+        targets,
+        remaining_prompts,
+        findings,
+        all_preflight,
+        notes,
+    );
+
+    // Apply limits
+    let mut final_output = output;
+    if final_output.findings.len() > options.max_findings {
+        final_output.findings.truncate(options.max_findings);
+        final_output
+            .notes
+            .push(format!("findings truncated to {}", options.max_findings));
+    }
+    if final_output.review_prompts.len() > options.max_prompts {
+        final_output.review_prompts.truncate(options.max_prompts);
+        final_output
+            .notes
+            .push(format!("prompts truncated to {}", options.max_prompts));
+    }
+
+    // Filter by options
+    if !options.include_findings {
+        final_output.findings.clear();
+    }
+    if !options.include_prompts {
+        final_output.review_prompts.clear();
+    }
+
+    Ok(final_output)
+}
+
+// ---------------------------------------------------------------------------
+// Report rendering
+// ---------------------------------------------------------------------------
+
+/// Render a compact summary of the security review output.
+pub fn render_security_review_summary(output: &SecurityReviewOutput) -> String {
+    let mut lines = Vec::new();
+    lines.push("Security Review Summary".to_string());
+    lines.push(format!("- Targets: {}", output.targets.len()));
+    lines.push(format!("- Findings: {}", output.findings.len()));
+    lines.push(format!("- Review prompts: {}", output.review_prompts.len()));
+
+    let pass_count = output
+        .preflight_results
+        .iter()
+        .filter(|p| p.status == PreflightStatus::Pass)
+        .count();
+    let fail_count = output
+        .preflight_results
+        .iter()
+        .filter(|p| p.status == PreflightStatus::Fail)
+        .count();
+    lines.push(format!(
+        "- Preflight checks: {} pass, {} fail",
+        pass_count, fail_count
+    ));
+
+    if !output.notes.is_empty() {
+        lines.push("- Notes:".to_string());
+        for note in &output.notes {
+            lines.push(format!("  - {}", note));
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Render findings with severity/confidence labels.
+pub fn render_security_review_findings(output: &SecurityReviewOutput) -> String {
+    if output.findings.is_empty() {
+        return "No findings.\n".to_string();
+    }
+
+    let mut lines = Vec::new();
+    lines.push("Findings".to_string());
+    lines.push(String::new());
+
+    for finding in &output.findings {
+        let location = if let Some(line) = finding.line {
+            format!("{}:{}", finding.file_path.display(), line)
+        } else {
+            finding.file_path.display().to_string()
+        };
+        lines.push(format!(
+            "[{}/{}] {} {}",
+            finding.severity, finding.confidence, location, finding.title
+        ));
+        lines.push(format!("  Evidence: {} items", finding.evidence.len()));
+        lines.push(format!("  Recommendation: {}", finding.recommendation));
+        if !finding.tests.is_empty() {
+            lines.push(format!("  Suggested tests: {}", finding.tests.join(", ")));
+        }
+        lines.push(String::new());
+    }
+
+    lines.join("\n")
+}
+
+/// Render review prompts (risk-marker based, not confirmed findings).
+pub fn render_security_review_prompts(output: &SecurityReviewOutput) -> String {
+    if output.review_prompts.is_empty() {
+        return "No review prompts.\n".to_string();
+    }
+
+    let mut lines = Vec::new();
+    lines.push("Review Prompts".to_string());
+    lines.push(String::new());
+
+    for prompt in &output.review_prompts {
+        let location = if let Some(line) = prompt.line {
+            format!("{}:{}", prompt.file_path.display(), line)
+        } else {
+            prompt.file_path.display().to_string()
+        };
+        lines.push(format!("[{}] {}", location, prompt.title));
+        lines.push(format!("  Rationale: {}", prompt.rationale));
+        lines.push(String::new());
+    }
+
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// Security review command helpers
+// ---------------------------------------------------------------------------
+
+/// Parsed command-line arguments for the `/security-review` slash command.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecurityReviewCommandArgs {
+    pub base: Option<String>,
+    pub json: bool,
+    pub prompts_only: bool,
+    pub findings_only: bool,
+    pub no_content: bool,
+    pub no_filename: bool,
+    pub max_findings: Option<usize>,
+    pub max_prompts: Option<usize>,
+}
+
+/// Parse a space-separated argument string into [`SecurityReviewCommandArgs`].
+///
+/// Unknown flags are silently ignored, matching the current TUI handler behavior.
+pub fn parse_security_review_args(input: &str) -> SecurityReviewCommandArgs {
+    let mut args = SecurityReviewCommandArgs::default();
+    let mut iter = input.split_whitespace();
+
+    while let Some(token) = iter.next() {
+        match token {
+            "--json" => args.json = true,
+            "--prompts-only" => args.prompts_only = true,
+            "--findings-only" => args.findings_only = true,
+            "--no-content" => args.no_content = true,
+            "--no-filename" => args.no_filename = true,
+            "--changed" => args.base = Some("HEAD".to_string()),
+            "--base" => {
+                args.base = iter.next().map(|s| s.to_string());
+            }
+            "--max-findings" => {
+                args.max_findings = iter.next().and_then(|s| s.parse::<usize>().ok());
+            }
+            "--max-prompts" => {
+                args.max_prompts = iter.next().and_then(|s| s.parse::<usize>().ok());
+            }
+            _ => {}
+        }
+    }
+
+    args
+}
+
+/// Run the security review command from parsed arguments.
+///
+/// Builds [`SecurityReviewWorkflowOptions`] from the args, runs the
+/// orchestrator, and renders the output as either JSON or human-readable text.
+pub async fn run_security_review_command(
+    root: &Path,
+    args: &SecurityReviewCommandArgs,
+) -> Result<String, String> {
+    let base = args.base.as_deref();
+
+    let mut options = SecurityReviewWorkflowOptions {
+        include_prompts: !args.findings_only,
+        include_findings: !args.prompts_only,
+        run_filename_preflight: !args.no_filename,
+        run_content_preflight: !args.no_content,
+        ..Default::default()
+    };
+
+    if let Some(max_f) = args.max_findings {
+        options.max_findings = max_f;
+    }
+    if let Some(max_p) = args.max_prompts {
+        options.max_prompts = max_p;
+    }
+
+    let output = run_security_review_workflow(root, base, options).await?;
+
+    if args.json {
+        serde_json::to_string_pretty(&output).map_err(|e| format!("JSON serialization failed: {e}"))
+    } else {
+        let mut report = render_security_review_summary(&output);
+        if !args.findings_only {
+            report.push_str("\n\n");
+            report.push_str(&render_security_review_findings(&output));
+        }
+        if !args.prompts_only {
+            report.push('\n');
+            report.push_str(&render_security_review_prompts(&output));
+        }
+        Ok(report)
+    }
+}

@@ -4081,34 +4081,11 @@ impl App {
             }
             "/security-review" => {
                 self.ui_state.command_mode = false;
-                let args = raw_input.unwrap_or("").trim();
-                let mut json_mode = false;
-                let mut prompts_only = false;
-                let mut findings_only = false;
-                let mut changed_only = false;
+                let raw_args = raw_input.unwrap_or("").trim();
+                let parsed_args = crate::security::workflow::parse_security_review_args(raw_args);
 
-                for arg in args.split_whitespace() {
-                    match arg {
-                        "--json" => json_mode = true,
-                        "--prompts-only" => prompts_only = true,
-                        "--findings-only" => findings_only = true,
-                        "--changed" => changed_only = true,
-                        _ => {}
-                    }
-                }
-
-                let options = crate::security::workflow::SecurityReviewWorkflowOptions {
-                    include_prompts: !findings_only,
-                    include_findings: !prompts_only,
-                    ..Default::default()
-                };
-
-                let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let base = if changed_only || args.is_empty() {
-                    Some("HEAD")
-                } else {
-                    None
-                };
+                let root =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
                 self.messages_state
                     .toasts
@@ -4116,54 +4093,19 @@ impl App {
 
                 let result = tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
-                        crate::security::workflow::run_security_review_workflow(
-                            &root, base, options,
-                        )
-                        .await
+                        crate::security::workflow::run_security_review_command(&root, &parsed_args)
+                            .await
                     })
                 });
 
                 match result {
-                    Ok(output) => {
-                        if json_mode {
-                            match serde_json::to_string_pretty(&output) {
-                                Ok(json) => {
-                                    self.messages_state.toasts.info(&json);
-                                }
-                                Err(e) => {
-                                    self.messages_state
-                                        .toasts
-                                        .error(&format!("JSON serialization failed: {}", e));
-                                }
-                            }
-                        } else {
-                            let mut report =
-                                crate::security::workflow::render_security_review_summary(
-                                    &output,
-                                );
-                            if !findings_only {
-                                report.push_str("\n\n");
-                                report.push_str(
-                                    &crate::security::workflow::render_security_review_findings(
-                                        &output,
-                                    ),
-                                );
-                            }
-                            if !prompts_only {
-                                report.push_str("\n");
-                                report.push_str(
-                                    &crate::security::workflow::render_security_review_prompts(
-                                        &output,
-                                    ),
-                                );
-                            }
-                            self.messages_state.toasts.info(&report);
-                        }
+                    Ok(report) => {
+                        self.messages_state.toasts.info(&report);
                     }
                     Err(e) => {
                         self.messages_state
                             .toasts
-                            .error(&format!("Security review failed: {}", e));
+                            .error(&format!("Security review failed: {e}"));
                     }
                 }
             }
