@@ -6,9 +6,10 @@
 pub mod preferences;
 pub use preferences::{UserPreferences, KEY_MODEL_LAST_USED, KEY_THEME_ACTIVE};
 
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -93,10 +94,14 @@ fn get_db_path(project_dir: &str) -> PathBuf {
 }
 
 async fn connect_and_configure(path: &str) -> Result<SqlitePool, StorageError> {
+    let options = SqliteConnectOptions::from_str(path)
+        .map_err(|e| StorageError::Database(format!("invalid database path {}: {}", path, e)))?
+        .create_if_missing(true);
+
     let pool = SqlitePoolOptions::new()
         .max_connections(10)
         .acquire_timeout(Duration::from_secs(30))
-        .connect(path)
+        .connect_with(options)
         .await
         .map_err(|e| StorageError::Database(format!("failed to open database {}: {}", path, e)))?;
 
