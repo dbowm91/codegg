@@ -144,21 +144,7 @@ impl crate::security::workflow::context::HunkSourceContextExecutor for LspHunkSo
         &self,
         request: egglsp::hunk_context::HunkSourceNavigationRequest,
     ) -> Result<egglsp::hunk_context::HunkSourceNavigationResponse, String> {
-        let mut value = serde_json::to_value(&request)
-            .map_err(|e| format!("failed to serialize hunkSourceContext request: {e}"))?;
-        value["operation"] = serde_json::Value::String("hunkSourceContext".to_string());
-
-        let result = self
-            .tool
-            .execute(value)
-            .await
-            .map_err(|e| format!("hunkSourceContext LSP execution failed: {e}"))?;
-
-        let parsed: serde_json::Value = serde_json::from_str(&result)
-            .map_err(|e| format!("failed to parse hunkSourceContext response: {e}"))?;
-
-        serde_json::from_value(parsed["results"].clone())
-            .map_err(|e| format!("failed to extract HunkSourceNavigationResponse from results: {e}"))
+        self.tool.execute_hunk_source_context_typed(request).await
     }
 }
 
@@ -291,5 +277,86 @@ mod tests {
             validate_security_context_request(&req).is_ok(),
             "request with all valid optional fields should pass"
         );
+    }
+
+    #[test]
+    fn noop_hunk_source_context_executor_errors() {
+        use super::super::workflow::context::NoopHunkSourceContextExecutor;
+        use super::super::workflow::context::HunkSourceContextExecutor;
+        use egglsp::hunk_context::HunkSourceNavigationRequest;
+
+        let exec = NoopHunkSourceContextExecutor;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let request = HunkSourceNavigationRequest {
+                file_path: "test.rs".to_string(),
+                hunks: vec![],
+                patch: None,
+                intent: "test".to_string(),
+                include_definitions: true,
+                include_references: true,
+                include_call_hierarchy: false,
+                include_type_hierarchy: false,
+                excerpt_radius: 40,
+                max_hunks: 20,
+                max_symbols_per_hunk: 10,
+                max_diagnostics_per_hunk: 10,
+                max_references_per_hunk: 10,
+            };
+            let result = exec.execute_hunk_source_context(request).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("no hunkSourceContext"));
+        });
+    }
+
+    #[test]
+    fn noop_hunk_executor_preserves_request_hunks() {
+        use super::super::workflow::context::NoopHunkSourceContextExecutor;
+        use super::super::workflow::context::HunkSourceContextExecutor;
+        use egglsp::hunk_context::{HunkDescriptor, HunkLineRange, HunkSourceNavigationRequest};
+
+        let exec = NoopHunkSourceContextExecutor;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let request = HunkSourceNavigationRequest {
+                file_path: "src/main.rs".to_string(),
+                hunks: vec![HunkDescriptor {
+                    id: "src/main.rs:0:10-20".to_string(),
+                    file_path: "src/main.rs".to_string(),
+                    old_range: Some(HunkLineRange {
+                        start_line: 10,
+                        end_line: 20,
+                    }),
+                    new_range: Some(HunkLineRange {
+                        start_line: 12,
+                        end_line: 24,
+                    }),
+                    header: Some("@@ -10,11 +12,13 @@".to_string()),
+                    added_lines: 5,
+                    removed_lines: 3,
+                    context_lines: 3,
+                }],
+                patch: None,
+                intent: "security_review".to_string(),
+                include_definitions: true,
+                include_references: true,
+                include_call_hierarchy: false,
+                include_type_hierarchy: false,
+                excerpt_radius: 40,
+                max_hunks: 20,
+                max_symbols_per_hunk: 10,
+                max_diagnostics_per_hunk: 10,
+                max_references_per_hunk: 10,
+            };
+
+            // The noop executor always errors, but the point is the typed
+            // DTO is accepted by the trait method — hunks survive to the
+            // trait boundary.
+            let result = exec.execute_hunk_source_context(request.clone()).await;
+            assert!(result.is_err());
+            // Verify the request we sent had the hunk
+            assert_eq!(request.hunks.len(), 1);
+            assert_eq!(request.hunks[0].id, "src/main.rs:0:10-20");
+        });
     }
 }

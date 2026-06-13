@@ -80,6 +80,9 @@ fn sample_receipt() -> SecurityReviewReceipt {
         "rendered text".to_string(),
         false,
         false,
+        false,
+        false,
+        false,
     )
 }
 
@@ -148,6 +151,9 @@ fn security_review_source_preview_rejects_outside_root() {
         String::new(),
         false,
         false,
+        false,
+        false,
+        false,
     );
 
     let item = SecurityReviewPanelItem {
@@ -193,6 +199,9 @@ fn security_review_source_preview_rejects_absolute_path_outside_root() {
             hunks: Vec::new(),
         },
         String::new(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -242,6 +251,9 @@ fn security_review_source_preview_handles_missing_file() {
         String::new(),
         false,
         false,
+        false,
+        false,
+        false,
     );
 
     // Item points to a file that does NOT exist, but the parent does.
@@ -289,6 +301,9 @@ fn security_review_source_preview_rejects_missing_parent() {
             hunks: Vec::new(),
         },
         String::new(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -465,6 +480,9 @@ fn security_review_preflight_items_stay_under_notes_filter() {
         String::new(),
         false,
         false,
+        false,
+        false,
+        false,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -524,6 +542,9 @@ fn security_review_preflight_item_title_prefix() {
         SecurityReviewCommandArgs::default(),
         output,
         String::new(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -587,6 +608,9 @@ fn security_review_medium_plus_filter_excludes_low_severity() {
         String::new(),
         false,
         false,
+        false,
+        false,
+        false,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -624,6 +648,9 @@ fn security_review_source_preview_resolves_existing_file() {
             hunks: Vec::new(),
         },
         String::new(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -708,6 +735,9 @@ fn security_review_panel_item_includes_hunk_for_prompt_line_inside_hunk() {
         "rendered".to_string(),
         false,
         false,
+        false,
+        false,
+        false,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -742,6 +772,9 @@ fn security_review_panel_item_includes_hunk_for_finding_line_inside_hunk() {
         SecurityReviewCommandArgs::default(),
         output,
         "rendered".to_string(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -785,6 +818,9 @@ fn security_review_panel_item_without_matching_hunk_has_none() {
         SecurityReviewCommandArgs::default(),
         output,
         "rendered".to_string(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -855,6 +891,9 @@ fn security_review_hunk_context_is_bounded() {
         SecurityReviewCommandArgs::default(),
         output,
         "rendered".to_string(),
+        false,
+        false,
+        false,
         false,
         false,
     );

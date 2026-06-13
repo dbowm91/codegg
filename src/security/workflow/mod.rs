@@ -3440,6 +3440,9 @@ diff --git a/src/lib.rs b/src/lib.rs
                 "rendered".to_string(),
                 false,
                 false,
+                false,
+                false,
+                false,
             )
         };
 
@@ -3527,6 +3530,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             SecurityReviewCommandArgs::default(),
             receipt_output,
             "rendered".to_string(),
+            false,
+            false,
+            false,
             false,
             false,
         );
@@ -3656,6 +3662,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             "rendered".to_string(),
             false,
             false,
+            false,
+            false,
+            false,
         );
 
         let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt);
@@ -3754,6 +3763,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             SecurityReviewCommandArgs::default(),
             output,
             "rendered".to_string(),
+            false,
+            false,
+            false,
             false,
             false,
         );
@@ -3868,6 +3880,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             "rendered".to_string(),
             false,
             false,
+            false,
+            false,
+            false,
         );
 
         let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt);
@@ -3931,6 +3946,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             SecurityReviewCommandArgs::default(),
             output,
             "rendered".to_string(),
+            false,
+            false,
+            false,
             false,
             false,
         );

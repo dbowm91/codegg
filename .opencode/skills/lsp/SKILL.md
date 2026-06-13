@@ -355,17 +355,17 @@ pub struct HunkSourceContextPolicy {
 
 ### Security review workflow integration
 
-The security review workflow (`src/security/workflow/report.rs`) optionally executes `hunkSourceContext` deterministically when `--hunk-context` is enabled via `enable_hunk_source_context: bool` (default: false) on `SecurityReviewWorkflowOptions`.
+The security review workflow (`src/security/workflow/report.rs`) optionally executes `hunkSourceContext` when `--hunk-context` is enabled via `enable_hunk_source_context: bool` (default: false) on `SecurityReviewWorkflowOptions`.
 
 When enabled and an executor is available:
-1. Hunks are grouped by file path
-2. `decide_hunk_source_context` is called per file with a synthetic patch
-3. The `HunkSourceContextExecutor` trait (`src/security/workflow/context.rs`) provides the boundary; `LspHunkSourceContextExecutor` (`src/security/lsp_executor.rs`) is the real adapter wrapping `LspTool`
+1. Hunks are grouped by file path; files are processed in deterministic sorted order
+2. `decide_hunk_source_context` is called per file with actual per-file patch data
+3. The `HunkSourceContextExecutor` trait (`src/security/workflow/context.rs`) provides the boundary; `LspHunkSourceContextExecutor` (`src/security/lsp_executor.rs`) is the real adapter that calls `LspTool::execute_hunk_source_context_typed()` directly with a typed `HunkSourceNavigationRequest` — no JSON round-trip. The model-facing tool schema remains patch-only; internal pre-parsed hunk descriptors are used via the typed API.
 4. Per-file evidence (enclosing symbols, diagnostics, definitions, references) is collected via `collect_hunk_source_context_all_files` which actually executes `hunkSourceContext` per file
 5. Evidence is injected into the evidence-based synthesis as `HunkNavigation` and `Diagnostic` evidence items
 6. `evidence_from_hunk_source_context` converts real `HunkSourceNavigationResponse` into `StructuredSecurityEvidence` — policy skip decisions are routing metadata, never evidence
 
-The tightened eligibility gate requires `HunkNavigation` to appear alongside `RiskMarker` or `Preflight` (or other supporting dimensions) — `ChangedHunk + HunkNavigation` alone is not finding-eligible. Multi-file diffs are processed one file at a time (capped at 8 files).
+The tightened eligibility gate requires `HunkNavigation` to appear alongside `RiskMarker` or `Preflight` (or other supporting dimensions) — `ChangedHunk + HunkNavigation` alone is not finding-eligible. Multi-file diffs are processed one file at a time (capped at 8 files), in deterministic sorted order. Per-file selection order is deterministic and bounded.
 
 Fail-open: per-file errors produce notes, never block the workflow. The policy skips unsupported file extensions, oversized patches, and files with too many hunks.
 

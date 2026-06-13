@@ -82,6 +82,9 @@ fn sample_receipt() -> SecurityReviewReceipt {
         "rendered text".to_string(),
         false,
         false,
+        false,
+        false,
+        false,
     )
 }
 
@@ -188,6 +191,9 @@ fn security_review_receipt_projection_handles_no_findings() {
         String::new(),
         false,
         false,
+        false,
+        false,
+        false,
     );
     let items = project_receipt_to_panel_items(&receipt);
     assert!(items
@@ -217,6 +223,9 @@ fn security_review_receipt_projection_handles_completely_empty_output() {
         SecurityReviewCommandArgs::default(),
         output,
         String::new(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -559,6 +568,9 @@ async fn security_review_workflow_pipeline_produces_output() {
         "rendered".to_string(),
         false,
         false,
+        false,
+        false,
+        false,
     );
     assert_eq!(receipt.output.findings.len(), output.findings.len());
     assert_eq!(
@@ -683,6 +695,9 @@ fn security_review_receipt_projects_diff_hunk_context_from_fixture_diff() {
         "rendered".to_string(),
         false,
         false,
+        false,
+        false,
+        false,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -737,6 +752,9 @@ fn security_review_changed_file_deleted_has_no_hunk_preview() {
         SecurityReviewCommandArgs::default(),
         output,
         "rendered".to_string(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -808,6 +826,9 @@ fn security_review_hunk_ref_render_marks_added_removed_context_lines() {
         SecurityReviewCommandArgs::default(),
         output,
         "rendered".to_string(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -901,6 +922,9 @@ fn security_review_hunk_focus_is_item_specific() {
         SecurityReviewCommandArgs::default(),
         output,
         "rendered".to_string(),
+        false,
+        false,
+        false,
         false,
         false,
     );
@@ -1094,6 +1118,9 @@ fn security_review_finding_evidence_line_can_attach_hunk() {
         "rendered".to_string(),
         false,
         false,
+        false,
+        false,
+        false,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -1167,6 +1194,9 @@ fn security_review_removed_only_hunk_has_no_new_side_focus() {
         SecurityReviewCommandArgs::default(),
         output,
         "rendered".to_string(),
+        false,
+        false,
+        false,
         false,
         false,
     );

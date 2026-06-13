@@ -24,12 +24,16 @@ pub struct SecurityReviewReceipt {
     pub completed_at_ms: i64,
     pub enriched: bool,
     pub lsp_available: bool,
+    pub hunk_context_requested: bool,
+    pub hunk_context_available: bool,
+    pub hunk_context_executed: bool,
 }
 
 impl SecurityReviewReceipt {
     /// Build a fresh receipt with a completed_at_ms timestamp derived
     /// from the wall clock. The caller fills `output`, `rendered_report`,
     /// `enriched`, and `lsp_available`.
+    #[allow(clippy::too_many_arguments)]
     pub fn now(
         id: String,
         root: PathBuf,
@@ -38,6 +42,9 @@ impl SecurityReviewReceipt {
         rendered_report: String,
         enriched: bool,
         lsp_available: bool,
+        hunk_context_requested: bool,
+        hunk_context_available: bool,
+        hunk_context_executed: bool,
     ) -> Self {
         Self {
             id,
@@ -51,6 +58,9 @@ impl SecurityReviewReceipt {
                 .unwrap_or(0),
             enriched,
             lsp_available,
+            hunk_context_requested,
+            hunk_context_available,
+            hunk_context_executed,
         }
     }
 }

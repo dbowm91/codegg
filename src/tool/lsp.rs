@@ -510,6 +510,60 @@ impl LspTool {
         ))
     }
 
+    /// Construct a [`HunkSourceNavigationCollector`] with the shared limits
+    /// used by both the model-facing handler and the typed internal path.
+    fn build_hunk_source_navigation_collector(
+        &self,
+        radius: u32,
+    ) -> crate::lsp::hunk_nav_collector::HunkSourceNavigationCollector {
+        let ops = Arc::new(crate::lsp::operations::LspOperations::new(
+            self.service.clone(),
+        ));
+        let diagnostics = Arc::new(crate::lsp::diagnostics::DiagnosticsCollector::new(
+            self.service.clone(),
+        ));
+        let sem_collector = crate::lsp::semantic_context::SemanticContextCollector::new(
+            self.service.clone(),
+            ops,
+            diagnostics,
+            self.allowed_root.clone(),
+        );
+
+        let nav = crate::lsp::hunk_nav::HunkSourceNavigator::new()
+            .with_excerpt_radius(radius)
+            .with_max_symbols_per_hunk(MAX_CONTEXT_SYMBOLS)
+            .with_max_diagnostics_per_hunk(MAX_CONTEXT_DIAGNOSTICS)
+            .with_max_references_per_hunk(MAX_CONTEXT_REFERENCES);
+
+        crate::lsp::hunk_nav_collector::HunkSourceNavigationCollector::new(sem_collector, nav)
+    }
+
+    /// Execute a typed `hunkSourceContext` request directly, bypassing the
+    /// JSON-in/JSON-out model-facing path. This is used by the security
+    /// review executor to avoid unnecessary serialization round-trips.
+    pub async fn execute_hunk_source_context_typed(
+        &self,
+        request: egglsp::hunk_context::HunkSourceNavigationRequest,
+    ) -> Result<egglsp::hunk_context::HunkSourceNavigationResponse, String> {
+        let path = std::path::PathBuf::from(&request.file_path);
+        let original = if request.file_path.starts_with('/') {
+            path
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(&request.file_path)
+        };
+        crate::tool::util::validate_path(&original, &self.allowed_root)
+            .map_err(|e| format!("hunkSourceContext: path validation failed: {e}"))?;
+
+        let radius = request
+            .excerpt_radius
+            .min(MAX_SEMANTIC_CONTEXT_RADIUS);
+
+        let collector = self.build_hunk_source_navigation_collector(radius);
+        collector.collect(request).await
+    }
+
     fn resolve_security_context_settings(
         parsed: &LspInput,
         has_position: bool,
@@ -2452,30 +2506,6 @@ impl Tool for LspTool {
                     .min(MAX_SEMANTIC_CONTEXT_RADIUS);
                 let max_hunks = parsed.max_hunks.unwrap_or(20);
 
-                let ops = Arc::new(crate::lsp::operations::LspOperations::new(
-                    self.service.clone(),
-                ));
-                let diagnostics = Arc::new(crate::lsp::diagnostics::DiagnosticsCollector::new(
-                    self.service.clone(),
-                ));
-                let sem_collector = crate::lsp::semantic_context::SemanticContextCollector::new(
-                    self.service.clone(),
-                    ops.clone(),
-                    diagnostics,
-                    self.allowed_root.clone(),
-                );
-
-                let nav = crate::lsp::hunk_nav::HunkSourceNavigator::new()
-                    .with_excerpt_radius(radius)
-                    .with_max_symbols_per_hunk(MAX_CONTEXT_SYMBOLS)
-                    .with_max_diagnostics_per_hunk(MAX_CONTEXT_DIAGNOSTICS)
-                    .with_max_references_per_hunk(MAX_CONTEXT_REFERENCES);
-
-                let collector = crate::lsp::hunk_nav_collector::HunkSourceNavigationCollector::new(
-                    sem_collector,
-                    nav,
-                );
-
                 let request = egglsp::hunk_context::HunkSourceNavigationRequest {
                     file_path: file_path_str.clone(),
                     hunks: vec![],
@@ -2492,10 +2522,10 @@ impl Tool for LspTool {
                     max_references_per_hunk: MAX_CONTEXT_REFERENCES,
                 };
 
-                let response = collector
-                    .collect(request)
+                let response = self
+                    .execute_hunk_source_context_typed(request)
                     .await
-                    .map_err(|e| ToolError::Execution(format!("hunkSourceContext: {e}")))?;
+                    .map_err(ToolError::Execution)?;
 
                 let output = LspToolOutput {
                     operation: "hunkSourceContext".to_string(),

@@ -634,9 +634,9 @@ The legacy entry point `plan_security_review_from_diff(diff, repo_root)` remains
 
 #### Security review workflow integration
 
-`SecurityReviewWorkflowOptions.enable_hunk_source_context` (default `false`) opts into deterministic `hunkSourceContext` execution during `run_security_review_workflow`. When enabled and an executor (backed by `LspTool` via `LspHunkSourceContextExecutor`) is available:
+`SecurityReviewWorkflowOptions.enable_hunk_source_context` (default `false`) opts into best-effort `hunkSourceContext` execution during `run_security_review_workflow`. When enabled and an executor is available:
 
-1. `collect_hunk_source_context_all_files()` groups `ChangedHunk`s by file path and invokes the `HunkSourceContextPolicy` per file. The `HunkSourceContextExecutor` trait (`src/security/workflow/context.rs`) defines the boundary; `LspHunkSourceContextExecutor` (`src/security/lsp_executor.rs`) is the real adapter delegating to `LspTool`.
+1. `collect_hunk_source_context_all_files()` groups `ChangedHunk`s by file path, processes files in deterministic sorted order, and invokes the `HunkSourceContextPolicy` per file using actual per-file patch data. The `HunkSourceContextExecutor` trait (`src/security/workflow/context.rs`) defines the boundary; `LspHunkSourceContextExecutor` (`src/security/lsp_executor.rs`) is the real adapter that calls `LspTool::execute_hunk_source_context_typed()` directly with a typed `HunkSourceNavigationRequest` — no JSON round-trip. The model-facing tool schema remains patch-only; internal pre-parsed hunk descriptors are used via the typed API.
 2. `evidence_from_hunk_source_context()` converts `HunkSourceNavigationResponse` into `StructuredSecurityEvidence` items with kind `HunkNavigation` (enclosing symbols, definitions, reference counts) or `Diagnostic` (in-hunk and nearby diagnostics). Only real `HunkSourceNavigationResponse` produces `HunkNavigation` evidence — policy skip decisions are routing metadata, never security evidence.
 3. Evidence is injected into `synthesize_evidence_based_findings_with_extra_evidence()` for eligibility gating. The tightened gate requires `HunkNavigation` to appear alongside `RiskMarker` or `Preflight` (or other supporting dimensions) — `ChangedHunk + HunkNavigation` alone is not finding-eligible.
 
@@ -650,21 +650,22 @@ Fail-open: per-file errors are noted (appended to output `notes`) and never bloc
 
 #### ChangedHunk → HunkDescriptor conversion
 
-`ChangedHunk::to_hunk_descriptor(hunk_index)` (in `src/security/workflow/types.rs`) converts a security-workflow `ChangedHunk` into an egglsp `HunkDescriptor` for `hunkSourceContext` consumption. The `old_range` and `new_range` are computed from the hunk's start/count fields. The `hunk_index` parameter provides the deterministic hunk id prefix.
+`ChangedHunk::to_hunk_descriptor(hunk_index)` (in `src/security/workflow/types.rs`) converts a security-workflow `ChangedHunk` into an egglsp `HunkDescriptor` for the typed internal execution path. The `old_range` and `new_range` are computed from the hunk's start/count fields. The `hunk_index` parameter provides the deterministic hunk id prefix. These pre-parsed descriptors are passed directly to `LspTool::execute_hunk_source_context_typed()` via the `HunkSourceContextExecutor` trait — the model-facing tool schema remains patch-only.
 
 #### Fail-open behavior
 
-All hunk source context operations are fail-open: errors during policy evaluation, semantic collection, or evidence conversion are recorded as notes in the output and do not prevent the rest of the security review from completing. Policy skip reasons are logged at debug level.
+All hunk source context operations are fail-open: errors during policy evaluation, semantic collection, or evidence conversion are recorded as notes in the output and do not prevent the rest of the security review from completing. LSP results remain server-dependent and fail-open. Policy skip reasons are logged at debug level.
 
 #### Default caps
 
-- `max_patch_bytes`: 64 KB (patch size limit)
+- `max_patch_bytes`: 64 KB (patch size limit; policy uses actual per-file patch data)
 - `max_hunks`: 20 (per-file hunk count limit)
 
 #### Known limitations
 
-- **Single-file hunk context only**: `hunkSourceContext` processes one file's hunks at a time. Multi-file patches are grouped by file path and processed independently.
+- **Single-file hunk context only**: `hunkSourceContext` processes one file's hunks at a time. The security review workflow groups multi-file patches by file path and processes them independently in deterministic sorted order.
 - **First-hunk-centered semantic collection**: Semantic context (definitions, references, hierarchy) is collected centered on the first hunk's position. Results are distributed to all hunks via range matching. Hunks far from the first may have less precise context.
+- **LSP results are server-dependent**: LSP results remain server-dependent and fail-open. Policy skips and LSP errors produce notes, never block the caller.
 
 ### Position Convention
 

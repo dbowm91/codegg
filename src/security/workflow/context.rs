@@ -559,3 +559,175 @@ pub fn plan_security_context_escalations(
 pub trait SecurityContextExecutorProvider {
     fn security_context_executor(&self) -> Option<Arc<dyn SecurityContextExecutor>>;
 }
+
+// ---------------------------------------------------------------------------
+// Executor bundle for programmatic callers
+// ---------------------------------------------------------------------------
+
+/// Bundle of executors for the security review workflow.
+///
+/// Groups optional `SecurityContextExecutor` and `HunkSourceContextExecutor`
+/// into a single struct so callers can pass both executors without
+/// threading individual references through multiple function signatures.
+pub struct SecurityReviewExecutors<'a> {
+    pub security_context: Option<&'a dyn SecurityContextExecutor>,
+    pub hunk_source_context: Option<&'a dyn HunkSourceContextExecutor>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executor_bundle_holds_both_executors() {
+        let security_exec = NoopSecurityContextExecutor;
+        let hunk_exec = NoopHunkSourceContextExecutor;
+
+        let bundle = SecurityReviewExecutors {
+            security_context: Some(&security_exec),
+            hunk_source_context: Some(&hunk_exec),
+        };
+
+        assert!(bundle.security_context.is_some());
+        assert!(bundle.hunk_source_context.is_some());
+    }
+
+    #[test]
+    fn executor_bundle_with_neither() {
+        let bundle = SecurityReviewExecutors {
+            security_context: None,
+            hunk_source_context: None,
+        };
+
+        assert!(bundle.security_context.is_none());
+        assert!(bundle.hunk_source_context.is_none());
+    }
+
+    #[test]
+    fn security_only_bundle_has_no_hunk_executor() {
+        let security_exec = NoopSecurityContextExecutor;
+
+        let bundle = SecurityReviewExecutors {
+            security_context: Some(&security_exec),
+            hunk_source_context: None,
+        };
+
+        assert!(bundle.security_context.is_some());
+        assert!(bundle.hunk_source_context.is_none());
+    }
+
+    #[test]
+    fn noop_security_executor_returns_error() {
+        let exec = NoopSecurityContextExecutor;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result = exec
+                .security_context(serde_json::json!({"file_path": "test.rs"}))
+                .await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("no securityContext"));
+        });
+    }
+
+    #[test]
+    fn noop_hunk_executor_returns_error() {
+        let exec = NoopHunkSourceContextExecutor;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let request = egglsp::hunk_context::HunkSourceNavigationRequest {
+                file_path: "test.rs".to_string(),
+                hunks: vec![],
+                patch: None,
+                intent: "test".to_string(),
+                include_definitions: true,
+                include_references: true,
+                include_call_hierarchy: false,
+                include_type_hierarchy: false,
+                excerpt_radius: 40,
+                max_hunks: 20,
+                max_symbols_per_hunk: 10,
+                max_diagnostics_per_hunk: 10,
+                max_references_per_hunk: 10,
+            };
+            let result = exec.execute_hunk_source_context(request).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("no hunkSourceContext"));
+        });
+    }
+
+    #[test]
+    fn escalation_level_ordering() {
+        assert!(SecurityContextEscalationLevel::None < SecurityContextEscalationLevel::Basic);
+        assert!(
+            SecurityContextEscalationLevel::Basic < SecurityContextEscalationLevel::CallDepth1
+        );
+        assert!(
+            SecurityContextEscalationLevel::CallDepth1 < SecurityContextEscalationLevel::CallDepth2
+        );
+    }
+
+    #[test]
+    fn escalation_plan_none_level_has_no_request() {
+        let output = SecurityReviewOutput {
+            targets: vec![SecurityReviewTarget {
+                file_path: PathBuf::from("low_risk.rs"),
+                line: None,
+                column: None,
+                preset: "rust_server".to_string(),
+                reason: SecurityTargetReason::ChangedHunk,
+            }],
+            findings: vec![],
+            review_prompts: vec![],
+            preflight_results: vec![],
+            hunks: vec![],
+            notes: vec![],
+        };
+        let plans = plan_security_context_escalations(&output);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].level, SecurityContextEscalationLevel::None);
+        assert!(plans[0].request.is_none());
+    }
+
+    #[test]
+    fn fixture_executor_tracks_requests() {
+        let exec = FixtureSecurityContextExecutor::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let req = serde_json::json!({"file_path": "a.rs", "security_preset": "rust_server"});
+            let result = exec.security_context(req.clone()).await;
+            assert!(result.is_err()); // no fixture response configured
+            let reqs = exec.requests.lock().unwrap();
+            assert_eq!(reqs.len(), 1);
+            assert_eq!(reqs[0]["file_path"], "a.rs");
+        });
+    }
+
+    #[test]
+    fn fixture_executor_responds_for_configured_path() {
+        let path = PathBuf::from("configured.rs");
+        let response = serde_json::json!({"risk_markers": []});
+        let exec = FixtureSecurityContextExecutor::with_response(path.clone(), response);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let req =
+                serde_json::json!({"file_path": "configured.rs", "security_preset": "rust_server"});
+            let result = exec.security_context(req).await;
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn fixture_executor_returns_configured_failure() {
+        let path = PathBuf::from("failing.rs");
+        let exec =
+            FixtureSecurityContextExecutor::with_failure(path, "LSP unavailable".to_string());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let req =
+                serde_json::json!({"file_path": "failing.rs", "security_preset": "rust_server"});
+            let result = exec.security_context(req).await;
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), "LSP unavailable");
+        });
+    }
+}
