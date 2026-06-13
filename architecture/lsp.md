@@ -56,7 +56,12 @@ pub struct LspService {
     clients: Arc<RwLock<HashMap<String, ClientEntry>>>,
     config: LspConfig,
 }
+```
 
+Lock ordering: the clients map lock must be acquired before any client-level lock.
+Documented on the struct for future contributors.
+
+```rust
 impl LspService {
     pub async fn get_or_create_client(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
     pub async fn get_or_create_client_for_file(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
@@ -970,7 +975,7 @@ Codegg handles these server requests via `dispatch_server_request` in `server_re
 
 `DynamicRegistrationState` tracks server-requested capability registrations bounded at 256 entries. Recording a registration does **not** mean Codegg claims operational support for that feature — `LspCapabilitySnapshot` is derived from `ServerCapabilities` (the `initialize` response) only.
 
-`client/registerCapability` processes the full `registrations` array: all entries are validated first (rejecting the entire request if any entry is malformed), deduplicated by ID (last-write-wins within a single request), then applied. Replacements of existing IDs bypass the 256 cap; only new IDs are counted against it.
+`client/registerCapability` processes the full `registrations` array via `register_batch()`, which pre-checks capacity before any mutation: all entries are validated first (rejecting the entire request if any entry is malformed), deduplicated by ID (last-write-wins within a single request), then applied. This atomic batch approach prevents partial application when a batch exceeds the capacity limit. Replacements of existing IDs bypass the 256 cap; only new IDs are counted against it.
 
 `client/unregisterCapability` accepts either the `unregisterations` array (LSP spec), the `unregistrations` compat spelling, or a single `id` field for backward compatibility. Unknown IDs are silently tolerated.
 
@@ -989,9 +994,9 @@ Cancellation failures are logged at debug level and never mask the primary timeo
 
 ### Single-Flight Client Initialization
 
-`LspService::get_or_create_client` uses a custom `InitSlot` pattern (not `OnceCell`) to ensure only one initialization occurs per `{project_root}:{server_id}` key. The slot tracks `Starting { waiters }` or `Ready(client)` states. Concurrent callers for the same key register oneshot channels and await the result from the first caller. Different keys initialize concurrently.
+`LspService::get_or_create_client` uses a single-flight initialization coordinator based on explicit `InitRole` election: the first caller becomes `Leader` and spawns an owned initialization task (`run_initialization_attempt`); concurrent callers for the same `{project_root}:{server_id}` key become `Waiters` receiving the same result via oneshot channels. An `ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs stored in the `InitSlot`.
 
-On initialization failure, the slot is cleaned up and all waiting callers receive `InitializationCancelled` errors, allowing later retries. This differs from `OnceCell` which would cache the failure permanently.
+On initialization failure, the slot is cleaned up by attempt ID (compare-and-remove prevents stale cleanup from deleting newer slots), and all waiting callers receive `SharedInitError` (preserving error category and message), allowing retries. This differs from `OnceCell` which would cache the failure permanently. `SharedInitError` with `SharedInitErrorKind` enum (`ServerNotFound`, `DownloadFailed`, `LaunchFailed`, `InitializeFailed`, `Timeout`, `Cancelled`, `Protocol`, `Other`) is used for all oneshot channel results instead of raw `LspError`, making concurrent error propagation thread-safe and cloneable. The `#[cfg(test)]` `test_new()` constructor accepts injectable test factories for deterministic testing without live LSP servers.
 
 ### Global Map Lock Discipline
 
@@ -1005,11 +1010,15 @@ This prevents serialization of unrelated clients behind process I/O. `close_file
 
 ### Shutdown Coordination
 
-`LspService` tracks a `ServiceLifecycle` state machine (`Running` → `ShuttingDown` → `Stopped`). `shutdown_all()` transitions to `ShuttingDown` first (idempotent), drains and shuts down all clients, clears `document_owners` and `initializing` maps, then transitions to `Stopped`. `get_or_create_client()` rejects new client acquisition when the lifecycle is not `Running`, returning `LspError::InitializationCancelled`.
+`LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a monotonic `generation: u64`. `shutdown_all()` atomically transitions to `ShuttingDown` and increments the generation. The spawned initialization task rechecks the generation before publication, preventing stale results from being published after shutdown. `get_or_create_client()` rejects new client acquisition when the lifecycle is not `Running`, returning `LspError::InitializationCancelled`.
 
 ### Writer Failure Propagation
 
-The background reader tracks `ClientTransportState` (`Running` or `Failed { reason }`). When the writer fails while sending a server-request response, the transport transitions to `Failed`, all pending requests are drained with errors, and the reader loop exits. Subsequent `send_request` / `send_notification` calls return `LspError::WriterClosed` immediately, avoiding writes to a broken pipe.
+The background reader tracks `ClientTransportState` (`Running` or `Failed { reason }`). All terminal transport failures (stdout EOF, server-request result/error write failure, `send_request` write failure, `send_notification` write failure) transition to `Failed` exactly once via the centralized `fail_transport()` helper. The helper atomically transitions to `Failed` (idempotent), releases the transport lock, then drains all pending requests with errors. Subsequent `send_request` / `send_notification` calls return `LspError::WriterClosed` immediately, avoiding writes to a broken pipe.
+
+### Integral Error Code Validation
+
+`is_structural_error()` in `client.rs` validates JSON-RPC error codes as integers using `as_i64().is_some()`, rejecting fractional codes (e.g. `3.5`) that would fail JSON-RPC error semantics. This prevents misclassification of malformed error responses.
 
 ### Limitations
 
@@ -1046,6 +1055,10 @@ pub enum LspError {
     InitializationCancelled(String),
 }
 ```
+
+### SharedInitError
+
+A cloneable error type used for concurrent initialization waiters. `SharedInitError` with `SharedInitErrorKind` enum (`ServerNotFound`, `DownloadFailed`, `LaunchFailed`, `InitializeFailed`, `Timeout`, `Cancelled`, `Protocol`, `Other`) carries the error category and message across threads via oneshot channels. Converts via `From<&LspError> for SharedInitError` and `into_lsp_error()` back to `LspError`. This replaces raw `LspError` in the `InitSlot` oneshot results, making concurrent initialization error propagation thread-safe and cloneable.
 
 `HierarchyDirection` parsing is available via `HierarchyDirection::parse(direction)` — accepts `"incoming"`, `"outgoing"`, `"both"`, or omitted (defaults to `"both"`). Invalid values return an error.
 

@@ -28,7 +28,7 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `goal/` | Long-horizon goal runtime: budget enforcement, auto-continuation, GoalStore persistence, system prompt steering — now in `crates/codegg-core` (`codegg-core` crate) |
 | `hooks/` | Hooks system for agent loop lifecycle events and plugin interaction |
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
-| `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits, temporary overlays, semantic context packets, securityContext call expansion, hunkSourceContext hunk-aware navigation, capability discovery and normalization, diagnostics cache lifecycle with freshness metadata, capability-gated operations, diagnostic evidence in context packets, shared semantic context API) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp |
+| `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits, temporary overlays, semantic context packets, securityContext call expansion, hunkSourceContext hunk-aware navigation, capability discovery and normalization, diagnostics cache lifecycle with freshness metadata, capability-gated operations, diagnostic evidence in context packets, shared semantic context API, initialization coordinator with leader/waiter election, SharedInitError for concurrent init, lifecycle generation tracking) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp |
 | `lsp/` (hunk_nav) | Hunk/source navigation: unified diff parser, range matching, HunkSourceNavigator, HunkSourceNavigationCollector, `HunkSourceContextPolicy` (decides when to invoke hunkSourceContext), `HunkSourceContextDecision` enum (Use/Skip), `decide_hunk_source_context()` pure policy function, `format_hunk_source_context_summary()` for compact agent-facing summaries |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
 | `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation — `src/core/` is the transport layer; domain modules (bus, error, goal, memory, session, storage, snapshot, worktree, resilience, task_state, model_profile, protocol_conversions) live in `crates/codegg-core`. Also contains `runtime_deps` (`CoreRuntimeDeps`) for bundling runtime dependencies. |
@@ -206,13 +206,20 @@ These items were verified during review sessions:
 | Server request dispatcher | `dispatch_server_request` | `crates/egglsp/src/server_request.rs` |
 | Dynamic registration state | `DynamicRegistrationState` (256 cap) — processes full arrays with validation and deduplication | `crates/egglsp/src/server_request.rs` |
 | Shared serialized writer | `LspWriter<W>` | `crates/egglsp/src/writer.rs` |
-| Single-flight initialization | `InitSlot` pattern with oneshot channels per key (not `OnceCell`); failure cleans up and allows retries | `crates/egglsp/src/service.rs` |
+| Single-flight initialization | `InitSlot` pattern with leader/waiter election, oneshot channels, attempt IDs; `SharedInitError` for cloneable concurrent error propagation; `#[cfg(test)]` injectable test factories; failure cleaned up by attempt ID allowing retries | `crates/egglsp/src/service.rs` |
 | Cancellation on timeout | `$/cancelRequest` best-effort | `crates/egglsp/src/client.rs` |
 | Global map lock release | Arc clone before await | `crates/egglsp/src/service.rs` |
 | workspace/applyEdit rejection | Always `applied: false` (application-level result, not JSON-RPC error) | `crates/egglsp/src/server_request.rs` |
 | New LspError variants | `Protocol`, `WriterClosed`, `InitializationCancelled` | `crates/egglsp/src/error.rs` |
 | Client transport state | `ClientTransportState` (`Running` or `Failed { reason }`) — writer failure propagation drains pending requests | `crates/egglsp/src/client.rs` |
 | Service lifecycle | `ServiceLifecycle` (`Running` → `ShuttingDown` → `Stopped`) — prevents new client acquisition after shutdown | `crates/egglsp/src/service.rs` |
+| Lifecycle generation tracking | `LifecycleState { phase: ServiceLifecycle, generation: u64 }` — `shutdown_all()` increments generation; spawned init task rechecks before publication | `crates/egglsp/src/service.rs` |
+| SharedInitError | Cloneable error for concurrent initialization waiters; `SharedInitErrorKind` enum (ServerNotFound, DownloadFailed, LaunchFailed, InitializeFailed, Timeout, Cancelled, Protocol, Other); `From<&LspError>` and `into_lsp_error()` conversions | `crates/egglsp/src/error.rs` |
+| InitSlot/InitSlotState/InitRole | InitSlot tracks attempt_id and state; InitRole enum (Leader/Waiter/Ready); ATTEMPT_COUNTER for monotonic attempt IDs; compare-and-remove prevents stale cleanup | `crates/egglsp/src/service.rs` |
+| fail_transport() helper | Centralized transport failure: atomically transitions to `Failed` (idempotent), releases lock, then drains pending. Used for stdout EOF, request/notification write failures | `crates/egglsp/src/client.rs` |
+| register_batch() | Atomic batch registration: pre-checks capacity before any mutation in DynamicRegistrationState | `crates/egglsp/src/server_request.rs` |
+| is_structural_error() validation | Uses `as_i64().is_some()` to reject fractional JSON-RPC error codes | `crates/egglsp/src/client.rs` |
+| Lock ordering documentation | Documented on `LspService` struct: clients map lock before client-level lock | `crates/egglsp/src/service.rs` |
 | Document ownership | `document_owners` map (URI → client key) for O(1) deterministic ownership lookup in `close_file`/`save_file` | `crates/egglsp/src/service.rs` |
 | Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` — see `architecture/native_crates.md` |
 | Extracted workspace crates | 4 (+1 new) | `crates/codegg-config`, `crates/codegg-protocol`, `crates/codegg-providers`, `crates/codegg-core` |
@@ -494,7 +501,7 @@ When adding guidance for a new module:
 | Error (AppError, ProviderError, ToolError, is_retryable, CircuitOpen) | `.opencode/skills/error/SKILL.md` |
 | Resilience (CircuitBreaker, FallbackProvider) | `.opencode/skills/resilience/SKILL.md` |
 | Permission (mode system, PermissionChecker, DoomLoop, PermissionRegistry) | `.opencode/skills/permission/SKILL.md` |
-| LSP (Language Server Protocol, diagnostics, code operations, semantic context packets, securityContext call expansion, capability discovery, diagnostics freshness, capability-gated operations, diagnostic evidence in context packets, shared semantic context API) | `.opencode/skills/lsp/SKILL.md` |
+| LSP (Language Server Protocol, diagnostics, code operations, semantic context packets, securityContext call expansion, capability discovery, diagnostics freshness, capability-gated operations, diagnostic evidence in context packets, shared semantic context API, initialization coordinator with leader/waiter election, SharedInitError for concurrent init, lifecycle generation tracking) | `.opencode/skills/lsp/SKILL.md` |
 | Tool (path validation, async command, ToolExecutor, ToolCatalog) | `.opencode/skills/tool/SKILL.md` |
 | Exec mode | `.opencode/skills/exec/SKILL.md` |
 | Hooks system | `.opencode/skills/hooks/SKILL.md` |

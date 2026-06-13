@@ -123,6 +123,30 @@ async fn fail_all_pending(pending: &PendingMap, error_msg: &str) {
     }
 }
 
+/// Atomically transition the transport to `Failed` and drain all pending requests.
+///
+/// This is idempotent: if the transport is already `Failed`, subsequent calls are no-ops.
+/// The transport lock is released before draining the pending map to avoid holding it
+/// across the (potentially lengthy) iteration.
+async fn fail_transport(
+    transport_state: &Arc<Mutex<ClientTransportState>>,
+    pending: &PendingMap,
+    reason: impl Into<String>,
+) {
+    let mut state = transport_state.lock().await;
+    match &*state {
+        ClientTransportState::Failed { .. } => (), // already failed
+        ClientTransportState::Running => {
+            let reason = reason.into();
+            *state = ClientTransportState::Failed {
+                reason: reason.clone(),
+            };
+            drop(state); // release transport lock before draining pending
+            fail_all_pending(pending, &reason).await;
+        }
+    }
+}
+
 /// Classified JSON-RPC message from the server.
 #[derive(Debug)]
 pub enum JsonRpcMessage {
@@ -227,7 +251,7 @@ fn is_structural_error(value: &serde_json::Value) -> bool {
         Some(serde_json::Value::Object(obj)) => obj,
         _ => return false,
     };
-    error.get("code").is_some_and(|c| c.is_number())
+    error.get("code").is_some_and(|c| c.as_i64().is_some())
         && error.get("message").is_some_and(|m| m.is_string())
 }
 
@@ -428,7 +452,7 @@ impl LspClient {
                 Err(e) => {
                     let msg = format!("LSP server '{}' stdout reader exiting: {}", server_id, e);
                     debug!(server = %server_id, error = %e, "stdout reader exiting");
-                    fail_all_pending(&pending, &msg).await;
+                    fail_transport(&transport_state, &pending, &msg).await;
                     break;
                 }
             };
@@ -487,10 +511,7 @@ impl LspClient {
                                 let reason =
                                     format!("failed to write server-request response: {e}");
                                 warn!(server = %server_id, id = %id, error = %e, "writer failure, entering failed state");
-                                *transport_state.lock().await = ClientTransportState::Failed {
-                                    reason: reason.clone(),
-                                };
-                                fail_all_pending(&pending, &reason).await;
+                                fail_transport(&transport_state, &pending, &reason).await;
                                 break;
                             }
                         }
@@ -505,10 +526,7 @@ impl LspClient {
                                 let reason =
                                     format!("failed to write server-request error response: {e}");
                                 warn!(server = %server_id, id = %id, error = %e, "writer failure, entering failed state");
-                                *transport_state.lock().await = ClientTransportState::Failed {
-                                    reason: reason.clone(),
-                                };
-                                fail_all_pending(&pending, &reason).await;
+                                fail_transport(&transport_state, &pending, &reason).await;
                                 break;
                             }
                         }
@@ -928,6 +946,7 @@ impl LspClient {
         // Write the request via the shared writer.
         if let Err(e) = self.writer.send_request_message(&id, method, params).await {
             self.pending.lock().await.remove(&id);
+            fail_transport(&self.transport_state, &self.pending, e.to_string()).await;
             return Err(e);
         }
 
@@ -983,7 +1002,11 @@ impl LspClient {
             return Err(LspError::WriterClosed(reason.clone()));
         }
 
-        self.writer.send_notification_message(method, params).await
+        let result = self.writer.send_notification_message(method, params).await;
+        if let Err(ref e) = result {
+            fail_transport(&self.transport_state, &self.pending, e.to_string()).await;
+        }
+        result
     }
 
     fn detect_language_id(&self, uri: &Url) -> String {
@@ -2447,5 +2470,94 @@ mod tests {
             LspError::WriterClosed(msg) => assert_eq!(msg, "broken pipe"),
             other => panic!("expected WriterClosed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn reader_eof_marks_transport_failed() {
+        let transport_state = Arc::new(tokio::sync::Mutex::new(ClientTransportState::Running));
+        let pending: PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+        fail_transport(&transport_state, &pending, "test reason").await;
+
+        let state = transport_state.lock().await;
+        match &*state {
+            ClientTransportState::Failed { reason } => assert_eq!(reason, "test reason"),
+            _ => panic!("expected Failed state"),
+        };
+    }
+
+    #[tokio::test]
+    async fn fail_transport_is_idempotent() {
+        let transport_state = Arc::new(tokio::sync::Mutex::new(ClientTransportState::Running));
+        let pending: PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+        fail_transport(&transport_state, &pending, "first reason").await;
+        fail_transport(&transport_state, &pending, "second reason").await;
+
+        let state = transport_state.lock().await;
+        match &*state {
+            ClientTransportState::Failed { reason } => assert_eq!(reason, "first reason"),
+            _ => panic!("expected Failed state"),
+        };
+    }
+
+    #[tokio::test]
+    async fn fail_transport_drains_pending() {
+        let transport_state = Arc::new(tokio::sync::Mutex::new(ClientTransportState::Running));
+        let pending: PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let (tx, rx) = oneshot::channel();
+        pending.lock().await.insert(JsonRpcId::Number(1), tx);
+
+        fail_transport(&transport_state, &pending, "test").await;
+
+        assert!(pending.lock().await.is_empty());
+        assert!(rx.await.is_ok());
+    }
+
+    // ── Phase 7: is_structural_error validation tests ───────────────
+
+    #[test]
+    fn structural_error_rejects_fractional_code() {
+        let value = serde_json::json!({
+            "id": 1,
+            "error": { "code": 1.5, "message": "test" }
+        });
+        assert!(!is_structural_error(&value));
+    }
+
+    #[test]
+    fn structural_error_rejects_string_code() {
+        let value = serde_json::json!({
+            "id": 1,
+            "error": { "code": "not-a-number", "message": "test" }
+        });
+        assert!(!is_structural_error(&value));
+    }
+
+    #[test]
+    fn structural_error_rejects_missing_code() {
+        let value = serde_json::json!({
+            "id": 1,
+            "error": { "message": "test" }
+        });
+        assert!(!is_structural_error(&value));
+    }
+
+    #[test]
+    fn structural_error_rejects_missing_message() {
+        let value = serde_json::json!({
+            "id": 1,
+            "error": { "code": -32601 }
+        });
+        assert!(!is_structural_error(&value));
+    }
+
+    #[test]
+    fn structural_error_accepts_integral_code() {
+        let value = serde_json::json!({
+            "id": 1,
+            "error": { "code": -32601, "message": "test" }
+        });
+        assert!(is_structural_error(&value));
     }
 }

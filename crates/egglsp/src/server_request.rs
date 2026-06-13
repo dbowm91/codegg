@@ -97,6 +97,42 @@ impl DynamicRegistrationState {
         self.registrations.get(id)
     }
 
+    /// Atomically register a batch of capabilities.
+    ///
+    /// All entries are validated and capacity-checked before any mutation.
+    /// Returns `Ok(())` if all entries fit, or `Err` with the first failure reason.
+    pub fn register_batch(
+        &mut self,
+        registrations: Vec<(String, String, Option<serde_json::Value>)>,
+    ) -> Result<(), String> {
+        // Count new IDs (not already present).
+        let new_id_count = registrations
+            .iter()
+            .filter(|(id, _, _)| !self.registrations.contains_key(id))
+            .count();
+
+        // Check capacity before any mutation.
+        if self.registrations.len() + new_id_count > MAX_REGISTRATIONS {
+            return Err(format!(
+                "dynamic registration limit ({}) would be exceeded",
+                MAX_REGISTRATIONS
+            ));
+        }
+
+        // Apply all entries.
+        for (id, method, options) in registrations {
+            self.registrations.insert(
+                id.clone(),
+                DynamicRegistration {
+                    id,
+                    method,
+                    register_options: options,
+                },
+            );
+        }
+        Ok(())
+    }
+
     /// Current count of tracked registrations.
     pub fn count(&self) -> usize {
         self.registrations.len()
@@ -258,16 +294,14 @@ async fn handle_register_capability(
         }
     }
 
-    // Apply all entries. Replacements (existing IDs) bypass the cap.
+    // Atomically apply all entries — batch is validated before any mutation.
     let mut state = context.dynamic_registrations.write().await;
-    for (id, method, options) in deduped {
-        if let Err(msg) = state.register(id, method, options) {
-            return ServerRequestReply::Error {
-                code: -32600,
-                message: msg,
-                data: None,
-            };
-        }
+    if let Err(msg) = state.register_batch(deduped) {
+        return ServerRequestReply::Error {
+            code: -32600,
+            message: msg,
+            data: None,
+        };
     }
     ServerRequestReply::Result(serde_json::Value::Null)
 }
@@ -1041,6 +1075,53 @@ mod tests {
             "timeout should be at most 30s, got {:?}",
             timeout
         );
+    }
+
+    #[test]
+    fn register_batch_rejects_over_capacity() {
+        let mut state = DynamicRegistrationState::new();
+        for i in 0..MAX_REGISTRATIONS {
+            state
+                .register(format!("id-{i}"), "test/m".into(), None)
+                .unwrap();
+        }
+        // 256 existing + 2 new = over cap
+        let result = state.register_batch(vec![
+            ("new-1".into(), "m1".into(), None),
+            ("new-2".into(), "m2".into(), None),
+        ]);
+        assert!(result.is_err());
+        assert_eq!(state.count(), MAX_REGISTRATIONS);
+    }
+
+    #[test]
+    fn register_batch_replacement_at_cap_succeeds() {
+        let mut state = DynamicRegistrationState::new();
+        for i in 0..MAX_REGISTRATIONS {
+            state
+                .register(format!("id-{i}"), "test/m".into(), None)
+                .unwrap();
+        }
+        let result = state.register_batch(vec![("id-0".into(), "replaced".into(), None)]);
+        assert!(result.is_ok());
+        assert_eq!(state.count(), MAX_REGISTRATIONS);
+    }
+
+    #[test]
+    fn register_batch_mixed_replacement_and_new_at_cap() {
+        let mut state = DynamicRegistrationState::new();
+        // Fill to 255 (one below cap) so replacement + one new = 256, at cap.
+        for i in 0..MAX_REGISTRATIONS - 1 {
+            state
+                .register(format!("id-{i}"), "test/m".into(), None)
+                .unwrap();
+        }
+        let result = state.register_batch(vec![
+            ("id-0".into(), "replaced".into(), None),
+            ("brand-new".into(), "m".into(), None),
+        ]);
+        assert!(result.is_ok());
+        assert_eq!(state.count(), MAX_REGISTRATIONS);
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 ---
 name: lsp
 description: LSP client-side integration for Language Server Protocol support
-version: 1.3.0
+version: 1.4.0
 tags:
   - lsp
   - language-server
@@ -636,6 +636,15 @@ pub enum LspError {
 }
 ```
 
+### SharedInitError
+
+A cloneable error type (`SharedInitError` with `SharedInitErrorKind` enum) used for
+concurrent initialization waiters. All oneshot channel results carry `SharedInitError`
+instead of raw `LspError`, preserving error category and message across threads.
+Converts via `From<&LspError> for SharedInitError` and `into_lsp_error()` back to
+`LspError`. Kinds: `ServerNotFound`, `DownloadFailed`, `LaunchFailed`,
+`InitializeFailed`, `Timeout`, `Cancelled`, `Protocol`, `Other`.
+
 ## Capability Discovery
 
 `egglsp::capability` provides a normalized boolean view of `ServerCapabilities` returned by the initialized LSP server.
@@ -876,12 +885,12 @@ Enforces bounded output. Defaults are conservative and aligned with the existing
 
 ## Protocol Peer Hardening
 
-Codegg acts as a bidirectional JSON-RPC peer. The background reader classifies incoming messages into `Response`, `ErrorResponse`, `ServerRequest`, `Notification`, and `Unknown` variants. Server requests are dispatched via `dispatch_server_request` in `server_request.rs`.
+Codegg acts as a bidirectional JSON-RPC peer. The background reader classifies incoming messages into `Response`, `ErrorResponse`, `ServerRequest`, `Notification`, and `Unknown` variants. Server requests are dispatched via `dispatch_server_request` in `server_request.rs`. `is_structural_error()` validates JSON-RPC error codes as integers via `as_i64().is_some()` (rejecting fractional codes).
 
 ### Supported server requests
 - `workspace/configuration` — scoped configuration lookup
 - `workspace/workspaceFolders` — returns current root
-- `client/registerCapability` / `client/unregisterCapability` — bounded dynamic registration tracking (256 max); processes full arrays with validation and deduplication
+- `client/registerCapability` / `client/unregisterCapability` — bounded dynamic registration tracking (256 max); processes full arrays with validation and deduplication; `register_batch()` pre-checks capacity before any mutation (atomic batch registration)
 - `window/workDoneProgress/create` — acknowledged with null
 - `workspace/applyEdit` — **always rejected** as an application-level result with `applied: false` and `failureReason` (not a JSON-RPC error; Codegg never applies implicit edits)
 
@@ -889,16 +898,29 @@ Codegg acts as a bidirectional JSON-RPC peer. The background reader classifies i
 Client request timeout triggers: (1) pending entry removal, (2) best-effort `$/cancelRequest` notification, (3) `RequestTimeout` error. Server-request dispatch has a 5-second timeout that returns `-32603` (Internal error) on expiry.
 
 ### Initialization
-Single-flight via custom `InitSlot` pattern — concurrent first-use for same key awaits one initialization. On failure, the slot is cleaned up and waiters receive errors, allowing retries.
+Single-flight via explicit `InitRole` election: the first caller becomes `Leader` and
+spawns an owned initialization task; concurrent callers become `Waiters` receiving
+the same result via oneshot channels. On failure, the slot is cleaned up by attempt ID
+and waiters receive the actual `SharedInitError` (preserving error category and message),
+allowing retries. An `ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs;
+compare-and-remove prevents stale cleanup from deleting newer slots.
 
 ### Writer
 `LspWriter` serializes all output through `Arc<Mutex<...>>`. Content-Length uses UTF-8 byte count.
 
 ### Transport State
-`ClientTransportState` tracks whether the writer pipe to the server is still operational (`Running` or `Failed { reason }`). When the background reader detects a write failure for a server-request response, it transitions to `Failed`, drains all pending requests with errors, and exits. Subsequent `send_request` / `send_notification` calls return `LspError::WriterClosed` immediately.
+`ClientTransportState` tracks whether the writer pipe to the server is still operational
+(`Running` or `Failed { reason }`). All terminal transport failures (stdout EOF,
+request write failure, notification write failure) transition to `Failed` exactly once
+via the centralized `fail_transport()` helper. Pending requests are drained on transition.
+Subsequent `send_request` / `send_notification` calls return `LspError::WriterClosed` immediately.
 
 ### Shutdown Coordination
-`LspService` tracks a `ServiceLifecycle` state machine (`Running` → `ShuttingDown` → `Stopped`). `shutdown_all()` transitions to `ShuttingDown` first, drains and shuts down all clients, clears document ownership and initialization maps, then transitions to `Stopped`. New client acquisition is rejected when the lifecycle is not `Running`.
+`LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a
+monotonic `generation: u64`. `shutdown_all()` atomically transitions to `ShuttingDown`
+and increments the generation. The spawned initialization task rechecks the generation
+before publication, preventing stale results from being published after shutdown.
+New client acquisition is rejected when the lifecycle is not `Running`.
 
 ## Architecture Notes
 
