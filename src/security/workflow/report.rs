@@ -303,6 +303,16 @@ pub struct HunkSourceContextFileResult {
 }
 
 /// Aggregate execution stats for `collect_hunk_source_context_all_files`.
+///
+/// Field semantics:
+/// - `files_considered`: number of files whose hunk-context policy was evaluated
+///   (i.e. files within the file cap, before any request-cap break).
+/// - `files_policy_skipped`: subset of `files_considered` where policy returned Skip.
+/// - `requests_attempted`: actual executor calls made.
+/// - `requests_succeeded` / `requests_failed` / `requests_timed_out`: outcome
+///   categories that sum to `requests_attempted`.
+/// - `evidence_items_emitted`: final aggregate evidence vector length across all
+///   files (assigned post-loop, not incrementally accumulated).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HunkSourceContextExecutionStats {
     pub files_considered: usize,
@@ -1337,10 +1347,7 @@ pub async fn collect_hunk_source_context_all_files<E: HunkSourceContextExecutor 
     let mut all_evidence = Vec::new();
     let mut summaries = Vec::new();
     let mut notes = Vec::new();
-    let mut stats = HunkSourceContextExecutionStats {
-        files_considered: grouped.len().min(max_files),
-        ..Default::default()
-    };
+    let mut stats = HunkSourceContextExecutionStats::default();
     // Phase 2: Track actual executor request attempts, not loop index.
     let mut attempted_requests = 0usize;
 
@@ -1352,6 +1359,11 @@ pub async fn collect_hunk_source_context_all_files<E: HunkSourceContextExecutor 
             ));
             break;
         }
+
+        // Option B: increment files_considered after file-cap check, before policy
+        // evaluation. Policy evaluation is cheap and this keeps skip statistics
+        // meaningful within the file cap.
+        stats.files_considered += 1;
 
         // Phase 5: Use real patch for policy evaluation when available.
         let patch_for_policy = real_patches.get(file_path).cloned().unwrap_or_else(|| {
@@ -1370,7 +1382,9 @@ pub async fn collect_hunk_source_context_all_files<E: HunkSourceContextExecutor 
 
         let decision = decide_hunk_source_context(policy, &patch_for_policy, Some(file_path));
 
-        // Phase 2: Only consume request budget for files where the executor will actually be called.
+        // Option B: evaluate policy before request cap. This keeps policy-skip
+        // statistics complete within the file cap; request budget is consumed
+        // only for actual calls.
         match decision {
             HunkSourceContextDecision::Skip { reason } => {
                 stats.files_policy_skipped += 1;
@@ -1406,9 +1420,7 @@ pub async fn collect_hunk_source_context_all_files<E: HunkSourceContextExecutor 
         )
         .await;
 
-        let evidence_count = result.evidence.len();
         all_evidence.extend(result.evidence);
-        stats.evidence_items_emitted += evidence_count;
         if let Some(s) = result.summary {
             summaries.push(s);
         }
@@ -1426,6 +1438,10 @@ pub async fn collect_hunk_source_context_all_files<E: HunkSourceContextExecutor 
             stats.requests_timed_out += 1;
         }
     }
+
+    // Phase 1: Assign aggregate evidence count from the final vector length
+    // rather than incrementally accumulating, which overcounts across files.
+    stats.evidence_items_emitted = all_evidence.len();
 
     HunkSourceContextCollectionResult {
         evidence: all_evidence,
@@ -3317,5 +3333,414 @@ mod tests {
             "should have a skip note mentioning 'exceeds cap': {:?}",
             result.notes
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 6: Focused regression tests for evidence counting, file counting,
+    // invariants, and the production adapter seam.
+    // -----------------------------------------------------------------------
+
+    // -- Evidence counting --
+
+    #[tokio::test]
+    async fn evidence_items_emitted_matches_total_evidence_len() {
+        let hunks = vec![
+            make_test_hunk("src/a.rs", 10, 3),
+            make_test_hunk("src/b.rs", 20, 3),
+        ];
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        patches.insert(
+            PathBuf::from("src/a.rs"),
+            "@@ -10,3 +10,3 @@\n-a\n+b\n".to_string(),
+        );
+        patches.insert(
+            PathBuf::from("src/b.rs"),
+            "@@ -20,3 +20,3 @@\n-c\n+d\n".to_string(),
+        );
+
+        let executor = SimpleExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            10,
+            10,
+            2500,
+        )
+        .await;
+
+        assert_eq!(
+            result.stats.evidence_items_emitted,
+            result.evidence.len(),
+            "evidence_items_emitted must equal final evidence vector length"
+        );
+    }
+
+    #[tokio::test]
+    async fn evidence_items_emitted_does_not_double_count_multiple_files() {
+        let hunks = vec![
+            make_test_hunk("src/a.rs", 10, 3),
+            make_test_hunk("src/b.rs", 20, 3),
+            make_test_hunk("src/c.rs", 30, 3),
+        ];
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        for (path, start) in [("src/a.rs", 10), ("src/b.rs", 20), ("src/c.rs", 30)] {
+            patches.insert(
+                PathBuf::from(path),
+                format!("@@ -{start},3 +{start},3 @@\n-x\n+y\n"),
+            );
+        }
+
+        let executor = SimpleExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            10,
+            10,
+            2500,
+        )
+        .await;
+
+        // Each file produces evidence; the count must not cumulatively overcount.
+        assert_eq!(
+            result.stats.evidence_items_emitted,
+            result.evidence.len(),
+            "evidence_items_emitted must equal final evidence vector length"
+        );
+        // With 3 files each producing evidence, the count should be exactly
+        // the sum of per-file evidence, not a cumulative overcount.
+        assert!(
+            result.stats.evidence_items_emitted <= 30,
+            "evidence count should be bounded: got {}",
+            result.stats.evidence_items_emitted
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_evidence_reports_zero_items_emitted() {
+        // Policy skip produces zero evidence.
+        let hunks = vec![make_test_hunk("src/image.png", 10, 3)];
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        patches.insert(
+            PathBuf::from("src/image.png"),
+            "@@ -10,3 +10,3 @@\n-a\n+b\n".to_string(),
+        );
+
+        let executor = SimpleExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            10,
+            10,
+            2500,
+        )
+        .await;
+
+        assert_eq!(result.stats.evidence_items_emitted, 0);
+        assert!(result.evidence.is_empty());
+    }
+
+    // -- File counting --
+
+    #[tokio::test]
+    async fn files_considered_increments_per_policy_evaluation() {
+        let hunks = vec![
+            make_test_hunk("src/a.rs", 10, 3),
+            make_test_hunk("src/b.rs", 20, 3),
+            make_test_hunk("src/c.rs", 30, 3),
+        ];
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        for (path, start) in [("src/a.rs", 10), ("src/b.rs", 20), ("src/c.rs", 30)] {
+            patches.insert(
+                PathBuf::from(path),
+                format!("@@ -{start},3 +{start},3 @@\n-x\n+y\n"),
+            );
+        }
+
+        let executor = SimpleExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            10,
+            10,
+            2500,
+        )
+        .await;
+
+        // All 3 files are within the file cap and policy is evaluated for each.
+        assert_eq!(result.stats.files_considered, 3);
+    }
+
+    #[tokio::test]
+    async fn policy_skipped_file_counts_as_considered() {
+        let hunks = vec![
+            make_test_hunk("src/image.png", 10, 3),
+            make_test_hunk("src/main.rs", 20, 3),
+        ];
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        patches.insert(
+            PathBuf::from("src/image.png"),
+            "@@ -10,3 +10,3 @@\n-a\n+b\n".to_string(),
+        );
+        patches.insert(
+            PathBuf::from("src/main.rs"),
+            "@@ -20,3 +20,3 @@\n-c\n+d\n".to_string(),
+        );
+
+        let executor = SimpleExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            10,
+            10,
+            2500,
+        )
+        .await;
+
+        // image.png is policy-skipped but still considered.
+        assert_eq!(result.stats.files_considered, 2);
+        assert_eq!(result.stats.files_policy_skipped, 1);
+        assert!(result.stats.files_policy_skipped <= result.stats.files_considered);
+    }
+
+    #[tokio::test]
+    async fn files_beyond_file_cap_are_not_considered() {
+        let hunks: Vec<ChangedHunk> = (0..10)
+            .map(|i| make_test_hunk(&format!("src/file_{:02}.rs", i), i * 10, 3))
+            .collect();
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        for i in 0..10 {
+            let path = format!("src/file_{:02}.rs", i);
+            patches.insert(
+                PathBuf::from(&path),
+                format!("@@ -{},3 +{},3 @@\n-a\n+b\n", i * 10, i * 10),
+            );
+        }
+
+        let executor = SimpleExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            3,
+            10,
+            2500,
+        )
+        .await;
+
+        // Only 3 files within the cap are considered.
+        assert_eq!(result.stats.files_considered, 3);
+    }
+
+    #[tokio::test]
+    async fn request_cap_boundary_has_documented_considered_count() {
+        // Option B: policy is evaluated before request cap check.
+        // With 3 eligible files, max_requests=1:
+        // - file 0: considered=1, policy Use, request cap not hit → execute (attempted_requests becomes 1)
+        // - file 1: considered=2, policy Use, request cap hit → break
+        // So files_considered = 2.
+        let hunks = vec![
+            make_test_hunk("src/a.rs", 10, 3),
+            make_test_hunk("src/b.rs", 20, 3),
+            make_test_hunk("src/c.rs", 30, 3),
+        ];
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        for (path, start) in [("src/a.rs", 10), ("src/b.rs", 20), ("src/c.rs", 30)] {
+            patches.insert(
+                PathBuf::from(path),
+                format!("@@ -{start},3 +{start},3 @@\n-x\n+y\n"),
+            );
+        }
+
+        let executor = SimpleExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            10,
+            1,
+            2500,
+        )
+        .await;
+
+        // Under Option B: file 0 executes (attempted=1), file 1 is considered
+        // (policy evaluated, request cap hit → break). files_considered = 2.
+        assert_eq!(result.stats.files_considered, 2);
+        assert_eq!(result.stats.requests_attempted, 1);
+    }
+
+    // -- Invariants --
+
+    #[tokio::test]
+    async fn request_outcome_counts_sum_to_attempted() {
+        let hunks = vec![
+            make_test_hunk("src/a.rs", 10, 3),
+            make_test_hunk("src/b.rs", 20, 3),
+            make_test_hunk("src/c.rs", 30, 3),
+        ];
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        for (path, start) in [("src/a.rs", 10), ("src/b.rs", 20), ("src/c.rs", 30)] {
+            patches.insert(
+                PathBuf::from(path),
+                format!("@@ -{start},3 +{start},3 @@\n-x\n+y\n"),
+            );
+        }
+
+        struct MixedExecutor;
+
+        #[async_trait::async_trait]
+        impl HunkSourceContextExecutor for MixedExecutor {
+            async fn execute_hunk_source_context(
+                &self,
+                request: HunkSourceNavigationRequest,
+            ) -> Result<HunkSourceNavigationResponse, String> {
+                match request.file_path.as_str() {
+                    "src/a.rs" => Ok(HunkSourceNavigationResponse::new("src/a.rs")),
+                    "src/b.rs" => Err("transient error".to_string()),
+                    _ => {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        unreachable!()
+                    }
+                }
+            }
+        }
+
+        let executor = MixedExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            10,
+            10,
+            50,
+        )
+        .await;
+
+        assert_eq!(
+            result.stats.requests_succeeded
+                + result.stats.requests_failed
+                + result.stats.requests_timed_out,
+            result.stats.requests_attempted,
+            "outcome counts must sum to attempted"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_skipped_never_exceeds_considered() {
+        let hunks = vec![
+            make_test_hunk("src/image.png", 10, 3),
+            make_test_hunk("src/lib.rs", 20, 3),
+            make_test_hunk("src/main.rs", 30, 3),
+        ];
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        patches.insert(
+            PathBuf::from("src/image.png"),
+            "@@ -10,3 +10,3 @@\n-a\n+b\n".to_string(),
+        );
+        patches.insert(
+            PathBuf::from("src/lib.rs"),
+            "@@ -20,3 +20,3 @@\n-c\n+d\n".to_string(),
+        );
+        patches.insert(
+            PathBuf::from("src/main.rs"),
+            "@@ -30,3 +30,3 @@\n-e\n+f\n".to_string(),
+        );
+
+        let executor = SimpleExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            10,
+            10,
+            2500,
+        )
+        .await;
+
+        assert!(
+            result.stats.files_policy_skipped <= result.stats.files_considered,
+            "files_policy_skipped ({}) > files_considered ({})",
+            result.stats.files_policy_skipped,
+            result.stats.files_considered
+        );
+    }
+
+    #[tokio::test]
+    async fn attempted_never_exceeds_request_cap() {
+        let hunks: Vec<ChangedHunk> = (0..5)
+            .map(|i| make_test_hunk(&format!("src/file_{i}.rs"), i * 10, 3))
+            .collect();
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        for i in 0..5 {
+            let path = format!("src/file_{i}.rs");
+            patches.insert(
+                PathBuf::from(&path),
+                format!("@@ -{},3 +{},3 @@\n-x\n+y\n", i * 10, i * 10),
+            );
+        }
+
+        let executor = SimpleExecutor;
+        let policy = HunkSourceContextPolicy::default();
+
+        let result = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            10,
+            2,
+            2500,
+        )
+        .await;
+
+        assert!(
+            result.stats.requests_attempted <= 2,
+            "requests_attempted ({}) > max_requests (2)",
+            result.stats.requests_attempted
+        );
+    }
+
+    /// Simple executor used by regression tests — always succeeds.
+    struct SimpleExecutor;
+
+    #[async_trait::async_trait]
+    impl HunkSourceContextExecutor for SimpleExecutor {
+        async fn execute_hunk_source_context(
+            &self,
+            request: HunkSourceNavigationRequest,
+        ) -> Result<HunkSourceNavigationResponse, String> {
+            Ok(HunkSourceNavigationResponse::new(&request.file_path))
+        }
     }
 }

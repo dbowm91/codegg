@@ -126,15 +126,45 @@ pub fn validate_security_context_request(request: &serde_json::Value) -> Result<
     Ok(())
 }
 
+/// Internal trait abstracting the typed hunk source context target.
+///
+/// This seam exists so the production `LspHunkSourceContextExecutor` can be
+/// tested without a live language server: a `#[cfg(test)]` recording target
+/// captures the exact request forwarded through the adapter.
+#[async_trait::async_trait]
+trait TypedHunkSourceContextTarget: Send + Sync {
+    async fn execute_hunk_source_context_typed(
+        &self,
+        request: egglsp::hunk_context::HunkSourceNavigationRequest,
+    ) -> Result<egglsp::hunk_context::HunkSourceNavigationResponse, String>;
+}
+
+#[async_trait::async_trait]
+impl TypedHunkSourceContextTarget for LspTool {
+    async fn execute_hunk_source_context_typed(
+        &self,
+        request: egglsp::hunk_context::HunkSourceNavigationRequest,
+    ) -> Result<egglsp::hunk_context::HunkSourceNavigationResponse, String> {
+        self.execute_hunk_source_context_typed(request).await
+    }
+}
+
 /// Adapter that implements [`HunkSourceContextExecutor`] by delegating to
-/// [`LspTool`].
+/// a [`TypedHunkSourceContextTarget`] (production: [`LspTool`]).
 pub struct LspHunkSourceContextExecutor {
-    tool: Arc<LspTool>,
+    target: Arc<dyn TypedHunkSourceContextTarget>,
 }
 
 impl LspHunkSourceContextExecutor {
+    /// Create a new executor wrapping the given [`LspTool`].
     pub fn new(tool: Arc<LspTool>) -> Self {
-        Self { tool }
+        Self { target: tool }
+    }
+
+    /// Create an executor backed by a custom target (for testing).
+    #[cfg(test)]
+    fn with_target(target: Arc<dyn TypedHunkSourceContextTarget>) -> Self {
+        Self { target }
     }
 }
 
@@ -146,7 +176,7 @@ impl crate::security::workflow::context::HunkSourceContextExecutor
         &self,
         request: egglsp::hunk_context::HunkSourceNavigationRequest,
     ) -> Result<egglsp::hunk_context::HunkSourceNavigationResponse, String> {
-        self.tool.execute_hunk_source_context_typed(request).await
+        self.target.execute_hunk_source_context_typed(request).await
     }
 }
 
@@ -481,5 +511,144 @@ mod lsp_hunk_executor_integration_tests {
             request.patch.is_some(),
             "model-facing path uses patch, internal path uses hunks — both typed"
         );
+    }
+}
+
+#[cfg(test)]
+mod lsp_hunk_adapter_tests {
+    use super::*;
+    use crate::security::workflow::context::HunkSourceContextExecutor;
+    use egglsp::hunk_context::{
+        HunkDescriptor, HunkLineRange, HunkSourceNavigationRequest, HunkSourceNavigationResponse,
+    };
+
+    /// Recording target that captures the exact request forwarded through the
+    /// `LspHunkSourceContextExecutor` adapter.
+    struct RecordingTarget {
+        captured: std::sync::Mutex<Option<HunkSourceNavigationRequest>>,
+        response: HunkSourceNavigationResponse,
+    }
+
+    impl RecordingTarget {
+        fn new(response: HunkSourceNavigationResponse) -> Self {
+            Self {
+                captured: std::sync::Mutex::new(None),
+                response,
+            }
+        }
+
+        fn captured_request(&self) -> Option<HunkSourceNavigationRequest> {
+            self.captured.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TypedHunkSourceContextTarget for RecordingTarget {
+        async fn execute_hunk_source_context_typed(
+            &self,
+            request: HunkSourceNavigationRequest,
+        ) -> Result<HunkSourceNavigationResponse, String> {
+            *self.captured.lock().unwrap() = Some(request);
+            Ok(self.response.clone())
+        }
+    }
+
+    /// Target that always returns an error.
+    struct ErrorTarget {
+        msg: String,
+    }
+
+    #[async_trait::async_trait]
+    impl TypedHunkSourceContextTarget for ErrorTarget {
+        async fn execute_hunk_source_context_typed(
+            &self,
+            _request: HunkSourceNavigationRequest,
+        ) -> Result<HunkSourceNavigationResponse, String> {
+            Err(self.msg.clone())
+        }
+    }
+
+    fn make_request(file_path: &str) -> HunkSourceNavigationRequest {
+        HunkSourceNavigationRequest {
+            file_path: file_path.to_string(),
+            hunks: vec![HunkDescriptor {
+                id: format!("{file_path}:0:10-20"),
+                file_path: file_path.to_string(),
+                old_range: Some(HunkLineRange {
+                    start_line: 10,
+                    end_line: 20,
+                }),
+                new_range: Some(HunkLineRange {
+                    start_line: 12,
+                    end_line: 24,
+                }),
+                header: Some("@@ -10,11 +12,13 @@".to_string()),
+                added_lines: 5,
+                removed_lines: 3,
+                context_lines: 3,
+            }],
+            patch: None,
+            intent: "security_review".to_string(),
+            include_definitions: true,
+            include_references: false,
+            include_call_hierarchy: false,
+            include_type_hierarchy: false,
+            excerpt_radius: 40,
+            max_hunks: 1,
+            max_symbols_per_hunk: 10,
+            max_diagnostics_per_hunk: 10,
+            max_references_per_hunk: 10,
+        }
+    }
+
+    #[tokio::test]
+    async fn lsp_hunk_executor_forwards_exact_typed_request() {
+        let request = make_request("src/main.rs");
+        let response = HunkSourceNavigationResponse::new("src/main.rs");
+        let target = Arc::new(RecordingTarget::new(response));
+        let executor = LspHunkSourceContextExecutor::with_target(target.clone());
+
+        let _result = executor.execute_hunk_source_context(request.clone()).await;
+
+        let captured = target
+            .captured_request()
+            .expect("target should have captured a request");
+        assert_eq!(captured.file_path, "src/main.rs");
+        assert_eq!(captured.intent, "security_review");
+        assert!(captured.include_definitions);
+        assert!(!captured.include_references);
+        assert!(captured.patch.is_none());
+        assert_eq!(captured.hunks.len(), 1);
+        assert_eq!(captured.hunks[0].id, "src/main.rs:0:10-20");
+        assert_eq!(captured.excerpt_radius, 40);
+        assert_eq!(captured.max_symbols_per_hunk, 10);
+    }
+
+    #[tokio::test]
+    async fn lsp_hunk_executor_propagates_target_response() {
+        let request = make_request("src/lib.rs");
+        let response = HunkSourceNavigationResponse::new("src/lib.rs");
+        let target = Arc::new(RecordingTarget::new(response.clone()));
+        let executor = LspHunkSourceContextExecutor::with_target(target);
+
+        let result = executor.execute_hunk_source_context(request).await;
+        let actual = result.expect("should succeed");
+
+        assert_eq!(actual.file_path, response.file_path);
+    }
+
+    #[tokio::test]
+    async fn lsp_hunk_executor_propagates_target_error() {
+        let request = make_request("src/bad.rs");
+        let target = Arc::new(ErrorTarget {
+            msg: "LSP server crashed".to_string(),
+        });
+        let executor = LspHunkSourceContextExecutor::with_target(target);
+
+        let err = executor
+            .execute_hunk_source_context(request)
+            .await
+            .expect_err("should fail");
+        assert_eq!(err, "LSP server crashed");
     }
 }
