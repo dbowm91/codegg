@@ -1,5 +1,7 @@
 # LSP Hunk Source Context Executor Wiring Cleanup Plan
 
+> **Status: COMPLETED** — Commit `8251f01` on `main`.
+
 ## Purpose
 
 The corrective security integration pass at `62499809277b3d2edec6ce267804cb5c2d2216b0` fixed the dangerous evidence semantics: routing decisions no longer become `HunkNavigation` evidence, the finding gate is conservative again, the workflow has a real executor trait, `--hunk-context` exists, formatter output is used, and diagnostic line indexing is corrected.
