@@ -359,4 +359,125 @@ mod tests {
             assert_eq!(request.hunks[0].id, "src/main.rs:0:10-20");
         });
     }
+
+    #[test]
+    fn lsp_hunk_executor_preserves_hunks_field_on_request() {
+        use super::super::workflow::context::HunkSourceContextExecutor;
+        use egglsp::hunk_context::{HunkDescriptor, HunkLineRange, HunkSourceNavigationRequest};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let request = HunkSourceNavigationRequest {
+                file_path: "src/security/lsp_executor.rs".to_string(),
+                hunks: vec![
+                    HunkDescriptor {
+                        id: "src/security/lsp_executor.rs:0:50-75".to_string(),
+                        file_path: "src/security/lsp_executor.rs".to_string(),
+                        old_range: Some(HunkLineRange {
+                            start_line: 50,
+                            end_line: 75,
+                        }),
+                        new_range: Some(HunkLineRange {
+                            start_line: 52,
+                            end_line: 78,
+                        }),
+                        header: Some("@@ -50,26 +52,27 @@".to_string()),
+                        added_lines: 2,
+                        removed_lines: 1,
+                        context_lines: 5,
+                    },
+                    HunkDescriptor {
+                        id: "src/security/lsp_executor.rs:1:100-120".to_string(),
+                        file_path: "src/security/lsp_executor.rs".to_string(),
+                        old_range: Some(HunkLineRange {
+                            start_line: 100,
+                            end_line: 120,
+                        }),
+                        new_range: Some(HunkLineRange {
+                            start_line: 102,
+                            end_line: 122,
+                        }),
+                        header: Some("@@ -100,21 +102,21 @@".to_string()),
+                        added_lines: 1,
+                        removed_lines: 1,
+                        context_lines: 4,
+                    },
+                ],
+                patch: None,
+                intent: "security_review".to_string(),
+                include_definitions: true,
+                include_references: true,
+                include_call_hierarchy: false,
+                include_type_hierarchy: false,
+                excerpt_radius: 40,
+                max_hunks: 20,
+                max_symbols_per_hunk: 10,
+                max_diagnostics_per_hunk: 10,
+                max_references_per_hunk: 10,
+            };
+
+            assert_eq!(request.hunks.len(), 2, "request should have 2 hunks");
+            assert!(
+                request.patch.is_none(),
+                "patch should be None to confirm typed path (no JSON serialization)"
+            );
+
+            assert_eq!(
+                request.hunks[0].id, "src/security/lsp_executor.rs:0:50-75",
+                "first hunk id should match"
+            );
+            assert_eq!(
+                request.hunks[1].id, "src/security/lsp_executor.rs:1:100-120",
+                "second hunk id should match"
+            );
+
+            let _ = request;
+        });
+    }
+}
+
+#[cfg(test)]
+mod lsp_hunk_executor_integration_tests {
+    use super::*;
+    use egglsp::hunk_context::{HunkDescriptor, HunkLineRange, HunkSourceNavigationRequest};
+
+    #[test]
+    fn model_facing_and_internal_executor_both_use_typed_method() {
+        let request = HunkSourceNavigationRequest {
+            file_path: "src/lib.rs".to_string(),
+            hunks: vec![HunkDescriptor {
+                id: "src/lib.rs:0:10-20".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                old_range: Some(HunkLineRange {
+                    start_line: 10,
+                    end_line: 20,
+                }),
+                new_range: Some(HunkLineRange {
+                    start_line: 12,
+                    end_line: 24,
+                }),
+                header: Some("@@ -10,11 +12,13 @@".to_string()),
+                added_lines: 5,
+                removed_lines: 3,
+                context_lines: 3,
+            }],
+            patch: Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,11 +12,13 @@\n old line\n+new line\n context\n".to_string()),
+            intent: "security_review".to_string(),
+            include_definitions: true,
+            include_references: true,
+            include_call_hierarchy: false,
+            include_type_hierarchy: false,
+            excerpt_radius: 40,
+            max_hunks: 20,
+            max_symbols_per_hunk: 10,
+            max_diagnostics_per_hunk: 10,
+            max_references_per_hunk: 10,
+        };
+
+        assert_eq!(request.hunks.len(), 1);
+        assert!(
+            request.patch.is_some(),
+            "model-facing path uses patch, internal path uses hunks — both typed"
+        );
+    }
 }

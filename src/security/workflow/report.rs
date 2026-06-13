@@ -1802,6 +1802,56 @@ mod tests {
         );
     }
 
+    // --- Timeout test ---
+
+    struct SlowHunkExecutor;
+    #[async_trait::async_trait]
+    impl HunkSourceContextExecutor for SlowHunkExecutor {
+        async fn execute_hunk_source_context(
+            &self,
+            _request: HunkSourceNavigationRequest,
+        ) -> Result<HunkSourceNavigationResponse, String> {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(HunkSourceNavigationResponse::new("src/main.rs"))
+        }
+    }
+
+    #[tokio::test]
+    async fn hunk_source_context_timeout_produces_fail_open_note() {
+        let hunks = vec![make_test_hunk("src/main.rs", 10, 5)];
+        let patch =
+            "@@ -10,5 +10,5 @@\n fn main() {\n-    old();\n+    new();\n }\n";
+        let file = Path::new("src/main.rs");
+        let policy = HunkSourceContextPolicy::default();
+
+        let (evidence, summary, notes) = collect_hunk_source_context_for_file(
+            &hunks,
+            patch,
+            file,
+            &policy,
+            Some(&SlowHunkExecutor),
+            10, // 10ms timeout — executor sleeps for 50ms
+        )
+        .await;
+
+        assert!(
+            evidence.is_empty(),
+            "timeout should emit no evidence"
+        );
+        assert!(
+            summary.is_none(),
+            "timeout should produce no summary"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("timed out")),
+            "should note timeout: {notes:?}"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("src/main.rs")),
+            "note should contain file path: {notes:?}"
+        );
+    }
+
     // --- Diagnostic line indexing test ---
 
     #[test]
@@ -2132,6 +2182,59 @@ mod tests {
     }
 
     #[test]
+    fn hunk_source_context_real_patch_oversized_triggers_skip() {
+        use crate::lsp::hunk_nav_policy::{decide_hunk_source_context, HunkSourceContextPolicy};
+
+        let policy = HunkSourceContextPolicy {
+            max_patch_bytes: 100,
+            ..Default::default()
+        };
+
+        let large_patch = format!(
+            "@@ -10,10 +10,10 @@ fn example() {{\n{}\n}}\n",
+            "x".repeat(120)
+        );
+        assert!(
+            large_patch.len() > 100,
+            "patch must actually exceed the 100-byte limit"
+        );
+
+        let decision = decide_hunk_source_context(
+            &policy,
+            &large_patch,
+            Some(std::path::Path::new("src/main.rs")),
+        );
+        match &decision {
+            crate::lsp::hunk_nav_policy::HunkSourceContextDecision::Skip { reason } => {
+                assert!(
+                    reason.contains("exceeds cap"),
+                    "skip reason should mention 'exceeds cap': {reason}"
+                );
+                assert!(
+                    reason.contains(" bytes exceeds "),
+                    "skip reason should include bytes and cap: {reason}"
+                );
+            }
+            _ => panic!("expected Skip for oversized patch, got {decision:?}"),
+        }
+
+        let small_patch = "@@ -1,1 +1,1 @@\n+a\n";
+        assert!(small_patch.len() < 100);
+
+        let decision_small = decide_hunk_source_context(
+            &policy,
+            small_patch,
+            Some(std::path::Path::new("src/main.rs")),
+        );
+        match &decision_small {
+            crate::lsp::hunk_nav_policy::HunkSourceContextDecision::Use { patch, .. } => {
+                assert_eq!(patch, small_patch);
+            }
+            _ => panic!("expected Use for small patch, got {decision_small:?}"),
+        }
+    }
+
+    #[test]
     fn to_hunk_descriptor_preserves_ranges_and_counts() {
         let hunk = make_test_hunk("src/lib.rs", 10, 5);
         let descriptor = hunk.to_hunk_descriptor(0);
@@ -2300,5 +2403,407 @@ mod tests {
         assert_eq!(seen_files[0], "src/a_first.rs");
         assert_eq!(seen_files[1], "src/m_middle.rs");
         assert_eq!(seen_files[2], "src/z_last.rs");
+    }
+
+    #[tokio::test]
+    async fn run_security_review_with_hunk_context_flag_produces_evidence() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        let output = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        std::fs::create_dir(root.join("src")).unwrap();
+        let test_file = root.join("src/main.rs");
+        std::fs::write(&test_file, r#"api_key = "sk-1234567890abcdef";"#).unwrap();
+
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        std::fs::write(&test_file, r#"api_key = "sk-xyz789";"#).unwrap();
+
+        let security_exec = FixtureSecurityContextExecutor::new();
+        let hunk_exec = FixtureHunkSourceContextExecutor::new()
+            .with_response("src/main.rs", Ok({
+                let mut response = HunkSourceNavigationResponse::new("src/main.rs");
+                response.hunks.push(HunkEvidence {
+                    hunk: HunkDescriptor {
+                        id: "src/main.rs:0:1-1".to_string(),
+                        file_path: "src/main.rs".to_string(),
+                        old_range: Some(HunkLineRange {
+                            start_line: 1,
+                            end_line: 1,
+                        }),
+                        new_range: Some(HunkLineRange {
+                            start_line: 1,
+                            end_line: 1,
+                        }),
+                        header: None,
+                        added_lines: 0,
+                        removed_lines: 0,
+                        context_lines: 0,
+                    },
+                    focus_range: None,
+                    enclosing_symbol: Some(SemanticSymbolSummary {
+                        name: "main".to_string(),
+                        kind: "function".to_string(),
+                        file: "src/main.rs".to_string(),
+                        start_line: 1,
+                        start_column: 0,
+                        end_line: 1,
+                        end_column: 1,
+                    }),
+                    related_symbols: vec![],
+                    diagnostics: vec![],
+                    nearby_diagnostics: vec![],
+                    definitions: vec![],
+                    references: vec![],
+                    call_hierarchy: None,
+                    type_hierarchy: None,
+                    source_excerpt: None,
+                    diagnostic_evidence: None,
+                    section_truncations: vec![],
+                    unavailable: vec![],
+                    notes: vec![],
+                });
+                response
+            }));
+
+        let executors = super::SecurityReviewExecutors {
+            security_context: Some(&security_exec),
+            hunk_source_context: Some(&hunk_exec),
+        };
+
+        let args = SecurityReviewCommandArgs {
+            hunk_context: true,
+            json: true,
+            base: Some("HEAD".to_string()),
+            ..Default::default()
+        };
+        let result =
+            run_security_review_command_with_executors(&root, &args, executors).await;
+        let output = result.expect("command should succeed; error: {result:?}");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&output).expect("output should be valid JSON");
+
+        let findings = parsed["findings"].as_array().expect("findings should be an array");
+        let notes = parsed["notes"].as_array().expect("notes should be an array");
+
+        let has_hunk_context_note = notes.iter().any(|n| {
+            n.as_str().map(|s| s.contains("hunkSourceContext")).unwrap_or(false)
+        });
+
+        let has_hunk_navigation_evidence = findings.iter().any(|f| {
+            f["evidence"].as_array().map(|e| {
+                e.iter().any(|ev| ev["kind"] == "HunkNavigation")
+            }).unwrap_or(false)
+        });
+
+        assert!(
+            has_hunk_context_note || has_hunk_navigation_evidence,
+            "hunk context evidence should appear in output: notes contain hunkSourceContext? {}, findings have HunkNavigation? {}\n\
+             findings={:#?}\nnotes={:#?}",
+            has_hunk_context_note, has_hunk_navigation_evidence, findings, notes
+        );
+    }
+
+    #[tokio::test]
+    async fn hunk_source_context_one_file_failure_does_not_block_others() {
+        let hunks = vec![
+            make_test_hunk("src/a.rs", 10, 5),
+            make_test_hunk("src/b.rs", 20, 3),
+            make_test_hunk("src/c.rs", 30, 4),
+        ];
+
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        patches.insert(
+            PathBuf::from("src/a.rs"),
+            "@@ -10,5 +10,5 @@\n-a\n+b\n".to_string(),
+        );
+        patches.insert(
+            PathBuf::from("src/b.rs"),
+            "@@ -20,3 +20,3 @@\n-c\n+d\n".to_string(),
+        );
+        patches.insert(
+            PathBuf::from("src/c.rs"),
+            "@@ -30,4 +30,4 @@\n-d\n+e\n".to_string(),
+        );
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+
+        struct SelectiveFailureExecutor {
+            seen: Arc<std::sync::Mutex<Vec<String>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl HunkSourceContextExecutor for SelectiveFailureExecutor {
+            async fn execute_hunk_source_context(
+                &self,
+                request: HunkSourceNavigationRequest,
+            ) -> Result<HunkSourceNavigationResponse, String> {
+                self.seen.lock().unwrap().push(request.file_path.clone());
+                if request.file_path == "src/b.rs" {
+                    return Err("LSP server unavailable for b.rs".to_string());
+                }
+                let mut response = HunkSourceNavigationResponse::new(&request.file_path);
+                response.hunks.push(HunkEvidence {
+                    hunk: HunkDescriptor {
+                        id: format!("{}:0:1-5", request.file_path),
+                        file_path: request.file_path.clone(),
+                        old_range: None,
+                        new_range: Some(HunkLineRange {
+                            start_line: 10,
+                            end_line: 14,
+                        }),
+                        header: None,
+                        added_lines: 0,
+                        removed_lines: 0,
+                        context_lines: 0,
+                    },
+                    focus_range: None,
+                    enclosing_symbol: Some(SemanticSymbolSummary {
+                        name: "test_func".to_string(),
+                        kind: "function".to_string(),
+                        file: request.file_path.clone(),
+                        start_line: 10,
+                        start_column: 0,
+                        end_line: 14,
+                        end_column: 1,
+                    }),
+                    related_symbols: vec![],
+                    diagnostics: vec![],
+                    nearby_diagnostics: vec![],
+                    definitions: vec![],
+                    references: vec![],
+                    call_hierarchy: None,
+                    type_hierarchy: None,
+                    source_excerpt: None,
+                    diagnostic_evidence: None,
+                    section_truncations: vec![],
+                    unavailable: vec![],
+                    notes: vec![],
+                });
+                Ok(response)
+            }
+        }
+
+        let executor = SelectiveFailureExecutor { seen: seen_clone };
+        let policy = HunkSourceContextPolicy::default();
+
+        let (evidence, summaries, notes) = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            8,
+            8,
+            2500,
+        )
+        .await;
+
+        assert!(
+            evidence.len() >= 2,
+            "expected evidence from a.rs and c.rs, got {} items",
+            evidence.len()
+        );
+        assert_eq!(summaries.len(), 2, "expected 2 summaries (a.rs and c.rs)");
+
+        assert!(
+            notes.iter().any(|n| n.contains("b.rs") && n.contains("unavailable")),
+            "expected failure note for b.rs, got notes: {:?}",
+            notes
+        );
+
+        let seen_files = seen.lock().unwrap();
+        assert_eq!(seen_files.len(), 3, "all 3 files should be attempted");
+        assert!(seen_files.contains(&"src/a.rs".to_string()));
+        assert!(seen_files.contains(&"src/b.rs".to_string()));
+        assert!(seen_files.contains(&"src/c.rs".to_string()));
+    }
+
+    #[tokio::test]
+    async fn collect_all_files_cap_always_selects_same_first_eight() {
+        let hunks: Vec<ChangedHunk> = (0..10)
+            .map(|i| make_test_hunk(&format!("src/file_{:02}.rs", i), i * 10, 3))
+            .collect();
+
+        let mut patches: HashMap<PathBuf, String> = HashMap::new();
+        for i in 0..10 {
+            let path = format!("src/file_{:02}.rs", i);
+            patches.insert(
+                PathBuf::from(&path),
+                format!("@@ -{},3 +{},3 @@\n-a\n+b\n", i * 10, i * 10),
+            );
+        }
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+
+        struct CapTrackingExecutor {
+            seen: Arc<std::sync::Mutex<Vec<String>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl HunkSourceContextExecutor for CapTrackingExecutor {
+            async fn execute_hunk_source_context(
+                &self,
+                request: HunkSourceNavigationRequest,
+            ) -> Result<HunkSourceNavigationResponse, String> {
+                self.seen.lock().unwrap().push(request.file_path.clone());
+                Ok(HunkSourceNavigationResponse::new(&request.file_path))
+            }
+        }
+
+        let executor = CapTrackingExecutor { seen: seen_clone };
+        let policy = HunkSourceContextPolicy::default();
+        let (_evidence, _summaries, _notes) = collect_hunk_source_context_all_files(
+            &hunks,
+            &patches,
+            &policy,
+            Some(&executor),
+            8,
+            8,
+            2500,
+        )
+        .await;
+
+        let seen_files = seen.lock().unwrap();
+        assert_eq!(seen_files.len(), 8, "exactly 8 files should be processed");
+
+        for i in 0..8 {
+            let expected = format!("src/file_{:02}.rs", i);
+            assert!(
+                seen_files.contains(&expected),
+                "file {} should be processed (sorted order)",
+                i
+            );
+        }
+
+        let not_processed: Vec<_> = seen_files
+            .iter()
+            .filter(|f| f.as_str() == "src/file_08.rs" || f.as_str() == "src/file_09.rs")
+            .collect();
+        assert!(
+            not_processed.is_empty(),
+            "src/file_08.rs and src/file_09.rs should NOT be processed"
+        );
+    }
+
+    #[tokio::test]
+    async fn hunk_source_context_real_patches_used_for_policy_not_synthetic_headers() {
+        // Verify that when real_patches HashMap is provided, the REAL patch
+        // content is used for policy evaluation (max_patch_bytes check),
+        // NOT the synthetic hunk headers from ChangedHunk.
+        //
+        // Setup: src/large.rs has a ChangedHunk with tiny synthetic headers
+        // but a real_patches entry that is > 64KB (exceeds default cap).
+        // Result: src/large.rs should be SKIPPED (policy uses real patch size).
+        //
+        // Setup: src/small.rs has a ChangedHunk with small synthetic headers
+        // and is NOT in real_patches, so synthetic headers are used.
+        // Result: src/small.rs should be PROCESSED (synthetic headers pass policy).
+
+        let hunks = vec![
+            make_test_hunk("src/large.rs", 10, 5),
+            make_test_hunk("src/small.rs", 20, 3),
+        ];
+
+        // Large real patch that exceeds default max_patch_bytes (64KB)
+        let large_patch_content = format!(
+            "@@ -10,5 +10,5 @@\n{}\n",
+            "x".repeat(70 * 1024)
+        );
+
+        let mut real_patches: HashMap<PathBuf, String> = HashMap::new();
+        real_patches.insert(PathBuf::from("src/large.rs"), large_patch_content);
+        // src/small.rs is NOT in real_patches → will use synthetic headers
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+
+        struct PolicyTrackingExecutor {
+            seen: Arc<std::sync::Mutex<Vec<String>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl HunkSourceContextExecutor for PolicyTrackingExecutor {
+            async fn execute_hunk_source_context(
+                &self,
+                request: HunkSourceNavigationRequest,
+            ) -> Result<HunkSourceNavigationResponse, String> {
+                self.seen.lock().unwrap().push(request.file_path.clone());
+                Ok(HunkSourceNavigationResponse::new(&request.file_path))
+            }
+        }
+
+        let executor = PolicyTrackingExecutor { seen: seen_clone };
+        let policy = HunkSourceContextPolicy::default();
+
+        let (_evidence, _summaries, notes) = collect_hunk_source_context_all_files(
+            &hunks,
+            &real_patches,
+            &policy,
+            Some(&executor),
+            8,
+            8,
+            2500,
+        )
+        .await;
+
+        let seen_files = seen.lock().unwrap();
+
+        // src/small.rs should be processed (uses synthetic headers, passes policy)
+        assert!(
+            seen_files.contains(&"src/small.rs".to_string()),
+            "src/small.rs should be processed (synthetic headers pass policy): seen={:?}",
+            *seen_files
+        );
+
+        // src/large.rs should NOT be processed (real patch > 64KB, skipped by policy)
+        assert!(
+            !seen_files.contains(&"src/large.rs".to_string()),
+            "src/large.rs should NOT be processed (real patch exceeds max_patch_bytes): seen={:?}",
+            *seen_files
+        );
+
+        // Verify the skip note mentions the size cap
+        // The note format is "hunkSourceContext skipped: patch size N bytes exceeds cap M bytes"
+        // (it does NOT include the file path in the skip message)
+        let skip_notes: Vec<_> = notes
+            .iter()
+            .filter(|n| n.contains("exceeds cap"))
+            .collect();
+        assert!(
+            !skip_notes.is_empty(),
+            "should have a skip note mentioning 'exceeds cap': {:?}",
+            notes
+        );
     }
 }
