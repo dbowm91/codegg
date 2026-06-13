@@ -881,18 +881,24 @@ Codegg acts as a bidirectional JSON-RPC peer. The background reader classifies i
 ### Supported server requests
 - `workspace/configuration` — scoped configuration lookup
 - `workspace/workspaceFolders` — returns current root
-- `client/registerCapability` / `client/unregisterCapability` — bounded dynamic registration tracking (256 max)
+- `client/registerCapability` / `client/unregisterCapability` — bounded dynamic registration tracking (256 max); processes full arrays with validation and deduplication
 - `window/workDoneProgress/create` — acknowledged with null
-- `workspace/applyEdit` — **always rejected** (Codegg never applies implicit edits)
+- `workspace/applyEdit` — **always rejected** as an application-level result with `applied: false` and `failureReason` (not a JSON-RPC error; Codegg never applies implicit edits)
 
 ### Cancellation
 Client request timeout triggers: (1) pending entry removal, (2) best-effort `$/cancelRequest` notification, (3) `RequestTimeout` error. Server-request dispatch has a 5-second timeout that returns `-32603` (Internal error) on expiry.
 
 ### Initialization
-Single-flight via `OnceCell` — concurrent first-use for same key awaits one initialization.
+Single-flight via custom `InitSlot` pattern — concurrent first-use for same key awaits one initialization. On failure, the slot is cleaned up and waiters receive errors, allowing retries.
 
 ### Writer
 `LspWriter` serializes all output through `Arc<Mutex<...>>`. Content-Length uses UTF-8 byte count.
+
+### Transport State
+`ClientTransportState` tracks whether the writer pipe to the server is still operational (`Running` or `Failed { reason }`). When the background reader detects a write failure for a server-request response, it transitions to `Failed`, drains all pending requests with errors, and exits. Subsequent `send_request` / `send_notification` calls return `LspError::WriterClosed` immediately.
+
+### Shutdown Coordination
+`LspService` tracks a `ServiceLifecycle` state machine (`Running` → `ShuttingDown` → `Stopped`). `shutdown_all()` transitions to `ShuttingDown` first, drains and shuts down all clients, clears document ownership and initialization maps, then transitions to `Stopped`. New client acquisition is rejected when the lifecycle is not `Running`.
 
 ## Architecture Notes
 

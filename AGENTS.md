@@ -204,13 +204,16 @@ These items were verified during review sessions:
 | `capabilities` LspTool operation | `capabilities` | `src/tool/lsp.rs` — returns `LspCapabilitySnapshot` for the file's server |
 | LSP bidirectional peer | Yes | `crates/egglsp/src/server_request.rs`, `crates/egglsp/src/client.rs` |
 | Server request dispatcher | `dispatch_server_request` | `crates/egglsp/src/server_request.rs` |
-| Dynamic registration state | `DynamicRegistrationState` (256 cap) | `crates/egglsp/src/server_request.rs` |
+| Dynamic registration state | `DynamicRegistrationState` (256 cap) — processes full arrays with validation and deduplication | `crates/egglsp/src/server_request.rs` |
 | Shared serialized writer | `LspWriter<W>` | `crates/egglsp/src/writer.rs` |
-| Single-flight initialization | `OnceCell` per key | `crates/egglsp/src/service.rs` |
+| Single-flight initialization | `InitSlot` pattern with oneshot channels per key (not `OnceCell`); failure cleans up and allows retries | `crates/egglsp/src/service.rs` |
 | Cancellation on timeout | `$/cancelRequest` best-effort | `crates/egglsp/src/client.rs` |
 | Global map lock release | Arc clone before await | `crates/egglsp/src/service.rs` |
-| workspace/applyEdit rejection | Always `applied: false` | `crates/egglsp/src/server_request.rs` |
+| workspace/applyEdit rejection | Always `applied: false` (application-level result, not JSON-RPC error) | `crates/egglsp/src/server_request.rs` |
 | New LspError variants | `Protocol`, `WriterClosed`, `InitializationCancelled` | `crates/egglsp/src/error.rs` |
+| Client transport state | `ClientTransportState` (`Running` or `Failed { reason }`) — writer failure propagation drains pending requests | `crates/egglsp/src/client.rs` |
+| Service lifecycle | `ServiceLifecycle` (`Running` → `ShuttingDown` → `Stopped`) — prevents new client acquisition after shutdown | `crates/egglsp/src/service.rs` |
+| Document ownership | `document_owners` map (URI → client key) for O(1) deterministic ownership lookup in `close_file`/`save_file` | `crates/egglsp/src/service.rs` |
 | Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` — see `architecture/native_crates.md` |
 | Extracted workspace crates | 4 (+1 new) | `crates/codegg-config`, `crates/codegg-protocol`, `crates/codegg-providers`, `crates/codegg-core` |
 | Tool backend contract | `src/tool/backend.rs` | `ToolBackendKind`, `ToolProvenance`, `StructuredToolResult`, `build_report()` for `/tool-backends` |

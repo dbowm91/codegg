@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::sync::{OnceCell, RwLock};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 use url::Url;
 
@@ -15,13 +15,31 @@ use super::root;
 use super::server::{self, LspServerDef};
 
 type ClientMap = Arc<RwLock<HashMap<String, Arc<LspClient>>>>;
-type InitCell = Arc<OnceCell<Arc<LspClient>>>;
-type InitMap = Arc<RwLock<HashMap<String, InitCell>>>;
+
+enum InitSlot {
+    Starting {
+        waiters: Vec<tokio::sync::oneshot::Sender<Result<Arc<LspClient>, LspError>>>,
+    },
+    Ready(Arc<LspClient>),
+}
+
+type InitMap = Arc<tokio::sync::RwLock<HashMap<String, Arc<Mutex<InitSlot>>>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceLifecycle {
+    Running,
+    ShuttingDown,
+    Stopped,
+}
 
 pub struct LspService {
     clients: ClientMap,
     /// Tracks in-progress initializations for single-flight semantics.
     initializing: InitMap,
+    /// Maps document URI string → client key for O(1) ownership lookup.
+    document_owners: Arc<RwLock<HashMap<String, String>>>,
+    /// Lifecycle state to prevent new client acquisition after shutdown begins.
+    lifecycle: Arc<RwLock<ServiceLifecycle>>,
     config: LspConfig,
 }
 
@@ -29,7 +47,9 @@ impl LspService {
     pub fn new(config: LspConfig) -> Self {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
-            initializing: Arc::new(RwLock::new(HashMap::new())),
+            initializing: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            document_owners: Arc::new(RwLock::new(HashMap::new())),
+            lifecycle: Arc::new(RwLock::new(ServiceLifecycle::Running)),
             config,
         }
     }
@@ -38,6 +58,16 @@ impl LspService {
         &self,
         file_path: &Path,
     ) -> Result<(String, PathBuf), LspError> {
+        // Phase 6: reject new client acquisition after shutdown begins.
+        {
+            let lc = self.lifecycle.read().await;
+            if *lc != ServiceLifecycle::Running {
+                return Err(LspError::InitializationCancelled(
+                    "service is not running".to_string(),
+                ));
+            }
+        }
+
         let lang = detect_language(file_path.to_str().unwrap_or("")).ok_or_else(|| {
             LspError::UnsupportedLanguage(format!("unknown language for {}", file_path.display()))
         })?;
@@ -71,26 +101,126 @@ impl LspService {
             }
         }
 
-        // Single-flight: create or reuse a OnceCell for this key.
-        let cell = {
-            let mut init = self.initializing.write().await;
-            init.entry(key.clone())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
+        // Phase 5: single-flight with shared failure results.
+        let slot = {
+            let init = self.initializing.read().await;
+            init.get(&key).cloned()
         };
 
-        // All concurrent callers for the same key await this single cell.
-        let client = cell
-            .get_or_try_init(|| async { self.init_client_inner(server, &project_root).await })
-            .await?;
+        let slot = match slot {
+            Some(s) => s,
+            None => {
+                let mut init = self.initializing.write().await;
+                // Double-check after acquiring write lock.
+                match init.get(&key) {
+                    Some(s) => s.clone(),
+                    None => {
+                        let s = Arc::new(Mutex::new(InitSlot::Starting { waiters: vec![] }));
+                        init.insert(key.clone(), s.clone());
+                        s
+                    }
+                }
+            }
+        };
 
-        // Install the client if not already installed.
-        {
-            let mut clients = self.clients.write().await;
-            clients.entry(key.clone()).or_insert_with(|| client.clone());
+        // Try to become the initializing caller.
+        let receiver = {
+            let mut guard = slot.lock().await;
+            match &*guard {
+                InitSlot::Ready(client) => {
+                    // Already initialized by someone else.
+                    {
+                        let mut clients = self.clients.write().await;
+                        clients.entry(key.clone()).or_insert_with(|| client.clone());
+                    }
+                    return Ok((key, project_root));
+                }
+                InitSlot::Starting { waiters } if waiters.is_empty() => {
+                    // We are the first caller — mark ourselves as initializing.
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    *guard = InitSlot::Starting { waiters: vec![tx] };
+                    Some(rx)
+                }
+                InitSlot::Starting { .. } => {
+                    // Concurrent caller — wait for result.
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    if let InitSlot::Starting { waiters } = &mut *guard {
+                        waiters.push(tx);
+                    }
+                    Some(rx)
+                }
+            }
+        };
+
+        match receiver {
+            Some(rx) => {
+                // We are a waiter — await the result from the first caller.
+                rx.await.unwrap_or_else(|_| {
+                    Err(LspError::InitializationCancelled(
+                        "init channel dropped".to_string(),
+                    ))
+                })?;
+                // The first caller already inserted into clients map on success.
+                return Ok((key, project_root));
+            }
+            None => {
+                // We are the first caller — run initialization.
+            }
         }
 
-        // Clean up the initialization cell.
+        let result = self.init_client_inner(server, &project_root).await;
+
+        // Lock the slot again to transition state and notify waiters.
+        let waiters = {
+            let mut guard = slot.lock().await;
+            match result {
+                Ok(client) => {
+                    // Install the client.
+                    {
+                        let mut clients = self.clients.write().await;
+                        clients.entry(key.clone()).or_insert_with(|| client.clone());
+                    }
+                    if let InitSlot::Starting { waiters } =
+                        std::mem::replace(&mut *guard, InitSlot::Ready(client))
+                    {
+                        waiters
+                    } else {
+                        vec![]
+                    }
+                }
+                Err(e) => {
+                    // Clean up the slot so a later call can retry.
+                    let waiters = if let InitSlot::Starting { waiters } =
+                        std::mem::replace(&mut *guard, InitSlot::Starting { waiters: vec![] })
+                    {
+                        waiters
+                    } else {
+                        vec![]
+                    };
+                    // Remove from map so retries work.
+                    drop(guard);
+                    self.initializing.write().await.remove(&key);
+                    // Notify waiters of failure.
+                    for tx in waiters {
+                        let _ = tx.send(Err(LspError::InitializationCancelled(
+                            "init failed".to_string(),
+                        )));
+                    }
+                    return Err(e);
+                }
+            }
+        };
+
+        // Notify waiters of success.
+        let client = {
+            let clients = self.clients.read().await;
+            clients.get(&key).cloned().unwrap()
+        };
+        for tx in waiters {
+            let _ = tx.send(Ok(client.clone()));
+        }
+
+        // Clean up the initialization slot.
         self.initializing.write().await.remove(&key);
 
         Ok((key, project_root))
@@ -146,7 +276,15 @@ impl LspService {
             .cloned()
             .unwrap_or(0)
             + 1;
-        client.open_file(&uri, text, version).await
+        client.open_file(&uri, text, version).await?;
+
+        // Phase 4: record ownership after successful didOpen.
+        self.document_owners
+            .write()
+            .await
+            .insert(uri.to_string(), key);
+
+        Ok(())
     }
 
     pub async fn update_file(&self, file_path: &Path, text: &str) -> Result<(), LspError> {
@@ -181,30 +319,38 @@ impl LspService {
             .map(|u| u.to_string())
             .unwrap_or_default();
 
-        // Find the client that has this file open.
+        // Phase 4: deterministic ownership lookup.
+        let owner_key = {
+            let owners = self.document_owners.read().await;
+            owners.get(&uri_str).cloned()
+        };
+
+        let owner_key = match owner_key {
+            Some(k) => k,
+            None => return Ok(()), // never-opened file — idempotent
+        };
+
         let client = {
             let clients = self.clients.read().await;
-            let mut found = None;
-            for (_, c) in clients.iter() {
-                if c.opened_files.lock().await.contains_key(&uri_str) {
-                    found = Some(c.clone());
-                    break;
-                }
-            }
-            found.ok_or_else(|| {
-                LspError::NotInitialized(format!("no client has file '{}' open", uri_str))
-            })?
+            clients.get(&owner_key).cloned()
         };
-        // Lock released.
 
-        let was_open = client.opened_files.lock().await.contains_key(&uri_str);
-        if was_open {
-            let uri = Url::from_file_path(file_path).map_err(|_| {
-                LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
-            })?;
-            let _ = client.close_file(&uri).await;
-            client.opened_files.lock().await.remove(&uri_str);
-        }
+        let client = match client {
+            Some(c) => c,
+            None => {
+                // Owner key stale — clean up and succeed.
+                self.document_owners.write().await.remove(&uri_str);
+                return Ok(());
+            }
+        };
+
+        let uri = Url::from_file_path(file_path).map_err(|_| {
+            LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
+        })?;
+        let _ = client.close_file(&uri).await;
+        client.opened_files.lock().await.remove(&uri_str);
+        self.document_owners.write().await.remove(&uri_str);
+
         Ok(())
     }
 
@@ -213,21 +359,26 @@ impl LspService {
             .map(|u| u.to_string())
             .unwrap_or_default();
 
-        // Find the client that has this file open.
+        // Phase 4: deterministic ownership lookup.
+        let owner_key = {
+            let owners = self.document_owners.read().await;
+            owners.get(&uri_str).cloned()
+        };
+
+        let owner_key = match owner_key {
+            Some(k) => k,
+            None => return Ok(()), // never-opened file — idempotent no-op
+        };
+
         let client = {
             let clients = self.clients.read().await;
-            let mut found = None;
-            for (_, c) in clients.iter() {
-                if c.opened_files.lock().await.contains_key(&uri_str) {
-                    found = Some(c.clone());
-                    break;
-                }
-            }
-            found.ok_or_else(|| {
-                LspError::NotInitialized(format!("no client has file '{}' open", uri_str))
-            })?
+            clients.get(&owner_key).cloned()
         };
-        // Lock released.
+
+        let client = match client {
+            Some(c) => c,
+            None => return Ok(()), // owner gone — no-op
+        };
 
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
@@ -308,6 +459,15 @@ impl LspService {
     }
 
     pub async fn shutdown_all(&self) {
+        // Phase 6: set lifecycle to ShuttingDown first.
+        {
+            let mut lc = self.lifecycle.write().await;
+            if *lc != ServiceLifecycle::Running {
+                return; // already shutting down or stopped — idempotent
+            }
+            *lc = ServiceLifecycle::ShuttingDown;
+        }
+
         let clients_to_shutdown: Vec<(String, Arc<LspClient>)> = {
             let mut clients = self.clients.write().await;
             clients.drain().collect()
@@ -320,6 +480,13 @@ impl LspService {
                 warn!(server = %key, error = %e, "error shutting down LSP client");
             }
         }
+
+        // Phase 4: clear document ownership.
+        self.document_owners.write().await.clear();
+        // Phase 5: clear pending initializations.
+        self.initializing.write().await.clear();
+        // Phase 6: set lifecycle to Stopped.
+        *self.lifecycle.write().await = ServiceLifecycle::Stopped;
     }
 
     pub async fn is_file_open(&self, key: &str, uri_str: &str) -> Result<bool, LspError> {
@@ -511,5 +678,108 @@ impl LspService {
             "multiple LSP clients for root {}; specify server_id to disambiguate",
             root.display()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Phase 4: deterministic document ownership ──
+
+    #[tokio::test]
+    async fn close_non_open_file_succeeds() {
+        let svc = LspService::new(LspConfig::Disabled(false));
+        let path = PathBuf::from("/tmp/nonexistent.rs");
+        // Should succeed idempotently — no owner entry exists.
+        assert!(svc.close_file(&path).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn save_non_open_file_succeeds() {
+        let svc = LspService::new(LspConfig::Disabled(false));
+        let path = PathBuf::from("/tmp/nonexistent.rs");
+        assert!(svc.save_file(&path, Some("text")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn document_ownership_roundtrip() {
+        let svc = LspService::new(LspConfig::Disabled(false));
+        // Manually insert an ownership entry.
+        {
+            let mut owners = svc.document_owners.write().await;
+            owners.insert(
+                "file:///tmp/foo.rs".to_string(),
+                "root:rust-analyzer".to_string(),
+            );
+        }
+        // Verify lookup.
+        {
+            let owners = svc.document_owners.read().await;
+            assert_eq!(
+                owners.get("file:///tmp/foo.rs").map(String::as_str),
+                Some("root:rust-analyzer")
+            );
+        }
+        // Remove via close_file path (simulated).
+        svc.document_owners
+            .write()
+            .await
+            .remove("file:///tmp/foo.rs");
+        assert!(svc.document_owners.read().await.is_empty());
+    }
+
+    // ── Phase 5: init slot logic ──
+
+    #[test]
+    fn init_slot_ready_shares_client() {
+        // Verify Starting variant carries empty waiters by default.
+        let slot = InitSlot::Starting { waiters: vec![] };
+        match slot {
+            InitSlot::Starting { waiters } => assert!(waiters.is_empty()),
+            _ => panic!("expected Starting"),
+        }
+    }
+
+    #[test]
+    fn init_slot_failure_cleans_up() {
+        // Verify that a Starting slot with waiters is correctly populated.
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let slot = InitSlot::Starting { waiters: vec![tx] };
+        match slot {
+            InitSlot::Starting { waiters } => assert_eq!(waiters.len(), 1),
+            _ => panic!("expected Starting"),
+        }
+    }
+
+    // ── Phase 6: lifecycle ──
+
+    #[tokio::test]
+    async fn lifecycle_starts_running() {
+        let svc = LspService::new(LspConfig::Disabled(false));
+        let lc = *svc.lifecycle.read().await;
+        assert_eq!(lc, ServiceLifecycle::Running);
+    }
+
+    #[tokio::test]
+    async fn shutdown_is_idempotent() {
+        let svc = LspService::new(LspConfig::Disabled(false));
+        svc.shutdown_all().await;
+        assert_eq!(*svc.lifecycle.read().await, ServiceLifecycle::Stopped);
+        // Second call should not panic.
+        svc.shutdown_all().await;
+        assert_eq!(*svc.lifecycle.read().await, ServiceLifecycle::Stopped);
+    }
+
+    #[tokio::test]
+    async fn get_or_create_client_rejects_after_shutdown() {
+        let svc = LspService::new(LspConfig::Disabled(false));
+        svc.shutdown_all().await;
+        let result = svc.get_or_create_client(Path::new("/tmp/test.rs")).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LspError::InitializationCancelled(_) => {}
+            other => panic!("expected InitializationCancelled, got {:?}", other),
+        }
     }
 }

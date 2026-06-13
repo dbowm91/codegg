@@ -59,14 +59,18 @@ impl DynamicRegistrationState {
         }
     }
 
-    /// Register a new capability. Returns `Err` if at the cap.
+    /// Register a new capability.
+    ///
+    /// If `id` already exists this is a replacement (no cap check).
+    /// If `id` is new and the cap is reached, returns `Err`.
     pub fn register(
         &mut self,
         id: String,
         method: String,
         options: Option<serde_json::Value>,
     ) -> Result<(), String> {
-        if self.registrations.len() >= MAX_REGISTRATIONS {
+        let is_new = !self.registrations.contains_key(&id);
+        if is_new && self.registrations.len() >= MAX_REGISTRATIONS {
             return Err(format!(
                 "dynamic registration limit ({}) reached",
                 MAX_REGISTRATIONS
@@ -86,6 +90,11 @@ impl DynamicRegistrationState {
     /// Unregister by id. Tolerates unknown ids.
     pub fn unregister(&mut self, id: &str) {
         self.registrations.remove(id);
+    }
+
+    /// Look up a registration by id.
+    pub fn get(&self, id: &str) -> Option<&DynamicRegistration> {
+        self.registrations.get(id)
     }
 
     /// Current count of tracked registrations.
@@ -111,14 +120,10 @@ pub async fn dispatch_server_request(
         "client/registerCapability" => handle_register_capability(context, &params).await,
         "client/unregisterCapability" => handle_unregister_capability(context, &params).await,
         "window/workDoneProgress/create" => ServerRequestReply::Result(serde_json::Value::Null),
-        "workspace/applyEdit" => ServerRequestReply::Error {
-            code: -32600,
-            message: "workspace/applyEdit is not supported".to_string(),
-            data: Some(serde_json::json!({
-                "applied": false,
-                "failureReason": "applyEdit is not supported by this client",
-            })),
-        },
+        "workspace/applyEdit" => ServerRequestReply::Result(serde_json::json!({
+            "applied": false,
+            "failureReason": "Codegg does not permit implicit language-server edits; request a preview and apply it through the authorized patch path",
+        })),
         _ => {
             debug!(method, "unknown server request method");
             ServerRequestReply::Error {
@@ -197,8 +202,8 @@ async fn handle_register_capability(
     context: &ServerRequestContext,
     params: &serde_json::Value,
 ) -> ServerRequestReply {
-    let reg = match params.get("registrations").and_then(|v| v.as_array()) {
-        Some(regs) if !regs.is_empty() => &regs[0],
+    let registrations = match params.get("registrations").and_then(|v| v.as_array()) {
+        Some(regs) if !regs.is_empty() => regs,
         _ => {
             warn!(
                 server_id = %context.server_id,
@@ -212,51 +217,110 @@ async fn handle_register_capability(
         }
     };
 
-    let id = match reg.get("id").and_then(|v| v.as_str()) {
-        Some(id) => id.to_string(),
-        None => {
-            return ServerRequestReply::Error {
-                code: -32602,
-                message: "Invalid params: missing registration id".to_string(),
-                data: None,
-            };
-        }
-    };
-
-    let method = match reg.get("method").and_then(|v| v.as_str()) {
-        Some(m) => m.to_string(),
-        None => {
-            return ServerRequestReply::Error {
-                code: -32602,
-                message: "Invalid params: missing registration method".to_string(),
-                data: None,
-            };
-        }
-    };
-
-    let register_options = reg.get("registerOptions").cloned();
-
-    let mut state = context.dynamic_registrations.write().await;
-    match state.register(id, method, register_options) {
-        Ok(()) => ServerRequestReply::Result(serde_json::Value::Null),
-        Err(msg) => ServerRequestReply::Error {
-            code: -32600,
-            message: msg,
-            data: None,
-        },
+    // Validate ALL entries first — reject the whole request if ANY is malformed.
+    let mut parsed: Vec<(String, String, Option<serde_json::Value>)> =
+        Vec::with_capacity(registrations.len());
+    for reg in registrations {
+        let id = match reg.get("id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => {
+                return ServerRequestReply::Error {
+                    code: -32602,
+                    message: "Invalid params: missing registration id".to_string(),
+                    data: None,
+                };
+            }
+        };
+        let method = match reg.get("method").and_then(|v| v.as_str()) {
+            Some(m) => m.to_string(),
+            None => {
+                return ServerRequestReply::Error {
+                    code: -32602,
+                    message: "Invalid params: missing registration method".to_string(),
+                    data: None,
+                };
+            }
+        };
+        let register_options = reg.get("registerOptions").cloned();
+        parsed.push((id, method, register_options));
     }
+
+    // Deduplicate by ID: last-write-wins within a single request.
+    let mut deduped: Vec<(String, String, Option<serde_json::Value>)> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for entry in parsed {
+        match seen.get(&entry.0) {
+            Some(&idx) => deduped[idx] = entry,
+            None => {
+                seen.insert(entry.0.clone(), deduped.len());
+                deduped.push(entry);
+            }
+        }
+    }
+
+    // Apply all entries. Replacements (existing IDs) bypass the cap.
+    let mut state = context.dynamic_registrations.write().await;
+    for (id, method, options) in deduped {
+        if let Err(msg) = state.register(id, method, options) {
+            return ServerRequestReply::Error {
+                code: -32600,
+                message: msg,
+                data: None,
+            };
+        }
+    }
+    ServerRequestReply::Result(serde_json::Value::Null)
 }
 
 async fn handle_unregister_capability(
     context: &ServerRequestContext,
     params: &serde_json::Value,
 ) -> ServerRequestReply {
+    // Try LSP array shape: "unregisterations" (official) or "unregistrations" (compat).
+    let items = params
+        .get("unregisterations")
+        .or_else(|| params.get("unregistrations"))
+        .and_then(|v| v.as_array());
+
+    if let Some(items) = items {
+        if items.is_empty() {
+            return ServerRequestReply::Error {
+                code: -32602,
+                message: "Invalid params: empty 'unregisterations' array".to_string(),
+                data: None,
+            };
+        }
+
+        // Validate each item has an ID, then unregister all.
+        let mut ids: Vec<String> = Vec::with_capacity(items.len());
+        for item in items {
+            match item.get("id").and_then(|v| v.as_str()) {
+                Some(id) => ids.push(id.to_string()),
+                None => {
+                    return ServerRequestReply::Error {
+                        code: -32602,
+                        message: "Invalid params: missing unregister id in array entry".to_string(),
+                        data: None,
+                    };
+                }
+            }
+        }
+
+        let mut state = context.dynamic_registrations.write().await;
+        for id in &ids {
+            state.unregister(id);
+        }
+        return ServerRequestReply::Result(serde_json::Value::Null);
+    }
+
+    // Fall back to single `id` field for backward compatibility.
     let id = match params.get("id").and_then(|v| v.as_str()) {
         Some(id) => id.to_string(),
         None => {
             return ServerRequestReply::Error {
                 code: -32602,
-                message: "Invalid params: missing unregister id".to_string(),
+                message: "Invalid params: missing 'unregisterations' array or 'id' field"
+                    .to_string(),
                 data: None,
             };
         }
@@ -464,6 +528,108 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn register_capability_multiple_registrations() {
+        let ctx = make_context();
+        let params = serde_json::json!({
+            "registrations": [
+                {"id": "r1", "method": "textDocument/didOpen"},
+                {"id": "r2", "method": "textDocument/didClose"},
+                {"id": "r3", "method": "textDocument/didSave", "registerOptions": {"includeText": true}}
+            ]
+        });
+        let reply = dispatch_server_request(&ctx, "client/registerCapability", params).await;
+        assert!(matches!(reply, ServerRequestReply::Result(_)));
+        let state = ctx.dynamic_registrations.read().await;
+        assert_eq!(state.count(), 3);
+    }
+
+    #[tokio::test]
+    async fn register_capability_replacement_at_cap_succeeds() {
+        let ctx = make_context();
+        {
+            let mut state = ctx.dynamic_registrations.write().await;
+            for i in 0..MAX_REGISTRATIONS {
+                state
+                    .register(format!("id-{i}"), "test/method".to_string(), None)
+                    .unwrap();
+            }
+        }
+        // Replacing an existing ID at the cap should succeed.
+        let params = serde_json::json!({
+            "registrations": [{"id": "id-0", "method": "replaced/method"}]
+        });
+        let reply = dispatch_server_request(&ctx, "client/registerCapability", params).await;
+        assert!(matches!(reply, ServerRequestReply::Result(_)));
+        let state = ctx.dynamic_registrations.read().await;
+        assert_eq!(state.count(), MAX_REGISTRATIONS);
+    }
+
+    #[tokio::test]
+    async fn register_capability_new_above_cap_fails() {
+        let ctx = make_context();
+        {
+            let mut state = ctx.dynamic_registrations.write().await;
+            for i in 0..MAX_REGISTRATIONS {
+                state
+                    .register(format!("id-{i}"), "test/method".to_string(), None)
+                    .unwrap();
+            }
+        }
+        // Adding a brand-new ID at the cap should fail, leaving state unchanged.
+        let params = serde_json::json!({
+            "registrations": [{"id": "brand-new", "method": "x"}]
+        });
+        let reply = dispatch_server_request(&ctx, "client/registerCapability", params).await;
+        match reply {
+            ServerRequestReply::Error { code, .. } => assert_eq!(code, -32600),
+            _ => panic!("expected Error"),
+        }
+        let state = ctx.dynamic_registrations.read().await;
+        assert_eq!(state.count(), MAX_REGISTRATIONS);
+    }
+
+    #[tokio::test]
+    async fn register_capability_malformed_entry_rejects_all() {
+        let ctx = make_context();
+        let params = serde_json::json!({
+            "registrations": [
+                {"id": "good-1", "method": "textDocument/didOpen"},
+                {"method": "textDocument/didClose"}
+            ]
+        });
+        let reply = dispatch_server_request(&ctx, "client/registerCapability", params).await;
+        match reply {
+            ServerRequestReply::Error { code, message, .. } => {
+                assert_eq!(code, -32602);
+                assert!(message.contains("missing registration id"));
+            }
+            _ => panic!("expected Error for malformed entry"),
+        }
+        // Nothing should have been registered.
+        let state = ctx.dynamic_registrations.read().await;
+        assert_eq!(state.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn register_capability_duplicate_ids_last_write_wins() {
+        let ctx = make_context();
+        let params = serde_json::json!({
+            "registrations": [
+                {"id": "dup", "method": "first/method", "registerOptions": {"v": 1}},
+                {"id": "dup", "method": "second/method", "registerOptions": {"v": 2}}
+            ]
+        });
+        let reply = dispatch_server_request(&ctx, "client/registerCapability", params).await;
+        assert!(matches!(reply, ServerRequestReply::Result(_)));
+        let state = ctx.dynamic_registrations.read().await;
+        assert_eq!(state.count(), 1);
+        // The second entry should have won.
+        let reg = state.get("dup").expect("registration exists");
+        assert_eq!(reg.method, "second/method");
+        assert_eq!(reg.register_options, Some(serde_json::json!({"v": 2})));
+    }
+
     // ── Unregister capability tests ──────────────────────────────────
 
     #[tokio::test]
@@ -501,6 +667,132 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn unregister_capability_multiple_unregistrations() {
+        let ctx = make_context();
+        {
+            let mut state = ctx.dynamic_registrations.write().await;
+            state.register("r1".into(), "m1".into(), None).unwrap();
+            state.register("r2".into(), "m2".into(), None).unwrap();
+            state.register("r3".into(), "m3".into(), None).unwrap();
+        }
+        let params = serde_json::json!({
+            "unregisterations": [
+                {"id": "r1", "method": "m1"},
+                {"id": "r3", "method": "m3"}
+            ]
+        });
+        let reply = dispatch_server_request(&ctx, "client/unregisterCapability", params).await;
+        assert!(matches!(reply, ServerRequestReply::Result(_)));
+        let state = ctx.dynamic_registrations.read().await;
+        assert_eq!(state.count(), 1);
+        assert!(state.get("r2").is_some());
+    }
+
+    #[tokio::test]
+    async fn unregister_capability_protocol_spelling() {
+        let ctx = make_context();
+        {
+            let mut state = ctx.dynamic_registrations.write().await;
+            state.register("r1".into(), "m1".into(), None).unwrap();
+        }
+        let params = serde_json::json!({
+            "unregisterations": [{"id": "r1", "method": "m1"}]
+        });
+        let reply = dispatch_server_request(&ctx, "client/unregisterCapability", params).await;
+        assert!(matches!(reply, ServerRequestReply::Result(_)));
+        let state = ctx.dynamic_registrations.read().await;
+        assert_eq!(state.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unregister_capability_compat_spelling() {
+        let ctx = make_context();
+        {
+            let mut state = ctx.dynamic_registrations.write().await;
+            state.register("r1".into(), "m1".into(), None).unwrap();
+        }
+        let params = serde_json::json!({
+            "unregistrations": [{"id": "r1", "method": "m1"}]
+        });
+        let reply = dispatch_server_request(&ctx, "client/unregisterCapability", params).await;
+        assert!(matches!(reply, ServerRequestReply::Result(_)));
+        let state = ctx.dynamic_registrations.read().await;
+        assert_eq!(state.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unregister_capability_unknown_ids_succeeds() {
+        let ctx = make_context();
+        let params = serde_json::json!({
+            "unregisterations": [
+                {"id": "unknown-1", "method": "m1"},
+                {"id": "unknown-2", "method": "m2"}
+            ]
+        });
+        let reply = dispatch_server_request(&ctx, "client/unregisterCapability", params).await;
+        assert!(matches!(reply, ServerRequestReply::Result(_)));
+    }
+
+    #[tokio::test]
+    async fn unregister_capability_empty_array_is_invalid() {
+        let ctx = make_context();
+        let params = serde_json::json!({
+            "unregisterations": []
+        });
+        let reply = dispatch_server_request(&ctx, "client/unregisterCapability", params).await;
+        match reply {
+            ServerRequestReply::Error { code, .. } => assert_eq!(code, -32602),
+            _ => panic!("expected Error for empty array"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unregister_capability_array_missing_id_is_invalid() {
+        let ctx = make_context();
+        let params = serde_json::json!({
+            "unregisterations": [{"method": "m1"}]
+        });
+        let reply = dispatch_server_request(&ctx, "client/unregisterCapability", params).await;
+        match reply {
+            ServerRequestReply::Error { code, .. } => assert_eq!(code, -32602),
+            _ => panic!("expected Error for missing id in array entry"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unregister_mixed_valid_and_malformed_rejects_all_atomically() {
+        let ctx = make_context();
+        {
+            let mut state = ctx.dynamic_registrations.write().await;
+            state.register("r1".into(), "m1".into(), None).unwrap();
+            state.register("r2".into(), "m2".into(), None).unwrap();
+        }
+        // One valid entry followed by one malformed entry (missing id).
+        let params = serde_json::json!({
+            "unregisterations": [
+                {"id": "r1", "method": "m1"},
+                {"method": "m2"}
+            ]
+        });
+        let reply = dispatch_server_request(&ctx, "client/unregisterCapability", params).await;
+        match reply {
+            ServerRequestReply::Error { code, message, .. } => {
+                assert_eq!(code, -32602);
+                assert!(
+                    message.contains("missing"),
+                    "error should mention missing id"
+                );
+            }
+            _ => panic!("expected Error for malformed entry"),
+        }
+        // Nothing should have been unregistered — atomic rejection.
+        let state = ctx.dynamic_registrations.read().await;
+        assert_eq!(state.count(), 2, "both registrations should remain");
+        assert!(state.get("r1").is_some());
+        assert!(state.get("r2").is_some());
+    }
+
     // ── WorkDoneProgress/create test ─────────────────────────────────
 
     #[tokio::test]
@@ -526,18 +818,112 @@ mod tests {
         });
         let reply = dispatch_server_request(&ctx, "workspace/applyEdit", params).await;
         match reply {
-            ServerRequestReply::Error {
-                code,
-                message,
-                data,
-            } => {
-                assert_eq!(code, -32600);
-                assert!(message.contains("not supported"));
-                let d = data.unwrap();
-                assert_eq!(d["applied"], false);
-                assert!(d.get("failureReason").is_some());
+            ServerRequestReply::Result(val) => {
+                assert_eq!(val["applied"], false);
+                let reason = val["failureReason"]
+                    .as_str()
+                    .expect("failureReason should be a string");
+                assert!(!reason.is_empty(), "failureReason should be non-empty");
             }
-            _ => panic!("expected Error"),
+            ServerRequestReply::Error { .. } => panic!("expected Result, not Error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_edit_with_changes_refused_as_result() {
+        let ctx = make_context();
+        let params = serde_json::json!({
+            "edit": {
+                "changes": {
+                    "file:///src/main.rs": [
+                        {
+                            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } },
+                            "newText": "hello"
+                        }
+                    ]
+                }
+            }
+        });
+        let reply = dispatch_server_request(&ctx, "workspace/applyEdit", params).await;
+        match reply {
+            ServerRequestReply::Result(val) => {
+                assert_eq!(val["applied"], false);
+                let reason = val["failureReason"]
+                    .as_str()
+                    .expect("failureReason should be a string");
+                assert!(!reason.is_empty());
+            }
+            ServerRequestReply::Error { .. } => panic!("expected Result, not Error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_edit_with_document_changes_refused_as_result() {
+        let ctx = make_context();
+        let params = serde_json::json!({
+            "edit": {
+                "documentChanges": [
+                    {
+                        "textDocument": { "uri": "file:///src/main.rs", "version": 1 },
+                        "edits": [
+                            {
+                                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } },
+                                "newText": "hello"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+        let reply = dispatch_server_request(&ctx, "workspace/applyEdit", params).await;
+        match reply {
+            ServerRequestReply::Result(val) => {
+                assert_eq!(val["applied"], false);
+                let reason = val["failureReason"]
+                    .as_str()
+                    .expect("failureReason should be a string");
+                assert!(!reason.is_empty());
+            }
+            ServerRequestReply::Error { .. } => panic!("expected Result, not Error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_edit_with_both_changes_and_document_changes() {
+        let ctx = make_context();
+        let params = serde_json::json!({
+            "edit": {
+                "changes": {
+                    "file:///src/main.rs": [
+                        {
+                            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } },
+                            "newText": "hello"
+                        }
+                    ]
+                },
+                "documentChanges": [
+                    {
+                        "textDocument": { "uri": "file:///src/lib.rs", "version": 1 },
+                        "edits": [
+                            {
+                                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } },
+                                "newText": "world"
+                            }
+                        ]
+                    }
+                ]
+            }
+        });
+        let reply = dispatch_server_request(&ctx, "workspace/applyEdit", params).await;
+        match reply {
+            ServerRequestReply::Result(val) => {
+                assert_eq!(val["applied"], false);
+                let reason = val["failureReason"]
+                    .as_str()
+                    .expect("failureReason should be a string");
+                assert!(!reason.is_empty());
+            }
+            ServerRequestReply::Error { .. } => panic!("expected Result, not Error"),
         }
     }
 

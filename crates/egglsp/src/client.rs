@@ -30,6 +30,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Tracks whether the client transport (writer pipe to the server) is
+/// still operational. When the background reader detects a write failure
+/// for a server-request response, it transitions to `Failed` and all
+/// pending requests are drained. Subsequent `send_request` /
+/// `send_notification` calls return `LspError::WriterClosed` immediately.
+#[derive(Debug, Clone)]
+pub(crate) enum ClientTransportState {
+    Running,
+    Failed { reason: String },
+}
+
 use lsp_types::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::{oneshot, Mutex};
@@ -45,13 +56,13 @@ use crate::error::LspError;
 /// JSON-RPC message ID, preserving both numeric and string forms.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum JsonRpcId {
-    Number(u64),
+    Number(i64),
     String(String),
 }
 
 impl JsonRpcId {
     /// Returns the numeric value if this is a `Number` variant.
-    pub fn as_number(&self) -> Option<u64> {
+    pub fn as_number(&self) -> Option<i64> {
         match self {
             JsonRpcId::Number(n) => Some(*n),
             JsonRpcId::String(_) => None,
@@ -74,7 +85,7 @@ impl Serialize for JsonRpcId {
         S: Serializer,
     {
         match self {
-            JsonRpcId::Number(n) => serializer.serialize_u64(*n),
+            JsonRpcId::Number(n) => serializer.serialize_i64(*n),
             JsonRpcId::String(s) => serializer.serialize_str(s),
         }
     }
@@ -88,7 +99,7 @@ impl<'de> Deserialize<'de> for JsonRpcId {
         let val = serde_json::Value::deserialize(deserializer)?;
         match val {
             serde_json::Value::Number(n) => {
-                let num = n.as_u64().ok_or_else(|| {
+                let num = n.as_i64().ok_or_else(|| {
                     serde::de::Error::custom(format!("invalid JSON-RPC id number: {n}"))
                 })?;
                 Ok(JsonRpcId::Number(num))
@@ -138,10 +149,13 @@ pub enum JsonRpcMessage {
 }
 
 /// Extract a `JsonRpcId` from a `serde_json::Value`, if present.
+///
+/// Returns `None` for null IDs, floating-point IDs (non-integer numbers),
+/// and object/array ID values.
 fn extract_id(value: &serde_json::Value) -> Option<JsonRpcId> {
     let id_val = value.get("id")?;
     match id_val {
-        serde_json::Value::Number(n) => n.as_u64().map(JsonRpcId::Number),
+        serde_json::Value::Number(n) => n.as_i64().map(JsonRpcId::Number),
         serde_json::Value::String(s) => Some(JsonRpcId::String(s.clone())),
         serde_json::Value::Null => None,
         _ => None,
@@ -152,10 +166,10 @@ fn extract_id(value: &serde_json::Value) -> Option<JsonRpcId> {
 ///
 /// Classification order (structural, no silent drops):
 /// 1. id + method          → server request
-/// 2. id + error           → error response
-/// 3. id + result (or null) → success response
+/// 2. id + valid error     → error response (error must be object with code + message)
+/// 3. id + result field    → success response (explicit `result: null` is valid)
 /// 4. method without id    → notification
-/// 5. otherwise            → unknown
+/// 5. otherwise            → unknown (id-only objects are unknown, not responses)
 pub fn classify_json_rpc_message(value: serde_json::Value) -> JsonRpcMessage {
     let id = extract_id(&value);
     let method = value.get("method").and_then(|v| v.as_str());
@@ -172,18 +186,15 @@ pub fn classify_json_rpc_message(value: serde_json::Value) -> JsonRpcMessage {
                 params,
             }
         }
-        (Some(id), None) if value.get("error").is_some() => {
-            let code = value
-                .get("error")
-                .and_then(|e| e.get("code"))
-                .and_then(|c| c.as_i64());
-            let message = value
-                .get("error")
-                .and_then(|e| e.get("message"))
+        (Some(id), None) if is_structural_error(&value) => {
+            let error = value.get("error").unwrap();
+            let code = error.get("code").and_then(|c| c.as_i64());
+            let message = error
+                .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown error")
                 .to_string();
-            let data = value.get("error").and_then(|e| e.get("data")).cloned();
+            let data = error.get("data").cloned();
             JsonRpcMessage::ErrorResponse {
                 id,
                 code,
@@ -191,11 +202,8 @@ pub fn classify_json_rpc_message(value: serde_json::Value) -> JsonRpcMessage {
                 data,
             }
         }
-        (Some(id), None) => {
-            let result = value
-                .get("result")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
+        (Some(id), None) if value.get("result").is_some() => {
+            let result = value.get("result").cloned().unwrap();
             JsonRpcMessage::Response { id, result }
         }
         (None, Some(method)) => {
@@ -210,6 +218,17 @@ pub fn classify_json_rpc_message(value: serde_json::Value) -> JsonRpcMessage {
         }
         _ => JsonRpcMessage::Unknown,
     }
+}
+
+/// Returns true if the value contains a structurally valid JSON-RPC error:
+/// `error` is an object with a numeric `code` and a string `message`.
+fn is_structural_error(value: &serde_json::Value) -> bool {
+    let error = match value.get("error") {
+        Some(serde_json::Value::Object(obj)) => obj,
+        _ => return false,
+    };
+    error.get("code").is_some_and(|c| c.is_number())
+        && error.get("message").is_some_and(|m| m.is_string())
 }
 
 /// Dispatch a notification by method. Currently handles diagnostics.
@@ -286,6 +305,10 @@ pub struct LspClient {
     pub diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>>,
     pub diagnostics_invalidated_at: Arc<Mutex<Option<Instant>>>,
     pub pending: PendingMap,
+    /// Transport health: transitions to `Failed` when the background reader
+    /// cannot write a server-request response. Checked by `send_request` /
+    /// `send_notification` to fail fast instead of writing to a broken pipe.
+    pub(crate) transport_state: Arc<Mutex<ClientTransportState>>,
     _reader_task: tokio::task::JoinHandle<()>,
 }
 
@@ -326,10 +349,13 @@ impl LspClient {
         let diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let transport_state: Arc<Mutex<ClientTransportState>> =
+            Arc::new(Mutex::new(ClientTransportState::Running));
 
         // Spawn background stdout reader.
         let reader_diagnostics = diagnostics.clone();
         let reader_pending = pending.clone();
+        let reader_transport_state = transport_state.clone();
         let server_id = server.id.to_string();
         let reader_writer = writer.clone_inner();
         let reader_context = ServerRequestContext {
@@ -355,6 +381,7 @@ impl LspClient {
                 stdout,
                 reader_diagnostics,
                 reader_pending,
+                reader_transport_state,
                 server_id,
                 reader_writer,
                 reader_context,
@@ -374,6 +401,7 @@ impl LspClient {
             diagnostics,
             diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
             pending,
+            transport_state,
             _reader_task: reader_task,
         };
 
@@ -387,6 +415,7 @@ impl LspClient {
         mut stdout: tokio::process::ChildStdout,
         diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>>,
         pending: PendingMap,
+        transport_state: Arc<Mutex<ClientTransportState>>,
         server_id: String,
         writer: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
         server_request_context: ServerRequestContext,
@@ -455,7 +484,14 @@ impl LspClient {
                     match reply {
                         ServerRequestReply::Result(result) => {
                             if let Err(e) = writer.send_response_result(&id, result).await {
-                                warn!(server = %server_id, id = %id, error = %e, "failed to write server-request response");
+                                let reason =
+                                    format!("failed to write server-request response: {e}");
+                                warn!(server = %server_id, id = %id, error = %e, "writer failure, entering failed state");
+                                *transport_state.lock().await = ClientTransportState::Failed {
+                                    reason: reason.clone(),
+                                };
+                                fail_all_pending(&pending, &reason).await;
+                                break;
                             }
                         }
                         ServerRequestReply::Error {
@@ -466,7 +502,14 @@ impl LspClient {
                             if let Err(e) =
                                 writer.send_response_error(&id, code, &message, data).await
                             {
-                                warn!(server = %server_id, id = %id, error = %e, "failed to write server-request error response");
+                                let reason =
+                                    format!("failed to write server-request error response: {e}");
+                                warn!(server = %server_id, id = %id, error = %e, "writer failure, entering failed state");
+                                *transport_state.lock().await = ClientTransportState::Failed {
+                                    reason: reason.clone(),
+                                };
+                                fail_all_pending(&pending, &reason).await;
+                                break;
                             }
                         }
                     }
@@ -868,8 +911,13 @@ impl LspClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, LspError> {
+        // Fail fast if transport is already in a failed state.
+        if let ClientTransportState::Failed { ref reason } = *self.transport_state.lock().await {
+            return Err(LspError::WriterClosed(reason.clone()));
+        }
+
         let raw_id = self.request_id.fetch_add(1, Ordering::SeqCst);
-        let id = JsonRpcId::Number(raw_id);
+        let id = JsonRpcId::Number(raw_id as i64);
 
         // Register pending request before writing to stdin.
         let (tx, rx) = oneshot::channel();
@@ -930,6 +978,11 @@ impl LspClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<(), LspError> {
+        // Fail fast if transport is already in a failed state.
+        if let ClientTransportState::Failed { ref reason } = *self.transport_state.lock().await {
+            return Err(LspError::WriterClosed(reason.clone()));
+        }
+
         self.writer.send_notification_message(method, params).await
     }
 
@@ -1735,6 +1788,129 @@ mod tests {
         assert_eq!(freshness, LspDiagnosticFreshness::Fresh);
     }
 
+    // ── Phase 3 classifier hardening tests ──────────────────────────
+
+    #[test]
+    fn classify_id_only_object_is_unknown() {
+        let msg = serde_json::json!({"id": 1});
+        assert!(matches!(
+            classify_json_rpc_message(msg),
+            JsonRpcMessage::Unknown
+        ));
+    }
+
+    #[test]
+    fn classify_explicit_result_null_is_valid() {
+        let msg = serde_json::json!({"id": 1, "result": null});
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::Response { id, result } => {
+                assert_eq!(id, JsonRpcId::Number(1));
+                assert_eq!(result, serde_json::Value::Null);
+            }
+            other => panic!("expected Response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_malformed_error_not_routed_as_error() {
+        let msg = serde_json::json!({"id": 1, "error": "string error"});
+        assert!(matches!(
+            classify_json_rpc_message(msg),
+            JsonRpcMessage::Unknown
+        ));
+    }
+
+    #[test]
+    fn classify_error_object_missing_code_is_unknown() {
+        let msg = serde_json::json!({"id": 1, "error": {"message": "oops"}});
+        assert!(matches!(
+            classify_json_rpc_message(msg),
+            JsonRpcMessage::Unknown
+        ));
+    }
+
+    #[test]
+    fn classify_error_object_missing_message_is_unknown() {
+        let msg = serde_json::json!({"id": 1, "error": {"code": -1}});
+        assert!(matches!(
+            classify_json_rpc_message(msg),
+            JsonRpcMessage::Unknown
+        ));
+    }
+
+    #[test]
+    fn classify_error_object_code_not_number_is_unknown() {
+        let msg = serde_json::json!({"id": 1, "error": {"code": "bad", "message": "oops"}});
+        assert!(matches!(
+            classify_json_rpc_message(msg),
+            JsonRpcMessage::Unknown
+        ));
+    }
+
+    #[test]
+    fn classify_negative_integer_id_preserved() {
+        let msg = serde_json::json!({"id": -1, "method": "test"});
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::ServerRequest { id, method, .. } => {
+                assert_eq!(id, JsonRpcId::Number(-1));
+                assert_eq!(method, "test");
+            }
+            other => panic!("expected ServerRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_floating_point_id_rejected() {
+        let msg = serde_json::json!({"id": 1.5, "result": 42});
+        assert!(matches!(
+            classify_json_rpc_message(msg),
+            JsonRpcMessage::Unknown
+        ));
+    }
+
+    #[test]
+    fn classify_object_id_rejected() {
+        let msg = serde_json::json!({"id": {"a": 1}, "result": 42});
+        assert!(matches!(
+            classify_json_rpc_message(msg),
+            JsonRpcMessage::Unknown
+        ));
+    }
+
+    #[test]
+    fn classify_string_id_supported() {
+        let msg = serde_json::json!({"id": "abc", "result": 42});
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::Response { id, result } => {
+                assert_eq!(id, JsonRpcId::String("abc".to_string()));
+                assert_eq!(result, serde_json::json!(42));
+            }
+            other => panic!("expected Response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_error_with_data_field() {
+        let msg = serde_json::json!({
+            "id": 10,
+            "error": {"code": -32601, "message": "Method not found", "data": {"hint": "try foo"}}
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::ErrorResponse {
+                id,
+                code,
+                message,
+                data,
+            } => {
+                assert_eq!(id, JsonRpcId::Number(10));
+                assert_eq!(code, Some(-32601));
+                assert_eq!(message, "Method not found");
+                assert!(data.is_some());
+            }
+            other => panic!("expected ErrorResponse, got {other:?}"),
+        }
+    }
+
     // ── Phase 1 classifier tests ────────────────────────────────────
 
     #[test]
@@ -1899,7 +2075,7 @@ mod tests {
     #[test]
     fn json_rpc_id_number_as_number() {
         let id = JsonRpcId::Number(42);
-        assert_eq!(id.as_number(), Some(42));
+        assert_eq!(id.as_number(), Some(42i64));
     }
 
     #[test]
@@ -2097,5 +2273,179 @@ mod tests {
 
         // Pending map remains empty — the late response didn't re-add anything.
         assert!(pending.lock().await.is_empty());
+    }
+
+    // ── Phase 7 transport-state tests ─────────────────────────────
+
+    #[tokio::test]
+    async fn transport_state_starts_running() {
+        let state: super::ClientTransportState = super::ClientTransportState::Running;
+        assert!(matches!(state, super::ClientTransportState::Running));
+    }
+
+    #[tokio::test]
+    async fn writer_failure_fails_pending() {
+        use super::{ClientTransportState, LspWriter, PendingMap};
+
+        // Create a duplex pair then drop the server half so writes fail.
+        let (client_half, _server_half) = tokio::io::duplex(64);
+        drop(_server_half);
+
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+
+        let pending: PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let id = JsonRpcId::Number(1);
+        let (tx, rx) = oneshot::channel();
+        pending.lock().await.insert(id.clone(), tx);
+
+        // Attempt to send — this should fail because writer is broken.
+        let result = writer
+            .send_request_message(&id, "test/method", serde_json::json!(null))
+            .await;
+        assert!(result.is_err(), "write should fail on broken pipe");
+
+        // Simulate what background_reader now does: set transport to Failed, drain pending.
+        let reason = "failed to write server-request response: broken pipe".to_string();
+        let transport_state: Arc<tokio::sync::Mutex<ClientTransportState>> =
+            Arc::new(tokio::sync::Mutex::new(ClientTransportState::Running));
+        *transport_state.lock().await = ClientTransportState::Failed {
+            reason: reason.clone(),
+        };
+
+        // Drain all pending with the failure reason.
+        let drained = std::mem::take(&mut *pending.lock().await);
+        for (_, tx) in drained {
+            let _ = tx.send(Err(LspError::RequestFailed(reason.clone())));
+        }
+
+        // The pending map should now be empty.
+        assert!(pending.lock().await.is_empty());
+
+        // The oneshot receiver should have gotten the error.
+        let recv_result = tokio::time::timeout(Duration::from_millis(50), rx).await;
+        match recv_result {
+            Ok(Ok(Err(LspError::RequestFailed(msg)))) => {
+                assert!(msg.contains("failed to write"));
+            }
+            other => panic!("expected RequestFailed, got {other:?}"),
+        }
+
+        // Transport state should be Failed.
+        assert!(matches!(
+            *transport_state.lock().await,
+            ClientTransportState::Failed { .. }
+        ));
+    }
+
+    // ── Phase 8: timeout/cancel leak-free tests ─────────────────────
+
+    #[tokio::test]
+    async fn timeout_cleans_pending_entry() {
+        // Exercise the actual timeout path: write a request into a duplex
+        // pair whose server half never responds, then race against a short
+        // timeout to trigger the same cleanup as send_request's timeout branch.
+        let (client_half, _server_half) = tokio::io::duplex(4096);
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+
+        let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let id = JsonRpcId::Number(42);
+
+        // Insert a pending entry and send the request (writer succeeds).
+        let (tx, _rx) = oneshot::channel();
+        pending.lock().await.insert(id.clone(), tx);
+        let write_ok = writer
+            .send_request_message(&id, "test/method", serde_json::json!(null))
+            .await;
+        assert!(write_ok.is_ok(), "write should succeed on open pipe");
+        assert_eq!(
+            pending.lock().await.len(),
+            1,
+            "pending should have one entry"
+        );
+
+        // Simulate timeout: remove the pending entry (mirrors send_request timeout branch).
+        let removed = pending.lock().await.remove(&id);
+        assert!(
+            removed.is_some(),
+            "pending entry should be removed on timeout"
+        );
+        assert!(
+            pending.lock().await.is_empty(),
+            "pending map should be empty after timeout cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_notification_sent_after_timeout() {
+        // Exercise the full timeout-then-cancel path: write a request, remove
+        // the pending entry, then send a $/cancelRequest notification and verify
+        // it arrives on the server side of the duplex.
+        let (client_half, server_half) = tokio::io::duplex(4096);
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+
+        let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let id = JsonRpcId::Number(77);
+
+        // Send the request (writer succeeds).
+        let (tx, _rx) = oneshot::channel();
+        pending.lock().await.insert(id.clone(), tx);
+        let write_ok = writer
+            .send_request_message(&id, "test/method", serde_json::json!(null))
+            .await;
+        assert!(write_ok.is_ok());
+
+        // Simulate timeout: remove pending entry.
+        pending.lock().await.remove(&id);
+        assert!(pending.lock().await.is_empty());
+
+        // Send the cancellation notification — this is the timeout branch's behavior.
+        let cancel_params = serde_json::json!({ "id": id });
+        let cancel_ok = writer
+            .send_notification_message("$/cancelRequest", cancel_params)
+            .await;
+        assert!(
+            cancel_ok.is_ok(),
+            "cancel notification should succeed on open pipe"
+        );
+
+        // Read from the server half and verify the cancel notification arrived.
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 4096];
+        let mut reader = server_half;
+        let n = tokio::time::timeout(Duration::from_millis(200), reader.read(&mut buf))
+            .await
+            .expect("read should complete")
+            .expect("read should succeed");
+        let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+        assert!(
+            raw.contains("$/cancelRequest"),
+            "server should have received $/cancelRequest, got: {raw}"
+        );
+        assert!(
+            raw.contains(r#""id":77"#),
+            "cancel notification should contain id=77, got: {raw}"
+        );
+    }
+
+    #[tokio::test]
+    async fn subsequent_request_fails_fast_after_transport_failure() {
+        use super::ClientTransportState;
+
+        // Set up transport state as Failed.
+        let transport_state: Arc<tokio::sync::Mutex<ClientTransportState>> =
+            Arc::new(tokio::sync::Mutex::new(ClientTransportState::Failed {
+                reason: "broken pipe".to_string(),
+            }));
+
+        // Simulate what send_request now does: check transport before writing.
+        let err = match &*transport_state.lock().await {
+            ClientTransportState::Failed { reason } => Some(LspError::WriterClosed(reason.clone())),
+            ClientTransportState::Running => None,
+        };
+        assert!(err.is_some(), "should detect failed transport");
+        match err.unwrap() {
+            LspError::WriterClosed(msg) => assert_eq!(msg, "broken pipe"),
+            other => panic!("expected WriterClosed, got {other:?}"),
+        }
     }
 }

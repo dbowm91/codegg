@@ -937,17 +937,19 @@ Codegg's LSP runtime operates as a **bidirectional JSON-RPC peer**, not merely a
 
 ### Incoming Message Taxonomy
 
-The `classify_json_rpc_message` function classifies incoming JSON-RPC messages using structural analysis:
+The `classify_json_rpc_message` function classifies incoming JSON-RPC messages using strict structural analysis:
 
 | Shape | Classification |
 |-------|---------------|
 | `id` + `method` | Server request |
-| `id` + `error` | Error response |
-| `id` + `result` (or null) | Success response |
+| `id` + valid error object (with numeric `code` and string `message`) | Error response |
+| `id` + `result` field present | Success response |
 | `method` without `id` | Notification |
-| Otherwise | Unknown |
+| Otherwise (including id-only objects, malformed errors) | Unknown |
 
-`JsonRpcId` preserves both numeric (`Number(u64)`) and string (`String(String)`) IDs per JSON-RPC spec. Client-originated IDs are tracked in the `pending` map; server-originated IDs are answered but never inserted into `pending`.
+The classifier is strict: an `id` without `method`, without a valid error object, and without a `result` field is classified as `Unknown`, not as a response. Malformed error objects (e.g., missing `code`, non-numeric `code`, missing `message`) also fall through to `Unknown`.
+
+`JsonRpcId` preserves both numeric (`Number(i64)`) and string (`String(String)`) IDs per JSON-RPC spec. Client-originated IDs are tracked in the `pending` map; server-originated IDs are answered but never inserted into `pending`.
 
 ### Supported Server-Originated Requests
 
@@ -960,13 +962,17 @@ Codegg handles these server requests via `dispatch_server_request` in `server_re
 | `client/registerCapability` | Records registration in `DynamicRegistrationState` (bounded at 256); acknowledges with `null` |
 | `client/unregisterCapability` | Removes registration by ID; tolerates unknown IDs |
 | `window/workDoneProgress/create` | Acknowledges with `null` |
-| `workspace/applyEdit` | **Always rejected** with `applied: false` — Codegg does not permit implicit language-server edits |
+| `workspace/applyEdit` | **Always rejected** as an application-level result with `applied: false` and a `failureReason` string — not a JSON-RPC error. Codegg does not permit implicit language-server edits. |
 | Unknown methods | Returns JSON-RPC error `-32601` (Method not found) |
 | Malformed params | Returns `-32602` (Invalid params) |
 
 ### Dynamic Registration
 
 `DynamicRegistrationState` tracks server-requested capability registrations bounded at 256 entries. Recording a registration does **not** mean Codegg claims operational support for that feature — `LspCapabilitySnapshot` is derived from `ServerCapabilities` (the `initialize` response) only.
+
+`client/registerCapability` processes the full `registrations` array: all entries are validated first (rejecting the entire request if any entry is malformed), deduplicated by ID (last-write-wins within a single request), then applied. Replacements of existing IDs bypass the 256 cap; only new IDs are counted against it.
+
+`client/unregisterCapability` accepts either the `unregisterations` array (LSP spec), the `unregistrations` compat spelling, or a single `id` field for backward compatibility. Unknown IDs are silently tolerated.
 
 ### Shared Serialized Writer
 
@@ -983,7 +989,9 @@ Cancellation failures are logged at debug level and never mask the primary timeo
 
 ### Single-Flight Client Initialization
 
-`LspService::get_or_create_client` uses `tokio::sync::OnceCell` to ensure only one initialization occurs per `{project_root}:{server_id}` key. Concurrent callers for the same key await the same initialization result. Different keys initialize concurrently.
+`LspService::get_or_create_client` uses a custom `InitSlot` pattern (not `OnceCell`) to ensure only one initialization occurs per `{project_root}:{server_id}` key. The slot tracks `Starting { waiters }` or `Ready(client)` states. Concurrent callers for the same key register oneshot channels and await the result from the first caller. Different keys initialize concurrently.
+
+On initialization failure, the slot is cleaned up and all waiting callers receive `InitializationCancelled` errors, allowing later retries. This differs from `OnceCell` which would cache the failure permanently.
 
 ### Global Map Lock Discipline
 
@@ -993,11 +1001,19 @@ All service operations follow this pattern:
 3. Release the map lock
 4. Await the client operation
 
-This prevents serialization of unrelated clients behind process I/O. `close_file` and `save_file` resolve the correct client by searching cloned handles rather than relying on `HashMap` iteration order.
+This prevents serialization of unrelated clients behind process I/O. `close_file` and `save_file` use deterministic O(1) ownership lookup via the `document_owners` map (URI → client key) rather than searching cloned handles or relying on `HashMap` iteration order.
+
+### Shutdown Coordination
+
+`LspService` tracks a `ServiceLifecycle` state machine (`Running` → `ShuttingDown` → `Stopped`). `shutdown_all()` transitions to `ShuttingDown` first (idempotent), drains and shuts down all clients, clears `document_owners` and `initializing` maps, then transitions to `Stopped`. `get_or_create_client()` rejects new client acquisition when the lifecycle is not `Running`, returning `LspError::InitializationCancelled`.
+
+### Writer Failure Propagation
+
+The background reader tracks `ClientTransportState` (`Running` or `Failed { reason }`). When the writer fails while sending a server-request response, the transport transitions to `Failed`, all pending requests are drained with errors, and the reader loop exits. Subsequent `send_request` / `send_notification` calls return `LspError::WriterClosed` immediately, avoiding writes to a broken pipe.
 
 ### Limitations
 
-- `workspace/applyEdit` is always rejected — servers cannot implicitly write files through Codegg
+- `workspace/applyEdit` is always rejected as an application-level result (`applied: false`) — servers cannot implicitly write files through Codegg
 - Dynamic registrations are tracked but do not expand model-facing capability claims
 - Configuration responses are bounded to the server's configured section — no environment secrets are exposed
 - Server requests are handled synchronously within the background reader with a 5-second timeout. A timeout produces a JSON-RPC error response with code `-32603` (Internal error) rather than silently abandoning the request. Current handlers are fast and local.
