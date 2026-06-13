@@ -351,7 +351,7 @@ pub struct HunkSourceContextPolicy {
 
 ### Compact summary formatter
 
-`format_hunk_source_context_summary` (`src/lsp/hunk_nav_prompt.rs`) formats a `HunkSourceNavigationResponse` into a compact, deterministic, agent-facing text summary. The output is bounded (max 5 symbols, 5 diagnostics, 5 references per hunk) and preserves freshness/truncation metadata. Used for prompt injection and security review notes.
+`format_hunk_source_context_summary` (`src/lsp/hunk_nav_prompt.rs`) formats a `HunkSourceNavigationResponse` into a compact, bounded agent-facing text summary. The summary format is deterministic but the underlying evidence is best-effort and server-dependent. The output is bounded (max 5 symbols, 5 diagnostics, 5 references per hunk) and preserves freshness/truncation metadata. Used for prompt injection and security review notes.
 
 ### Security review workflow integration
 
@@ -361,11 +361,11 @@ When enabled and an executor is available:
 1. Hunks are grouped by file path; files are processed in deterministic sorted order
 2. `decide_hunk_source_context` is called per file with actual per-file patch data
 3. The `HunkSourceContextExecutor` trait (`src/security/workflow/context.rs`) provides the boundary; `LspHunkSourceContextExecutor` (`src/security/lsp_executor.rs`) is the real adapter that calls `LspTool::execute_hunk_source_context_typed()` directly with a typed `HunkSourceNavigationRequest` — no JSON round-trip. The model-facing tool schema remains patch-only; internal pre-parsed hunk descriptors are used via the typed API.
-4. Per-file evidence (enclosing symbols, diagnostics, definitions, references) is collected via `collect_hunk_source_context_all_files` which actually executes `hunkSourceContext` per file
+4. Per-file evidence (enclosing symbols, diagnostics, definitions, references) is collected via `collect_hunk_source_context_all_files` which returns a `HunkSourceContextCollectionResult` with evidence, summaries, notes, and `HunkSourceContextExecutionStats` (tracking files_considered, files_policy_skipped, requests_attempted/succeeded/failed/timed_out, evidence_items_emitted). Request caps count actual executor calls, not loop position. The LSP evidence is best-effort and server-dependent.
 5. Evidence is injected into the evidence-based synthesis as `HunkNavigation` and `Diagnostic` evidence items
 6. `evidence_from_hunk_source_context` converts real `HunkSourceNavigationResponse` into `StructuredSecurityEvidence` — policy skip decisions are routing metadata, never evidence
 
-The tightened eligibility gate requires `HunkNavigation` to appear alongside `RiskMarker` or `Preflight` (or other supporting dimensions) — `ChangedHunk + HunkNavigation` alone is not finding-eligible. Multi-file diffs are processed one file at a time (capped at 8 files), in deterministic sorted order. Per-file selection order is deterministic and bounded.
+The tightened eligibility gate requires `HunkNavigation` to appear alongside `RiskMarker` or `Preflight` (or other supporting dimensions) — `ChangedHunk + HunkNavigation` alone is not finding-eligible. Multi-file diffs are processed one file at a time (capped at 8 files), in deterministic sorted order.
 
 Fail-open: per-file errors produce notes, never block the workflow. The policy skips unsupported file extensions, oversized patches, and files with too many hunks.
 

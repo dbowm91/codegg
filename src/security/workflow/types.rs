@@ -356,12 +356,28 @@ impl ChangedHunk {
             "@@ -{},{} +{},{} @@",
             self.old_start, self.old_count, self.new_start, self.new_count
         );
-        let added_lines = self.lines.iter().filter(|l| l.kind == DiffLineKind::Added).count();
-        let removed_lines = self.lines.iter().filter(|l| l.kind == DiffLineKind::Removed).count();
-        let context_lines = self.lines.iter().filter(|l| l.kind == DiffLineKind::Context).count();
+        let added_lines = self
+            .lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Added)
+            .count();
+        let removed_lines = self
+            .lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Removed)
+            .count();
+        let context_lines = self
+            .lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Context)
+            .count();
 
         egglsp::hunk_context::HunkDescriptor {
-            id: format!("{file_str}:{hunk_index}:{}-{}", self.new_start, self.new_start + self.new_count.saturating_sub(1)),
+            id: format!(
+                "{file_str}:{hunk_index}:{}-{}",
+                self.new_start,
+                self.new_start + self.new_count.saturating_sub(1)
+            ),
             file_path: file_str,
             old_range,
             new_range,

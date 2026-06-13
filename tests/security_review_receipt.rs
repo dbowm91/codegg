@@ -85,6 +85,9 @@ fn sample_receipt() -> SecurityReviewReceipt {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     )
 }
 
@@ -194,6 +197,9 @@ fn security_review_receipt_projection_handles_no_findings() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
     let items = project_receipt_to_panel_items(&receipt);
     assert!(items
@@ -228,6 +234,9 @@ fn security_review_receipt_projection_handles_completely_empty_output() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
     let items = project_receipt_to_panel_items(&receipt);
     assert!(items.is_empty());
@@ -552,7 +561,7 @@ async fn security_review_workflow_pipeline_produces_output() {
         .current_dir(dir.path())
         .status();
 
-    let output = run_security_review_workflow(
+    let (output, _stats) = run_security_review_workflow(
         dir.path(),
         Some("HEAD"),
         SecurityReviewWorkflowOptions::default(),
@@ -571,6 +580,9 @@ async fn security_review_workflow_pipeline_produces_output() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
     assert_eq!(receipt.output.findings.len(), output.findings.len());
     assert_eq!(
@@ -698,6 +710,9 @@ fn security_review_receipt_projects_diff_hunk_context_from_fixture_diff() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -757,6 +772,9 @@ fn security_review_changed_file_deleted_has_no_hunk_preview() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -831,6 +849,9 @@ fn security_review_hunk_ref_render_marks_added_removed_context_lines() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -927,6 +948,9 @@ fn security_review_hunk_focus_is_item_specific() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -1121,6 +1145,9 @@ fn security_review_finding_evidence_line_can_attach_hunk() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -1199,6 +1226,9 @@ fn security_review_removed_only_hunk_has_no_new_side_focus() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);

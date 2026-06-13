@@ -139,7 +139,9 @@ impl LspHunkSourceContextExecutor {
 }
 
 #[async_trait::async_trait]
-impl crate::security::workflow::context::HunkSourceContextExecutor for LspHunkSourceContextExecutor {
+impl crate::security::workflow::context::HunkSourceContextExecutor
+    for LspHunkSourceContextExecutor
+{
     async fn execute_hunk_source_context(
         &self,
         request: egglsp::hunk_context::HunkSourceNavigationRequest,
@@ -281,8 +283,8 @@ mod tests {
 
     #[test]
     fn noop_hunk_source_context_executor_errors() {
-        use super::super::workflow::context::NoopHunkSourceContextExecutor;
         use super::super::workflow::context::HunkSourceContextExecutor;
+        use super::super::workflow::context::NoopHunkSourceContextExecutor;
         use egglsp::hunk_context::HunkSourceNavigationRequest;
 
         let exec = NoopHunkSourceContextExecutor;
@@ -311,8 +313,8 @@ mod tests {
 
     #[test]
     fn noop_hunk_executor_preserves_request_hunks() {
-        use super::super::workflow::context::NoopHunkSourceContextExecutor;
         use super::super::workflow::context::HunkSourceContextExecutor;
+        use super::super::workflow::context::NoopHunkSourceContextExecutor;
         use egglsp::hunk_context::{HunkDescriptor, HunkLineRange, HunkSourceNavigationRequest};
 
         let exec = NoopHunkSourceContextExecutor;

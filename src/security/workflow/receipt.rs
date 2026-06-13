@@ -27,6 +27,9 @@ pub struct SecurityReviewReceipt {
     pub hunk_context_requested: bool,
     pub hunk_context_available: bool,
     pub hunk_context_executed: bool,
+    pub hunk_context_succeeded: bool,
+    pub hunk_context_requests_attempted: usize,
+    pub hunk_context_requests_succeeded: usize,
 }
 
 impl SecurityReviewReceipt {
@@ -45,6 +48,9 @@ impl SecurityReviewReceipt {
         hunk_context_requested: bool,
         hunk_context_available: bool,
         hunk_context_executed: bool,
+        hunk_context_succeeded: bool,
+        hunk_context_requests_attempted: usize,
+        hunk_context_requests_succeeded: usize,
     ) -> Self {
         Self {
             id,
@@ -61,6 +67,9 @@ impl SecurityReviewReceipt {
             hunk_context_requested,
             hunk_context_available,
             hunk_context_executed,
+            hunk_context_succeeded,
+            hunk_context_requests_attempted,
+            hunk_context_requests_succeeded,
         }
     }
 }

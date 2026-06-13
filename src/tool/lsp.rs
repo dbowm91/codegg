@@ -39,6 +39,21 @@ const DEFAULT_MAX_CALL_NODES: usize = 32;
 const MAX_CALL_NODES: usize = 64;
 const MAX_CALL_EDGES: usize = 128;
 
+/// Compute effective per-hunk navigation limits from a request, clamping to
+/// safe upper bounds and coercing zero values to 1.
+pub(crate) fn effective_hunk_navigation_limits(
+    request: &egglsp::hunk_context::HunkSourceNavigationRequest,
+) -> (usize, usize, usize) {
+    let max_symbols = request.max_symbols_per_hunk.clamp(1, MAX_CONTEXT_SYMBOLS);
+    let max_diagnostics = request
+        .max_diagnostics_per_hunk
+        .clamp(1, MAX_CONTEXT_DIAGNOSTICS);
+    let max_references = request
+        .max_references_per_hunk
+        .clamp(1, MAX_CONTEXT_REFERENCES);
+    (max_symbols, max_diagnostics, max_references)
+}
+
 #[derive(Serialize)]
 struct LspToolOutput<T> {
     operation: String,
@@ -459,17 +474,21 @@ impl LspTool {
         self
     }
 
+    fn resolve_file_from_str(&self, p: &str) -> Result<PathBuf, ToolError> {
+        let original = if p.starts_with('/') {
+            PathBuf::from(p)
+        } else {
+            self.allowed_root.join(p)
+        };
+        crate::tool::util::validate_path(&original, &self.allowed_root)
+            .map_err(|e| ToolError::Execution(e.to_string()))
+    }
+
     fn resolve_file(&self, path: &Option<String>) -> Result<PathBuf, ToolError> {
         let p = path
             .as_ref()
             .ok_or_else(|| ToolError::Execution("file_path required".to_string()))?;
-        let original = if p.starts_with('/') {
-            PathBuf::from(p)
-        } else {
-            std::env::current_dir().unwrap_or_default().join(p)
-        };
-        crate::tool::util::validate_path(&original, &self.allowed_root)
-            .map_err(|e| ToolError::Execution(e.to_string()))
+        self.resolve_file_from_str(p)
     }
 
     fn reject_probable_multi_file_patch(&self, patch: &str) -> Result<(), ToolError> {
@@ -510,11 +529,14 @@ impl LspTool {
         ))
     }
 
-    /// Construct a [`HunkSourceNavigationCollector`] with the shared limits
-    /// used by both the model-facing handler and the typed internal path.
+    /// Construct a [`HunkSourceNavigationCollector`] with explicit per-hunk
+    /// limits instead of the global constants.
     fn build_hunk_source_navigation_collector(
         &self,
         radius: u32,
+        max_symbols_per_hunk: usize,
+        max_diagnostics_per_hunk: usize,
+        max_references_per_hunk: usize,
     ) -> crate::lsp::hunk_nav_collector::HunkSourceNavigationCollector {
         let ops = Arc::new(crate::lsp::operations::LspOperations::new(
             self.service.clone(),
@@ -531,9 +553,9 @@ impl LspTool {
 
         let nav = crate::lsp::hunk_nav::HunkSourceNavigator::new()
             .with_excerpt_radius(radius)
-            .with_max_symbols_per_hunk(MAX_CONTEXT_SYMBOLS)
-            .with_max_diagnostics_per_hunk(MAX_CONTEXT_DIAGNOSTICS)
-            .with_max_references_per_hunk(MAX_CONTEXT_REFERENCES);
+            .with_max_symbols_per_hunk(max_symbols_per_hunk)
+            .with_max_diagnostics_per_hunk(max_diagnostics_per_hunk)
+            .with_max_references_per_hunk(max_references_per_hunk);
 
         crate::lsp::hunk_nav_collector::HunkSourceNavigationCollector::new(sem_collector, nav)
     }
@@ -545,22 +567,20 @@ impl LspTool {
         &self,
         request: egglsp::hunk_context::HunkSourceNavigationRequest,
     ) -> Result<egglsp::hunk_context::HunkSourceNavigationResponse, String> {
-        let path = std::path::PathBuf::from(&request.file_path);
-        let original = if request.file_path.starts_with('/') {
-            path
-        } else {
-            std::env::current_dir()
-                .unwrap_or_default()
-                .join(&request.file_path)
-        };
-        crate::tool::util::validate_path(&original, &self.allowed_root)
+        self.resolve_file_from_str(&request.file_path)
             .map_err(|e| format!("hunkSourceContext: path validation failed: {e}"))?;
 
-        let radius = request
-            .excerpt_radius
-            .min(MAX_SEMANTIC_CONTEXT_RADIUS);
+        let radius = request.excerpt_radius.min(MAX_SEMANTIC_CONTEXT_RADIUS);
 
-        let collector = self.build_hunk_source_navigation_collector(radius);
+        let (max_symbols, max_diagnostics, max_references) =
+            effective_hunk_navigation_limits(&request);
+
+        let collector = self.build_hunk_source_navigation_collector(
+            radius,
+            max_symbols,
+            max_diagnostics,
+            max_references,
+        );
         collector.collect(request).await
     }
 
@@ -5373,5 +5393,87 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert_eq!(req.excerpt_radius, 50);
         assert!(req.include_call_hierarchy);
         assert!(req.include_type_hierarchy);
+    }
+
+    // ── Phase 7: effective_hunk_navigation_limits tests ───────────────
+
+    mod hunk_limits_tests {
+        use super::*;
+        use egglsp::hunk_context::HunkSourceNavigationRequest;
+
+        fn make_request(
+            max_symbols: usize,
+            max_diagnostics: usize,
+            max_references: usize,
+        ) -> HunkSourceNavigationRequest {
+            HunkSourceNavigationRequest {
+                file_path: "test.rs".to_string(),
+                hunks: vec![],
+                patch: None,
+                intent: "test".to_string(),
+                include_definitions: true,
+                include_references: true,
+                include_call_hierarchy: false,
+                include_type_hierarchy: false,
+                excerpt_radius: 40,
+                max_hunks: 20,
+                max_symbols_per_hunk: max_symbols,
+                max_diagnostics_per_hunk: max_diagnostics,
+                max_references_per_hunk: max_references,
+            }
+        }
+
+        #[test]
+        fn effective_hunk_navigation_limits_uses_request_values() {
+            let request = make_request(5, 3, 7);
+            let (sym, diag, refs) = effective_hunk_navigation_limits(&request);
+            assert_eq!(sym, 5);
+            assert_eq!(diag, 3);
+            assert_eq!(refs, 7);
+        }
+
+        #[test]
+        fn effective_hunk_navigation_limits_clamps_to_global_maximum() {
+            let request = make_request(999, 999, 999);
+            let (sym, diag, refs) = effective_hunk_navigation_limits(&request);
+            assert_eq!(sym, MAX_CONTEXT_SYMBOLS);
+            assert_eq!(diag, MAX_CONTEXT_DIAGNOSTICS);
+            assert_eq!(refs, MAX_CONTEXT_REFERENCES);
+        }
+
+        #[test]
+        fn effective_hunk_navigation_limits_coerces_zero_to_one() {
+            let request = make_request(0, 0, 0);
+            let (sym, diag, refs) = effective_hunk_navigation_limits(&request);
+            assert_eq!(sym, 1, "zero should be coerced to 1");
+            assert_eq!(diag, 1, "zero should be coerced to 1");
+            assert_eq!(refs, 1, "zero should be coerced to 1");
+        }
+
+        #[test]
+        fn effective_hunk_navigation_limits_exact_maximum_not_truncated() {
+            let request = make_request(
+                MAX_CONTEXT_SYMBOLS,
+                MAX_CONTEXT_DIAGNOSTICS,
+                MAX_CONTEXT_REFERENCES,
+            );
+            let (sym, diag, refs) = effective_hunk_navigation_limits(&request);
+            assert_eq!(sym, MAX_CONTEXT_SYMBOLS);
+            assert_eq!(diag, MAX_CONTEXT_DIAGNOSTICS);
+            assert_eq!(refs, MAX_CONTEXT_REFERENCES);
+        }
+
+        #[test]
+        fn effective_hunk_navigation_limits_one_above_maximum_clamped() {
+            let request = make_request(
+                MAX_CONTEXT_SYMBOLS + 1,
+                MAX_CONTEXT_DIAGNOSTICS + 1,
+                MAX_CONTEXT_REFERENCES + 1,
+            );
+            let (sym, diag, refs) = effective_hunk_navigation_limits(&request);
+            assert_eq!(sym, MAX_CONTEXT_SYMBOLS);
+            assert_eq!(diag, MAX_CONTEXT_DIAGNOSTICS);
+            assert_eq!(refs, MAX_CONTEXT_REFERENCES);
+        }
     }
 }

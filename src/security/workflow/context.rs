@@ -658,9 +658,7 @@ mod tests {
     #[test]
     fn escalation_level_ordering() {
         assert!(SecurityContextEscalationLevel::None < SecurityContextEscalationLevel::Basic);
-        assert!(
-            SecurityContextEscalationLevel::Basic < SecurityContextEscalationLevel::CallDepth1
-        );
+        assert!(SecurityContextEscalationLevel::Basic < SecurityContextEscalationLevel::CallDepth1);
         assert!(
             SecurityContextEscalationLevel::CallDepth1 < SecurityContextEscalationLevel::CallDepth2
         );

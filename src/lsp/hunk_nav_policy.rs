@@ -50,8 +50,8 @@ pub enum HunkSourceContextDecision {
 
 /// Known file extensions likely covered by LSP support.
 const LSP_LIKELY_EXTENSIONS: &[&str] = &[
-    "rs", "py", "ts", "tsx", "js", "jsx", "go", "java", "c", "cpp", "cc", "cxx", "h", "hpp",
-    "cs", "rb", "swift", "kt", "kts", "scala", "ex", "exs", "erl", "hs", "ml", "clj",
+    "rs", "py", "ts", "tsx", "js", "jsx", "go", "java", "c", "cpp", "cc", "cxx", "h", "hpp", "cs",
+    "rb", "swift", "kt", "kts", "scala", "ex", "exs", "erl", "hs", "ml", "clj",
 ];
 
 /// Decide whether `hunkSourceContext` should be invoked for a given patch.
@@ -85,9 +85,7 @@ pub fn decide_hunk_source_context(
             .any(|&e| e.eq_ignore_ascii_case(ext));
         if !is_lsp_covered {
             return HunkSourceContextDecision::Skip {
-                reason: format!(
-                    "file extension .{ext} is unlikely to be covered by an LSP server"
-                ),
+                reason: format!("file extension .{ext} is unlikely to be covered by an LSP server"),
             };
         }
     } else {
@@ -123,7 +121,10 @@ pub fn decide_hunk_source_context(
         };
     }
 
-    HunkSourceContextDecision::Use { file_path, patch: patch.to_string() }
+    HunkSourceContextDecision::Use {
+        file_path,
+        patch: patch.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -162,11 +163,8 @@ mod tests {
     #[test]
     fn unsupported_extension_skips() {
         let policy = HunkSourceContextPolicy::default();
-        let decision = decide_hunk_source_context(
-            &policy,
-            "@@ -1 +1 @@\n+new",
-            Some(Path::new("image.png")),
-        );
+        let decision =
+            decide_hunk_source_context(&policy, "@@ -1 +1 @@\n+new", Some(Path::new("image.png")));
         match decision {
             HunkSourceContextDecision::Skip { reason } => {
                 assert!(reason.contains(".png"));
@@ -195,11 +193,8 @@ mod tests {
             ..Default::default()
         };
         let big_patch = "@@ -1 +1 @@\n+".to_string() + &"x".repeat(20);
-        let decision = decide_hunk_source_context(
-            &policy,
-            &big_patch,
-            Some(Path::new("src/main.rs")),
-        );
+        let decision =
+            decide_hunk_source_context(&policy, &big_patch, Some(Path::new("src/main.rs")));
         match decision {
             HunkSourceContextDecision::Skip { reason } => {
                 assert!(reason.contains("exceeds cap"));
@@ -228,8 +223,7 @@ mod tests {
             ..Default::default()
         };
         let patch = "@@ -1 +1 @@\n+a\n@@ -5 +5 @@\n+b\n@@ -10 +10 @@\n+c";
-        let decision =
-            decide_hunk_source_context(&policy, patch, Some(Path::new("src/main.rs")));
+        let decision = decide_hunk_source_context(&policy, patch, Some(Path::new("src/main.rs")));
         match decision {
             HunkSourceContextDecision::Skip { reason } => {
                 assert!(reason.contains("exceeds cap"));
@@ -242,8 +236,7 @@ mod tests {
     fn supported_extension_uses() {
         let policy = HunkSourceContextPolicy::default();
         let patch = "@@ -10,6 +10,8 @@\n fn main() {\n+    let x = 1;\n+    let y = 2;\n }";
-        let decision =
-            decide_hunk_source_context(&policy, patch, Some(Path::new("src/main.rs")));
+        let decision = decide_hunk_source_context(&policy, patch, Some(Path::new("src/main.rs")));
         assert_eq!(
             decision,
             HunkSourceContextDecision::Use {
@@ -260,8 +253,7 @@ mod tests {
             ..Default::default()
         };
         let patch = "@@ -1 +1 @@\n+a\n@@ -5 +5 @@\n+b";
-        let decision =
-            decide_hunk_source_context(&policy, patch, Some(Path::new("src/main.rs")));
+        let decision = decide_hunk_source_context(&policy, patch, Some(Path::new("src/main.rs")));
         assert!(matches!(decision, HunkSourceContextDecision::Use { .. }));
     }
 
@@ -272,8 +264,7 @@ mod tests {
             ..Default::default()
         };
         let patch = "@@ -1 +1 @@\n+x"; // 14 bytes
-        let decision =
-            decide_hunk_source_context(&policy, patch, Some(Path::new("src/main.rs")));
+        let decision = decide_hunk_source_context(&policy, patch, Some(Path::new("src/main.rs")));
         assert!(matches!(decision, HunkSourceContextDecision::Use { .. }));
     }
 

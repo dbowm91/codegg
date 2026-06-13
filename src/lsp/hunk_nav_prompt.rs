@@ -87,12 +87,7 @@ pub fn format_hunk_source_context_summary(response: &HunkSourceNavigationRespons
 
         // Diagnostics in hunk (bounded).
         if !ev.diagnostics.is_empty() {
-            write!(
-                &mut out,
-                "Diagnostics: {} in hunk",
-                ev.diagnostics.len(),
-            )
-            .unwrap();
+            write!(&mut out, "Diagnostics: {} in hunk", ev.diagnostics.len(),).unwrap();
             let shown: Vec<&str> = ev
                 .diagnostics
                 .iter()
@@ -127,12 +122,7 @@ pub fn format_hunk_source_context_summary(response: &HunkSourceNavigationRespons
 
         // References (bounded).
         if !ev.references.is_empty() {
-            write!(
-                &mut out,
-                "References: {} intersecting",
-                ev.references.len(),
-            )
-            .unwrap();
+            write!(&mut out, "References: {} intersecting", ev.references.len(),).unwrap();
             if ev.references.len() > MAX_REFERENCES_SHOWN {
                 write!(
                     &mut out,
@@ -200,9 +190,7 @@ mod tests {
         HunkSourceNavigationResponse,
     };
     use egglsp::lsp_types::DiagnosticSeverity;
-    use egglsp::semantic_context::{
-        SemanticDiagnosticEvidence, SemanticSymbolSummary,
-    };
+    use egglsp::semantic_context::{SemanticDiagnosticEvidence, SemanticSymbolSummary};
 
     fn test_hunk_descriptor(id: &str, start: u32, end: u32) -> HunkDescriptor {
         HunkDescriptor {
@@ -213,7 +201,12 @@ mod tests {
                 start_line: start,
                 end_line: end,
             }),
-            header: Some(format!("@@ -{},0 +{},{} @@", start, end - start + 1, end - start + 1)),
+            header: Some(format!(
+                "@@ -{},0 +{},{} @@",
+                start,
+                end - start + 1,
+                end - start + 1
+            )),
             added_lines: (end - start + 1) as usize,
             removed_lines: 0,
             context_lines: 0,

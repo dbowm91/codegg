@@ -83,6 +83,9 @@ fn sample_receipt() -> SecurityReviewReceipt {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     )
 }
 
@@ -154,6 +157,9 @@ fn security_review_source_preview_rejects_outside_root() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let item = SecurityReviewPanelItem {
@@ -204,6 +210,9 @@ fn security_review_source_preview_rejects_absolute_path_outside_root() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let item = SecurityReviewPanelItem {
@@ -254,6 +263,9 @@ fn security_review_source_preview_handles_missing_file() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     // Item points to a file that does NOT exist, but the parent does.
@@ -306,6 +318,9 @@ fn security_review_source_preview_rejects_missing_parent() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let item = SecurityReviewPanelItem {
@@ -483,6 +498,9 @@ fn security_review_preflight_items_stay_under_notes_filter() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -547,6 +565,9 @@ fn security_review_preflight_item_title_prefix() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -611,6 +632,9 @@ fn security_review_medium_plus_filter_excludes_low_severity() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -653,6 +677,9 @@ fn security_review_source_preview_resolves_existing_file() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let item = SecurityReviewPanelItem {
@@ -738,6 +765,9 @@ fn security_review_panel_item_includes_hunk_for_prompt_line_inside_hunk() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -777,6 +807,9 @@ fn security_review_panel_item_includes_hunk_for_finding_line_inside_hunk() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -823,6 +856,9 @@ fn security_review_panel_item_without_matching_hunk_has_none() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);
@@ -896,6 +932,9 @@ fn security_review_hunk_context_is_bounded() {
         false,
         false,
         false,
+        false,
+        0,
+        0,
     );
 
     let items = project_receipt_to_panel_items(&receipt);

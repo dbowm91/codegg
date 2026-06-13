@@ -3443,6 +3443,9 @@ diff --git a/src/lib.rs b/src/lib.rs
                 false,
                 false,
                 false,
+                false,
+                0,
+                0,
             )
         };
 
@@ -3535,6 +3538,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             false,
             false,
             false,
+            false,
+            0,
+            0,
         );
 
         let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt.clone());
@@ -3665,6 +3671,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             false,
             false,
             false,
+            false,
+            0,
+            0,
         );
 
         let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt);
@@ -3768,6 +3777,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             false,
             false,
             false,
+            false,
+            0,
+            0,
         );
 
         let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt);
@@ -3883,6 +3895,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             false,
             false,
             false,
+            false,
+            0,
+            0,
         );
 
         let mut dialog = SecurityReviewDialog::with_receipt(theme, receipt);
@@ -3951,6 +3966,9 @@ diff --git a/src/lib.rs b/src/lib.rs
             false,
             false,
             false,
+            false,
+            0,
+            0,
         );
 
         let items = project_receipt_to_panel_items(&receipt);
