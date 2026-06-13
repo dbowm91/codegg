@@ -1406,8 +1406,9 @@ pub async fn collect_hunk_source_context_all_files<E: HunkSourceContextExecutor 
         )
         .await;
 
+        let evidence_count = result.evidence.len();
         all_evidence.extend(result.evidence);
-        stats.evidence_items_emitted += all_evidence.len();
+        stats.evidence_items_emitted += evidence_count;
         if let Some(s) = result.summary {
             summaries.push(s);
         }
