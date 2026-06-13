@@ -207,6 +207,11 @@ These items were verified during review sessions:
 | Dynamic registration state | `DynamicRegistrationState` (256 cap) — processes full arrays with validation and deduplication | `crates/egglsp/src/server_request.rs` |
 | Shared serialized writer | `LspWriter<W>` | `crates/egglsp/src/writer.rs` |
 | Single-flight initialization | `InitSlot` pattern with explicit leader/waiter election and shared completion fan-out, oneshot channels, attempt IDs; `SharedInitError` for cloneable concurrent error propagation; `#[cfg(test)]` injectable test factories; failure cleaned up by attempt ID allowing retries | `crates/egglsp/src/service.rs` |
+| Client-map read/write lock discipline | Non-mutating service methods use `clients.read().await`; write guards reserved for slot election/publication and shutdown drain; no guard held across client I/O | `crates/egglsp/src/service.rs` |
+| Tracked initialization tasks | `active_init_tasks: HashMap<u64, InitTaskControl>` with `CancellationToken` + `AbortHandle`; cooperative cancellation at download, spawn, initialize, initialized stages | `crates/egglsp/src/service.rs` |
+| Quiescent shutdown_all() | Cooperative cancel → abort after grace → await completion → drain clients → notify callers; bounded: 300ms grace, 2s abort wait, 2s client timeout, 6s global timeout | `crates/egglsp/src/service.rs` |
+| Concurrent shutdown callers | Second caller observes `ShuttingDown` and awaits `shutdown_complete: Notify` | `crates/egglsp/src/service.rs` |
+| Unified terminal state | `InitTerminal` enum (Published/Existing/Invalidated/Failed/Cancelled/Panicked) with `finish_attempt()` cleanup helper | `crates/egglsp/src/service.rs` |
 | Cancellation on timeout | best-effort `$/cancelRequest`; cancel write failure marks transport failed and drains pending | `crates/egglsp/src/client.rs` |
 | Global map lock release | Arc clone before await | `crates/egglsp/src/service.rs` |
 | workspace/applyEdit rejection | Always `applied: false` (application-level result, not JSON-RPC error) | `crates/egglsp/src/server_request.rs` |

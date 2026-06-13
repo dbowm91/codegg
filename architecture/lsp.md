@@ -54,9 +54,14 @@ impl Lsp {
 ```rust
 pub struct LspService {
     clients: Arc<RwLock<HashMap<String, ClientEntry>>>,
+    active_init_tasks: HashMap<u64, InitTaskControl>,
     config: LspConfig,
+    lifecycle: Arc<RwLock<LifecycleState>>,
+    shutdown_complete: Notify,
 }
 ```
+
+`InitTaskControl` holds a `CancellationToken` (from `tokio_util`) and `AbortHandle` for each spawned initialization task, keyed by attempt ID. This enables cooperative cancellation during shutdown.
 
 Lock ordering: the clients map lock must be acquired before any client-level lock.
 Documented on the struct for future contributors.
@@ -997,21 +1002,75 @@ Cancellation failures do not replace the timeout error, but they do retire the t
 
 `LspService::get_or_create_client` uses explicit `InitRole` election: the first caller becomes `Leader` and spawns an owned initialization task (`run_initialization_attempt`); concurrent callers for the same `{project_root}:{server_id}` key become `Waiters`. The `InitSlot` stores one leader sender plus a waiter list, and completion is fanned out to every sender with the same `Arc<LspClient>` on success or the same `SharedInitError` on failure. An `ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs stored in the `InitSlot`.
 
+Each spawned initialization task now has a `CancellationToken` (from `tokio_util`) and `AbortHandle` stored in `active_init_tasks: HashMap<u64, InitTaskControl>`. Cooperative cancellation checks are performed at key stages: before download, before process spawn, before initialize request, and before initialized notification. This allows the shutdown path to cancel in-flight initializations cooperatively rather than relying solely on hard abort.
+
 On initialization failure, the slot is cleaned up by attempt ID (compare-and-remove prevents stale cleanup from deleting newer slots), and all waiting callers receive `SharedInitError` (preserving error category and message), allowing retries. Before a successful client is published, the init task rechecks `LifecycleState` and only inserts when the phase is still `Running` and the generation matches the captured generation; if publication is invalidated or loses to an existing client, the unpublished client is disposed via `dispose_unpublished_client(...)` with a bounded shutdown timeout. This differs from `OnceCell` which would cache the failure permanently. `SharedInitError` with `SharedInitErrorKind` enum (`ServerNotFound`, `DownloadFailed`, `LaunchFailed`, `InitializeFailed`, `Timeout`, `Cancelled`, `Protocol`, `Other`) is used for all oneshot channel results instead of raw `LspError`, making concurrent error propagation thread-safe and cloneable. The `#[cfg(test)]` `test_new()` constructor accepts injectable test factories for deterministic testing without live LSP servers.
+
+#### Unified Terminal State (InitTerminal)
+
+Each initialization attempt terminates in exactly one `InitTerminal` variant:
+
+```rust
+pub enum InitTerminal {
+    Published,    // Client published successfully
+    Existing,     // Client already existed (lost race to another publication)
+    Invalidated,  // Lifecycle state changed before publication
+    Failed,       // Initialization error (server not found, download failed, etc.)
+    Cancelled,    // Cooperative cancellation requested
+    Panicked,     // Initialization task panicked
+}
+```
+
+The `finish_attempt()` helper atomically records the terminal state, removes the `InitTaskControl` from `active_init_tasks`, and fans out the result to all waiters. This ensures exactly-once cleanup regardless of how the initialization task exits.
 
 ### Global Map Lock Discipline
 
-All service operations follow this pattern:
+Non-mutating service methods use `clients.read().await` to avoid serializing unrelated clients behind process I/O. These methods include: `open_file`, `update_file`, `close_file`, `save_file`, `is_file_open`, `get_diagnostics_for_key`, `get_all_diagnostics_for_key`, `diagnostics_may_still_be_warming`, `get_diagnostic_snapshot_for_key`, `send_request`, `client_keys`, and `get_capabilities_for_key`. Each follows the pattern:
+
 1. Acquire the map read lock
 2. Clone the `Arc<LspClient>`
 3. Release the map lock
 4. Await the client operation
 
-This prevents serialization of unrelated clients behind process I/O. `close_file` and `save_file` use deterministic O(1) ownership lookup via the `document_owners` map (URI → client key) rather than searching cloned handles or relying on `HashMap` iteration order.
+Write guards (`clients.write().await`) are reserved for slot election/publication (inserting a new client entry after initialization) and shutdown drain (removing clients during `shutdown_all`). This separation ensures read-heavy workloads (diagnostics, file operations, capability checks) never contend with write operations.
+
+`close_file` and `save_file` use deterministic O(1) ownership lookup via the `document_owners` map (URI → client key) rather than searching cloned handles or relying on `HashMap` iteration order.
 
 ### Shutdown Coordination
 
 `LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a monotonic `generation: u64`. `shutdown_all()` atomically transitions to `ShuttingDown` and increments the generation. The spawned initialization task rechecks the phase and generation before publication, preventing stale results from being published after shutdown and disposing any unpublished client that loses the race. `get_or_create_client()` rejects new client acquisition when the lifecycle is not `Running`, returning `LspError::InitializationCancelled`.
+
+#### Quiescent Shutdown Sequence
+
+`shutdown_all()` follows a bounded, multi-phase sequence:
+
+1. **Transition to ShuttingDown** — atomically sets phase and increments generation
+2. **Drain init slots** — removes all pending `InitSlot` entries so no new initializations can start
+3. **Cancel cooperative tasks** — signals `CancellationToken` on each tracked init task in `active_init_tasks`
+4. **Wait with grace period** — sleeps for `SHUTDOWN_CANCELLATION_GRACE` (300ms) to allow cooperative tasks to observe cancellation and exit cleanly
+5. **Abort non-cooperative tasks** — calls `AbortHandle::abort()` on any tasks still in `active_init_tasks`
+6. **Wait for abort** — sleeps for `SHUTDOWN_ABORT_WAIT` (2s) to allow abort to take effect
+7. **Drain ready clients** — removes all initialized clients from the map, shutting down their processes
+8. **Transition to Stopped** — final lifecycle phase
+9. **Notify concurrent waiters** — signals `shutdown_complete` Notify so concurrent callers observe completion
+
+Total bounded duration: `SHUTDOWN_CANCELLATION_GRACE` (300ms) + `SHUTDOWN_ABORT_WAIT` (2s) + `SHUTDOWN_CLIENT_TIMEOUT` (2s) + `SHUTDOWN_GLOBAL_TIMEOUT` (6s) = maximum ~10.3s worst case.
+
+#### Concurrent Shutdown Callers
+
+A second caller observing `ShuttingDown` does not return immediately. Instead it awaits the `shutdown_complete` `Notify`, ensuring all concurrent shutdown callers observe the final `Stopped` state exactly once. This prevents premature assumption of shutdown completion when multiple tasks call `shutdown_all()` concurrently.
+
+### New Tests
+
+The tracked initialization and quiescent shutdown features are covered by targeted tests:
+
+| Test | What it verifies |
+|------|-----------------|
+| `shutdown_cancels_blocked_factory` | Cooperative cancellation: a factory blocked in `initialize` is cancelled via `CancellationToken` during shutdown |
+| `shutdown_aborts_uncooperative_task` | Hard abort: a task that ignores cooperative cancellation is aborted via `AbortHandle` after grace period |
+| `concurrent_shutdown_callers` | Two concurrent `shutdown_all()` calls both observe the final `Stopped` state via the `Notify` mechanism |
+| `read_lock_concurrency` | Non-mutating operations (`open_file`, `diagnostics`, etc.) use read locks and do not contend with each other |
+| `publication_race_remains_safe` | Publication under shutdown races: an init task that finishes after `ShuttingDown` does not publish a stale client |
 
 ### Writer Failure Propagation
 

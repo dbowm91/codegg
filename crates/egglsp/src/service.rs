@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -21,13 +22,16 @@ type InitResult = Result<Arc<LspClient>, SharedInitError>;
 type InitCompletionSender = tokio::sync::oneshot::Sender<InitResult>;
 type InitCompletionReceiver = tokio::sync::oneshot::Receiver<InitResult>;
 
-// ── Phase 1: InitSlot with explicit leader/waiter election ───────────
+// ── Phase 2+4: InitSlot with cancellation and task tracking ──────────
 
 /// Tracks an in-progress initialization attempt for single-flight semantics.
 struct InitSlot {
     attempt_id: u64,
     leader: InitCompletionSender,
     waiters: Vec<InitCompletionSender>,
+    /// Cooperative cancellation token shared with the spawned init task.
+    #[allow(dead_code)]
+    cancellation: CancellationToken,
 }
 
 impl InitSlot {
@@ -41,6 +45,34 @@ impl InitSlot {
 
 type InitMap = Arc<Mutex<HashMap<String, InitSlot>>>;
 
+/// Tracks a spawned initialization task for shutdown coordination.
+struct InitTaskControl {
+    #[allow(dead_code)]
+    attempt_id: u64,
+    cancellation: CancellationToken,
+    abort_handle: tokio::task::AbortHandle,
+    finished: tokio::sync::oneshot::Receiver<()>,
+}
+
+type ActiveTaskMap = Arc<Mutex<HashMap<u64, InitTaskControl>>>;
+
+/// Terminal state for an initialization attempt (Phase 4).
+#[allow(dead_code)]
+enum InitTerminal {
+    /// Client was successfully published.
+    Published,
+    /// Client lost the publication race; already exists.
+    Existing(Arc<LspClient>),
+    /// Lifecycle invalidated before or after publication.
+    Invalidated(LifecycleState),
+    /// Attempt failed with an error.
+    Failed(SharedInitError),
+    /// Attempt was cancelled (shutdown or abort).
+    Cancelled(SharedInitError),
+    /// Attempt panicked.
+    Panicked(SharedInitError),
+}
+
 /// Global attempt ID counter — monotonically increasing per service lifetime.
 static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -50,6 +82,7 @@ enum InitRole {
     Leader {
         attempt_id: u64,
         completion: InitCompletionReceiver,
+        cancellation: CancellationToken,
     },
     /// We are a waiter: a slot was already running.
     Waiter { completion: InitCompletionReceiver },
@@ -67,7 +100,7 @@ struct TestHooks {
     shutdown_gate: Option<std::sync::Arc<TestPauseGate>>,
 }
 
-// ── Phase 4: Lifecycle generation ────────────────────────────────────
+// ── Phase 3+4: Lifecycle generation and shutdown coordination ────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServiceLifecycle {
@@ -90,6 +123,12 @@ struct LifecycleState {
 #[cfg(test)]
 type TestInitFn = TestFactoryFn;
 
+/// Shutdown timeout constants (Phase 3).
+const SHUTDOWN_CANCELLATION_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+const SHUTDOWN_ABORT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const SHUTDOWN_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const SHUTDOWN_GLOBAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
 /// LSP service facade with deterministic lock ordering.
 ///
 /// # Lock ordering
@@ -100,6 +139,7 @@ type TestInitFn = TestFactoryFn;
 /// lifecycle          (RwLock<LifecycleState>)
 /// clients            (RwLock<HashMap<String, Arc<LspClient>>>)
 /// initializing       (Mutex<HashMap<String, InitSlot>>)
+/// active_init_tasks  (Mutex<HashMap<u64, InitTaskControl>>)
 /// document_owners    (RwLock<HashMap<String, String>>)
 /// client.opened_files        (Mutex<HashMap<String, i32>>)
 /// client.transport_state     (Arc<Mutex<ClientTransportState>>)
@@ -107,17 +147,38 @@ type TestInitFn = TestFactoryFn;
 /// client.writer              (LspWriter — serialized via Arc<Mutex<...>>)
 /// ```
 ///
-/// Coordinator paths hold the client map lock through slot election to
-/// keep publication and slot creation atomic. No client/process I/O occurs
-/// while lifecycle, client-map, or initialization-map locks are held.
+/// ## Client-map lock discipline
+///
+/// Non-mutating access (get, contains_key, keys, clone handle) uses a
+/// **read guard** so that independent diagnostics, request routing,
+/// capability reads, file-lifecycle lookups, and client enumeration are
+/// not serialized against each other.
+///
+/// Write guards are limited to:
+/// - slot election / client publication (atomic insertion during init);
+/// - shutdown drain (`shutdown_all`); and
+/// - any genuine client-map mutation.
+///
+/// No client-map guard is ever held across client I/O.
+///
+/// Coordinator paths hold the client map write lock through slot election
+/// to publication to keep slot creation and client insertion atomic.
+/// No client/process I/O occurs while lifecycle, client-map, or
+/// initialization-map locks are held.
 pub struct LspService {
     clients: ClientMap,
     /// Tracks in-progress initializations for single-flight semantics.
     initializing: InitMap,
+    /// Tracks spawned initialization tasks for shutdown coordination.
+    /// Keyed by attempt_id.
+    active_init_tasks: ActiveTaskMap,
     /// Maps document URI string → client key for O(1) ownership lookup.
     document_owners: Arc<RwLock<HashMap<String, String>>>,
     /// Lifecycle state with generation tracking.
     lifecycle: Arc<RwLock<LifecycleState>>,
+    /// Signals when lifecycle transitions to `Stopped` so concurrent
+    /// shutdown callers can await the same completion.
+    shutdown_complete: Arc<tokio::sync::Notify>,
     config: LspConfig,
     /// Test-only factory for injecting fake client initialization.
     /// When `Some`, `run_initialization_attempt` calls this instead of the
@@ -134,11 +195,13 @@ impl LspService {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             initializing: Arc::new(Mutex::new(HashMap::new())),
+            active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
             lifecycle: Arc::new(RwLock::new(LifecycleState {
                 phase: ServiceLifecycle::Running,
                 generation: 0,
             })),
+            shutdown_complete: Arc::new(tokio::sync::Notify::new()),
             config,
             #[cfg(test)]
             test_init_fn: None,
@@ -160,11 +223,13 @@ impl LspService {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             initializing: Arc::new(Mutex::new(HashMap::new())),
+            active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
             lifecycle: Arc::new(RwLock::new(LifecycleState {
                 phase: ServiceLifecycle::Running,
                 generation: 0,
             })),
+            shutdown_complete: Arc::new(tokio::sync::Notify::new()),
             config,
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: None,
@@ -183,11 +248,13 @@ impl LspService {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             initializing: Arc::new(Mutex::new(HashMap::new())),
+            active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
             lifecycle: Arc::new(RwLock::new(LifecycleState {
                 phase: ServiceLifecycle::Running,
                 generation: 0,
             })),
+            shutdown_complete: Arc::new(tokio::sync::Notify::new()),
             config,
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: Some(test_hooks),
@@ -251,17 +318,20 @@ impl LspService {
                 None => {
                     let attempt_id = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
                     let (tx, rx) = tokio::sync::oneshot::channel();
+                    let cancellation = CancellationToken::new();
                     init.insert(
                         key.clone(),
                         InitSlot {
                             attempt_id,
                             leader: tx,
                             waiters: vec![],
+                            cancellation: cancellation.clone(),
                         },
                     );
                     InitRole::Leader {
                         attempt_id,
                         completion: rx,
+                        cancellation,
                     }
                 }
             }
@@ -284,6 +354,7 @@ impl LspService {
             InitRole::Leader {
                 attempt_id,
                 completion,
+                cancellation,
             } => {
                 #[cfg(test)]
                 if let Some(hooks) = &self.test_hooks {
@@ -296,9 +367,11 @@ impl LspService {
                 let config = self.config.clone();
                 let clients = self.clients.clone();
                 let initializing = self.initializing.clone();
+                let active_init_tasks = self.active_init_tasks.clone();
                 let lifecycle = self.lifecycle.clone();
                 let key_clone = key.clone();
                 let project_root_clone = project_root.clone();
+                let cancel_for_task = cancellation.clone();
                 #[cfg(test)]
                 let test_init = self.test_init_fn.clone();
 
@@ -311,38 +384,72 @@ impl LspService {
                     initializing.clone(),
                     lifecycle,
                     key_clone,
+                    cancel_for_task,
                     #[cfg(test)]
                     test_init,
                 ));
 
+                // Store abort handle so shutdown can cancel/abort the task.
+                let abort_handle = task.abort_handle();
+                let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+                {
+                    let mut tasks = active_init_tasks.lock().await;
+                    // If shutdown already removed the slot, abort immediately.
+                    if tasks.is_empty() && !initializing.lock().await.contains_key(&key) {
+                        task.abort();
+                        let _ = finished_tx.send(());
+                    } else {
+                        tasks.insert(
+                            attempt_id,
+                            InitTaskControl {
+                                attempt_id,
+                                cancellation: cancellation.clone(),
+                                abort_handle: abort_handle.clone(),
+                                finished: finished_rx,
+                            },
+                        );
+                    }
+                }
+
                 let key_for_monitor = key.clone();
                 let initializing_for_monitor = initializing.clone();
+                let active_tasks_for_monitor = self.active_init_tasks.clone();
                 tokio::spawn(async move {
-                    if let Err(join_err) = task.await {
-                        let message = if join_err.is_panic() {
-                            format!(
-                                "initialization task panicked for {}:{}: {}",
-                                key_for_monitor, attempt_id, join_err
-                            )
-                        } else {
-                            format!(
-                                "initialization task cancelled for {}:{}: {}",
-                                key_for_monitor, attempt_id, join_err
-                            )
-                        };
-                        if let Some(senders) =
-                            take_attempt(&initializing_for_monitor, &key_for_monitor, attempt_id)
-                                .await
-                        {
-                            let err = SharedInitError {
-                                kind: super::error::SharedInitErrorKind::Other,
-                                message,
-                            };
-                            for tx in senders {
-                                let _ = tx.send(Err(err.clone()));
+                    let terminal = match task.await {
+                        Ok(()) => {
+                            // Task returned normally — it handled its own
+                            // cleanup via `take_attempt`.
+                            return;
+                        }
+                        Err(join_err) => {
+                            if join_err.is_panic() {
+                                InitTerminal::Panicked(SharedInitError {
+                                    kind: super::error::SharedInitErrorKind::Other,
+                                    message: format!(
+                                        "initialization task panicked for {}:{}: {}",
+                                        key_for_monitor, attempt_id, join_err
+                                    ),
+                                })
+                            } else {
+                                InitTerminal::Cancelled(SharedInitError {
+                                    kind: super::error::SharedInitErrorKind::Cancelled,
+                                    message: format!(
+                                        "initialization task cancelled for {}:{}: {}",
+                                        key_for_monitor, attempt_id, join_err
+                                    ),
+                                })
                             }
                         }
-                    }
+                    };
+
+                    finish_attempt(
+                        &initializing_for_monitor,
+                        &active_tasks_for_monitor,
+                        &key_for_monitor,
+                        attempt_id,
+                        terminal,
+                    )
+                    .await;
                 });
 
                 match completion.await {
@@ -360,13 +467,13 @@ impl LspService {
         let (key, _root) = self.get_or_create_client(file_path).await?;
 
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients
                 .get(&key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
-        // Lock released.
+        // Read lock released before await.
 
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
@@ -395,13 +502,13 @@ impl LspService {
         let (key, _root) = self.get_or_create_client(file_path).await?;
 
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients
                 .get(&key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
-        // Lock released.
+        // Read lock released before await.
 
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
@@ -435,7 +542,7 @@ impl LspService {
         };
 
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients.get(&owner_key).cloned()
         };
 
@@ -475,7 +582,7 @@ impl LspService {
         };
 
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients.get(&owner_key).cloned()
         };
 
@@ -507,7 +614,21 @@ impl LspService {
         }
     }
 
+    /// Gracefully shut down the LSP service.
+    ///
+    /// # Quiescence contract
+    ///
+    /// After `shutdown_all()` returns:
+    /// - No initialization task remains active.
+    /// - All ready clients have been shut down.
+    /// - The lifecycle phase is `Stopped`.
+    /// - Concurrent callers that observe `ShuttingDown` will block until
+    ///   the transition to `Stopped` and then return.
     pub async fn shutdown_all(&self) {
+        let _ = tokio::time::timeout(SHUTDOWN_GLOBAL_TIMEOUT, self.shutdown_inner()).await;
+    }
+
+    async fn shutdown_inner(&self) {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
             if let Some(gate) = &hooks.shutdown_gate {
@@ -516,34 +637,73 @@ impl LspService {
             }
         }
 
-        // Phase 6: atomically transition to ShuttingDown and increment generation.
+        // Step 1-4: atomically transition to ShuttingDown or await existing shutdown.
         {
             let mut lc = self.lifecycle.write().await;
-            if lc.phase != ServiceLifecycle::Running {
-                return; // already shutting down or stopped — idempotent
+            match lc.phase {
+                ServiceLifecycle::Stopped => return,
+                ServiceLifecycle::ShuttingDown => {
+                    drop(lc);
+                    // Await the existing shutdown completion.
+                    self.shutdown_complete.notified().await;
+                    return;
+                }
+                ServiceLifecycle::Running => {
+                    lc.phase = ServiceLifecycle::ShuttingDown;
+                    lc.generation = lc.generation.wrapping_add(1);
+                }
             }
-            lc.phase = ServiceLifecycle::ShuttingDown;
-            lc.generation = lc.generation.wrapping_add(1);
         }
 
-        // Clear document ownership first so file-level cleanup cannot race
-        // with shutting down the client map.
+        // Step 5: release lifecycle lock.
+        // Step 6: clear document ownership.
         self.document_owners.write().await.clear();
 
+        // Step 7: drain initialization slots and signal cancellation.
+        let attempts_to_cancel = drain_attempts(&self.initializing).await;
+
+        // Step 8: collect and cancel active tasks.
+        let tasks_to_cancel: Vec<InitTaskControl> = {
+            let mut tasks = self.active_init_tasks.lock().await;
+            tasks.drain().map(|(_, v)| v).collect()
+        };
+
+        // Signal cooperative cancellation to all init tasks.
+        for ctrl in &tasks_to_cancel {
+            ctrl.cancellation.cancel();
+        }
+
+        // Step 9: await task completion with a bounded timeout, then abort
+        // any that did not finish.
+        for ctrl in tasks_to_cancel {
+            let wait_result =
+                tokio::time::timeout(SHUTDOWN_CANCELLATION_GRACE, ctrl.finished).await;
+
+            if wait_result.is_err() {
+                // Grace timeout expired — force abort.
+                ctrl.abort_handle.abort();
+                // Wait briefly for abort to take effect.
+                let _ = tokio::time::timeout(SHUTDOWN_ABORT_WAIT, async {
+                    let _ = tokio::task::yield_now().await;
+                })
+                .await;
+            }
+        }
+
+        // Step 10: drain ready clients and shut them down.
         let clients_to_shutdown: Vec<(String, Arc<LspClient>)> = {
             let mut clients = self.clients.write().await;
             clients.drain().collect()
         };
 
-        let attempts_to_cancel = drain_attempts(&self.initializing).await;
-
         for (key, client) in clients_to_shutdown {
             info!(server = %key, "shutting down LSP client");
-            if let Err(e) = client.shutdown().await {
-                warn!(server = %key, error = %e, "error shutting down LSP client");
+            if let Err(e) = tokio::time::timeout(SHUTDOWN_CLIENT_TIMEOUT, client.shutdown()).await {
+                warn!(server = %key, error = ?e, "error shutting down LSP client");
             }
         }
 
+        // Notify waiters of cancelled init tasks (if drain hadn't already).
         for (key, attempt_id, senders) in attempts_to_cancel {
             info!(server = %key, attempt_id, "cancelling in-flight LSP init during shutdown");
             let cancel_err = SharedInitError {
@@ -553,20 +713,25 @@ impl LspService {
             send_completion_result(senders, Err(cancel_err));
         }
 
-        // Phase 6: set lifecycle to Stopped.
-        let mut lc = self.lifecycle.write().await;
-        lc.phase = ServiceLifecycle::Stopped;
+        // Step 11: set lifecycle to Stopped.
+        {
+            let mut lc = self.lifecycle.write().await;
+            lc.phase = ServiceLifecycle::Stopped;
+        }
+
+        // Step 12: notify concurrent shutdown waiters.
+        self.shutdown_complete.notify_waiters();
     }
 
     pub async fn is_file_open(&self, key: &str, uri_str: &str) -> Result<bool, LspError> {
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients
                 .get(key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
-        // Lock released.
+        // Read lock released before await.
         let result = client.opened_files.lock().await.contains_key(uri_str);
         Ok(result)
     }
@@ -606,13 +771,13 @@ impl LspService {
         uri_str: &str,
     ) -> Result<Vec<lsp_types::Diagnostic>, LspError> {
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients
                 .get(key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
-        // Lock released.
+        // Read lock released before await.
         Ok(client.get_diagnostics(uri_str).await)
     }
 
@@ -621,22 +786,22 @@ impl LspService {
         key: &str,
     ) -> Result<HashMap<String, Vec<lsp_types::Diagnostic>>, LspError> {
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients
                 .get(key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
-        // Lock released.
+        // Read lock released before await.
         Ok(client.get_all_diagnostics().await)
     }
 
     pub async fn diagnostics_may_still_be_warming(&self, key: &str, uri: &str) -> bool {
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients.get(key).cloned()
         };
-        // Lock released.
+        // Read lock released before await.
         match client {
             Some(c) => c.diagnostics_may_still_be_warming(uri).await,
             None => false,
@@ -649,13 +814,13 @@ impl LspService {
         uri_str: &str,
     ) -> Result<crate::diagnostics::LspDiagnosticSnapshot, LspError> {
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients
                 .get(key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
-        // Lock released.
+        // Read lock released before await.
         Ok(client.diagnostic_snapshot(uri_str).await)
     }
 
@@ -666,18 +831,18 @@ impl LspService {
         params: serde_json::Value,
     ) -> Result<serde_json::Value, LspError> {
         let client = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             clients
                 .get(key)
                 .cloned()
                 .ok_or_else(|| LspError::NotInitialized(format!("client '{}' not found", key)))?
         };
-        // Lock released.
+        // Read lock released before await.
         client.send_request(method, params).await
     }
 
     pub async fn client_keys(&self) -> Vec<String> {
-        let clients = self.clients.write().await;
+        let clients = self.clients.read().await;
         clients.keys().cloned().collect()
     }
 
@@ -689,7 +854,7 @@ impl LspService {
         key: &str,
     ) -> Option<lsp_types::ServerCapabilities> {
         let cap_ref = {
-            let clients = self.clients.write().await;
+            let clients = self.clients.read().await;
             let entry = clients.get(key)?;
             entry.capabilities.clone()
         };
@@ -821,6 +986,7 @@ async fn run_initialization_attempt(
     initializing: InitMap,
     lifecycle: Arc<RwLock<LifecycleState>>,
     key: String,
+    cancellation: CancellationToken,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
 ) {
     let env: Vec<(String, String)> = match &config {
@@ -889,17 +1055,53 @@ async fn run_initialization_attempt(
         lc.generation
     };
 
+    // Cooperative cancellation: check before download.
+    if cancellation.is_cancelled() {
+        if let Some(senders) = take_attempt(&initializing, &key, attempt_id).await {
+            let cancel_err = SharedInitError {
+                kind: super::error::SharedInitErrorKind::Cancelled,
+                message: "service is shutting down".to_string(),
+            };
+            send_completion_result(senders, Err(cancel_err));
+        }
+        return;
+    }
+
     let result = async {
         #[cfg(test)]
         if let Some(ref init_fn) = test_init_fn {
             return init_fn(server, &root).await;
         }
 
-        let binary = download::ensure_server_binary(server).await?;
+        let binary = tokio::select! {
+            result = download::ensure_server_binary(server) => result?,
+            _ = cancellation.cancelled() => {
+                return Err(LspError::InitializationCancelled("shutting down".to_string()));
+            }
+        };
+
         #[allow(unused_mut)]
-        let mut client = LspClient::new(server, &binary, &root, &env, configuration).await?;
-        client.initialize(init_opts).await?;
-        client.send_initialized().await?;
+        let mut client = tokio::select! {
+            result = LspClient::new(server, &binary, &root, &env, configuration) => result?,
+            _ = cancellation.cancelled() => {
+                return Err(LspError::InitializationCancelled("shutting down".to_string()));
+            }
+        };
+
+        tokio::select! {
+            result = client.initialize(init_opts) => { result?; }
+            _ = cancellation.cancelled() => {
+                return Err(LspError::InitializationCancelled("shutting down".to_string()));
+            }
+        };
+
+        tokio::select! {
+            result = client.send_initialized() => { result?; }
+            _ = cancellation.cancelled() => {
+                return Err(LspError::InitializationCancelled("shutting down".to_string()));
+            }
+        };
+
         info!(server = server.id, root = ?root, "LSP client initialized");
         Ok::<_, LspError>(Arc::new(client))
     }
@@ -970,6 +1172,40 @@ async fn run_initialization_attempt(
             if let Some(senders) = take_attempt(&initializing, &key, attempt_id).await {
                 send_completion_result(senders, Err(err));
             }
+        }
+    }
+}
+
+/// Unified terminal cleanup for init attempt monitor tasks.
+async fn finish_attempt(
+    initializing: &InitMap,
+    active_tasks: &ActiveTaskMap,
+    key: &str,
+    attempt_id: u64,
+    terminal: InitTerminal,
+) {
+    // Remove from active tasks map.
+    active_tasks.lock().await.remove(&attempt_id);
+
+    // Remove the init slot and get the senders to notify.
+    let senders = take_attempt(initializing, key, attempt_id).await;
+
+    match terminal {
+        InitTerminal::Panicked(err) | InitTerminal::Failed(err) | InitTerminal::Cancelled(err) => {
+            if let Some(senders) = senders {
+                for tx in senders {
+                    let _ = tx.send(Err(err.clone()));
+                }
+            }
+        }
+        InitTerminal::Published | InitTerminal::Existing(_) | InitTerminal::Invalidated(_) => {
+            // These states are handled by the init task itself before it returns.
+            // The monitor task only handles error/panic/cancel paths.
+            debug!(
+                server = %key,
+                attempt_id,
+                "init task completed with terminal state after normal return"
+            );
         }
     }
 }
@@ -1332,18 +1568,32 @@ mod tests {
         entered_rx.changed().await.expect("factory should enter");
         assert_eq!(state.invocations.load(Ordering::SeqCst), 1);
 
-        svc.shutdown_all().await;
+        // Release the factory so the init task completes and publishes the client.
         state.release.notify_waiters();
 
+        // Wait for all init tasks to finish and publish.
+        let mut results = Vec::new();
         for handle in handles {
-            let result = await_join(handle).await;
-            expect_init_cancelled(result).await;
+            results.push(await_join(handle).await);
         }
 
+        for result in &results {
+            match result {
+                Ok(_) => {}
+                other => panic!("expected Ok after factory release, got {other:?}"),
+            }
+        }
+
+        // Now the client should be published.
+        assert!(!svc.clients.read().await.is_empty());
+
+        // Shutdown should drain the published client.
+        svc.shutdown_all().await;
+
         assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
-        assert!(svc.clients.write().await.is_empty());
+        assert!(svc.clients.read().await.is_empty());
         assert!(svc.initializing.lock().await.is_empty());
-        assert!(svc.document_owners.write().await.is_empty());
+        assert!(svc.document_owners.read().await.is_empty());
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 
@@ -1439,5 +1689,276 @@ mod tests {
 
         assert!(svc.clients.write().await.is_empty());
         assert!(svc.initializing.lock().await.is_empty());
+    }
+
+    // ── Phase 5: Shutdown-quiescence tests ─────────────────────────────
+
+    /// Test: blocked factory is cancelled during shutdown, leader/waiters
+    /// receive cancellation.
+    #[tokio::test]
+    async fn shutdown_cancels_blocked_factory() {
+        let (entered_tx, mut entered_rx) = watch::channel(false);
+        let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let state = std::sync::Arc::new(BlockingFactoryState {
+            invocations: AtomicUsize::new(0),
+            entered: entered_tx,
+            release: Notify::new(),
+            outcome: Mutex::new(FactoryOutcome::Success),
+            shutdown_count: shutdown_count.clone(),
+        });
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            blocking_factory(state.clone()),
+        ));
+
+        let barrier = std::sync::Arc::new(Barrier::new(4));
+        let mut handles = Vec::new();
+        for _ in 0..3 {
+            let svc = svc.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                svc.get_or_create_client(rust_file()).await
+            }));
+        }
+
+        barrier.wait().await;
+        entered_rx.changed().await.expect("factory should enter");
+        assert_eq!(state.invocations.load(Ordering::SeqCst), 1);
+
+        // Shutdown while factory is blocked.
+        svc.shutdown_all().await;
+
+        // All callers should have received cancellation.
+        for handle in handles {
+            let result = await_join(handle).await;
+            expect_init_cancelled(result).await;
+        }
+
+        // No client should have been published.
+        assert!(svc.clients.read().await.is_empty());
+        assert!(svc.initializing.lock().await.is_empty());
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+    }
+
+    /// Test: cancellation-uncooperative task is forcibly aborted.
+    #[tokio::test]
+    async fn shutdown_aborts_uncooperative_task() {
+        // A factory that ignores cooperative cancellation and blocks forever.
+        fn uncooperative_factory(
+            counter: std::sync::Arc<AtomicUsize>,
+            release: std::sync::Arc<Notify>,
+        ) -> impl Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static
+        {
+            move |_server, _root| {
+                let counter = counter.clone();
+                let release = release.clone();
+                Box::pin(async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    // Block forever (until abort).
+                    release.notified().await;
+                    Err(LspError::LaunchFailed("uncooperative".into()))
+                })
+            }
+        }
+
+        let counter = std::sync::Arc::new(AtomicUsize::new(0));
+        let release = std::sync::Arc::new(Notify::new());
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            uncooperative_factory(counter.clone(), release.clone()),
+        ));
+
+        let handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+
+        // Wait for factory to enter.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while counter.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("factory should enter");
+
+        // Shutdown should forcibly abort the uncooperative task.
+        svc.shutdown_all().await;
+
+        // The caller should get cancellation.
+        let result = await_join(handle).await;
+        expect_init_cancelled(result).await;
+
+        // Release so the aborted task can clean up.
+        release.notify_waiters();
+
+        assert!(svc.clients.read().await.is_empty());
+        assert!(svc.initializing.lock().await.is_empty());
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+    }
+
+    /// Test: concurrent shutdown callers both return after Stopped.
+    #[tokio::test]
+    async fn concurrent_shutdown_callers() {
+        let (shutdown_gate, mut shutdown_rx) = pause_gate();
+        let hooks = std::sync::Arc::new(TestHooks {
+            leader_spawn_gate: None,
+            shutdown_gate: Some(shutdown_gate.clone()),
+        });
+        let (entered_tx, _entered_rx) = watch::channel(false);
+        let state = std::sync::Arc::new(BlockingFactoryState {
+            invocations: AtomicUsize::new(0),
+            entered: entered_tx,
+            release: Notify::new(),
+            outcome: Mutex::new(FactoryOutcome::Success),
+            shutdown_count: std::sync::Arc::new(AtomicUsize::new(0)),
+        });
+        let svc = std::sync::Arc::new(LspService::test_new_with_hooks(
+            LspConfig::Disabled(false),
+            blocking_factory(state),
+            hooks,
+        ));
+
+        // First shutdown caller — will be paused by test gate.
+        let svc1 = svc.clone();
+        let first = tokio::spawn(async move { svc1.shutdown_all().await });
+
+        shutdown_rx
+            .changed()
+            .await
+            .expect("shutdown gate should trip");
+
+        // Second shutdown caller — should observe ShuttingDown and await.
+        let svc2 = svc.clone();
+        let second = tokio::spawn(async move { svc2.shutdown_all().await });
+
+        // Give second caller a moment to observe ShuttingDown.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Release the first shutdown.
+        shutdown_gate.release.notify_waiters();
+
+        // Both should return within a bounded time.
+        let timeout = std::time::Duration::from_secs(5);
+        let (r1, r2) = tokio::join!(
+            tokio::time::timeout(timeout, first),
+            tokio::time::timeout(timeout, second),
+        );
+        r1.expect("first shutdown should complete")
+            .expect("no panic");
+        r2.expect("second shutdown should complete")
+            .expect("no panic");
+
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+    }
+
+    /// Test: read-lock concurrency — two read-only operations can proceed
+    /// concurrently without exclusive serialization.
+    #[tokio::test]
+    async fn read_lock_concurrency() {
+        let svc = std::sync::Arc::new(LspService::new(LspConfig::Disabled(false)));
+
+        // Publish two fake clients directly.
+        {
+            let mut clients = svc.clients.write().await;
+            clients.insert(
+                "root1:rust-analyzer".to_string(),
+                Arc::new(
+                    LspClient::test_stub(
+                        "rust-analyzer",
+                        Path::new("/tmp/root1"),
+                        std::sync::Arc::new(AtomicUsize::new(0)),
+                    )
+                    .await
+                    .unwrap(),
+                ),
+            );
+            clients.insert(
+                "root2:pyright".to_string(),
+                Arc::new(
+                    LspClient::test_stub(
+                        "pyright",
+                        Path::new("/tmp/root2"),
+                        std::sync::Arc::new(AtomicUsize::new(0)),
+                    )
+                    .await
+                    .unwrap(),
+                ),
+            );
+        }
+
+        // Two concurrent read-only operations should not block each other.
+        let svc1 = svc.clone();
+        let svc2 = svc.clone();
+        let (r1, r2) = tokio::join!(
+            async {
+                let start = std::time::Instant::now();
+                let keys = svc1.client_keys().await;
+                let elapsed = start.elapsed();
+                (keys, elapsed)
+            },
+            async {
+                let start = std::time::Instant::now();
+                let result = svc2.get_capabilities_for_key("root1:rust-analyzer").await;
+                let elapsed = start.elapsed();
+                (result.is_some() || result.is_none(), elapsed)
+            },
+        );
+
+        // Both should complete — the exact keys depend on insertion order.
+        assert!(!r1.0.is_empty());
+        // Read operations should not take long (no serialization).
+        assert!(r1.1 < std::time::Duration::from_secs(1));
+        assert!(r2.1 < std::time::Duration::from_secs(1));
+    }
+
+    /// Test: publication race remains safe — either publication occurs and
+    /// shutdown drains it, or cancellation prevents publication.
+    #[tokio::test]
+    async fn publication_race_remains_safe() {
+        let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let (entered_tx, mut entered_rx) = watch::channel(false);
+        let state = std::sync::Arc::new(BlockingFactoryState {
+            invocations: AtomicUsize::new(0),
+            entered: entered_tx,
+            release: Notify::new(),
+            outcome: Mutex::new(FactoryOutcome::Success),
+            shutdown_count: shutdown_count.clone(),
+        });
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            blocking_factory(state.clone()),
+        ));
+
+        let handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+
+        entered_rx.changed().await.expect("factory should enter");
+
+        // Release factory and immediately shutdown.
+        state.release.notify_waiters();
+        svc.shutdown_all().await;
+
+        let result = await_join(handle).await;
+        // Either the init completed and was drained, or it was cancelled.
+        match result {
+            Ok(_) => {
+                // Published client was drained by shutdown.
+                assert!(svc.clients.read().await.is_empty());
+            }
+            Err(LspError::InitializationCancelled(_)) => {
+                // Cancellation prevented publication.
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+
+        assert!(svc.initializing.lock().await.is_empty());
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 }

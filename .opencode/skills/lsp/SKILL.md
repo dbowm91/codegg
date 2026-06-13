@@ -909,6 +909,12 @@ client is shut down via `dispose_unpublished_client(...)` with a bounded timeout
 `ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs; compare-and-remove prevents
 stale cleanup from deleting newer slots.
 
+Each init task is tracked in `active_init_tasks` with a `CancellationToken` and
+`AbortHandle`. Cooperative cancellation checks occur at key stages: before download,
+process spawn, `initialize` request, and `initialized` notification. This allows
+`shutdown_all()` to cancel in-flight initialization cooperatively rather than only
+relying on abort.
+
 ### Writer
 `LspWriter` serializes all output through `Arc<Mutex<...>>`. Content-Length uses UTF-8 byte count.
 
@@ -922,11 +928,20 @@ Pending requests are drained on transition. Subsequent `send_request` /
 
 ### Shutdown Coordination
 `LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a
-monotonic `generation: u64`. `shutdown_all()` atomically transitions to `ShuttingDown`
-and increments the generation. The spawned initialization task rechecks the phase and
-generation before publication, preventing stale results from being published after
-shutdown and disposing any unpublished client that loses the race. New client acquisition
-is rejected when the lifecycle is not `Running`.
+monotonic `generation: u64`. `shutdown_all()` is quiescent: it cancels cooperative tasks
+via `CancellationToken`, aborts uncooperative ones after a grace period (300ms), awaits
+task completion with a bounded wait (2s), drains all ready clients with a per-client
+timeout (2s), and notifies concurrent callers via a shared `Notify`. The total shutdown
+is bounded by a global timeout (6s). A second caller observing `ShuttingDown` awaits the
+same completion signal rather than racing independently. New client acquisition is rejected
+when the lifecycle is not `Running`.
+
+### Client-Map Lock Discipline
+
+Non-mutating client-map access uses read guards (`clients.read().await`). Write guards
+are limited to slot election/publication (init task lifecycle) and shutdown drain. No
+client-map guard is held across client I/O — operations acquire the read guard, extract
+an `Arc<LspClient>`, then drop the guard before performing LSP requests.
 
 ## Architecture Notes
 
@@ -964,6 +979,16 @@ Key helper functions (exported from `client.rs`):
 - `classify_json_rpc_message(value) -> JsonRpcMessage`
 - `dispatch_notification(diagnostics, method, params)`
 - `url_to_uri(url) -> Uri`
+
+## Quiescence Tests
+
+Five tests in `crates/egglsp/src/service.rs` verify the quiescent shutdown behavior:
+
+- `test_shutdown_quiesces_running_init` — verifies `shutdown_all()` cancels an in-flight init task
+- `test_shutdown_waits_for_completion` — verifies the shutdown awaits task completion before returning
+- `test_concurrent_shutdown_callers` — verifies a second caller sees `ShuttingDown` and awaits the same signal
+- `test_shutdown_drains_ready_clients` — verifies ready clients are drained with bounded timeouts
+- `test_generation_prevents_stale_publication` — verifies init tasks recheck generation before publishing
 
 ## See Also
 
