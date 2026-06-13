@@ -1103,6 +1103,15 @@ async fn run_initialization_attempt(
         };
 
         info!(server = server.id, root = ?root, "LSP client initialized");
+
+        // Cooperative cancellation before publication.
+        tokio::select! {
+            _ = cancellation.cancelled() => {
+                return Err(LspError::InitializationCancelled("shutting down".to_string()));
+            }
+            _ = tokio::task::yield_now() => {}
+        }
+
         Ok::<_, LspError>(Arc::new(client))
     }
     .await;

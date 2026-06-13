@@ -30,7 +30,13 @@ pub struct LspService {
 }
 ```
 
+Client-map read/write lock discipline: non-mutating service methods (`open_file`, `update_file`, `close_file`, `save_file`, `is_file_open`, `get_diagnostics_for_key`, `get_all_diagnostics_for_key`, `diagnostics_may_still_be_warming`, `get_diagnostic_snapshot_for_key`, `send_request`, `client_keys`, `get_capabilities_for_key`) use `clients.read().await`. Write guards are reserved for client publication, insertion, removal, and shutdown drain.
+
+Each spawned initialization task is tracked via `active_init_tasks: HashMap<u64, InitTaskControl>` with cooperative cancellation (`CancellationToken`) at five stages: before download, before process spawn, before initialize request, before initialized notification, and before publication. A `tokio::select!` races each long-running stage against the cancellation signal.
+
 If publication loses to an existing client or is invalidated by shutdown, the unpublished client is shut down with a bounded timeout before waiters are notified.
+
+`shutdown_all()` is quiescent: it transitions to `ShuttingDown`, drains init slots, signals cooperative cancellation to all tracked tasks, aborts non-cooperative tasks after a 300ms grace period, waits up to 2s for abort, drains ready clients with a 2s per-client timeout, transitions to `Stopped`, and notifies concurrent waiters. The entire sequence is bounded by a 6s global timeout. Concurrent shutdown callers observing `ShuttingDown` await a shared `Notify` and return only after the service reaches `Stopped`.
 
 ### LspOperations
 
