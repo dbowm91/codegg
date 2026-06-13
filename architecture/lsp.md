@@ -1002,26 +1002,35 @@ Cancellation failures do not replace the timeout error, but they do retire the t
 
 `LspService::get_or_create_client` uses explicit `InitRole` election: the first caller becomes `Leader` and spawns an owned initialization task (`run_initialization_attempt`); concurrent callers for the same `{project_root}:{server_id}` key become `Waiters`. The `InitSlot` stores one leader sender plus a waiter list, and completion is fanned out to every sender with the same `Arc<LspClient>` on success or the same `SharedInitError` on failure. An `ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs stored in the `InitSlot`.
 
-Each spawned initialization task now has a `CancellationToken` (from `tokio_util`) and `AbortHandle` stored in `active_init_tasks: HashMap<u64, InitTaskControl>`. Cooperative cancellation checks are performed at key stages: before download, before process spawn, before initialize request, and before initialized notification. This allows the shutdown path to cancel in-flight initializations cooperatively rather than relying solely on hard abort.
+Each spawned initialization task is wrapped in `run_init_task_wrapper`, which holds the actual `JoinHandle` of the wrapper future. The wrapper owns an `ActiveTaskGuard` drop guard that removes the wrapper's own `active_init_tasks` entry on every terminal path (normal completion, panic, abort). The `InitTaskControl` struct stores the wrapper's `JoinHandle` so that `shutdown_all()` can await real task completion rather than relying on a disconnected oneshot receiver. Cooperative cancellation checks are performed at key stages: before download, before process spawn, before initialize request, and before initialized notification. This allows the shutdown path to cancel in-flight initializations cooperatively rather than relying solely on hard abort.
+
+The `run_init_task_wrapper` function uses `AssertUnwindSafe + catch_unwind` to convert inner-task panics into a `SharedInitError` notification for any waiters, ensuring the wrapper itself never panics out of the spawned task.
 
 On initialization failure, the slot is cleaned up by attempt ID (compare-and-remove prevents stale cleanup from deleting newer slots), and all waiting callers receive `SharedInitError` (preserving error category and message), allowing retries. Before a successful client is published, the init task rechecks `LifecycleState` and only inserts when the phase is still `Running` and the generation matches the captured generation; if publication is invalidated or loses to an existing client, the unpublished client is disposed via `dispose_unpublished_client(...)` with a bounded shutdown timeout. This differs from `OnceCell` which would cache the failure permanently. `SharedInitError` with `SharedInitErrorKind` enum (`ServerNotFound`, `DownloadFailed`, `LaunchFailed`, `InitializeFailed`, `Timeout`, `Cancelled`, `Protocol`, `Other`) is used for all oneshot channel results instead of raw `LspError`, making concurrent error propagation thread-safe and cloneable. The `#[cfg(test)]` `test_new()` constructor accepts injectable test factories for deterministic testing without live LSP servers.
 
-#### Unified Terminal State (InitTerminal)
+#### Active-Task Entry Cleanup
 
-Each initialization attempt terminates in exactly one `InitTerminal` variant:
+The `ActiveTaskGuard` drop guard runs on every terminal path of the spawned init task future:
 
-```rust
-pub enum InitTerminal {
-    Published,    // Client published successfully
-    Existing,     // Client already existed (lost race to another publication)
-    Invalidated,  // Lifecycle state changed before publication
-    Failed,       // Initialization error (server not found, download failed, etc.)
-    Cancelled,    // Cooperative cancellation requested
-    Panicked,     // Initialization task panicked
-}
-```
+- **Normal completion**: the future returns; the guard's `Drop` runs.
+- **Panic**: the wrapper catches via `catch_unwind`; the future returns; the guard's `Drop` runs.
+- **Abort**: the future is dropped; the guard's `Drop` runs.
+- **Drop due to shutdown drain**: the guard's `Drop` runs.
 
-The `finish_attempt()` helper atomically records the terminal state, removes the `InitTaskControl` from `active_init_tasks`, and fans out the result to all waiters. This ensures exactly-once cleanup regardless of how the initialization task exits.
+The guard uses `try_lock` for synchronous removal. If the lock is held (e.g. by `shutdown_all`'s drain step), shutdown handles the entry as part of its drain; the entry is still removed in all cases.
+
+This eliminates the prior defect where successful, failed, or invalidated attempts left stale task-control entries until shutdown drained the map.
+
+#### Registration Race Resolution
+
+Between slot creation and active-task registration, the slot may be removed by a concurrent shutdown. The `Leader` branch resolves this race by:
+
+1. Checking `initializing` first (in document order with `active_init_tasks`) to confirm the slot is still valid for this attempt.
+2. If valid, acquiring the `active_init_tasks` lock and re-checking `initializing` to handle the inverted-order race.
+3. If still valid, inserting the `InitTaskControl` and proceeding.
+4. If invalid at any point, aborting the spawned task (which triggers the drop guard) and notifying any waiters.
+
+The lock order is `initializing → active_init_tasks` only for read-only state checks; no path holds `active_init_tasks` while awaiting `initializing`, and no path holds `initializing` while awaiting task/client I/O.
 
 ### Global Map Lock Discipline
 
@@ -1038,27 +1047,36 @@ Write guards (`clients.write().await`) are reserved for slot election/publicatio
 
 ### Shutdown Coordination
 
-`LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a monotonic `generation: u64`. `shutdown_all()` atomically transitions to `ShuttingDown` and increments the generation. The spawned initialization task rechecks the phase and generation before publication, preventing stale results from being published after shutdown and disposing any unpublished client that loses the race. `get_or_create_client()` rejects new client acquisition when the lifecycle is not `Running`, returning `LspError::InitializationCancelled`.
+`LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a monotonic `generation: u64`. The service also holds a `tokio::sync::watch` channel (`lifecycle_tx`) that retains the latest lifecycle state for late subscribers; this replaces the previous `Notify`-based coordination which was susceptible to lost wakeups at the `ShuttingDown → Stopped` transition. `shutdown_all()` atomically transitions to `ShuttingDown` and increments the generation, broadcasting the change on the watch channel. The spawned initialization task rechecks the phase and generation before publication, preventing stale results from being published after shutdown and disposing any unpublished client that loses the race. `get_or_create_client()` rejects new client acquisition when the lifecycle is not `Running`, returning `LspError::InitializationCancelled`.
 
 #### Quiescent Shutdown Sequence
 
-`shutdown_all()` follows a bounded, multi-phase sequence:
+`shutdown_all()` follows a bounded, multi-phase sequence driven by an **absolute deadline** (computed once at entry: `Instant::now() + SHUTDOWN_GLOBAL_TIMEOUT`). Each stage receives a remaining-time bound; the deadline propagates rather than being re-wrapped in a timeout that can silently abandon finalization.
 
-1. **Transition to ShuttingDown** — atomically sets phase and increments generation
-2. **Drain init slots** — removes all pending `InitSlot` entries so no new initializations can start
-3. **Cancel cooperative tasks** — signals `CancellationToken` on each tracked init task in `active_init_tasks`
-4. **Wait with grace period** — sleeps for `SHUTDOWN_CANCELLATION_GRACE` (300ms) to allow cooperative tasks to observe cancellation and exit cleanly
-5. **Abort non-cooperative tasks** — calls `AbortHandle::abort()` on any tasks still in `active_init_tasks`
-6. **Wait for abort** — sleeps for `SHUTDOWN_ABORT_WAIT` (2s) to allow abort to take effect
-7. **Drain ready clients** — removes all initialized clients from the map, shutting down their processes
-8. **Transition to Stopped** — final lifecycle phase
-9. **Notify concurrent waiters** — signals `shutdown_complete` Notify so concurrent callers observe completion
+1. **Transition to ShuttingDown** — atomically sets phase and increments generation; broadcasts on `lifecycle_tx` (watch channel). A second caller observing `ShuttingDown` enters the race-free `await_stopped()` path.
+2. **Clear document ownership** — `document_owners` is cleared.
+3. **Drain init slots** — all pending `InitSlot` entries are removed; their senders are notified at step 9.
+4. **Drain active tasks** — `active_init_tasks` is drained; each entry's `CancellationToken` is signalled and its `JoinHandle` is moved into a concurrent wait pool.
+5. **Concurrent cooperative cancel** — all cancellation tokens are signalled simultaneously.
+6. **Concurrent grace wait** — all `JoinHandle`s are awaited concurrently (via a `tokio::task::JoinSet`) under one aggregate grace deadline (`SHUTDOWN_CANCELLATION_GRACE` = 300ms, capped by the global deadline). Tasks that complete within the budget return; tasks that do not are forcibly aborted.
+7. **Concurrent abort** — for any tasks still pending after the grace deadline, `AbortHandle::abort()` is called on each; the `JoinHandle`s are awaited concurrently under the remaining budget. This eliminates the prior defect where `tokio::task::yield_now().await` was used as a substitute for actual task join completion.
+8. **Concurrent ready-client shutdown** — ready clients are drained from the map and shut down concurrently (`futures::future::join_all`). Each per-client timeout is capped by `SHUTDOWN_CLIENT_TIMEOUT` (2s) and the global deadline, so the total shutdown duration is independent of client count. Three result variants are logged: `Ok(Ok(()))` (graceful), `Ok(Err(_))` (graceful shutdown error), and `Err(_)` (timeout).
+9. **Notify init-task waiters** — the senders drained in step 3 receive a `Cancelled` `SharedInitError`.
+10. **Forced finalization** — if the absolute deadline has expired, a `warn!` is logged. The `active_init_tasks`, `initializing`, and `document_owners` maps are drained defensively to guarantee postconditions.
+11. **Transition to Stopped** — final lifecycle phase; broadcast on `lifecycle_tx` so concurrent waiters can return.
 
-Total bounded duration: `SHUTDOWN_CANCELLATION_GRACE` (300ms) + `SHUTDOWN_ABORT_WAIT` (2s) + `SHUTDOWN_CLIENT_TIMEOUT` (2s) + `SHUTDOWN_GLOBAL_TIMEOUT` (6s) = maximum ~10.3s worst case.
+Total bounded duration: `SHUTDOWN_GLOBAL_TIMEOUT` (6s). Per-stage budgets are derived from the absolute deadline.
 
 #### Concurrent Shutdown Callers
 
-A second caller observing `ShuttingDown` does not return immediately. Instead it awaits the `shutdown_complete` `Notify`, ensuring all concurrent shutdown callers observe the final `Stopped` state exactly once. This prevents premature assumption of shutdown completion when multiple tasks call `shutdown_all()` concurrently.
+A second caller observing `ShuttingDown` enters `await_stopped()`:
+
+1. Subscribe to the `lifecycle_tx` watch channel.
+2. Re-check the current state.
+3. If `Stopped`, return immediately.
+4. If `ShuttingDown`, await state changes until `Stopped`.
+
+This race-free pattern eliminates the lost-wakeup window that the previous `Notify`-based coordination had at the `ShuttingDown → Stopped` transition. Late subscribers always observe the latest retained state.
 
 ### New Tests
 
@@ -1068,9 +1086,14 @@ The tracked initialization and quiescent shutdown features are covered by target
 |------|-----------------|
 | `shutdown_cancels_blocked_factory` | Cooperative cancellation: a factory blocked in `initialize` is cancelled via `CancellationToken` during shutdown |
 | `shutdown_aborts_uncooperative_task` | Hard abort: a task that ignores cooperative cancellation is aborted via `AbortHandle` after grace period |
-| `concurrent_shutdown_callers` | Two concurrent `shutdown_all()` calls both observe the final `Stopped` state via the `Notify` mechanism |
+| `concurrent_shutdown_callers` | Two concurrent `shutdown_all()` calls both observe the final `Stopped` state via the watch channel |
+| `concurrent_shutdown_lost_wakeup_boundary` | Late subscribers to the watch channel do not miss the `ShuttingDown → Stopped` transition |
 | `read_lock_concurrency` | Non-mutating operations (`open_file`, `diagnostics`, etc.) use read locks and do not contend with each other |
 | `publication_race_remains_safe` | Publication under shutdown races: an init task that finishes after `ShuttingDown` does not publish a stale client |
+| `normal_completion_removes_active_task_entry` | The wrapper's `ActiveTaskGuard` drop guard removes the entry without requiring shutdown |
+| `ordinary_failure_removes_active_task_entry` | Same, for ordinary initialization failures |
+| `forced_abort_is_awaited` | The aborted task's `JoinHandle` is awaited; the task body actually exits before shutdown returns |
+| `global_deadline_finalizes_state` | A task that does not complete within the global deadline is still drained; lifecycle reaches `Stopped` and all maps are empty |
 
 ### Writer Failure Propagation
 

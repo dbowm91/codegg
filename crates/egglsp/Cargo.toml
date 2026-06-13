@@ -24,6 +24,7 @@ dirs = "6"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 similar = "3.0.0"
 sha2 = "0.10"
+futures = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

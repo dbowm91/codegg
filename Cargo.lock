@@ -1829,6 +1829,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "flate2",
+ "futures",
  "lsp-types",
  "reqwest",
  "serde",

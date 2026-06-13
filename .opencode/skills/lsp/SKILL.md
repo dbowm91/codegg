@@ -1,7 +1,7 @@
 ---
 name: lsp
 description: LSP client-side integration for Language Server Protocol support
-version: 1.4.0
+version: 1.5.0
 tags:
   - lsp
   - language-server
@@ -928,13 +928,26 @@ Pending requests are drained on transition. Subsequent `send_request` /
 
 ### Shutdown Coordination
 `LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a
-monotonic `generation: u64`. `shutdown_all()` is quiescent: it cancels cooperative tasks
-via `CancellationToken`, aborts uncooperative ones after a grace period (300ms), awaits
-task completion with a bounded wait (2s), drains all ready clients with a per-client
-timeout (2s), and notifies concurrent callers via a shared `Notify`. The total shutdown
-is bounded by a global timeout (6s). A second caller observing `ShuttingDown` awaits the
-same completion signal rather than racing independently. New client acquisition is rejected
-when the lifecycle is not `Running`.
+monotonic `generation: u64`. The lifecycle is broadcast on a `tokio::sync::watch` channel
+(`lifecycle_tx`) so late subscribers do not lose wakeups at the `ShuttingDown → Stopped`
+transition. `shutdown_all()` is quiescent: it cancels cooperative tasks via
+`CancellationToken` (concurrent, not sequential), aborts uncooperative ones after a grace
+period (300ms), awaits the actual `JoinHandle` of each init task wrapper (concurrent via
+`tokio::task::JoinSet`, not a `yield_now` substitute), drains all ready clients concurrently
+via `futures::future::join_all` with a per-client timeout (2s), and notifies concurrent
+callers via `await_stopped()` which subscribes to the watch channel and waits for `Stopped`.
+The shutdown is driven by an absolute deadline (`Instant::now() + SHUTDOWN_GLOBAL_TIMEOUT`),
+so the total shutdown is bounded by 6s regardless of client count. A second caller
+observing `ShuttingDown` awaits the same completion signal via the watch channel rather
+than racing independently. New client acquisition is rejected when the lifecycle is not
+`Running`.
+
+Each spawned init task is wrapped in `run_init_task_wrapper`, which holds the actual
+`JoinHandle`. The wrapper owns an `ActiveTaskGuard` drop guard that removes the wrapper's
+own entry from `active_init_tasks` on every terminal path — normal completion, panic
+(caught via `AssertUnwindSafe + catch_unwind`), abort, or drop due to shutdown drain. This
+eliminates the prior defect where stale `active_init_tasks` entries could persist after
+success/failure.
 
 ### Client-Map Lock Discipline
 
@@ -982,13 +995,25 @@ Key helper functions (exported from `client.rs`):
 
 ## Quiescence Tests
 
-Five tests in `crates/egglsp/src/service.rs` verify the quiescent shutdown behavior:
+The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutdown behavior:
 
-- `test_shutdown_quiesces_running_init` — verifies `shutdown_all()` cancels an in-flight init task
-- `test_shutdown_waits_for_completion` — verifies the shutdown awaits task completion before returning
-- `test_concurrent_shutdown_callers` — verifies a second caller sees `ShuttingDown` and awaits the same signal
-- `test_shutdown_drains_ready_clients` — verifies ready clients are drained with bounded timeouts
-- `test_generation_prevents_stale_publication` — verifies init tasks recheck generation before publishing
+- `read_lock_concurrency` — non-mutating operations use read locks and do not contend with each other
+- `second_caller_becomes_waiter_before_leader_spawn` — concurrent callers for the same key are sequenced
+- `publish_before_shutdown_drains_published_client` — a published client is drained with bounded timeout even if shutdown begins after publication
+- `retry_after_failure_invokes_factory_again` — a failed init allows a fresh attempt
+- `shutdown_during_init_cancels_waiters_and_disposes_client` — waiters receive `Cancelled`; unpublished client is disposed
+- `factory_panic_resolves_all_callers` — a panicking factory is converted to a `SharedInitError` for all waiters
+- `same_key_concurrent_cold_start_invokes_factory_once` — single-flight election works under contention
+- `shared_failure_is_identical_for_all_callers` — every waiter sees the same `SharedInitError`
+- `concurrent_shutdown_callers` — two `shutdown_all()` calls both observe the final `Stopped` state
+- `publication_race_remains_safe` — an init task that finishes after `ShuttingDown` does not publish a stale client
+- `shutdown_aborts_uncooperative_task` — hard abort works after the grace period
+- `shutdown_cancels_blocked_factory` — cooperative cancellation works via `CancellationToken`
+- `normal_completion_removes_active_task_entry` — the wrapper's `ActiveTaskGuard` drop guard removes the entry
+- `ordinary_failure_removes_active_task_entry` — same, for ordinary initialization failures
+- `forced_abort_is_awaited` — the aborted task's `JoinHandle` is awaited; the task body actually exits before shutdown returns
+- `concurrent_shutdown_lost_wakeup_boundary` — late subscribers to the watch channel do not miss the `ShuttingDown → Stopped` transition
+- `global_deadline_finalizes_state` — a task that does not complete within the global deadline is still drained; lifecycle reaches `Stopped` and all maps are empty
 
 ## See Also
 

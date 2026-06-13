@@ -11,7 +11,7 @@ The authoritative LSP implementation is in **`crates/egglsp/`**. The `src/lsp/` 
 The egglsp crate consists of:
 
 - **`src/server.rs`** - Server definitions (39 servers: clangd, rust-analyzer, gopls, pyright, typescript-language-server, etc.)
-- **`src/service.rs`** - `LspService` managing LSP client lifecycle, explicit leader/waiter init election, lifecycle-validated publication, and unpublished-client disposal
+- **`src/service.rs`** - `LspService` managing LSP client lifecycle, explicit leader/waiter init election, lifecycle-validated publication, unpublished-client disposal, and quiescent shutdown driven by an absolute deadline
 - **`src/client.rs`** - Low-level LSP client implementation
 - **`src/operations.rs`** - `LspOperations` for code actions (goto definition, find references, etc.), `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview`
 - **`src/diagnostics.rs`** - `DiagnosticsCollector` for collecting and debouncing diagnostics
@@ -32,11 +32,11 @@ pub struct LspService {
 
 Client-map read/write lock discipline: non-mutating service methods (`open_file`, `update_file`, `close_file`, `save_file`, `is_file_open`, `get_diagnostics_for_key`, `get_all_diagnostics_for_key`, `diagnostics_may_still_be_warming`, `get_diagnostic_snapshot_for_key`, `send_request`, `client_keys`, `get_capabilities_for_key`) use `clients.read().await`. Write guards are reserved for client publication, insertion, removal, and shutdown drain.
 
-Each spawned initialization task is tracked via `active_init_tasks: HashMap<u64, InitTaskControl>` with cooperative cancellation (`CancellationToken`) at five stages: before download, before process spawn, before initialize request, before initialized notification, and before publication. A `tokio::select!` races each long-running stage against the cancellation signal.
+Each spawned initialization task is wrapped in `run_init_task_wrapper`, which holds the actual `JoinHandle` of the wrapper future. The wrapper owns an `ActiveTaskGuard` drop guard that removes its own entry from `active_init_tasks` on every terminal path — normal completion, panic (caught via `AssertUnwindSafe + catch_unwind`), abort, or drop due to shutdown drain. `active_init_tasks: HashMap<u64, InitTaskControl>` stores the wrapper's `JoinHandle` and `CancellationToken`. Cooperative cancellation races each long-running stage against the cancellation signal at five stages: before download, before process spawn, before initialize request, before initialized notification, and before publication.
 
 If publication loses to an existing client or is invalidated by shutdown, the unpublished client is shut down with a bounded timeout before waiters are notified.
 
-`shutdown_all()` is quiescent: it transitions to `ShuttingDown`, drains init slots, signals cooperative cancellation to all tracked tasks, aborts non-cooperative tasks after a 300ms grace period, waits up to 2s for abort, drains ready clients with a 2s per-client timeout, transitions to `Stopped`, and notifies concurrent waiters. The entire sequence is bounded by a 6s global timeout. Concurrent shutdown callers observing `ShuttingDown` await a shared `Notify` and return only after the service reaches `Stopped`.
+`shutdown_all()` is quiescent: it transitions to `ShuttingDown` and broadcasts on a `tokio::sync::watch` channel (`lifecycle_tx`), drains init slots, signals cooperative cancellation to all tracked tasks concurrently, awaits the wrapper `JoinHandle`s concurrently via `tokio::task::JoinSet` with a 300ms grace period, aborts any tasks still pending with concurrent await, drains ready clients concurrently via `futures::future::join_all` with a 2s per-client timeout, notifies `Cancelled` `SharedInitError` to any waiters, and transitions to `Stopped`. The entire sequence is driven by an **absolute deadline** (`Instant::now() + SHUTDOWN_GLOBAL_TIMEOUT` = 6s), so the total shutdown is bounded regardless of client count. Concurrent shutdown callers observing `ShuttingDown` enter `await_stopped()`, which subscribes to the watch channel and waits for `Stopped` — race-free with no lost-wakeup window at the `ShuttingDown → Stopped` transition.
 
 ### LspOperations
 

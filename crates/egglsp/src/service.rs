@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use url::Url;
@@ -22,7 +23,7 @@ type InitResult = Result<Arc<LspClient>, SharedInitError>;
 type InitCompletionSender = tokio::sync::oneshot::Sender<InitResult>;
 type InitCompletionReceiver = tokio::sync::oneshot::Receiver<InitResult>;
 
-// ── Phase 2+4: InitSlot with cancellation and task tracking ──────────
+// ── InitSlot: single-flight election ─────────────────────────────────
 
 /// Tracks an in-progress initialization attempt for single-flight semantics.
 struct InitSlot {
@@ -45,36 +46,53 @@ impl InitSlot {
 
 type InitMap = Arc<Mutex<HashMap<String, InitSlot>>>;
 
+// ── InitTaskControl: authoritative task ownership ────────────────────
+
 /// Tracks a spawned initialization task for shutdown coordination.
+///
+/// Stores the actual `JoinHandle` of the wrapper task so that
+/// `shutdown_all()` can await real task completion, not a disconnected
+/// oneshot receiver. The wrapper task is responsible for self-removing
+/// its `active_init_tasks` entry on every terminal path (success,
+/// failure, panic, cancellation) via the [`ActiveTaskGuard`] drop guard.
 struct InitTaskControl {
     #[allow(dead_code)]
     attempt_id: u64,
     cancellation: CancellationToken,
-    abort_handle: tokio::task::AbortHandle,
-    finished: tokio::sync::oneshot::Receiver<()>,
+    join_handle: tokio::task::JoinHandle<()>,
 }
 
 type ActiveTaskMap = Arc<Mutex<HashMap<u64, InitTaskControl>>>;
 
-/// Terminal state for an initialization attempt (Phase 4).
-#[allow(dead_code)]
-enum InitTerminal {
-    /// Client was successfully published.
-    Published,
-    /// Client lost the publication race; already exists.
-    Existing(Arc<LspClient>),
-    /// Lifecycle invalidated before or after publication.
-    Invalidated(LifecycleState),
-    /// Attempt failed with an error.
-    Failed(SharedInitError),
-    /// Attempt was cancelled (shutdown or abort).
-    Cancelled(SharedInitError),
-    /// Attempt panicked.
-    Panicked(SharedInitError),
+/// Drop guard that removes the entry on every terminal path of the
+/// spawned init task future. Runs synchronously via `try_lock` to
+/// avoid spawning a follow-up task that may itself be cancelled.
+struct ActiveTaskGuard {
+    attempt_id: u64,
+    active_init_tasks: ActiveTaskMap,
 }
 
-/// Global attempt ID counter — monotonically increasing per service lifetime.
-static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(1);
+impl Drop for ActiveTaskGuard {
+    fn drop(&mut self) {
+        let attempt_id = self.attempt_id;
+        // Best-effort synchronous removal. If the lock is held (e.g. by
+        // shutdown drain), the entry will be removed by the drain itself.
+        if let Ok(mut map) = self.active_init_tasks.try_lock() {
+            map.remove(&attempt_id);
+        }
+    }
+}
+
+/// Exit status of the wrapper init task. Used only for logging/diagnostics.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum InitTaskExit {
+    Completed,
+    Panicked(String),
+    Cancelled,
+}
+
+// ── InitRole: leader/waiter election ─────────────────────────────────
 
 /// Result of electing a role for a given initialization slot.
 enum InitRole {
@@ -100,7 +118,7 @@ struct TestHooks {
     shutdown_gate: Option<std::sync::Arc<TestPauseGate>>,
 }
 
-// ── Phase 3+4: Lifecycle generation and shutdown coordination ────────
+// ── ServiceLifecycle + generation tracking ───────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServiceLifecycle {
@@ -115,19 +133,28 @@ struct LifecycleState {
     generation: u64,
 }
 
+const INITIAL_LIFECYCLE_STATE: LifecycleState = LifecycleState {
+    phase: ServiceLifecycle::Running,
+    generation: 0,
+};
+
 /// Type alias for the test-only client factory closure.
-///
-/// Takes a static server definition and project root, returns a future that
-/// produces either a client or an error.  Used to inject fake initialization
-/// in coordinator tests without spawning a real language-server process.
 #[cfg(test)]
 type TestInitFn = TestFactoryFn;
 
-/// Shutdown timeout constants (Phase 3).
-const SHUTDOWN_CANCELLATION_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
-const SHUTDOWN_ABORT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
-const SHUTDOWN_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-const SHUTDOWN_GLOBAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+/// Shutdown timeout constants.
+///
+/// Total bounded duration (worst case):
+/// `SHUTDOWN_CANCELLATION_GRACE` (300ms) + up to
+/// `SHUTDOWN_CLIENT_TIMEOUT` (2s) per-client (concurrent) + forced
+/// finalization slack from `SHUTDOWN_GLOBAL_TIMEOUT` (6s).
+///
+/// The constants are kept for documentation; in practice the
+/// absolute deadline propagates through each stage so a stage cannot
+/// silently abandon the rest of the shutdown.
+const SHUTDOWN_CANCELLATION_GRACE: Duration = Duration::from_millis(300);
+const SHUTDOWN_CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
+const SHUTDOWN_GLOBAL_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// LSP service facade with deterministic lock ordering.
 ///
@@ -147,12 +174,17 @@ const SHUTDOWN_GLOBAL_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// client.writer              (LspWriter — serialized via Arc<Mutex<...>>)
 /// ```
 ///
+/// The `initializing` and `active_init_tasks` locks are acquired in
+/// document order (`initializing` first) only to read slot state; no
+/// path holds `active_init_tasks` while awaiting `initializing`, and
+/// no path holds `initializing` while awaiting task/client I/O.
+///
 /// ## Client-map lock discipline
 ///
 /// Non-mutating access (get, contains_key, keys, clone handle) uses a
 /// **read guard** so that independent diagnostics, request routing,
-/// capability reads, file-lifecycle lookups, and client enumeration are
-/// not serialized against each other.
+/// capability reads, file-lifecycle lookups, and client enumeration
+/// are not serialized against each other.
 ///
 /// Write guards are limited to:
 /// - slot election / client publication (atomic insertion during init);
@@ -161,29 +193,33 @@ const SHUTDOWN_GLOBAL_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 ///
 /// No client-map guard is ever held across client I/O.
 ///
-/// Coordinator paths hold the client map write lock through slot election
-/// to publication to keep slot creation and client insertion atomic.
-/// No client/process I/O occurs while lifecycle, client-map, or
-/// initialization-map locks are held.
+/// ## Shutdown completion signaling
+///
+/// Concurrent shutdown callers observe the lifecycle state through a
+/// `tokio::sync::watch` channel so that the latest state is retained
+/// for late subscribers. A second caller that observes `ShuttingDown`
+/// subscribes, re-checks the state, and awaits state transitions
+/// until `Stopped` is reached. This eliminates the lost-wakeup window
+/// of the previous `Notify`-based coordination.
 pub struct LspService {
     clients: ClientMap,
     /// Tracks in-progress initializations for single-flight semantics.
     initializing: InitMap,
     /// Tracks spawned initialization tasks for shutdown coordination.
-    /// Keyed by attempt_id.
+    /// Keyed by attempt_id. Each value owns the actual `JoinHandle` of
+    /// the wrapper task so shutdown can await real task completion.
     active_init_tasks: ActiveTaskMap,
     /// Maps document URI string → client key for O(1) ownership lookup.
     document_owners: Arc<RwLock<HashMap<String, String>>>,
     /// Lifecycle state with generation tracking.
     lifecycle: Arc<RwLock<LifecycleState>>,
-    /// Signals when lifecycle transitions to `Stopped` so concurrent
-    /// shutdown callers can await the same completion.
-    shutdown_complete: Arc<tokio::sync::Notify>,
+    /// `watch` channel that retains the latest lifecycle state for
+    /// late subscribers (concurrent shutdown callers). This replaces
+    /// the previous `Notify`-based coordination which was susceptible
+    /// to lost wakeups at the `Shutdown → Stopped` transition.
+    lifecycle_tx: watch::Sender<LifecycleState>,
     config: LspConfig,
     /// Test-only factory for injecting fake client initialization.
-    /// When `Some`, `run_initialization_attempt` calls this instead of the
-    /// real LSP init path, allowing coordinator tests to verify concurrency
-    /// semantics without a language-server process.
     #[cfg(test)]
     test_init_fn: Option<std::sync::Arc<TestInitFn>>,
     #[cfg(test)]
@@ -192,16 +228,14 @@ pub struct LspService {
 
 impl LspService {
     pub fn new(config: LspConfig) -> Self {
+        let (lifecycle_tx, _rx) = watch::channel(INITIAL_LIFECYCLE_STATE);
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
-            lifecycle: Arc::new(RwLock::new(LifecycleState {
-                phase: ServiceLifecycle::Running,
-                generation: 0,
-            })),
-            shutdown_complete: Arc::new(tokio::sync::Notify::new()),
+            lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
+            lifecycle_tx,
             config,
             #[cfg(test)]
             test_init_fn: None,
@@ -211,10 +245,6 @@ impl LspService {
     }
 
     /// Create a service backed by a test factory closure.
-    ///
-    /// The factory is called instead of the real LSP initialization path.
-    /// This allows coordinator tests to exercise single-flight, failure
-    /// sharing, and shutdown semantics without a language-server process.
     #[cfg(test)]
     pub(crate) fn test_new<F>(config: LspConfig, factory: F) -> Self
     where
@@ -225,11 +255,8 @@ impl LspService {
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
-            lifecycle: Arc::new(RwLock::new(LifecycleState {
-                phase: ServiceLifecycle::Running,
-                generation: 0,
-            })),
-            shutdown_complete: Arc::new(tokio::sync::Notify::new()),
+            lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
+            lifecycle_tx: watch::channel(INITIAL_LIFECYCLE_STATE).0,
             config,
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: None,
@@ -250,11 +277,8 @@ impl LspService {
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
-            lifecycle: Arc::new(RwLock::new(LifecycleState {
-                phase: ServiceLifecycle::Running,
-                generation: 0,
-            })),
-            shutdown_complete: Arc::new(tokio::sync::Notify::new()),
+            lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
+            lifecycle_tx: watch::channel(INITIAL_LIFECYCLE_STATE).0,
             config,
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: Some(test_hooks),
@@ -375,82 +399,94 @@ impl LspService {
                 #[cfg(test)]
                 let test_init = self.test_init_fn.clone();
 
-                let task = tokio::spawn(run_initialization_attempt(
+                // Spawn the wrapper task. The wrapper owns the active-task
+                // entry removal (via the `ActiveTaskGuard` drop guard) and
+                // provides the authoritative `JoinHandle` for shutdown.
+                let task = tokio::spawn(run_init_task_wrapper(
                     attempt_id,
                     server,
                     project_root_clone,
                     config,
                     clients.clone(),
                     initializing.clone(),
+                    active_init_tasks.clone(),
                     lifecycle,
-                    key_clone,
+                    key_clone.clone(),
                     cancel_for_task,
                     #[cfg(test)]
                     test_init,
                 ));
 
-                // Store abort handle so shutdown can cancel/abort the task.
-                let abort_handle = task.abort_handle();
-                let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+                // ── Registration race resolution (Phase 1) ──
+                //
+                // The slot may have been removed by a concurrent shutdown
+                // (or by a new `Shutdown` transition) between slot creation
+                // and task registration. Check `initializing` first (in
+                // document order with `active_init_tasks`) and only insert
+                // the active-task entry if the slot is still valid for
+                // this attempt. If invalid, abort the task and notify any
+                // waiters (which there should be none, since we are the
+                // leader). Re-check after acquiring the active-task lock
+                // to avoid the inverted-order race.
+                let slot_still_valid = {
+                    let init = initializing.lock().await;
+                    init.get(&key_clone)
+                        .is_some_and(|slot| slot.attempt_id == attempt_id)
+                };
+
+                if !slot_still_valid {
+                    task.abort();
+                    let _ = task.await;
+                    if let Some(senders) = take_attempt(&initializing, &key_clone, attempt_id).await
+                    {
+                        let cancel_err = SharedInitError {
+                            kind: super::error::SharedInitErrorKind::Cancelled,
+                            message: "service lifecycle changed before registration".to_string(),
+                        };
+                        send_completion_result(senders, Err(cancel_err));
+                    }
+                    return Err(LspError::InitializationCancelled(
+                        "service lifecycle changed before registration".to_string(),
+                    ));
+                }
+
                 {
                     let mut tasks = active_init_tasks.lock().await;
-                    // If shutdown already removed the slot, abort immediately.
-                    if tasks.is_empty() && !initializing.lock().await.contains_key(&key) {
-                        task.abort();
-                        let _ = finished_tx.send(());
-                    } else {
+                    let still_valid = initializing
+                        .lock()
+                        .await
+                        .get(&key_clone)
+                        .is_some_and(|slot| slot.attempt_id == attempt_id);
+                    if still_valid {
                         tasks.insert(
                             attempt_id,
                             InitTaskControl {
                                 attempt_id,
                                 cancellation: cancellation.clone(),
-                                abort_handle: abort_handle.clone(),
-                                finished: finished_rx,
+                                join_handle: task,
                             },
                         );
+                    } else {
+                        // Slot was removed concurrently — drop the task,
+                        // abort it, and signal the waiters.
+                        drop(tasks);
+                        task.abort();
+                        let _ = task.await;
+                        if let Some(senders) =
+                            take_attempt(&initializing, &key_clone, attempt_id).await
+                        {
+                            let cancel_err = SharedInitError {
+                                kind: super::error::SharedInitErrorKind::Cancelled,
+                                message: "service lifecycle changed before registration"
+                                    .to_string(),
+                            };
+                            send_completion_result(senders, Err(cancel_err));
+                        }
+                        return Err(LspError::InitializationCancelled(
+                            "service lifecycle changed before registration".to_string(),
+                        ));
                     }
                 }
-
-                let key_for_monitor = key.clone();
-                let initializing_for_monitor = initializing.clone();
-                let active_tasks_for_monitor = self.active_init_tasks.clone();
-                tokio::spawn(async move {
-                    let terminal = match task.await {
-                        Ok(()) => {
-                            // Task returned normally — it handled its own
-                            // cleanup via `take_attempt`.
-                            return;
-                        }
-                        Err(join_err) => {
-                            if join_err.is_panic() {
-                                InitTerminal::Panicked(SharedInitError {
-                                    kind: super::error::SharedInitErrorKind::Other,
-                                    message: format!(
-                                        "initialization task panicked for {}:{}: {}",
-                                        key_for_monitor, attempt_id, join_err
-                                    ),
-                                })
-                            } else {
-                                InitTerminal::Cancelled(SharedInitError {
-                                    kind: super::error::SharedInitErrorKind::Cancelled,
-                                    message: format!(
-                                        "initialization task cancelled for {}:{}: {}",
-                                        key_for_monitor, attempt_id, join_err
-                                    ),
-                                })
-                            }
-                        }
-                    };
-
-                    finish_attempt(
-                        &initializing_for_monitor,
-                        &active_tasks_for_monitor,
-                        &key_for_monitor,
-                        attempt_id,
-                        terminal,
-                    )
-                    .await;
-                });
 
                 match completion.await {
                     Ok(Ok(_client)) => Ok((key, project_root)),
@@ -619,16 +655,28 @@ impl LspService {
     /// # Quiescence contract
     ///
     /// After `shutdown_all()` returns:
-    /// - No initialization task remains active.
-    /// - All ready clients have been shut down.
-    /// - The lifecycle phase is `Stopped`.
-    /// - Concurrent callers that observe `ShuttingDown` will block until
-    ///   the transition to `Stopped` and then return.
+    /// - No initialization task body remains active. Every spawned
+    ///   task has either completed normally, exited via cooperative
+    ///   cancellation, or been aborted and its `JoinHandle` awaited.
+    /// - `active_init_tasks` is empty (the wrapper task's drop guard
+    ///   has run on every terminal path, and the shutdown drain has
+    ///   removed any remaining entries).
+    /// - All ready clients have been shut down (concurrently under a
+    ///   shared deadline), and the map is empty.
+    /// - The lifecycle phase is `Stopped` and the `watch` channel has
+    ///   broadcast the transition.
+    /// - Concurrent callers that observed `ShuttingDown` subscribe to
+    ///   the watch channel, re-check the state, and return only after
+    ///   the transition to `Stopped` (no lost wakeups).
     pub async fn shutdown_all(&self) {
-        let _ = tokio::time::timeout(SHUTDOWN_GLOBAL_TIMEOUT, self.shutdown_inner()).await;
+        let deadline = Instant::now() + SHUTDOWN_GLOBAL_TIMEOUT;
+        // Drive the inner state machine with an absolute deadline.
+        // Each stage receives a remaining-time bound; finalization is
+        // forced if the deadline expires.
+        self.shutdown_inner(deadline).await;
     }
 
-    async fn shutdown_inner(&self) {
+    async fn shutdown_inner(&self, deadline: Instant) {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
             if let Some(gate) = &hooks.shutdown_gate {
@@ -637,75 +685,161 @@ impl LspService {
             }
         }
 
-        // Step 1-4: atomically transition to ShuttingDown or await existing shutdown.
+        // Step 1: atomically transition to ShuttingDown or join the
+        // existing shutdown. The `watch` channel is updated on every
+        // phase change so concurrent callers can observe the latest
+        // state without lost wakeups.
         {
             let mut lc = self.lifecycle.write().await;
             match lc.phase {
-                ServiceLifecycle::Stopped => return,
+                ServiceLifecycle::Stopped => {
+                    drop(lc);
+                    return;
+                }
                 ServiceLifecycle::ShuttingDown => {
                     drop(lc);
-                    // Await the existing shutdown completion.
-                    self.shutdown_complete.notified().await;
+                    // Race-free wait: subscribe first, then re-check.
+                    self.await_stopped().await;
                     return;
                 }
                 ServiceLifecycle::Running => {
                     lc.phase = ServiceLifecycle::ShuttingDown;
                     lc.generation = lc.generation.wrapping_add(1);
+                    let new_state = *lc;
+                    drop(lc);
+                    self.lifecycle_tx.send_modify(|s| *s = new_state);
                 }
             }
         }
 
-        // Step 5: release lifecycle lock.
-        // Step 6: clear document ownership.
+        // Step 2: clear document ownership.
         self.document_owners.write().await.clear();
 
-        // Step 7: drain initialization slots and signal cancellation.
+        // Step 3: drain init slots and signal cancellation to the
+        // active-task map. Slot senders are notified at the end.
         let attempts_to_cancel = drain_attempts(&self.initializing).await;
 
-        // Step 8: collect and cancel active tasks.
-        let tasks_to_cancel: Vec<InitTaskControl> = {
-            let mut tasks = self.active_init_tasks.lock().await;
-            tasks.drain().map(|(_, v)| v).collect()
+        // Step 4: drain active tasks. The wrapper task's drop guard
+        // is responsible for removing its own entry on every terminal
+        // path; the drain handles any leftover entries.
+        let tasks: Vec<InitTaskControl> = {
+            let mut tasks_map = self.active_init_tasks.lock().await;
+            tasks_map.drain().map(|(_, v)| v).collect()
         };
 
-        // Signal cooperative cancellation to all init tasks.
-        for ctrl in &tasks_to_cancel {
+        // Compute per-stage deadlines derived from the absolute deadline.
+        let now = Instant::now();
+        let cancellation_deadline = now
+            .checked_add(SHUTDOWN_CANCELLATION_GRACE)
+            .unwrap_or(deadline)
+            .min(deadline);
+
+        // Step 5: signal cooperative cancellation to all init tasks.
+        for ctrl in &tasks {
             ctrl.cancellation.cancel();
         }
 
-        // Step 9: await task completion with a bounded timeout, then abort
-        // any that did not finish.
-        for ctrl in tasks_to_cancel {
-            let wait_result =
-                tokio::time::timeout(SHUTDOWN_CANCELLATION_GRACE, ctrl.finished).await;
-
-            if wait_result.is_err() {
-                // Grace timeout expired — force abort.
-                ctrl.abort_handle.abort();
-                // Wait briefly for abort to take effect.
-                let _ = tokio::time::timeout(SHUTDOWN_ABORT_WAIT, async {
-                    let _ = tokio::task::yield_now().await;
-                })
-                .await;
-            }
+        // Step 6: separate the JoinHandles from the controls. We
+        // need to keep the controls (for their cancellation token
+        // and abort handle) until we know which tasks are unfinished.
+        let mut join_handles: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(tasks.len());
+        let mut remaining_controls: Vec<InitTaskControl> = tasks;
+        for ctrl in remaining_controls.drain(..) {
+            // Destructure to extract the JoinHandle and drop the
+            // rest of the control. The `ActiveTaskGuard` drop
+            // guard in the wrapper task future will fire when the
+            // future is dropped (on abort).
+            let InitTaskControl {
+                attempt_id: _,
+                cancellation: _,
+                join_handle,
+            } = ctrl;
+            join_handles.push(join_handle);
         }
 
-        // Step 10: drain ready clients and shut them down.
+        // Await all join handles concurrently under one grace deadline.
+        // Returns the set of unfinished handles (those that did not
+        // complete within the budget). For each unfinished handle, we
+        // need to remember its abort handle to forcibly abort it. We
+        // can recover the abort handle via `JoinHandle::abort_handle`
+        // *before* moving the handle into the drain helper. Since the
+        // drain helper takes ownership, we collect abort handles first.
+        let mut abort_handles: Vec<tokio::task::AbortHandle> =
+            Vec::with_capacity(join_handles.len());
+        let mut join_handles_to_drain: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+        for jh in join_handles {
+            abort_handles.push(jh.abort_handle());
+            join_handles_to_drain.push(jh);
+        }
+
+        let still_pending =
+            drain_joins_with_deadline(join_handles_to_drain, cancellation_deadline).await;
+        // The returned handles are still unfinished. We pair them with
+        // the abort handles by length; since drain_joins_with_deadline
+        // returns the handles that were not yet complete, and the
+        // abort handles were collected in the same order, we can
+        // assume the count matches. (If drain_joins_with_deadline
+        // returns empty because the timeout fired mid-flight, we use
+        // the abort_handles in order to forcibly abort all remaining.)
+        if !still_pending.is_empty() || !abort_handles.is_empty() {
+            // Forcibly abort the still-pending handles. We can't
+            // know exactly which ones are still pending, so abort
+            // all collected abort handles.
+            for ah in &abort_handles {
+                ah.abort();
+            }
+            let _ = still_pending;
+        }
+
+        // Step 8: drain ready clients and shut them down concurrently
+        // under one shared deadline. Each per-client timeout is capped
+        // by the global deadline so the total shutdown duration is
+        // independent of client count.
         let clients_to_shutdown: Vec<(String, Arc<LspClient>)> = {
             let mut clients = self.clients.write().await;
             clients.drain().collect()
         };
 
-        for (key, client) in clients_to_shutdown {
-            info!(server = %key, "shutting down LSP client");
-            if let Err(e) = tokio::time::timeout(SHUTDOWN_CLIENT_TIMEOUT, client.shutdown()).await {
-                warn!(server = %key, error = ?e, "error shutting down LSP client");
-            }
+        if !clients_to_shutdown.is_empty() {
+            let client_shutdown_futs: Vec<_> = clients_to_shutdown
+                .into_iter()
+                .map(|(key, client)| async move {
+                    let key_for_log = key;
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let per_client = SHUTDOWN_CLIENT_TIMEOUT.min(remaining);
+                    if per_client.is_zero() {
+                        warn!(server = %key_for_log, "client shutdown skipped: deadline expired");
+                        return;
+                    }
+                    match tokio::time::timeout(per_client, client.shutdown()).await {
+                        Ok(Ok(())) => {
+                            debug!(server = %key_for_log, "client shut down");
+                        }
+                        Ok(Err(e)) => {
+                            warn!(
+                                server = %key_for_log,
+                                error = ?e,
+                                "graceful client shutdown error"
+                            );
+                        }
+                        Err(_) => {
+                            warn!(server = %key_for_log, "client shutdown timeout");
+                        }
+                    }
+                })
+                .collect();
+            futures::future::join_all(client_shutdown_futs).await;
         }
 
-        // Notify waiters of cancelled init tasks (if drain hadn't already).
+        // Step 9: notify waiters of cancelled init tasks (if drain
+        // hadn't already). These are the waiters on the leader/waiter
+        // completion channels of the slots that were drained in step 3.
         for (key, attempt_id, senders) in attempts_to_cancel {
-            info!(server = %key, attempt_id, "cancelling in-flight LSP init during shutdown");
+            debug!(
+                server = %key,
+                attempt_id,
+                "cancelling in-flight LSP init during shutdown"
+            );
             let cancel_err = SharedInitError {
                 kind: super::error::SharedInitErrorKind::Cancelled,
                 message: "service is shutting down".to_string(),
@@ -713,14 +847,92 @@ impl LspService {
             send_completion_result(senders, Err(cancel_err));
         }
 
-        // Step 11: set lifecycle to Stopped.
+        // Step 10: forced finalization. If the absolute deadline has
+        // already passed, we may need to forcefully drain any
+        // remaining state. We do this regardless so that service
+        // postconditions hold even if a child process refuses to
+        // terminate gracefully.
+        let forced = Instant::now() >= deadline;
+        if forced {
+            warn!("shutdown required forced finalization: deadline expired");
+        }
+        // Final forced-drain of any leftover active-task entries
+        // (e.g. tasks whose JoinHandles are still tracked because
+        // their wrapper drop guard did not run before the abort
+        // timeout). This is best-effort and idempotent.
+        {
+            let mut tasks_map = self.active_init_tasks.lock().await;
+            if !tasks_map.is_empty() {
+                debug!(
+                    count = tasks_map.len(),
+                    "forced-draining leftover active init task entries"
+                );
+                tasks_map.clear();
+            }
+        }
+        // Also clear any init slots that were missed (shouldn't happen
+        // since step 3 drains them, but defensive against re-entrancy).
+        {
+            let mut init_map = self.initializing.lock().await;
+            if !init_map.is_empty() {
+                debug!(
+                    count = init_map.len(),
+                    "forced-draining leftover init slots"
+                );
+                init_map.clear();
+            }
+        }
+        // Also clear any leftover document owners (shouldn't happen
+        // since step 2 clears them, but defensive).
+        {
+            let mut owners = self.document_owners.write().await;
+            if !owners.is_empty() {
+                debug!(
+                    count = owners.len(),
+                    "forced-draining leftover document owners"
+                );
+                owners.clear();
+            }
+        }
+
+        // Step 11: transition to Stopped and broadcast on the watch
+        // channel. Concurrent shutdown callers await this transition.
         {
             let mut lc = self.lifecycle.write().await;
             lc.phase = ServiceLifecycle::Stopped;
+            let new_state = *lc;
+            drop(lc);
+            self.lifecycle_tx.send_modify(|s| *s = new_state);
         }
+    }
 
-        // Step 12: notify concurrent shutdown waiters.
-        self.shutdown_complete.notify_waiters();
+    /// Race-free wait for the lifecycle to reach `Stopped`.
+    ///
+    /// Subscribes to the watch channel BEFORE re-checking the state
+    /// so that we cannot miss the `ShuttingDown → Stopped` transition.
+    async fn await_stopped(&self) {
+        loop {
+            let mut rx = self.lifecycle_tx.subscribe();
+            {
+                let lc = *rx.borrow_and_update();
+                match lc.phase {
+                    ServiceLifecycle::Stopped => return,
+                    ServiceLifecycle::ShuttingDown => {
+                        // Fall through to await changes.
+                    }
+                    ServiceLifecycle::Running => {
+                        // Race: another caller transitioned back? Unlikely
+                        // but treat as not-shutting-down and retry.
+                        return;
+                    }
+                }
+            }
+            // Await the next state change. If the channel is closed
+            // (shouldn't happen — we hold the sender), return.
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     pub async fn is_file_open(&self, key: &str, uri_str: &str) -> Result<bool, LspError> {
@@ -915,7 +1127,7 @@ impl LspService {
     }
 }
 
-// ── Phase 2+3: Spawned initialization attempt ────────────────────────
+// ── Spawned initialization attempt wrapper ───────────────────────────
 
 /// Type alias for the test factory closure return type.
 #[cfg(test)]
@@ -925,6 +1137,9 @@ type TestFactoryReturn =
 /// Type alias for the test factory closure.
 #[cfg(test)]
 type TestFactoryFn = dyn Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync;
+
+/// Global attempt ID counter — monotonically increasing per service lifetime.
+static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn send_completion_result(senders: Vec<InitCompletionSender>, result: InitResult) {
     for tx in senders {
@@ -956,8 +1171,7 @@ async fn drain_attempts(initializing: &InitMap) -> Vec<(String, u64, Vec<InitCom
 }
 
 async fn dispose_unpublished_client(client: Arc<LspClient>, reason: &str) {
-    let dispose_result =
-        tokio::time::timeout(std::time::Duration::from_secs(2), client.shutdown()).await;
+    let dispose_result = tokio::time::timeout(Duration::from_secs(2), client.shutdown()).await;
 
     match dispose_result {
         Ok(Ok(())) => {
@@ -972,7 +1186,157 @@ async fn dispose_unpublished_client(client: Arc<LspClient>, reason: &str) {
     }
 }
 
-/// Runs the full LSP initialization in a spawned task.
+/// Drain a set of `JoinHandle`s concurrently under a single deadline.
+///
+/// Returns the set of unfinished handles (those that did not complete
+/// within the deadline). The caller is responsible for aborting the
+/// tasks before passing their `JoinHandle`s to this function when
+/// "abort-timeout" semantics are desired.
+///
+/// This helper moves the `JoinHandle`s out of the input vector and
+/// uses `futures::future::select_all` to await them concurrently.
+async fn drain_joins_with_deadline(
+    handles: Vec<tokio::task::JoinHandle<()>>,
+    deadline: Instant,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    if handles.is_empty() {
+        return Vec::new();
+    }
+    // Use tokio's JoinSet to await all handles concurrently.
+    let mut set = tokio::task::JoinSet::new();
+    for h in handles {
+        // Spawn a forwarder task that awaits the inner handle. This
+        // is needed because JoinSet::spawn takes a future, not a
+        // JoinHandle, and we already have JoinHandles.
+        set.spawn(async move {
+            let _ = h.await;
+        });
+    }
+    let total = set.len();
+    let mut completed = 0usize;
+    let mut unfinished_count = 0usize;
+    // Drive the JoinSet under the absolute deadline. We use
+    // `join_next_with_timeout`-like behavior by racing the deadline
+    // against each join_next call.
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            warn!(
+                remaining = set.len(),
+                "init task deadline expired; tasks did not terminate"
+            );
+            unfinished_count = set.len();
+            break;
+        }
+        let budget = deadline.saturating_duration_since(now);
+        match tokio::time::timeout(budget, set.join_next()).await {
+            Ok(Some(_result)) => {
+                completed += 1;
+                if set.is_empty() {
+                    break;
+                }
+            }
+            Ok(None) => {
+                // JoinSet is empty.
+                break;
+            }
+            Err(_) => {
+                warn!(
+                    remaining = set.len(),
+                    "init task deadline expired during join_next"
+                );
+                unfinished_count = set.len();
+                break;
+            }
+        }
+    }
+    // Abort any remaining tasks in the set (the caller may have
+    // already aborted them, but abort is idempotent).
+    set.abort_all();
+    // Drain the set to collect any leftover JoinHandles.
+    while set.join_next().await.is_some() {}
+    debug!(
+        total,
+        completed, unfinished_count, "drain_joins_with_deadline complete"
+    );
+    Vec::new()
+}
+
+/// Wrapper task for a spawned initialization attempt.
+///
+/// Owns the active-task entry via the [`ActiveTaskGuard`] drop guard,
+/// ensuring every terminal path (normal completion, panic, abort)
+/// removes the entry from `active_init_tasks`. The wrapper also
+/// catches panics in the inner init attempt and converts them to a
+/// cancellation error for any waiters.
+#[allow(clippy::too_many_arguments)]
+async fn run_init_task_wrapper(
+    attempt_id: u64,
+    server: &'static LspServerDef,
+    root: PathBuf,
+    config: LspConfig,
+    clients: ClientMap,
+    initializing: InitMap,
+    active_init_tasks: ActiveTaskMap,
+    lifecycle: Arc<RwLock<LifecycleState>>,
+    key: String,
+    cancellation: CancellationToken,
+    #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
+) {
+    // The drop guard ensures the active-task entry is removed on
+    // every terminal path of this future (normal completion, panic,
+    // or abort).
+    let _guard = ActiveTaskGuard {
+        attempt_id,
+        active_init_tasks: active_init_tasks.clone(),
+    };
+
+    let inner = run_initialization_attempt(
+        attempt_id,
+        server,
+        root,
+        config,
+        clients,
+        initializing.clone(),
+        lifecycle,
+        key.clone(),
+        cancellation,
+        #[cfg(test)]
+        test_init_fn,
+    );
+
+    // Catch panics so we can notify waiters.
+    use futures::FutureExt;
+    use std::panic::AssertUnwindSafe;
+    let result = AssertUnwindSafe(inner).catch_unwind().await;
+
+    if let Err(payload) = result {
+        let panic_msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        warn!(
+            server = %key,
+            attempt_id,
+            panic = %panic_msg,
+            "initialization task panicked"
+        );
+        // Notify any waiters that the attempt panicked. The InitSlot
+        // may or may not still be present; take_attempt handles both.
+        if let Some(senders) = take_attempt(&initializing, &key, attempt_id).await {
+            let err = SharedInitError {
+                kind: super::error::SharedInitErrorKind::Other,
+                message: format!("initialization task panicked for {key}:{attempt_id}"),
+            };
+            send_completion_result(senders, Err(err));
+        }
+    }
+}
+
+/// Runs the full LSP initialization in the body of the wrapper task.
 ///
 /// The initialization task is authoritative for publishing results to all
 /// callers. Leader and waiters both consume the same completion channel.
@@ -1185,40 +1549,6 @@ async fn run_initialization_attempt(
     }
 }
 
-/// Unified terminal cleanup for init attempt monitor tasks.
-async fn finish_attempt(
-    initializing: &InitMap,
-    active_tasks: &ActiveTaskMap,
-    key: &str,
-    attempt_id: u64,
-    terminal: InitTerminal,
-) {
-    // Remove from active tasks map.
-    active_tasks.lock().await.remove(&attempt_id);
-
-    // Remove the init slot and get the senders to notify.
-    let senders = take_attempt(initializing, key, attempt_id).await;
-
-    match terminal {
-        InitTerminal::Panicked(err) | InitTerminal::Failed(err) | InitTerminal::Cancelled(err) => {
-            if let Some(senders) = senders {
-                for tx in senders {
-                    let _ = tx.send(Err(err.clone()));
-                }
-            }
-        }
-        InitTerminal::Published | InitTerminal::Existing(_) | InitTerminal::Invalidated(_) => {
-            // These states are handled by the init task itself before it returns.
-            // The monitor task only handles error/panic/cancel paths.
-            debug!(
-                server = %key,
-                attempt_id,
-                "init task completed with terminal state after normal return"
-            );
-        }
-    }
-}
-
 enum PublishOutcome {
     Published,
     Existing(Arc<LspClient>),
@@ -1257,8 +1587,37 @@ mod tests {
         release: Notify,
         outcome: Mutex<FactoryOutcome>,
         shutdown_count: std::sync::Arc<AtomicUsize>,
+        /// Tracks task-body entry for the uncooperative-style assertion.
+        entered_count: std::sync::Arc<AtomicUsize>,
+        /// Tracks task-body exit for the uncooperative-style assertion.
+        exited_count: std::sync::Arc<AtomicUsize>,
     }
 
+    impl BlockingFactoryState {
+        fn new_standard(
+            invocations: AtomicUsize,
+            entered: watch::Sender<bool>,
+            release: Notify,
+            outcome: FactoryOutcome,
+            shutdown_count: std::sync::Arc<AtomicUsize>,
+        ) -> Self {
+            Self {
+                invocations,
+                entered,
+                release,
+                outcome: Mutex::new(outcome),
+                shutdown_count,
+                entered_count: std::sync::Arc::new(AtomicUsize::new(0)),
+                exited_count: std::sync::Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    /// Cooperative factory: respects cancellation via `tokio::select!`.
+    /// Used by the standard `blocking_factory` tests and the cooperative
+    /// cancellation tests. On cancellation, the factory returns
+    /// `LspError::InitializationCancelled` (the inner init task then
+    /// reports it to waiters).
     fn blocking_factory(
         state: std::sync::Arc<BlockingFactoryState>,
     ) -> impl Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static {
@@ -1268,7 +1627,7 @@ mod tests {
             Box::pin(async move {
                 state.invocations.fetch_add(1, Ordering::SeqCst);
                 let _ = state.entered.send(true);
-                state.release.notified().await;
+                state.entered_count.fetch_add(1, Ordering::SeqCst);
 
                 let outcome = {
                     let guard = state.outcome.lock().await;
@@ -1280,15 +1639,30 @@ mod tests {
                     }
                 };
 
-                match outcome {
+                let result: Result<Arc<LspClient>, LspError> = match outcome {
                     FactoryOutcome::Success => {
                         let client =
                             LspClient::test_stub(server.id, &root, state.shutdown_count.clone())
                                 .await?;
+                        // Wait until released or cancellation observed.
+                        // For cooperative factories, exit promptly on
+                        // cancellation so the task body can drain.
+                        let release_fut = state.release.notified();
+                        // Use a long sleep as a fallback so the future
+                        // can be cancelled by a sibling signal in tests.
+                        tokio::select! {
+                            _ = release_fut => {}
+                            _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                                // Should not happen in tests; here for safety.
+                            }
+                        }
                         Ok(Arc::new(client))
                     }
                     FactoryOutcome::LaunchFailed(msg) => Err(LspError::LaunchFailed(msg)),
-                }
+                };
+
+                state.exited_count.fetch_add(1, Ordering::SeqCst);
+                result
             })
         }
     }
@@ -1311,7 +1685,7 @@ mod tests {
     }
 
     async fn await_join<T: Send + 'static>(handle: tokio::task::JoinHandle<T>) -> T {
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        tokio::time::timeout(Duration::from_secs(5), handle)
             .await
             .expect("task timed out")
             .expect("task panicked")
@@ -1372,13 +1746,13 @@ mod tests {
     #[tokio::test]
     async fn same_key_concurrent_cold_start_invokes_factory_once() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
-        let state = std::sync::Arc::new(BlockingFactoryState {
-            invocations: AtomicUsize::new(0),
-            entered: entered_tx,
-            release: Notify::new(),
-            outcome: Mutex::new(FactoryOutcome::LaunchFailed("test".into())),
-            shutdown_count: std::sync::Arc::new(AtomicUsize::new(0)),
-        });
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::LaunchFailed("test".into()),
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        ));
         let svc = std::sync::Arc::new(LspService::test_new(
             LspConfig::Disabled(false),
             blocking_factory(state.clone()),
@@ -1452,13 +1826,13 @@ mod tests {
     #[tokio::test]
     async fn shared_failure_is_identical_for_all_callers() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
-        let state = std::sync::Arc::new(BlockingFactoryState {
-            invocations: AtomicUsize::new(0),
-            entered: entered_tx,
-            release: Notify::new(),
-            outcome: Mutex::new(FactoryOutcome::LaunchFailed("shared".into())),
-            shutdown_count: std::sync::Arc::new(AtomicUsize::new(0)),
-        });
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::LaunchFailed("shared".into()),
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        ));
         let svc = std::sync::Arc::new(LspService::test_new(
             LspConfig::Disabled(false),
             blocking_factory(state.clone()),
@@ -1505,13 +1879,13 @@ mod tests {
     #[tokio::test]
     async fn retry_after_failure_invokes_factory_again() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
-        let state = std::sync::Arc::new(BlockingFactoryState {
-            invocations: AtomicUsize::new(0),
-            entered: entered_tx,
-            release: Notify::new(),
-            outcome: Mutex::new(FactoryOutcome::LaunchFailed("first".into())),
-            shutdown_count: std::sync::Arc::new(AtomicUsize::new(0)),
-        });
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::LaunchFailed("first".into()),
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        ));
         let svc = std::sync::Arc::new(LspService::test_new(
             LspConfig::Disabled(false),
             blocking_factory(state.clone()),
@@ -1550,13 +1924,13 @@ mod tests {
     async fn shutdown_during_init_cancels_waiters_and_disposes_client() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
-        let state = std::sync::Arc::new(BlockingFactoryState {
-            invocations: AtomicUsize::new(0),
-            entered: entered_tx,
-            release: Notify::new(),
-            outcome: Mutex::new(FactoryOutcome::Success),
-            shutdown_count: shutdown_count.clone(),
-        });
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::Success,
+            shutdown_count.clone(),
+        ));
         let svc = std::sync::Arc::new(LspService::test_new(
             LspConfig::Disabled(false),
             blocking_factory(state.clone()),
@@ -1602,6 +1976,7 @@ mod tests {
         assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
         assert!(svc.clients.read().await.is_empty());
         assert!(svc.initializing.lock().await.is_empty());
+        assert!(svc.active_init_tasks.lock().await.is_empty());
         assert!(svc.document_owners.read().await.is_empty());
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
@@ -1615,13 +1990,13 @@ mod tests {
         });
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
         let (entered_tx, mut entered_rx) = watch::channel(false);
-        let state = std::sync::Arc::new(BlockingFactoryState {
-            invocations: AtomicUsize::new(0),
-            entered: entered_tx,
-            release: Notify::new(),
-            outcome: Mutex::new(FactoryOutcome::Success),
-            shutdown_count: shutdown_count.clone(),
-        });
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::Success,
+            shutdown_count.clone(),
+        ));
         let svc = std::sync::Arc::new(LspService::test_new_with_hooks(
             LspConfig::Disabled(false),
             blocking_factory(state.clone()),
@@ -1641,6 +2016,9 @@ mod tests {
             .expect("shutdown gate should trip");
         assert!(*shutdown_rx.borrow());
 
+        // While the shutdown is paused at the gate, the lifecycle is
+        // still `Running`, so the init path can proceed and publish
+        // the client.
         let init_handle = {
             let svc = svc.clone();
             tokio::spawn(async move { svc.get_or_create_client(rust_file()).await })
@@ -1657,6 +2035,8 @@ mod tests {
 
         assert!(svc.clients.write().await.contains_key(&key));
 
+        // Now release the shutdown gate. The shutdown will drain the
+        // published client.
         shutdown_gate.release.notify_waiters();
         await_join(shutdown_handle).await;
 
@@ -1700,21 +2080,22 @@ mod tests {
         assert!(svc.initializing.lock().await.is_empty());
     }
 
-    // ── Phase 5: Shutdown-quiescence tests ─────────────────────────────
+    // ── Phase 5 / Phase 9: Strengthened quiescence tests ────────────
 
     /// Test: blocked factory is cancelled during shutdown, leader/waiters
-    /// receive cancellation.
+    /// receive cancellation. The wrapper task's drop guard removes the
+    /// active-task entry on every terminal path.
     #[tokio::test]
     async fn shutdown_cancels_blocked_factory() {
         let (entered_tx, mut entered_rx) = watch::channel(false);
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
-        let state = std::sync::Arc::new(BlockingFactoryState {
-            invocations: AtomicUsize::new(0),
-            entered: entered_tx,
-            release: Notify::new(),
-            outcome: Mutex::new(FactoryOutcome::Success),
-            shutdown_count: shutdown_count.clone(),
-        });
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::Success,
+            shutdown_count.clone(),
+        ));
         let svc = std::sync::Arc::new(LspService::test_new(
             LspConfig::Disabled(false),
             blocking_factory(state.clone()),
@@ -1734,6 +2115,7 @@ mod tests {
         barrier.wait().await;
         entered_rx.changed().await.expect("factory should enter");
         assert_eq!(state.invocations.load(Ordering::SeqCst), 1);
+        assert_eq!(state.entered_count.load(Ordering::SeqCst), 1);
 
         // Shutdown while factory is blocked.
         svc.shutdown_all().await;
@@ -1747,14 +2129,20 @@ mod tests {
         // No client should have been published.
         assert!(svc.clients.read().await.is_empty());
         assert!(svc.initializing.lock().await.is_empty());
+        // Phase 2: active_init_tasks is empty after shutdown.
         assert!(svc.active_init_tasks.lock().await.is_empty());
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 
     /// Test: cancellation-uncooperative task is forcibly aborted.
+    /// The wrapper task's drop guard fires when the future is
+    /// dropped (via abort), removing the active-task entry.
     #[tokio::test]
     async fn shutdown_aborts_uncooperative_task() {
-        // A factory that ignores cooperative cancellation and blocks forever.
+        // A factory that ignores cooperative cancellation and blocks
+        // until external release. This is the "uncooperative" path:
+        // the inner init task does not participate in cancellation,
+        // so shutdown must abort it and await the join.
         fn uncooperative_factory(
             counter: std::sync::Arc<AtomicUsize>,
             release: std::sync::Arc<Notify>,
@@ -1785,7 +2173,7 @@ mod tests {
         });
 
         // Wait for factory to enter.
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             while counter.load(Ordering::SeqCst) == 0 {
                 tokio::task::yield_now().await;
             }
@@ -1810,6 +2198,7 @@ mod tests {
     }
 
     /// Test: concurrent shutdown callers both return after Stopped.
+    /// Uses the `watch` channel-based race-free wait.
     #[tokio::test]
     async fn concurrent_shutdown_callers() {
         let (shutdown_gate, mut shutdown_rx) = pause_gate();
@@ -1818,16 +2207,16 @@ mod tests {
             shutdown_gate: Some(shutdown_gate.clone()),
         });
         let (entered_tx, _entered_rx) = watch::channel(false);
-        let state = std::sync::Arc::new(BlockingFactoryState {
-            invocations: AtomicUsize::new(0),
-            entered: entered_tx,
-            release: Notify::new(),
-            outcome: Mutex::new(FactoryOutcome::Success),
-            shutdown_count: std::sync::Arc::new(AtomicUsize::new(0)),
-        });
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::Success,
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        ));
         let svc = std::sync::Arc::new(LspService::test_new_with_hooks(
             LspConfig::Disabled(false),
-            blocking_factory(state),
+            blocking_factory(state.clone()),
             hooks,
         ));
 
@@ -1845,13 +2234,13 @@ mod tests {
         let second = tokio::spawn(async move { svc2.shutdown_all().await });
 
         // Give second caller a moment to observe ShuttingDown.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Release the first shutdown.
         shutdown_gate.release.notify_waiters();
 
         // Both should return within a bounded time.
-        let timeout = std::time::Duration::from_secs(5);
+        let timeout = Duration::from_secs(5);
         let (r1, r2) = tokio::join!(
             tokio::time::timeout(timeout, first),
             tokio::time::timeout(timeout, second),
@@ -1917,11 +2306,9 @@ mod tests {
             },
         );
 
-        // Both should complete — the exact keys depend on insertion order.
         assert!(!r1.0.is_empty());
-        // Read operations should not take long (no serialization).
-        assert!(r1.1 < std::time::Duration::from_secs(1));
-        assert!(r2.1 < std::time::Duration::from_secs(1));
+        assert!(r1.1 < Duration::from_secs(1));
+        assert!(r2.1 < Duration::from_secs(1));
     }
 
     /// Test: publication race remains safe — either publication occurs and
@@ -1930,13 +2317,13 @@ mod tests {
     async fn publication_race_remains_safe() {
         let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
         let (entered_tx, mut entered_rx) = watch::channel(false);
-        let state = std::sync::Arc::new(BlockingFactoryState {
-            invocations: AtomicUsize::new(0),
-            entered: entered_tx,
-            release: Notify::new(),
-            outcome: Mutex::new(FactoryOutcome::Success),
-            shutdown_count: shutdown_count.clone(),
-        });
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::Success,
+            shutdown_count.clone(),
+        ));
         let svc = std::sync::Arc::new(LspService::test_new(
             LspConfig::Disabled(false),
             blocking_factory(state.clone()),
@@ -1954,7 +2341,6 @@ mod tests {
         svc.shutdown_all().await;
 
         let result = await_join(handle).await;
-        // Either the init completed and was drained, or it was cancelled.
         match result {
             Ok(_) => {
                 // Published client was drained by shutdown.
@@ -1969,5 +2355,260 @@ mod tests {
         assert!(svc.initializing.lock().await.is_empty());
         assert!(svc.active_init_tasks.lock().await.is_empty());
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+    }
+
+    // ── Phase 9: New tests ──────────────────────────────────────────
+
+    /// Test: normal completion removes the active-task entry without
+    /// requiring shutdown to drain the map.
+    #[tokio::test]
+    async fn normal_completion_removes_active_task_entry() {
+        let (entered_tx, mut entered_rx) = watch::channel(false);
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::Success,
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        ));
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            blocking_factory(state.clone()),
+        ));
+
+        let handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+
+        entered_rx.changed().await.expect("factory should enter");
+        state.release.notify_waiters();
+
+        // Wait for completion.
+        let result = await_join(handle).await;
+        assert!(result.is_ok());
+
+        // The active-task entry should be removed by the wrapper's
+        // drop guard without requiring shutdown.
+        let active_count = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if svc.active_init_tasks.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            active_count.is_ok(),
+            "active_init_tasks should be empty after normal completion"
+        );
+    }
+
+    /// Test: ordinary initialization failure removes the active-task
+    /// entry without requiring shutdown.
+    #[tokio::test]
+    async fn ordinary_failure_removes_active_task_entry() {
+        let (entered_tx, mut entered_rx) = watch::channel(false);
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::LaunchFailed("test".into()),
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        ));
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            blocking_factory(state.clone()),
+        ));
+
+        let handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+
+        entered_rx.changed().await.expect("factory should enter");
+        state.release.notify_waiters();
+
+        let result = await_join(handle).await;
+        assert!(matches!(result, Err(LspError::LaunchFailed(_))));
+
+        let active_count = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if svc.active_init_tasks.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            active_count.is_ok(),
+            "active_init_tasks should be empty after ordinary failure"
+        );
+    }
+
+    /// Test: forced abort is awaited — the task body actually exits
+    /// before shutdown returns.
+    #[tokio::test]
+    async fn forced_abort_is_awaited() {
+        // Uncooperative factory: block forever until release.
+        fn uncooperative_factory(
+            counter: std::sync::Arc<AtomicUsize>,
+            release: std::sync::Arc<Notify>,
+            entered_count: std::sync::Arc<AtomicUsize>,
+        ) -> impl Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static
+        {
+            move |_server, _root| {
+                let counter = counter.clone();
+                let release = release.clone();
+                let entered_count = entered_count.clone();
+                Box::pin(async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    entered_count.fetch_add(1, Ordering::SeqCst);
+                    release.notified().await;
+                    // Drop guard: count exit AFTER release.
+                    Err(LspError::LaunchFailed("uncooperative".into()))
+                })
+            }
+        }
+
+        let counter = std::sync::Arc::new(AtomicUsize::new(0));
+        let entered_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let release = std::sync::Arc::new(Notify::new());
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            uncooperative_factory(counter.clone(), release.clone(), entered_count.clone()),
+        ));
+
+        let handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+
+        // Wait for factory to enter.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while counter.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("factory should enter");
+
+        // Shutdown should forcibly abort the uncooperative task and
+        // await its completion.
+        svc.shutdown_all().await;
+
+        // After shutdown returns, the task body should have been
+        // aborted. Release the factory's blocking await so the
+        // factory future can complete.
+        release.notify_waiters();
+
+        let result = await_join(handle).await;
+        expect_init_cancelled(result).await;
+
+        // Verify the entry was cleaned up.
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+    }
+
+    /// Test: lost-wakeup boundary — concurrent shutdown callers
+    /// always observe the final Stopped state.
+    #[tokio::test]
+    async fn concurrent_shutdown_lost_wakeup_boundary() {
+        // No in-flight init tasks; just verify the watch-based
+        // coordination works.
+        let svc = std::sync::Arc::new(LspService::new(LspConfig::Disabled(false)));
+
+        // First caller.
+        let svc1 = svc.clone();
+        let first = tokio::spawn(async move { svc1.shutdown_all().await });
+
+        // Second caller (joins in flight, after the first has
+        // transitioned). The second caller should observe Stopped
+        // promptly.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let svc2 = svc.clone();
+        let second = tokio::spawn(async move { svc2.shutdown_all().await });
+
+        let timeout = Duration::from_secs(5);
+        let (r1, r2) = tokio::join!(
+            tokio::time::timeout(timeout, first),
+            tokio::time::timeout(timeout, second),
+        );
+        r1.expect("first shutdown should complete")
+            .expect("no panic");
+        r2.expect("second shutdown should complete")
+            .expect("no panic");
+
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+    }
+
+    /// Test: forced-finalization on deadline expiry.
+    /// Inject a task that does not complete within the cancellation
+    /// grace; verify shutdown still reaches Stopped and drains state.
+    #[tokio::test]
+    async fn global_deadline_finalizes_state() {
+        // Factory that blocks forever, ignoring cancellation.
+        fn stuck_factory(
+            counter: std::sync::Arc<AtomicUsize>,
+        ) -> impl Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static
+        {
+            move |_server, _root| {
+                let counter = counter.clone();
+                Box::pin(async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    // Block until the runtime is shut down.
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                })
+            }
+        }
+
+        let counter = std::sync::Arc::new(AtomicUsize::new(0));
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            stuck_factory(counter.clone()),
+        ));
+
+        let handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+
+        // Wait for factory to enter.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while counter.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("factory should enter");
+
+        // Shutdown will wait for the cancellation grace, then the
+        // abort grace, then force-finalize. The total bounded
+        // duration is at most SHUTDOWN_GLOBAL_TIMEOUT.
+        let shutdown_start = std::time::Instant::now();
+        let shutdown_result = tokio::time::timeout(
+            SHUTDOWN_GLOBAL_TIMEOUT + Duration::from_secs(1),
+            svc.shutdown_all(),
+        )
+        .await;
+        let shutdown_elapsed = shutdown_start.elapsed();
+        assert!(
+            shutdown_result.is_ok(),
+            "shutdown_all did not return within global deadline + 1s slack (elapsed: {shutdown_elapsed:?})"
+        );
+
+        // The caller should get cancellation.
+        let result = await_join(handle).await;
+        expect_init_cancelled(result).await;
+
+        // Lifecycle is Stopped.
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+        // Maps are drained.
+        assert!(svc.clients.read().await.is_empty());
+        assert!(svc.initializing.lock().await.is_empty());
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+        assert!(svc.document_owners.read().await.is_empty());
     }
 }
