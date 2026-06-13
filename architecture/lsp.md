@@ -988,15 +988,16 @@ Codegg handles these server requests via `dispatch_server_request` in `server_re
 On request timeout:
 1. The pending entry is removed from the map
 2. A best-effort `$/cancelRequest` notification is sent to the server with the original request ID
-3. The timeout error is returned to the caller
+3. If the cancel write fails, `fail_transport()` marks the transport failed and drains any remaining pending requests
+4. The timeout error is returned to the caller
 
-Cancellation failures are logged at debug level and never mask the primary timeout error.
+Cancellation failures do not replace the timeout error, but they do retire the transport so later calls fail fast.
 
 ### Single-Flight Client Initialization
 
-`LspService::get_or_create_client` uses a single-flight initialization coordinator based on explicit `InitRole` election: the first caller becomes `Leader` and spawns an owned initialization task (`run_initialization_attempt`); concurrent callers for the same `{project_root}:{server_id}` key become `Waiters` receiving the same result via oneshot channels. An `ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs stored in the `InitSlot`.
+`LspService::get_or_create_client` uses explicit `InitRole` election: the first caller becomes `Leader` and spawns an owned initialization task (`run_initialization_attempt`); concurrent callers for the same `{project_root}:{server_id}` key become `Waiters`. The `InitSlot` stores one leader sender plus a waiter list, and completion is fanned out to every sender with the same `Arc<LspClient>` on success or the same `SharedInitError` on failure. An `ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs stored in the `InitSlot`.
 
-On initialization failure, the slot is cleaned up by attempt ID (compare-and-remove prevents stale cleanup from deleting newer slots), and all waiting callers receive `SharedInitError` (preserving error category and message), allowing retries. This differs from `OnceCell` which would cache the failure permanently. `SharedInitError` with `SharedInitErrorKind` enum (`ServerNotFound`, `DownloadFailed`, `LaunchFailed`, `InitializeFailed`, `Timeout`, `Cancelled`, `Protocol`, `Other`) is used for all oneshot channel results instead of raw `LspError`, making concurrent error propagation thread-safe and cloneable. The `#[cfg(test)]` `test_new()` constructor accepts injectable test factories for deterministic testing without live LSP servers.
+On initialization failure, the slot is cleaned up by attempt ID (compare-and-remove prevents stale cleanup from deleting newer slots), and all waiting callers receive `SharedInitError` (preserving error category and message), allowing retries. Before a successful client is published, the init task rechecks `LifecycleState` and only inserts when the phase is still `Running` and the generation matches the captured generation; if publication is invalidated or loses to an existing client, the unpublished client is disposed via `dispose_unpublished_client(...)` with a bounded shutdown timeout. This differs from `OnceCell` which would cache the failure permanently. `SharedInitError` with `SharedInitErrorKind` enum (`ServerNotFound`, `DownloadFailed`, `LaunchFailed`, `InitializeFailed`, `Timeout`, `Cancelled`, `Protocol`, `Other`) is used for all oneshot channel results instead of raw `LspError`, making concurrent error propagation thread-safe and cloneable. The `#[cfg(test)]` `test_new()` constructor accepts injectable test factories for deterministic testing without live LSP servers.
 
 ### Global Map Lock Discipline
 
@@ -1010,11 +1011,11 @@ This prevents serialization of unrelated clients behind process I/O. `close_file
 
 ### Shutdown Coordination
 
-`LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a monotonic `generation: u64`. `shutdown_all()` atomically transitions to `ShuttingDown` and increments the generation. The spawned initialization task rechecks the generation before publication, preventing stale results from being published after shutdown. `get_or_create_client()` rejects new client acquisition when the lifecycle is not `Running`, returning `LspError::InitializationCancelled`.
+`LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a monotonic `generation: u64`. `shutdown_all()` atomically transitions to `ShuttingDown` and increments the generation. The spawned initialization task rechecks the phase and generation before publication, preventing stale results from being published after shutdown and disposing any unpublished client that loses the race. `get_or_create_client()` rejects new client acquisition when the lifecycle is not `Running`, returning `LspError::InitializationCancelled`.
 
 ### Writer Failure Propagation
 
-The background reader tracks `ClientTransportState` (`Running` or `Failed { reason }`). All terminal transport failures (stdout EOF, server-request result/error write failure, `send_request` write failure, `send_notification` write failure) transition to `Failed` exactly once via the centralized `fail_transport()` helper. The helper atomically transitions to `Failed` (idempotent), releases the transport lock, then drains all pending requests with errors. Subsequent `send_request` / `send_notification` calls return `LspError::WriterClosed` immediately, avoiding writes to a broken pipe.
+The background reader tracks `ClientTransportState` (`Running` or `Failed { reason }`). All terminal transport failures (stdout EOF, server-request result/error write failure, `send_request` write failure, `send_notification` write failure, and timeout-cancel write failure) transition to `Failed` exactly once via the centralized `fail_transport()` helper. The helper atomically transitions to `Failed` (idempotent), releases the transport lock, then drains all pending requests with errors. Subsequent `send_request` / `send_notification` calls return `LspError::WriterClosed` immediately, avoiding writes to a broken pipe.
 
 ### Integral Error Code Validation
 

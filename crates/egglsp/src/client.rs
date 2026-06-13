@@ -333,6 +333,8 @@ pub struct LspClient {
     /// cannot write a server-request response. Checked by `send_request` /
     /// `send_notification` to fail fast instead of writing to a broken pipe.
     pub(crate) transport_state: Arc<Mutex<ClientTransportState>>,
+    #[cfg(test)]
+    test_shutdown_count: Option<Arc<std::sync::atomic::AtomicUsize>>,
     _reader_task: tokio::task::JoinHandle<()>,
 }
 
@@ -426,10 +428,103 @@ impl LspClient {
             diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
             pending,
             transport_state,
+            #[cfg(test)]
+            test_shutdown_count: None,
             _reader_task: reader_task,
         };
 
         Ok(client)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_stub(
+        server_id: &str,
+        root: &Path,
+        shutdown_count: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Result<Self, LspError> {
+        let cwd = if root.is_dir() {
+            root
+        } else {
+            root.parent().unwrap_or(root)
+        };
+        let mut process = launch::spawn_server("sleep", &["1000"], &[], Some(cwd)).await?;
+
+        if let Some(stderr) = process.stderr.take() {
+            launch::spawn_stderr_drain(server_id, stderr.into_inner());
+        }
+
+        let stdout = process
+            .stdout
+            .take()
+            .ok_or_else(|| LspError::LaunchFailed("stdout not available".to_string()))?;
+        let writer = LspWriter::new(
+            process
+                .stdin
+                .take()
+                .ok_or_else(|| LspError::LaunchFailed("stdin not available".to_string()))?,
+        );
+
+        let diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
+        let transport_state: Arc<Mutex<ClientTransportState>> =
+            Arc::new(Mutex::new(ClientTransportState::Running));
+
+        let reader_diagnostics = diagnostics.clone();
+        let reader_pending = pending.clone();
+        let reader_transport_state = transport_state.clone();
+        let server_id = server_id.to_string();
+        let reader_server_id = server_id.clone();
+        let reader_writer = writer.clone_inner();
+        let reader_context = ServerRequestContext {
+            server_id: server_id.clone(),
+            root: root.to_path_buf(),
+            configuration: serde_json::Value::Null,
+            workspace_folders: vec![lsp_types::WorkspaceFolder {
+                uri: url_to_uri(
+                    &url::Url::from_file_path(root)
+                        .map_err(|_| LspError::LaunchFailed("invalid root path".to_string()))?,
+                )?,
+                name: root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            }],
+            dynamic_registrations: Arc::new(tokio::sync::RwLock::new(
+                crate::server_request::DynamicRegistrationState::new(),
+            )),
+        };
+
+        let reader_task = tokio::spawn(async move {
+            Self::background_reader(
+                stdout,
+                reader_diagnostics,
+                reader_pending,
+                reader_transport_state,
+                reader_server_id,
+                reader_writer,
+                reader_context,
+            )
+            .await;
+        });
+
+        Ok(Self {
+            server_id: server_id.clone(),
+            root: root.to_path_buf(),
+            process: tokio::sync::Mutex::new(process),
+            writer,
+            request_id: AtomicU64::new(0),
+            capabilities: Arc::new(Mutex::new(None)),
+            opened_files: Mutex::new(HashMap::new()),
+            last_content_change_at: Mutex::new(HashMap::new()),
+            diagnostics,
+            diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
+            pending,
+            transport_state,
+            #[cfg(test)]
+            test_shutdown_count: Some(shutdown_count),
+            _reader_task: reader_task,
+        })
     }
 
     /// Background task that reads framed JSON-RPC messages from stdout
@@ -911,6 +1006,11 @@ impl LspClient {
     }
 
     pub async fn shutdown(&self) -> Result<(), LspError> {
+        #[cfg(test)]
+        if let Some(counter) = &self.test_shutdown_count {
+            counter.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
         self.send_request("shutdown", serde_json::json!(null))
             .await?;
         self.send_notification("exit", serde_json::json!({})).await
@@ -965,31 +1065,38 @@ impl LspClient {
                 )))
             }
             Err(_) => {
-                // Timeout — clean up pending entry first.
-                self.pending.lock().await.remove(&id);
-
-                // Best-effort cancellation notification to the server.
-                let cancel_params = serde_json::json!({ "id": id });
-                if let Err(e) = self
-                    .writer
-                    .send_notification_message("$/cancelRequest", cancel_params)
-                    .await
-                {
-                    debug!(
-                        server = %self.server_id,
-                        method = %method,
-                        error = %e,
-                        "failed to send cancellation notification after timeout"
-                    );
-                }
-
-                Err(LspError::RequestTimeout(format!(
-                    "LSP request '{}' timed out after {:?}",
-                    method,
-                    Self::REQUEST_TIMEOUT
-                )))
+                return self.handle_request_timeout(method, id).await;
             }
         }
+    }
+
+    async fn handle_request_timeout(
+        &self,
+        method: &str,
+        id: JsonRpcId,
+    ) -> Result<serde_json::Value, LspError> {
+        self.pending.lock().await.remove(&id);
+
+        let cancel_params = serde_json::json!({ "id": id });
+        if let Err(e) = self
+            .writer
+            .send_notification_message("$/cancelRequest", cancel_params)
+            .await
+        {
+            debug!(
+                server = %self.server_id,
+                method = %method,
+                error = %e,
+                "failed to send cancellation notification after timeout"
+            );
+            fail_transport(&self.transport_state, &self.pending, e.to_string()).await;
+        }
+
+        Err(LspError::RequestTimeout(format!(
+            "LSP request '{}' timed out after {:?}",
+            method,
+            Self::REQUEST_TIMEOUT
+        )))
     }
 
     pub async fn send_notification(
@@ -2448,6 +2555,74 @@ mod tests {
             raw.contains(r#""id":77"#),
             "cancel notification should contain id=77, got: {raw}"
         );
+    }
+
+    #[tokio::test]
+    async fn timeout_cancel_failure_marks_transport_failed_and_writes_writer_closed() {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let mut client = LspClient::test_stub(
+            "fake-server",
+            tempdir.path(),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        )
+        .await
+        .expect("test client should be created");
+        let timeout_id = JsonRpcId::Number(99);
+        {
+            let mut process = client.process.lock().await;
+            process
+                .child
+                .kill()
+                .await
+                .expect("test process should terminate");
+        }
+
+        let pending: PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let (timeout_tx, rx_timeout) = oneshot::channel();
+        let other_id = JsonRpcId::Number(100);
+        let (other_tx, rx_other) = oneshot::channel();
+        pending.lock().await.insert(timeout_id.clone(), timeout_tx);
+        pending.lock().await.insert(other_id, other_tx);
+        client.pending = pending.clone();
+
+        let result = client
+            .handle_request_timeout("test/method", timeout_id)
+            .await;
+        match result {
+            Err(LspError::RequestTimeout(msg)) => {
+                assert!(msg.contains("test/method"));
+            }
+            other => panic!("expected RequestTimeout, got {other:?}"),
+        }
+
+        assert!(matches!(
+            *client.transport_state.lock().await,
+            ClientTransportState::Failed { .. }
+        ));
+        assert!(pending.lock().await.is_empty());
+
+        assert!(
+            rx_timeout.await.is_err(),
+            "timed-out request sender should be dropped without a value"
+        );
+
+        let pending_result = tokio::time::timeout(Duration::from_millis(100), rx_other)
+            .await
+            .expect("drained pending request should resolve")
+            .expect("pending sender should receive a value");
+        match pending_result {
+            Err(LspError::RequestFailed(msg)) => assert!(!msg.is_empty()),
+            other => panic!("expected RequestFailed for drained pending request, got {other:?}"),
+        }
+
+        let writer_closed = client
+            .send_notification("test/notify", serde_json::json!({}))
+            .await
+            .expect_err("subsequent notification should fail fast");
+        match writer_closed {
+            LspError::WriterClosed(msg) => assert!(!msg.is_empty()),
+            other => panic!("expected WriterClosed, got {other:?}"),
+        }
     }
 
     #[tokio::test]

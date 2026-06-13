@@ -11,7 +11,7 @@ The authoritative LSP implementation is in **`crates/egglsp/`**. The `src/lsp/` 
 The egglsp crate consists of:
 
 - **`src/server.rs`** - Server definitions (39 servers: clangd, rust-analyzer, gopls, pyright, typescript-language-server, etc.)
-- **`src/service.rs`** - `LspService` managing LSP client lifecycle
+- **`src/service.rs`** - `LspService` managing LSP client lifecycle, explicit leader/waiter init election, lifecycle-validated publication, and unpublished-client disposal
 - **`src/client.rs`** - Low-level LSP client implementation
 - **`src/operations.rs`** - `LspOperations` for code actions (goto definition, find references, etc.), `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview`
 - **`src/diagnostics.rs`** - `DiagnosticsCollector` for collecting and debouncing diagnostics
@@ -20,15 +20,17 @@ The egglsp crate consists of:
 
 ### LspService
 
-Manages the lifecycle of LSP clients per project/language. Uses `OnceCell` for single-flight initialization (concurrent first-use for the same key awaits one initialization) and `Arc`-based handles to avoid serialization of unrelated clients behind process I/O:
+Manages the lifecycle of LSP clients per project/language. Uses explicit leader/waiter init election for single-flight initialization (the first caller becomes leader, concurrent callers wait on the same completion fan-out), validates lifecycle generation before publication, and uses `Arc`-based handles to avoid serialization of unrelated clients behind process I/O:
 
 ```rust
 pub struct LspService {
     // Manages multiple language server clients
-    clients: HashMap<String, LspClient>,
+    clients: Arc<RwLock<HashMap<String, Arc<LspClient>>>>,
     config: LspConfig,
 }
 ```
+
+If publication loses to an existing client or is invalidated by shutdown, the unpublished client is shut down with a bounded timeout before waiters are notified.
 
 ### LspOperations
 
@@ -113,4 +115,5 @@ Use the lsp tool to find the definition of the `processRequest` function
 
 - Server launch failures return `LspError::LaunchFailed`
 - Invalid file paths return `LspError::LaunchFailed`
-- Communication errors return `LspError::Connection`
+- Request timeouts send a best-effort `$/cancelRequest`; if that cancel write fails, the transport is marked failed and later calls fail fast with `LspError::WriterClosed`
+- Immediate request/notification I/O failures surface as `LspError::RequestFailed`; once the transport is failed, later calls fail fast with `LspError::WriterClosed`

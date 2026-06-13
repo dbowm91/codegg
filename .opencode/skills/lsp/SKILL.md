@@ -895,15 +895,19 @@ Codegg acts as a bidirectional JSON-RPC peer. The background reader classifies i
 - `workspace/applyEdit` — **always rejected** as an application-level result with `applied: false` and `failureReason` (not a JSON-RPC error; Codegg never applies implicit edits)
 
 ### Cancellation
-Client request timeout triggers: (1) pending entry removal, (2) best-effort `$/cancelRequest` notification, (3) `RequestTimeout` error. Server-request dispatch has a 5-second timeout that returns `-32603` (Internal error) on expiry.
+Client request timeout triggers: (1) pending entry removal, (2) best-effort `$/cancelRequest` notification, (3) if that cancel write fails, `fail_transport()` marks the transport failed and drains pending, (4) `RequestTimeout` error. Server-request dispatch has a 5-second timeout that returns `-32603` (Internal error) on expiry.
 
 ### Initialization
 Single-flight via explicit `InitRole` election: the first caller becomes `Leader` and
-spawns an owned initialization task; concurrent callers become `Waiters` receiving
-the same result via oneshot channels. On failure, the slot is cleaned up by attempt ID
+spawns an owned initialization task; concurrent callers become `Waiters` on the same
+completion fan-out. The `InitSlot` stores one leader sender plus a waiter list so the
+same result is broadcast to all callers. On failure, the slot is cleaned up by attempt ID
 and waiters receive the actual `SharedInitError` (preserving error category and message),
-allowing retries. An `ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs;
-compare-and-remove prevents stale cleanup from deleting newer slots.
+allowing retries. Before publication, the init task rechecks lifecycle phase/generation;
+if publication is invalidated or an existing client already won the key, the unpublished
+client is shut down via `dispose_unpublished_client(...)` with a bounded timeout. An
+`ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs; compare-and-remove prevents
+stale cleanup from deleting newer slots.
 
 ### Writer
 `LspWriter` serializes all output through `Arc<Mutex<...>>`. Content-Length uses UTF-8 byte count.
@@ -911,16 +915,18 @@ compare-and-remove prevents stale cleanup from deleting newer slots.
 ### Transport State
 `ClientTransportState` tracks whether the writer pipe to the server is still operational
 (`Running` or `Failed { reason }`). All terminal transport failures (stdout EOF,
-request write failure, notification write failure) transition to `Failed` exactly once
-via the centralized `fail_transport()` helper. Pending requests are drained on transition.
-Subsequent `send_request` / `send_notification` calls return `LspError::WriterClosed` immediately.
+request write failure, notification write failure, and timeout-cancel write failure)
+transition to `Failed` exactly once via the centralized `fail_transport()` helper.
+Pending requests are drained on transition. Subsequent `send_request` /
+`send_notification` calls return `LspError::WriterClosed` immediately.
 
 ### Shutdown Coordination
 `LspService` tracks a `LifecycleState` containing both `ServiceLifecycle` phase and a
 monotonic `generation: u64`. `shutdown_all()` atomically transitions to `ShuttingDown`
-and increments the generation. The spawned initialization task rechecks the generation
-before publication, preventing stale results from being published after shutdown.
-New client acquisition is rejected when the lifecycle is not `Running`.
+and increments the generation. The spawned initialization task rechecks the phase and
+generation before publication, preventing stale results from being published after
+shutdown and disposing any unpublished client that loses the race. New client acquisition
+is rejected when the lifecycle is not `Running`.
 
 ## Architecture Notes
 
