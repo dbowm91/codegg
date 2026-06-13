@@ -547,6 +547,7 @@ async fn security_review_workflow_pipeline_produces_output() {
         dir.path(),
         Some("HEAD"),
         SecurityReviewWorkflowOptions::default(),
+        None,
     )
     .await
     .expect("workflow should succeed");

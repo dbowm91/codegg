@@ -85,7 +85,6 @@ pub fn is_finding_eligible(evidence: &[StructuredSecurityEvidence]) -> bool {
             || has_hunk_nav))
         || (has_preflight_fail && has_changed_hunk)
         || (has_reasoning && has_changed_hunk)
-        || (has_hunk_nav && has_changed_hunk)
         || (has_hunk_nav && has_preflight_fail)
 }
 

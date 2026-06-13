@@ -107,6 +107,35 @@ impl SecurityContextExecutor for FixtureSecurityContextExecutor {
 }
 
 // ---------------------------------------------------------------------------
+// HunkSourceContext executor boundary
+// ---------------------------------------------------------------------------
+
+/// Executor boundary for `hunkSourceContext` LSP requests in the
+/// security review workflow. Mirrors [`SecurityContextExecutor`].
+#[async_trait::async_trait]
+pub trait HunkSourceContextExecutor: Send + Sync {
+    /// Execute a hunk source navigation request and return the response.
+    async fn execute_hunk_source_context(
+        &self,
+        request: egglsp::hunk_context::HunkSourceNavigationRequest,
+    ) -> Result<egglsp::hunk_context::HunkSourceNavigationResponse, String>;
+}
+
+/// No-op executor that always returns an error. Used in tests and
+/// as a type parameter when no executor is available.
+pub struct NoopHunkSourceContextExecutor;
+
+#[async_trait::async_trait]
+impl HunkSourceContextExecutor for NoopHunkSourceContextExecutor {
+    async fn execute_hunk_source_context(
+        &self,
+        _request: egglsp::hunk_context::HunkSourceNavigationRequest,
+    ) -> Result<egglsp::hunk_context::HunkSourceNavigationResponse, String> {
+        Err("no hunkSourceContext executor available".to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Build securityContext request payloads
 // ---------------------------------------------------------------------------
 

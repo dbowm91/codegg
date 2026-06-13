@@ -634,17 +634,19 @@ The legacy entry point `plan_security_review_from_diff(diff, repo_root)` remains
 
 #### Security review workflow integration
 
-`SecurityReviewWorkflowOptions.enable_hunk_source_context` (default `false`) opts into hunk source context evidence collection during `run_security_review_workflow`. When enabled:
+`SecurityReviewWorkflowOptions.enable_hunk_source_context` (default `false`) opts into deterministic `hunkSourceContext` execution during `run_security_review_workflow`. When enabled and an executor (backed by `LspTool` via `LspHunkSourceContextExecutor`) is available:
 
-1. `collect_hunk_source_context_all_files()` groups `ChangedHunk`s by file path and invokes the `HunkSourceContextPolicy` per file.
-2. `evidence_from_hunk_source_context()` converts `HunkSourceNavigationResponse` into `StructuredSecurityEvidence` items with kind `HunkNavigation` (enclosing symbols, definitions, reference counts) or `Diagnostic` (in-hunk and nearby diagnostics).
-3. Evidence is injected into `synthesize_evidence_based_findings_with_extra_evidence()` for eligibility gating (2+ dimensions required).
+1. `collect_hunk_source_context_all_files()` groups `ChangedHunk`s by file path and invokes the `HunkSourceContextPolicy` per file. The `HunkSourceContextExecutor` trait (`src/security/workflow/context.rs`) defines the boundary; `LspHunkSourceContextExecutor` (`src/security/lsp_executor.rs`) is the real adapter delegating to `LspTool`.
+2. `evidence_from_hunk_source_context()` converts `HunkSourceNavigationResponse` into `StructuredSecurityEvidence` items with kind `HunkNavigation` (enclosing symbols, definitions, reference counts) or `Diagnostic` (in-hunk and nearby diagnostics). Only real `HunkSourceNavigationResponse` produces `HunkNavigation` evidence — policy skip decisions are routing metadata, never security evidence.
+3. Evidence is injected into `synthesize_evidence_based_findings_with_extra_evidence()` for eligibility gating. The tightened gate requires `HunkNavigation` to appear alongside `RiskMarker` or `Preflight` (or other supporting dimensions) — `ChangedHunk + HunkNavigation` alone is not finding-eligible.
+
+Multi-file diffs are processed one file at a time (capped at 8 files). The workflow is the `/security-review --hunk-context` flag path, not model-initiated.
 
 Fail-open: per-file errors are noted (appended to output `notes`) and never block the workflow.
 
 #### HunkNavigation evidence kind
 
-`SecurityEvidenceKind::HunkNavigation` (in `src/security/workflow/types.rs`) represents evidence from `hunkSourceContext`: enclosing symbols, definitions intersecting changed ranges, and reference counts. Each item carries `file_path`, `line`, `summary`, and `detail` (hunk id). `HunkNavigation` evidence participates in the same-file evidence eligibility gate alongside `Diagnostic`, `CallPath`, and `TruncationNotice`.
+`SecurityEvidenceKind::HunkNavigation` (in `src/security/workflow/types.rs`) represents evidence from `hunkSourceContext`: enclosing symbols, definitions intersecting changed ranges, and reference counts. Each item carries `file_path`, `line`, `summary`, and `detail` (hunk id). `HunkNavigation` is not standalone finding-eligible — it requires `RiskMarker`, `Preflight`, or another supporting dimension to form a finding. Policy skip decisions never produce `HunkNavigation` evidence.
 
 #### ChangedHunk → HunkDescriptor conversion
 

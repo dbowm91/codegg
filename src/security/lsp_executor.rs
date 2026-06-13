@@ -126,6 +126,42 @@ pub fn validate_security_context_request(request: &serde_json::Value) -> Result<
     Ok(())
 }
 
+/// Adapter that implements [`HunkSourceContextExecutor`] by delegating to
+/// [`LspTool`].
+pub struct LspHunkSourceContextExecutor {
+    tool: Arc<LspTool>,
+}
+
+impl LspHunkSourceContextExecutor {
+    pub fn new(tool: Arc<LspTool>) -> Self {
+        Self { tool }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::security::workflow::context::HunkSourceContextExecutor for LspHunkSourceContextExecutor {
+    async fn execute_hunk_source_context(
+        &self,
+        request: egglsp::hunk_context::HunkSourceNavigationRequest,
+    ) -> Result<egglsp::hunk_context::HunkSourceNavigationResponse, String> {
+        let mut value = serde_json::to_value(&request)
+            .map_err(|e| format!("failed to serialize hunkSourceContext request: {e}"))?;
+        value["operation"] = serde_json::Value::String("hunkSourceContext".to_string());
+
+        let result = self
+            .tool
+            .execute(value)
+            .await
+            .map_err(|e| format!("hunkSourceContext LSP execution failed: {e}"))?;
+
+        let parsed: serde_json::Value = serde_json::from_str(&result)
+            .map_err(|e| format!("failed to parse hunkSourceContext response: {e}"))?;
+
+        serde_json::from_value(parsed["results"].clone())
+            .map_err(|e| format!("failed to extract HunkSourceNavigationResponse from results: {e}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

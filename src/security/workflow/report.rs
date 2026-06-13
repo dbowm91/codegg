@@ -336,6 +336,7 @@ pub async fn run_security_review_workflow(
     root: &Path,
     base: Option<&str>,
     options: SecurityReviewWorkflowOptions,
+    hunk_executor: Option<&dyn HunkSourceContextExecutor>,
 ) -> Result<SecurityReviewOutput, String> {
     // Phase 1: Discover targets from diff
     let (targets, parsed_hunks) = discover_targets_from_diff(root, base).await?;
@@ -397,13 +398,17 @@ pub async fn run_security_review_workflow(
     let mut notes = Vec::new();
     let hunk_context_evidence = if options.enable_hunk_source_context {
         let policy = HunkSourceContextPolicy::default();
-        let (evidence, _summaries, ctx_notes) =
-            collect_hunk_source_context_all_files(&parsed_hunks, &policy).await;
+        let (evidence, summaries, ctx_notes) =
+            collect_hunk_source_context_all_files(&parsed_hunks, &policy, hunk_executor).await;
         if !evidence.is_empty() {
             tracing::debug!(
                 "hunkSourceContext collected {} evidence items",
                 evidence.len()
             );
+        }
+        // Append concise per-file hunk context summaries to notes.
+        for summary in &summaries {
+            notes.push(format!("hunkSourceContext:\n{summary}"));
         }
         notes.extend(ctx_notes);
         evidence
@@ -489,13 +494,14 @@ pub async fn run_security_review_workflow_with_lsp_enrichment<
     base: Option<&str>,
     options: SecurityReviewWorkflowOptions,
     executor: &E,
+    hunk_executor: Option<&dyn HunkSourceContextExecutor>,
 ) -> Result<SecurityReviewOutput, String> {
     // Stage 1: deterministic review (enrichment disabled in options for this pass)
     let stage1_options = SecurityReviewWorkflowOptions {
         enable_lsp_enrichment: false,
         ..options.clone()
     };
-    let mut output = run_security_review_workflow(root, base, stage1_options).await?;
+    let mut output = run_security_review_workflow(root, base, stage1_options, hunk_executor).await?;
 
     if !options.enable_lsp_enrichment {
         return Ok(output);
@@ -668,6 +674,8 @@ pub struct SecurityReviewCommandArgs {
     pub max_enriched_targets: Option<usize>,
     /// Timeout per LSP securityContext request in milliseconds.
     pub lsp_timeout_ms: Option<u64>,
+    /// Enable hunk source context evidence collection.
+    pub hunk_context: bool,
     /// Open the result panel automatically on successful completion.
     pub open_panel_on_complete: bool,
 }
@@ -703,6 +711,7 @@ pub fn parse_security_review_args(input: &str) -> SecurityReviewCommandArgs {
             "--lsp-timeout-ms" => {
                 args.lsp_timeout_ms = iter.next().and_then(|s| s.parse::<u64>().ok());
             }
+            "--hunk-context" => args.hunk_context = true,
             "--panel" | "--open-panel" => args.open_panel_on_complete = true,
             _ => {}
         }
@@ -736,7 +745,8 @@ pub async fn run_security_review_command_with_executor(
     args: &SecurityReviewCommandArgs,
     executor: Option<&dyn SecurityContextExecutor>,
 ) -> Result<String, String> {
-    let (output, rendered) = run_security_review_command_inner(root, args, executor, true).await?;
+    let hunk_exec: Option<&dyn HunkSourceContextExecutor> = None;
+    let (output, rendered) = run_security_review_command_inner(root, args, executor, hunk_exec, true).await?;
     if args.json {
         serde_json::to_string_pretty(&output).map_err(|e| format!("JSON serialization failed: {e}"))
     } else {
@@ -753,7 +763,8 @@ pub async fn run_security_review_command_with_executor(
 async fn run_security_review_command_inner(
     root: &Path,
     args: &SecurityReviewCommandArgs,
-    executor: Option<&dyn SecurityContextExecutor>,
+    security_executor: Option<&dyn SecurityContextExecutor>,
+    hunk_executor: Option<&dyn HunkSourceContextExecutor>,
     render_human: bool,
 ) -> Result<(SecurityReviewOutput, String), String> {
     let base = args.base.as_deref();
@@ -763,6 +774,7 @@ async fn run_security_review_command_inner(
         include_findings: !args.prompts_only,
         run_filename_preflight: !args.no_filename,
         run_content_preflight: !args.no_content,
+        enable_hunk_source_context: args.hunk_context,
         enable_lsp_enrichment: args.enrich,
         ..Default::default()
     };
@@ -784,8 +796,8 @@ async fn run_security_review_command_inner(
     let include_prompts = options.include_prompts;
 
     let mut output = if options.enable_lsp_enrichment {
-        if let Some(exec) = executor {
-            run_security_review_workflow_with_lsp_enrichment(root, base, options, exec).await?
+        if let Some(exec) = security_executor {
+            run_security_review_workflow_with_lsp_enrichment(root, base, options, exec, hunk_executor).await?
         } else {
             // No executor available — skip enrichment, run deterministic
             // stage-1 only, and append a clear unavailable note.
@@ -793,12 +805,12 @@ async fn run_security_review_command_inner(
                 enable_lsp_enrichment: false,
                 ..options
             };
-            let mut result = run_security_review_workflow(root, base, stage1_options).await?;
+            let mut result = run_security_review_workflow(root, base, stage1_options, hunk_executor).await?;
             note_lsp_enrichment_unavailable(&mut result);
             result
         }
     } else {
-        run_security_review_workflow(root, base, options).await?
+        run_security_review_workflow(root, base, options, hunk_executor).await?
     };
 
     if args.json {
@@ -856,17 +868,22 @@ pub async fn run_security_review_background(
     args: SecurityReviewCommandArgs,
     lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
 ) -> Result<SecurityReviewReceipt, String> {
-    let executor = lsp_tool.map(crate::security::lsp_executor::LspSecurityContextExecutor::new);
-    let executor_ref = executor
+    let hunk_executor = lsp_tool.clone().map(crate::security::lsp_executor::LspHunkSourceContextExecutor::new);
+    let security_executor = lsp_tool.map(crate::security::lsp_executor::LspSecurityContextExecutor::new);
+
+    let security_executor_ref = security_executor
         .as_ref()
         .map(|e| e as &dyn crate::security::workflow::context::SecurityContextExecutor);
+    let hunk_executor_ref = hunk_executor
+        .as_ref()
+        .map(|e| e as &dyn crate::security::workflow::context::HunkSourceContextExecutor);
 
-    let lsp_available = executor.is_some();
-    let enriched = args.enrich && executor.is_some();
+    let lsp_available = security_executor.is_some();
+    let enriched = args.enrich && security_executor.is_some();
 
     let id = SecurityReviewRunId::new().0;
     let (output, rendered) =
-        run_security_review_command_inner(&root, &args, executor_ref, true).await?;
+        run_security_review_command_inner(&root, &args, security_executor_ref, hunk_executor_ref, true).await?;
 
     Ok(SecurityReviewReceipt::now(
         id,
@@ -916,7 +933,11 @@ fn note_lsp_enrichment_executed(output: &mut SecurityReviewOutput, count: usize)
 // Hunk source context evidence integration
 // ---------------------------------------------------------------------------
 
-use crate::lsp::hunk_nav_policy::{decide_hunk_source_context, HunkSourceContextPolicy};
+use crate::lsp::hunk_nav_policy::{
+    decide_hunk_source_context, HunkSourceContextDecision, HunkSourceContextPolicy,
+};
+use crate::lsp::hunk_nav_prompt::format_hunk_source_context_summary;
+use egglsp::hunk_context::HunkSourceNavigationRequest;
 use egglsp::hunk_context::HunkSourceNavigationResponse;
 
 /// Convert a [`HunkSourceNavigationResponse`] into structured security
@@ -950,11 +971,13 @@ pub fn evidence_from_hunk_source_context(
         }
 
         // Diagnostics in hunk.
+        // Note: FileDiagnostic.line is 0-indexed (LSP convention); convert
+        // to 1-indexed to match hunk/security-workflow line conventions.
         for diag in &ev.diagnostics {
             evidence.push(StructuredSecurityEvidence {
                 kind: SecurityEvidenceKind::Diagnostic,
                 file_path: Some(std::path::PathBuf::from(&response.file_path)),
-                line: Some(diag.line),
+                line: Some(diag.line + 1),
                 summary: format!("{:?}: {}", diag.severity, diag.message),
                 detail: Some(format!("hunk {}", ev.hunk.id)),
             });
@@ -965,7 +988,7 @@ pub fn evidence_from_hunk_source_context(
             evidence.push(StructuredSecurityEvidence {
                 kind: SecurityEvidenceKind::Diagnostic,
                 file_path: Some(std::path::PathBuf::from(&response.file_path)),
-                line: Some(diag.line),
+                line: Some(diag.line + 1),
                 summary: format!("{:?} (nearby): {}", diag.severity, diag.message),
                 detail: Some(format!("hunk {}", ev.hunk.id)),
             });
@@ -1004,11 +1027,12 @@ pub fn evidence_from_hunk_source_context(
 /// and a human-readable summary for inclusion in the output notes.
 ///
 /// Fail-open: returns empty evidence on any error, appending a note.
-pub async fn collect_hunk_source_context_for_file(
+pub async fn collect_hunk_source_context_for_file<E: HunkSourceContextExecutor + ?Sized>(
     hunks: &[ChangedHunk],
     patch: &str,
     file_path: &std::path::Path,
     policy: &HunkSourceContextPolicy,
+    executor: Option<&E>,
 ) -> (
     Vec<StructuredSecurityEvidence>,
     Option<String>,
@@ -1017,36 +1041,56 @@ pub async fn collect_hunk_source_context_for_file(
     let decision = decide_hunk_source_context(policy, patch, Some(file_path));
 
     match decision {
-        crate::lsp::hunk_nav_policy::HunkSourceContextDecision::Skip { reason } => {
+        HunkSourceContextDecision::Skip { reason } => {
             let note = format!("hunkSourceContext skipped: {reason}");
             (vec![], None, vec![note])
         }
-        crate::lsp::hunk_nav_policy::HunkSourceContextDecision::Use {
-            file_path: fp,
-            patch: p,
-        } => {
-            // For now, we record the decision as evidence but don't actually
-            // call the LSP (which would require an async collector).
-            // The actual LSP call is deferred to Phase 4 when the workflow
-            // is wired through the hunk source navigation collector.
-            let evidence = vec![StructuredSecurityEvidence {
-                kind: SecurityEvidenceKind::HunkNavigation,
-                file_path: Some(fp.clone()),
-                line: hunks.first().map(|h| h.new_start),
-                summary: format!(
-                    "hunkSourceContext policy: use for {} ({} hunks, {} bytes)",
-                    file_path.display(),
-                    hunks.len(),
-                    p.len()
-                ),
-                detail: Some("policy decision only — LSP call deferred".to_string()),
-            }];
-            let summary = Some(format!(
-                "hunkSourceContext: {} hunks for {} — policy says use (LSP call deferred)",
-                hunks.len(),
-                file_path.display()
-            ));
-            (evidence, summary, vec![])
+        HunkSourceContextDecision::Use { .. } => {
+            let Some(executor) = executor else {
+                let note = format!(
+                    "hunkSourceContext recommended for {}, but no executor is available; continuing without semantic hunk evidence",
+                    file_path.display()
+                );
+                return (vec![], None, vec![note]);
+            };
+
+            // Convert ChangedHunks to HunkDescriptors for the request.
+            let descriptors: Vec<_> = hunks
+                .iter()
+                .enumerate()
+                .map(|(i, h)| h.to_hunk_descriptor(i))
+                .collect();
+
+            let request = HunkSourceNavigationRequest {
+                file_path: file_path.to_string_lossy().to_string(),
+                hunks: descriptors,
+                patch: None,
+                intent: "security_review".to_string(),
+                include_definitions: policy.include_definitions,
+                include_references: policy.include_references,
+                include_call_hierarchy: policy.include_call_hierarchy,
+                include_type_hierarchy: policy.include_type_hierarchy,
+                excerpt_radius: 40,
+                max_hunks: hunks.len(),
+                max_symbols_per_hunk: 10,
+                max_diagnostics_per_hunk: 10,
+                max_references_per_hunk: 10,
+            };
+
+            match executor.execute_hunk_source_context(request).await {
+                Ok(response) => {
+                    let evidence = evidence_from_hunk_source_context(&response);
+                    let summary = Some(format_hunk_source_context_summary(&response));
+                    (evidence, summary, vec![])
+                }
+                Err(e) => {
+                    let note = format!(
+                        "hunkSourceContext execution failed for {}: {e}",
+                        file_path.display()
+                    );
+                    (vec![], None, vec![note])
+                }
+            }
         }
     }
 }
@@ -1059,9 +1103,10 @@ pub async fn collect_hunk_source_context_for_file(
 /// merges all evidence. Fail-open: errors per file are noted, not fatal.
 ///
 /// Returns merged evidence, summaries per file, and notes.
-pub async fn collect_hunk_source_context_all_files(
+pub async fn collect_hunk_source_context_all_files<E: HunkSourceContextExecutor + ?Sized>(
     hunks: &[ChangedHunk],
     policy: &HunkSourceContextPolicy,
+    executor: Option<&E>,
 ) -> (
     Vec<StructuredSecurityEvidence>,
     Vec<String>,
@@ -1078,11 +1123,20 @@ pub async fn collect_hunk_source_context_all_files(
         hunks_by_file.entry(&hunk.file_path).or_default().push(hunk);
     }
 
+    let max_files = 8;
     let mut all_evidence = Vec::new();
     let mut summaries = Vec::new();
     let mut notes = Vec::new();
 
-    for (file_path, file_hunks) in &hunks_by_file {
+    for (i, (file_path, file_hunks)) in hunks_by_file.iter().enumerate() {
+        if i >= max_files {
+            notes.push(format!(
+                "hunkSourceContext: capped at {max_files} files; {} additional files skipped",
+                hunks_by_file.len() - max_files
+            ));
+            break;
+        }
+
         // Build a synthetic patch from the hunks for policy evaluation.
         let synthetic_patch = file_hunks
             .iter()
@@ -1098,7 +1152,7 @@ pub async fn collect_hunk_source_context_all_files(
         // Convert &[&ChangedHunk] to Vec<ChangedHunk> for the function call.
         let owned_hunks: Vec<ChangedHunk> = file_hunks.iter().map(|h| (*h).clone()).collect();
         let (evidence, summary, file_notes) =
-            collect_hunk_source_context_for_file(&owned_hunks, &synthetic_patch, file_path, policy)
+            collect_hunk_source_context_for_file(&owned_hunks, &synthetic_patch, file_path, policy, executor)
                 .await;
 
         all_evidence.extend(evidence);
@@ -1377,6 +1431,460 @@ mod tests {
             id.0.starts_with("sr-"),
             "default-generated id should start with 'sr-': {}",
             id.0
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Hunk source context security integration tests
+    // -----------------------------------------------------------------------
+
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use egglsp::hunk_context::HunkDescriptor;
+    use egglsp::hunk_context::HunkEvidence;
+    use egglsp::hunk_context::HunkLineRange;
+    use egglsp::hunk_context::HunkSourceNavigationRequest;
+    use egglsp::hunk_context::HunkSourceNavigationResponse;
+    use egglsp::lsp_types::DiagnosticSeverity;
+    use egglsp::semantic_context::SemanticSymbolSummary;
+
+    /// Fixture executor for `HunkSourceContextExecutor` that returns
+    /// pre-configured responses keyed by file path.
+    struct FixtureHunkSourceContextExecutor {
+        responses: Mutex<HashMap<String, Result<HunkSourceNavigationResponse, String>>>,
+    }
+
+    impl FixtureHunkSourceContextExecutor {
+        fn new() -> Self {
+            Self {
+                responses: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn with_response(
+            self,
+            file_path: &str,
+            response: Result<HunkSourceNavigationResponse, String>,
+        ) -> Self {
+            self.responses
+                .lock()
+                .unwrap()
+                .insert(file_path.to_string(), response);
+            self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HunkSourceContextExecutor for FixtureHunkSourceContextExecutor {
+        async fn execute_hunk_source_context(
+            &self,
+            request: HunkSourceNavigationRequest,
+        ) -> Result<HunkSourceNavigationResponse, String> {
+            let map = self.responses.lock().unwrap();
+            match map.get(&request.file_path) {
+                Some(Ok(resp)) => Ok(resp.clone()),
+                Some(Err(e)) => Err(e.clone()),
+                None => Err(format!("no fixture response for {}", request.file_path)),
+            }
+        }
+    }
+
+    fn make_test_hunk(file: &str, new_start: u32, new_count: u32) -> ChangedHunk {
+        ChangedHunk {
+            file_path: PathBuf::from(file),
+            old_start: new_start,
+            old_count: new_count,
+            new_start,
+            new_count,
+            lines: vec![],
+        }
+    }
+
+    // --- Evidence safety tests ---
+
+    #[tokio::test]
+    async fn hunk_source_policy_use_without_executor_emits_no_evidence() {
+        let hunks = vec![make_test_hunk("src/main.rs", 10, 5)];
+        let patch =
+            "@@ -10,5 +10,5 @@\n fn main() {\n-    old();\n+    new();\n }\n";
+        let file = Path::new("src/main.rs");
+        let policy = HunkSourceContextPolicy::default();
+
+        let (evidence, summary, notes) = collect_hunk_source_context_for_file(
+            &hunks,
+            patch,
+            file,
+            &policy,
+            None::<&NoopHunkSourceContextExecutor>,
+        )
+        .await;
+
+        assert!(
+            evidence.is_empty(),
+            "policy Use without executor should emit no evidence"
+        );
+        assert!(
+            summary.is_none(),
+            "policy Use without executor should produce no summary"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("no executor")),
+            "should note executor unavailability"
+        );
+    }
+
+    #[tokio::test]
+    async fn hunk_source_policy_skip_emits_no_evidence() {
+        let hunks = vec![make_test_hunk("src/main.rs", 10, 5)];
+        // Empty patch triggers Skip (no @@ headers).
+        let patch = "";
+        let file = Path::new("src/main.rs");
+        let policy = HunkSourceContextPolicy::default();
+
+        let (evidence, summary, notes) = collect_hunk_source_context_for_file(
+            &hunks,
+            patch,
+            file,
+            &policy,
+            None::<&NoopHunkSourceContextExecutor>,
+        )
+        .await;
+
+        assert!(
+            evidence.is_empty(),
+            "policy Skip should emit no evidence"
+        );
+        assert!(summary.is_none());
+        assert!(
+            notes.iter().any(|n| n.contains("skipped")),
+            "should note skip reason"
+        );
+    }
+
+    // --- Executor success test ---
+
+    #[tokio::test]
+    async fn hunk_source_executor_success_returns_real_evidence() {
+        let hunks = vec![make_test_hunk("src/main.rs", 10, 5)];
+        let patch =
+            "@@ -10,5 +10,5 @@\n fn main() {\n-    old();\n+    new();\n }\n";
+        let file = Path::new("src/main.rs");
+        let policy = HunkSourceContextPolicy::default();
+
+        let mut response = HunkSourceNavigationResponse::new("src/main.rs");
+        response.hunks.push(HunkEvidence {
+            hunk: HunkDescriptor {
+                id: "src/main.rs:0:10-14".to_string(),
+                file_path: "src/main.rs".to_string(),
+                old_range: Some(HunkLineRange {
+                    start_line: 10,
+                    end_line: 14,
+                }),
+                new_range: Some(HunkLineRange {
+                    start_line: 10,
+                    end_line: 14,
+                }),
+                header: Some("@@ -10,5 +10,5 @@".to_string()),
+                added_lines: 1,
+                removed_lines: 1,
+                context_lines: 3,
+            },
+            focus_range: None,
+            enclosing_symbol: Some(SemanticSymbolSummary {
+                name: "main".to_string(),
+                kind: "function".to_string(),
+                file: "src/main.rs".to_string(),
+                start_line: 10,
+                start_column: 0,
+                end_line: 14,
+                end_column: 1,
+            }),
+            related_symbols: vec![],
+            diagnostics: vec![],
+            nearby_diagnostics: vec![],
+            definitions: vec![],
+            references: vec![],
+            call_hierarchy: None,
+            type_hierarchy: None,
+            source_excerpt: None,
+            diagnostic_evidence: None,
+            section_truncations: vec![],
+            unavailable: vec![],
+            notes: vec![],
+        });
+
+        let executor =
+            FixtureHunkSourceContextExecutor::new().with_response("src/main.rs", Ok(response));
+
+        let (evidence, summary, notes) = collect_hunk_source_context_for_file(
+            &hunks,
+            patch,
+            file,
+            &policy,
+            Some(&executor),
+        )
+        .await;
+
+        assert!(
+            !evidence.is_empty(),
+            "executor success should produce evidence"
+        );
+        assert!(
+            summary.is_some(),
+            "executor success should produce a formatted summary"
+        );
+        assert!(
+            notes.is_empty(),
+            "executor success should produce no notes"
+        );
+        assert!(evidence.iter().any(|e| e.kind == SecurityEvidenceKind::HunkNavigation));
+    }
+
+    // --- Executor failure test ---
+
+    #[tokio::test]
+    async fn hunk_source_executor_failure_returns_empty_evidence_with_note() {
+        let hunks = vec![make_test_hunk("src/main.rs", 10, 5)];
+        let patch =
+            "@@ -10,5 +10,5 @@\n fn main() {\n-    old();\n+    new();\n }\n";
+        let file = Path::new("src/main.rs");
+        let policy = HunkSourceContextPolicy::default();
+
+        let executor = FixtureHunkSourceContextExecutor::new()
+            .with_response("src/main.rs", Err("LSP server unavailable".to_string()));
+
+        let (evidence, summary, notes) = collect_hunk_source_context_for_file(
+            &hunks,
+            patch,
+            file,
+            &policy,
+            Some(&executor),
+        )
+        .await;
+
+        assert!(
+            evidence.is_empty(),
+            "executor failure should emit no evidence"
+        );
+        assert!(summary.is_none());
+        assert!(
+            notes.iter().any(|n| n.contains("execution failed")),
+            "should note execution failure"
+        );
+    }
+
+    // --- Diagnostic line indexing test ---
+
+    #[test]
+    fn diagnostic_line_evidence_is_1indexed() {
+        let mut response = HunkSourceNavigationResponse::new("src/test.rs");
+        response.hunks.push(HunkEvidence {
+            hunk: HunkDescriptor {
+                id: "src/test.rs:0:1-5".to_string(),
+                file_path: "src/test.rs".to_string(),
+                old_range: None,
+                new_range: Some(HunkLineRange {
+                    start_line: 1,
+                    end_line: 5,
+                }),
+                header: None,
+                added_lines: 0,
+                removed_lines: 0,
+                context_lines: 0,
+            },
+            focus_range: None,
+            enclosing_symbol: None,
+            related_symbols: vec![],
+            diagnostics: vec![egglsp::diagnostics::FileDiagnostic {
+                file: "src/test.rs".to_string(),
+                line: 9, // 0-indexed LSP line 9 = 10th line
+                column: 0,
+                message: "unused variable".to_string(),
+                severity: DiagnosticSeverity::WARNING,
+                source: None,
+                code: None,
+            }],
+            nearby_diagnostics: vec![],
+            definitions: vec![],
+            references: vec![],
+            call_hierarchy: None,
+            type_hierarchy: None,
+            source_excerpt: None,
+            diagnostic_evidence: None,
+            section_truncations: vec![],
+            unavailable: vec![],
+            notes: vec![],
+        });
+
+        let evidence = evidence_from_hunk_source_context(&response);
+        let diag_evidence: Vec<_> = evidence
+            .iter()
+            .filter(|e| e.kind == SecurityEvidenceKind::Diagnostic)
+            .collect();
+
+        assert_eq!(
+            diag_evidence.len(),
+            1,
+            "should have one diagnostic evidence item"
+        );
+        assert_eq!(
+            diag_evidence[0].line,
+            Some(10),
+            "0-indexed line 9 should become 1-indexed line 10"
+        );
+    }
+
+    // --- Finding eligibility gate tests ---
+
+    #[test]
+    fn hunk_nav_plus_changed_hunk_not_eligible() {
+        let evidence = vec![
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::HunkNavigation,
+                file_path: Some(PathBuf::from("src/main.rs")),
+                line: Some(10),
+                summary: "enclosing symbol: function main".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::ChangedHunk,
+                file_path: Some(PathBuf::from("src/main.rs")),
+                line: Some(10),
+                summary: "changed hunk".to_string(),
+                detail: None,
+            },
+        ];
+        assert!(
+            !is_finding_eligible(&evidence),
+            "ChangedHunk + HunkNavigation alone should not be eligible"
+        );
+    }
+
+    #[test]
+    fn risk_marker_plus_hunk_nav_still_eligible() {
+        let evidence = vec![
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::RiskMarker,
+                file_path: Some(PathBuf::from("src/main.rs")),
+                line: Some(10),
+                summary: "unsafe code".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::HunkNavigation,
+                file_path: Some(PathBuf::from("src/main.rs")),
+                line: Some(10),
+                summary: "enclosing symbol: function main".to_string(),
+                detail: None,
+            },
+        ];
+        assert!(
+            is_finding_eligible(&evidence),
+            "RiskMarker + HunkNavigation should be eligible"
+        );
+    }
+
+    #[test]
+    fn preflight_fail_plus_hunk_nav_still_eligible() {
+        let evidence = vec![
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::Preflight,
+                file_path: Some(PathBuf::from("src/main.rs")),
+                line: Some(10),
+                summary: "found secret key".to_string(),
+                detail: None,
+            },
+            StructuredSecurityEvidence {
+                kind: SecurityEvidenceKind::HunkNavigation,
+                file_path: Some(PathBuf::from("src/main.rs")),
+                line: Some(10),
+                summary: "enclosing symbol: function main".to_string(),
+                detail: None,
+            },
+        ];
+        assert!(
+            is_finding_eligible(&evidence),
+            "Preflight + HunkNavigation should be eligible"
+        );
+    }
+
+    // --- Command flag tests ---
+
+    #[test]
+    fn parse_hunk_context_flag() {
+        let args = parse_security_review_args("--hunk-context --base HEAD");
+        assert!(
+            args.hunk_context,
+            "--hunk-context flag should set hunk_context"
+        );
+        assert_eq!(args.base.as_deref(), Some("HEAD"));
+    }
+
+    #[test]
+    fn parse_default_no_hunk_context() {
+        let args = parse_security_review_args("--base HEAD");
+        assert!(
+            !args.hunk_context,
+            "default should not enable hunk_context"
+        );
+    }
+
+    // --- Formatter usage test ---
+
+    #[test]
+    fn formatter_summary_includes_file_path() {
+        let mut response = HunkSourceNavigationResponse::new("src/test.rs");
+        response.hunks.push(HunkEvidence {
+            hunk: HunkDescriptor {
+                id: "src/test.rs:0:1-5".to_string(),
+                file_path: "src/test.rs".to_string(),
+                old_range: None,
+                new_range: Some(HunkLineRange {
+                    start_line: 1,
+                    end_line: 5,
+                }),
+                header: None,
+                added_lines: 0,
+                removed_lines: 0,
+                context_lines: 0,
+            },
+            focus_range: None,
+            enclosing_symbol: Some(SemanticSymbolSummary {
+                name: "test_fn".to_string(),
+                kind: "function".to_string(),
+                file: "src/test.rs".to_string(),
+                start_line: 1,
+                start_column: 0,
+                end_line: 5,
+                end_column: 1,
+            }),
+            related_symbols: vec![],
+            diagnostics: vec![],
+            nearby_diagnostics: vec![],
+            definitions: vec![],
+            references: vec![],
+            call_hierarchy: None,
+            type_hierarchy: None,
+            source_excerpt: None,
+            diagnostic_evidence: None,
+            section_truncations: vec![],
+            unavailable: vec![],
+            notes: vec![],
+        });
+
+        let summary = format_hunk_source_context_summary(&response);
+        assert!(
+            summary.contains("src/test.rs"),
+            "summary should contain file path"
+        );
+        assert!(
+            summary.contains("function"),
+            "summary should mention enclosing symbol kind"
+        );
+        assert!(
+            summary.contains("test_fn"),
+            "summary should mention enclosing symbol name"
         );
     }
 }

@@ -355,14 +355,17 @@ pub struct HunkSourceContextPolicy {
 
 ### Security review workflow integration
 
-The security review workflow (`src/security/workflow/report.rs`) optionally collects hunk source context evidence via `enable_hunk_source_context: bool` (default: false) on `SecurityReviewWorkflowOptions`.
+The security review workflow (`src/security/workflow/report.rs`) optionally executes `hunkSourceContext` deterministically when `--hunk-context` is enabled via `enable_hunk_source_context: bool` (default: false) on `SecurityReviewWorkflowOptions`.
 
-When enabled:
+When enabled and an executor is available:
 1. Hunks are grouped by file path
 2. `decide_hunk_source_context` is called per file with a synthetic patch
-3. Per-file evidence (enclosing symbols, diagnostics, definitions, references) is collected via `collect_hunk_source_context_all_files`
-4. Evidence is injected into the evidence-based synthesis as `HunkNavigation` and `Diagnostic` evidence items
-5. `evidence_from_hunk_source_context` converts `HunkSourceNavigationResponse` into `StructuredSecurityEvidence`
+3. The `HunkSourceContextExecutor` trait (`src/security/workflow/context.rs`) provides the boundary; `LspHunkSourceContextExecutor` (`src/security/lsp_executor.rs`) is the real adapter wrapping `LspTool`
+4. Per-file evidence (enclosing symbols, diagnostics, definitions, references) is collected via `collect_hunk_source_context_all_files` which actually executes `hunkSourceContext` per file
+5. Evidence is injected into the evidence-based synthesis as `HunkNavigation` and `Diagnostic` evidence items
+6. `evidence_from_hunk_source_context` converts real `HunkSourceNavigationResponse` into `StructuredSecurityEvidence` — policy skip decisions are routing metadata, never evidence
+
+The tightened eligibility gate requires `HunkNavigation` to appear alongside `RiskMarker` or `Preflight` (or other supporting dimensions) — `ChangedHunk + HunkNavigation` alone is not finding-eligible. Multi-file diffs are processed one file at a time (capped at 8 files).
 
 Fail-open: per-file errors produce notes, never block the workflow. The policy skips unsupported file extensions, oversized patches, and files with too many hunks.
 
