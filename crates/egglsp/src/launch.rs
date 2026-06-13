@@ -19,7 +19,7 @@ use tracing::{debug, error, info};
 use crate::error::LspError;
 
 pub struct LspProcess {
-    pub stdin: tokio::process::ChildStdin,
+    pub stdin: Option<tokio::process::ChildStdin>,
     pub stdout: Option<tokio::process::ChildStdout>,
     pub stderr: Option<BufReader<tokio::process::ChildStderr>>,
     pub child: tokio::process::Child,
@@ -77,7 +77,7 @@ pub async fn spawn_server(
     info!(command, args = ?args, "spawned LSP server");
 
     Ok(LspProcess {
-        stdin,
+        stdin: Some(stdin),
         stdout: Some(stdout),
         stderr: Some(stderr_reader),
         child,
@@ -85,14 +85,16 @@ pub async fn spawn_server(
 }
 
 pub async fn send_request(process: &mut LspProcess, msg: &str) -> Result<(), LspError> {
-    let content = format!("Content-Length: {}\r\n\r\n{}", msg.len(), msg);
-    process
+    let stdin = process
         .stdin
+        .as_mut()
+        .ok_or_else(|| LspError::RequestFailed("stdin not available".to_string()))?;
+    let content = format!("Content-Length: {}\r\n\r\n{}", msg.len(), msg);
+    stdin
         .write_all(content.as_bytes())
         .await
         .map_err(|e| LspError::RequestFailed(format!("write failed: {}", e)))?;
-    process
-        .stdin
+    stdin
         .flush()
         .await
         .map_err(|e| LspError::RequestFailed(format!("flush failed: {}", e)))?;

@@ -930,6 +930,7 @@ pub enum LspRule {
         disabled: Option<bool>,
         env: Option<HashMap<String, String>>,
         initialization: Option<HashMap<String, serde_json::Value>>,
+        workspace_configuration: Option<HashMap<String, serde_json::Value>>,
     },
 }
 

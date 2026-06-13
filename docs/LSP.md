@@ -1,5 +1,7 @@
 # LSP (Language Server Protocol)
 
+> **Note:** This document is partially outdated. For comprehensive LSP documentation, see `architecture/lsp.md` and `.opencode/skills/lsp/SKILL.md`.
+
 codegg integrates with Language Server Protocol (LSP) to provide IDE-like features including diagnostics, code navigation, and intelligent completions.
 
 ## Architecture
@@ -18,7 +20,7 @@ The egglsp crate consists of:
 
 ### LspService
 
-Manages the lifecycle of LSP clients per project/language:
+Manages the lifecycle of LSP clients per project/language. Uses `OnceCell` for single-flight initialization (concurrent first-use for the same key awaits one initialization) and `Arc`-based handles to avoid serialization of unrelated clients behind process I/O:
 
 ```rust
 pub struct LspService {

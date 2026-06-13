@@ -55,6 +55,15 @@ pub enum LspError {
 
     #[error("source action '{0}' returned multiple edit-bearing actions: {1}")]
     AmbiguousSourceAction(String, String),
+
+    #[error("protocol error: {0}")]
+    Protocol(String),
+
+    #[error("writer closed: {0}")]
+    WriterClosed(String),
+
+    #[error("initialization cancelled: {0}")]
+    InitializationCancelled(String),
 }
 
 impl LspError {
@@ -67,5 +76,27 @@ impl LspError {
                 | LspError::RequestTimeout(_)
                 | LspError::Io(_)
         )
+        // Protocol, WriterClosed, InitializationCancelled are not retryable.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_error_variants_are_not_retryable() {
+        assert!(!LspError::Protocol("test".into()).is_retryable());
+        assert!(!LspError::WriterClosed("test".into()).is_retryable());
+        assert!(!LspError::InitializationCancelled("test".into()).is_retryable());
+    }
+
+    #[test]
+    fn existing_retryable_variants_still_retryable() {
+        assert!(LspError::DownloadFailed("test".into()).is_retryable());
+        assert!(LspError::LaunchFailed("test".into()).is_retryable());
+        assert!(LspError::RequestFailed("test".into()).is_retryable());
+        assert!(LspError::RequestTimeout("test".into()).is_retryable());
+        assert!(LspError::Io(std::io::Error::other("test")).is_retryable());
     }
 }

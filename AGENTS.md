@@ -202,6 +202,15 @@ These items were verified during review sessions:
 | Semantic context collector | `SemanticContextCollector` | `src/lsp/semantic_context.rs` — assembles the shared semantic read model, produces `SemanticContextResponse` from LSP services |
 | Semantic context adapter | `SemanticContextPacket::from_semantic_response()` | `src/tool/lsp.rs` — adapts shared response into tool-local presentation packet |
 | `capabilities` LspTool operation | `capabilities` | `src/tool/lsp.rs` — returns `LspCapabilitySnapshot` for the file's server |
+| LSP bidirectional peer | Yes | `crates/egglsp/src/server_request.rs`, `crates/egglsp/src/client.rs` |
+| Server request dispatcher | `dispatch_server_request` | `crates/egglsp/src/server_request.rs` |
+| Dynamic registration state | `DynamicRegistrationState` (256 cap) | `crates/egglsp/src/server_request.rs` |
+| Shared serialized writer | `LspWriter<W>` | `crates/egglsp/src/writer.rs` |
+| Single-flight initialization | `OnceCell` per key | `crates/egglsp/src/service.rs` |
+| Cancellation on timeout | `$/cancelRequest` best-effort | `crates/egglsp/src/client.rs` |
+| Global map lock release | Arc clone before await | `crates/egglsp/src/service.rs` |
+| workspace/applyEdit rejection | Always `applied: false` | `crates/egglsp/src/server_request.rs` |
+| New LspError variants | `Protocol`, `WriterClosed`, `InitializationCancelled` | `crates/egglsp/src/error.rs` |
 | Native tool crates | 4 | `crates/egglsp`, `crates/egggit`, `crates/eggsentry`, `crates/eggcontext` — see `architecture/native_crates.md` |
 | Extracted workspace crates | 4 (+1 new) | `crates/codegg-config`, `crates/codegg-protocol`, `crates/codegg-providers`, `crates/codegg-core` |
 | Tool backend contract | `src/tool/backend.rs` | `ToolBackendKind`, `ToolProvenance`, `StructuredToolResult`, `build_report()` for `/tool-backends` |

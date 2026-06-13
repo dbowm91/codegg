@@ -232,6 +232,15 @@ impl From<egglsp::LspError> for LspError {
             egglsp::LspError::AmbiguousSourceAction(kind, titles) => {
                 LspError::AmbiguousSourceAction(kind, titles)
             }
+            egglsp::LspError::Protocol(s) => {
+                LspError::RequestFailed(format!("protocol error: {}", s))
+            }
+            egglsp::LspError::WriterClosed(s) => {
+                LspError::RequestFailed(format!("writer closed: {}", s))
+            }
+            egglsp::LspError::InitializationCancelled(s) => {
+                LspError::RequestFailed(format!("initialization cancelled: {}", s))
+            }
         }
     }
 }

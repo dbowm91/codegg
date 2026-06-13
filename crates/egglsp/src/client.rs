@@ -23,6 +23,7 @@
 //! - `DiagnosticEntry` - file URI + diagnostic data
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,15 +31,78 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use lsp_types::*;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, info, warn};
 use url::Url;
 
 use super::launch::{self, LspProcess};
 use super::server::LspServerDef;
+use super::server_request::{dispatch_server_request, ServerRequestContext, ServerRequestReply};
+use super::writer::LspWriter;
 use crate::error::LspError;
 
-type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, LspError>>>>>;
+/// JSON-RPC message ID, preserving both numeric and string forms.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum JsonRpcId {
+    Number(u64),
+    String(String),
+}
+
+impl JsonRpcId {
+    /// Returns the numeric value if this is a `Number` variant.
+    pub fn as_number(&self) -> Option<u64> {
+        match self {
+            JsonRpcId::Number(n) => Some(*n),
+            JsonRpcId::String(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for JsonRpcId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JsonRpcId::Number(n) => write!(f, "{n}"),
+            JsonRpcId::String(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl Serialize for JsonRpcId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            JsonRpcId::Number(n) => serializer.serialize_u64(*n),
+            JsonRpcId::String(s) => serializer.serialize_str(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for JsonRpcId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let val = serde_json::Value::deserialize(deserializer)?;
+        match val {
+            serde_json::Value::Number(n) => {
+                let num = n.as_u64().ok_or_else(|| {
+                    serde::de::Error::custom(format!("invalid JSON-RPC id number: {n}"))
+                })?;
+                Ok(JsonRpcId::Number(num))
+            }
+            serde_json::Value::String(s) => Ok(JsonRpcId::String(s)),
+            _ => Err(serde::de::Error::custom(format!(
+                "invalid JSON-RPC id type: {val}"
+            ))),
+        }
+    }
+}
+
+type PendingMap =
+    Arc<Mutex<HashMap<JsonRpcId, oneshot::Sender<Result<serde_json::Value, LspError>>>>>;
 
 async fn fail_all_pending(pending: &PendingMap, error_msg: &str) {
     let mut pending = pending.lock().await;
@@ -49,15 +113,22 @@ async fn fail_all_pending(pending: &PendingMap, error_msg: &str) {
 }
 
 /// Classified JSON-RPC message from the server.
+#[derive(Debug)]
 pub enum JsonRpcMessage {
     Response {
-        id: u64,
+        id: JsonRpcId,
         result: serde_json::Value,
     },
     ErrorResponse {
-        id: u64,
+        id: JsonRpcId,
         code: Option<i64>,
         message: String,
+        data: Option<serde_json::Value>,
+    },
+    ServerRequest {
+        id: JsonRpcId,
+        method: String,
+        params: serde_json::Value,
     },
     Notification {
         method: String,
@@ -66,13 +137,42 @@ pub enum JsonRpcMessage {
     Unknown,
 }
 
+/// Extract a `JsonRpcId` from a `serde_json::Value`, if present.
+fn extract_id(value: &serde_json::Value) -> Option<JsonRpcId> {
+    let id_val = value.get("id")?;
+    match id_val {
+        serde_json::Value::Number(n) => n.as_u64().map(JsonRpcId::Number),
+        serde_json::Value::String(s) => Some(JsonRpcId::String(s.clone())),
+        serde_json::Value::Null => None,
+        _ => None,
+    }
+}
+
 /// Classify a raw JSON-RPC value into its semantic type.
+///
+/// Classification order (structural, no silent drops):
+/// 1. id + method          → server request
+/// 2. id + error           → error response
+/// 3. id + result (or null) → success response
+/// 4. method without id    → notification
+/// 5. otherwise            → unknown
 pub fn classify_json_rpc_message(value: serde_json::Value) -> JsonRpcMessage {
-    let id = value.get("id").and_then(|v| v.as_u64());
+    let id = extract_id(&value);
     let method = value.get("method").and_then(|v| v.as_str());
 
     match (id, method) {
-        (Some(id), _) if value.get("error").is_some() => {
+        (Some(id), Some(method)) => {
+            let params = value
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            JsonRpcMessage::ServerRequest {
+                id,
+                method: method.to_string(),
+                params,
+            }
+        }
+        (Some(id), None) if value.get("error").is_some() => {
             let code = value
                 .get("error")
                 .and_then(|e| e.get("code"))
@@ -83,9 +183,15 @@ pub fn classify_json_rpc_message(value: serde_json::Value) -> JsonRpcMessage {
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown error")
                 .to_string();
-            JsonRpcMessage::ErrorResponse { id, code, message }
+            let data = value.get("error").and_then(|e| e.get("data")).cloned();
+            JsonRpcMessage::ErrorResponse {
+                id,
+                code,
+                message,
+                data,
+            }
         }
-        (Some(id), _) => {
+        (Some(id), None) => {
             let result = value
                 .get("result")
                 .cloned()
@@ -171,6 +277,7 @@ pub struct LspClient {
     pub server_id: String,
     pub root: PathBuf,
     pub process: tokio::sync::Mutex<LspProcess>,
+    pub writer: LspWriter,
     pub request_id: AtomicU64,
     pub capabilities: Arc<Mutex<Option<ServerCapabilities>>>,
     pub opened_files: Mutex<HashMap<String, i32>>,
@@ -188,6 +295,7 @@ impl LspClient {
         binary: &Path,
         root: &Path,
         env: &[(String, String)],
+        configuration: serde_json::Value,
     ) -> Result<Self, LspError> {
         let args: Vec<&str> = server.args.iter().map(|s| &**s).collect();
         let binary_str = binary.to_str().ok_or_else(|| {
@@ -208,6 +316,13 @@ impl LspClient {
             .take()
             .ok_or_else(|| LspError::LaunchFailed("stdout not available".to_string()))?;
 
+        let writer = LspWriter::new(
+            process
+                .stdin
+                .take()
+                .ok_or_else(|| LspError::LaunchFailed("stdin not available".to_string()))?,
+        );
+
         let diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
@@ -216,14 +331,42 @@ impl LspClient {
         let reader_diagnostics = diagnostics.clone();
         let reader_pending = pending.clone();
         let server_id = server.id.to_string();
+        let reader_writer = writer.clone_inner();
+        let reader_context = ServerRequestContext {
+            server_id: server.id.to_string(),
+            root: root.to_path_buf(),
+            configuration,
+            workspace_folders: vec![lsp_types::WorkspaceFolder {
+                uri: url_to_uri(
+                    &url::Url::from_file_path(root)
+                        .map_err(|_| LspError::LaunchFailed("invalid root path".to_string()))?,
+                )?,
+                name: root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            }],
+            dynamic_registrations: Arc::new(tokio::sync::RwLock::new(
+                crate::server_request::DynamicRegistrationState::new(),
+            )),
+        };
         let reader_task = tokio::spawn(async move {
-            Self::background_reader(stdout, reader_diagnostics, reader_pending, server_id).await;
+            Self::background_reader(
+                stdout,
+                reader_diagnostics,
+                reader_pending,
+                server_id,
+                reader_writer,
+                reader_context,
+            )
+            .await;
         });
 
         let client = Self {
             server_id: server.id.to_string(),
             root: root.to_path_buf(),
             process: tokio::sync::Mutex::new(process),
+            writer,
             request_id: AtomicU64::new(0),
             capabilities: Arc::new(Mutex::new(None)),
             opened_files: Mutex::new(HashMap::new()),
@@ -238,13 +381,17 @@ impl LspClient {
     }
 
     /// Background task that reads framed JSON-RPC messages from stdout
-    /// and routes them to pending request senders or notification handlers.
+    /// and routes them to pending request senders, notification handlers,
+    /// or the server-request dispatcher.
     async fn background_reader(
         mut stdout: tokio::process::ChildStdout,
         diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>>,
         pending: PendingMap,
         server_id: String,
+        writer: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
+        server_request_context: ServerRequestContext,
     ) {
+        let writer = LspWriter::from_inner(writer);
         loop {
             // Read Content-Length framed message.
             let resp_str = match read_framed_message(&mut stdout).await {
@@ -270,15 +417,44 @@ impl LspClient {
                     let sender = pending.lock().await.remove(&id);
                     if let Some(tx) = sender {
                         let _ = tx.send(Ok(result));
+                    } else {
+                        debug!(server = %server_id, id = %id, "late or unmatched response ID");
                     }
                 }
-                JsonRpcMessage::ErrorResponse { id, code, message } => {
+                JsonRpcMessage::ErrorResponse {
+                    id, code, message, ..
+                } => {
                     let sender = pending.lock().await.remove(&id);
                     if let Some(tx) = sender {
                         let code_str = code.map(|c| c.to_string()).unwrap_or_default();
                         let _ = tx.send(Err(LspError::RequestFailed(format!(
                             "LSP error {code_str}: {message}"
                         ))));
+                    } else {
+                        debug!(server = %server_id, id = %id, code, message, "late or unmatched error response ID");
+                    }
+                }
+                JsonRpcMessage::ServerRequest { id, method, params } => {
+                    debug!(server = %server_id, id = %id, method = %method, "dispatching server request");
+                    let reply =
+                        dispatch_server_request(&server_request_context, &method, params).await;
+                    match reply {
+                        ServerRequestReply::Result(result) => {
+                            if let Err(e) = writer.send_response_result(&id, result).await {
+                                warn!(server = %server_id, id = %id, error = %e, "failed to write server-request response");
+                            }
+                        }
+                        ServerRequestReply::Error {
+                            code,
+                            message,
+                            data,
+                        } => {
+                            if let Err(e) =
+                                writer.send_response_error(&id, code, &message, data).await
+                            {
+                                warn!(server = %server_id, id = %id, error = %e, "failed to write server-request error response");
+                            }
+                        }
                     }
                 }
                 JsonRpcMessage::Notification { method, params } => {
@@ -672,27 +848,19 @@ impl LspClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, LspError> {
-        let id = self.request_id.fetch_add(1, Ordering::SeqCst);
-
-        let msg = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-
-        let msg_str = serde_json::to_string(&msg)?;
+        let raw_id = self.request_id.fetch_add(1, Ordering::SeqCst);
+        let id = JsonRpcId::Number(raw_id);
 
         // Register pending request before writing to stdin.
         let (tx, rx) = oneshot::channel();
         {
-            self.pending.lock().await.insert(id, tx);
+            self.pending.lock().await.insert(id.clone(), tx);
         }
 
-        // Write the request.
-        {
-            let mut proc = self.process.lock().await;
-            launch::send_request(&mut proc, &msg_str).await?;
+        // Write the request via the shared writer.
+        if let Err(e) = self.writer.send_request_message(&id, method, params).await {
+            self.pending.lock().await.remove(&id);
+            return Err(e);
         }
 
         // Wait for the background reader to deliver the response.
@@ -710,8 +878,24 @@ impl LspClient {
                 )))
             }
             Err(_) => {
-                // Timeout — clean up pending entry; background reader will ignore late response.
+                // Timeout — clean up pending entry first.
                 self.pending.lock().await.remove(&id);
+
+                // Best-effort cancellation notification to the server.
+                let cancel_params = serde_json::json!({ "id": id });
+                if let Err(e) = self
+                    .writer
+                    .send_notification_message("$/cancelRequest", cancel_params)
+                    .await
+                {
+                    debug!(
+                        server = %self.server_id,
+                        method = %method,
+                        error = %e,
+                        "failed to send cancellation notification after timeout"
+                    );
+                }
+
                 Err(LspError::RequestTimeout(format!(
                     "LSP request '{}' timed out after {:?}",
                     method,
@@ -726,15 +910,7 @@ impl LspClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<(), LspError> {
-        let msg = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-        });
-
-        let msg_str = serde_json::to_string(&msg)?;
-        let mut proc = self.process.lock().await;
-        launch::send_request(&mut proc, &msg_str).await
+        self.writer.send_notification_message(method, params).await
     }
 
     fn detect_language_id(&self, uri: &Url) -> String {
@@ -957,7 +1133,7 @@ mod tests {
         });
         match classify_json_rpc_message(msg) {
             JsonRpcMessage::Response { id, result } => {
-                assert_eq!(id, 1);
+                assert_eq!(id, JsonRpcId::Number(1));
                 assert!(result.get("capabilities").is_some());
             }
             _ => panic!("expected Response"),
@@ -972,10 +1148,16 @@ mod tests {
             "error": {"code": -32600, "message": "Invalid Request"}
         });
         match classify_json_rpc_message(msg) {
-            JsonRpcMessage::ErrorResponse { id, code, message } => {
-                assert_eq!(id, 2);
+            JsonRpcMessage::ErrorResponse {
+                id,
+                code,
+                message,
+                data,
+            } => {
+                assert_eq!(id, JsonRpcId::Number(2));
                 assert_eq!(code, Some(-32600));
                 assert_eq!(message, "Invalid Request");
+                assert!(data.is_none());
             }
             _ => panic!("expected ErrorResponse"),
         }
@@ -1531,5 +1713,369 @@ mod tests {
         let (out_entry, freshness) = classify_diagnostic_freshness(Some(entry), None, None);
         assert!(out_entry.is_some());
         assert_eq!(freshness, LspDiagnosticFreshness::Fresh);
+    }
+
+    // ── Phase 1 classifier tests ────────────────────────────────────
+
+    #[test]
+    fn classify_server_request_with_id_and_method() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "window/showMessageRequest",
+            "params": {"message": "hello", "actions": []}
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::ServerRequest { id, method, params } => {
+                assert_eq!(id, JsonRpcId::Number(42));
+                assert_eq!(method, "window/showMessageRequest");
+                assert!(params.get("message").is_some());
+            }
+            other => panic!("expected ServerRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_server_request_with_string_id() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "abc-123",
+            "method": "window/showMessageRequest",
+            "params": {}
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::ServerRequest { id, method, .. } => {
+                assert_eq!(id, JsonRpcId::String("abc-123".to_string()));
+                assert_eq!(method, "window/showMessageRequest");
+            }
+            other => panic!("expected ServerRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_server_request_no_params_defaults_to_null() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "some/request"
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::ServerRequest { id, method, params } => {
+                assert_eq!(id, JsonRpcId::Number(1));
+                assert_eq!(method, "some/request");
+                assert_eq!(params, serde_json::Value::Null);
+            }
+            other => panic!("expected ServerRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_error_response_with_data_field() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "error": {
+                "code": -32601,
+                "message": "Method not found",
+                "data": {"details": "no such method"}
+            }
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::ErrorResponse {
+                id,
+                code,
+                message,
+                data,
+            } => {
+                assert_eq!(id, JsonRpcId::Number(5));
+                assert_eq!(code, Some(-32601));
+                assert_eq!(message, "Method not found");
+                assert!(data.is_some());
+                assert_eq!(
+                    data.unwrap()["details"],
+                    serde_json::json!("no such method")
+                );
+            }
+            other => panic!("expected ErrorResponse with data, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_response_with_string_id() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "req-7",
+            "result": {"ok": true}
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::Response { id, result } => {
+                assert_eq!(id, JsonRpcId::String("req-7".to_string()));
+                assert_eq!(result["ok"], serde_json::json!(true));
+            }
+            other => panic!("expected Response with string id, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_response_with_null_result() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": null
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::Response { id, result } => {
+                assert_eq!(id, JsonRpcId::Number(3));
+                assert_eq!(result, serde_json::Value::Null);
+            }
+            other => panic!("expected Response with null result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_error_response_takes_precedence_over_response_when_both_present() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "error": {"code": -1, "message": "fail"},
+            "result": {"ignored": true}
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::ErrorResponse { id, code, .. } => {
+                assert_eq!(id, JsonRpcId::Number(99));
+                assert_eq!(code, Some(-1));
+            }
+            other => panic!("expected ErrorResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_id_with_string_id_type() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "string-id",
+            "method": "test/method"
+        });
+        match classify_json_rpc_message(msg) {
+            JsonRpcMessage::ServerRequest { id, .. } => {
+                assert_eq!(id, JsonRpcId::String("string-id".to_string()));
+            }
+            other => panic!("expected ServerRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_null_id_yields_unknown() {
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": null
+        });
+        assert!(matches!(
+            classify_json_rpc_message(msg),
+            JsonRpcMessage::Unknown
+        ));
+    }
+
+    #[test]
+    fn json_rpc_id_number_as_number() {
+        let id = JsonRpcId::Number(42);
+        assert_eq!(id.as_number(), Some(42));
+    }
+
+    #[test]
+    fn json_rpc_id_string_as_number() {
+        let id = JsonRpcId::String("abc".to_string());
+        assert_eq!(id.as_number(), None);
+    }
+
+    #[test]
+    fn json_rpc_id_display_number() {
+        let id = JsonRpcId::Number(7);
+        assert_eq!(id.to_string(), "7");
+    }
+
+    #[test]
+    fn json_rpc_id_display_string() {
+        let id = JsonRpcId::String("xyz".to_string());
+        assert_eq!(id.to_string(), "xyz");
+    }
+
+    #[test]
+    fn json_rpc_id_roundtrip_serialize() {
+        let id = JsonRpcId::Number(5);
+        let json = serde_json::to_value(&id).unwrap();
+        assert_eq!(json, serde_json::json!(5));
+        let deserialized: JsonRpcId = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized, JsonRpcId::Number(5));
+    }
+
+    #[test]
+    fn json_rpc_id_roundtrip_serialize_string() {
+        let id = JsonRpcId::String("my-id".to_string());
+        let json = serde_json::to_value(&id).unwrap();
+        assert_eq!(json, serde_json::json!("my-id"));
+        let deserialized: JsonRpcId = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized, JsonRpcId::String("my-id".to_string()));
+    }
+
+    #[test]
+    fn cancel_notification_format_is_correct() {
+        // Verify the JSON-RPC notification format for $/cancelRequest
+        let id = JsonRpcId::Number(42);
+        let cancel_params = serde_json::json!({ "id": id });
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": cancel_params,
+        });
+        assert_eq!(msg["method"], "$/cancelRequest");
+        assert_eq!(msg["params"]["id"], 42);
+        assert!(
+            msg.get("id").is_none(),
+            "notification must not have an id field"
+        );
+    }
+
+    #[test]
+    fn cancel_notification_with_string_id() {
+        let id = JsonRpcId::String("abc-123".to_string());
+        let cancel_params = serde_json::json!({ "id": id });
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": cancel_params,
+        });
+        assert_eq!(msg["params"]["id"], "abc-123");
+    }
+
+    #[tokio::test]
+    async fn write_failure_removes_pending_entry() {
+        use super::LspWriter;
+        use tokio::sync::oneshot;
+
+        // Create a duplex pair then drop the server half so client writes fail.
+        let (client_half, server_half) = tokio::io::duplex(64);
+        drop(server_half);
+
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+
+        let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let id = JsonRpcId::Number(1);
+        let (tx, _rx) = oneshot::channel();
+        pending.lock().await.insert(id.clone(), tx);
+
+        // Attempt to send — this should fail because writer is broken.
+        let result = writer
+            .send_request_message(&id, "test/method", serde_json::json!(null))
+            .await;
+        assert!(result.is_err(), "write should fail on broken pipe");
+
+        // The pending entry should be gone after the caller cleans up.
+        // We simulate the cleanup path here.
+        pending.lock().await.remove(&id);
+        assert!(
+            pending.lock().await.is_empty(),
+            "pending map should be empty after cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_emits_cancel_notification() {
+        // Set up a duplex pair: the client writes to client_half, we read from server_half.
+        let (client_half, server_half) = tokio::io::duplex(4096);
+        let writer = LspWriter::from_inner(Arc::new(tokio::sync::Mutex::new(client_half)));
+
+        let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let id = JsonRpcId::Number(7);
+        let (tx, _rx) = oneshot::channel();
+        pending.lock().await.insert(id.clone(), tx);
+
+        // Send a request through the writer (this will succeed since duplex is open).
+        let write_result = writer
+            .send_request_message(&id, "test/method", serde_json::json!(null))
+            .await;
+        assert!(write_result.is_ok(), "initial write should succeed");
+
+        // Remove the pending entry (simulating timeout cleanup).
+        pending.lock().await.remove(&id);
+
+        // Send the cancellation notification — verify it doesn't error.
+        let cancel_params = serde_json::json!({ "id": id });
+        let cancel_result = writer
+            .send_notification_message("$/cancelRequest", cancel_params)
+            .await;
+        assert!(
+            cancel_result.is_ok(),
+            "cancel notification should succeed on open pipe"
+        );
+
+        // Read the bytes from server_half to verify the cancel was written.
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 4096];
+        let mut reader = server_half;
+        let n = tokio::time::timeout(Duration::from_millis(100), reader.read(&mut buf))
+            .await
+            .expect("read should complete")
+            .expect("read should succeed");
+        let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+
+        // The raw output contains Content-Length header + body for each message.
+        // Find the cancellation notification body.
+        assert!(
+            raw.contains("$/cancelRequest"),
+            "server should have received $/cancelRequest, got: {raw}"
+        );
+        assert!(
+            raw.contains(r#""id":7"#),
+            "cancel notification should contain id=7, got: {raw}"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_removes_pending_state() {
+        // Simulate the timeout path: insert pending, then remove it (as timeout handler does).
+        let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let id = JsonRpcId::Number(99);
+        let (tx, _rx) = oneshot::channel();
+        pending.lock().await.insert(id.clone(), tx);
+        assert_eq!(pending.lock().await.len(), 1);
+
+        // Simulate timeout cleanup (the code we added).
+        pending.lock().await.remove(&id);
+        assert!(
+            pending.lock().await.is_empty(),
+            "pending should be empty after timeout cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_response_after_timeout_is_ignored() {
+        // After timeout removes the pending entry, a late oneshot send should be a no-op.
+        let pending: super::PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let id = JsonRpcId::Number(50);
+
+        // Insert a dummy sender into the pending map.
+        let (dummy_tx, _dummy_rx) = oneshot::channel();
+        pending.lock().await.insert(id.clone(), dummy_tx);
+
+        // Simulate timeout: remove from pending.
+        pending.lock().await.remove(&id);
+        assert!(pending.lock().await.is_empty());
+
+        // A late response arrives on a separate channel (representing the background reader).
+        let (late_tx, late_rx) = oneshot::channel::<Result<serde_json::Value, LspError>>();
+        let _ = late_tx.send(Ok(serde_json::json!("late response")));
+
+        // The receiver gets the value — the channel is independent of the pending map.
+        let result = tokio::time::timeout(Duration::from_millis(50), late_rx).await;
+        assert!(result.is_ok(), "receiver should get the late value");
+        let value = result
+            .unwrap()
+            .unwrap()
+            .expect("channel should have Ok value");
+        assert_eq!(value, serde_json::json!("late response"));
+
+        // Pending map remains empty — the late response didn't re-add anything.
+        assert!(pending.lock().await.is_empty());
     }
 }

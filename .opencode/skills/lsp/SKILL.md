@@ -874,6 +874,26 @@ Enforces bounded output. Defaults are conservative and aligned with the existing
 
 `LspCapabilitySnapshot::unavailable(op)` builds a structured fallback for unsupported operations. Used internally when a requested semantic context operation cannot be served because the server lacks the required capability.
 
+## Protocol Peer Hardening
+
+Codegg acts as a bidirectional JSON-RPC peer. The background reader classifies incoming messages into `Response`, `ErrorResponse`, `ServerRequest`, `Notification`, and `Unknown` variants. Server requests are dispatched via `dispatch_server_request` in `server_request.rs`.
+
+### Supported server requests
+- `workspace/configuration` — scoped configuration lookup
+- `workspace/workspaceFolders` — returns current root
+- `client/registerCapability` / `client/unregisterCapability` — bounded dynamic registration tracking (256 max)
+- `window/workDoneProgress/create` — acknowledged with null
+- `workspace/applyEdit` — **always rejected** (Codegg never applies implicit edits)
+
+### Cancellation
+Timeout triggers: (1) pending entry removal, (2) best-effort `$/cancelRequest` notification, (3) `RequestTimeout` error.
+
+### Initialization
+Single-flight via `OnceCell` — concurrent first-use for same key awaits one initialization.
+
+### Writer
+`LspWriter` serializes all output through `Arc<Mutex<...>>`. Content-Length uses UTF-8 byte count.
+
 ## Architecture Notes
 
 ### Client-Per-Root Pattern

@@ -931,6 +931,77 @@ construction uses `ToolRegistry::with_session_config_defaults(&config,
 `with_session_defaults(...)` is documented as a footgun for
 config-aware paths.
 
+## Protocol Peer Hardening (Phase 1)
+
+Codegg's LSP runtime operates as a **bidirectional JSON-RPC peer**, not merely a client that sends requests and consumes diagnostics. The server can send requests back to the client (e.g. `workspace/configuration`, `workspace/workspaceFolders`, `client/registerCapability`), and Codegg answers them correctly.
+
+### Incoming Message Taxonomy
+
+The `classify_json_rpc_message` function classifies incoming JSON-RPC messages using structural analysis:
+
+| Shape | Classification |
+|-------|---------------|
+| `id` + `method` | Server request |
+| `id` + `error` | Error response |
+| `id` + `result` (or null) | Success response |
+| `method` without `id` | Notification |
+| Otherwise | Unknown |
+
+`JsonRpcId` preserves both numeric (`Number(u64)`) and string (`String(String)`) IDs per JSON-RPC spec. Client-originated IDs are tracked in the `pending` map; server-originated IDs are answered but never inserted into `pending`.
+
+### Supported Server-Originated Requests
+
+Codegg handles these server requests via `dispatch_server_request` in `server_request.rs`:
+
+| Method | Behavior |
+|--------|----------|
+| `workspace/configuration` | Returns configuration values scoped to the server/root; `null` for unknown sections |
+| `workspace/workspaceFolders` | Returns the current root as a single-element workspace folder array |
+| `client/registerCapability` | Records registration in `DynamicRegistrationState` (bounded at 256); acknowledges with `null` |
+| `client/unregisterCapability` | Removes registration by ID; tolerates unknown IDs |
+| `window/workDoneProgress/create` | Acknowledges with `null` |
+| `workspace/applyEdit` | **Always rejected** with `applied: false` — Codegg does not permit implicit language-server edits |
+| Unknown methods | Returns JSON-RPC error `-32601` (Method not found) |
+| Malformed params | Returns `-32602` (Invalid params) |
+
+### Dynamic Registration
+
+`DynamicRegistrationState` tracks server-requested capability registrations bounded at 256 entries. Recording a registration does **not** mean Codegg claims operational support for that feature — `LspCapabilitySnapshot` is derived from `ServerCapabilities` (the `initialize` response) only.
+
+### Shared Serialized Writer
+
+`LspWriter` (`writer.rs`) provides a shared, `Arc<Mutex<...>>`-wrapped writer for all protocol output. Both client requests/notifications and the background server-request dispatcher use the same writer, ensuring serialized writes without interleaving frames. Content-Length framing uses UTF-8 byte length.
+
+### Timeout Cancellation
+
+On request timeout:
+1. The pending entry is removed from the map
+2. A best-effort `$/cancelRequest` notification is sent to the server with the original request ID
+3. The timeout error is returned to the caller
+
+Cancellation failures are logged at debug level and never mask the primary timeout error.
+
+### Single-Flight Client Initialization
+
+`LspService::get_or_create_client` uses `tokio::sync::OnceCell` to ensure only one initialization occurs per `{project_root}:{server_id}` key. Concurrent callers for the same key await the same initialization result. Different keys initialize concurrently.
+
+### Global Map Lock Discipline
+
+All service operations follow this pattern:
+1. Acquire the map read lock
+2. Clone the `Arc<LspClient>`
+3. Release the map lock
+4. Await the client operation
+
+This prevents serialization of unrelated clients behind process I/O. `close_file` and `save_file` resolve the correct client by searching cloned handles rather than relying on `HashMap` iteration order.
+
+### Limitations
+
+- `workspace/applyEdit` is always rejected — servers cannot implicitly write files through Codegg
+- Dynamic registrations are tracked but do not expand model-facing capability claims
+- Configuration responses are bounded to the server's configured section — no environment secrets are exposed
+- Server requests are handled synchronously within the background reader; long-running handlers could delay stdout consumption (current handlers are fast and local)
+
 ## Error Handling
 
 Overlay-specific behavior: `semanticCheckPreview` restore failures are logged and surfaced via `restore_error: Option<String>` in the response (alongside `restored_disk_view: false`) rather than returning `LspError`. `diagnostics_error` and `symbols_error` are similarly non-None when their respective LSP requests fail, rather than silently returning empty vectors. The original disk content is never written by this operation, so a restore failure leaves the LSP in-memory state stale but the filesystem untouched. The wrapper's `execute_structured` sets `success=false` when `restore_error` is present.
@@ -954,6 +1025,9 @@ pub enum LspError {
     CommandOnlySourceAction(String),
     NoEditForSourceAction(String),
     AmbiguousSourceAction(String, String),
+    Protocol(String),
+    WriterClosed(String),
+    InitializationCancelled(String),
 }
 ```
 

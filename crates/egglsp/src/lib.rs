@@ -31,10 +31,12 @@ pub mod overlay;
 pub mod root;
 pub mod semantic_context;
 pub mod server;
+pub mod server_request;
 pub mod service;
+pub mod writer;
 
 pub use capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
-pub use client::DiagnosticCacheEntry;
+pub use client::{DiagnosticCacheEntry, JsonRpcId};
 pub use config::{LspConfig, LspRule};
 pub use diagnostics::{
     DiagnosticsCollector, DiagnosticsOutput, LspDiagnosticFreshness, LspDiagnosticSnapshot,
@@ -52,7 +54,12 @@ pub use semantic_context::{
     SemanticContextCaps, SemanticContextIntent, SemanticContextRequest, SemanticContextResponse,
     SemanticLocation,
 };
+pub use server_request::{
+    dispatch_server_request, DynamicRegistration, DynamicRegistrationState, ServerRequestContext,
+    ServerRequestReply,
+};
 pub use service::LspService;
+pub use writer::LspWriter;
 
 pub use edit::{FileEditPreview, TextEditPreview, WorkspaceEditPreview};
 pub use lsp_types;
