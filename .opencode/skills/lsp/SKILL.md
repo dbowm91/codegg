@@ -886,7 +886,7 @@ Codegg acts as a bidirectional JSON-RPC peer. The background reader classifies i
 - `workspace/applyEdit` — **always rejected** (Codegg never applies implicit edits)
 
 ### Cancellation
-Timeout triggers: (1) pending entry removal, (2) best-effort `$/cancelRequest` notification, (3) `RequestTimeout` error.
+Client request timeout triggers: (1) pending entry removal, (2) best-effort `$/cancelRequest` notification, (3) `RequestTimeout` error. Server-request dispatch has a 5-second timeout that returns `-32603` (Internal error) on expiry.
 
 ### Initialization
 Single-flight via `OnceCell` — concurrent first-use for same key awaits one initialization.

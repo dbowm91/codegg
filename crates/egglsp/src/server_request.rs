@@ -616,6 +616,47 @@ mod tests {
             .is_err());
     }
 
+    // ── Dispatch timeout tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn dispatch_completes_within_timeout() {
+        // All current handlers are fast and local — verify they complete
+        // well within the 5-second SERVER_REQUEST_TIMEOUT.
+        let ctx = make_context();
+        let params = serde_json::json!({"items": [{"section": "test"}]});
+        let start = std::time::Instant::now();
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            dispatch_server_request(&ctx, "workspace/configuration", params),
+        )
+        .await;
+        let elapsed = start.elapsed();
+        assert!(reply.is_ok(), "dispatch should complete within timeout");
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "dispatch took {:?}, expected < 1s",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn server_request_timeout_is_reasonable() {
+        // The SERVER_REQUEST_TIMEOUT constant in client.rs should be generous
+        // enough for fast local handlers but short enough to prevent stalling
+        // stdout consumption.
+        let timeout = crate::client::LspClient::SERVER_REQUEST_TIMEOUT;
+        assert!(
+            timeout >= std::time::Duration::from_secs(2),
+            "timeout should be at least 2s, got {:?}",
+            timeout
+        );
+        assert!(
+            timeout <= std::time::Duration::from_secs(30),
+            "timeout should be at most 30s, got {:?}",
+            timeout
+        );
+    }
+
     #[tokio::test]
     async fn configuration_uses_context_configuration_field() {
         let uri: lsp_types::Uri = "file:///workspace".parse().expect("valid URI");

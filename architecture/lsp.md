@@ -1000,7 +1000,7 @@ This prevents serialization of unrelated clients behind process I/O. `close_file
 - `workspace/applyEdit` is always rejected — servers cannot implicitly write files through Codegg
 - Dynamic registrations are tracked but do not expand model-facing capability claims
 - Configuration responses are bounded to the server's configured section — no environment secrets are exposed
-- Server requests are handled synchronously within the background reader; long-running handlers could delay stdout consumption (current handlers are fast and local)
+- Server requests are handled synchronously within the background reader with a 5-second timeout. A timeout produces a JSON-RPC error response with code `-32603` (Internal error) rather than silently abandoning the request. Current handlers are fast and local.
 
 ## Error Handling
 

@@ -436,8 +436,22 @@ impl LspClient {
                 }
                 JsonRpcMessage::ServerRequest { id, method, params } => {
                     debug!(server = %server_id, id = %id, method = %method, "dispatching server request");
-                    let reply =
-                        dispatch_server_request(&server_request_context, &method, params).await;
+                    let reply = match tokio::time::timeout(
+                        Self::SERVER_REQUEST_TIMEOUT,
+                        dispatch_server_request(&server_request_context, &method, params),
+                    )
+                    .await
+                    {
+                        Ok(reply) => reply,
+                        Err(_elapsed) => {
+                            warn!(server = %server_id, id = %id, method = %method, "server request dispatch timed out");
+                            ServerRequestReply::Error {
+                                code: -32603,
+                                message: format!("server request '{method}' timed out internally"),
+                                data: None,
+                            }
+                        }
+                    };
                     match reply {
                         ServerRequestReply::Result(result) => {
                             if let Err(e) = writer.send_response_result(&id, result).await {
@@ -842,6 +856,12 @@ impl LspClient {
     }
 
     const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// Timeout for server-request dispatch. Current handlers are fast and
+    /// local (hashmap lookups, vector construction), but this guard prevents
+    /// a misbehaving server from blocking stdout consumption indefinitely.
+    pub(crate) const SERVER_REQUEST_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(5);
 
     pub async fn send_request(
         &self,
