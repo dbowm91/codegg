@@ -1827,9 +1827,11 @@ dependencies = [
 name = "egglsp"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "dirs",
  "flate2",
  "futures",
+ "libc",
  "lsp-types",
  "reqwest",
  "serde",
@@ -1852,8 +1854,12 @@ dependencies = [
 name = "egglsp-test-server"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

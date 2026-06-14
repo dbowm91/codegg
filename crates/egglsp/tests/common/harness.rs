@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 use tempfile::TempDir;
@@ -120,39 +121,73 @@ impl FakeLspHarness {
     ///
     /// Searches in order:
     /// 1. `EGGLSP_TEST_SERVER` environment variable
-    /// 2. `<target_dir>/egglsp-test-server` (relative to CARGO_MANIFEST_DIR)
+    /// 2. A Cargo-built `egglsp-test-server` binary resolved from `cargo build`
     /// 3. Panics with a helpful message
     pub fn fake_server_path() -> String {
         static SERVER_PATH: OnceLock<String> = OnceLock::new();
         SERVER_PATH
             .get_or_init(|| {
-                // 1. Check environment variable
                 if let Ok(path) = std::env::var("EGGLSP_TEST_SERVER") {
                     return path;
                 }
 
-                // 2. Look relative to CARGO_MANIFEST_DIR (workspace layout)
-                // CARGO_MANIFEST_DIR = crates/egglsp, so we need to go up twice
-                if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-                    let manifest = PathBuf::from(&manifest_dir);
-                    if let Some(crates_dir) = manifest.parent() {
-                        if let Some(workspace_root) = crates_dir.parent() {
-                            let target_dirs = [
-                                workspace_root.join("target").join("debug"),
-                                workspace_root.join("target").join("release"),
-                            ];
-                            for dir in &target_dirs {
-                                let binary = dir.join("egglsp-test-server");
-                                if binary.exists() {
-                                    return binary.to_string_lossy().into_owned();
-                                }
-                            }
+                let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|path| path.parent())
+                    .expect("failed to resolve workspace root")
+                    .to_path_buf();
+                let manifest_path = workspace_root.join("Cargo.toml");
+                let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+                let mut command = Command::new(cargo);
+                command
+                    .arg("build")
+                    .arg("--locked")
+                    .arg("--manifest-path")
+                    .arg(&manifest_path)
+                    .arg("-p")
+                    .arg("egglsp-test-server")
+                    .arg("--bin")
+                    .arg("egglsp-test-server")
+                    .arg("--message-format=json-render-diagnostics")
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                if std::env::var("PROFILE").ok().as_deref() == Some("release") {
+                    command.arg("--release");
+                }
+
+                let output = command
+                    .output()
+                    .unwrap_or_else(|e| panic!("failed to run cargo build for fake server: {e}"));
+                if !output.status.success() {
+                    panic!(
+                        "cargo build for egglsp-test-server failed:\n{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+                        continue;
+                    };
+                    if message.get("reason").and_then(|value| value.as_str())
+                        == Some("compiler-artifact")
+                        && message
+                            .get("target")
+                            .and_then(|value| value.get("name"))
+                            .and_then(|value| value.as_str())
+                            == Some("egglsp-test-server")
+                    {
+                        if let Some(path) =
+                            message.get("executable").and_then(|value| value.as_str())
+                        {
+                            return path.to_string();
                         }
                     }
                 }
 
                 panic!(
-                    "Could not find egglsp-test-server binary.\n\
+                    "Could not find egglsp-test-server binary from Cargo output.\n\
                      Build it with: cargo build -p egglsp-test-server\n\
                      Or set EGGLSP_TEST_SERVER=/path/to/binary"
                 )

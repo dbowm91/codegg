@@ -16,6 +16,7 @@ use super::config::{LspConfig, LspRule};
 use super::download;
 use super::error::{LspError, SharedInitError};
 use super::language::{detect_language, language_id_to_server_id};
+use super::launch::LspLaunchSpec;
 use super::root;
 use super::server::{self, LspServerDef};
 
@@ -1298,6 +1299,59 @@ async fn dispose_unpublished_client(client: Arc<LspClient>, reason: &str) {
     }
 }
 
+async fn resolve_launch_spec(
+    server: &'static LspServerDef,
+    config: &LspConfig,
+) -> Result<LspLaunchSpec, LspError> {
+    let (command, args, env) = match config {
+        LspConfig::Rules(rules) => {
+            if let Some(LspRule::Active {
+                command: command_parts,
+                env,
+                ..
+            }) = rules.get(server.id)
+            {
+                if command_parts.is_empty() {
+                    return Err(LspError::LaunchFailed(format!(
+                        "server '{}' configuration command is empty",
+                        server.id
+                    )));
+                }
+                let command = PathBuf::from(&command_parts[0]);
+                let args = command_parts.iter().skip(1).cloned().collect::<Vec<_>>();
+                let env = env
+                    .as_ref()
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                (command, args, env)
+            } else {
+                let command = download::ensure_server_binary(server).await?;
+                let args = server.args.iter().map(|s| s.to_string()).collect();
+                (command, args, Vec::new())
+            }
+        }
+        _ => {
+            let command = download::ensure_server_binary(server).await?;
+            let args = server.args.iter().map(|s| s.to_string()).collect();
+            (command, args, Vec::new())
+        }
+    };
+
+    Ok(LspLaunchSpec::new(
+        server.id,
+        command,
+        args,
+        env,
+        server.languages.iter().map(|s| s.to_string()).collect(),
+        server.extensions.iter().map(|s| s.to_string()).collect(),
+    ))
+}
+
 /// Await a set of `InitTaskControl` completion receivers concurrently
 /// under a single absolute deadline. Returns the set of tasks that
 /// did NOT complete within the budget; for those the caller still
@@ -1548,19 +1602,6 @@ async fn run_initialization_attempt(
     cancellation: CancellationToken,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
 ) {
-    let env: Vec<(String, String)> = match &config {
-        LspConfig::Rules(rules) => {
-            if let Some(LspRule::Active { env, .. }) = rules.get(server.id) {
-                env.as_ref()
-                    .map(|e| e.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            }
-        }
-        _ => Vec::new(),
-    };
-
     let init_opts: Option<serde_json::Value> = match &config {
         LspConfig::Rules(rules) => {
             if let Some(LspRule::Active { initialization, .. }) = rules.get(server.id) {
@@ -1651,8 +1692,13 @@ async fn run_initialization_attempt(
             };
         }
 
-        let binary = tokio::select! {
-            result = download::ensure_server_binary(server) => result?,
+        let launch = tokio::select! {
+            result = resolve_launch_spec(server, &config) => match result {
+                Ok(launch) => launch,
+                Err(err) => {
+                    return Err(err);
+                }
+            },
             _ = cancellation.cancelled() => {
                 return Err(LspError::InitializationCancelled("shutting down".to_string()));
             }
@@ -1660,7 +1706,7 @@ async fn run_initialization_attempt(
 
         #[allow(unused_mut)]
         let mut client = tokio::select! {
-            result = LspClient::new(server, &binary, &root, &env, configuration, LspClientOptions::default()) => result?,
+            result = LspClient::new_with_launch_spec(launch, &root, configuration, LspClientOptions::default()) => result?,
             _ = cancellation.cancelled() => {
                 return Err(LspError::InitializationCancelled("shutting down".to_string()));
             }

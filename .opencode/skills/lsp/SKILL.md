@@ -1041,15 +1041,16 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 
 The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing through real child-process stdio.
 
-Phase 2 is complete. The fake server binary exercises 32 protocol tests and 12 semantic tests through real stdio transport, plus 234 unit tests across the crate (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). The previously flaky transport test has been fixed.
+Phase 2 is complete. The fake server binary exercises 32 protocol tests and 12 semantic tests through real stdio transport, plus 235 unit tests across the crate (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). The fake-server package also runs 3 scenario-engine self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
 
 ### Test Infrastructure
 
 - **Fake server binary**: `crates/egglsp-test-server/` — reads Content-Length framed JSON-RPC, executes scripted scenarios
-- **Scenario format**: JSON files with step types (ExpectRequest, ExpectNotification, SendNotification, Delay, ExitNow)
+- **Scenario format**: JSON files with step types (ExpectRequest, ExpectNotification, AllowRequest, AllowNotification, SendNotification, Delay, ExitNow)
 - **Transcript**: Machine-readable JSONL output for failure diagnostics
-- **Harness**: `tests/common/harness.rs` — temp directories, scenario management, binary discovery
+- **Harness**: `tests/common/harness.rs` — temp directories, scenario management, `CARGO_BIN_EXE_egglsp-test-server` discovery with `EGGLSP_TEST_SERVER` override
 - **Wire helpers**: `tests/common/wire.rs` — shared Content-Length framing senders/readers
+- **Fake-server self-tests**: `crates/egglsp-test-server/tests/scenario_engine.rs` — strict mismatches, raw bytes, grouped frames
 
 ### Core Protocol Tests (`tests/protocol_stdio.rs`)
 
@@ -1093,7 +1094,10 @@ These tests exercise the wire-level protocol for the LSP operations that Codegg'
 cargo test -p egglsp --test protocol_stdio
 cargo test -p egglsp --test semantic_stdio
 
-# Run unit tests (229 total)
+# Run fake-server package self-tests
+cargo test -p egglsp-test-server
+
+# Run unit tests (235 total)
 cargo test -p egglsp --lib
 
 # Force single-threaded to validate sequential stability

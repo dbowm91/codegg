@@ -47,7 +47,7 @@ use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use super::launch::{self, LspProcess};
+use super::launch::{self, LspLaunchSpec, LspProcess};
 use super::server::LspServerDef;
 use super::server_request::{dispatch_server_request, ServerRequestContext, ServerRequestReply};
 use super::writer::LspWriter;
@@ -373,10 +373,37 @@ impl LspClient {
                 binary.display()
             ))
         })?;
-        let mut process = launch::spawn_server(binary_str, &args, env, Some(root)).await?;
+        let process = launch::spawn_server(binary_str, &args, env, Some(root)).await?;
+        Self::finish_from_process(server.id.to_string(), process, root, configuration, options)
+            .await
+    }
 
+    pub async fn new_with_launch_spec(
+        launch: LspLaunchSpec,
+        root: &Path,
+        configuration: serde_json::Value,
+        options: LspClientOptions,
+    ) -> Result<Self, LspError> {
+        let LspLaunchSpec {
+            id,
+            command,
+            args,
+            env,
+            ..
+        } = launch;
+        let process = launch::spawn_server_owned(&command, &args, &env, Some(root)).await?;
+        Self::finish_from_process(id, process, root, configuration, options).await
+    }
+
+    async fn finish_from_process(
+        server_id: String,
+        mut process: LspProcess,
+        root: &Path,
+        configuration: serde_json::Value,
+        options: LspClientOptions,
+    ) -> Result<Self, LspError> {
         if let Some(stderr) = process.stderr.take() {
-            launch::spawn_stderr_drain(server.id, stderr.into_inner());
+            launch::spawn_stderr_drain(&server_id, stderr.into_inner());
         }
 
         // Split process: stdout goes to background reader, stdin stays in LspClient.
@@ -402,10 +429,10 @@ impl LspClient {
         let reader_diagnostics = diagnostics.clone();
         let reader_pending = pending.clone();
         let reader_transport_state = transport_state.clone();
-        let server_id = server.id.to_string();
+        let server_id_for_reader = server_id.clone();
         let reader_writer = writer.clone_inner();
         let reader_context = ServerRequestContext {
-            server_id: server.id.to_string(),
+            server_id: server_id.clone(),
             root: root.to_path_buf(),
             configuration,
             workspace_folders: vec![lsp_types::WorkspaceFolder {
@@ -428,7 +455,7 @@ impl LspClient {
                 reader_diagnostics,
                 reader_pending,
                 reader_transport_state,
-                server_id,
+                server_id_for_reader,
                 reader_writer,
                 reader_context,
                 options.server_request_timeout,
@@ -436,8 +463,8 @@ impl LspClient {
             .await;
         });
 
-        let client = Self {
-            server_id: server.id.to_string(),
+        Ok(Self {
+            server_id,
             root: root.to_path_buf(),
             process: tokio::sync::Mutex::new(process),
             writer,
@@ -453,9 +480,7 @@ impl LspClient {
             #[cfg(test)]
             test_shutdown_count: None,
             _reader_task: reader_task,
-        };
-
-        Ok(client)
+        })
     }
 
     #[cfg(test)]
@@ -581,8 +606,10 @@ impl LspClient {
             let value: serde_json::Value = match serde_json::from_str(&resp_str) {
                 Ok(v) => v,
                 Err(e) => {
+                    let reason = format!("LSP server '{}' sent invalid JSON: {}", server_id, e);
                     warn!(server = %server_id, error = %e, "failed to parse JSON-RPC message");
-                    continue;
+                    fail_transport(&transport_state, &pending, &reason).await;
+                    break;
                 }
             };
 
@@ -1325,27 +1352,101 @@ pub fn parse_publish_diagnostics(
 /// causing the client to allocate unbounded memory.
 const MAX_LSP_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
+const MAX_LSP_HEADER_BYTES: usize = 16 * 1024;
+const MAX_LSP_HEADER_LINE_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LspHeaders {
+    content_length: usize,
+}
+
+fn parse_lsp_headers(header: &[u8]) -> Result<LspHeaders, LspError> {
+    if header.len() > MAX_LSP_HEADER_BYTES {
+        return Err(LspError::Protocol(format!(
+            "LSP header block exceeds {} bytes (read {})",
+            MAX_LSP_HEADER_BYTES,
+            header.len()
+        )));
+    }
+
+    let header_str = std::str::from_utf8(header)
+        .map_err(|_| LspError::Protocol("LSP header block is not valid UTF-8".to_string()))?;
+
+    let mut content_length: Option<usize> = None;
+    for raw_line in header_str.split("\r\n") {
+        if raw_line.is_empty() {
+            continue;
+        }
+        if raw_line.len() > MAX_LSP_HEADER_LINE_BYTES {
+            return Err(LspError::Protocol(format!(
+                "LSP header line exceeds {} bytes",
+                MAX_LSP_HEADER_LINE_BYTES
+            )));
+        }
+
+        let (name, value) = raw_line.split_once(':').ok_or_else(|| {
+            LspError::Protocol(format!("malformed LSP header line: {raw_line:?}"))
+        })?;
+        let name = name.trim();
+        let value = value.trim();
+
+        if name.eq_ignore_ascii_case("Content-Length") {
+            if content_length.is_some() {
+                return Err(LspError::Protocol(
+                    "duplicate Content-Length header".to_string(),
+                ));
+            }
+            let parsed = value.parse::<usize>().map_err(|_| {
+                LspError::Protocol(format!("invalid Content-Length value: {value:?}"))
+            })?;
+            content_length = Some(parsed);
+        } else if name.eq_ignore_ascii_case("Content-Type") {
+            continue;
+        }
+    }
+
+    let content_length = content_length
+        .ok_or_else(|| LspError::Protocol("missing Content-Length header".to_string()))?;
+
+    Ok(LspHeaders { content_length })
+}
+
 /// Read a single Content-Length framed message from a stdout stream.
-async fn read_framed_message(stdout: &mut tokio::process::ChildStdout) -> Result<String, LspError> {
+async fn read_framed_message<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<String, LspError> {
     use tokio::io::AsyncReadExt;
+
     let mut header_buf = Vec::new();
     let mut byte = [0u8; 1];
 
     loop {
-        stdout
-            .read_exact(&mut byte)
+        let n = reader
+            .read(&mut byte)
             .await
-            .map_err(|e| LspError::RequestFailed(format!("read header failed: {}", e)))?;
+            .map_err(|e| LspError::Protocol(format!("read header failed: {e}")))?;
+        if n == 0 {
+            return Err(LspError::Protocol(format!(
+                "unexpected EOF after reading {} header bytes",
+                header_buf.len()
+            )));
+        }
         header_buf.push(byte[0]);
+
+        if header_buf.len() > MAX_LSP_HEADER_BYTES {
+            return Err(LspError::Protocol(format!(
+                "LSP header block exceeds {} bytes (read {})",
+                MAX_LSP_HEADER_BYTES,
+                header_buf.len()
+            )));
+        }
 
         if header_buf.ends_with(b"\r\n\r\n") {
             break;
         }
     }
 
-    let header_str = String::from_utf8_lossy(&header_buf);
-    let content_length = parse_content_length(&header_str)
-        .ok_or_else(|| LspError::RequestFailed("missing Content-Length header".to_string()))?;
+    let content_length = parse_lsp_headers(&header_buf)?.content_length;
 
     if content_length > MAX_LSP_FRAME_BYTES {
         return Err(LspError::Protocol(format!(
@@ -1355,22 +1456,27 @@ async fn read_framed_message(stdout: &mut tokio::process::ChildStdout) -> Result
     }
 
     let mut body = vec![0u8; content_length];
-    stdout
-        .read_exact(&mut body)
-        .await
-        .map_err(|e| LspError::RequestFailed(format!("read body failed: {}", e)))?;
-
-    String::from_utf8(body)
-        .map_err(|e| LspError::RequestFailed(format!("invalid utf8 in response: {}", e)))
-}
-
-fn parse_content_length(header: &str) -> Option<usize> {
-    for line in header.lines() {
-        if let Some(val) = line.strip_prefix("Content-Length: ") {
-            return val.trim().parse().ok();
+    let mut read = 0usize;
+    while read < content_length {
+        let n = reader
+            .read(&mut body[read..])
+            .await
+            .map_err(|e| LspError::Protocol(format!("read body failed: {e}")))?;
+        if n == 0 {
+            return Err(LspError::Protocol(format!(
+                "unexpected EOF while reading LSP body: read {} of {} bytes",
+                read, content_length
+            )));
         }
+        read += n;
     }
-    None
+
+    String::from_utf8(body).map_err(|e| {
+        LspError::Protocol(format!(
+            "invalid UTF-8 in response body (read {} bytes): {}",
+            content_length, e
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -2804,27 +2910,32 @@ mod tests {
     }
 
     #[test]
-    fn parse_content_length_extracts_value() {
-        let header = "Content-Length: 42\r\n\r\n";
-        assert_eq!(parse_content_length(header), Some(42));
+    fn parse_lsp_headers_extracts_value() {
+        let header = b"Content-Length: 42\r\n\r\n";
+        assert_eq!(parse_lsp_headers(header).unwrap().content_length, 42);
     }
 
     #[test]
-    fn parse_content_length_rejects_non_numeric() {
-        let header = "Content-Length: abc\r\n\r\n";
-        assert_eq!(parse_content_length(header), None);
+    fn parse_lsp_headers_rejects_non_numeric() {
+        let header = b"Content-Length: abc\r\n\r\n";
+        assert!(parse_lsp_headers(header).is_err());
     }
 
     #[test]
-    fn parse_content_length_rejects_missing() {
-        let header = "\r\n";
-        assert_eq!(parse_content_length(header), None);
+    fn parse_lsp_headers_rejects_missing() {
+        let header = b"\r\n";
+        assert!(parse_lsp_headers(header).is_err());
     }
 
     #[test]
-    fn parse_content_length_uses_first_header() {
-        // parse_content_length returns the first Content-Length it finds
-        let header = "Content-Length: 10\r\nContent-Length: 20\r\n\r\n";
-        assert_eq!(parse_content_length(header), Some(10));
+    fn parse_lsp_headers_rejects_duplicates() {
+        let header = b"Content-Length: 10\r\nContent-Length: 20\r\n\r\n";
+        assert!(parse_lsp_headers(header).is_err());
+    }
+
+    #[test]
+    fn parse_lsp_headers_accepts_case_insensitive_name() {
+        let header = b"content-length: 9\r\n\r\n";
+        assert_eq!(parse_lsp_headers(header).unwrap().content_length, 9);
     }
 }

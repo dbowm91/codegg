@@ -62,6 +62,7 @@ pub use service::LspService;
 pub use writer::LspWriter;
 
 pub use edit::{FileEditPreview, TextEditPreview, WorkspaceEditPreview};
+pub use launch::LspLaunchSpec;
 pub use lsp_types;
 pub use overlay::{
     OverlayRestoreToken, OverlaySession, SemanticCheckPreview, SemanticSymbolSummary,

@@ -9,7 +9,7 @@
 //! stdout is exclusively owned by the background reader task in `client.rs`;
 //! this module does not read responses or notifications.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -17,6 +17,40 @@ use tokio::process::Command;
 use tracing::{debug, error, info};
 
 use crate::error::LspError;
+
+/// Owned launch description for a single child process.
+///
+/// The production runtime resolves static registry entries or config
+/// overrides into this owned representation before spawning.
+#[derive(Debug, Clone)]
+pub struct LspLaunchSpec {
+    pub id: String,
+    pub command: PathBuf,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+    pub languages: Vec<String>,
+    pub extensions: Vec<String>,
+}
+
+impl LspLaunchSpec {
+    pub fn new(
+        id: impl Into<String>,
+        command: impl Into<PathBuf>,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+        languages: Vec<String>,
+        extensions: Vec<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            command: command.into(),
+            args,
+            env,
+            languages,
+            extensions,
+        }
+    }
+}
 
 pub struct LspProcess {
     pub stdin: Option<tokio::process::ChildStdin>,
@@ -31,6 +65,31 @@ pub async fn spawn_server(
     env: &[(String, String)],
     cwd: Option<&Path>,
 ) -> Result<LspProcess, LspError> {
+    let command = PathBuf::from(command);
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    spawn_server_impl(&command, &args, env, cwd, true).await
+}
+
+/// Spawns from a resolved command path plus owned args/env.
+///
+/// This path does not consult the parent process PATH; callers must
+/// pass a resolved executable path.
+pub async fn spawn_server_owned(
+    command: &Path,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: Option<&Path>,
+) -> Result<LspProcess, LspError> {
+    spawn_server_impl(command, args, env, cwd, false).await
+}
+
+async fn spawn_server_impl(
+    command: &Path,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: Option<&Path>,
+    include_parent_path: bool,
+) -> Result<LspProcess, LspError> {
     let mut cmd = Command::new(command);
     cmd.args(args)
         .stdin(Stdio::piped())
@@ -39,22 +98,27 @@ pub async fn spawn_server(
         .kill_on_drop(true)
         .env_clear();
 
-    if let Some(user_path) = std::env::var_os("PATH") {
-        cmd.env("PATH", user_path);
-    } else {
-        cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+    if include_parent_path {
+        if let Some(user_path) = std::env::var_os("PATH") {
+            cmd.env("PATH", user_path);
+        } else {
+            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+        }
     }
 
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
+    cmd.envs(env.iter().map(|(k, v)| (k, v)));
 
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
 
     let mut child = cmd.spawn().map_err(|e| {
-        LspError::LaunchFailed(format!("failed to spawn '{} {:?}': {}", command, args, e))
+        LspError::LaunchFailed(format!(
+            "failed to spawn '{} {:?}': {}",
+            command.display(),
+            args,
+            e
+        ))
     })?;
 
     let stdin = child
@@ -74,7 +138,7 @@ pub async fn spawn_server(
 
     let stderr_reader = BufReader::new(stderr);
 
-    info!(command, args = ?args, "spawned LSP server");
+    info!(command = %command.display(), args = ?args, "spawned LSP server");
 
     Ok(LspProcess {
         stdin: Some(stdin),

@@ -1251,17 +1251,18 @@ transcript + assertions
 
 ### Scenario Format
 
-Scenarios are JSON files with steps like `ExpectRequest`, `ExpectNotification`, `SendNotification`, `Delay`, and `ExitNow`. Each step can trigger actions like `RespondResult`, `RespondError`, or `SendRequest`.
+Scenarios are JSON files with steps like `ExpectRequest`, `ExpectNotification`, `AllowRequest`, `AllowNotification`, `SendNotification`, `Delay`, and `ExitNow`. Steps can trigger actions like `RespondResult`, `RespondError`, `SendRequest`, `SendRawBytes`, or grouped-frame/raw-header helpers.
 
 ### Binary Discovery
 
-The test binary is located via workspace `target/` directory search. The `EGGLSP_TEST_SERVER` env var can override the path for CI.
+Cargo exposes the test binary to package integration tests via `CARGO_BIN_EXE_egglsp-test-server`. The `EGGLSP_TEST_SERVER` env var can override the path for CI or manual runs.
 
 ### Test Counts
 
-- **11 protocol tests** in `tests/protocol_stdio.rs` — all passing ✅
+- **32 protocol tests** in `tests/protocol_stdio.rs` — all passing ✅
 - **12 semantic tests** in `tests/semantic_stdio.rs` — all passing ✅
-- **229 unit tests** in the `egglsp` crate (was 228 before `forced_abort_after_grace_period`)
+- **235 unit tests** in the `egglsp` crate
+- **3 scenario-engine tests** in `crates/egglsp-test-server/tests/scenario_engine.rs` — package-local self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures
 
 ### Test Organization
 
@@ -1269,6 +1270,7 @@ The test binary is located via workspace `target/` directory search. The `EGGLSP
 - `tests/semantic_stdio.rs` — Feature-level scenarios (document lifecycle, hover, definition, references, symbols, call hierarchy, rename, code actions, semantic context composites, hunk source context)
 - `tests/common/harness.rs` — Reusable test harness with temp directory and scenario management
 - `tests/common/wire.rs` — Shared Content-Length framing helpers
+- `crates/egglsp-test-server/tests/scenario_engine.rs` — Package-local fake-server self-tests for strict mismatches, raw bytes, and grouped frames
 
 ### Test Coverage Matrix (Phase 2)
 
@@ -1311,6 +1313,9 @@ Phase 2 deliberately skips the following items (deferred to Phase 3 or omitted a
 ```bash
 # Run all Phase 2 integration tests (parallel-safe, default 1 thread per file)
 cargo test -p egglsp --tests
+
+# Run fake-server package self-tests
+cargo test -p egglsp-test-server
 
 # Force single-threaded to validate sequential stability
 cargo test -p egglsp --tests -- --test-threads=1
