@@ -1254,19 +1254,116 @@ The test binary is located via workspace `target/` directory search. The `EGGLSP
 
 ### Test Organization
 
-- `tests/protocol_stdio.rs` — Core protocol scenarios (init, shutdown, cancellation, malformed input)
-- `tests/semantic_stdio.rs` — Feature-level scenarios (placeholder for continuation)
+- `tests/protocol_stdio.rs` — Core protocol scenarios (init, shutdown, cancellation, diagnostics lifecycle, malformed input)
+- `tests/semantic_stdio.rs` — Feature-level scenarios (document lifecycle, hover, definition, references, symbols, call hierarchy, rename, code actions, semantic context composites, hunk source context)
 - `tests/common/harness.rs` — Reusable test harness with temp directory and scenario management
+- `tests/common/wire.rs` — Shared Content-Length framing helpers
+
+### Test Coverage Matrix (Phase 2)
+
+| Section | Plan ID | Tests | Status |
+|---------|---------|-------|--------|
+| Initialization handshake | C1 | `initialization_handshake` | ✅ |
+| Server requests during init | C2 | `server_request_during_init` | ✅ |
+| Apply-edit refusal | C3 | `apply_edit_refusal` | ✅ |
+| Interleaved notifications | C4 | `notifications_interleaved` | ✅ |
+| Concurrent out-of-order responses | C5 | `concurrent_out_of_order_responses`, `d2_concurrent_out_of_order_semantic` | ✅ |
+| Diagnostics lifecycle | C6 | `diagnostics_lifecycle` | ✅ |
+| Cancellation write failure | C9 | Deterministic unit test in `client.rs` (OS-pipe flake avoided) | ✅ |
+| Graceful shutdown | C10 | `graceful_shutdown` | ✅ |
+| Ungraceful shutdown / EOF | C11 | `server_exit_before_response` | ✅ |
+| Server error response | — | `server_error_response` | ✅ |
+| Framing sizes | — | `framing_various_sizes` | ✅ |
+| Progress notifications | — | `progress_notification` | ✅ |
+| Document lifecycle | D1 | `d1_document_lifecycle` | ✅ |
+| Hover | D2 | `d2_hover_request_response` | ✅ |
+| Definition | D2 | `d2_definition_request_response` | ✅ |
+| References | D2 | `d2_references_request_response` | ✅ |
+| Document symbols | D2 | `d2_document_symbols_request_response` | ✅ |
+| Call hierarchy | D3 | `d3_call_hierarchy_flow` | ✅ |
+| Rename (WorkspaceEdit) | D4 | `d4_rename_workspace_edit` | ✅ |
+| Code action (edit-bearing) | D4 | `d4_code_action_with_edit` | ✅ |
+| Semantic context composite | D5 | `d5_semantic_context_composite` | ✅ |
+| Security context composite | D6 | `d6_security_context_composite` | ✅ |
+| Hunk source context | D7 | `d7_hunk_source_context` | ✅ |
+
+Phase 2 deliberately skips the following items (deferred to Phase 3 or omitted as nondeterministic at the OS-pipe level):
+- **C7** (configuration / dynamic registration) — deferred to Phase 3 real-server matrix
+- **C8** (timeout / `$/cancelRequest` end-to-end) — covered by deterministic unit tests in `client.rs`
+- **C12** (malformed framing byte-level) — covered by `framing_various_sizes` + unit tests in `writer.rs`
+- **C13** (malformed JSON-RPC shapes) — covered by `classify_json_rpc_message` unit tests in `client.rs`
+- **C14** (server-response write failure end-to-end) — covered by deterministic writer unit test
+- **C15** (stderr drainage) — drain is in `launch::spawn_stderr_drain`; bounded by line cap (not yet a Phase 2 test)
 
 ### Running
 
 ```bash
-cargo test -p egglsp --test protocol_stdio -- --test-threads=1
+# Run all Phase 2 integration tests (parallel-safe, default 1 thread per file)
+cargo test -p egglsp --tests
+
+# Force single-threaded to validate sequential stability
+cargo test -p egglsp --tests -- --test-threads=1
 ```
 
-Tests require `--test-threads=1` because they share the fake server binary path resolution.
+Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/transcript paths). The harness does not require `--test-threads=1`; that flag was only needed by the pre-Phase-2 test layout.
+
+## Phase 3: Real-Server Compatibility Matrix (Opt-in)
+
+Phase 2 gives us confidence in the wire protocol. Phase 3 extends this confidence to real LSP servers — verifying that rust-analyzer, pyright, gopls, clangd, and typescript-language-server all work with the production launcher, frame parser, and request routing.
+
+### Why Deferred
+
+Real-server smoke tests are:
+- **Slow** — server startup is 200ms-2s, plus indexing and warm-up
+- **Non-hermetic** — require installed binaries or downloaded releases
+- **Flaky** — diagnostics can take seconds to arrive, language versions vary
+- **Expensive in CI** — minutes of compute for marginal additional coverage
+
+### Target Compatibility Matrix
+
+| Server | Language | Key Operations | Expected Behavior | Known Limitations |
+|--------|----------|----------------|-------------------|-------------------|
+| **rust-analyzer** | Rust | hover, definition, references, symbols, call hierarchy, rename, code actions, semanticContext, securityContext, hunkSourceContext | Full feature coverage | Initial indexing may be slow on large workspaces; diagnostics may need a warm-up delay |
+| **pyright** | Python | hover, definition, references, symbols, rename | Full feature coverage | No `prepareCallHierarchy` (Python doesn't have function-level call hierarchy); `codeAction` limited to pyright's organize imports |
+| **typescript-language-server** | TypeScript / JavaScript | hover, definition, references, symbols, rename, code actions | Full feature coverage | `prepareCallHierarchy` may be empty; large workspaces slow |
+| **gopls** | Go | hover, definition, references, symbols, rename, code actions | Full feature coverage | Call hierarchy not yet supported by gopls; securityContext will degrade gracefully |
+| **clangd** | C / C++ | hover, definition, references, symbols, rename, code actions | Full feature coverage | No call hierarchy; slow on large TUs |
+
+### Test Profile
+
+Real-server tests will be opt-in via a cargo feature flag:
+
+```bash
+cargo test -p egglsp --features lsp-real-server
+```
+
+Or per-server:
+
+```bash
+cargo test -p egglsp --features lsp-real-server-rust-analyzer
+```
+
+### Opt-In Mechanics
+
+The real-server tests are **not** in default CI. They will:
+
+1. Spawn the actual server binary (or download if not on PATH).
+2. Wait for initialization and a brief warm-up period.
+3. Open a small fixture file and exercise the operation under test.
+4. Assert on the shape and content of the response.
+5. Clean up via `kill_on_drop` and `LspService::shutdown_all()`.
+
+The fixtures are tiny (10-50 lines) and live in `tests/fixtures/real_servers/`. Each test sets a generous timeout (30-60s) and uses a unique scratch directory.
+
+### Open Questions for Phase 3
+
+- Should we record golden-output JSON responses and diff against them, or use shape-only assertions?
+- How do we handle servers that send unsolicited `workspace/diagnostic` (pull-mode) in addition to `textDocument/publishDiagnostics` (push-mode)?
+- Do we need a separate "warm-up" phase before assertions, or can we infer readiness from the first response?
+- Should real-server tests be nightly-only, or part of every PR?
 
 ## See Also
 
 - [.opencode/skills/lsp/SKILL.md](../.opencode/skills/lsp/SKILL.md) - LSP skill guide
 - [tool.md](tool.md) - LSP tool wrapper
+- [plans/lsp_phase1_cleanup_and_phase2_scripted_stdio_harness.md](../plans/lsp_phase1_cleanup_and_phase2_scripted_stdio_harness.md) - Phase 1 + Phase 2 plan

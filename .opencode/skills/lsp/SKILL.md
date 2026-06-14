@@ -1046,6 +1046,7 @@ The `egglsp-test-server` crate provides a deterministic fake LSP server for end-
 - **Scenario format**: JSON files with step types (ExpectRequest, ExpectNotification, SendNotification, Delay, ExitNow)
 - **Transcript**: Machine-readable JSONL output for failure diagnostics
 - **Harness**: `tests/common/harness.rs` — temp directories, scenario management, binary discovery
+- **Wire helpers**: `tests/common/wire.rs` — shared Content-Length framing senders/readers
 
 ### Core Protocol Tests (`tests/protocol_stdio.rs`)
 
@@ -1061,12 +1062,41 @@ The `egglsp-test-server` crate provides a deterministic fake LSP server for end-
 | `server_error_response` | JSON-RPC error handling |
 | `framing_various_sizes` | Content-Length framing edge cases |
 | `progress_notification` | $/progress notifications |
+| `diagnostics_lifecycle` | publishDiagnostics around didOpen/didChange/didSave/didClose |
+
+### Feature Tests (`tests/semantic_stdio.rs`)
+
+These tests exercise the wire-level protocol for the LSP operations that Codegg's semantic, security, and hunk-source-context tools depend on. The fake server returns deterministic fixtures so the tests can assert on operation mapping, request/response shape, and DTO conversion paths.
+
+| Section | Test | Coverage |
+|---------|------|----------|
+| D1 | `d1_document_lifecycle` | didOpen/didChange/didSave/didClose wire shape; transcript records URI, languageId, version |
+| D2 | `d2_hover_request_response` | textDocument/hover: markdown contents shape |
+| D2 | `d2_definition_request_response` | textDocument/definition: Location array decoding |
+| D2 | `d2_references_request_response` | textDocument/references: list of locations |
+| D2 | `d2_document_symbols_request_response` | textDocument/documentSymbol: hierarchical symbol tree |
+| D2 | `d2_concurrent_out_of_order_semantic` | hover/definition/references/documentSymbol all issued concurrently, responses received out-of-order |
+| D3 | `d3_call_hierarchy_flow` | prepareCallHierarchy + callHierarchy/incomingCalls + callHierarchy/outgoingCalls |
+| D4 | `d4_rename_workspace_edit` | textDocument/rename: documentChanges with multi-file WorkspaceEdit |
+| D4 | `d4_code_action_with_edit` | textDocument/codeAction: edit-bearing action with documentChanges |
+| D5 | `d5_semantic_context_composite` | symbols + hover + definition + references + diagnostics composite flow |
+| D6 | `d6_security_context_composite` | diagnostics + prepareCallHierarchy + outgoingCalls composite flow |
+| D7 | `d7_hunk_source_context` | documentSymbol + definition + references for hunk source context |
 
 ### Running
 
 ```bash
-cargo test -p egglsp --test protocol_stdio -- --test-threads=1
+# Run all Phase 2 integration tests (parallel-safe)
+cargo test -p egglsp --test protocol_stdio
+cargo test -p egglsp --test semantic_stdio
+
+# Force single-threaded to validate sequential stability
+cargo test -p egglsp --tests -- --test-threads=1
 ```
+
+## Phase 3: Real-Server Compatibility Matrix
+
+Phase 3 (deferred) covers opt-in tests against actual LSP servers — rust-analyzer, pyright, gopls, clangd, typescript-language-server. See `architecture/lsp.md` for the full matrix and mechanics.
 
 ## See Also
 

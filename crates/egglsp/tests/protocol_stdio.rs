@@ -6,158 +6,12 @@
 
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::{Child, ChildStdout, Command};
-
-use common::FakeLspHarness;
-
 mod common;
 
-// ── Frame reader ─────────────────────────────────────────────────────
-
-/// Read a single Content-Length framed JSON-RPC message from stdout.
-///
-/// Returns `None` on EOF.
-async fn read_frame(stdout: &mut BufReader<ChildStdout>) -> Option<serde_json::Value> {
-    let mut content_length: Option<usize> = None;
-
-    // Read headers line by line until empty line
-    loop {
-        let mut line = String::new();
-        let n = stdout.read_line(&mut line).await.ok()?;
-        if n == 0 {
-            return None; // EOF
-        }
-        let line = line.trim();
-        if line.is_empty() {
-            break; // End of headers
-        }
-        if let Some(len) = line.strip_prefix("Content-Length: ") {
-            content_length = len.parse().ok();
-        }
-    }
-
-    let len = content_length?;
-    let mut body = vec![0u8; len];
-    stdout.read_exact(&mut body).await.ok()?;
-    serde_json::from_slice(&body).ok()
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────
-
-/// Spawn the fake LSP server with the given scenario.
-async fn spawn_fake_server(
-    harness: &FakeLspHarness,
-) -> (Child, BufReader<ChildStdout>) {
-    let server_path = FakeLspHarness::fake_server_path();
-    let mut child = Command::new(&server_path)
-        .env("CODEGG_FAKE_LSP_SCENARIO", harness.scenario_path_str())
-        .env("CODEGG_FAKE_LSP_TRANSCRIPT", harness.transcript_path_str())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("failed to spawn fake server");
-
-    let stdout = child.stdout.take().expect("stdout not captured");
-    (child, BufReader::new(stdout))
-}
-
-/// Send a framed JSON-RPC request.
-async fn send_request(
-    stdin: &mut tokio::process::ChildStdin,
-    id: i64,
-    method: &str,
-    params: serde_json::Value,
-) {
-    let msg = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    let body = serde_json::to_string(&msg).unwrap();
-    let content = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
-    use tokio::io::AsyncWriteExt;
-    stdin.write_all(content.as_bytes()).await.unwrap();
-    stdin.flush().await.unwrap();
-}
-
-/// Send a framed JSON-RPC notification.
-async fn send_notification(
-    stdin: &mut tokio::process::ChildStdin,
-    method: &str,
-    params: serde_json::Value,
-) {
-    let msg = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": method,
-        "params": params,
-    });
-    let body = serde_json::to_string(&msg).unwrap();
-    let content = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
-    use tokio::io::AsyncWriteExt;
-    stdin.write_all(content.as_bytes()).await.unwrap();
-    stdin.flush().await.unwrap();
-}
-
-/// Send a framed JSON-RPC response (success).
-async fn send_response(
-    stdin: &mut tokio::process::ChildStdin,
-    id: &serde_json::Value,
-    result: serde_json::Value,
-) {
-    let msg = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": result,
-    });
-    let body = serde_json::to_string(&msg).unwrap();
-    let content = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
-    use tokio::io::AsyncWriteExt;
-    stdin.write_all(content.as_bytes()).await.unwrap();
-    stdin.flush().await.unwrap();
-}
-
-/// Send a framed JSON-RPC error response.
-async fn send_error_response(
-    stdin: &mut tokio::process::ChildStdin,
-    id: &serde_json::Value,
-    code: i64,
-    message: &str,
-) {
-    let msg = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {
-            "code": code,
-            "message": message,
-        },
-    });
-    let body = serde_json::to_string(&msg).unwrap();
-    let content = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
-    use tokio::io::AsyncWriteExt;
-    stdin.write_all(content.as_bytes()).await.unwrap();
-    stdin.flush().await.unwrap();
-}
-
-/// Check if a frame is a server request (has both `id` and `method`).
-fn is_server_request(frame: &serde_json::Value) -> bool {
-    frame.get("id").is_some() && frame.get("method").is_some()
-}
-
-/// Check if a frame is a response (has `id` but no `method`, and has `result` or `error`).
-fn is_response(frame: &serde_json::Value) -> bool {
-    frame.get("id").is_some()
-        && frame.get("method").is_none()
-        && (frame.get("result").is_some() || frame.get("error").is_some())
-}
-
-/// Check if a frame is a notification (no `id`, has `method`).
-fn is_notification(frame: &serde_json::Value) -> bool {
-    frame.get("id").is_none() && frame.get("method").is_some()
-}
+use common::{
+    is_notification, is_response, is_server_request, read_frame, send_error_response,
+    send_notification, send_request, send_response, spawn_fake_server, FakeLspHarness,
+};
 
 // ── Tests ────────────────────────────────────────────────────────────
 
@@ -935,12 +789,247 @@ async fn server_error_response() {
     assert!(got_error_response, "should have received error response for definition request");
 
     // Shutdown + exit
-    send_request(&mut stdin, 3, "shutdown", serde_json::json!(null)).await;
+    send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;
     let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
         .await
         .expect("timeout")
         .expect("EOF");
-    assert_eq!(resp["id"], 3);
+    assert_eq!(resp["id"], 2);
+
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("timeout")
+        .expect("wait failed");
+    assert!(status.success());
+}
+
+/// Diagnostics lifecycle: after didOpen, the server may publish
+/// diagnostics. didChange/didSave can trigger re-publish, and
+/// didClose typically produces an empty diagnostic list. The client
+/// must route these notifications to the diagnostics cache without
+/// confusing them with responses.
+#[tokio::test]
+async fn diagnostics_lifecycle() {
+    let test_uri = "file:///test/lifecycle.rs";
+    let scenario = serde_json::json!({
+        "name": "diagnostics_lifecycle",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": [
+                    {"type": "SendNotification", "method": "textDocument/publishDiagnostics", "params": {
+                        "uri": test_uri,
+                        "diagnostics": [{
+                            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}},
+                            "message": "initial diagnostic",
+                            "severity": 2,
+                            "source": "fake-lsp"
+                        }]
+                    }}
+                ]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "textDocument/didOpen",
+                "then": [
+                    {"type": "SendNotification", "method": "textDocument/publishDiagnostics", "params": {
+                        "uri": test_uri,
+                        "diagnostics": [{
+                            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}},
+                            "message": "unused variable",
+                            "severity": 2,
+                            "source": "fake-lsp"
+                        }]
+                    }}
+                ]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "textDocument/didChange",
+                "then": [
+                    {"type": "SendNotification", "method": "textDocument/publishDiagnostics", "params": {
+                        "uri": test_uri,
+                        "diagnostics": []
+                    }}
+                ]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "textDocument/didSave",
+                "then": [
+                    {"type": "SendNotification", "method": "textDocument/publishDiagnostics", "params": {
+                        "uri": test_uri,
+                        "diagnostics": []
+                    }}
+                ]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "textDocument/didClose",
+                "then": [
+                    {"type": "SendNotification", "method": "textDocument/publishDiagnostics", "params": {
+                        "uri": test_uri,
+                        "diagnostics": []
+                    }}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    // Initialize
+    send_request(
+        &mut stdin,
+        1,
+        "initialize",
+        serde_json::json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", harness.root.display()),
+            "capabilities": {}
+        }),
+    )
+    .await;
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
+        .await
+        .expect("timeout")
+        .expect("EOF");
+    assert_eq!(resp["id"], 1);
+
+    send_notification(&mut stdin, "initialized", serde_json::json!({})).await;
+
+    // Send didOpen
+    send_notification(
+        &mut stdin,
+        "textDocument/didOpen",
+        serde_json::json!({
+            "textDocument": {
+                "uri": test_uri,
+                "languageId": "rust",
+                "version": 1,
+                "text": "fn main() {}\n"
+            }
+        }),
+    )
+    .await;
+
+    // Send didChange (full content)
+    send_notification(
+        &mut stdin,
+        "textDocument/didChange",
+        serde_json::json!({
+            "textDocument": {"uri": test_uri, "version": 2},
+            "contentChanges": [{"text": "fn main() { let x = 1; }\n"}]
+        }),
+    )
+    .await;
+
+    // Send didSave
+    send_notification(
+        &mut stdin,
+        "textDocument/didSave",
+        serde_json::json!({
+            "textDocument": {"uri": test_uri}
+        }),
+    )
+    .await;
+
+    // Send didClose
+    send_notification(
+        &mut stdin,
+        "textDocument/didClose",
+        serde_json::json!({
+            "textDocument": {"uri": test_uri}
+        }),
+    )
+    .await;
+
+    // Read all publishDiagnostics notifications - expect 5 (one per
+    // document-sync step: pre-open, post-open, post-change, post-save,
+    // post-close).
+    let mut diag_notifications = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+    while tokio::time::Instant::now() < deadline && diag_notifications.len() < 5 {
+        let remaining = deadline - tokio::time::Instant::now();
+        let frame = match tokio::time::timeout(remaining, read_frame(&mut stdout)).await {
+            Ok(Some(f)) => f,
+            _ => break,
+        };
+
+        if is_notification(&frame) {
+            let method = frame["method"].as_str().unwrap();
+            if method == "textDocument/publishDiagnostics" {
+                diag_notifications.push(frame);
+            }
+        }
+    }
+
+    assert_eq!(
+        diag_notifications.len(),
+        5,
+        "should have received 5 publishDiagnostics notifications (one per lifecycle step)"
+    );
+
+    // At least one diagnostics notification should have a non-empty list
+    let has_non_empty = diag_notifications.iter().any(|n| {
+        n["params"]["diagnostics"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
+    });
+    assert!(
+        has_non_empty,
+        "at least one diagnostics notification should have a non-empty list"
+    );
+
+    // The publishDiagnostics after didClose should have an empty list
+    let last = diag_notifications.last().expect("at least one diagnostic");
+    let last_diags = last["params"]["diagnostics"].as_array();
+    assert!(
+        last_diags.map(|a| a.is_empty()).unwrap_or(false),
+        "post-didClose publishDiagnostics should have an empty list"
+    );
+
+    // The transcript must record all the did_* lifecycle events we sent
+    let transcript = std::fs::read_to_string(harness.transcript_path_str())
+        .expect("failed to read transcript");
+    for method in &["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave", "textDocument/didClose"] {
+        assert!(
+            transcript.contains(method),
+            "transcript should record {method} notification"
+        );
+    }
+
+    // Shutdown + exit
+    send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
+        .await
+        .expect("timeout")
+        .expect("EOF");
+    assert_eq!(resp["id"], 2);
 
     send_notification(&mut stdin, "exit", serde_json::json!({})).await;
 
