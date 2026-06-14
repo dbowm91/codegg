@@ -23,6 +23,7 @@ target = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple
 [[bin]]
 name = "codegg-lsp-test-server"
 path = "crates/egglsp-test-server/src/main.rs"
+required-features = ["lsp-test-support"]
 
 [dependencies]
 # Core
@@ -191,6 +192,12 @@ server = [
     "tokio-tungstenite",
 ]
 image = ["dep:ratatui-image", "dep:image"]
+lsp-test-support = []
+
+[[test]]
+name = "lsp_composite_stdio"
+path = "tests/lsp_composite_stdio.rs"
+required-features = ["lsp-test-support"]
 
 [profile.release]
 lto = true

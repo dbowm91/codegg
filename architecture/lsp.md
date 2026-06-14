@@ -1260,7 +1260,7 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - **11 production protocol tests** in `tests/production_protocol_stdio.rs` — all passing ✅
 - **3 production semantic tests** in `tests/production_semantic_stdio.rs` — all passing ✅
 - **5 production service tests** in `tests/production_service_stdio.rs` — all passing ✅
-- **20 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
+- **23 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
 - **235 unit tests** in the `egglsp` crate
 - **3 scenario-engine tests** in `tests/scenario_engine.rs` — wrapper around `crates/egglsp-test-server/tests/scenario_engine.rs` for strict allow-listing, raw bytes, and grouped-frame fixtures
 
@@ -1269,7 +1269,7 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - `tests/production_protocol_stdio.rs` — Production-harness protocol coverage for launcher-path behavior and transport edge cases
 - `tests/production_semantic_stdio.rs` — Production-harness semantic and edit-preview coverage
 - `tests/production_service_stdio.rs` — Production-harness LspService lifecycle coverage
-- `tests/lsp_composite_stdio.rs` — 21 root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`, and security context tool orchestration against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous, resource-operation), semantic-context collector workflow/capability-gating/failure-degradation tests, security context tool tests (orchestration with risk markers, call expansion, cycle suppression, and graceful degradation on call hierarchy error), and hunk-source-context collector test (unified diff with real LSP operations). Path comparison uses `Path::strip_prefix` for path-aware hunk normalization.
+- `tests/lsp_composite_stdio.rs` — 23 root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`, and security context tool orchestration against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous, resource-operation), semantic-context collector workflow/capability-gating/failure-degradation tests, security context tool tests (orchestration with risk markers, call expansion, cycle suppression, node-limit truncation, diagnostic evidence filtering, and graceful degradation on call hierarchy error), and hunk-source-context collector test (unified diff with real LSP operations). Hunk path normalization uses canonical containment with error propagation.
 - `tests/common/harness.rs` — Reusable fake-server test harness with temp directory and scenario management
 - `tests/common/production_harness.rs` — Real-project harness for production launcher-path coverage
 - `tests/scenario_engine.rs` — Package-local wrapper around the fake-server self-tests
@@ -1314,6 +1314,8 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 | Security context composite | D6 | `semantic_context_security_review_intent_collects_security_source` (renamed from `security_context_workflow_uses_semantic_collector`) | ✅ |
 | Security context tool orchestration | D6 | `security_context_tool_exercises_risk_filtering_and_call_expansion` (exercises real `LspTool::execute("securityContext")` with risk markers, call expansion, cycle suppression) | ✅ |
 | Security context: call hierarchy error degradation | D6 | `security_context_tool_degrades_on_call_hierarchy_error` (outgoingCalls error is recorded, packet returned, nodes/evidence preserved) | ✅ |
+| Security context: node-limit truncation | D6 | `security_context_tool_enforces_call_node_limit_and_truncation` (max_call_nodes enforced, truncation flags set, BFS depth limit proven) | ✅ |
+| Security context: diagnostic evidence | D6 | `security_context_tool_filters_and_preserves_diagnostic_evidence` (security-relevant diagnostic survives filtering, diagnostic_evidence populated) | ✅ |
 | Hunk source context composite | D7 | `hunk_source_context_collector_exercises_real_workflow` | ✅ |
 | Semantic context: capability gating | D6 | `semantic_context_collector_capability_gating` | ✅ |
 | Semantic context: failure degradation | D6 | `semantic_context_collector_failure_degradation` | ✅ |
@@ -1333,17 +1335,17 @@ Phase 2 deliberately skips the following items (deferred to Phase 3 or omitted a
 ### Running
 
 ```bash
-# Run Phase 2 integration tests (parallel-safe)
-cargo test -p egglsp --test production_protocol_stdio
-cargo test -p egglsp --test production_semantic_stdio
-cargo test -p egglsp --test production_service_stdio
-cargo test -p egglsp --test scenario_engine
+# Run Phase 2 integration tests (parallel-safe, require lsp-test-support feature)
+cargo test -p egglsp --features lsp-test-support --test production_protocol_stdio
+cargo test -p egglsp --features lsp-test-support --test production_semantic_stdio
+cargo test -p egglsp --features lsp-test-support --test production_service_stdio
+cargo test -p egglsp --features lsp-test-support --test scenario_engine
 
 # Run root composite tests (semantic/security/hunk collectors + preview safety)
-cargo test --test lsp_composite_stdio
+cargo test --features lsp-test-support --test lsp_composite_stdio
 
 # Force single-threaded to validate sequential stability
-cargo test -p egglsp --tests -- --test-threads=1
+cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 ```
 
 Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/transcript paths). The harness does not require `--test-threads=1`; that flag was only needed by the pre-Phase-2 test layout.
@@ -1351,8 +1353,8 @@ Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/t
 ### Phase 2 Final Closure Notes
 
 - **Hermetic binary strategy**: Root-crate composite tests use `codegg-lsp-test-server` (via `CARGO_BIN_EXE_codegg-lsp-test-server`), while `egglsp`-only integration tests use `egglsp-test-server` (via `CARGO_BIN_EXE_egglsp-test-server`). Both are `[[bin]]` targets from the `egglsp` package, sharing the same source. The root `Cargo.toml` declares a `[[bin]]` target pointing to the shared source.
-- **Path-aware hunk normalization**: Hunk path comparison now uses `Path::strip_prefix` instead of string prefix stripping, providing correct cross-platform behavior for paths with different separators.
-- **Inspection APIs**: `transport_state_snapshot()` and `pending_request_count()` are observational health APIs for diagnostics; `dynamic_registration_snapshot()` is test-support/internal.
+- **Hunk path normalization**: `normalize_diff_relative_path()` strips `a/`/`b/` diff prefixes and rejects path-traversal (`..`), `RootDir`, and `Prefix` components. `normalize_request_relative_path()` canonicalizes paths against the allowed root via `Path::canonicalize()` and rejects paths outside the root or resolving to the root itself. Errors are propagated from the collector's `collect()` method via `.map_err()`. The collector compares normalized hunk paths against the normalized target path to reject multi-file patches. Tests use real `TempDir` fixtures for canonical containment verification.
+- **Inspection APIs**: `health_snapshot()` returns an `LspClientHealthSnapshot` with a typed `ClientTransportSnapshot` field (`Running` or `Failed { reason }`) and `pending_requests` count. `transport_state_snapshot()` and `pending_request_count()` are the individual observational health APIs for diagnostics. `dynamic_registration_snapshot()` is test-support/internal (`#[doc(hidden)]`).
 
 ## Phase 3: Real-Server Compatibility Matrix (Opt-in)
 

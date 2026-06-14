@@ -1042,7 +1042,7 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 
 The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is built as a `[[bin]]` target from the `egglsp` package; root tests use `codegg-lsp-test-server` (via `CARGO_BIN_EXE_codegg-lsp-test-server`), while `egglsp`-only tests use `egglsp-test-server` (via `CARGO_BIN_EXE_egglsp-test-server`), with `EGGLSP_TEST_SERVER` as an override for CI or manual runs.
 
-Phase 2 is complete. The production-harness integration tests cover 11 protocol tests, 3 semantic tests, and 5 service tests through real stdio transport, plus 20 root-crate composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path) also contribute coverage. Tests live in `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, `tests/production_service_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
+Phase 2 is complete. The production-harness integration tests cover 11 protocol tests, 3 semantic tests, and 5 service tests through real stdio transport, plus 23 root-crate composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path) also contribute coverage. Tests live in `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, `tests/production_service_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
 
 The fake server supports **captured-ID mode** for genuinely out-of-order concurrent responses, enabling deterministic testing of concurrent request handling. All integration tests use **bounded condition waits** (polling loops) instead of fixed sleeps. `LspClient` has **typed hierarchy methods** (`prepare_call_hierarchy`, `incoming_calls`, `outgoing_calls`, `prepare_type_hierarchy`, `supertypes`, `subtypes`) that replace manual JSON-RPC dispatch.
 
@@ -1117,24 +1117,29 @@ Preview tests are classified into two categories:
 | `semantic_context_security_review_intent_collects_security_source` | Security review intent on security-sensitive source (renamed from `security_context_workflow_uses_semantic_collector`) |
 | `security_context_tool_exercises_risk_filtering_and_call_expansion` | Real `LspTool::execute("securityContext")` orchestration with risk markers, call expansion, and cycle suppression |
 | `security_context_tool_degrades_on_call_hierarchy_error` | Graceful degradation when outgoingCalls fails during expansion BFS — error recorded, packet returned, nodes/evidence preserved |
+| `security_context_tool_enforces_call_node_limit_and_truncation` | `max_call_nodes` enforced, BFS depth limit proven, truncation flags set |
+| `security_context_tool_filters_and_preserves_diagnostic_evidence` | Security-relevant diagnostic survives filtering, diagnostic_evidence populated |
+| `semantic_context_minimal_service_client` | Minimal service-client construction |
+| `preview_safety_resource_operation_rejected` | Resource-operation code action rejection — local production-function |
+| `hunk_source_context_collector_exercises_real_workflow` | Hunk source context collector real workflow with unified diff |
 
 ### Running
 
 ```bash
-# Run Phase 2 integration tests (parallel-safe)
-cargo test -p egglsp --test production_protocol_stdio
-cargo test -p egglsp --test production_semantic_stdio
-cargo test -p egglsp --test production_service_stdio
-cargo test -p egglsp --test scenario_engine
+# Run Phase 2 integration tests (parallel-safe, require lsp-test-support feature)
+cargo test -p egglsp --features lsp-test-support --test production_protocol_stdio
+cargo test -p egglsp --features lsp-test-support --test production_semantic_stdio
+cargo test -p egglsp --features lsp-test-support --test production_service_stdio
+cargo test -p egglsp --features lsp-test-support --test scenario_engine
 
 # Run root composite tests (semantic/security/hunk collectors + preview safety)
-cargo test --test lsp_composite_stdio
+cargo test --features lsp-test-support --test lsp_composite_stdio
 
 # Run unit tests
 cargo test -p egglsp --lib
 
 # Force single-threaded to validate sequential stability
-cargo test -p egglsp --tests -- --test-threads=1
+cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 ```
 
 ## Phase 3: Real-Server Compatibility Matrix

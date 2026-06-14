@@ -9,6 +9,30 @@ rust-version = "1.81"
 [[bin]]
 name = "egglsp-test-server"
 path = "../egglsp-test-server/src/main.rs"
+required-features = ["lsp-test-support"]
+
+[features]
+lsp-test-support = []
+
+[[test]]
+name = "production_protocol_stdio"
+path = "tests/production_protocol_stdio.rs"
+required-features = ["lsp-test-support"]
+
+[[test]]
+name = "production_semantic_stdio"
+path = "tests/production_semantic_stdio.rs"
+required-features = ["lsp-test-support"]
+
+[[test]]
+name = "production_service_stdio"
+path = "tests/production_service_stdio.rs"
+required-features = ["lsp-test-support"]
+
+[[test]]
+name = "scenario_engine"
+path = "tests/scenario_engine.rs"
+required-features = ["lsp-test-support"]
 
 [dependencies]
 base64 = "0.22"

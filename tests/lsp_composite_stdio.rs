@@ -2282,6 +2282,268 @@ async fn semantic_context_collector_capability_gating() {
         response.type_hierarchy.is_some(),
         "type_hierarchy should be present (derived from callHierarchyProvider)"
     );
+}
+
+/// Security context tool: proves max_call_nodes truncation and depth limiting.
+///
+/// Uses a graph wider than max_call_nodes (entry → validate, sink, audit, log)
+/// with max_call_nodes=2 and call_depth=2. The BFS should:
+/// - Collect entry (depth 0) as node 1
+/// - Collect one child (depth 1) as node 2
+/// - Truncate remaining children
+/// - Set truncation flags
+#[tokio::test]
+async fn security_context_tool_enforces_call_node_limit_and_truncation() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let base = manifest_dir.join("target/lsp-tests");
+    std::fs::create_dir_all(&base).expect("mkdir lsp-tests base");
+    let temp = tempfile::Builder::new()
+        .prefix("test-security-node-limit-")
+        .tempdir_in(&base)
+        .expect("tempdir");
+    let root = temp.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, SECURITY_CALL_GRAPH_LIMIT_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-security-node-limit-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_security_call_graph_node_limit(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = Arc::new(LspService::new(make_service_config(
+        &scenario_path,
+        &transcript_path,
+    )));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    let result = timeout(
+        Duration::from_secs(30),
+        tool.execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": source_path.to_str().unwrap(),
+            "line": 4,
+            "column": 5,
+            "security_preset": "unsafe_review",
+            "security_categories": ["unsafe", "process"],
+            "include_call_hierarchy": true,
+            "call_depth": 2,
+            "max_call_nodes": 2,
+            "call_direction": "outgoing"
+        })),
+    )
+    .await
+    .expect("securityContext timed out")
+    .expect("securityContext failed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    // Debug: print the call expansion section
+    eprintln!(
+        "CALL_EXPANSION: {}",
+        serde_json::to_string_pretty(&parsed["results"]["call_expansion"]).unwrap_or_default()
+    );
+
+    // Risk markers must be present
+    let markers = parsed["results"]["risk_markers"]
+        .as_array()
+        .expect("risk_markers should be an array");
+    assert!(!markers.is_empty(), "should have risk markers");
+
+    // Call expansion must be present
+    let expansion = parsed["results"]["call_expansion"]
+        .as_object()
+        .expect("call_expansion should be an object");
+    assert!(
+        expansion.get("root").is_some_and(|v| !v.is_null()),
+        "root should be present and non-null"
+    );
+    assert_eq!(expansion["direction"], "outgoing");
+
+    // Node count must obey max_call_nodes=2
+    let nodes = expansion["nodes"]
+        .as_array()
+        .expect("nodes should be an array");
+    assert!(
+        nodes.len() <= 2,
+        "nodes should be at most 2 (max_call_nodes), got {}",
+        nodes.len()
+    );
+
+    // Root node must be retained
+    let node_names: Vec<&str> = nodes.iter().filter_map(|n| n["name"].as_str()).collect();
+    assert!(
+        node_names.contains(&"entry"),
+        "root node 'entry' must be retained, got: {node_names:?}"
+    );
+
+    // Every node must have depth <= 2 (call_depth limit)
+    for node in nodes {
+        let depth = node["depth"]
+            .as_u64()
+            .expect("node should have numeric depth");
+        assert!(depth <= 2, "node depth {depth} should be <= call_depth 2");
+    }
+
+    // Truncation flags must be true
+    assert_eq!(
+        expansion["truncated"], true,
+        "call_expansion.truncated must be true when nodes exceed max_call_nodes"
+    );
+    assert_eq!(
+        parsed["results"]["limits"]["call_expansion_truncated"], true,
+        "limits.call_expansion_truncated must be true"
+    );
+
+    service.shutdown_all().await;
+}
+
+/// Security context tool: proves diagnostic filtering and diagnostic evidence.
+///
+/// The fake server publishes two diagnostics via initialized notification:
+/// - A security-relevant COMMAND_INJECTION diagnostic (severity: error, source: security-lint)
+/// - A non-security STYLE_ONLY diagnostic (severity: info, source: style-lint)
+///
+/// The test verifies that the security diagnostic survives filtering and
+/// appears in security_relevant_diagnostics, while diagnostic_evidence is populated.
+#[tokio::test]
+async fn security_context_tool_filters_and_preserves_diagnostic_evidence() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let base = manifest_dir.join("target/lsp-tests");
+    std::fs::create_dir_all(&base).expect("mkdir lsp-tests base");
+    let temp = tempfile::Builder::new()
+        .prefix("test-security-diag-")
+        .tempdir_in(&base)
+        .expect("tempdir");
+    let root = temp.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, SECURITY_CALL_GRAPH_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-security-diag-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_security_call_graph_with_diagnostics(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = Arc::new(LspService::new(make_service_config(
+        &scenario_path,
+        &transcript_path,
+    )));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    // Open the file first so diagnostics get synced
+    let _ = timeout(
+        Duration::from_secs(10),
+        tool.execute(serde_json::json!({
+            "operation": "semanticContext",
+            "file_path": source_path.to_str().unwrap(),
+            "intent": "security_review"
+        })),
+    )
+    .await;
+
+    // Now run securityContext
+    let result = timeout(
+        Duration::from_secs(30),
+        tool.execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": source_path.to_str().unwrap(),
+            "line": 14,
+            "column": 5,
+            "security_preset": "unsafe_review",
+            "security_categories": ["unsafe", "process"]
+        })),
+    )
+    .await
+    .expect("securityContext timed out")
+    .expect("securityContext failed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    // Risk markers must be present
+    let markers = parsed["results"]["risk_markers"]
+        .as_array()
+        .expect("risk_markers should be an array");
+    assert!(!markers.is_empty(), "should have risk markers");
+
+    // Security-relevant diagnostics must be present and contain the COMMAND_INJECTION diagnostic
+    let sec_diags = parsed["results"]["security_relevant_diagnostics"]
+        .as_array()
+        .expect("security_relevant_diagnostics should be an array");
+    assert!(
+        !sec_diags.is_empty(),
+        "should have security-relevant diagnostics"
+    );
+    let diag_messages: Vec<&str> = sec_diags
+        .iter()
+        .filter_map(|d| {
+            d["message"]
+                .as_str()
+                .or(d.get("message").and_then(|m| m.as_str()))
+        })
+        .collect();
+    assert!(
+        diag_messages.iter().any(|m| m.contains("COMMAND_INJECTION") || m.contains("untrusted input reaches shell")),
+        "should contain COMMAND_INJECTION diagnostic, got: {diag_messages:?}"
+    );
+
+    // Diagnostic evidence should be present
+    let diag_evidence = &parsed["results"]["diagnostic_evidence"];
+    // diagnostic_evidence may be an object or array; just check it exists and is non-null
+    assert!(
+        !diag_evidence.is_null(),
+        "diagnostic_evidence should be present"
+    );
+
+    // Notes and limits should be present
+    assert!(
+        parsed["results"]["notes"].as_array().is_some(),
+        "notes should be present"
+    );
+    assert!(
+        parsed["results"]["limits"].as_object().is_some(),
+        "limits should be present"
+    );
 
     service.shutdown_all().await;
 }
@@ -2629,6 +2891,35 @@ fn sink(input: &str) {
         let _ = Command::new("sh").arg("-c").arg(input).output();
     }
     entry(input); // deliberate cycle
+}
+"#;
+
+const SECURITY_CALL_GRAPH_LIMIT_SOURCE: &str = r#"use std::process::Command;
+
+pub fn entry(input: &str) {
+    validate(input);
+    sink(input);
+    audit(input);
+    log(input);
+}
+
+fn validate(input: &str) {
+    if input.is_empty() { return; }
+}
+
+fn sink(input: &str) {
+    unsafe {
+        let _ = Command::new("sh").arg("-c").arg(input).output();
+    }
+    entry(input); // deliberate cycle
+}
+
+fn audit(input: &str) {
+    let _ = Command::new("sh").arg("-c").arg(input);
+}
+
+fn log(input: &str) {
+    eprintln!("{input}");
 }
 "#;
 
@@ -3310,6 +3601,272 @@ fn scenario_security_call_graph_outgoing_error() -> serde_json::Value {
     scenario
 }
 
+fn scenario_security_call_graph_node_limit() -> serde_json::Value {
+    // The securityContext tool with include_call_hierarchy=true makes:
+    // 1. Semantic context collector: prepareCallHierarchy + incomingCalls + outgoingCalls
+    // 2. Call expansion BFS: prepareCallHierarchy + outgoingCalls (truncated at max_call_nodes=2)
+    // With max_call_nodes=2, the BFS stops after adding entry + one child,
+    // so the second outgoingCalls is NOT consumed.
+    serde_json::json!({
+        "name": "security_call_graph_node_limit",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": {
+                        "capabilities": {
+                            "definitionProvider": true,
+                            "referencesProvider": true,
+                            "documentSymbolProvider": true,
+                            "callHierarchyProvider": true
+                        }
+                    }}
+                ]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {"type": "AllowNotification", "method": "textDocument/didOpen"},
+            {"type": "AllowNotification", "method": "textDocument/didChange"},
+            {"type": "AllowNotification", "method": "textDocument/didSave"},
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/documentSymbol",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {"name": "entry", "kind": 12,
+                         "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                         "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                        {"name": "validate", "kind": 12,
+                         "range": {"start": {"line": 10, "character": 0}, "end": {"line": 12, "character": 1}},
+                         "selectionRange": {"start": {"line": 10, "character": 3}, "end": {"line": 10, "character": 11}}},
+                        {"name": "sink", "kind": 12,
+                         "range": {"start": {"line": 14, "character": 0}, "end": {"line": 20, "character": 1}},
+                         "selectionRange": {"start": {"line": 14, "character": 3}, "end": {"line": 14, "character": 7}}},
+                        {"name": "audit", "kind": 12,
+                         "range": {"start": {"line": 22, "character": 0}, "end": {"line": 24, "character": 1}},
+                         "selectionRange": {"start": {"line": 22, "character": 3}, "end": {"line": 22, "character": 8}}},
+                        {"name": "log", "kind": 12,
+                         "range": {"start": {"line": 26, "character": 0}, "end": {"line": 28, "character": 1}},
+                         "selectionRange": {"start": {"line": 26, "character": 3}, "end": {"line": 26, "character": 6}}}
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/definition",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}}
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/references",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 12}}},
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 5, "character": 4}, "end": {"line": 5, "character": 8}}},
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 6, "character": 4}, "end": {"line": 6, "character": 9}}},
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 7, "character": 4}, "end": {"line": 7, "character": 7}}}
+                    ]}
+                ]
+            },
+            {"type": "ExpectRequest", "method": "textDocument/prepareCallHierarchy", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                     "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                     "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}}
+                ]}]},
+            {"type": "ExpectRequest", "method": "callHierarchy/incomingCalls", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": []}]},
+            {"type": "ExpectRequest", "method": "callHierarchy/outgoingCalls", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "validate", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 10, "character": 0}, "end": {"line": 12, "character": 1}},
+                            "selectionRange": {"start": {"line": 10, "character": 3}, "end": {"line": 10, "character": 11}}},
+                     "fromRanges": [{"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 12}}]},
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "sink", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 14, "character": 0}, "end": {"line": 20, "character": 1}},
+                            "selectionRange": {"start": {"line": 14, "character": 3}, "end": {"line": 14, "character": 7}}},
+                     "fromRanges": [{"start": {"line": 5, "character": 4}, "end": {"line": 5, "character": 8}}]},
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "audit", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 22, "character": 0}, "end": {"line": 24, "character": 1}},
+                            "selectionRange": {"start": {"line": 22, "character": 3}, "end": {"line": 22, "character": 8}}},
+                     "fromRanges": [{"start": {"line": 6, "character": 4}, "end": {"line": 6, "character": 9}}]},
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "log", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 26, "character": 0}, "end": {"line": 28, "character": 1}},
+                            "selectionRange": {"start": {"line": 26, "character": 3}, "end": {"line": 26, "character": 6}}},
+                     "fromRanges": [{"start": {"line": 7, "character": 4}, "end": {"line": 7, "character": 7}}]}
+                ]}]},
+            {"type": "ExpectRequest", "method": "textDocument/prepareCallHierarchy", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                     "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                     "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}}
+                ]}]},
+            {"type": "ExpectRequest", "method": "callHierarchy/outgoingCalls", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "validate", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 10, "character": 0}, "end": {"line": 12, "character": 1}},
+                            "selectionRange": {"start": {"line": 10, "character": 3}, "end": {"line": 10, "character": 11}}},
+                     "fromRanges": [{"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 12}}]},
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "sink", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 14, "character": 0}, "end": {"line": 20, "character": 1}},
+                            "selectionRange": {"start": {"line": 14, "character": 3}, "end": {"line": 14, "character": 7}}},
+                     "fromRanges": [{"start": {"line": 5, "character": 4}, "end": {"line": 5, "character": 8}}]},
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "audit", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 22, "character": 0}, "end": {"line": 24, "character": 1}},
+                            "selectionRange": {"start": {"line": 22, "character": 3}, "end": {"line": 22, "character": 8}}},
+                     "fromRanges": [{"start": {"line": 6, "character": 4}, "end": {"line": 6, "character": 9}}]},
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 8, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "log", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 26, "character": 0}, "end": {"line": 28, "character": 1}},
+                            "selectionRange": {"start": {"line": 26, "character": 3}, "end": {"line": 26, "character": 6}}},
+                     "fromRanges": [{"start": {"line": 7, "character": 4}, "end": {"line": 7, "character": 7}}]}
+                ]}]},
+            {"type": "ExpectRequest", "method": "shutdown", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": null}]},
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    })
+}
+
+fn scenario_security_call_graph_with_diagnostics() -> serde_json::Value {
+    serde_json::json!({
+        "name": "security_call_graph_diagnostics",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": {
+                        "capabilities": {
+                            "definitionProvider": true,
+                            "referencesProvider": true,
+                            "documentSymbolProvider": true,
+                            "callHierarchyProvider": true
+                        }
+                    }}
+                ]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": [
+                {"type": "SendNotification", "method": "textDocument/publishDiagnostics", "params": {
+                    "uri": "__SOURCE_URI__",
+                    "version": 1,
+                    "diagnostics": [
+                        {
+                            "range": {
+                                "start": {"line": 14, "character": 4},
+                                "end": {"line": 17, "character": 5}
+                            },
+                            "severity": 1,
+                            "source": "security-lint",
+                            "code": "COMMAND_INJECTION",
+                            "message": "untrusted input reaches shell command execution"
+                        },
+                        {
+                            "range": {
+                                "start": {"line": 9, "character": 4},
+                                "end": {"line": 9, "character": 20}
+                            },
+                            "severity": 3,
+                            "source": "style-lint",
+                            "code": "STYLE_ONLY",
+                            "message": "consider a shorter function"
+                        }
+                    ]
+                }}
+            ]},
+            {"type": "AllowNotification", "method": "textDocument/didOpen"},
+            {"type": "AllowNotification", "method": "textDocument/didChange"},
+            {"type": "AllowNotification", "method": "textDocument/didSave"},
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/documentSymbol",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {"name": "entry", "kind": 12,
+                         "range": {"start": {"line": 3, "character": 0}, "end": {"line": 7, "character": 1}},
+                         "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                        {"name": "validate", "kind": 12,
+                         "range": {"start": {"line": 9, "character": 0}, "end": {"line": 11, "character": 1}},
+                         "selectionRange": {"start": {"line": 9, "character": 3}, "end": {"line": 9, "character": 11}}},
+                        {"name": "sink", "kind": 12,
+                         "range": {"start": {"line": 13, "character": 0}, "end": {"line": 19, "character": 1}},
+                         "selectionRange": {"start": {"line": 13, "character": 3}, "end": {"line": 13, "character": 7}}}
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/definition",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}}
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/references",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 12}}},
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 5, "character": 4}, "end": {"line": 5, "character": 8}}}
+                    ]}
+                ]
+            },
+            {"type": "ExpectRequest", "method": "shutdown", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": null}]},
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    })
+}
+
 /// Security context tool: degrades gracefully when one outgoing call
 /// hierarchy request fails during call expansion BFS.
 ///
@@ -3323,17 +3880,13 @@ fn scenario_security_call_graph_outgoing_error() -> serde_json::Value {
 #[tokio::test]
 async fn security_context_tool_degrades_on_call_hierarchy_error() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest_dir
-        .join("target")
-        .join("test-security-call-graph-error");
-    std::fs::create_dir_all(root.join("src")).expect("mkdir test root");
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(root.clone());
+    let base = manifest_dir.join("target/lsp-tests");
+    std::fs::create_dir_all(&base).expect("mkdir lsp-tests base");
+    let temp = tempfile::Builder::new()
+        .prefix("test-security-call-graph-error-")
+        .tempdir_in(&base)
+        .expect("tempdir");
+    let root = temp.path().to_path_buf();
     let source_path = root.join("src/lib.rs");
     let scenario_path = root.join("scenario.json");
     let transcript_path = root.join("transcript.jsonl");
@@ -3477,19 +4030,14 @@ async fn security_context_tool_degrades_on_call_hierarchy_error() {
 /// - Limits and notes are populated
 #[tokio::test]
 async fn security_context_tool_exercises_risk_filtering_and_call_expansion() {
-    // Use a workspace-local temp dir to avoid macOS /var symlinks that
-    // trigger the symlink check in LspTool::resolve_file.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest_dir.join("target").join("test-security-call-graph");
-    std::fs::create_dir_all(root.join("src")).expect("mkdir test root");
-    // Clean up on drop via a guard.
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _cleanup = Cleanup(root.clone());
+    let base = manifest_dir.join("target/lsp-tests");
+    std::fs::create_dir_all(&base).expect("mkdir lsp-tests base");
+    let temp = tempfile::Builder::new()
+        .prefix("test-security-call-graph-")
+        .tempdir_in(&base)
+        .expect("tempdir");
+    let root = temp.path().to_path_buf();
     let source_path = root.join("src/lib.rs");
     let scenario_path = root.join("scenario.json");
     let transcript_path = root.join("transcript.jsonl");

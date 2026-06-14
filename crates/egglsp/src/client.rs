@@ -374,7 +374,7 @@ pub struct LspClient {
 #[derive(Debug, Clone)]
 pub struct LspClientHealthSnapshot {
     /// Current transport state (Running or Failed).
-    pub transport: String,
+    pub transport: ClientTransportSnapshot,
     /// Number of requests awaiting responses.
     pub pending_requests: usize,
 }
@@ -1361,7 +1361,7 @@ impl LspClient {
     /// The returned values reflect the state at the moment of the call.
     pub async fn health_snapshot(&self) -> LspClientHealthSnapshot {
         LspClientHealthSnapshot {
-            transport: format!("{:?}", self.transport_state_snapshot().await),
+            transport: self.transport_state_snapshot().await,
             pending_requests: self.pending_request_count().await,
         }
     }
@@ -1384,6 +1384,7 @@ impl LspClient {
     ///
     /// This is primarily for test support and internal diagnostics.
     /// The snapshot reflects the state at the time of the call.
+    #[doc(hidden)]
     pub async fn dynamic_registration_snapshot(
         &self,
     ) -> Vec<crate::server_request::DynamicRegistration> {

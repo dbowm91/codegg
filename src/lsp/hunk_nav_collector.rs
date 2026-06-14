@@ -19,34 +19,39 @@ fn normalize_diff_relative_path(raw: &str) -> Result<PathBuf, String> {
         .or_else(|| trimmed.strip_prefix("b/"))
         .unwrap_or(trimmed);
 
-    let path = PathBuf::from(stripped);
-
-    if path.is_absolute() {
-        return Err(format!("absolute path not allowed in diff: {raw}"));
+    if stripped.is_empty() {
+        return Err(format!(
+            "diff path resolves to empty after stripping prefix: {raw}"
+        ));
     }
 
-    for component in path.components() {
+    let mut normalized = PathBuf::new();
+    for component in Path::new(stripped).components() {
         match component {
-            std::path::Component::ParentDir => {
-                return Err(format!("path traversal not allowed in diff: {raw}"));
+            std::path::Component::Normal(part) => normalized.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(format!(
+                    "path traversal or absolute component not allowed in diff: {raw}"
+                ));
             }
-            std::path::Component::Normal(_) => {}
-            _ => {}
         }
     }
-
-    Ok(path)
+    if normalized.as_os_str().is_empty() {
+        return Err(format!("diff path has no normal components: {raw}"));
+    }
+    Ok(normalized)
 }
 
 /// Normalize a request file path relative to the allowed root.
-/// Uses `Path::strip_prefix` (not string prefix removal).
+/// Uses `Path::canonicalize` for symlink-safe comparison and rejects
+/// paths outside the root or paths that resolve to the root itself.
 fn normalize_request_relative_path(
     request_file: &Path,
     allowed_root: &Path,
 ) -> Result<PathBuf, String> {
-    let canonical_file = request_file
-        .canonicalize()
-        .map_err(|e| format!("failed to canonicalize {}: {e}", request_file.display()))?;
     let canonical_root = allowed_root.canonicalize().map_err(|e| {
         format!(
             "failed to canonicalize root {}: {e}",
@@ -54,24 +59,29 @@ fn normalize_request_relative_path(
         )
     })?;
 
-    canonical_file
-        .strip_prefix(&canonical_root)
-        .map(|rel| rel.to_path_buf())
-        .map_err(|_| {
-            format!(
-                "path {} is outside allowed root {}",
-                request_file.display(),
-                allowed_root.display()
-            )
-        })
-}
+    let resolved_file = if request_file.is_absolute() {
+        request_file.to_path_buf()
+    } else {
+        canonical_root.join(request_file)
+    };
 
-/// Strip `a/` or `b/` diff prefixes for simple string-based comparison.
-/// For path-aware comparison prefer `normalize_diff_relative_path`.
-#[allow(dead_code)]
-fn normalize_hunk_path(path: &str) -> String {
-    let p = path.trim_start_matches("a/").trim_start_matches("b/");
-    p.to_string()
+    let canonical_file = resolved_file
+        .canonicalize()
+        .map_err(|e| format!("failed to canonicalize {}: {e}", resolved_file.display()))?;
+
+    let relative = canonical_file.strip_prefix(&canonical_root).map_err(|_| {
+        format!(
+            "path {} is outside allowed root {}",
+            canonical_file.display(),
+            canonical_root.display()
+        )
+    })?;
+
+    if relative.as_os_str().is_empty() {
+        return Err("request file resolves to the project root, not a file".to_string());
+    }
+
+    Ok(relative.to_path_buf())
 }
 
 pub struct HunkSourceNavigationCollector {
@@ -113,7 +123,7 @@ impl HunkSourceNavigationCollector {
         let target_path = PathBuf::from(&request.file_path);
         let target_relative =
             normalize_request_relative_path(&target_path, self.semantic_collector.allowed_root())
-                .unwrap_or_else(|_| target_path.clone());
+                .map_err(|e| format!("hunkSourceContext: invalid file path: {e}"))?;
         let mismatched_files: Vec<&str> = hunks
             .iter()
             .filter(|h| {
@@ -206,19 +216,27 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    fn make_collector() -> HunkSourceNavigationCollector {
+    fn make_collector() -> (HunkSourceNavigationCollector, tempfile::TempDir) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        // Create files needed by multi-file tests
+        for f in ["src/a.rs", "src/b.rs", "src/c.rs", "src/main.rs"] {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "fn placeholder() {}\n").unwrap();
+        }
         let service = Arc::new(LspService::new(LspConfig::default()));
         let operations = Arc::new(LspOperations::new(service.clone()));
         let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
-        let sem_collector =
-            SemanticContextCollector::new(service, operations, diagnostics, PathBuf::from("/tmp"));
+        let sem_collector = SemanticContextCollector::new(service, operations, diagnostics, root);
         let nav = HunkSourceNavigator::new();
-        HunkSourceNavigationCollector::new(sem_collector, nav)
+        (HunkSourceNavigationCollector::new(sem_collector, nav), temp)
     }
 
     #[tokio::test]
     async fn empty_hunks_returns_error() {
-        let collector = make_collector();
+        let (collector, _temp) = make_collector();
         let request = HunkSourceNavigationRequest {
             file_path: "test.rs".to_string(),
             hunks: vec![],
@@ -241,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn patch_parsed_into_hunks() {
-        let collector = make_collector();
+        let (collector, _temp) = make_collector();
         let patch = "\
 diff --git a/src/main.rs b/src/main.rs
 --- a/src/main.rs
@@ -288,7 +306,7 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[tokio::test]
     async fn malformed_patch_returns_error() {
-        let collector = make_collector();
+        let (collector, _temp) = make_collector();
         let request = HunkSourceNavigationRequest {
             file_path: "test.rs".to_string(),
             hunks: vec![],
@@ -316,98 +334,122 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[test]
     fn hunk_source_navigation_collector_constructs() {
-        let _collector = make_collector();
-    }
-
-    // --- Phase 4: normalize_hunk_path tests ---
-
-    #[test]
-    fn normalize_strips_a_prefix() {
-        assert_eq!(normalize_hunk_path("a/src/main.rs"), "src/main.rs");
-    }
-
-    #[test]
-    fn normalize_strips_b_prefix() {
-        assert_eq!(normalize_hunk_path("b/src/main.rs"), "src/main.rs");
-    }
-
-    #[test]
-    fn normalize_no_prefix_unchanged() {
-        assert_eq!(normalize_hunk_path("src/main.rs"), "src/main.rs");
-    }
-
-    #[test]
-    fn normalize_empty_string() {
-        assert_eq!(normalize_hunk_path(""), "");
+        let (_collector, _temp) = make_collector();
     }
 
     // --- normalize_diff_relative_path tests ---
 
     #[test]
-    fn normalize_diff_relative_path_strips_a_prefix() {
-        let result = normalize_diff_relative_path("a/src/lib.rs").unwrap();
-        assert_eq!(result, PathBuf::from("src/lib.rs"));
+    fn normalize_diff_a_prefix() {
+        assert_eq!(
+            normalize_diff_relative_path("a/src/lib.rs").unwrap(),
+            PathBuf::from("src/lib.rs")
+        );
     }
 
     #[test]
-    fn normalize_diff_relative_path_strips_b_prefix() {
-        let result = normalize_diff_relative_path("b/src/lib.rs").unwrap();
-        assert_eq!(result, PathBuf::from("src/lib.rs"));
+    fn normalize_diff_b_prefix() {
+        assert_eq!(
+            normalize_diff_relative_path("b/src/lib.rs").unwrap(),
+            PathBuf::from("src/lib.rs")
+        );
     }
 
     #[test]
-    fn normalize_diff_relative_path_no_prefix_unchanged() {
-        let result = normalize_diff_relative_path("src/lib.rs").unwrap();
-        assert_eq!(result, PathBuf::from("src/lib.rs"));
+    fn normalize_diff_no_prefix() {
+        assert_eq!(
+            normalize_diff_relative_path("src/lib.rs").unwrap(),
+            PathBuf::from("src/lib.rs")
+        );
     }
 
     #[test]
-    fn normalize_diff_relative_path_rejects_traversal() {
-        assert!(normalize_diff_relative_path("a/../outside.rs").is_err());
+    fn normalize_diff_cur_dir() {
+        assert_eq!(
+            normalize_diff_relative_path("./src/lib.rs").unwrap(),
+            PathBuf::from("src/lib.rs")
+        );
     }
 
     #[test]
-    fn normalize_diff_relative_path_rejects_absolute() {
-        assert!(normalize_diff_relative_path("/etc/passwd").is_err());
+    fn normalize_diff_rejects_empty_a() {
+        assert!(normalize_diff_relative_path("a/").is_err());
     }
 
     #[test]
-    fn normalize_diff_relative_path_rejects_empty() {
-        assert!(normalize_diff_relative_path("").is_err());
+    fn normalize_diff_rejects_empty_b() {
+        assert!(normalize_diff_relative_path("b/").is_err());
     }
 
     #[test]
-    fn normalize_diff_relative_path_rejects_double_traversal() {
+    fn normalize_diff_rejects_traversal() {
+        assert!(normalize_diff_relative_path("../outside.rs").is_err());
+    }
+
+    #[test]
+    fn normalize_diff_rejects_double_traversal() {
         assert!(normalize_diff_relative_path("a/b/../../outside.rs").is_err());
+    }
+
+    #[test]
+    fn normalize_diff_rejects_absolute() {
+        assert!(normalize_diff_relative_path("/etc/passwd").is_err());
     }
 
     // --- normalize_request_relative_path tests ---
 
-    #[test]
-    fn normalize_request_relative_path_matches_under_root() {
-        let root = PathBuf::from("/tmp/project");
-        let file = PathBuf::from("/tmp/project/src/lib.rs");
-        // canonicalize will fail for non-existent paths in unit tests,
-        // so we test the helper with a direct assertion on the logic.
-        let result = normalize_request_relative_path(&file, &root);
-        // On systems where these paths exist, the prefix check passes.
-        // On systems where they don't, canonicalize fails gracefully.
-        // We just verify the function doesn't panic.
-        let _ = result;
+    fn make_real_path_fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        let file = root.join("src/lib.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        (temp, root, file)
     }
 
     #[test]
-    fn normalize_request_relative_path_rejects_outside_root() {
-        let root = PathBuf::from("/tmp/project");
-        let file = PathBuf::from("/tmp/project-other/file.rs");
-        let result = normalize_request_relative_path(&file, &root);
-        // Should fail because file is outside root.
-        // (May also fail on canonicalize for non-existent paths.)
-        if let Ok(_) = result {
-            // If it somehow succeeded (symlinks?), the paths exist and are different roots.
-            // The strip_prefix should have failed.
-            panic!("should have rejected path outside root");
-        }
+    fn normalize_request_absolute_under_root() {
+        let (_temp, root, file) = make_real_path_fixture();
+        let result = normalize_request_relative_path(&file, &root).unwrap();
+        assert_eq!(result, PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn normalize_request_relative_path_resolves() {
+        let (_temp, root, _file) = make_real_path_fixture();
+        let result = normalize_request_relative_path(Path::new("src/lib.rs"), &root).unwrap();
+        assert_eq!(result, PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn normalize_request_rejects_prefix_collision() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        let file = root.join("src/lib.rs");
+        let other = temp.path().join("project-other").join("file.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, "fn other() {}\n").unwrap();
+        let result = normalize_request_relative_path(&other, &root);
+        assert!(result.is_err(), "prefix collision should be rejected");
+    }
+
+    #[test]
+    fn normalize_request_rejects_traversal() {
+        let (_temp, root, _file) = make_real_path_fixture();
+        let result = normalize_request_relative_path(Path::new("../project-other/file.rs"), &root);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn normalize_request_rejects_root_itself() {
+        let (_temp, root, _file) = make_real_path_fixture();
+        let result = normalize_request_relative_path(&root, &root);
+        assert!(
+            result.is_err(),
+            "root itself should be rejected as empty relative path"
+        );
     }
 
     // --- Phase 5: multi-file patch rejection ---
@@ -457,7 +499,7 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[tokio::test]
     async fn multi_file_patch_rejected() {
-        let collector = make_collector();
+        let (collector, _temp) = make_collector();
         let hunks = vec![
             make_hunk("h0", "src/a.rs", 1, 5),
             make_hunk("h1", "src/b.rs", 10, 15),
@@ -478,7 +520,7 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[tokio::test]
     async fn single_file_patch_accepted() {
-        let collector = make_collector();
+        let (collector, _temp) = make_collector();
         let hunks = vec![
             make_hunk("h0", "src/main.rs", 1, 5),
             make_hunk("h1", "src/main.rs", 10, 15),
@@ -499,7 +541,7 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[tokio::test]
     async fn patch_with_a_b_prefix_matches_file_path() {
-        let collector = make_collector();
+        let (collector, _temp) = make_collector();
         let patch = "\
 diff --git a/src/main.rs b/src/main.rs
 --- a/src/main.rs
@@ -540,7 +582,7 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[tokio::test]
     async fn multi_file_multi_hunk_rejected_with_all_files_named() {
-        let collector = make_collector();
+        let (collector, _temp) = make_collector();
         let hunks = vec![
             make_hunk("h0", "src/a.rs", 1, 5),
             make_hunk("h1", "src/b.rs", 10, 15),
@@ -560,7 +602,7 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[tokio::test]
     async fn max_hunks_zero_coerced_to_one() {
-        let collector = make_collector();
+        let (collector, _temp) = make_collector();
         let hunks = vec![make_hunk("h0", "src/main.rs", 1, 5)];
         let request = make_request_with_hunks("src/main.rs", hunks, 0);
         let result = collector.collect(request).await;
@@ -580,5 +622,45 @@ diff --git a/src/main.rs b/src/main.rs
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn collect_rejects_outside_root_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        let file = root.join("src/lib.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let service = Arc::new(LspService::new(LspConfig::default()));
+        let operations = Arc::new(LspOperations::new(service.clone()));
+        let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
+        let sem_collector =
+            SemanticContextCollector::new(service, operations, diagnostics, root.clone());
+        let nav = HunkSourceNavigator::new();
+        let collector = HunkSourceNavigationCollector::new(sem_collector, nav);
+
+        let request = HunkSourceNavigationRequest {
+            file_path: "/etc/passwd".to_string(),
+            hunks: vec![],
+            patch: Some("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n".to_string()),
+            intent: "navigation".to_string(),
+            include_definitions: false,
+            include_references: false,
+            include_call_hierarchy: false,
+            include_type_hierarchy: false,
+            excerpt_radius: 40,
+            max_hunks: 20,
+            max_symbols_per_hunk: 10,
+            max_diagnostics_per_hunk: 10,
+            max_references_per_hunk: 10,
+        };
+        let result = collector.collect(request).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("invalid file path") || err.contains("outside"),
+            "expected path rejection error: {err}"
+        );
     }
 }
