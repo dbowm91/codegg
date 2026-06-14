@@ -21,9 +21,10 @@ use egglsp::{
 use egglsp::diagnostics::DiagnosticsCollector;
 use egglsp::edit::{preview_text_edits_for_file, preview_workspace_edit};
 use egglsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Command as LspCommand, DocumentChanges,
-    OptionalVersionedTextDocumentIdentifier, OneOf, Position, Range, TextDocumentEdit, TextEdit,
-    WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, Command as LspCommand,
+    CreateFile, DocumentChangeOperation, DocumentChanges,
+    OptionalVersionedTextDocumentIdentifier, OneOf, Position, Range, ResourceOp,
+    TextDocumentEdit, TextEdit, WorkspaceEdit,
 };
 use egglsp::operations::LspOperations;
 use egglsp::operations::{select_source_action_edit, SourceActionPreviewKind};
@@ -1392,6 +1393,29 @@ async fn preview_safety_ambiguous_source_actions_rejected() {
     assert!(
         matches!(err, Err(LspError::AmbiguousSourceAction(_, _))),
         "expected AmbiguousSourceAction, got: {err:?}"
+    );
+}
+
+// ── Test 9: resource operation rejected ───────────────────────────────
+
+#[tokio::test]
+async fn preview_safety_resource_operation_rejected() {
+    let ws_edit = WorkspaceEdit {
+        changes: None,
+        document_changes: Some(DocumentChanges::Operations(vec![
+            DocumentChangeOperation::Op(ResourceOp::Create(CreateFile {
+                uri: "file:///tmp/new_file.rs".parse().unwrap(),
+                options: None,
+                annotation_id: None,
+            })),
+        ])),
+        change_annotations: None,
+    };
+
+    let err = preview_workspace_edit("test", ws_edit, Some(Path::new("/tmp")));
+    assert!(
+        matches!(err, Err(LspError::UnsupportedEdit(ref msg)) if msg.contains("resource operations")),
+        "expected UnsupportedEdit with resource operations message, got: {err:?}"
     );
 }
 
