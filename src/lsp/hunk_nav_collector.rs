@@ -46,10 +46,20 @@ impl HunkSourceNavigationCollector {
         }
 
         // Phase 5: Reject multi-file patches unless all hunks match file_path.
+        // Strip the root prefix from the request file_path so the comparison
+        // works against relative hunk paths (e.g. "src/lib.rs" from a git diff).
         let target_path = normalize_hunk_path(&request.file_path);
+        let target_relative = {
+            let root_str = self.semantic_collector.allowed_root().to_string_lossy();
+            let root_prefix = root_str.trim_end_matches('/');
+            target_path
+                .strip_prefix(root_prefix)
+                .map(|s| s.trim_start_matches('/').to_string())
+                .unwrap_or(target_path)
+        };
         let mismatched_files: Vec<&str> = hunks
             .iter()
-            .filter(|h| !h.file_path.is_empty() && normalize_hunk_path(&h.file_path) != target_path)
+            .filter(|h| !h.file_path.is_empty() && normalize_hunk_path(&h.file_path) != target_relative)
             .map(|h| h.file_path.as_str())
             .collect();
         if !mismatched_files.is_empty() {

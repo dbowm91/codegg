@@ -39,6 +39,10 @@ impl SemanticContextCollector {
         }
     }
 
+    pub fn allowed_root(&self) -> &Path {
+        &self.allowed_root
+    }
+
     pub async fn collect(
         &self,
         request: SemanticContextRequest,

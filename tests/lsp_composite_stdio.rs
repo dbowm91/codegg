@@ -2351,3 +2351,469 @@ async fn semantic_context_collector_failure_degradation() {
 
     service.shutdown_all().await;
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 4: Hunk Source Context integration test
+// ══════════════════════════════════════════════════════════════════════
+
+/// Source file containing a function with a call to exercise hunk context.
+const HUNK_SOURCE: &str = "pub fn entry() {\n    helper();\n}\n\nfn helper() {}\n";
+
+/// Scenario for hunk source context: the collector needs the same operations
+/// as semantic context (documentSymbol, definition, references).
+fn scenario_hunk_source_context() -> serde_json::Value {
+    serde_json::json!({
+        "name": "hunk_source_context_workflow",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": {
+                        "capabilities": {
+                            "definitionProvider": true,
+                            "referencesProvider": true,
+                            "documentSymbolProvider": true
+                        }
+                    }}
+                ]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {"type": "AllowNotification", "method": "textDocument/didOpen"},
+            {"type": "AllowNotification", "method": "textDocument/didChange"},
+            {"type": "AllowNotification", "method": "textDocument/didSave"},
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/documentSymbol",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "entry",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 2, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 0, "character": 7},
+                                "end": {"line": 0, "character": 12}
+                            }
+                        },
+                        {
+                            "name": "helper",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 4, "character": 0},
+                                "end": {"line": 4, "character": 15}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 4, "character": 3},
+                                "end": {"line": 4, "character": 9}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/definition",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 4, "character": 3},
+                                "end": {"line": 4, "character": 9}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/references",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 1, "character": 4},
+                                "end": {"line": 1, "character": 12}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {"type": "ExpectRequest", "method": "shutdown", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": null}]},
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    })
+}
+
+/// Hunk source context: exercises `HunkSourceNavigationCollector` with a real
+/// unified diff against a fake-server-backed LSP stack.
+///
+/// Validates:
+/// - Patch is parsed into hunks
+/// - Semantic context is collected (document symbols, definition, references)
+/// - Hunk evidence is produced with enclosing symbol
+/// - Definitions and references are included
+#[tokio::test]
+async fn hunk_source_context_collector_exercises_real_workflow() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, HUNK_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-hunk-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_hunk_source_context(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = Arc::new(LspService::new(make_service_config(
+        &scenario_path,
+        &transcript_path,
+    )));
+    let operations = Arc::new(LspOperations::new(service.clone()));
+    let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
+    let sem_collector = codegg::lsp::semantic_context::SemanticContextCollector::new(
+        service.clone(),
+        operations,
+        diagnostics,
+        root.clone(),
+    );
+    let navigator = codegg::lsp::hunk_nav::HunkSourceNavigator::new();
+    let hunk_collector =
+        codegg::lsp::hunk_nav_collector::HunkSourceNavigationCollector::new(sem_collector, navigator);
+
+    // Unified diff: add a comment inside entry()
+    let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,5 @@
+ pub fn entry() {
++    // validate input
+     helper();
+ }
+ 
+";
+
+    let request = egglsp::hunk_context::HunkSourceNavigationRequest {
+        file_path: source_path.to_string_lossy().to_string(),
+        hunks: vec![],
+        patch: Some(patch.to_string()),
+        intent: "navigation".to_string(),
+        include_definitions: true,
+        include_references: true,
+        include_call_hierarchy: false,
+        include_type_hierarchy: false,
+        excerpt_radius: 40,
+        max_hunks: 20,
+        max_symbols_per_hunk: 10,
+        max_diagnostics_per_hunk: 10,
+        max_references_per_hunk: 10,
+    };
+
+    let response = timeout(Duration::from_secs(30), hunk_collector.collect(request))
+        .await
+        .expect("hunk collector timed out")
+        .expect("hunk collector failed");
+
+    // Hunk evidence should be present
+    assert!(
+        !response.hunks.is_empty(),
+        "should have at least one hunk in response"
+    );
+
+    let hunk_evidence = &response.hunks[0];
+
+    // Enclosing symbol should be present (the hunk is inside entry(),
+    // and the navigator identifies the nearest enclosing symbol).
+    assert!(
+        hunk_evidence.enclosing_symbol.is_some(),
+        "should have an enclosing symbol"
+    );
+
+    // Definitions should reference `helper` (called on line 2)
+    assert!(
+        !hunk_evidence.definitions.is_empty(),
+        "should have definitions"
+    );
+
+    // References should be present (helper() call is a reference)
+    assert!(
+        !hunk_evidence.references.is_empty(),
+        "should have references"
+    );
+
+    // Source excerpt should contain the modified file content
+    assert!(
+        hunk_evidence.source_excerpt.is_some(),
+        "should have a source excerpt"
+    );
+
+    service.shutdown_all().await;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 3: Security Context workflow integration test
+// ══════════════════════════════════════════════════════════════════════
+
+/// Source file with security-sensitive patterns for security context testing.
+const SECURITY_SOURCE: &str = r#"use std::process::Command;
+
+pub fn run_unchecked(input: &str) -> String {
+    unsafe {
+        let cmd = Command::new("sh").arg("-c").arg(input).output();
+        String::from_utf8_unchecked(cmd.unwrap().stdout)
+    }
+}
+
+pub fn entry() {
+    let data = run_unchecked("echo hello");
+    println!("{data}");
+}
+"#;
+
+/// Scenario for security context: exercises the same LSP operations as the
+/// semantic context collector (documentSymbol, definition, references).
+fn scenario_security_context() -> serde_json::Value {
+    serde_json::json!({
+        "name": "security_context_workflow",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": {
+                        "capabilities": {
+                            "definitionProvider": true,
+                            "referencesProvider": true,
+                            "documentSymbolProvider": true
+                        }
+                    }}
+                ]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {"type": "AllowNotification", "method": "textDocument/didOpen"},
+            {"type": "AllowNotification", "method": "textDocument/didChange"},
+            {"type": "AllowNotification", "method": "textDocument/didSave"},
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/documentSymbol",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "run_unchecked",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 2, "character": 0},
+                                "end": {"line": 8, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 2, "character": 7},
+                                "end": {"line": 2, "character": 20}
+                            }
+                        },
+                        {
+                            "name": "entry",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 10, "character": 0},
+                                "end": {"line": 14, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 10, "character": 7},
+                                "end": {"line": 10, "character": 12}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/definition",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 2, "character": 7},
+                                "end": {"line": 2, "character": 20}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/references",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 11, "character": 12},
+                                "end": {"line": 11, "character": 25}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {"type": "ExpectRequest", "method": "shutdown", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": null}]},
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    })
+}
+
+/// Security context workflow: exercises `SemanticContextCollector` with
+/// `SecurityReview` intent against security-sensitive source code.
+///
+/// The security context LSP tool operation delegates to this collector for
+/// its core LSP operations, then applies risk marker scanning and security-
+/// relevant filtering locally. This test verifies the collector produces
+/// correct results with `SecurityReview` intent on source containing
+/// `unsafe`, `process::Command`, and command injection patterns.
+///
+/// Validates:
+/// - Source excerpt from the actual file
+/// - Document symbols for `run_unchecked` and `entry`
+/// - Definition for `run_unchecked` at the function declaration
+/// - Reference to `run_unchecked` from `entry`
+/// - Source contains security-sensitive patterns (unsafe, Command)
+#[tokio::test]
+async fn security_context_workflow_uses_semantic_collector() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, SECURITY_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-security-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_security_context(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = Arc::new(LspService::new(make_service_config(
+        &scenario_path,
+        &transcript_path,
+    )));
+    let operations = Arc::new(LspOperations::new(service.clone()));
+    let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
+    let collector = codegg::lsp::semantic_context::SemanticContextCollector::new(
+        service.clone(),
+        operations,
+        diagnostics,
+        root.clone(),
+    );
+
+    // Use SecurityReview intent — this is the same path the securityContext
+    // tool operation takes through the collector.
+    let request = egglsp::SemanticContextRequest::new(
+        source_path.to_string_lossy().as_ref(),
+        egglsp::SemanticContextIntent::SecurityReview,
+    )
+    .with_position(11, 12); // entry() calling run_unchecked
+
+    let response = timeout(Duration::from_secs(30), collector.collect(request))
+        .await
+        .expect("collector timed out")
+        .expect("collector failed");
+
+    // Source excerpt should contain the security-sensitive code
+    let excerpt = response
+        .source_excerpt
+        .as_ref()
+        .expect("source_excerpt should be present");
+    assert!(
+        excerpt.text.contains("unsafe"),
+        "excerpt should contain unsafe keyword"
+    );
+    assert!(
+        excerpt.text.contains("Command"),
+        "excerpt should contain Command usage"
+    );
+
+    // Document symbols should include run_unchecked and entry
+    let syms = &response.all_symbols;
+    assert!(!syms.is_empty(), "should have document symbols");
+    let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"run_unchecked"),
+        "should have run_unchecked symbol: {names:?}"
+    );
+    assert!(
+        names.contains(&"entry"),
+        "should have entry symbol: {names:?}"
+    );
+
+    // Definition should be present (def of run_unchecked at line 3)
+    assert!(
+        !response.definitions.is_empty(),
+        "should have definitions"
+    );
+
+    // References should be present (run_unchecked called from entry)
+    assert!(
+        !response.references.is_empty(),
+        "should have references"
+    );
+
+    service.shutdown_all().await;
+}

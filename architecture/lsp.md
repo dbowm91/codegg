@@ -1260,7 +1260,7 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - **11 production protocol tests** in `tests/production_protocol_stdio.rs` — all passing ✅
 - **3 production semantic tests** in `tests/production_semantic_stdio.rs` — all passing ✅
 - **5 production service tests** in `tests/production_service_stdio.rs` — all passing ✅
-- **16 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
+- **19 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
 - **235 unit tests** in the `egglsp` crate
 - **3 scenario-engine tests** in `tests/scenario_engine.rs` — wrapper around `crates/egglsp-test-server/tests/scenario_engine.rs` for strict allow-listing, raw bytes, and grouped-frame fixtures
 
@@ -1269,7 +1269,7 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - `tests/production_protocol_stdio.rs` — Production-harness protocol coverage for launcher-path behavior and transport edge cases
 - `tests/production_semantic_stdio.rs` — Production-harness semantic and edit-preview coverage
 - `tests/production_service_stdio.rs` — Production-harness LspService lifecycle coverage
-- `tests/lsp_composite_stdio.rs` — Root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, and `LspOperations` against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous) and semantic-context collector workflow/capability-gating/failure-degradation tests
+- `tests/lsp_composite_stdio.rs` — Root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, and `LspOperations` against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous, resource-operation), semantic-context collector workflow/capability-gating/failure-degradation tests, security-context workflow test (`SecurityReview` intent on security-sensitive source), and hunk-source-context collector test (unified diff with real LSP operations)
 - `tests/common/harness.rs` — Reusable fake-server test harness with temp directory and scenario management
 - `tests/common/production_harness.rs` — Real-project harness for production launcher-path coverage
 - `tests/scenario_engine.rs` — Package-local wrapper around the fake-server self-tests
@@ -1309,9 +1309,10 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 | Preview safety: command-only | D5 | `preview_safety_command_only_code_action_rejected` | ✅ |
 | Preview safety: no-edit | D5 | `preview_safety_no_edit_code_action_rejected` | ✅ |
 | Preview safety: ambiguous | D5 | `preview_safety_ambiguous_source_actions_rejected` | ✅ |
+| Preview safety: resource operation | D5 | `preview_safety_resource_operation_rejected` | ✅ |
 | Semantic context composite | D6 | `semantic_context_collector_exercises_real_workflow` | ✅ |
-| Security context composite | D6 | `semantic_context_collector_exercises_real_workflow` (security-filtered view of semantic response) | ✅ |
-| Hunk source context composite | D7 | `semantic_context_collector_exercises_real_workflow` (shared semantic read model for hunk evidence) | ✅ |
+| Security context composite | D6 | `security_context_workflow_uses_semantic_collector` | ✅ |
+| Hunk source context composite | D7 | `hunk_source_context_collector_exercises_real_workflow` | ✅ |
 | Semantic context: capability gating | D6 | `semantic_context_collector_capability_gating` | ✅ |
 | Semantic context: failure degradation | D6 | `semantic_context_collector_failure_degradation` | ✅ |
 | LspService single-flight | — | `single_flight_init_uses_a_real_child` | ✅ |

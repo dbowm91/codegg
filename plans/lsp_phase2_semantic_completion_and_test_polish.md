@@ -664,50 +664,50 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Composite workflows
 
-- [ ] Actual semantic context collector invoked against fake server.
-- [ ] Actual security context path invoked against fake server.
-- [ ] Actual hunk source context path invoked against fake server.
-- [ ] Capability gating is asserted.
-- [ ] Optional-operation degradation is asserted.
-- [ ] Budget/truncation behavior remains bounded.
+- [x] Actual semantic context collector invoked against fake server.
+- [x] Actual security context path invoked against fake server.
+- [x] Actual hunk source context path invoked against fake server.
+- [x] Capability gating is asserted.
+- [x] Optional-operation degradation is asserted.
+- [x] Budget/truncation behavior remains bounded.
 
 ## Preview safety
 
-- [ ] Rename response flows through `WorkspaceEditPreview` conversion.
-- [ ] Formatting response flows through preview conversion.
-- [ ] Edit-bearing source action flows through preview conversion.
-- [ ] Multi-file and UTF-16 success case covered.
-- [ ] Out-of-root edit rejected.
-- [ ] Overlapping edit rejected.
-- [ ] Unsupported resource operation rejected.
-- [ ] Command-only/no-edit/ambiguous source actions rejected.
-- [ ] Files remain byte-for-byte unchanged.
+- [x] Rename response flows through `WorkspaceEditPreview` conversion.
+- [x] Formatting response flows through preview conversion.
+- [x] Edit-bearing source action flows through preview conversion.
+- [x] Multi-file and UTF-16 success case covered.
+- [x] Out-of-root edit rejected.
+- [x] Overlapping edit rejected.
+- [x] Unsupported resource operation rejected.
+- [x] Command-only/no-edit/ambiguous source actions rejected.
+- [x] Files remain byte-for-byte unchanged.
 
 ## Routing
 
-- [ ] Fake server captures request IDs.
-- [ ] Responses are emitted in a different order than requests.
-- [ ] Each production caller receives the correct result.
-- [ ] Pending count returns to zero.
+- [x] Fake server captures request IDs.
+- [x] Responses are emitted in a different order than requests.
+- [x] Each production caller receives the correct result.
+- [x] Pending count returns to zero.
 
 ## Typed APIs
 
-- [ ] Dedicated hierarchy adapters are used where available.
-- [ ] New adapters are shared by production collectors and tests.
-- [ ] No test-only typed wrapper is added.
+- [x] Dedicated hierarchy adapters are used where available.
+- [x] New adapters are shared by production collectors and tests.
+- [x] No test-only typed wrapper is added.
 
 ## Reliability
 
-- [ ] Fixed synchronization sleeps removed.
-- [ ] Bounded wait helpers include useful failure diagnostics.
-- [ ] Tests pass under one and eight test threads.
+- [x] Fixed synchronization sleeps removed.
+- [x] Bounded wait helpers include useful failure diagnostics.
+- [x] Tests pass under one and eight test threads.
 
 ## API and docs
 
 - [ ] Inspection methods have an explicit supported/test-only policy.
-- [ ] Public mutable internals are not expanded.
-- [ ] Documentation distinguishes protocol, service, semantic, preview, and composite coverage.
-- [ ] Phase 2 completion claims match actual tests.
+- [x] Public mutable internals are not expanded.
+- [x] Documentation distinguishes protocol, service, semantic, preview, and composite coverage.
+- [x] Phase 2 completion claims match actual tests.
 
 # Completion Criteria
 
