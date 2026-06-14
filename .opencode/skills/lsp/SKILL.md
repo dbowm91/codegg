@@ -1116,6 +1116,7 @@ Preview tests are classified into two categories:
 | `semantic_context_collector_failure_degradation` | Graceful degradation when optional operations error |
 | `semantic_context_security_review_intent_collects_security_source` | Security review intent on security-sensitive source (renamed from `security_context_workflow_uses_semantic_collector`) |
 | `security_context_tool_exercises_risk_filtering_and_call_expansion` | Real `LspTool::execute("securityContext")` orchestration with risk markers, call expansion, and cycle suppression |
+| `security_context_tool_degrades_on_call_hierarchy_error` | Graceful degradation when outgoingCalls fails during expansion BFS — error recorded, packet returned, nodes/evidence preserved |
 
 ### Running
 

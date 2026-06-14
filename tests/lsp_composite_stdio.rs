@@ -3262,6 +3262,209 @@ fn scenario_security_call_graph() -> serde_json::Value {
     })
 }
 
+/// Scenario variant of `scenario_security_call_graph` where the
+/// `callHierarchy/outgoingCalls` for `sink` returns an LSP error instead
+/// of the expected cycle edge. The security context tool should degrade
+/// gracefully: the packet is still returned, the error is recorded, and
+/// nodes/evidence collected before the failure are preserved.
+fn scenario_security_call_graph_outgoing_error() -> serde_json::Value {
+    let mut scenario = scenario_security_call_graph();
+    let steps = scenario["steps"]
+        .as_array_mut()
+        .expect("steps should be an array");
+
+    // Find the outgoingCalls step for sink (the one returning sink→entry cycle).
+    // It is the last outgoingCalls step, after prepareCallHierarchy for sink.
+    // Replace its RespondResult with RespondError.
+    let mut replaced = false;
+    for step in steps.iter_mut() {
+        if step["method"] == "callHierarchy/outgoingCalls" {
+            if let Some(actions) = step["then"].as_array() {
+                if let Some(first) = actions.first() {
+                    if first["type"] == "RespondResult" {
+                        let result = &first["result"];
+                        // The cycle response has one entry whose "to" name is "entry"
+                        if let Some(items) = result.as_array() {
+                            if items.iter().any(|item| item["to"]["name"] == "entry") {
+                                // Replace with an error response
+                                *step = serde_json::json!({
+                                    "type": "ExpectRequest",
+                                    "method": "callHierarchy/outgoingCalls",
+                                    "id": {"type": "Number"},
+                                    "then": [
+                                        {"type": "RespondError", "code": -32603, "message": "Internal error: call hierarchy unavailable for sink"}
+                                    ]
+                                });
+                                replaced = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        replaced,
+        "should have found and replaced the sink outgoingCalls step"
+    );
+    scenario
+}
+
+/// Security context tool: degrades gracefully when one outgoing call
+/// hierarchy request fails during call expansion BFS.
+///
+/// Uses the same risk-marker source as the main security test but the
+/// fake server returns an LSP error for sink's outgoingCalls. The tool
+/// must still return a packet with:
+/// - risk markers and security-relevant symbols (collected before failure)
+/// - the expansion graph with nodes collected before the error
+/// - the error recorded in `call_expansion.errors`
+/// - `call_expansion.truncated` may be true (partial expansion)
+#[tokio::test]
+async fn security_context_tool_degrades_on_call_hierarchy_error() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir
+        .join("target")
+        .join("test-security-call-graph-error");
+    std::fs::create_dir_all(root.join("src")).expect("mkdir test root");
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, SECURITY_CALL_GRAPH_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-security-call-graph-error-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_security_call_graph_outgoing_error(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = Arc::new(LspService::new(make_service_config(
+        &scenario_path,
+        &transcript_path,
+    )));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    // The tool must NOT fail — it should degrade gracefully
+    let result = timeout(
+        Duration::from_secs(30),
+        tool.execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": source_path.to_str().unwrap(),
+            "line": 14,
+            "column": 5,
+            "security_preset": "unsafe_review",
+            "security_categories": ["unsafe", "process"],
+            "include_call_hierarchy": true,
+            "call_depth": 2,
+            "max_call_nodes": 8,
+            "call_direction": "outgoing"
+        })),
+    )
+    .await
+    .expect("securityContext timed out")
+    .expect("securityContext must not fail on partial call hierarchy error");
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    // Risk markers must still be present despite the call hierarchy error
+    let markers = parsed["results"]["risk_markers"]
+        .as_array()
+        .expect("risk_markers should be an array");
+    assert!(
+        !markers.is_empty(),
+        "risk markers should be present even with call hierarchy error"
+    );
+
+    // Security-relevant symbols must still be present
+    let syms = parsed["results"]["security_relevant_symbols"]
+        .as_array()
+        .expect("security_relevant_symbols should be an array");
+    assert!(
+        !syms.is_empty(),
+        "security-relevant symbols should be present even with call hierarchy error"
+    );
+
+    // Preset should match
+    assert_eq!(parsed["results"]["preset"], "unsafe_review");
+
+    // Call expansion must be present (partial)
+    let expansion = parsed["results"]["call_expansion"]
+        .as_object()
+        .expect("call_expansion should be an object");
+    assert!(
+        expansion.get("root").is_some(),
+        "call_expansion.root should be present"
+    );
+    assert_eq!(expansion["direction"], "outgoing");
+
+    // Nodes: at least entry and validate should be collected before the error
+    let nodes = expansion["nodes"]
+        .as_array()
+        .expect("call_expansion.nodes should be an array");
+    assert!(
+        !nodes.is_empty(),
+        "should have at least some nodes before the error"
+    );
+    let node_names: Vec<&str> = nodes.iter().filter_map(|n| n["name"].as_str()).collect();
+    assert!(
+        node_names.contains(&"entry"),
+        "entry should be in the expansion (collected before error), got: {node_names:?}"
+    );
+
+    // Edges: at least one edge should be present (entry→validate or entry→sink)
+    let edges = expansion["edges"]
+        .as_array()
+        .expect("call_expansion.edges should be an array");
+    assert!(
+        !edges.is_empty(),
+        "should have at least some edges before the error"
+    );
+
+    // The error must be recorded in call_expansion.errors
+    let errors = expansion.get("errors");
+    assert!(
+        errors.is_some() && errors.unwrap().as_array().map_or(false, |e| !e.is_empty()),
+        "call_expansion.errors should be non-empty, recording the outgoingCalls failure"
+    );
+
+    // Notes and limits should be present
+    assert!(
+        parsed["results"]["notes"].as_array().is_some(),
+        "notes should be present"
+    );
+    assert!(
+        parsed["results"]["limits"].as_object().is_some(),
+        "limits should be present"
+    );
+
+    service.shutdown_all().await;
+}
+
 /// Security context tool: exercises risk filtering and call expansion with
 /// `unsafe_review` preset against code containing unsafe blocks, process
 /// execution, and a deliberate call cycle (entry → sink → entry).
