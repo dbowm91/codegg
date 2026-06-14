@@ -80,6 +80,42 @@ impl FakeLspHarness {
         }
     }
 
+    /// Dump server diagnostics (stderr + transcript) for debugging test failures.
+    ///
+    /// Call this in test failure paths or after assertion failures to get
+    /// actionable output. Reads stderr from the child process and the
+    /// transcript file written by the fake server.
+    #[allow(dead_code)]
+    pub async fn dump_diagnostics(child: &mut Child, harness: &FakeLspHarness) {
+        eprintln!("\n=== Fake LSP Server Diagnostics ===");
+
+        // Dump stderr
+        let stderr = Self::read_stderr(child).await;
+        if !stderr.is_empty() {
+            eprintln!("--- stderr ---");
+            for line in stderr.lines() {
+                eprintln!("  {line}");
+            }
+        }
+
+        // Dump transcript
+        if harness.transcript_path.exists() {
+            eprintln!("--- transcript ({}) ---", harness.transcript_path.display());
+            match std::fs::read_to_string(&harness.transcript_path) {
+                Ok(content) => {
+                    for line in content.lines() {
+                        eprintln!("  {line}");
+                    }
+                }
+                Err(e) => eprintln!("  (could not read transcript: {e})"),
+            }
+        } else {
+            eprintln!("--- transcript: not yet written ---");
+        }
+
+        eprintln!("=== End Diagnostics ===\n");
+    }
+
     /// Path to the fake server binary.
     ///
     /// Searches in order:

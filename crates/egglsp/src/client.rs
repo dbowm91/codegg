@@ -1318,6 +1318,13 @@ pub fn parse_publish_diagnostics(
     Some((uri.to_string(), diagnostics))
 }
 
+/// Maximum allowed Content-Length for a single inbound LSP frame (64 MiB).
+///
+/// Real LSP responses rarely exceed a few hundred KiB. This limit protects
+/// against a malicious or buggy server claiming an absurdly large frame and
+/// causing the client to allocate unbounded memory.
+const MAX_LSP_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 /// Read a single Content-Length framed message from a stdout stream.
 async fn read_framed_message(stdout: &mut tokio::process::ChildStdout) -> Result<String, LspError> {
     use tokio::io::AsyncReadExt;
@@ -1339,6 +1346,13 @@ async fn read_framed_message(stdout: &mut tokio::process::ChildStdout) -> Result
     let header_str = String::from_utf8_lossy(&header_buf);
     let content_length = parse_content_length(&header_str)
         .ok_or_else(|| LspError::RequestFailed("missing Content-Length header".to_string()))?;
+
+    if content_length > MAX_LSP_FRAME_BYTES {
+        return Err(LspError::Protocol(format!(
+            "Content-Length {} exceeds maximum allowed frame size of {} bytes",
+            content_length, MAX_LSP_FRAME_BYTES
+        )));
+    }
 
     let mut body = vec![0u8; content_length];
     stdout
@@ -2782,5 +2796,35 @@ mod tests {
             "error": { "code": -32601, "message": "test" }
         });
         assert!(is_structural_error(&value));
+    }
+
+    #[test]
+    fn max_lsp_frame_bytes_is_64_mib() {
+        assert_eq!(MAX_LSP_FRAME_BYTES, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_content_length_extracts_value() {
+        let header = "Content-Length: 42\r\n\r\n";
+        assert_eq!(parse_content_length(header), Some(42));
+    }
+
+    #[test]
+    fn parse_content_length_rejects_non_numeric() {
+        let header = "Content-Length: abc\r\n\r\n";
+        assert_eq!(parse_content_length(header), None);
+    }
+
+    #[test]
+    fn parse_content_length_rejects_missing() {
+        let header = "\r\n";
+        assert_eq!(parse_content_length(header), None);
+    }
+
+    #[test]
+    fn parse_content_length_uses_first_header() {
+        // parse_content_length returns the first Content-Length it finds
+        let header = "Content-Length: 10\r\nContent-Length: 20\r\n\r\n";
+        assert_eq!(parse_content_length(header), Some(10));
     }
 }

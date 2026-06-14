@@ -1879,6 +1879,357 @@ async fn cancel_request_notification() {
     assert!(status.success());
 }
 
+// ── Additional malformed framing tests (C12 continued) ────────────────
+
+/// Send a message with a negative Content-Length value. The parser
+/// rejects negative values because `usize::parse` fails on `-1`.
+#[tokio::test]
+async fn malformed_negative_content_length() {
+    let scenario = serde_json::json!({
+        "name": "malformed_negative_cl",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Negative Content-Length — usize::parse fails on "-1"
+    let malformed = b"Content-Length: -1\r\n\r\n{}";
+    send_raw_bytes(&mut stdin, malformed).await;
+
+    send_request(&mut stdin, 99, "shutdown", serde_json::json!(null)).await;
+    let _ = read_frame_timeout(&mut stdout, Duration::from_secs(3)).await;
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+    match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+        Ok(Ok(status)) => {
+            assert!(
+                status.code().is_some(),
+                "server should terminate after negative Content-Length"
+            );
+        }
+        _ => {
+            let _ = child.kill().await;
+        }
+    }
+}
+
+/// Send a message where Content-Length is smaller than the actual body.
+/// The server reads exactly Content-Length bytes, leaving the rest in the
+/// buffer. The next read picks up the leftover bytes, which are not a
+/// valid frame, causing the server to terminate.
+#[tokio::test]
+async fn malformed_content_length_smaller_than_body() {
+    let scenario = serde_json::json!({
+        "name": "malformed_cl_too_small",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Content-Length says 5 bytes but we send 20. Server reads 5, leaves 15
+    // in the buffer. Those 15 bytes are not a valid frame header, so the
+    // server will fail on the next read.
+    let body = b"12345extra_bytes_here";
+    let frame = format!("Content-Length: 5\r\n\r\n{}", String::from_utf8_lossy(body));
+    send_raw_bytes(&mut stdin, frame.as_bytes()).await;
+
+    // Give server time to process, then close stdin so it exits
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(stdin);
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("timeout")
+        .expect("wait failed");
+    assert!(
+        status.code().is_some(),
+        "server should terminate after Content-Length smaller than body"
+    );
+}
+
+/// Send a message with LF-only line endings instead of CRLF. The parser
+/// expects `\r\n\r\n` as the header terminator and should reject this.
+#[tokio::test]
+async fn malformed_lf_only_framing() {
+    let scenario = serde_json::json!({
+        "name": "malformed_lf_only",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // LF-only framing: "Content-Length: 2\n\n{}" instead of CRLF
+    let malformed = b"Content-Length: 2\n\n{}";
+    send_raw_bytes(&mut stdin, malformed).await;
+
+    send_request(&mut stdin, 99, "shutdown", serde_json::json!(null)).await;
+    let _ = read_frame_timeout(&mut stdout, Duration::from_secs(3)).await;
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+    match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+        Ok(Ok(status)) => {
+            assert!(
+                status.code().is_some(),
+                "server should terminate after LF-only framing"
+            );
+        }
+        _ => {
+            let _ = child.kill().await;
+        }
+    }
+}
+
+/// Send two complete frames in a single write. The server's BufReader
+/// should process both frames correctly (this is a valid scenario).
+#[tokio::test]
+async fn multiple_frames_in_one_write() {
+    let scenario = serde_json::json!({
+        "name": "multi_frame_write",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send two frames in one write: initialized notification + shutdown request
+    let initialized = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    });
+    let init_body = serde_json::to_string(&initialized).unwrap();
+    let shutdown = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 99,
+        "method": "shutdown",
+        "params": null
+    });
+    let shut_body = serde_json::to_string(&shutdown).unwrap();
+    let combined = format!(
+        "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+        init_body.len(),
+        init_body,
+        shut_body.len(),
+        shut_body
+    );
+    send_raw_bytes(&mut stdin, combined.as_bytes()).await;
+
+    // Read shutdown response (id=99)
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
+        .await
+        .expect("timeout")
+        .expect("EOF");
+    assert_eq!(resp["id"], 99);
+
+    // Send exit
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("timeout")
+        .expect("wait failed");
+    assert!(status.success());
+}
+
+// ── Workspace folders test ────────────────────────────────────────────
+
+/// Server sends `workspace/workspaceFolders` request during initialization.
+/// Client responds with the root folder. This is a simpler variant of the
+/// configuration test, exercising the workspace folders handler path.
+#[tokio::test]
+async fn workspace_folders_request() {
+    let scenario = serde_json::json!({
+        "name": "workspace_folders",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [
+                    {"type": "RespondResult", "result": {"capabilities": {}}},
+                    {"type": "SendRequest", "method": "workspace/workspaceFolders", "params": {}}
+                ]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_request(
+        &mut stdin,
+        1,
+        "initialize",
+        serde_json::json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", harness.root.display()),
+            "capabilities": {}
+        }),
+    )
+    .await;
+
+    // Read frames: expect init response and workspaceFolders request
+    let mut got_init_response = false;
+    let mut got_workspace_folders = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let frame = match tokio::time::timeout(remaining, read_frame(&mut stdout)).await {
+            Ok(Some(f)) => f,
+            _ => break,
+        };
+
+        if is_server_request(&frame) {
+            let method = frame["method"].as_str().unwrap();
+            if method == "workspace/workspaceFolders" {
+                let req_id = &frame["id"];
+                send_response(&mut stdin, req_id, serde_json::json!([])).await;
+                got_workspace_folders = true;
+            }
+        } else if is_response(&frame) && frame["id"] == serde_json::json!(1) {
+            got_init_response = true;
+        }
+    }
+
+    assert!(got_init_response, "should have received init response");
+    assert!(
+        got_workspace_folders,
+        "should have received workspace/workspaceFolders request"
+    );
+
+    // Send initialized
+    send_notification(&mut stdin, "initialized", serde_json::json!({})).await;
+
+    // Shutdown + exit
+    send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
+        .await
+        .expect("timeout")
+        .expect("EOF");
+    assert_eq!(resp["id"], 2);
+
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("timeout")
+        .expect("wait failed");
+    assert!(status.success());
+}
+
 /// Diagnostics lifecycle: after didOpen, the server may publish
 /// diagnostics. didChange/didSave can trigger re-publish, and
 /// didClose typically produces an empty diagnostic list. The client
