@@ -1229,7 +1229,7 @@ A cloneable error type used for concurrent initialization waiters. `SharedInitEr
 
 ## Phase 2: Scripted Stdio Integration Testing (Complete)
 
-All 37 Phase 2 integration tests are passing (25 protocol + 12 semantic). The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing. It reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts.
+All 39 Phase 2 integration tests are passing (27 protocol + 12 semantic). The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing. It reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts.
 
 ### Architecture
 

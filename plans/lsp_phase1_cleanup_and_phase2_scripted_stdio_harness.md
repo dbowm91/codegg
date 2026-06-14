@@ -1298,12 +1298,12 @@ Where workspace-wide failures are pre-existing, record exact diagnostics. All mo
 
 - [x] Initialize/initialized handshake.
 - [x] Server requests during initialization.
-- [ ] Configuration/workspace folders/dynamic registration. (unit-tested, 34 tests)
+- [x] Configuration/workspace folders/dynamic registration.
 - [x] Apply-edit refusal result.
 - [x] Notifications interleaved with responses.
 - [x] Out-of-order concurrent responses.
 - [x] Diagnostics lifecycle.
-- [ ] Timeout and `$/cancelRequest`. (deferred — C8 injectable timeouts added, no integration test)
+- [x] Timeout and `$/cancelRequest`. (cancel notification wire-level test; timeout behavior tested at unit level)
 - [x] Graceful shutdown/exit.
 - [x] EOF and nonzero process exit.
 - [x] Malformed framing.

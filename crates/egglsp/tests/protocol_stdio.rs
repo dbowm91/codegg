@@ -1658,6 +1658,227 @@ async fn nonzero_exit_code() {
     assert_eq!(status.code(), Some(1), "server should exit with code 1");
 }
 
+// ── Dynamic registration test ─────────────────────────────────────────
+
+/// Server sends `client/registerCapability` request after initialization.
+/// Client responds with null (success), registering the dynamic capability.
+/// This tests the `DynamicRegistrationState` flow through real stdio.
+#[tokio::test]
+async fn dynamic_registration() {
+    let scenario = serde_json::json!({
+        "name": "dynamic_registration",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [
+                    {"type": "RespondResult", "result": {"capabilities": {}}},
+                    {"type": "SendRequest", "method": "client/registerCapability", "params": {
+                        "registrations": [{
+                            "id": "test-reg-1",
+                            "method": "textDocument/completion",
+                            "registerOptions": {
+                                "triggerCharacters": [".", ":"]
+                            }
+                        }]
+                    }}
+                ]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_request(
+        &mut stdin,
+        1,
+        "initialize",
+        serde_json::json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", harness.root.display()),
+            "capabilities": {}
+        }),
+    )
+    .await;
+
+    // Read frames: expect init response and registerCapability request
+    let mut got_init_response = false;
+    let mut got_register_request = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let frame = match tokio::time::timeout(remaining, read_frame(&mut stdout)).await {
+            Ok(Some(f)) => f,
+            _ => break,
+        };
+
+        if is_server_request(&frame) {
+            let method = frame["method"].as_str().unwrap();
+            if method == "client/registerCapability" {
+                let req_id = &frame["id"];
+                send_response(&mut stdin, req_id, serde_json::Value::Null).await;
+                got_register_request = true;
+            }
+        } else if is_response(&frame) && frame["id"] == serde_json::json!(1) {
+            got_init_response = true;
+        }
+    }
+
+    assert!(got_init_response, "should have received init response");
+    assert!(
+        got_register_request,
+        "should have received client/registerCapability request"
+    );
+
+    // Send initialized
+    send_notification(&mut stdin, "initialized", serde_json::json!({})).await;
+
+    // Shutdown + exit
+    send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
+        .await
+        .expect("timeout")
+        .expect("EOF");
+    assert_eq!(resp["id"], 2);
+
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("timeout")
+        .expect("wait failed");
+    assert!(status.success());
+}
+
+// ── $/cancelRequest notification test ──────────────────────────────────
+
+/// Client sends `$/cancelRequest` notification during an in-flight request.
+/// This tests that the cancel notification is properly framed and delivered
+/// to the server. The actual timeout/cancel behavior is tested at the unit
+/// test level (see client.rs cancel tests); this integration test verifies
+/// the wire-level notification format and delivery.
+#[tokio::test]
+async fn cancel_request_notification() {
+    let scenario = serde_json::json!({
+        "name": "cancel_request",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": [
+                    {"type": "SendRequest", "method": "textDocument/definition", "params": {}}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_request(
+        &mut stdin,
+        1,
+        "initialize",
+        serde_json::json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", harness.root.display()),
+            "capabilities": {}
+        }),
+    )
+    .await;
+
+    // Read init response
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
+        .await
+        .expect("timeout")
+        .expect("EOF");
+    assert_eq!(resp["id"], 1);
+
+    // Send initialized
+    send_notification(&mut stdin, "initialized", serde_json::json!({})).await;
+
+    // Read the definition request from the server
+    let mut got_definition = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let frame = match tokio::time::timeout(remaining, read_frame(&mut stdout)).await {
+            Ok(Some(f)) => f,
+            _ => break,
+        };
+        if is_server_request(&frame) && frame["method"].as_str() == Some("textDocument/definition")
+        {
+            got_definition = true;
+            break;
+        }
+    }
+    assert!(got_definition, "should have received definition request");
+
+    // Send $/cancelRequest notification for id=2 (the definition request).
+    // This is a client→server notification; the server receives it but
+    // the cancel logic is handled client-side (pending map removal).
+    send_notification(
+        &mut stdin,
+        "$/cancelRequest",
+        serde_json::json!({ "id": 2 }),
+    )
+    .await;
+
+    // Shutdown + exit
+    send_request(&mut stdin, 3, "shutdown", serde_json::json!(null)).await;
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
+        .await
+        .expect("timeout")
+        .expect("EOF");
+    assert_eq!(resp["id"], 3);
+
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("timeout")
+        .expect("wait failed");
+    assert!(status.success());
+}
+
 /// Diagnostics lifecycle: after didOpen, the server may publish
 /// diagnostics. didChange/didSave can trigger re-publish, and
 /// didClose typically produces an empty diagnostic list. The client
