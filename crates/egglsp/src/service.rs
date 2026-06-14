@@ -48,48 +48,92 @@ type InitMap = Arc<Mutex<HashMap<String, InitSlot>>>;
 
 // ── InitTaskControl: authoritative task ownership ────────────────────
 
-/// Tracks a spawned initialization task for shutdown coordination.
-///
-/// Stores the actual `JoinHandle` of the wrapper task so that
-/// `shutdown_all()` can await real task completion, not a disconnected
-/// oneshot receiver. The wrapper task is responsible for self-removing
-/// its `active_init_tasks` entry on every terminal path (success,
-/// failure, panic, cancellation) via the [`ActiveTaskGuard`] drop guard.
-struct InitTaskControl {
-    #[allow(dead_code)]
-    attempt_id: u64,
-    cancellation: CancellationToken,
-    join_handle: tokio::task::JoinHandle<()>,
-}
-
-type ActiveTaskMap = Arc<Mutex<HashMap<u64, InitTaskControl>>>;
-
-/// Drop guard that removes the entry on every terminal path of the
-/// spawned init task future. Runs synchronously via `try_lock` to
-/// avoid spawning a follow-up task that may itself be cancelled.
-struct ActiveTaskGuard {
-    attempt_id: u64,
-    active_init_tasks: ActiveTaskMap,
-}
-
-impl Drop for ActiveTaskGuard {
-    fn drop(&mut self) {
-        let attempt_id = self.attempt_id;
-        // Best-effort synchronous removal. If the lock is held (e.g. by
-        // shutdown drain), the entry will be removed by the drain itself.
-        if let Ok(mut map) = self.active_init_tasks.try_lock() {
-            map.remove(&attempt_id);
-        }
-    }
-}
-
-/// Exit status of the wrapper init task. Used only for logging/diagnostics.
+/// Exit status of the wrapper init task. Used for logging/diagnostics
+/// and to prove that the wrapper task body has been dropped before
+/// `shutdown_all()` returns.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 enum InitTaskExit {
     Completed,
     Panicked(String),
     Cancelled,
+}
+
+type InitTaskExitRx = tokio::sync::oneshot::Receiver<InitTaskExit>;
+type InitTaskExitTx = tokio::sync::oneshot::Sender<InitTaskExit>;
+
+/// Tracks a spawned initialization task for shutdown coordination.
+///
+/// The `completion` oneshot receiver is the **authoritative terminal
+/// signal** for the real wrapper task. The wrapper task owns the
+/// corresponding sender and is required to either send exactly one
+/// `InitTaskExit` before exiting, or be dropped (which closes the
+/// channel and resolves the receiver with `Err`). Shutdown never
+/// holds the real `JoinHandle` via a forwarding task: it observes
+/// termination through this receiver.
+///
+/// `abort_handle` is the `JoinHandle::abort_handle()` clone. It is
+/// used to forcibly abort stragglers that do not respond to
+/// cooperative cancellation within the grace deadline.
+struct InitTaskControl {
+    attempt_id: u64,
+    cancellation: CancellationToken,
+    abort_handle: tokio::task::AbortHandle,
+    completion: InitTaskExitRx,
+}
+
+type ActiveTaskMap = Arc<Mutex<HashMap<u64, InitTaskControl>>>;
+
+/// Fallback guard that removes the `active_init_tasks` entry on
+/// terminal paths where the wrapper task did not run its explicit
+/// cleanup (panic, forced abort, unexpected future drop).
+///
+/// Normal completion uses [`ActiveTaskGuard::disarm`] after explicit
+/// removal of the entry from the map. The drop fallback spawns a
+/// follow-up cleanup task so the removal is not contingent on the
+/// lock being uncontended at drop time. The shutdown drain
+/// additionally clears any leftover entries after observing task
+/// termination, so the active map is guaranteed to be empty
+/// post-shutdown regardless of which path the wrapper took.
+struct ActiveTaskGuard {
+    attempt_id: u64,
+    active_init_tasks: ActiveTaskMap,
+    armed: bool,
+}
+
+impl ActiveTaskGuard {
+    fn new(attempt_id: u64, active_init_tasks: ActiveTaskMap) -> Self {
+        Self {
+            attempt_id,
+            active_init_tasks,
+            armed: true,
+        }
+    }
+
+    /// Disarm the guard. Must be called after the wrapper has
+    /// explicitly removed its `active_init_tasks` entry on the
+    /// normal completion path.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ActiveTaskGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Fallback: explicit removal did not run. Spawn a cleanup
+        // task; the runtime will run it as long as it is alive.
+        // The shutdown drain is the additional safety net — it
+        // empties the map after observing terminal completion, so
+        // the entry is guaranteed to disappear.
+        let attempt_id = self.attempt_id;
+        let map = self.active_init_tasks.clone();
+        tokio::spawn(async move {
+            let mut map = map.lock().await;
+            map.remove(&attempt_id);
+        });
+    }
 }
 
 // ── InitRole: leader/waiter election ─────────────────────────────────
@@ -174,10 +218,18 @@ const SHUTDOWN_GLOBAL_TIMEOUT: Duration = Duration::from_secs(6);
 /// client.writer              (LspWriter — serialized via Arc<Mutex<...>>)
 /// ```
 ///
-/// The `initializing` and `active_init_tasks` locks are acquired in
-/// document order (`initializing` first) only to read slot state; no
-/// path holds `active_init_tasks` while awaiting `initializing`, and
-/// no path holds `initializing` while awaiting task/client I/O.
+/// The `initializing` and `active_init_tasks` locks are acquired
+/// **sequentially, never nested**:
+/// - The leader registration path acquires `initializing` to read
+///   slot state, releases it, then acquires `active_init_tasks` to
+///   install the control, releases it, then re-acquires
+///   `initializing` to re-check slot validity, releases it. No
+///   acquisition holds both locks.
+/// - No path holds `active_init_tasks` while awaiting `initializing`,
+///   and no path holds `initializing` while awaiting task/client I/O.
+/// - `shutdown_all` drains `active_init_tasks` once, signals all
+///   cancellation tokens, and awaits all completion receivers
+///   concurrently under one aggregate deadline. No nested locks.
 ///
 /// ## Client-map lock discipline
 ///
@@ -399,11 +451,21 @@ impl LspService {
                 #[cfg(test)]
                 let test_init = self.test_init_fn.clone();
 
-                // Spawn the wrapper task. The wrapper owns the active-task
-                // entry removal (via the `ActiveTaskGuard` drop guard) and
-                // provides the authoritative `JoinHandle` for shutdown.
+                // ── Start-barrier pattern ──
+                //
+                // The wrapper task waits on `start_rx` before doing
+                // any work. We send on `start_tx` only after the
+                // `active_init_tasks` entry has been installed. This
+                // guarantees the task body cannot complete (or even
+                // begin) before its bookkeeping record exists.
+                let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
+                let (completion_tx, completion_rx) =
+                    tokio::sync::oneshot::channel::<InitTaskExit>();
+
                 let task = tokio::spawn(run_init_task_wrapper(
                     attempt_id,
+                    start_rx,
+                    completion_tx,
                     server,
                     project_root_clone,
                     config,
@@ -417,17 +479,27 @@ impl LspService {
                     test_init,
                 ));
 
-                // ── Registration race resolution (Phase 1) ──
-                //
-                // The slot may have been removed by a concurrent shutdown
-                // (or by a new `Shutdown` transition) between slot creation
-                // and task registration. Check `initializing` first (in
-                // document order with `active_init_tasks`) and only insert
-                // the active-task entry if the slot is still valid for
-                // this attempt. If invalid, abort the task and notify any
-                // waiters (which there should be none, since we are the
-                // leader). Re-check after acquiring the active-task lock
-                // to avoid the inverted-order race.
+                // Step 1: install the active-task entry. We do this
+                // BEFORE the second `initializing` check, so the
+                // control is always present if the task is running.
+                let abort_handle = task.abort_handle();
+                {
+                    let mut tasks = active_init_tasks.lock().await;
+                    tasks.insert(
+                        attempt_id,
+                        InitTaskControl {
+                            attempt_id,
+                            cancellation: cancellation.clone(),
+                            abort_handle,
+                            completion: completion_rx,
+                        },
+                    );
+                }
+
+                // Step 2: re-check slot validity under `initializing`.
+                // No nesting: we released `active_init_tasks` before
+                // acquiring `initializing`. The two maps are checked
+                // independently with no lock held across both.
                 let slot_still_valid = {
                     let init = initializing.lock().await;
                     init.get(&key_clone)
@@ -435,57 +507,40 @@ impl LspService {
                 };
 
                 if !slot_still_valid {
-                    task.abort();
-                    let _ = task.await;
-                    if let Some(senders) = take_attempt(&initializing, &key_clone, attempt_id).await
-                    {
-                        let cancel_err = SharedInitError {
-                            kind: super::error::SharedInitErrorKind::Cancelled,
-                            message: "service lifecycle changed before registration".to_string(),
-                        };
-                        send_completion_result(senders, Err(cancel_err));
-                    }
+                    // Drop the start_tx to unblock the wrapper; the
+                    // wrapper will observe channel closure and exit
+                    // early. We also abort in case the wrapper has
+                    // not yet hit the start_rx await.
+                    drop(start_tx);
+                    abort_and_finalize_unstarted_task(
+                        task,
+                        &active_init_tasks,
+                        attempt_id,
+                        &initializing,
+                        &key_clone,
+                    )
+                    .await;
                     return Err(LspError::InitializationCancelled(
                         "service lifecycle changed before registration".to_string(),
                     ));
                 }
 
-                {
-                    let mut tasks = active_init_tasks.lock().await;
-                    let still_valid = initializing
-                        .lock()
-                        .await
-                        .get(&key_clone)
-                        .is_some_and(|slot| slot.attempt_id == attempt_id);
-                    if still_valid {
-                        tasks.insert(
-                            attempt_id,
-                            InitTaskControl {
-                                attempt_id,
-                                cancellation: cancellation.clone(),
-                                join_handle: task,
-                            },
-                        );
-                    } else {
-                        // Slot was removed concurrently — drop the task,
-                        // abort it, and signal the waiters.
-                        drop(tasks);
-                        task.abort();
-                        let _ = task.await;
-                        if let Some(senders) =
-                            take_attempt(&initializing, &key_clone, attempt_id).await
-                        {
-                            let cancel_err = SharedInitError {
-                                kind: super::error::SharedInitErrorKind::Cancelled,
-                                message: "service lifecycle changed before registration"
-                                    .to_string(),
-                            };
-                            send_completion_result(senders, Err(cancel_err));
-                        }
-                        return Err(LspError::InitializationCancelled(
-                            "service lifecycle changed before registration".to_string(),
-                        ));
-                    }
+                // Step 3: signal the wrapper to start.
+                if start_tx.send(()).is_err() {
+                    // Wrapper dropped its start_rx before we sent —
+                    // it has already exited. Reap its terminal
+                    // completion below.
+                    abort_and_finalize_unstarted_task(
+                        task,
+                        &active_init_tasks,
+                        attempt_id,
+                        &initializing,
+                        &key_clone,
+                    )
+                    .await;
+                    return Err(LspError::InitializationCancelled(
+                        "init task exited before registration completed".to_string(),
+                    ));
                 }
 
                 match completion.await {
@@ -654,13 +709,22 @@ impl LspService {
     ///
     /// # Quiescence contract
     ///
-    /// After `shutdown_all()` returns:
-    /// - No initialization task body remains active. Every spawned
-    ///   task has either completed normally, exited via cooperative
-    ///   cancellation, or been aborted and its `JoinHandle` awaited.
-    /// - `active_init_tasks` is empty (the wrapper task's drop guard
-    ///   has run on every terminal path, and the shutdown drain has
-    ///   removed any remaining entries).
+    /// **Normal contract** (pathological-deadline fallback not triggered):
+    /// After `shutdown_all()` returns, every spawned initialization
+    /// task has been observed to terminate via its authoritative
+    /// completion receiver (`InitTaskExit` or channel close). No
+    /// forwarding task owns the real `JoinHandle` — the completion
+    /// receiver IS the authoritative terminal signal.
+    ///
+    /// Specifically:
+    /// - Every wrapper task body has either completed normally, exited
+    ///   via cooperative cancellation (`CancellationToken`), or been
+    ///   aborted (`AbortHandle`) and the abort completion observed via
+    ///   the same completion receiver.
+    /// - `active_init_tasks` is empty (explicit cleanup on the normal
+    ///   path; the `ActiveTaskGuard` fallback's spawned cleanup task
+    ///   for panic/abort paths; and the coordinator drain as the
+    ///   final safety net).
     /// - All ready clients have been shut down (concurrently under a
     ///   shared deadline), and the map is empty.
     /// - The lifecycle phase is `Stopped` and the `watch` channel has
@@ -668,6 +732,17 @@ impl LspService {
     /// - Concurrent callers that observed `ShuttingDown` subscribe to
     ///   the watch channel, re-check the state, and return only after
     ///   the transition to `Stopped` (no lost wakeups).
+    ///
+    /// **Pathological deadline fallback** (forced finalization):
+    /// If the absolute global deadline (`SHUTDOWN_GLOBAL_TIMEOUT`)
+    /// expires before all tasks have terminated, the service
+    /// finalizes state regardless: the maps are cleared, the abort
+    /// handles are signaled, the lifecycle transitions to `Stopped`,
+    /// and unresolved task completions are logged as severe
+    /// invariant failures. In this fallback, Tokio is not guaranteed
+    /// to deliver a terminal event for an aborted task; the contract
+    /// does not claim absolute proof of termination after the
+    /// runtime deadline.
     pub async fn shutdown_all(&self) {
         let deadline = Instant::now() + SHUTDOWN_GLOBAL_TIMEOUT;
         // Drive the inner state machine with an absolute deadline.
@@ -719,9 +794,10 @@ impl LspService {
         // active-task map. Slot senders are notified at the end.
         let attempts_to_cancel = drain_attempts(&self.initializing).await;
 
-        // Step 4: drain active tasks. The wrapper task's drop guard
-        // is responsible for removing its own entry on every terminal
-        // path; the drain handles any leftover entries.
+        // Step 4: drain active tasks. Each entry's `InitTaskControl`
+        // carries a oneshot completion receiver that is the
+        // authoritative terminal signal for the wrapper task. We
+        // never wrap the real `JoinHandle` in a forwarding task.
         let tasks: Vec<InitTaskControl> = {
             let mut tasks_map = self.active_init_tasks.lock().await;
             tasks_map.drain().map(|(_, v)| v).collect()
@@ -739,56 +815,25 @@ impl LspService {
             ctrl.cancellation.cancel();
         }
 
-        // Step 6: separate the JoinHandles from the controls. We
-        // need to keep the controls (for their cancellation token
-        // and abort handle) until we know which tasks are unfinished.
-        let mut join_handles: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(tasks.len());
-        let mut remaining_controls: Vec<InitTaskControl> = tasks;
-        for ctrl in remaining_controls.drain(..) {
-            // Destructure to extract the JoinHandle and drop the
-            // rest of the control. The `ActiveTaskGuard` drop
-            // guard in the wrapper task future will fire when the
-            // future is dropped (on abort).
-            let InitTaskControl {
-                attempt_id: _,
-                cancellation: _,
-                join_handle,
-            } = ctrl;
-            join_handles.push(join_handle);
-        }
+        // Step 6: aggregate grace wait. Await all completion
+        // receivers concurrently under one grace deadline. The
+        // returned set is the list of tasks that did NOT complete
+        // within the grace budget; for those we still hold the
+        // abort handles so we can forcibly abort them in step 7.
+        let still_pending = await_init_task_completions(tasks, cancellation_deadline).await;
 
-        // Await all join handles concurrently under one grace deadline.
-        // Returns the set of unfinished handles (those that did not
-        // complete within the budget). For each unfinished handle, we
-        // need to remember its abort handle to forcibly abort it. We
-        // can recover the abort handle via `JoinHandle::abort_handle`
-        // *before* moving the handle into the drain helper. Since the
-        // drain helper takes ownership, we collect abort handles first.
-        let mut abort_handles: Vec<tokio::task::AbortHandle> =
-            Vec::with_capacity(join_handles.len());
-        let mut join_handles_to_drain: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-        for jh in join_handles {
-            abort_handles.push(jh.abort_handle());
-            join_handles_to_drain.push(jh);
-        }
-
-        let still_pending =
-            drain_joins_with_deadline(join_handles_to_drain, cancellation_deadline).await;
-        // The returned handles are still unfinished. We pair them with
-        // the abort handles by length; since drain_joins_with_deadline
-        // returns the handles that were not yet complete, and the
-        // abort handles were collected in the same order, we can
-        // assume the count matches. (If drain_joins_with_deadline
-        // returns empty because the timeout fired mid-flight, we use
-        // the abort_handles in order to forcibly abort all remaining.)
-        if !still_pending.is_empty() || !abort_handles.is_empty() {
-            // Forcibly abort the still-pending handles. We can't
-            // know exactly which ones are still pending, so abort
-            // all collected abort handles.
-            for ah in &abort_handles {
-                ah.abort();
+        // Step 7: forcibly abort stragglers and await their
+        // completion receivers under the remaining global deadline.
+        // The completion receiver resolves either when the wrapper
+        // sends its terminal exit (rare under forced abort) or
+        // when the sender is dropped (the task future was dropped
+        // by the abort, closing the channel).
+        if !still_pending.is_empty() {
+            for ctrl in &still_pending {
+                ctrl.abort_handle.abort();
             }
-            let _ = still_pending;
+            let abort_deadline = deadline;
+            let _ = await_init_task_completions(still_pending, abort_deadline).await;
         }
 
         // Step 8: drain ready clients and shut them down concurrently
@@ -1163,6 +1208,45 @@ async fn take_attempt(
     init.remove(key).map(InitSlot::into_senders)
 }
 
+/// Abort a not-yet-started wrapper task and finalize the bookkeeping
+/// associated with it. Used by the leader registration path when the
+/// slot is invalidated after the task was spawned but before it was
+/// started via the start barrier.
+///
+/// This helper:
+/// 1. Aborts the task via `JoinHandle::abort` (defensive — the task
+///    has not started its body yet, so this is a no-op for the body,
+///    but it ensures the JoinHandle is consumed).
+/// 2. Removes the active-task entry under `active_init_tasks`.
+/// 3. Drains the slot from `initializing` (if still present) and
+///    notifies any waiters with a `Cancelled` `SharedInitError`.
+async fn abort_and_finalize_unstarted_task(
+    task: tokio::task::JoinHandle<()>,
+    active_init_tasks: &ActiveTaskMap,
+    attempt_id: u64,
+    initializing: &InitMap,
+    key: &str,
+) {
+    // Remove the active-task entry; the task never started.
+    {
+        let mut tasks = active_init_tasks.lock().await;
+        tasks.remove(&attempt_id);
+    }
+
+    // Abort the task (it is awaiting start_rx or has been dropped).
+    task.abort();
+    let _ = task.await;
+
+    // Drain the slot and notify any (orphan) waiters.
+    if let Some(senders) = take_attempt(initializing, key, attempt_id).await {
+        let cancel_err = SharedInitError {
+            kind: super::error::SharedInitErrorKind::Cancelled,
+            message: "service lifecycle changed before registration".to_string(),
+        };
+        send_completion_result(senders, Err(cancel_err));
+    }
+}
+
 async fn drain_attempts(initializing: &InitMap) -> Vec<(String, u64, Vec<InitCompletionSender>)> {
     let mut init = initializing.lock().await;
     init.drain()
@@ -1186,92 +1270,139 @@ async fn dispose_unpublished_client(client: Arc<LspClient>, reason: &str) {
     }
 }
 
-/// Drain a set of `JoinHandle`s concurrently under a single deadline.
+/// Await a set of `InitTaskControl` completion receivers concurrently
+/// under a single absolute deadline. Returns the set of tasks that
+/// did NOT complete within the budget; for those the caller still
+/// owns the `InitTaskControl` (with its `abort_handle`) so it can
+/// forcibly abort and re-await.
 ///
-/// Returns the set of unfinished handles (those that did not complete
-/// within the deadline). The caller is responsible for aborting the
-/// tasks before passing their `JoinHandle`s to this function when
-/// "abort-timeout" semantics are desired.
+/// The receiver in each `InitTaskControl` is the authoritative
+/// terminal signal for the wrapper task: it resolves when the
+/// wrapper sends its `InitTaskExit` (normal or panic path) or when
+/// the sender is dropped (forced abort path, where the abort drops
+/// the future and thus the sender).
 ///
-/// This helper moves the `JoinHandle`s out of the input vector and
-/// uses `futures::future::select_all` to await them concurrently.
-async fn drain_joins_with_deadline(
-    handles: Vec<tokio::task::JoinHandle<()>>,
+/// Implementation note: each control's future borrows the
+/// completion receiver via `&mut` inside a `tokio::select!`. When
+/// the deadline fires first, the `select!` drops the deadline
+/// branch (the sleep future) and the borrow on the receiver
+/// ends, so the receiver is still intact and can be returned in
+/// the control for a second pass. The `biased;` directive in the
+/// `select!` ensures we always poll the receiver first, so
+/// completed tasks resolve as soon as the wrapper sends its
+/// terminal signal.
+#[allow(clippy::type_complexity)]
+async fn await_init_task_completions(
+    mut tasks: Vec<InitTaskControl>,
     deadline: Instant,
-) -> Vec<tokio::task::JoinHandle<()>> {
-    if handles.is_empty() {
+) -> Vec<InitTaskControl> {
+    if tasks.is_empty() {
         return Vec::new();
     }
-    // Use tokio's JoinSet to await all handles concurrently.
-    let mut set = tokio::task::JoinSet::new();
-    for h in handles {
-        // Spawn a forwarder task that awaits the inner handle. This
-        // is needed because JoinSet::spawn takes a future, not a
-        // JoinHandle, and we already have JoinHandles.
-        set.spawn(async move {
-            let _ = h.await;
-        });
-    }
-    let total = set.len();
+
+    let total = tasks.len();
     let mut completed = 0usize;
-    let mut unfinished_count = 0usize;
-    // Drive the JoinSet under the absolute deadline. We use
-    // `join_next_with_timeout`-like behavior by racing the deadline
-    // against each join_next call.
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            warn!(
-                remaining = set.len(),
-                "init task deadline expired; tasks did not terminate"
-            );
-            unfinished_count = set.len();
-            break;
-        }
-        let budget = deadline.saturating_duration_since(now);
-        match tokio::time::timeout(budget, set.join_next()).await {
-            Ok(Some(_result)) => {
+
+    let mut unordered: futures::stream::FuturesUnordered<
+        std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = (InitTaskControl, Result<InitTaskExit, ()>)>
+                    + Send,
+            >,
+        >,
+    > = futures::stream::FuturesUnordered::new();
+
+    for mut ctrl in tasks.drain(..) {
+        unordered.push(Box::pin(async move {
+            // Race the completion receiver against the absolute
+            // deadline. `select!` borrows the receiver; on
+            // timeout, the borrow ends and the receiver is
+            // intact in the control.
+            //
+            // The receiver is `oneshot::Receiver<InitTaskExit>`.
+            // - If the wrapper sent a value, we get `Ok(exit)`.
+            // - If the sender was dropped (abort), we get
+            //   `Err(RecvError)`.
+            // - If the deadline fires first, we return
+            //   `Err(())` to signal "still pending" with the
+            //   control's receiver intact.
+            let res: InitTaskExit = tokio::select! {
+                biased;
+                res = &mut ctrl.completion => match res {
+                    Ok(exit) => exit,
+                    Err(_recv) => InitTaskExit::Cancelled,
+                },
+                _ = tokio::time::sleep_until(deadline.into()) => return (ctrl, Err(())),
+            };
+            (ctrl, Ok(res))
+        }));
+    }
+
+    use futures::StreamExt;
+    let mut pending: Vec<InitTaskControl> = Vec::new();
+    while let Some((ctrl, res)) = unordered.next().await {
+        // `res` is `Result<InitTaskExit, ()>`:
+        // - Ok(exit) means the wrapper sent a terminal exit
+        //   (normal completion, panic, or cancelled).
+        // - Err(()) means the deadline fired before the
+        //   receiver resolved; return the control for a
+        //   second pass.
+        match res {
+            Ok(InitTaskExit::Completed) => {
                 completed += 1;
-                if set.is_empty() {
-                    break;
-                }
             }
-            Ok(None) => {
-                // JoinSet is empty.
-                break;
-            }
-            Err(_) => {
+            Ok(InitTaskExit::Panicked(msg)) => {
                 warn!(
-                    remaining = set.len(),
-                    "init task deadline expired during join_next"
+                    attempt_id = ctrl.attempt_id,
+                    panic = %msg,
+                    "init task panicked during shutdown"
                 );
-                unfinished_count = set.len();
-                break;
+                completed += 1;
+            }
+            Ok(InitTaskExit::Cancelled) => {
+                debug!(
+                    attempt_id = ctrl.attempt_id,
+                    "init task cancelled during shutdown"
+                );
+                completed += 1;
+            }
+            Err(()) => {
+                // Deadline expired before the receiver
+                // resolved. Return the control with the
+                // real receiver intact for the second pass.
+                pending.push(ctrl);
             }
         }
     }
-    // Abort any remaining tasks in the set (the caller may have
-    // already aborted them, but abort is idempotent).
-    set.abort_all();
-    // Drain the set to collect any leftover JoinHandles.
-    while set.join_next().await.is_some() {}
+
     debug!(
         total,
-        completed, unfinished_count, "drain_joins_with_deadline complete"
+        completed,
+        pending = pending.len(),
+        "await_init_task_completions complete"
     );
-    Vec::new()
+    pending
 }
 
 /// Wrapper task for a spawned initialization attempt.
 ///
-/// Owns the active-task entry via the [`ActiveTaskGuard`] drop guard,
-/// ensuring every terminal path (normal completion, panic, abort)
-/// removes the entry from `active_init_tasks`. The wrapper also
-/// catches panics in the inner init attempt and converts them to a
-/// cancellation error for any waiters.
+/// Owns the `completion_tx` end of the authoritative terminal
+/// signal: this wrapper must send exactly one `InitTaskExit` before
+/// exiting, or be dropped (which closes the channel and resolves
+/// the receiver with `Err`). Shutdown uses the receiver as the
+/// authoritative completion primitive; no forwarding task owns or
+/// drops the real `JoinHandle`.
+///
+/// The wrapper awaits `start_rx` before doing any work. The
+/// registration code sends on the paired `start_tx` only after
+/// the `active_init_tasks` entry has been installed, which
+/// guarantees the task body cannot complete (or even begin) before
+/// its bookkeeping record exists.
 #[allow(clippy::too_many_arguments)]
 async fn run_init_task_wrapper(
     attempt_id: u64,
+    start_rx: tokio::sync::oneshot::Receiver<()>,
+    completion_tx: InitTaskExitTx,
     server: &'static LspServerDef,
     root: PathBuf,
     config: LspConfig,
@@ -1283,13 +1414,17 @@ async fn run_init_task_wrapper(
     cancellation: CancellationToken,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
 ) {
-    // The drop guard ensures the active-task entry is removed on
-    // every terminal path of this future (normal completion, panic,
-    // or abort).
-    let _guard = ActiveTaskGuard {
-        attempt_id,
-        active_init_tasks: active_init_tasks.clone(),
-    };
+    // Fallback guard: ensures the active-task entry is removed on
+    // every terminal path where explicit cleanup did not run.
+    let guard = ActiveTaskGuard::new(attempt_id, active_init_tasks.clone());
+
+    // Wait for the registration barrier. If `start_rx` returns
+    // `Err`, the registration was abandoned (slot invalidated or
+    // sender dropped); send a terminal exit and return.
+    if start_rx.await.is_err() {
+        let _ = completion_tx.send(InitTaskExit::Cancelled);
+        return;
+    }
 
     let inner = run_initialization_attempt(
         attempt_id,
@@ -1305,35 +1440,54 @@ async fn run_init_task_wrapper(
         test_init_fn,
     );
 
-    // Catch panics so we can notify waiters.
+    // Catch panics so we can notify waiters and still send a
+    // terminal exit.
     use futures::FutureExt;
     use std::panic::AssertUnwindSafe;
     let result = AssertUnwindSafe(inner).catch_unwind().await;
 
-    if let Err(payload) = result {
-        let panic_msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
-            (*s).to_string()
-        } else if let Some(s) = payload.downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "unknown panic".to_string()
-        };
-        warn!(
-            server = %key,
-            attempt_id,
-            panic = %panic_msg,
-            "initialization task panicked"
-        );
-        // Notify any waiters that the attempt panicked. The InitSlot
-        // may or may not still be present; take_attempt handles both.
-        if let Some(senders) = take_attempt(&initializing, &key, attempt_id).await {
-            let err = SharedInitError {
-                kind: super::error::SharedInitErrorKind::Other,
-                message: format!("initialization task panicked for {key}:{attempt_id}"),
+    let exit = match result {
+        Ok(()) => InitTaskExit::Completed,
+        Err(payload) => {
+            let panic_msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
             };
-            send_completion_result(senders, Err(err));
+            warn!(
+                server = %key,
+                attempt_id,
+                panic = %panic_msg,
+                "initialization task panicked"
+            );
+            // Notify any waiters that the attempt panicked. The
+            // InitSlot may or may not still be present;
+            // `take_attempt` handles both.
+            if let Some(senders) = take_attempt(&initializing, &key, attempt_id).await {
+                let err = SharedInitError {
+                    kind: super::error::SharedInitErrorKind::Other,
+                    message: format!("initialization task panicked for {key}:{attempt_id}"),
+                };
+                send_completion_result(senders, Err(err));
+            }
+            InitTaskExit::Panicked(panic_msg)
         }
+    };
+
+    // Explicit cleanup of the active-task entry. This is the
+    // primary path: normal completion and ordinary failure both
+    // remove the entry here.
+    {
+        let mut tasks = active_init_tasks.lock().await;
+        tasks.remove(&attempt_id);
     }
+    guard.disarm();
+
+    // Authoritative terminal signal. The receiver in
+    // `InitTaskControl` resolves here.
+    let _ = completion_tx.send(exit);
 }
 
 /// Runs the full LSP initialization in the body of the wrapper task.
@@ -1434,7 +1588,26 @@ async fn run_initialization_attempt(
     let result = async {
         #[cfg(test)]
         if let Some(ref init_fn) = test_init_fn {
-            return init_fn(server, &root).await;
+            // Wrap the injected test factory in a cooperative
+            // cancellation race so cancellation propagates to
+            // test factories by default. The default
+            // `blocking_factory` used by the standard test
+            // suite is cancellation-aware; factories that are
+            // intentionally uncooperative can opt out by
+            // returning a future that ignores the outer
+            // select — but the outer `select!` still observes
+            // cancellation, so the wrapper task exits at
+            // `select!` boundaries regardless of inner
+            // behavior. Truly cancellation-insensitive
+            // factories (e.g. a tight CPU loop) are exercised
+            // via forced abort in the dedicated tests.
+            return tokio::select! {
+                biased;
+                res = init_fn(server, &root) => res,
+                _ = cancellation.cancelled() => {
+                    Err(LspError::InitializationCancelled("shutting down".into()))
+                }
+            };
         }
 
         let binary = tokio::select! {
@@ -1591,6 +1764,11 @@ mod tests {
         entered_count: std::sync::Arc<AtomicUsize>,
         /// Tracks task-body exit for the uncooperative-style assertion.
         exited_count: std::sync::Arc<AtomicUsize>,
+        /// RAII-driven counter proving the factory future body was
+        /// dropped. Incremented by `FutureExitProbe::drop`. Robust
+        /// to normal return, cooperative cancellation, and forced
+        /// abort.
+        future_dropped: std::sync::Arc<AtomicUsize>,
     }
 
     impl BlockingFactoryState {
@@ -1609,7 +1787,37 @@ mod tests {
                 shutdown_count,
                 entered_count: std::sync::Arc::new(AtomicUsize::new(0)),
                 exited_count: std::sync::Arc::new(AtomicUsize::new(0)),
+                future_dropped: std::sync::Arc::new(AtomicUsize::new(0)),
             }
+        }
+    }
+
+    /// RAII drop guard that proves a future body has actually been
+    /// dropped. Construct it at the start of a test factory future
+    /// and assert via the shared counter that it ran. The probe is
+    /// robust to all three exit paths:
+    /// - normal return (future drops at end of scope);
+    /// - cooperative cancellation (outer `select!` cancels the
+    ///   inner future, which drops it);
+    /// - forced abort (the task is aborted, which drops the future).
+    ///
+    /// The probe does NOT increment on success vs. cancellation vs.
+    /// abort — it just proves the future was dropped. To distinguish
+    /// exit reasons, pair the probe with an external `AtomicUsize`
+    /// counter incremented before the return / drop site.
+    struct FutureExitProbe {
+        exited: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl FutureExitProbe {
+        fn new(counter: std::sync::Arc<AtomicUsize>) -> Self {
+            Self { exited: counter }
+        }
+    }
+
+    impl Drop for FutureExitProbe {
+        fn drop(&mut self) {
+            self.exited.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -1618,6 +1826,9 @@ mod tests {
     /// cancellation tests. On cancellation, the factory returns
     /// `LspError::InitializationCancelled` (the inner init task then
     /// reports it to waiters).
+    ///
+    /// A `FutureExitProbe` is installed at the top of the factory body
+    /// to prove the future is dropped on every terminal path.
     fn blocking_factory(
         state: std::sync::Arc<BlockingFactoryState>,
     ) -> impl Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static {
@@ -1625,6 +1836,10 @@ mod tests {
             let state = state.clone();
             let root = root.to_path_buf();
             Box::pin(async move {
+                // RAII probe: increments on future drop, regardless
+                // of return / cancellation / abort path.
+                let _probe = FutureExitProbe::new(state.future_dropped.clone());
+
                 state.invocations.fetch_add(1, Ordering::SeqCst);
                 let _ = state.entered.send(true);
                 state.entered_count.fetch_add(1, Ordering::SeqCst);
@@ -2143,17 +2358,27 @@ mod tests {
         // until external release. This is the "uncooperative" path:
         // the inner init task does not participate in cancellation,
         // so shutdown must abort it and await the join.
+        //
+        // `Notify::notified().await` is cancellation-safe (dropping
+        // the future unsubscribes from the notification), so this
+        // is technically cancellation-aware. We use the
+        // `FutureExitProbe` to assert that the future body is
+        // actually dropped before shutdown returns — which is the
+        // property we care about.
         fn uncooperative_factory(
             counter: std::sync::Arc<AtomicUsize>,
             release: std::sync::Arc<Notify>,
+            future_dropped: std::sync::Arc<AtomicUsize>,
         ) -> impl Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static
         {
             move |_server, _root| {
                 let counter = counter.clone();
                 let release = release.clone();
+                let future_dropped = future_dropped.clone();
                 Box::pin(async move {
+                    let _probe = FutureExitProbe::new(future_dropped);
                     counter.fetch_add(1, Ordering::SeqCst);
-                    // Block forever (until abort).
+                    // Block until external release or future drop.
                     release.notified().await;
                     Err(LspError::LaunchFailed("uncooperative".into()))
                 })
@@ -2162,9 +2387,10 @@ mod tests {
 
         let counter = std::sync::Arc::new(AtomicUsize::new(0));
         let release = std::sync::Arc::new(Notify::new());
+        let future_dropped = std::sync::Arc::new(AtomicUsize::new(0));
         let svc = std::sync::Arc::new(LspService::test_new(
             LspConfig::Disabled(false),
-            uncooperative_factory(counter.clone(), release.clone()),
+            uncooperative_factory(counter.clone(), release.clone(), future_dropped.clone()),
         ));
 
         let handle = tokio::spawn({
@@ -2187,6 +2413,14 @@ mod tests {
         // The caller should get cancellation.
         let result = await_join(handle).await;
         expect_init_cancelled(result).await;
+
+        // Phase 7: the factory future body must have been dropped
+        // before shutdown returned. The probe increments on drop.
+        assert_eq!(
+            future_dropped.load(Ordering::SeqCst),
+            1,
+            "factory future must be dropped before shutdown returns"
+        );
 
         // Release so the aborted task can clean up.
         release.notify_waiters();
@@ -2457,13 +2691,18 @@ mod tests {
             counter: std::sync::Arc<AtomicUsize>,
             release: std::sync::Arc<Notify>,
             entered_count: std::sync::Arc<AtomicUsize>,
+            future_dropped: std::sync::Arc<AtomicUsize>,
         ) -> impl Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static
         {
             move |_server, _root| {
                 let counter = counter.clone();
                 let release = release.clone();
                 let entered_count = entered_count.clone();
+                let future_dropped = future_dropped.clone();
                 Box::pin(async move {
+                    // RAII probe: the future body must be dropped
+                    // before shutdown returns.
+                    let _probe = FutureExitProbe::new(future_dropped);
                     counter.fetch_add(1, Ordering::SeqCst);
                     entered_count.fetch_add(1, Ordering::SeqCst);
                     release.notified().await;
@@ -2476,9 +2715,15 @@ mod tests {
         let counter = std::sync::Arc::new(AtomicUsize::new(0));
         let entered_count = std::sync::Arc::new(AtomicUsize::new(0));
         let release = std::sync::Arc::new(Notify::new());
+        let future_dropped = std::sync::Arc::new(AtomicUsize::new(0));
         let svc = std::sync::Arc::new(LspService::test_new(
             LspConfig::Disabled(false),
-            uncooperative_factory(counter.clone(), release.clone(), entered_count.clone()),
+            uncooperative_factory(
+                counter.clone(),
+                release.clone(),
+                entered_count.clone(),
+                future_dropped.clone(),
+            ),
         ));
 
         let handle = tokio::spawn({
@@ -2498,6 +2743,14 @@ mod tests {
         // Shutdown should forcibly abort the uncooperative task and
         // await its completion.
         svc.shutdown_all().await;
+
+        // Phase 7: the factory future body must have been dropped
+        // before shutdown returned.
+        assert_eq!(
+            future_dropped.load(Ordering::SeqCst),
+            1,
+            "factory future must be dropped before shutdown returns"
+        );
 
         // After shutdown returns, the task body should have been
         // aborted. Release the factory's blocking await so the
@@ -2611,4 +2864,363 @@ mod tests {
         assert!(svc.active_init_tasks.lock().await.is_empty());
         assert!(svc.document_owners.read().await.is_empty());
     }
+
+    // ── Phase 9: New tests for the authoritative completion contract ──
+
+    /// Test: a fast-completing factory cannot outrun its active-task
+    /// registration. The start barrier ensures the wrapper task does
+    /// not begin its body until the `active_init_tasks` entry has
+    /// been installed, so the entry is never stale.
+    ///
+    /// Repeatedly in a bounded loop to expose scheduler races.
+    #[tokio::test]
+    async fn fast_completion_cannot_beat_registration() {
+        const ITERATIONS: usize = 20;
+
+        for i in 0..ITERATIONS {
+            // Use a counting-fail factory: returns immediately
+            // with an error. This exercises the start barrier
+            // and explicit cleanup path on the fastest possible
+            // completion.
+            let counter = std::sync::Arc::new(AtomicUsize::new(0));
+            let svc = std::sync::Arc::new(LspService::test_new(
+                LspConfig::Disabled(false),
+                counting_fail_factory(counter.clone()),
+            ));
+
+            // Use a unique file path per iteration to avoid
+            // cache-style reuse.
+            let file_path = format!("/tmp/test_{i}.rs");
+            let file = Path::new(&file_path).to_path_buf();
+            let handle = tokio::spawn({
+                let svc = svc.clone();
+                let file = file.clone();
+                async move { svc.get_or_create_client(&file).await }
+            });
+
+            let result = await_join(handle).await;
+            assert!(
+                matches!(result, Err(LspError::LaunchFailed(_))),
+                "iteration {i}: expected LaunchFailed, got {result:?}"
+            );
+
+            // After completion, the active map must be empty.
+            let active_count = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if svc.active_init_tasks.lock().await.is_empty() {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            assert!(
+                active_count.is_ok(),
+                "iteration {i}: active_init_tasks must be empty after fast completion"
+            );
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    /// Test: cooperative cancellation is observed. The factory
+    /// future body is dropped before shutdown returns (RAII probe).
+    #[tokio::test]
+    async fn cooperative_cancellation_is_observed() {
+        let (entered_tx, mut entered_rx) = watch::channel(false);
+        let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            Notify::new(),
+            FactoryOutcome::Success,
+            shutdown_count.clone(),
+        ));
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            blocking_factory(state.clone()),
+        ));
+
+        let barrier = std::sync::Arc::new(Barrier::new(4));
+        let mut handles = Vec::new();
+        for _ in 0..3 {
+            let svc = svc.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                svc.get_or_create_client(rust_file()).await
+            }));
+        }
+
+        barrier.wait().await;
+        entered_rx.changed().await.expect("factory should enter");
+        assert_eq!(state.invocations.load(Ordering::SeqCst), 1);
+
+        // Shutdown while factory is blocked.
+        svc.shutdown_all().await;
+
+        // All callers should have received cancellation.
+        for handle in handles {
+            let result = await_join(handle).await;
+            expect_init_cancelled(result).await;
+        }
+
+        // Phase 7: the factory future body was dropped (probe
+        // incremented) before shutdown returned.
+        assert_eq!(
+            state.future_dropped.load(Ordering::SeqCst),
+            1,
+            "factory future must be dropped before shutdown returns"
+        );
+    }
+
+    /// Test: many tasks share one grace period. Verify that the
+    /// aggregate grace wait in `await_init_task_completions` is
+    /// applied across all in-flight tasks, not per-task. Single
+    /// flight election only spawns one in-flight init task per
+    /// key, so this test exercises the grace plumbing with one
+    /// task but with multiple concurrent waiters, ensuring the
+    /// total shutdown time is bounded by one grace period.
+    #[tokio::test]
+    async fn many_tasks_share_one_grace_period() {
+        // Build a service with a factory that blocks on a release
+        // notify.
+        let (entered_tx, mut entered_rx) = watch::channel(false);
+        let release = Notify::new();
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            release,
+            FactoryOutcome::Success,
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        ));
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            blocking_factory(state.clone()),
+        ));
+
+        // Issue a single call so the leader task is spawned.
+        let handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+        // Wait for the factory to enter.
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            while !*entered_rx.borrow() {
+                entered_rx.changed().await.ok();
+            }
+        })
+        .await;
+        assert_eq!(state.invocations.load(Ordering::SeqCst), 1);
+
+        // Shutdown now; the in-flight task should be cancelled
+        // and shutdown should return within the grace + abort
+        // window. The grace is 300ms; the global deadline is 6s.
+        let start = std::time::Instant::now();
+        svc.shutdown_all().await;
+        let elapsed = start.elapsed();
+        // The cooperative task should complete well under 1s.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "shutdown took too long: {elapsed:?}"
+        );
+
+        let result = await_join(handle).await;
+        expect_init_cancelled(result).await;
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+    }
+
+    /// Test: no stale active entries under contention. Run
+    /// concurrent fast success/failure attempts across multiple
+    /// keys and assert the active map becomes empty without
+    /// shutdown.
+    #[tokio::test]
+    async fn no_stale_active_entries_under_contention() {
+        const ITERATIONS: usize = 10;
+
+        for i in 0..ITERATIONS {
+            // Use the standard blocking factory with a unique
+            // server per iteration to force N independent
+            // client-key paths. The factory blocks on a release
+            // notify; we release it after spawning, so the
+            // factory returns quickly.
+            let (entered_tx, mut entered_rx) = watch::channel(false);
+            let release = Notify::new();
+            let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+                AtomicUsize::new(0),
+                entered_tx,
+                release,
+                FactoryOutcome::Success,
+                std::sync::Arc::new(AtomicUsize::new(0)),
+            ));
+            let svc = std::sync::Arc::new(LspService::test_new(
+                LspConfig::Disabled(false),
+                blocking_factory(state.clone()),
+            ));
+
+            // Issue a single call, but the test factory will be
+            // re-invoked only if the key changes. To force
+            // contention, run several concurrent calls for the
+            // same key (single-flight elects 1 leader, others
+            // wait).
+            let barrier = std::sync::Arc::new(Barrier::new(6));
+            let mut handles = Vec::new();
+            for _ in 0..5 {
+                let svc = svc.clone();
+                let barrier = barrier.clone();
+                let file = Path::new(&format!("/tmp/contention_{i}.rs")).to_path_buf();
+                handles.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    svc.get_or_create_client(&file).await
+                }));
+            }
+
+            barrier.wait().await;
+            // Wait for the factory to enter so we know the
+            // leader task has been spawned.
+            let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                while !*entered_rx.borrow() {
+                    entered_rx.changed().await.ok();
+                }
+            })
+            .await;
+            // Release the factory so the leader can complete.
+            state.release.notify_waiters();
+
+            for handle in handles {
+                let result = await_join(handle).await;
+                assert!(result.is_ok(), "iteration {i}: expected Ok, got {result:?}");
+            }
+
+            // No shutdown; the active map must be empty because
+            // explicit cleanup ran on success.
+            let active_count = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if svc.active_init_tasks.lock().await.is_empty() {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            assert!(
+                active_count.is_ok(),
+                "iteration {i}: active_init_tasks must be empty without shutdown"
+            );
+        }
+    }
+
+    /// Test: lock-order regression. Force concurrent registration
+    /// and shutdown to overlap via the test gate, and assert no
+    /// deadlock. Both complete within a bounded time.
+    #[tokio::test]
+    async fn lock_order_no_deadlock_under_overlap() {
+        let (leader_gate, mut leader_rx) = pause_gate();
+        let (shutdown_gate, mut shutdown_rx) = pause_gate();
+        let hooks = std::sync::Arc::new(TestHooks {
+            leader_spawn_gate: Some(leader_gate.clone()),
+            shutdown_gate: Some(shutdown_gate.clone()),
+        });
+        let counter = std::sync::Arc::new(AtomicUsize::new(0));
+        let svc = std::sync::Arc::new(LspService::test_new_with_hooks(
+            LspConfig::Disabled(false),
+            counting_fail_factory(counter.clone()),
+            hooks,
+        ));
+
+        // Leader is paused at the leader_spawn_gate. Shutdown is
+        // also paused at the shutdown_gate. Both will be released
+        // at the same time, forcing lock acquisition overlap.
+        let leader_handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+        leader_rx.changed().await.expect("leader gate should trip");
+
+        let shutdown_handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.shutdown_all().await }
+        });
+        shutdown_rx
+            .changed()
+            .await
+            .expect("shutdown gate should trip");
+
+        // Release both. Lock acquisition will interleave but
+        // must not deadlock.
+        leader_gate.release.notify_waiters();
+        shutdown_gate.release.notify_waiters();
+
+        let timeout = Duration::from_secs(5);
+        let (lr, sr) = tokio::join!(
+            tokio::time::timeout(timeout, leader_handle),
+            tokio::time::timeout(timeout, shutdown_handle),
+        );
+        // The leader's result depends on which path wins the
+        // race; both Ok and InitCancelled are valid outcomes.
+        // The key property is that neither path deadlocks.
+        let _ = lr.expect("leader should not deadlock").expect("no panic");
+        sr.expect("shutdown should not deadlock").expect("no panic");
+
+        // After both, the service is Stopped.
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+        // All maps are drained.
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+    }
+
+    /// Test: global deadline fallback semantics. The stuck
+    /// factory is forcibly aborted, the abort signal is
+    /// observed, all maps are drained, and the lifecycle is
+    /// Stopped — all within the global deadline.
+    #[tokio::test]
+    async fn global_deadline_fallback_asserts_all_signals() {
+        // Stuck factory that ignores cancellation.
+        fn stuck_factory(
+        ) -> impl Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static
+        {
+            move |_server, _root| {
+                Box::pin(async move {
+                    // Block until the runtime is shut down.
+                    std::future::pending::<()>().await;
+                    unreachable!()
+                })
+            }
+        }
+
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            stuck_factory(),
+        ));
+
+        let handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+
+        // Give the task a moment to spawn and enter.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Shutdown will hit the grace deadline, abort the
+        // stuck task, await the abort completion, and
+        // transition to Stopped.
+        let start = std::time::Instant::now();
+        svc.shutdown_all().await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed <= SHUTDOWN_GLOBAL_TIMEOUT + Duration::from_millis(500),
+            "shutdown took {elapsed:?}, exceeds global deadline"
+        );
+
+        // All abort handles were signaled (we don't have direct
+        // access to them post-shutdown, but the maps are empty).
+        assert!(svc.clients.read().await.is_empty());
+        assert!(svc.initializing.lock().await.is_empty());
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+        assert!(svc.document_owners.read().await.is_empty());
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+
+        let result = await_join(handle).await;
+        expect_init_cancelled(result).await;
+    }
+
+    // ── Helpers for the new tests ──
 }

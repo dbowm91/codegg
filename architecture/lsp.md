@@ -54,14 +54,23 @@ impl Lsp {
 ```rust
 pub struct LspService {
     clients: Arc<RwLock<HashMap<String, ClientEntry>>>,
-    active_init_tasks: HashMap<u64, InitTaskControl>,
-    config: LspConfig,
+    initializing: Arc<Mutex<HashMap<String, InitSlot>>>,
+    active_init_tasks: Arc<Mutex<HashMap<u64, InitTaskControl>>>,
+    document_owners: Arc<RwLock<HashMap<String, String>>>,
     lifecycle: Arc<RwLock<LifecycleState>>,
-    shutdown_complete: Notify,
+    lifecycle_tx: watch::Sender<LifecycleState>,
+    config: LspConfig,
 }
 ```
 
-`InitTaskControl` holds a `CancellationToken` (from `tokio_util`) and `AbortHandle` for each spawned initialization task, keyed by attempt ID. This enables cooperative cancellation during shutdown.
+`InitTaskControl` holds the authoritative terminal completion primitive for each spawned initialization task:
+
+- `attempt_id: u64` — unique per-attempt monotonic counter
+- `cancellation: CancellationToken` — cooperative cancellation signal
+- `abort_handle: tokio::task::AbortHandle` — forced-abort primitive for stragglers
+- `completion: oneshot::Receiver<InitTaskExit>` — **authoritative** terminal signal owned by the wrapper task
+
+The completion receiver is the only authoritative source of truth for "the wrapper task has terminated". The wrapper task owns the paired `Sender` and is required to either send exactly one `InitTaskExit` (`Completed`, `Panicked(String)`, or `Cancelled`) before exiting, or be dropped (which closes the channel and resolves the receiver with `Err`). Shutdown never wraps the real `JoinHandle` in a forwarding task — the receiver is the completion primitive.
 
 Lock ordering: the clients map lock must be acquired before any client-level lock.
 Documented on the struct for future contributors.
@@ -1002,35 +1011,71 @@ Cancellation failures do not replace the timeout error, but they do retire the t
 
 `LspService::get_or_create_client` uses explicit `InitRole` election: the first caller becomes `Leader` and spawns an owned initialization task (`run_initialization_attempt`); concurrent callers for the same `{project_root}:{server_id}` key become `Waiters`. The `InitSlot` stores one leader sender plus a waiter list, and completion is fanned out to every sender with the same `Arc<LspClient>` on success or the same `SharedInitError` on failure. An `ATTEMPT_COUNTER: AtomicU64` generates monotonic attempt IDs stored in the `InitSlot`.
 
-Each spawned initialization task is wrapped in `run_init_task_wrapper`, which holds the actual `JoinHandle` of the wrapper future. The wrapper owns an `ActiveTaskGuard` drop guard that removes the wrapper's own `active_init_tasks` entry on every terminal path (normal completion, panic, abort). The `InitTaskControl` struct stores the wrapper's `JoinHandle` so that `shutdown_all()` can await real task completion rather than relying on a disconnected oneshot receiver. Cooperative cancellation checks are performed at key stages: before download, before process spawn, before initialize request, and before initialized notification. This allows the shutdown path to cancel in-flight initializations cooperatively rather than relying solely on hard abort.
+#### Start-Registration Barrier
 
-The `run_init_task_wrapper` function uses `AssertUnwindSafe + catch_unwind` to convert inner-task panics into a `SharedInitError` notification for any waiters, ensuring the wrapper itself never panics out of the spawned task.
+The wrapper task does not begin its initialization body until its `active_init_tasks` entry has been installed. This is enforced by a one-shot start barrier:
+
+1. The leader creates `(start_tx, start_rx)` and `(completion_tx, completion_rx)` channels.
+2. The wrapper task is spawned with `start_rx` and `completion_tx` and **awaits** `start_rx` first.
+3. The leader installs the `InitTaskControl` (containing `completion_rx`) into `active_init_tasks` under its own lock acquisition.
+4. The leader re-validates the slot under the `initializing` lock — these are sequential lock acquisitions, not nested.
+5. The leader sends on `start_tx`, releasing the wrapper to begin its body.
+6. If the slot was invalidated in step 4, the leader drops `start_tx` (causing the wrapper's `start_rx.await` to resolve to `Err`), aborts the wrapper defensively, removes the just-installed `active_init_tasks` entry, and notifies any waiters via `abort_and_finalize_unstarted_task`.
+
+This eliminates the spawn-before-registration race: a fast task cannot complete before its bookkeeping record exists.
+
+#### Authoritative Completion Primitive
+
+Each spawned initialization task is wrapped in `run_init_task_wrapper`, which:
+
+1. **Awaits** `start_rx` to receive the registration-completion signal.
+2. **Owns** the `completion_tx` end of the authoritative terminal signal.
+3. **Executes** the inner init attempt, with `AssertUnwindSafe + catch_unwind` to convert panics into a `SharedInitError` for any waiters and an `InitTaskExit::Panicked` exit value.
+4. **Explicitly removes** its `active_init_tasks` entry before sending the terminal exit (primary cleanup path).
+5. **Disarms** the `ActiveTaskGuard` fallback so the guard's `Drop` is a no-op.
+6. **Sends** exactly one `InitTaskExit` (`Completed`, `Panicked(msg)`, or `Cancelled`) via `completion_tx`.
+
+The completion receiver in `InitTaskControl` is the authoritative source of truth for "the wrapper task has terminated". The receiver resolves to `Ok(exit)` on the normal path, or to `Err(RecvError)` if the sender (and therefore the wrapper) was dropped without sending — e.g. by forced abort. Shutdown awaits this receiver through `await_init_task_completions`; it never holds the real `JoinHandle` via a forwarding task.
 
 On initialization failure, the slot is cleaned up by attempt ID (compare-and-remove prevents stale cleanup from deleting newer slots), and all waiting callers receive `SharedInitError` (preserving error category and message), allowing retries. Before a successful client is published, the init task rechecks `LifecycleState` and only inserts when the phase is still `Running` and the generation matches the captured generation; if publication is invalidated or loses to an existing client, the unpublished client is disposed via `dispose_unpublished_client(...)` with a bounded shutdown timeout. This differs from `OnceCell` which would cache the failure permanently. `SharedInitError` with `SharedInitErrorKind` enum (`ServerNotFound`, `DownloadFailed`, `LaunchFailed`, `InitializeFailed`, `Timeout`, `Cancelled`, `Protocol`, `Other`) is used for all oneshot channel results instead of raw `LspError`, making concurrent error propagation thread-safe and cloneable. The `#[cfg(test)]` `test_new()` constructor accepts injectable test factories for deterministic testing without live LSP servers.
 
 #### Active-Task Entry Cleanup
 
-The `ActiveTaskGuard` drop guard runs on every terminal path of the spawned init task future:
+`active_init_tasks` entries are removed through three complementary mechanisms:
 
-- **Normal completion**: the future returns; the guard's `Drop` runs.
-- **Panic**: the wrapper catches via `catch_unwind`; the future returns; the guard's `Drop` runs.
-- **Abort**: the future is dropped; the guard's `Drop` runs.
-- **Drop due to shutdown drain**: the guard's `Drop` runs.
+1. **Explicit removal** (primary path): the wrapper acquires the `active_init_tasks` lock and removes its own entry before sending the terminal exit. This is the path for normal completion and ordinary failure. The wrapper then calls `ActiveTaskGuard::disarm()` to suppress the fallback.
 
-The guard uses `try_lock` for synchronous removal. If the lock is held (e.g. by `shutdown_all`'s drain step), shutdown handles the entry as part of its drain; the entry is still removed in all cases.
+2. **ActiveTaskGuard fallback**: if the wrapper is dropped before explicit removal (e.g. due to forced abort, panic propagation that bypasses explicit cleanup, or unexpected future drop), the guard's `Drop` runs and **spawns a follow-up cleanup task** that locks the map and removes the entry. This is robust to lock contention at drop time. The guard no longer relies on `try_lock` for the fallback path — that approach silently abandoned cleanup if the lock was held.
 
-This eliminates the prior defect where successful, failed, or invalidated attempts left stale task-control entries until shutdown drained the map.
+3. **Coordinator-owned drain**: `shutdown_all` is the additional safety net. After awaiting all completion receivers (via `await_init_task_completions`), the drain clears the map one final time to guarantee the postcondition regardless of which path any individual wrapper took.
 
-#### Registration Race Resolution
+This eliminates the prior defect where successful, failed, or invalidated attempts could leave stale task-control entries until shutdown drained the map.
 
-Between slot creation and active-task registration, the slot may be removed by a concurrent shutdown. The `Leader` branch resolves this race by:
+#### Registration Lock Ordering
 
-1. Checking `initializing` first (in document order with `active_init_tasks`) to confirm the slot is still valid for this attempt.
-2. If valid, acquiring the `active_init_tasks` lock and re-checking `initializing` to handle the inverted-order race.
-3. If still valid, inserting the `InitTaskControl` and proceeding.
-4. If invalid at any point, aborting the spawned task (which triggers the drop guard) and notifying any waiters.
+Between slot creation and active-task registration, the slot may be removed by a concurrent shutdown. The `Leader` branch resolves this race without nested locks:
 
-The lock order is `initializing → active_init_tasks` only for read-only state checks; no path holds `active_init_tasks` while awaiting `initializing`, and no path holds `initializing` while awaiting task/client I/O.
+1. Acquire `initializing` lock; check slot validity for this `attempt_id`; release `initializing` lock.
+2. Acquire `active_init_tasks` lock; install `InitTaskControl`; release `active_init_tasks` lock.
+3. Acquire `initializing` lock again; re-check slot validity; release `initializing` lock.
+4. If still valid, send on `start_tx` to release the wrapper.
+5. If invalidated at any point, run `abort_and_finalize_unstarted_task` to drop the start signal, abort the wrapper defensively, remove the active-task entry, and notify any waiters.
+
+No path holds `active_init_tasks` while awaiting `initializing`, and no path holds either lock across task/client I/O. The two lock acquisitions are sequential, not nested.
+
+#### Cooperative Cancellation in Test Factories
+
+The injected test factory is wrapped in a `tokio::select!` so cancellation propagates to test factories by default:
+
+```rust
+tokio::select! {
+    biased;
+    res = init_fn(server, &root) => res,
+    _ = cancellation.cancelled() => Err(LspError::InitializationCancelled("shutting down".into())),
+}
+```
+
+The standard `blocking_factory` and similar are cancellation-aware. Tests that exercise forced abort (e.g. via a stuck factory) use factories whose inner future ignores the outer `select!`'s cancellation arm, exercising the `AbortHandle` path through `await_init_task_completions`.
 
 ### Global Map Lock Discipline
 
@@ -1056,13 +1101,13 @@ Write guards (`clients.write().await`) are reserved for slot election/publicatio
 1. **Transition to ShuttingDown** — atomically sets phase and increments generation; broadcasts on `lifecycle_tx` (watch channel). A second caller observing `ShuttingDown` enters the race-free `await_stopped()` path.
 2. **Clear document ownership** — `document_owners` is cleared.
 3. **Drain init slots** — all pending `InitSlot` entries are removed; their senders are notified at step 9.
-4. **Drain active tasks** — `active_init_tasks` is drained; each entry's `CancellationToken` is signalled and its `JoinHandle` is moved into a concurrent wait pool.
+4. **Drain active tasks** — `active_init_tasks` is drained; each entry's `InitTaskControl` (containing its `CancellationToken`, `AbortHandle`, and authoritative completion receiver) is moved into the shutdown's local vector.
 5. **Concurrent cooperative cancel** — all cancellation tokens are signalled simultaneously.
-6. **Concurrent grace wait** — all `JoinHandle`s are awaited concurrently (via a `tokio::task::JoinSet`) under one aggregate grace deadline (`SHUTDOWN_CANCELLATION_GRACE` = 300ms, capped by the global deadline). Tasks that complete within the budget return; tasks that do not are forcibly aborted.
-7. **Concurrent abort** — for any tasks still pending after the grace deadline, `AbortHandle::abort()` is called on each; the `JoinHandle`s are awaited concurrently under the remaining budget. This eliminates the prior defect where `tokio::task::yield_now().await` was used as a substitute for actual task join completion.
+6. **Aggregate grace wait** — `await_init_task_completions` awaits all completion receivers concurrently using `FuturesUnordered` under one aggregate grace deadline (`SHUTDOWN_CANCELLATION_GRACE` = 300ms, capped by the global deadline). The future for each control uses `tokio::select!` to race the receiver against the deadline. On timeout, the control (with its real receiver intact) is returned in the pending set. On receiver resolution, the exit value is logged. **No forwarding task wraps the real `JoinHandle`**: the receiver is the authoritative terminal signal.
+7. **Concurrent abort of stragglers** — for any controls still pending after the grace, `AbortHandle::abort()` is called on each, then `await_init_task_completions` re-awaits the same set of completion receivers under the remaining global deadline. The receiver resolves either when the wrapper sends its terminal exit (rare under forced abort) or when the sender is dropped (the task future was dropped by the abort, closing the channel). Every aborted task's real completion is observed.
 8. **Concurrent ready-client shutdown** — ready clients are drained from the map and shut down concurrently (`futures::future::join_all`). Each per-client timeout is capped by `SHUTDOWN_CLIENT_TIMEOUT` (2s) and the global deadline, so the total shutdown duration is independent of client count. Three result variants are logged: `Ok(Ok(()))` (graceful), `Ok(Err(_))` (graceful shutdown error), and `Err(_)` (timeout).
 9. **Notify init-task waiters** — the senders drained in step 3 receive a `Cancelled` `SharedInitError`.
-10. **Forced finalization** — if the absolute deadline has expired, a `warn!` is logged. The `active_init_tasks`, `initializing`, and `document_owners` maps are drained defensively to guarantee postconditions.
+10. **Forced finalization** — if the absolute deadline has expired, a `warn!` is logged. The `active_init_tasks`, `initializing`, and `document_owners` maps are drained defensively to guarantee postconditions. This is the documented **pathological deadline fallback**: the service state is finalized after abort was requested, with unresolved task completion logged as a severe invariant failure. The shutdown contract distinguishes the **normal contract** (all task termination observed via completion receivers) from the **deadline fallback** (state forced after the global deadline, with the explicit caveat that Tokio may not deliver a terminal event for an aborted task in pathological cases).
 11. **Transition to Stopped** — final lifecycle phase; broadcast on `lifecycle_tx` so concurrent waiters can return.
 
 Total bounded duration: `SHUTDOWN_GLOBAL_TIMEOUT` (6s). Per-stage budgets are derived from the absolute deadline.
@@ -1085,15 +1130,23 @@ The tracked initialization and quiescent shutdown features are covered by target
 | Test | What it verifies |
 |------|-----------------|
 | `shutdown_cancels_blocked_factory` | Cooperative cancellation: a factory blocked in `initialize` is cancelled via `CancellationToken` during shutdown |
-| `shutdown_aborts_uncooperative_task` | Hard abort: a task that ignores cooperative cancellation is aborted via `AbortHandle` after grace period |
+| `shutdown_aborts_uncooperative_task` | Hard abort: a task that ignores cooperative cancellation is aborted via `AbortHandle` after grace period. The `FutureExitProbe` RAII guard asserts the factory future body was actually dropped before shutdown returned. |
 | `concurrent_shutdown_callers` | Two concurrent `shutdown_all()` calls both observe the final `Stopped` state via the watch channel |
 | `concurrent_shutdown_lost_wakeup_boundary` | Late subscribers to the watch channel do not miss the `ShuttingDown → Stopped` transition |
 | `read_lock_concurrency` | Non-mutating operations (`open_file`, `diagnostics`, etc.) use read locks and do not contend with each other |
 | `publication_race_remains_safe` | Publication under shutdown races: an init task that finishes after `ShuttingDown` does not publish a stale client |
-| `normal_completion_removes_active_task_entry` | The wrapper's `ActiveTaskGuard` drop guard removes the entry without requiring shutdown |
+| `normal_completion_removes_active_task_entry` | Explicit cleanup path: the wrapper removes its `active_init_tasks` entry without requiring shutdown |
 | `ordinary_failure_removes_active_task_entry` | Same, for ordinary initialization failures |
-| `forced_abort_is_awaited` | The aborted task's `JoinHandle` is awaited; the task body actually exits before shutdown returns |
+| `forced_abort_is_awaited` | The aborted task's completion receiver is awaited; the task body actually exits before shutdown returns. The `FutureExitProbe` proves the factory future was dropped. |
 | `global_deadline_finalizes_state` | A task that does not complete within the global deadline is still drained; lifecycle reaches `Stopped` and all maps are empty |
+| `fast_completion_cannot_beat_registration` | The start-registration barrier prevents a fast-completing task from racing past the `active_init_tasks` insertion. Run repeatedly in a bounded loop to expose scheduler races. |
+| `cooperative_cancellation_is_observed` | The factory future body is dropped (RAII probe increments) before shutdown returns; the `InitTaskExit` resolution is observed via the authoritative receiver. |
+| `many_tasks_share_one_grace_period` | The aggregate grace wait in `await_init_task_completions` is applied across all in-flight tasks; total shutdown time is bounded by one grace period rather than N × grace. |
+| `no_stale_active_entries_under_contention` | Concurrent fast success attempts (single-flight) leave `active_init_tasks` empty without requiring shutdown. |
+| `lock_order_no_deadlock_under_overlap` | Concurrent registration and shutdown overlap via test gates; neither path deadlocks and both complete within bounded time. |
+| `global_deadline_fallback_asserts_all_signals` | A stuck factory is forcibly aborted, the abort signal is observed, all maps are drained, and the lifecycle is `Stopped` — all within the global deadline. |
+
+The `FutureExitProbe` test-only RAII guard (`src/lsp/../service.rs`) is constructed at the top of test factory futures to prove that the future body was actually dropped. It is robust to all three exit paths (normal return, cooperative cancellation, forced abort) and is used by `shutdown_aborts_uncooperative_task`, `cooperative_cancellation_is_observed`, and `forced_abort_is_awaited`.
 
 ### Writer Failure Propagation
 
