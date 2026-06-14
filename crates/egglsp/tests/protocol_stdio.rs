@@ -80,7 +80,10 @@ async fn initialization_handshake() {
         .expect("EOF reading init response");
 
     assert_eq!(resp["id"], 1);
-    assert!(resp.get("result").is_some(), "expected result in init response");
+    assert!(
+        resp.get("result").is_some(),
+        "expected result in init response"
+    );
     assert!(
         resp["result"]["capabilities"].is_object(),
         "expected capabilities object"
@@ -314,7 +317,10 @@ async fn apply_edit_refusal() {
         }
     }
 
-    assert!(got_apply_edit, "should have received workspace/applyEdit request");
+    assert!(
+        got_apply_edit,
+        "should have received workspace/applyEdit request"
+    );
 
     // Shutdown + exit
     send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;
@@ -425,8 +431,15 @@ async fn notifications_interleaved() {
         }
     }
 
-    assert!(got_diag_notification, "should have received publishDiagnostics notification");
-    assert_eq!(server_request_ids.len(), 2, "should have received 2 server requests");
+    assert!(
+        got_diag_notification,
+        "should have received publishDiagnostics notification"
+    );
+    assert_eq!(
+        server_request_ids.len(),
+        2,
+        "should have received 2 server requests"
+    );
 
     // Shutdown + exit
     send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;
@@ -523,7 +536,9 @@ async fn concurrent_out_of_order_responses() {
             // Respond with a result appropriate for the method
             let result = match method.as_str() {
                 "textDocument/definition" => serde_json::Value::Null,
-                "textDocument/hover" => serde_json::json!({"contents": {"kind": "markdown", "value": "hover info"}}),
+                "textDocument/hover" => {
+                    serde_json::json!({"contents": {"kind": "markdown", "value": "hover info"}})
+                }
                 "textDocument/references" => serde_json::json!([]),
                 _ => serde_json::Value::Null,
             };
@@ -532,13 +547,20 @@ async fn concurrent_out_of_order_responses() {
         }
     }
 
-    assert_eq!(request_methods.len(), 3, "should have received 3 server requests");
+    assert_eq!(
+        request_methods.len(),
+        3,
+        "should have received 3 server requests"
+    );
     // Server sends in order: definition, hover, references
-    assert_eq!(request_methods, vec![
-        "textDocument/definition",
-        "textDocument/hover",
-        "textDocument/references",
-    ]);
+    assert_eq!(
+        request_methods,
+        vec![
+            "textDocument/definition",
+            "textDocument/hover",
+            "textDocument/references",
+        ]
+    );
 
     // Shutdown + exit
     send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;
@@ -786,7 +808,10 @@ async fn server_error_response() {
         }
     }
 
-    assert!(got_error_response, "should have received error response for definition request");
+    assert!(
+        got_error_response,
+        "should have received error response for definition request"
+    );
 
     // Shutdown + exit
     send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;
@@ -1014,9 +1039,14 @@ async fn diagnostics_lifecycle() {
     );
 
     // The transcript must record all the did_* lifecycle events we sent
-    let transcript = std::fs::read_to_string(harness.transcript_path_str())
-        .expect("failed to read transcript");
-    for method in &["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave", "textDocument/didClose"] {
+    let transcript =
+        std::fs::read_to_string(harness.transcript_path_str()).expect("failed to read transcript");
+    for method in &[
+        "textDocument/didOpen",
+        "textDocument/didChange",
+        "textDocument/didSave",
+        "textDocument/didClose",
+    ] {
         assert!(
             transcript.contains(method),
             "transcript should record {method} notification"
@@ -1119,7 +1149,11 @@ async fn framing_various_sizes() {
         }
     }
 
-    assert_eq!(request_methods.len(), 2, "should have received 2 server requests");
+    assert_eq!(
+        request_methods.len(),
+        2,
+        "should have received 2 server requests"
+    );
     assert!(request_methods.contains(&"test/small".to_string()));
     assert!(request_methods.contains(&"test/large".to_string()));
 
@@ -1225,7 +1259,11 @@ async fn progress_notification() {
         }
     }
 
-    assert_eq!(progress_notifications.len(), 2, "should have received 2 progress notifications");
+    assert_eq!(
+        progress_notifications.len(),
+        2,
+        "should have received 2 progress notifications"
+    );
 
     // Shutdown + exit
     send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;

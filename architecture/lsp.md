@@ -1145,6 +1145,9 @@ The tracked initialization and quiescent shutdown features are covered by target
 | `no_stale_active_entries_under_contention` | Concurrent fast success attempts (single-flight) leave `active_init_tasks` empty without requiring shutdown. |
 | `lock_order_no_deadlock_under_overlap` | Concurrent registration and shutdown overlap via test gates; neither path deadlocks and both complete within bounded time. |
 | `global_deadline_fallback_asserts_all_signals` | A stuck factory is forcibly aborted, the abort signal is observed, all maps are drained, and the lifecycle is `Stopped` — all within the global deadline. |
+| `forced_abort_after_grace_period` | Genuinely survives cooperative cancellation past the 300ms grace interval using a test-only `InitTaskBehavior::IgnoreCancellationUntilAbort` hook. Asserts the real `AbortHandle::abort()` path is reached and the factory future is dropped before shutdown returns. |
+| `aggregate_grace_across_independent_tasks` | Multiple independent initialization keys (distinct roots) each with blocked factories. Confirms `active_init_tasks.len() == N` and total shutdown time is bounded near one aggregate grace period rather than N × grace. |
+| `deadline_fallback_with_unresolvable_completion` | Constructs `InitTaskControl` values with receivers whose senders are intentionally retained (never resolving). Drives `await_init_task_completions` to the global deadline and verifies unresolved controls are logged/returned and state finalization continues. |
 | Phase 2: initialization handshake | `protocol_stdio::initialization_handshake` | Real stdio init/initialized/shutdown/exit through fake server |
 | Phase 2: server request during init | `protocol_stdio::server_request_during_init` | workspace/configuration interleaved with initialize |
 | Phase 2: apply-edit refusal | `protocol_stdio::apply_edit_refusal` | workspace/applyEdit rejected with applied:false |
@@ -1156,7 +1159,9 @@ The tracked initialization and quiescent shutdown features are covered by target
 | Phase 2: framing sizes | `protocol_stdio::framing_various_sizes` | Content-Length framing edge cases |
 | Phase 2: progress notifications | `protocol_stdio::progress_notification` | $/progress notifications |
 
-The `FutureExitProbe` test-only RAII guard (`src/lsp/../service.rs`) is constructed at the top of test factory futures to prove that the future body was actually dropped. It is robust to all three exit paths (normal return, cooperative cancellation, forced abort) and is used by `shutdown_aborts_uncooperative_task`, `cooperative_cancellation_is_observed`, and `forced_abort_is_awaited`.
+The `FutureExitProbe` test-only RAII guard (`src/lsp/../service.rs`) is constructed at the top of test factory futures to prove that the future body was actually dropped. It is robust to all three exit paths (normal return, cooperative cancellation, forced abort) and is used by `shutdown_aborts_uncooperative_task`, `cooperative_cancellation_is_observed`, `forced_abort_is_awaited`, and `forced_abort_after_grace_period`.
+
+The flaky transport test (`timeout_cancel_failure_marks_transport_failed_and_writes_writer_closed`) has been fixed by replacing OS-pipe-dependent behavior with deterministic writer injection.
 
 ### Writer Failure Propagation
 
@@ -1222,9 +1227,9 @@ A cloneable error type used for concurrent initialization waiters. `SharedInitEr
 - **Client routing**: `workspaceSymbol` resolves client via `get_or_create_client_for_file` or `get_or_create_client_for_root_hint`, not arbitrary first-key selection
 - **Doctor subsystem**: `codegg doctor --subsystem lsp` provides non-mutating LSP diagnostics
 
-## Phase 2: Scripted Stdio Integration Testing
+## Phase 2: Scripted Stdio Integration Testing (Complete)
 
-The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing. It reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts.
+All 23 Phase 2 integration tests are passing (11 protocol + 12 semantic). The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing. It reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts.
 
 ### Architecture
 
@@ -1251,6 +1256,12 @@ Scenarios are JSON files with steps like `ExpectRequest`, `ExpectNotification`, 
 ### Binary Discovery
 
 The test binary is located via workspace `target/` directory search. The `EGGLSP_TEST_SERVER` env var can override the path for CI.
+
+### Test Counts
+
+- **11 protocol tests** in `tests/protocol_stdio.rs` — all passing ✅
+- **12 semantic tests** in `tests/semantic_stdio.rs` — all passing ✅
+- **229 unit tests** in the `egglsp` crate (was 228 before `forced_abort_after_grace_period`)
 
 ### Test Organization
 

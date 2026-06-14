@@ -194,9 +194,14 @@ async fn d1_document_lifecycle() {
     let transcript_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while tokio::time::Instant::now() < transcript_deadline {
         if let Ok(t) = std::fs::read_to_string(harness.transcript_path_str()) {
-            let all_present = ["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave", "textDocument/didClose"]
-                .iter()
-                .all(|m| t.contains(m));
+            let all_present = [
+                "textDocument/didOpen",
+                "textDocument/didChange",
+                "textDocument/didSave",
+                "textDocument/didClose",
+            ]
+            .iter()
+            .all(|m| t.contains(m));
             if all_present {
                 transcript = t;
                 break;
@@ -204,16 +209,27 @@ async fn d1_document_lifecycle() {
         }
         tokio::task::yield_now().await;
     }
-    for method in &["textDocument/didOpen", "textDocument/didChange", "textDocument/didSave", "textDocument/didClose"] {
+    for method in &[
+        "textDocument/didOpen",
+        "textDocument/didChange",
+        "textDocument/didSave",
+        "textDocument/didClose",
+    ] {
         assert!(
             transcript.contains(method),
             "transcript should record {method} (full transcript: {transcript})"
         );
     }
     // URI should appear in the transcript (the server saw it)
-    assert!(transcript.contains("lib.rs"), "transcript should record the test URI");
+    assert!(
+        transcript.contains("lib.rs"),
+        "transcript should record the test URI"
+    );
     // languageId should appear
-    assert!(transcript.contains("rust"), "transcript should record the languageId");
+    assert!(
+        transcript.contains("rust"),
+        "transcript should record the languageId"
+    );
 
     shutdown_server(&mut child, &mut stdin, &mut stdout).await;
 }
@@ -375,7 +391,9 @@ async fn d2_definition_request_response() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 2);
-    let results = resp["result"].as_array().expect("definition should return array");
+    let results = resp["result"]
+        .as_array()
+        .expect("definition should return array");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["uri"], target_uri);
     assert_eq!(results[0]["range"]["start"]["line"], 10);
@@ -462,7 +480,9 @@ async fn d2_references_request_response() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 2);
-    let results = resp["result"].as_array().expect("references should return array");
+    let results = resp["result"]
+        .as_array()
+        .expect("references should return array");
     assert_eq!(results.len(), 2, "expected 2 reference locations");
     assert_eq!(results[0]["uri"], test_uri);
     assert_eq!(results[1]["range"]["start"]["line"], 5);
@@ -545,7 +565,9 @@ async fn d2_document_symbols_request_response() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 2);
-    let symbols = resp["result"].as_array().expect("symbols should return array");
+    let symbols = resp["result"]
+        .as_array()
+        .expect("symbols should return array");
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0]["name"], "main");
     assert_eq!(symbols[0]["kind"], 12); // Function
@@ -704,8 +726,14 @@ async fn d3_call_hierarchy_flow() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 2);
-    let prepared = resp["result"].as_array().expect("prepare should return array");
-    assert_eq!(prepared.len(), 2, "expected 2 prepared call hierarchy items");
+    let prepared = resp["result"]
+        .as_array()
+        .expect("prepare should return array");
+    assert_eq!(
+        prepared.len(),
+        2,
+        "expected 2 prepared call hierarchy items"
+    );
 
     // Incoming
     send_request(
@@ -722,7 +750,9 @@ async fn d3_call_hierarchy_flow() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 3);
-    let incoming = resp["result"].as_array().expect("incoming should return array");
+    let incoming = resp["result"]
+        .as_array()
+        .expect("incoming should return array");
     assert_eq!(incoming.len(), 1);
     assert_eq!(incoming[0]["from"]["name"], "caller_a");
 
@@ -741,7 +771,9 @@ async fn d3_call_hierarchy_flow() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 4);
-    let outgoing = resp["result"].as_array().expect("outgoing should return array");
+    let outgoing = resp["result"]
+        .as_array()
+        .expect("outgoing should return array");
     assert_eq!(outgoing.len(), 1);
     assert_eq!(outgoing[0]["to"]["name"], "callee_x");
 
@@ -852,7 +884,9 @@ async fn d4_rename_workspace_edit() {
     assert_eq!(changes.len(), 2, "expected 2 document changes");
     assert_eq!(changes[0]["textDocument"]["uri"], source_uri);
     assert_eq!(changes[0]["textDocument"]["version"], 5);
-    let edits0 = changes[0]["edits"].as_array().expect("edits should be array");
+    let edits0 = changes[0]["edits"]
+        .as_array()
+        .expect("edits should be array");
     assert_eq!(edits0[0]["newText"], "renamed_var");
     assert_eq!(changes[1]["textDocument"]["uri"], other_uri);
 
@@ -949,7 +983,10 @@ async fn d4_code_action_with_edit() {
     let actions = resp["result"].as_array().expect("actions should be array");
     assert_eq!(actions.len(), 1);
     assert_eq!(actions[0]["title"], "organize imports");
-    assert!(actions[0]["edit"].is_object(), "edit-bearing code action should have edit");
+    assert!(
+        actions[0]["edit"].is_object(),
+        "edit-bearing code action should have edit"
+    );
     let changes = actions[0]["edit"]["documentChanges"]
         .as_array()
         .expect("documentChanges should be array");
@@ -1073,10 +1110,18 @@ async fn d5_semantic_context_composite() {
             }
         }
     }
-    assert!(got_diag, "should have received pre-emptive publishDiagnostics");
+    assert!(
+        got_diag,
+        "should have received pre-emptive publishDiagnostics"
+    );
 
     // Issue the composite semantic-context requests
-    for (id, method) in &[(2, "textDocument/documentSymbol"), (3, "textDocument/hover"), (4, "textDocument/definition"), (5, "textDocument/references")] {
+    for (id, method) in &[
+        (2, "textDocument/documentSymbol"),
+        (3, "textDocument/hover"),
+        (4, "textDocument/definition"),
+        (5, "textDocument/references"),
+    ] {
         let params = if *method == "textDocument/documentSymbol" {
             serde_json::json!({"textDocument": {"uri": test_uri}})
         } else {
@@ -1095,8 +1140,10 @@ async fn d5_semantic_context_composite() {
             .expect("timeout")
             .expect("EOF");
         assert_eq!(resp["id"], id, "expected response id {id}");
-        assert!(resp["result"].is_object() || resp["result"].is_array(),
-            "result should be a JSON value");
+        assert!(
+            resp["result"].is_object() || resp["result"].is_array(),
+            "result should be a JSON value"
+        );
     }
 
     shutdown_server(&mut child, &mut stdin, &mut stdout).await;
@@ -1216,7 +1263,9 @@ async fn d6_security_context_composite() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 2);
-    let prepared = resp["result"].as_array().expect("prepare should return array");
+    let prepared = resp["result"]
+        .as_array()
+        .expect("prepare should return array");
     assert_eq!(prepared.len(), 1);
     assert_eq!(prepared[0]["name"], "vulnerable_fn");
 
@@ -1233,7 +1282,9 @@ async fn d6_security_context_composite() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 3);
-    let outgoing = resp["result"].as_array().expect("outgoing should return array");
+    let outgoing = resp["result"]
+        .as_array()
+        .expect("outgoing should return array");
     assert_eq!(outgoing.len(), 1);
     assert_eq!(outgoing[0]["to"]["name"], "sink_fn");
 
@@ -1332,7 +1383,9 @@ async fn d7_hunk_source_context() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 2);
-    let symbols = resp["result"].as_array().expect("symbols should return array");
+    let symbols = resp["result"]
+        .as_array()
+        .expect("symbols should return array");
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0]["name"], "hunk_target_fn");
 
@@ -1352,7 +1405,9 @@ async fn d7_hunk_source_context() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 3);
-    let defs = resp["result"].as_array().expect("definition should return array");
+    let defs = resp["result"]
+        .as_array()
+        .expect("definition should return array");
     assert_eq!(defs.len(), 1);
     assert_eq!(defs[0]["uri"], test_uri);
 
@@ -1373,7 +1428,9 @@ async fn d7_hunk_source_context() {
         .expect("timeout")
         .expect("EOF");
     assert_eq!(resp["id"], 4);
-    let refs = resp["result"].as_array().expect("references should return array");
+    let refs = resp["result"]
+        .as_array()
+        .expect("references should return array");
     assert_eq!(refs.len(), 1);
 
     shutdown_server(&mut child, &mut stdin, &mut stdout).await;
@@ -1496,7 +1553,9 @@ async fn d2_concurrent_out_of_order_semantic() {
             _ => break,
         };
         if is_response(&frame) {
-            let id = frame["id"].as_i64().expect("response should have integer id");
+            let id = frame["id"]
+                .as_i64()
+                .expect("response should have integer id");
             responses.insert(id, frame);
         }
     }
@@ -1507,7 +1566,10 @@ async fn d2_concurrent_out_of_order_semantic() {
     assert!(responses.contains_key(&300), "references response");
     assert!(responses.contains_key(&400), "documentSymbol response");
     // Verify the hover response is the right shape
-    assert_eq!(responses[&100]["result"]["contents"]["value"], "hover_result");
+    assert_eq!(
+        responses[&100]["result"]["contents"]["value"],
+        "hover_result"
+    );
 
     shutdown_server(&mut child, &mut stdin, &mut stdout).await;
 }

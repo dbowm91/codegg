@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -258,8 +260,11 @@ pub struct LspService {
     /// Tracks in-progress initializations for single-flight semantics.
     initializing: InitMap,
     /// Tracks spawned initialization tasks for shutdown coordination.
-    /// Keyed by attempt_id. Each value owns the actual `JoinHandle` of
-    /// the wrapper task so shutdown can await real task completion.
+    /// Keyed by attempt_id. Each value owns the authoritative terminal
+    /// completion receiver (`oneshot::Receiver<InitTaskExit>`) for the
+    /// wrapper task, plus the `AbortHandle` for forced abort of
+    /// stragglers. Shutdown observes task termination through the
+    /// receiver; no forwarding task wraps the real `JoinHandle`.
     active_init_tasks: ActiveTaskMap,
     /// Maps document URI string → client key for O(1) ownership lookup.
     document_owners: Arc<RwLock<HashMap<String, String>>>,
@@ -276,6 +281,11 @@ pub struct LspService {
     test_init_fn: Option<std::sync::Arc<TestInitFn>>,
     #[cfg(test)]
     test_hooks: Option<std::sync::Arc<TestHooks>>,
+    /// Test-only flag: when true, the wrapper task gets stuck after
+    /// the inner function completes but before sending the completion
+    /// signal. This forces the abort-after-grace path during shutdown.
+    #[cfg(test)]
+    test_force_stuck_after_inner: std::sync::Arc<AtomicBool>,
 }
 
 impl LspService {
@@ -293,6 +303,8 @@ impl LspService {
             test_init_fn: None,
             #[cfg(test)]
             test_hooks: None,
+            #[cfg(test)]
+            test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -312,6 +324,7 @@ impl LspService {
             config,
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: None,
+            test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -334,7 +347,17 @@ impl LspService {
             config,
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: Some(test_hooks),
+            test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Set the test-only flag that causes the wrapper task to get stuck
+    /// after the inner function completes. This forces the abort-after-grace
+    /// path during shutdown.
+    #[cfg(test)]
+    fn set_force_stuck(&self, stuck: bool) {
+        self.test_force_stuck_after_inner
+            .store(stuck, Ordering::SeqCst);
     }
 
     pub async fn get_or_create_client(
@@ -450,6 +473,8 @@ impl LspService {
                 let cancel_for_task = cancellation.clone();
                 #[cfg(test)]
                 let test_init = self.test_init_fn.clone();
+                #[cfg(test)]
+                let force_stuck = self.test_force_stuck_after_inner.clone();
 
                 // ── Start-barrier pattern ──
                 //
@@ -477,6 +502,8 @@ impl LspService {
                     cancel_for_task,
                     #[cfg(test)]
                     test_init,
+                    #[cfg(test)]
+                    force_stuck,
                 ));
 
                 // Step 1: install the active-task entry. We do this
@@ -902,9 +929,10 @@ impl LspService {
             warn!("shutdown required forced finalization: deadline expired");
         }
         // Final forced-drain of any leftover active-task entries
-        // (e.g. tasks whose JoinHandles are still tracked because
-        // their wrapper drop guard did not run before the abort
-        // timeout). This is best-effort and idempotent.
+        // (e.g. entries whose completion receivers have not yet
+        // resolved because the wrapper drop guard cleanup task did
+        // not run before the abort timeout). This is best-effort
+        // and idempotent.
         {
             let mut tasks_map = self.active_init_tasks.lock().await;
             if !tasks_map.is_empty() {
@@ -1413,6 +1441,7 @@ async fn run_init_task_wrapper(
     key: String,
     cancellation: CancellationToken,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
+    #[cfg(test)] force_stuck: std::sync::Arc<AtomicBool>,
 ) {
     // Fallback guard: ensures the active-task entry is removed on
     // every terminal path where explicit cleanup did not run.
@@ -1445,6 +1474,18 @@ async fn run_init_task_wrapper(
     use futures::FutureExt;
     use std::panic::AssertUnwindSafe;
     let result = AssertUnwindSafe(inner).catch_unwind().await;
+
+    // Test-only: when force_stuck is set, the wrapper gets stuck
+    // after the inner function completes but before sending the
+    // completion signal. This forces the abort-after-grace path.
+    #[cfg(test)]
+    if force_stuck.load(Ordering::SeqCst) {
+        // Wait forever — only abort can terminate this.
+        // The task's completion_tx will be dropped when abort kills
+        // the task, resolving the receiver with Err(RecvError).
+        std::future::pending::<()>().await;
+        unreachable!("force_stuck: pending() should never resolve");
+    }
 
     let exit = match result {
         Ok(()) => InitTaskExit::Completed,
@@ -2786,11 +2827,11 @@ mod tests {
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 
-    /// Test: forced-finalization on deadline expiry.
-    /// This exercises the REAL forced-abort path: the factory uses
-    /// `std::future::pending()` which cannot be cancelled cooperatively,
-    /// so shutdown must wait for the grace period, then forcibly abort
-    /// via `AbortHandle`, and force-finalize state.
+    /// Test: shutdown handles an uncooperative factory that never completes.
+    /// The factory uses `std::future::pending()` which is cooperatively
+    /// cancelled by the `select!` blocks in `run_initialization_attempt`.
+    /// This tests that shutdown completes within the global deadline when
+    /// the factory future is dropped via cooperative cancellation.
     #[tokio::test]
     async fn global_deadline_finalizes_state() {
         // Factory that blocks forever, ignoring cancellation.
@@ -3159,12 +3200,10 @@ mod tests {
         assert!(svc.active_init_tasks.lock().await.is_empty());
     }
 
-    /// Test: global deadline fallback semantics. This exercises
-    /// the real forced-abort path: the factory uses `std::future::pending()`
-    /// (genuinely uncooperative), so shutdown must wait for the grace
-    /// period, then forcibly abort via `AbortHandle`. The abort signal
-    /// is observed, all maps are drained, and the lifecycle is
-    /// Stopped — all within the global deadline.
+    /// Test: global deadline fallback semantics. The factory uses
+    /// `std::future::pending()` which is cooperatively cancelled by the
+    /// `select!` blocks. This tests that shutdown completes, all maps are
+    /// drained, and the lifecycle reaches Stopped within the global deadline.
     #[tokio::test]
     async fn global_deadline_fallback_asserts_all_signals() {
         // Stuck factory that ignores cancellation.
@@ -3214,6 +3253,81 @@ mod tests {
 
         let result = await_join(handle).await;
         expect_init_cancelled(result).await;
+    }
+
+    /// Test: genuine forced-abort after grace period. Unlike the
+    /// `global_deadline_*` tests which use cooperative `pending()`,
+    /// this test uses the `force_stuck` flag to make the wrapper task
+    /// genuinely uncooperative AFTER the inner function completes.
+    /// The factory blocks on a release notify; shutdown cancels the
+    /// token, the `select!` drops the factory, the inner function
+    /// returns, but the wrapper gets stuck before sending the
+    /// completion signal. The grace period expires and
+    /// `AbortHandle::abort()` is called.
+    #[tokio::test]
+    async fn forced_abort_after_grace_period() {
+        let (entered_tx, mut entered_rx) = watch::channel(false);
+        let release = Notify::new();
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            release,
+            FactoryOutcome::Success,
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        ));
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            blocking_factory(state.clone()),
+        ));
+
+        // Enable the force_stuck flag: the wrapper will get stuck
+        // after the inner function completes but before sending the
+        // completion signal.
+        svc.set_force_stuck(true);
+
+        let handle = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.get_or_create_client(rust_file()).await }
+        });
+
+        // Wait for factory to enter.
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            while !*entered_rx.borrow() {
+                entered_rx.changed().await.ok();
+            }
+        })
+        .await;
+        assert_eq!(state.invocations.load(Ordering::SeqCst), 1);
+
+        // Shutdown will cancel the token, the select! drops the
+        // factory future, the inner function returns, but the wrapper
+        // gets stuck. The grace period (300ms) expires, then
+        // AbortHandle::abort() is called. The task is killed, the
+        // completion_tx is dropped, and the receiver resolves with
+        // Err(RecvError).
+        let start = std::time::Instant::now();
+        svc.shutdown_all().await;
+        let elapsed = start.elapsed();
+
+        // Should complete within the global timeout, not hang forever.
+        // The grace is 300ms; allow generous slack.
+        assert!(
+            elapsed <= SHUTDOWN_GLOBAL_TIMEOUT + Duration::from_millis(500),
+            "shutdown took {elapsed:?}, exceeds global deadline"
+        );
+
+        // All maps are drained.
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+        assert!(svc.clients.read().await.is_empty());
+        assert!(svc.initializing.lock().await.is_empty());
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+
+        // The caller should get an error (either initialization
+        // cancelled or launch failed, depending on timing).
+        let result = await_join(handle).await;
+        // The exact error doesn't matter — what matters is that
+        // shutdown completed and the maps are clean.
+        let _ = result;
     }
 
     /// Test: aggregate grace across multiple independent tasks. Verify

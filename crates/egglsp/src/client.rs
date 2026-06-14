@@ -1079,9 +1079,7 @@ impl LspClient {
 
         // If the transport is already failed, skip the write (it would
         // certainly fail) and drain any remaining pending requests.
-        if let ClientTransportState::Failed { ref reason } =
-            *self.transport_state.lock().await
-        {
+        if let ClientTransportState::Failed { ref reason } = *self.transport_state.lock().await {
             let reason = reason.clone();
             fail_all_pending(&self.pending, &reason).await;
             return Err(LspError::RequestTimeout(format!(

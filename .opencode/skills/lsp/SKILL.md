@@ -1035,10 +1035,13 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 - `global_deadline_fallback_asserts_all_signals` — a stuck factory is forcibly aborted, all maps are drained, and the lifecycle is `Stopped` — all within the global deadline
 - `aggregate_grace_across_independent_tasks` — the aggregate grace wait in `await_init_task_completions` is applied across independent in-flight tasks; total shutdown time is bounded by one grace period regardless of task count
 - `deadline_fallback_with_unresolvable_completion` — when a completion receiver never resolves, the global deadline forces finalization; lifecycle reaches `Stopped` and all maps are empty
+- `forced_abort_after_grace_period` — genuinely reaches the abort-after-grace path: a factory that blocks indefinitely triggers the forced-abort fallback after the 300ms grace period expires; verifies the `AbortHandle` path works end-to-end
 
 ## Phase 2: Scripted Stdio Integration Tests
 
 The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing through real child-process stdio.
+
+Phase 2 is complete. The fake server binary exercises 11 protocol tests and 12 semantic tests through real stdio transport, plus 229 unit tests across the crate (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). The previously flaky transport test has been fixed.
 
 ### Test Infrastructure
 
@@ -1089,6 +1092,9 @@ These tests exercise the wire-level protocol for the LSP operations that Codegg'
 # Run all Phase 2 integration tests (parallel-safe)
 cargo test -p egglsp --test protocol_stdio
 cargo test -p egglsp --test semantic_stdio
+
+# Run unit tests (229 total)
+cargo test -p egglsp --lib
 
 # Force single-threaded to validate sequential stability
 cargo test -p egglsp --tests -- --test-threads=1

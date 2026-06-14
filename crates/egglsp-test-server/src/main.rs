@@ -227,8 +227,8 @@ fn main() {
 
     let scenario_file = File::open(&scenario_path)
         .unwrap_or_else(|e| panic!("Failed to open scenario file {scenario_path}: {e}"));
-    let scenario: Scenario =
-        serde_json::from_reader(scenario_file).unwrap_or_else(|e| panic!("Failed to parse scenario: {e}"));
+    let scenario: Scenario = serde_json::from_reader(scenario_file)
+        .unwrap_or_else(|e| panic!("Failed to parse scenario: {e}"));
 
     let mut transcript = TranscriptWriter::new(&PathBuf::from(&transcript_path))
         .unwrap_or_else(|e| panic!("Failed to create transcript file: {e}"));
@@ -262,9 +262,7 @@ fn main() {
                     }
                     None => {
                         if scenario.strict {
-                            eprintln!(
-                                "[fake-lsp] EOF waiting for request {method} in strict mode"
-                            );
+                            eprintln!("[fake-lsp] EOF waiting for request {method} in strict mode");
                             exit_code = 1;
                             break;
                         }
@@ -275,12 +273,9 @@ fn main() {
                 }
             }
             Step::ExpectNotification { method, then } => {
-                let msg =
-                    read_until_notification(&mut reader, &mut transcript, step_idx, method);
+                let msg = read_until_notification(&mut reader, &mut transcript, step_idx, method);
                 if msg.is_none() && scenario.strict {
-                    eprintln!(
-                        "[fake-lsp] EOF waiting for notification {method} in strict mode"
-                    );
+                    eprintln!("[fake-lsp] EOF waiting for notification {method} in strict mode");
                     exit_code = 1;
                     break;
                 }

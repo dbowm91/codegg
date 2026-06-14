@@ -113,11 +113,7 @@ pub async fn send_request_str(
 }
 
 /// Send a framed JSON-RPC notification.
-pub async fn send_notification(
-    stdin: &mut ChildStdin,
-    method: &str,
-    params: serde_json::Value,
-) {
+pub async fn send_notification(stdin: &mut ChildStdin, method: &str, params: serde_json::Value) {
     let msg = serde_json::json!({
         "jsonrpc": "2.0",
         "method": method,
