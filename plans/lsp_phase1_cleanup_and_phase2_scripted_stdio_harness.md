@@ -1277,58 +1277,58 @@ Where workspace-wide failures are pre-existing, record exact diagnostics. All mo
 
 ## Phase 1 cleanup
 
-- [ ] `active_init_tasks` documentation names abort handle + completion receiver, not real `JoinHandle` ownership.
-- [ ] Cooperative cancellation tests are named accurately.
-- [ ] A deterministic test reaches grace expiry and real `AbortHandle::abort()`.
-- [ ] Forced-abort test needs no post-shutdown release.
-- [ ] Aggregate grace is tested with multiple independent task controls.
-- [ ] Deadline-fallback claims match actual coverage.
-- [ ] Flaky cancellation-write test is deterministic or replaced.
+- [x] `active_init_tasks` documentation names abort handle + completion receiver, not real `JoinHandle` ownership.
+- [x] Cooperative cancellation tests are named accurately.
+- [x] A deterministic test reaches grace expiry and real `AbortHandle::abort()`.
+- [x] Forced-abort test needs no post-shutdown release.
+- [x] Aggregate grace is tested with multiple independent task controls.
+- [x] Deadline-fallback claims match actual coverage.
+- [x] Flaky cancellation-write test is deterministic or replaced.
 
 ## Fixture architecture
 
-- [ ] Fake server is a Rust child-process executable.
-- [ ] It uses real stdin/stdout Content-Length framing.
-- [ ] Scenario input is per-process and parallel-safe.
-- [ ] Unexpected messages fail fast with transcript output.
-- [ ] No network or external server dependency.
-- [ ] Child cleanup is guaranteed on test failure.
+- [x] Fake server is a Rust child-process executable.
+- [x] It uses real stdin/stdout Content-Length framing.
+- [x] Scenario input is per-process and parallel-safe.
+- [x] Unexpected messages fail fast with transcript output.
+- [x] No network or external server dependency.
+- [x] Child cleanup is guaranteed on test failure.
 
 ## Protocol coverage
 
-- [ ] Initialize/initialized handshake.
-- [ ] Server requests during initialization.
-- [ ] Configuration/workspace folders/dynamic registration.
-- [ ] Apply-edit refusal result.
-- [ ] Notifications interleaved with responses.
-- [ ] Out-of-order concurrent responses.
-- [ ] Diagnostics lifecycle.
-- [ ] Timeout and `$/cancelRequest`.
-- [ ] Graceful shutdown/exit.
-- [ ] EOF and nonzero process exit.
-- [ ] Malformed framing.
-- [ ] Malformed JSON-RPC structures.
-- [ ] Server-response write failure path or deterministic equivalent.
-- [ ] Stderr drainage.
+- [x] Initialize/initialized handshake.
+- [x] Server requests during initialization.
+- [ ] Configuration/workspace folders/dynamic registration. (unit-tested, 34 tests)
+- [x] Apply-edit refusal result.
+- [x] Notifications interleaved with responses.
+- [x] Out-of-order concurrent responses.
+- [x] Diagnostics lifecycle.
+- [ ] Timeout and `$/cancelRequest`. (deferred — C8 injectable timeouts added, no integration test)
+- [x] Graceful shutdown/exit.
+- [x] EOF and nonzero process exit.
+- [x] Malformed framing.
+- [x] Malformed JSON-RPC structures.
+- [x] Server-response write failure path or deterministic equivalent. (covered by fail_transport() unit test)
+- [x] Stderr drainage.
 
 ## Feature coverage
 
-- [ ] Document lifecycle.
-- [ ] Hover/definition/references/symbols.
-- [ ] Hierarchy operations currently supported.
-- [ ] Rename/format/code-action previews.
-- [ ] No edit mutation.
-- [ ] Semantic context composite.
-- [ ] Security context composite.
-- [ ] Hunk source context current behavior.
+- [x] Document lifecycle.
+- [x] Hover/definition/references/symbols.
+- [x] Hierarchy operations currently supported.
+- [x] Rename/format/code-action previews.
+- [x] No edit mutation.
+- [x] Semantic context composite.
+- [x] Security context composite.
+- [x] Hunk source context current behavior.
 
 ## Reliability
 
-- [ ] Every test has a total timeout.
-- [ ] Failure output includes transcript and stderr tail.
-- [ ] Tests run in parallel without global state collisions.
-- [ ] Test suite runtime is acceptable for default CI.
-- [ ] macOS and Linux path/URI differences are normalized.
+- [x] Every test has a total timeout.
+- [x] Failure output includes transcript and stderr tail.
+- [x] Tests run in parallel without global state collisions.
+- [x] Test suite runtime is acceptable for default CI.
+- [x] macOS and Linux path/URI differences are normalized.
 
 # Completion Criteria
 

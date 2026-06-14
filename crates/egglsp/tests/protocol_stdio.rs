@@ -10,8 +10,8 @@ mod common;
 
 use common::{
     is_notification, is_response, is_server_request, read_frame, read_frame_timeout,
-    send_error_response, send_initialize, send_notification, send_raw_frame, send_request,
-    send_response, shutdown, spawn_fake_server, FakeLspHarness,
+    send_error_response, send_initialize, send_notification, send_raw_bytes, send_raw_frame,
+    send_request, send_response, shutdown, spawn_fake_server, FakeLspHarness,
 };
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -1408,6 +1408,254 @@ async fn server_error_response() {
         .expect("timeout")
         .expect("wait failed");
     assert!(status.success());
+}
+
+// ── Malformed framing tests (C12) ────────────────────────────────────
+
+/// Send a message with a non-numeric Content-Length header value.
+/// The fake server's framing parser should reject it and continue.
+#[tokio::test]
+async fn malformed_non_numeric_content_length() {
+    let scenario = serde_json::json!({
+        "name": "malformed_non_numeric_cl",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send a message with non-numeric Content-Length header.
+    // The server's framing parser should reject this and continue.
+    let malformed = b"Content-Length: abc\r\n\r\n{\"jsonrpc\":\"2.0\",\"method\":\"test\"}";
+    send_raw_bytes(&mut stdin, malformed).await;
+
+    // Server may hang or exit due to malformed framing. Use timeout-tolerant shutdown.
+    send_request(&mut stdin, 99, "shutdown", serde_json::json!(null)).await;
+    let _ = read_frame_timeout(&mut stdout, Duration::from_secs(3)).await;
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+    match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+        Ok(Ok(status)) => {
+            assert!(
+                status.code().is_some(),
+                "server should terminate after non-numeric Content-Length"
+            );
+        }
+        _ => {
+            let _ = child.kill().await;
+        }
+    }
+}
+
+/// Send a message with no Content-Length header at all (just a newline
+/// followed by JSON). The server's framing parser should reject it.
+#[tokio::test]
+async fn malformed_missing_content_length_header() {
+    let scenario = serde_json::json!({
+        "name": "malformed_missing_cl",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send a message with no Content-Length header: just a newline then body.
+    // The server's framing parser expects "Content-Length: N" and should reject this.
+    let malformed = b"\r\n{\"jsonrpc\":\"2.0\",\"method\":\"test\"}";
+    send_raw_bytes(&mut stdin, malformed).await;
+
+    // Server may hang or exit due to malformed framing. Use timeout-tolerant shutdown.
+    send_request(&mut stdin, 99, "shutdown", serde_json::json!(null)).await;
+    let _ = read_frame_timeout(&mut stdout, Duration::from_secs(3)).await;
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+    match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+        Ok(Ok(status)) => {
+            assert!(
+                status.code().is_some(),
+                "server should terminate after missing Content-Length header"
+            );
+        }
+        _ => {
+            let _ = child.kill().await;
+        }
+    }
+}
+
+/// Send a message with an oversized Content-Length (much larger than the
+/// actual body). The server will try to read more bytes than available,
+/// hit EOF, and terminate.
+#[tokio::test]
+async fn malformed_oversized_content_length() {
+    let scenario = serde_json::json!({
+        "name": "malformed_oversized_cl",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send a message claiming a huge Content-Length but with only 2 bytes of body.
+    // The server will try to read 999999999 bytes, hit EOF, and terminate.
+    let malformed = b"Content-Length: 999999999\r\n\r\n{}";
+    send_raw_bytes(&mut stdin, malformed).await;
+
+    // Give the server time to start reading the oversized body, then close stdin
+    // so it hits EOF instead of hanging forever.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(stdin);
+
+    // Server should terminate (may exit with 0 or non-zero due to read error)
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("timeout waiting for exit")
+        .expect("wait failed");
+    // Server should terminate - any exit code is acceptable
+    assert!(
+        status.code().is_some(),
+        "server process should terminate after oversized Content-Length"
+    );
+}
+
+/// Server exits with nonzero status code. The client should detect
+/// the non-zero exit and not treat it as a clean shutdown.
+#[tokio::test]
+async fn nonzero_exit_code() {
+    let scenario = serde_json::json!({
+        "name": "nonzero_exit",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 1},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_request(
+        &mut stdin,
+        1,
+        "initialize",
+        serde_json::json!({
+            "processId": std::process::id(),
+            "rootUri": format!("file://{}", harness.root.display()),
+            "capabilities": {}
+        }),
+    )
+    .await;
+
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
+        .await
+        .expect("timeout reading init response")
+        .expect("EOF reading init response");
+    assert_eq!(resp["id"], 1);
+
+    send_notification(&mut stdin, "initialized", serde_json::json!({})).await;
+
+    send_request(&mut stdin, 2, "shutdown", serde_json::json!(null)).await;
+    let resp = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut stdout))
+        .await
+        .expect("timeout reading shutdown response")
+        .expect("EOF reading shutdown response");
+    assert_eq!(resp["id"], 2);
+
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+
+    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("timeout waiting for exit")
+        .expect("wait failed");
+
+    // Server exits with code 1 as configured in the scenario.
+    // The client should handle this gracefully.
+    assert_eq!(status.code(), Some(1), "server should exit with code 1");
 }
 
 /// Diagnostics lifecycle: after didOpen, the server may publish

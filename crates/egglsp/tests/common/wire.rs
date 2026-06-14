@@ -86,6 +86,16 @@ pub async fn send_raw_frame(stdin: &mut ChildStdin, body: &str) {
     write_framed(stdin, body).await;
 }
 
+/// Send raw bytes directly to stdin (no framing applied).
+///
+/// Used for malformed framing tests (C12) where we need to send
+/// invalid Content-Length headers or partial frames.
+#[allow(dead_code)]
+pub async fn send_raw_bytes(stdin: &mut ChildStdin, bytes: &[u8]) {
+    stdin.write_all(bytes).await.unwrap();
+    stdin.flush().await.unwrap();
+}
+
 /// Send a framed JSON-RPC request.
 pub async fn send_request(
     stdin: &mut ChildStdin,

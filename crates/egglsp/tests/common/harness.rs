@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use tempfile::TempDir;
+use tokio::process::Child;
 
 /// Test harness for fake LSP server integration tests.
 ///
@@ -56,6 +57,27 @@ impl FakeLspHarness {
     /// Path to the transcript file, as a string.
     pub fn transcript_path_str(&self) -> &str {
         self.transcript_path.to_str().unwrap()
+    }
+
+    /// Read all available stderr output from the fake server child process.
+    ///
+    /// This is useful for diagnostics when a test fails. The child's stderr
+    /// must still be available (not taken by `child.stderr()`). Returns the
+    /// stderr content as a string, or a placeholder if unavailable.
+    #[allow(dead_code)]
+    pub async fn read_stderr(child: &mut Child) -> String {
+        use tokio::io::AsyncReadExt;
+        if let Some(mut stderr) = child.stderr.take() {
+            let mut buf = Vec::new();
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                stderr.read_to_end(&mut buf),
+            )
+            .await;
+            String::from_utf8_lossy(&buf).into_owned()
+        } else {
+            "(stderr not captured)".to_string()
+        }
     }
 
     /// Path to the fake server binary.
