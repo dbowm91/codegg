@@ -1111,9 +1111,7 @@ impl LspClient {
             partial_result_params: Default::default(),
         })?;
 
-        let result = self
-            .send_request("typeHierarchy/subtypes", params)
-            .await?;
+        let result = self.send_request("typeHierarchy/subtypes", params).await?;
 
         if result.is_null() {
             return Ok(Vec::new());
@@ -1336,12 +1334,19 @@ impl LspClient {
         result
     }
 
-    /// Return the current number of pending client-initiated requests.
+    /// Returns the current count of requests awaiting responses.
+    ///
+    /// This is an observation, not a synchronization primitive.
+    /// The count may change immediately after the call.
     pub async fn pending_request_count(&self) -> usize {
         self.pending.lock().await.len()
     }
 
-    /// Return a read-only snapshot of the current transport state.
+    /// Returns an observation of the current transport state.
+    ///
+    /// This is a snapshot and may not reflect state changes that occur
+    /// immediately after the call. Useful for operational health monitoring,
+    /// not a synchronization primitive.
     pub async fn transport_state_snapshot(&self) -> ClientTransportSnapshot {
         match &*self.transport_state.lock().await {
             ClientTransportState::Running => ClientTransportSnapshot::Running,
@@ -1351,7 +1356,10 @@ impl LspClient {
         }
     }
 
-    /// Return a deterministic snapshot of the dynamic registration map.
+    /// Returns a snapshot of the server's dynamic registration state.
+    ///
+    /// This is primarily for test support and internal diagnostics.
+    /// The snapshot reflects the state at the time of the call.
     pub async fn dynamic_registration_snapshot(
         &self,
     ) -> Vec<crate::server_request::DynamicRegistration> {

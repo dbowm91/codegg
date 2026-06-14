@@ -1040,19 +1040,19 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 
 ## Phase 2: Scripted Stdio Integration Tests
 
-The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is still named `egglsp-test-server`, but it is built as a `[[bin]]` target from the `egglsp` package and discovered via `CARGO_BIN_EXE_egglsp-test-server`, with `EGGLSP_TEST_SERVER` as an override for CI or manual runs.
+The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is built as a `[[bin]]` target from the `egglsp` package; root tests use `codegg-lsp-test-server` (via `CARGO_BIN_EXE_codegg-lsp-test-server`), while `egglsp`-only tests use `egglsp-test-server` (via `CARGO_BIN_EXE_egglsp-test-server`), with `EGGLSP_TEST_SERVER` as an override for CI or manual runs.
 
-Phase 2 is complete. The production-harness integration tests cover 11 protocol tests, 3 semantic tests, and 5 service tests through real stdio transport, plus 16 root-crate composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path) also contribute coverage. Tests live in `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, `tests/production_service_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
+Phase 2 is complete. The production-harness integration tests cover 11 protocol tests, 3 semantic tests, and 5 service tests through real stdio transport, plus 20 root-crate composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path) also contribute coverage. Tests live in `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, `tests/production_service_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
 
 The fake server supports **captured-ID mode** for genuinely out-of-order concurrent responses, enabling deterministic testing of concurrent request handling. All integration tests use **bounded condition waits** (polling loops) instead of fixed sleeps. `LspClient` has **typed hierarchy methods** (`prepare_call_hierarchy`, `incoming_calls`, `outgoing_calls`, `prepare_type_hierarchy`, `supertypes`, `subtypes`) that replace manual JSON-RPC dispatch.
 
 ### Test Infrastructure
 
-- **Fake server binary**: `crates/egglsp-test-server/src/main.rs` (built as the `egglsp-test-server` bin target from `egglsp`) — reads Content-Length framed JSON-RPC, executes scripted scenarios
+- **Fake server binary**: `crates/egglsp-test-server/src/main.rs` (built as `egglsp-test-server` for `egglsp` tests and `codegg-lsp-test-server` for root tests) — reads Content-Length framed JSON-RPC, executes scripted scenarios
 - **Production harness**: `tests/common/production_harness.rs` — launches the same binary against a minimal real-project root for launcher-path coverage
 - **Scenario format**: JSON files with step types (ExpectRequest, ExpectNotification, AllowRequest, AllowNotification, SendNotification, Delay, ExitNow)
 - **Transcript**: Machine-readable JSONL output for failure diagnostics
-- **Harness**: `tests/common/harness.rs` — temp directories, scenario management, `CARGO_BIN_EXE_egglsp-test-server` discovery with `EGGLSP_TEST_SERVER` override
+- **Harness**: `tests/common/harness.rs` — temp directories, scenario management, `CARGO_BIN_EXE_codegg-lsp-test-server` discovery with `EGGLSP_TEST_SERVER` override
 - **Fake-server self-tests**: `tests/scenario_engine.rs` — includes `../egglsp-test-server/tests/scenario_engine.rs` for strict mismatches, raw bytes, grouped frames
 
 ### Production Protocol Tests (`tests/production_protocol_stdio.rs`)
@@ -1110,6 +1110,8 @@ These tests exercise root-crate collectors against the fake LSP server via the p
 | `semantic_context_collector_exercises_real_workflow` | Full `SemanticContextCollector` workflow (source excerpt, diagnostics, symbols, definitions, references) |
 | `semantic_context_collector_capability_gating` | Capability-gated degradation when server lacks a capability |
 | `semantic_context_collector_failure_degradation` | Graceful degradation when optional operations error |
+| `semantic_context_security_review_intent_collects_security_source` | Security review intent on security-sensitive source (renamed from `security_context_workflow_uses_semantic_collector`) |
+| `security_context_tool_exercises_risk_filtering_and_call_expansion` | Real `LspTool::execute("securityContext")` orchestration with risk markers, call expansion, and cycle suppression |
 
 ### Running
 

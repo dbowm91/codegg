@@ -15,48 +15,48 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 use url::Url;
 
-use egglsp::{
-    LspClient, LspClientOptions, LspConfig, LspError, LspLaunchSpec, LspRule, LspService,
-};
 use egglsp::diagnostics::DiagnosticsCollector;
 use egglsp::edit::{preview_text_edits_for_file, preview_workspace_edit};
 use egglsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Command as LspCommand,
-    CreateFile, DocumentChangeOperation, DocumentChanges,
-    OptionalVersionedTextDocumentIdentifier, OneOf, Position, Range, ResourceOp,
-    TextDocumentEdit, TextEdit, WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, Command as LspCommand, CreateFile,
+    DocumentChangeOperation, DocumentChanges, OneOf, OptionalVersionedTextDocumentIdentifier,
+    Position, Range, ResourceOp, TextDocumentEdit, TextEdit, WorkspaceEdit,
 };
 use egglsp::operations::LspOperations;
 use egglsp::operations::{select_source_action_edit, SourceActionPreviewKind};
+use egglsp::{
+    LspClient, LspClientOptions, LspConfig, LspError, LspLaunchSpec, LspRule, LspService,
+};
+
+use codegg::tool::lsp::LspTool;
+use codegg::tool::Tool;
 
 // ── Fake server binary path ──────────────────────────────────────────
 
 fn fake_server_binary_path() -> PathBuf {
-    // Allow manual override.
+    // Root-specific manual override.
+    if let Ok(path) = std::env::var("CODEGG_LSP_TEST_SERVER") {
+        return PathBuf::from(path);
+    }
+
+    // Backward-compatible manual override.
     if let Ok(path) = std::env::var("EGGLSP_TEST_SERVER") {
         return PathBuf::from(path);
     }
 
-    // When running `cargo test -p egglsp`, Cargo sets this env var at compile time.
-    if let Some(path) = option_env!("CARGO_BIN_EXE_egglsp-test-server") {
+    // Package-local Cargo artifact. The root Cargo.toml declares a
+    // [[bin]] target named "codegg-lsp-test-server" pointing at the
+    // shared source in crates/egglsp-test-server/src/main.rs, so
+    // Cargo sets this at compile time for the root integration test.
+    if let Some(path) = option_env!("CARGO_BIN_EXE_codegg-lsp-test-server") {
         return PathBuf::from(path);
     }
 
-    // Fallback: look in the workspace target directory for the binary.
-    // This covers root-crate tests where CARGO_BIN_EXE_* isn't set.
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let debug_path = PathBuf::from(manifest_dir)
-        .join("target")
-        .join("debug")
-        .join("egglsp-test-server");
-    if debug_path.exists() {
-        return debug_path;
-    }
-
     panic!(
-        "Could not find egglsp-test-server binary.\n\
-         Build it with: cargo build -p egglsp --bin egglsp-test-server\n\
-         Or set EGGLSP_TEST_SERVER=/path/to/binary"
+        "Could not find codegg-lsp-test-server binary.\n\
+         Cargo should build it automatically for root integration tests.\n\
+         Ensure the [[bin]] target in Cargo.toml is correct.\n\
+         Or set CODEGG_LSP_TEST_SERVER=/path/to/binary"
     )
 }
 
@@ -162,7 +162,7 @@ edition = "2021"
         .map_err(LspError::Io)?;
 
         let launch = LspLaunchSpec::new(
-            "egglsp-test-server",
+            "codegg-lsp-test-server",
             fake_server_binary_path(),
             Vec::new(),
             vec![
@@ -280,10 +280,7 @@ edition = "2021"
         out.push_str(&format!("root: {}\n", root.display()));
         out.push_str(&format!("source: {}\n", source_path.display()));
         out.push_str(&format!("scenario file: {}\n", scenario_path.display()));
-        out.push_str(&format!(
-            "transcript file: {}\n",
-            transcript_path.display()
-        ));
+        out.push_str(&format!("transcript file: {}\n", transcript_path.display()));
         out.push_str(&format!("pending requests: {pending}\n"));
         out.push_str(&format!("transport: {transport:?}\n"));
         out.push_str(&format!("child exit: {child_status}\n"));
@@ -342,10 +339,7 @@ fn make_service_config(scenario_path: &Path, transcript_path: &Path) -> LspConfi
     rules.insert(
         "rust-analyzer".to_string(),
         LspRule::Active {
-            command: vec![fake_server_binary_path()
-                .to_str()
-                .unwrap()
-                .to_string()],
+            command: vec![fake_server_binary_path().to_str().unwrap().to_string()],
             extensions: Some(vec!["rs".to_string()]),
             disabled: None,
             env: Some(env),
@@ -390,7 +384,13 @@ fn substitute_placeholders(
                 .into_iter()
                 .map(|v| {
                     substitute_placeholders(
-                        v, root, root_uri, source_path, source_uri, scenario_path, transcript_path,
+                        v,
+                        root,
+                        root_uri,
+                        source_path,
+                        source_uri,
+                        scenario_path,
+                        transcript_path,
                     )
                 })
                 .collect(),
@@ -401,7 +401,12 @@ fn substitute_placeholders(
                     (
                         k,
                         substitute_placeholders(
-                            v, root, root_uri, source_path, source_uri, scenario_path,
+                            v,
+                            root,
+                            root_uri,
+                            source_path,
+                            source_uri,
+                            scenario_path,
                             transcript_path,
                         ),
                     )
@@ -612,10 +617,7 @@ async fn composite_document_symbols_via_direct_client() {
 
     // Use the direct client to request document symbols.
     let source_url = Url::from_file_path(&harness.source_path).expect("valid source path");
-    let symbols = harness
-        .client
-        .document_symbols(&source_url)
-        .await;
+    let symbols = harness.client.document_symbols(&source_url).await;
 
     match symbols {
         Ok(syms) => {
@@ -626,7 +628,10 @@ async fn composite_document_symbols_via_direct_client() {
             assert_eq!(syms[0].name, "my_function");
         }
         Err(err) => {
-            panic!("document_symbols failed: {err}\n{}", harness.diagnostics().await);
+            panic!(
+                "document_symbols failed: {err}\n{}",
+                harness.diagnostics().await
+            );
         }
     }
 
@@ -972,8 +977,7 @@ async fn rename_preview_converts_through_production_path() {
         .expect("scenario to string");
     let scenario_str = scenario_str.replace("__SOURCE_URI__", &source_uri);
     let scenario_str = scenario_str.replace("__HELPER_URI__", &helper_uri);
-    let scenario: serde_json::Value =
-        serde_json::from_str(&scenario_str).expect("parse scenario");
+    let scenario: serde_json::Value = serde_json::from_str(&scenario_str).expect("parse scenario");
 
     let harness = CompositeHarness::start_with_root(tempdir, scenario)
         .await
@@ -1032,10 +1036,7 @@ async fn rename_preview_converts_through_production_path() {
         std::fs::read_to_string(&harness.source_path).unwrap(),
         source_text
     );
-    assert_eq!(
-        std::fs::read_to_string(&helper_path).unwrap(),
-        helper_text
-    );
+    assert_eq!(std::fs::read_to_string(&helper_path).unwrap(), helper_text);
 
     harness.shutdown().await.expect("shutdown");
 }
@@ -1078,17 +1079,12 @@ async fn format_preview_converts_through_production_path() {
         .await
         .expect("formatting request failed");
 
-    let edits: Vec<TextEdit> =
-        serde_json::from_value(resp).expect("failed to parse TextEdits");
+    let edits: Vec<TextEdit> = serde_json::from_value(resp).expect("failed to parse TextEdits");
     assert_eq!(edits.len(), 1);
 
-    let preview = preview_text_edits_for_file(
-        "format",
-        &harness.source_path,
-        edits,
-        Some(&harness.root),
-    )
-    .expect("preview_text_edits_for_file failed");
+    let preview =
+        preview_text_edits_for_file("format", &harness.source_path, edits, Some(&harness.root))
+            .expect("preview_text_edits_for_file failed");
 
     assert_eq!(preview.total_files, 1);
     assert_eq!(preview.total_edits, 1);
@@ -1164,7 +1160,9 @@ async fn code_action_source_action_preview_converts_through_production_path() {
     assert_eq!(preview.total_files, 1);
     assert_eq!(preview.files.len(), 1);
     assert!(!preview.truncated);
-    assert!(preview.files[0].patch.contains("+use std::collections::HashMap;"));
+    assert!(preview.files[0]
+        .patch
+        .contains("+use std::collections::HashMap;"));
 
     // Disk must remain unchanged.
     assert_eq!(
@@ -1173,8 +1171,8 @@ async fn code_action_source_action_preview_converts_through_production_path() {
     );
 
     // Test command-only rejection (tests 6 integration through production path).
-    let command_only_actions: Vec<CodeActionOrCommand> = vec![CodeActionOrCommand::CodeAction(
-        CodeAction {
+    let command_only_actions: Vec<CodeActionOrCommand> =
+        vec![CodeActionOrCommand::CodeAction(CodeAction {
             title: "Organize Imports".to_string(),
             kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
             command: Some(LspCommand {
@@ -1184,8 +1182,7 @@ async fn code_action_source_action_preview_converts_through_production_path() {
             }),
             edit: None,
             ..Default::default()
-        },
-    )];
+        })];
     let err = select_source_action_edit(
         SourceActionPreviewKind::OrganizeImports,
         command_only_actions,
@@ -1344,21 +1341,25 @@ async fn preview_safety_ambiguous_source_actions_rejected() {
             kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
             edit: Some(WorkspaceEdit {
                 changes: None,
-                document_changes: Some(DocumentChanges::Edits(vec![
-                    TextDocumentEdit {
-                        text_document: OptionalVersionedTextDocumentIdentifier {
-                            uri: "file:///tmp/test.rs".parse().unwrap(),
-                            version: Some(1),
-                        },
-                        edits: vec![OneOf::Left(TextEdit {
-                            range: Range {
-                                start: Position { line: 0, character: 0 },
-                                end: Position { line: 0, character: 5 },
-                            },
-                            new_text: "AAAAA".to_string(),
-                        })],
+                document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                    text_document: OptionalVersionedTextDocumentIdentifier {
+                        uri: "file:///tmp/test.rs".parse().unwrap(),
+                        version: Some(1),
                     },
-                ])),
+                    edits: vec![OneOf::Left(TextEdit {
+                        range: Range {
+                            start: Position {
+                                line: 0,
+                                character: 0,
+                            },
+                            end: Position {
+                                line: 0,
+                                character: 5,
+                            },
+                        },
+                        new_text: "AAAAA".to_string(),
+                    })],
+                }])),
                 change_annotations: None,
             }),
             ..Default::default()
@@ -1368,21 +1369,25 @@ async fn preview_safety_ambiguous_source_actions_rejected() {
             kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
             edit: Some(WorkspaceEdit {
                 changes: None,
-                document_changes: Some(DocumentChanges::Edits(vec![
-                    TextDocumentEdit {
-                        text_document: OptionalVersionedTextDocumentIdentifier {
-                            uri: "file:///tmp/test.rs".parse().unwrap(),
-                            version: Some(1),
-                        },
-                        edits: vec![OneOf::Left(TextEdit {
-                            range: Range {
-                                start: Position { line: 0, character: 0 },
-                                end: Position { line: 0, character: 5 },
-                            },
-                            new_text: "BBBBB".to_string(),
-                        })],
+                document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                    text_document: OptionalVersionedTextDocumentIdentifier {
+                        uri: "file:///tmp/test.rs".parse().unwrap(),
+                        version: Some(1),
                     },
-                ])),
+                    edits: vec![OneOf::Left(TextEdit {
+                        range: Range {
+                            start: Position {
+                                line: 0,
+                                character: 0,
+                            },
+                            end: Position {
+                                line: 0,
+                                character: 5,
+                            },
+                        },
+                        new_text: "BBBBB".to_string(),
+                    })],
+                }])),
                 change_annotations: None,
             }),
             ..Default::default()
@@ -2053,15 +2058,25 @@ async fn semantic_context_minimal_service_client() {
         &scenario_path,
         &transcript_path,
     );
-    std::fs::write(&scenario_path, serde_json::to_string_pretty(&scenario).unwrap()).unwrap();
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).unwrap(),
+    )
+    .unwrap();
     std::fs::write(&transcript_path, "").unwrap();
 
-    let service = Arc::new(LspService::new(make_service_config(&scenario_path, &transcript_path)));
+    let service = Arc::new(LspService::new(make_service_config(
+        &scenario_path,
+        &transcript_path,
+    )));
     let operations = Arc::new(LspOperations::new(service.clone()));
     let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
 
     // Open the file (triggers get_or_create_client + initialize + didOpen)
-    diagnostics.get_diagnostic_snapshot_for_file(&source_path).await.unwrap();
+    diagnostics
+        .get_diagnostic_snapshot_for_file(&source_path)
+        .await
+        .unwrap();
 
     // Now document_symbols should work
     let syms = operations.document_symbols(&source_path).await.unwrap();
@@ -2124,7 +2139,11 @@ async fn semantic_context_collector_exercises_real_workflow() {
         !response.all_symbols.is_empty(),
         "all_symbols should not be empty"
     );
-    let names: Vec<&str> = response.all_symbols.iter().map(|s| s.name.as_str()).collect();
+    let names: Vec<&str> = response
+        .all_symbols
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
     assert!(
         names.contains(&"entry"),
         "symbols should include 'entry', got: {names:?}"
@@ -2159,16 +2178,6 @@ async fn semantic_context_collector_exercises_real_workflow() {
         .call_hierarchy
         .as_ref()
         .expect("call_hierarchy should be present");
-    eprintln!("DEBUG call_hierarchy: items={}, incoming={}, outgoing={}, prepare_error={:?}, incoming_error={:?}, outgoing_error={:?}",
-        ch.items.len(), ch.incoming_count, ch.outgoing_count, ch.prepare_error, ch.incoming_error, ch.outgoing_error);
-    // Print transcript for debugging
-    let transcript_path = _root.join("transcript.jsonl");
-    if let Ok(t) = std::fs::read_to_string(&transcript_path) {
-        eprintln!("DEBUG transcript (last 20 lines):");
-        for line in t.lines().rev().take(20) {
-            eprintln!("  {line}");
-        }
-    }
     assert_eq!(ch.items.len(), 1, "call hierarchy should have one item");
     assert_eq!(ch.items[0].name, "entry");
     assert_eq!(
@@ -2319,10 +2328,7 @@ async fn semantic_context_collector_failure_degradation() {
     );
 
     // A note should be recorded for the failed definition request.
-    let has_def_note = response
-        .notes
-        .iter()
-        .any(|n| n.contains("goToDefinition"));
+    let has_def_note = response.notes.iter().any(|n| n.contains("goToDefinition"));
     assert!(
         has_def_note,
         "should have a note about the failed definition, got: {:?}",
@@ -2511,8 +2517,10 @@ async fn hunk_source_context_collector_exercises_real_workflow() {
         root.clone(),
     );
     let navigator = codegg::lsp::hunk_nav::HunkSourceNavigator::new();
-    let hunk_collector =
-        codegg::lsp::hunk_nav_collector::HunkSourceNavigationCollector::new(sem_collector, navigator);
+    let hunk_collector = codegg::lsp::hunk_nav_collector::HunkSourceNavigationCollector::new(
+        sem_collector,
+        navigator,
+    );
 
     // Unified diff: add a comment inside entry()
     let patch = "\
@@ -2601,6 +2609,26 @@ pub fn run_unchecked(input: &str) -> String {
 pub fn entry() {
     let data = run_unchecked("echo hello");
     println!("{data}");
+}
+"#;
+
+/// Source file for call graph / call hierarchy security context testing.
+const SECURITY_CALL_GRAPH_SOURCE: &str = r#"use std::process::Command;
+
+pub fn entry(input: &str) {
+    validate(input);
+    sink(input);
+}
+
+fn validate(input: &str) {
+    if input.is_empty() { return; }
+}
+
+fn sink(input: &str) {
+    unsafe {
+        let _ = Command::new("sh").arg("-c").arg(input).output();
+    }
+    entry(input); // deliberate cycle
 }
 "#;
 
@@ -2718,7 +2746,7 @@ fn scenario_security_context() -> serde_json::Value {
 /// - Reference to `run_unchecked` from `entry`
 /// - Source contains security-sensitive patterns (unsafe, Command)
 #[tokio::test]
-async fn security_context_workflow_uses_semantic_collector() {
+async fn semantic_context_security_review_intent_collects_security_source() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let root = tempdir.path().to_path_buf();
     let source_path = root.join("src/lib.rs");
@@ -2804,15 +2832,578 @@ async fn security_context_workflow_uses_semantic_collector() {
     );
 
     // Definition should be present (def of run_unchecked at line 3)
-    assert!(
-        !response.definitions.is_empty(),
-        "should have definitions"
-    );
+    assert!(!response.definitions.is_empty(), "should have definitions");
 
     // References should be present (run_unchecked called from entry)
+    assert!(!response.references.is_empty(), "should have references");
+
+    service.shutdown_all().await;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Phase 4: Security context call graph + risk filtering integration test
+// ══════════════════════════════════════════════════════════════════════
+
+/// Scenario for call graph / call hierarchy security context testing.
+fn scenario_security_call_graph() -> serde_json::Value {
+    serde_json::json!({
+        "name": "security_call_graph",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": {
+                        "capabilities": {
+                            "definitionProvider": true,
+                            "referencesProvider": true,
+                            "documentSymbolProvider": true,
+                            "callHierarchyProvider": true
+                        }
+                    }}
+                ]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {"type": "AllowNotification", "method": "textDocument/didOpen"},
+            {"type": "AllowNotification", "method": "textDocument/didChange"},
+            {"type": "AllowNotification", "method": "textDocument/didSave"},
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/documentSymbol",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "entry",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 3, "character": 0},
+                                "end": {"line": 7, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 3, "character": 7},
+                                "end": {"line": 3, "character": 12}
+                            }
+                        },
+                        {
+                            "name": "validate",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 9, "character": 0},
+                                "end": {"line": 11, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 9, "character": 3},
+                                "end": {"line": 9, "character": 11}
+                            }
+                        },
+                        {
+                            "name": "sink",
+                            "kind": 12,
+                            "range": {
+                                "start": {"line": 13, "character": 0},
+                                "end": {"line": 19, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 13, "character": 3},
+                                "end": {"line": 13, "character": 7}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/definition",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 3, "character": 7},
+                                "end": {"line": 3, "character": 12}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/references",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 4, "character": 4},
+                                "end": {"line": 4, "character": 12}
+                            }
+                        },
+                        {
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 5, "character": 4},
+                                "end": {"line": 5, "character": 8}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/prepareCallHierarchy",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "entry",
+                            "kind": 12,
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 3, "character": 0},
+                                "end": {"line": 7, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 3, "character": 7},
+                                "end": {"line": 3, "character": 12}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "callHierarchy/incomingCalls",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": []}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "callHierarchy/outgoingCalls",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "from": {
+                                "name": "entry",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 3, "character": 0},
+                                    "end": {"line": 7, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 3, "character": 7},
+                                    "end": {"line": 3, "character": 12}
+                                }
+                            },
+                            "to": {
+                                "name": "validate",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 9, "character": 0},
+                                    "end": {"line": 11, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 9, "character": 3},
+                                    "end": {"line": 9, "character": 11}
+                                }
+                            },
+                            "fromRanges": [
+                                {
+                                    "start": {"line": 4, "character": 4},
+                                    "end": {"line": 4, "character": 12}
+                                }
+                            ]
+                        },
+                        {
+                            "from": {
+                                "name": "entry",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 3, "character": 0},
+                                    "end": {"line": 7, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 3, "character": 7},
+                                    "end": {"line": 3, "character": 12}
+                                }
+                            },
+                            "to": {
+                                "name": "sink",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 13, "character": 0},
+                                    "end": {"line": 19, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 13, "character": 3},
+                                    "end": {"line": 13, "character": 7}
+                                }
+                            },
+                            "fromRanges": [
+                                {
+                                    "start": {"line": 5, "character": 4},
+                                    "end": {"line": 5, "character": 8}
+                                }
+                            ]
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/prepareCallHierarchy",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "entry",
+                            "kind": 12,
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 3, "character": 0},
+                                "end": {"line": 7, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 3, "character": 7},
+                                "end": {"line": 3, "character": 12}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "callHierarchy/outgoingCalls",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "from": {
+                                "name": "entry",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 3, "character": 0},
+                                    "end": {"line": 7, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 3, "character": 7},
+                                    "end": {"line": 3, "character": 12}
+                                }
+                            },
+                            "to": {
+                                "name": "validate",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 9, "character": 0},
+                                    "end": {"line": 11, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 9, "character": 3},
+                                    "end": {"line": 9, "character": 11}
+                                }
+                            },
+                            "fromRanges": [
+                                {
+                                    "start": {"line": 4, "character": 4},
+                                    "end": {"line": 4, "character": 12}
+                                }
+                            ]
+                        },
+                        {
+                            "from": {
+                                "name": "entry",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 3, "character": 0},
+                                    "end": {"line": 7, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 3, "character": 7},
+                                    "end": {"line": 3, "character": 12}
+                                }
+                            },
+                            "to": {
+                                "name": "sink",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 13, "character": 0},
+                                    "end": {"line": 19, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 13, "character": 3},
+                                    "end": {"line": 13, "character": 7}
+                                }
+                            },
+                            "fromRanges": [
+                                {
+                                    "start": {"line": 5, "character": 4},
+                                    "end": {"line": 5, "character": 8}
+                                }
+                            ]
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/prepareCallHierarchy",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "validate",
+                            "kind": 12,
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 9, "character": 0},
+                                "end": {"line": 11, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 9, "character": 3},
+                                "end": {"line": 9, "character": 11}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "callHierarchy/outgoingCalls",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": []}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/prepareCallHierarchy",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "name": "sink",
+                            "kind": 12,
+                            "uri": "__SOURCE_URI__",
+                            "range": {
+                                "start": {"line": 13, "character": 0},
+                                "end": {"line": 19, "character": 1}
+                            },
+                            "selectionRange": {
+                                "start": {"line": 13, "character": 3},
+                                "end": {"line": 13, "character": 7}
+                            }
+                        }
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "callHierarchy/outgoingCalls",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {
+                            "from": {
+                                "name": "sink",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 13, "character": 0},
+                                    "end": {"line": 19, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 13, "character": 3},
+                                    "end": {"line": 13, "character": 7}
+                                }
+                            },
+                            "to": {
+                                "name": "entry",
+                                "kind": 12,
+                                "uri": "__SOURCE_URI__",
+                                "range": {
+                                    "start": {"line": 3, "character": 0},
+                                    "end": {"line": 7, "character": 1}
+                                },
+                                "selectionRange": {
+                                    "start": {"line": 3, "character": 7},
+                                    "end": {"line": 3, "character": 12}
+                                }
+                            },
+                            "fromRanges": [
+                                {
+                                    "start": {"line": 17, "character": 4},
+                                    "end": {"line": 17, "character": 9}
+                                }
+                            ]
+                        }
+                    ]}
+                ]
+            },
+            {"type": "ExpectRequest", "method": "shutdown", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": null}]},
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    })
+}
+
+/// Security context tool: exercises risk filtering and call expansion with
+/// `unsafe_review` preset against code containing unsafe blocks, process
+/// execution, and a deliberate call cycle (entry → sink → entry).
+///
+/// Validates:
+/// - Risk markers are detected for unsafe and process patterns
+/// - `unsafe_review` preset is applied
+/// - Call hierarchy expansion is triggered and bounded
+/// - Call expansion graph contains expected nodes and edges
+/// - Limits and notes are populated
+#[tokio::test]
+async fn security_context_tool_exercises_risk_filtering_and_call_expansion() {
+    // Use a workspace-local temp dir to avoid macOS /var symlinks that
+    // trigger the symlink check in LspTool::resolve_file.
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir.join("target").join("test-security-call-graph");
+    std::fs::create_dir_all(root.join("src")).expect("mkdir test root");
+    // Clean up on drop via a guard.
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, SECURITY_CALL_GRAPH_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-security-call-graph-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_security_call_graph(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = Arc::new(LspService::new(make_service_config(
+        &scenario_path,
+        &transcript_path,
+    )));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    let result = timeout(
+        Duration::from_secs(30),
+        tool.execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": source_path.to_str().unwrap(),
+            "line": 14,
+            "column": 5,
+            "security_preset": "unsafe_review",
+            "security_categories": ["unsafe", "process"],
+            "include_call_hierarchy": true,
+            "call_depth": 2,
+            "max_call_nodes": 8,
+            "call_direction": "outgoing"
+        })),
+    )
+    .await
+    .expect("securityContext timed out")
+    .expect("securityContext failed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    // Risk markers must be present and include unsafe/process categories
+    let markers = parsed["results"]["risk_markers"]
+        .as_array()
+        .expect("risk_markers should be an array");
+    assert!(!markers.is_empty(), "should have risk markers");
+    let categories: Vec<&str> = markers
+        .iter()
+        .filter_map(|m| m["category"].as_str())
+        .collect();
     assert!(
-        !response.references.is_empty(),
-        "should have references"
+        categories.contains(&"unsafe") || categories.contains(&"process"),
+        "should contain unsafe or process category markers, got: {categories:?}"
+    );
+
+    // Security-relevant symbols should be populated
+    let syms = parsed["results"]["security_relevant_symbols"]
+        .as_array()
+        .expect("security_relevant_symbols should be an array");
+    assert!(!syms.is_empty(), "should have security-relevant symbols");
+
+    // Preset should match
+    assert_eq!(parsed["results"]["preset"], "unsafe_review");
+
+    // Call expansion must be present
+    let expansion = parsed["results"]["call_expansion"]
+        .as_object()
+        .expect("call_expansion should be an object");
+    assert!(
+        expansion.get("root").is_some(),
+        "call_expansion.root should be present"
+    );
+    assert_eq!(expansion["direction"], "outgoing");
+
+    // Nodes: entry, validate, sink — at most 3
+    let nodes = expansion["nodes"]
+        .as_array()
+        .expect("call_expansion.nodes should be an array");
+    assert!(
+        nodes.len() <= 3,
+        "should have at most 3 nodes (entry, validate, sink), got {}",
+        nodes.len()
+    );
+
+    // Edges: at least 2 (entry→validate, entry→sink)
+    let edges = expansion["edges"]
+        .as_array()
+        .expect("call_expansion.edges should be an array");
+    assert!(
+        edges.len() >= 2,
+        "should have at least 2 edges, got {}",
+        edges.len()
+    );
+
+    // Notes and limits should be present
+    assert!(
+        parsed["results"]["notes"].as_array().is_some(),
+        "notes should be present"
+    );
+    assert!(
+        parsed["results"]["limits"].as_object().is_some(),
+        "limits should be present"
     );
 
     service.shutdown_all().await;

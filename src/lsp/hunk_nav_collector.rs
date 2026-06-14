@@ -4,7 +4,71 @@ use crate::lsp::semantic_context::SemanticContextCollector;
 use egglsp::hunk_context::{HunkSourceNavigationRequest, HunkSourceNavigationResponse};
 use egglsp::semantic_context::SemanticContextRequest;
 
-/// Strip `a/` or `b/` diff prefixes and normalize the path for comparison.
+use std::path::{Path, PathBuf};
+
+/// Normalize a file path from a unified diff by stripping leading `a/` or `b/`
+/// diff prefixes and converting to a PathBuf. Rejects `..`, absolute paths,
+/// and empty terminal components.
+fn normalize_diff_relative_path(raw: &str) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("empty path not allowed in diff".to_string());
+    }
+    let stripped = trimmed
+        .strip_prefix("a/")
+        .or_else(|| trimmed.strip_prefix("b/"))
+        .unwrap_or(trimmed);
+
+    let path = PathBuf::from(stripped);
+
+    if path.is_absolute() {
+        return Err(format!("absolute path not allowed in diff: {raw}"));
+    }
+
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                return Err(format!("path traversal not allowed in diff: {raw}"));
+            }
+            std::path::Component::Normal(_) => {}
+            _ => {}
+        }
+    }
+
+    Ok(path)
+}
+
+/// Normalize a request file path relative to the allowed root.
+/// Uses `Path::strip_prefix` (not string prefix removal).
+fn normalize_request_relative_path(
+    request_file: &Path,
+    allowed_root: &Path,
+) -> Result<PathBuf, String> {
+    let canonical_file = request_file
+        .canonicalize()
+        .map_err(|e| format!("failed to canonicalize {}: {e}", request_file.display()))?;
+    let canonical_root = allowed_root.canonicalize().map_err(|e| {
+        format!(
+            "failed to canonicalize root {}: {e}",
+            allowed_root.display()
+        )
+    })?;
+
+    canonical_file
+        .strip_prefix(&canonical_root)
+        .map(|rel| rel.to_path_buf())
+        .map_err(|_| {
+            format!(
+                "path {} is outside allowed root {}",
+                request_file.display(),
+                allowed_root.display()
+            )
+        })
+}
+
+/// Strip `a/` or `b/` diff prefixes for simple string-based comparison.
+/// For path-aware comparison prefer `normalize_diff_relative_path`.
+#[allow(dead_code)]
 fn normalize_hunk_path(path: &str) -> String {
     let p = path.trim_start_matches("a/").trim_start_matches("b/");
     p.to_string()
@@ -46,20 +110,21 @@ impl HunkSourceNavigationCollector {
         }
 
         // Phase 5: Reject multi-file patches unless all hunks match file_path.
-        // Strip the root prefix from the request file_path so the comparison
-        // works against relative hunk paths (e.g. "src/lib.rs" from a git diff).
-        let target_path = normalize_hunk_path(&request.file_path);
-        let target_relative = {
-            let root_str = self.semantic_collector.allowed_root().to_string_lossy();
-            let root_prefix = root_str.trim_end_matches('/');
-            target_path
-                .strip_prefix(root_prefix)
-                .map(|s| s.trim_start_matches('/').to_string())
-                .unwrap_or(target_path)
-        };
+        let target_path = PathBuf::from(&request.file_path);
+        let target_relative =
+            normalize_request_relative_path(&target_path, self.semantic_collector.allowed_root())
+                .unwrap_or_else(|_| target_path.clone());
         let mismatched_files: Vec<&str> = hunks
             .iter()
-            .filter(|h| !h.file_path.is_empty() && normalize_hunk_path(&h.file_path) != target_relative)
+            .filter(|h| {
+                if h.file_path.is_empty() {
+                    return false;
+                }
+                match normalize_diff_relative_path(&h.file_path) {
+                    Ok(hunk_path) => hunk_path != target_relative,
+                    Err(_) => true,
+                }
+            })
             .map(|h| h.file_path.as_str())
             .collect();
         if !mismatched_files.is_empty() {
@@ -274,6 +339,41 @@ diff --git a/src/main.rs b/src/main.rs
     #[test]
     fn normalize_empty_string() {
         assert_eq!(normalize_hunk_path(""), "");
+    }
+
+    // --- normalize_diff_relative_path tests ---
+
+    #[test]
+    fn normalize_diff_relative_path_strips_a_prefix() {
+        let result = normalize_diff_relative_path("a/src/lib.rs").unwrap();
+        assert_eq!(result, PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn normalize_diff_relative_path_strips_b_prefix() {
+        let result = normalize_diff_relative_path("b/src/lib.rs").unwrap();
+        assert_eq!(result, PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn normalize_diff_relative_path_no_prefix_unchanged() {
+        let result = normalize_diff_relative_path("src/lib.rs").unwrap();
+        assert_eq!(result, PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn normalize_diff_relative_path_rejects_traversal() {
+        assert!(normalize_diff_relative_path("a/../outside.rs").is_err());
+    }
+
+    #[test]
+    fn normalize_diff_relative_path_rejects_absolute() {
+        assert!(normalize_diff_relative_path("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn normalize_diff_relative_path_rejects_empty() {
+        assert!(normalize_diff_relative_path("").is_err());
     }
 
     // --- Phase 5: multi-file patch rejection ---

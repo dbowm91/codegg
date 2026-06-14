@@ -1289,10 +1289,7 @@ async fn hierarchy_context_requests_round_trip_through_real_client() {
 
     let incoming = expect_ok(
         &harness,
-        harness
-            .client
-            .incoming_calls(prepared[0].clone())
-            .await,
+        harness.client.incoming_calls(prepared[0].clone()).await,
     )
     .await;
     assert_eq!(incoming.len(), 1);
@@ -1300,10 +1297,7 @@ async fn hierarchy_context_requests_round_trip_through_real_client() {
 
     let outgoing = expect_ok(
         &harness,
-        harness
-            .client
-            .outgoing_calls(prepared[0].clone())
-            .await,
+        harness.client.outgoing_calls(prepared[0].clone()).await,
     )
     .await;
     assert_eq!(outgoing.len(), 1);
@@ -1322,10 +1316,7 @@ async fn hierarchy_context_requests_round_trip_through_real_client() {
 
     let supertypes = expect_ok(
         &harness,
-        harness
-            .client
-            .supertypes(prepared_types[0].clone())
-            .await,
+        harness.client.supertypes(prepared_types[0].clone()).await,
     )
     .await;
     assert_eq!(supertypes.len(), 1);
@@ -1333,10 +1324,7 @@ async fn hierarchy_context_requests_round_trip_through_real_client() {
 
     let subtypes = expect_ok(
         &harness,
-        harness
-            .client
-            .subtypes(prepared_types[0].clone())
-            .await,
+        harness.client.subtypes(prepared_types[0].clone()).await,
     )
     .await;
     assert_eq!(subtypes.len(), 2);

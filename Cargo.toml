@@ -20,6 +20,10 @@ rust-version = "1.81"
 pkg-url = "{ repo }/releases/download/{ version }/{ name }-{ target }{ archive-suffix }"
 target = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
 
+[[bin]]
+name = "codegg-lsp-test-server"
+path = "crates/egglsp-test-server/src/main.rs"
+
 [dependencies]
 # Core
 tokio = { version = "1", features = [

@@ -1227,7 +1227,7 @@ A cloneable error type used for concurrent initialization waiters. `SharedInitEr
 
 ## Phase 2: Scripted Stdio Integration Testing (Complete)
 
-The `egglsp` package carries production-harness integration tests under `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, and `tests/production_service_stdio.rs`, plus `tests/scenario_engine.rs` wrapping the fake-server self-tests. The root crate carries composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The fake LSP server binary is named `egglsp-test-server`, but it is built as a `[[bin]]` target from the `egglsp` package; it reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts. The fake server supports captured-ID mode for genuinely out-of-order concurrent responses, enabling deterministic testing of concurrent request handling. All integration tests use bounded condition waits (polling loops) instead of fixed sleeps.
+The `egglsp` package carries production-harness integration tests under `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, and `tests/production_service_stdio.rs`, plus `tests/scenario_engine.rs` wrapping the fake-server self-tests. The root crate carries composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The fake LSP server binary is named `codegg-lsp-test-server` for root tests (via `CARGO_BIN_EXE_codegg-lsp-test-server`); the `egglsp` package uses `egglsp-test-server` via `CARGO_BIN_EXE_egglsp-test-server`. Both are built as `[[bin]]` targets from the `egglsp` package; they read Content-Length framed JSON-RPC from stdin, execute scripted scenarios, and write machine-readable transcripts. The fake server supports captured-ID mode for genuinely out-of-order concurrent responses, enabling deterministic testing of concurrent request handling. All integration tests use bounded condition waits (polling loops) instead of fixed sleeps.
 
 ### Architecture
 
@@ -1253,14 +1253,14 @@ Scenarios are JSON files with steps like `ExpectRequest`, `ExpectNotification`, 
 
 ### Binary Discovery
 
-Cargo exposes the test binary to the `egglsp` package integration tests via `CARGO_BIN_EXE_egglsp-test-server`. The `EGGLSP_TEST_SERVER` env var can override the path for CI or manual runs.
+Cargo exposes the test binary to the `egglsp` package integration tests via `CARGO_BIN_EXE_egglsp-test-server`. Root-crate composite tests use `CARGO_BIN_EXE_codegg-lsp-test-server`. The `EGGLSP_TEST_SERVER` env var can override the path for CI or manual runs.
 
 ### Test Counts
 
 - **11 production protocol tests** in `tests/production_protocol_stdio.rs` — all passing ✅
 - **3 production semantic tests** in `tests/production_semantic_stdio.rs` — all passing ✅
 - **5 production service tests** in `tests/production_service_stdio.rs` — all passing ✅
-- **19 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
+- **20 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
 - **235 unit tests** in the `egglsp` crate
 - **3 scenario-engine tests** in `tests/scenario_engine.rs` — wrapper around `crates/egglsp-test-server/tests/scenario_engine.rs` for strict allow-listing, raw bytes, and grouped-frame fixtures
 
@@ -1269,7 +1269,7 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - `tests/production_protocol_stdio.rs` — Production-harness protocol coverage for launcher-path behavior and transport edge cases
 - `tests/production_semantic_stdio.rs` — Production-harness semantic and edit-preview coverage
 - `tests/production_service_stdio.rs` — Production-harness LspService lifecycle coverage
-- `tests/lsp_composite_stdio.rs` — Root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, and `LspOperations` against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous, resource-operation), semantic-context collector workflow/capability-gating/failure-degradation tests, security-context workflow test (`SecurityReview` intent on security-sensitive source), and hunk-source-context collector test (unified diff with real LSP operations)
+- `tests/lsp_composite_stdio.rs` — Root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`, and security context tool orchestration against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous, resource-operation), semantic-context collector workflow/capability-gating/failure-degradation tests, security context tool test (`security_context_tool_exercises_risk_filtering_and_call_expansion` exercising real `LspTool::execute("securityContext")` orchestration with risk markers, call expansion, and cycle suppression), and hunk-source-context collector test (unified diff with real LSP operations). Path comparison uses `Path::strip_prefix` for path-aware hunk normalization.
 - `tests/common/harness.rs` — Reusable fake-server test harness with temp directory and scenario management
 - `tests/common/production_harness.rs` — Real-project harness for production launcher-path coverage
 - `tests/scenario_engine.rs` — Package-local wrapper around the fake-server self-tests
@@ -1311,7 +1311,8 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 | Preview safety: ambiguous | D5 | `preview_safety_ambiguous_source_actions_rejected` | ✅ |
 | Preview safety: resource operation | D5 | `preview_safety_resource_operation_rejected` | ✅ |
 | Semantic context composite | D6 | `semantic_context_collector_exercises_real_workflow` | ✅ |
-| Security context composite | D6 | `security_context_workflow_uses_semantic_collector` | ✅ |
+| Security context composite | D6 | `semantic_context_security_review_intent_collects_security_source` (renamed from `security_context_workflow_uses_semantic_collector`) | ✅ |
+| Security context tool orchestration | D6 | `security_context_tool_exercises_risk_filtering_and_call_expansion` (exercises real `LspTool::execute("securityContext")` with risk markers, call expansion, cycle suppression) | ✅ |
 | Hunk source context composite | D7 | `hunk_source_context_collector_exercises_real_workflow` | ✅ |
 | Semantic context: capability gating | D6 | `semantic_context_collector_capability_gating` | ✅ |
 | Semantic context: failure degradation | D6 | `semantic_context_collector_failure_degradation` | ✅ |
@@ -1345,6 +1346,12 @@ cargo test -p egglsp --tests -- --test-threads=1
 ```
 
 Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/transcript paths). The harness does not require `--test-threads=1`; that flag was only needed by the pre-Phase-2 test layout.
+
+### Phase 2 Final Closure Notes
+
+- **Hermetic binary strategy**: Root-crate composite tests use `codegg-lsp-test-server` (via `CARGO_BIN_EXE_codegg-lsp-test-server`), while `egglsp`-only integration tests use `egglsp-test-server` (via `CARGO_BIN_EXE_egglsp-test-server`). Both are `[[bin]]` targets from the `egglsp` package, sharing the same source. The root `Cargo.toml` declares a `[[bin]]` target pointing to the shared source.
+- **Path-aware hunk normalization**: Hunk path comparison now uses `Path::strip_prefix` instead of string prefix stripping, providing correct cross-platform behavior for paths with different separators.
+- **Inspection APIs**: `transport_state_snapshot()` and `pending_request_count()` are observational health APIs for diagnostics; `dynamic_registration_snapshot()` is test-support/internal.
 
 ## Phase 3: Real-Server Compatibility Matrix (Opt-in)
 

@@ -493,9 +493,7 @@ async fn request_timeout_and_late_response_are_dropped() {
             break;
         }
         if tokio::time::Instant::now() >= deadline {
-            panic!(
-                "timed out waiting for $/cancelRequest in transcript, last: {transcript}"
-            );
+            panic!("timed out waiting for $/cancelRequest in transcript, last: {transcript}");
         }
         sleep(Duration::from_millis(25)).await;
     }

@@ -984,8 +984,7 @@ fn read_until_request(
                     .is_some_and(|method| allowed_notifications.contains(method))
                     && is_notification(&msg)
                 {
-                    let reason =
-                        format!("allowed notification {}", msg.method.as_deref().unwrap());
+                    let reason = format!("allowed notification {}", msg.method.as_deref().unwrap());
                     record_allowed_entry(transcript, step_idx, &msg, &reason);
                     continue;
                 }
@@ -1460,12 +1459,7 @@ fn main() {
                             captured_ids.insert(name.clone(), id_val.clone());
                             let detail = format!("captured id {name} = {id_val}");
                             eprintln!("[fake-lsp] {detail}");
-                            record_action_event(
-                                &mut transcript,
-                                step_idx,
-                                "CaptureId",
-                                &detail,
-                            );
+                            record_action_event(&mut transcript, step_idx, "CaptureId", &detail);
                         }
                     }
                     match execute_actions(
