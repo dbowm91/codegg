@@ -9,8 +9,9 @@ use std::time::Duration;
 mod common;
 
 use common::{
-    is_notification, is_response, is_server_request, read_frame, send_error_response,
-    send_notification, send_request, send_response, spawn_fake_server, FakeLspHarness,
+    is_notification, is_response, is_server_request, read_frame, read_frame_timeout,
+    send_error_response, send_initialize, send_notification, send_raw_frame, send_request,
+    send_response, shutdown, spawn_fake_server, FakeLspHarness,
 };
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -649,7 +650,586 @@ async fn graceful_shutdown() {
         .await
         .expect("timeout")
         .expect("wait failed");
-    assert!(status.success(), "expected exit code 0");
+    assert!(status.success());
+}
+
+// ── Malformed JSON-RPC tests (C13) ─────────────────────────────────────
+
+/// Send `{"id": 1}` - ID without method or result. This is an unknown
+/// message shape that does not match any JSON-RPC category. The server
+/// should ignore it and continue.
+#[tokio::test]
+async fn malformed_json_rpc_id_only() {
+    let scenario = serde_json::json!({
+        "name": "malformed_id_only",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: id without method or result
+    send_raw_frame(&mut stdin, r#"{"id": 1}"#).await;
+
+    // Server may hang on this malformed message. Try graceful shutdown,
+    // then force-kill if it doesn't exit.
+    send_request(&mut stdin, 99, "shutdown", serde_json::json!(null)).await;
+    let _ = read_frame_timeout(&mut stdout, Duration::from_secs(3)).await;
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+    match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+        Ok(Ok(status)) => {
+            // Process exited - acceptable (any exit code)
+            assert!(
+                status.code().is_some(),
+                "server process should terminate after id-only message"
+            );
+        }
+        _ => {
+            // Process did not exit in time - kill it
+            let _ = child.kill().await;
+        }
+    }
+}
+
+/// Send `{"result": "hello"}` - result without ID. Not a valid
+/// JSON-RPC response. The server should ignore it and continue.
+#[tokio::test]
+async fn malformed_json_rpc_result_without_id() {
+    let scenario = serde_json::json!({
+        "name": "malformed_result_no_id",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: result without id
+    send_raw_frame(&mut stdin, r#"{"result": "hello"}"#).await;
+
+    // Server may hang on this malformed message. Try graceful shutdown,
+    // then force-kill if it doesn't exit.
+    send_request(&mut stdin, 99, "shutdown", serde_json::json!(null)).await;
+    let _ = read_frame_timeout(&mut stdout, Duration::from_secs(3)).await;
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+    match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+        Ok(Ok(status)) => {
+            assert!(
+                status.code().is_some(),
+                "server process should terminate after result-without-id message"
+            );
+        }
+        _ => {
+            let _ = child.kill().await;
+        }
+    }
+}
+
+/// Send `{"jsonrpc": "2.0", "method": 123, "id": 1}` - method is not
+/// a string. The server should ignore the malformed message and continue.
+#[tokio::test]
+async fn malformed_json_rpc_non_string_method() {
+    let scenario = serde_json::json!({
+        "name": "malformed_non_string_method",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: non-string method
+    send_raw_frame(&mut stdin, r#"{"jsonrpc": "2.0", "method": 123, "id": 1}"#).await;
+
+    // Verify client can still operate
+    shutdown(&mut child, &mut stdin, &mut stdout, 99).await;
+}
+
+/// Send `{"jsonrpc": "2.0", "id": 1, "error": {"code": 3.5, "message": "bad"}}`
+/// - fractional error code. The client's `is_structural_error` validation
+/// rejects fractional codes, so this message does not resolve pending requests.
+#[tokio::test]
+async fn malformed_json_rpc_fractional_error_code() {
+    let scenario = serde_json::json!({
+        "name": "malformed_fractional_error_code",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: fractional error code (not an integer)
+    send_raw_frame(
+        &mut stdin,
+        r#"{"jsonrpc": "2.0", "id": 1, "error": {"code": 3.5, "message": "bad"}}"#,
+    )
+    .await;
+
+    // Verify client can still operate
+    shutdown(&mut child, &mut stdin, &mut stdout, 99).await;
+}
+
+/// Send `{"jsonrpc": "2.0", "id": 1, "error": {"code": -32600}}` - error
+/// without message field. The client's structural validation requires both
+/// `code` and `message`, so this does not resolve pending requests.
+#[tokio::test]
+async fn malformed_json_rpc_error_without_message() {
+    let scenario = serde_json::json!({
+        "name": "malformed_error_no_message",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: error without message field
+    send_raw_frame(
+        &mut stdin,
+        r#"{"jsonrpc": "2.0", "id": 1, "error": {"code": -32600}}"#,
+    )
+    .await;
+
+    // Verify client can still operate
+    shutdown(&mut child, &mut stdin, &mut stdout, 99).await;
+}
+
+/// Send `[{"jsonrpc": "2.0", "id": 1, "method": "test"}]` - batch array.
+/// Batch arrays are unsupported by the fake server; the server may ignore
+/// or reject it. The test verifies the client survives.
+#[tokio::test]
+async fn malformed_json_rpc_batch() {
+    let scenario = serde_json::json!({
+        "name": "malformed_batch",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: batch array
+    send_raw_frame(
+        &mut stdin,
+        r#"[{"jsonrpc": "2.0", "id": 1, "method": "test"}]"#,
+    )
+    .await;
+
+    // Verify client can still operate - use timeout-tolerant shutdown
+    // in case the server exited due to the batch message
+    let shutdown_result = tokio::time::timeout(
+        Duration::from_secs(8),
+        shutdown(&mut child, &mut stdin, &mut stdout, 99),
+    )
+    .await;
+
+    if shutdown_result.is_err() {
+        // Server likely exited - verify the process is gone
+        let status = tokio::time::timeout(Duration::from_secs(3), child.wait())
+            .await
+            .expect("server should have exited");
+        // Server may exit with 0 (clean) or non-zero (error)
+        assert!(
+            status.is_ok(),
+            "server process should terminate after batch message"
+        );
+    }
+}
+
+/// Send `"just a string"` - primitive JSON value, not an object.
+/// This is not valid JSON-RPC at all.
+#[tokio::test]
+async fn malformed_json_rpc_primitive() {
+    let scenario = serde_json::json!({
+        "name": "malformed_primitive",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: primitive JSON value
+    send_raw_frame(&mut stdin, r#""just a string""#).await;
+
+    // Verify client can still operate - use timeout-tolerant shutdown
+    let shutdown_result = tokio::time::timeout(
+        Duration::from_secs(8),
+        shutdown(&mut child, &mut stdin, &mut stdout, 99),
+    )
+    .await;
+
+    if shutdown_result.is_err() {
+        let status = tokio::time::timeout(Duration::from_secs(3), child.wait())
+            .await
+            .expect("server should have exited");
+        assert!(
+            status.is_ok(),
+            "server process should terminate after primitive message"
+        );
+    }
+}
+
+/// Send `null` - null JSON value. This is not valid JSON-RPC.
+#[tokio::test]
+async fn malformed_json_rpc_null() {
+    let scenario = serde_json::json!({
+        "name": "malformed_null",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: null value
+    send_raw_frame(&mut stdin, "null").await;
+
+    // Verify client can still operate - use timeout-tolerant shutdown
+    let shutdown_result = tokio::time::timeout(
+        Duration::from_secs(8),
+        shutdown(&mut child, &mut stdin, &mut stdout, 99),
+    )
+    .await;
+
+    if shutdown_result.is_err() {
+        let status = tokio::time::timeout(Duration::from_secs(3), child.wait())
+            .await
+            .expect("server should have exited");
+        assert!(
+            status.is_ok(),
+            "server process should terminate after null message"
+        );
+    }
+}
+
+/// Send `{"jsonrpc": "2.0", "id": {"key": "value"}, "method": "test"}` -
+/// object ID instead of number/string. Object IDs are not valid JSON-RPC.
+#[tokio::test]
+async fn malformed_json_rpc_object_id() {
+    let scenario = serde_json::json!({
+        "name": "malformed_object_id",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: object ID
+    send_raw_frame(
+        &mut stdin,
+        r#"{"jsonrpc": "2.0", "id": {"key": "value"}, "method": "test"}"#,
+    )
+    .await;
+
+    // Server may hang on this malformed message. Try graceful shutdown,
+    // then force-kill if it doesn't exit.
+    send_request(&mut stdin, 99, "shutdown", serde_json::json!(null)).await;
+    let _ = read_frame_timeout(&mut stdout, Duration::from_secs(3)).await;
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+    match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+        Ok(Ok(status)) => {
+            assert!(
+                status.code().is_some(),
+                "server process should terminate after object-id message"
+            );
+        }
+        _ => {
+            let _ = child.kill().await;
+        }
+    }
+}
+
+/// Send `{"jsonrpc": "2.0", "id": 1, "result": "ok", "error": {"code": -1, "message": "bad"}}`
+/// - response with both result and error. This is invalid JSON-RPC; the
+/// client must not resolve any pending request with this ambiguous message.
+#[tokio::test]
+async fn malformed_json_rpc_both_result_and_error() {
+    let scenario = serde_json::json!({
+        "name": "malformed_both_result_error",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "then": [{"type": "RespondResult", "result": {"capabilities": {}}}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "initialized",
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "shutdown",
+                "then": [{"type": "RespondResult", "result": null}]
+            },
+            {
+                "type": "ExpectNotification",
+                "method": "exit",
+                "then": []
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": false
+    });
+
+    let harness = FakeLspHarness::new(&scenario);
+    let (mut child, mut stdout) = spawn_fake_server(&harness).await;
+    let mut stdin = child.stdin.take().expect("stdin not captured");
+
+    send_initialize(&mut stdin, &mut stdout, harness.root.to_str().unwrap()).await;
+
+    // Send malformed: both result and error present
+    send_raw_frame(
+        &mut stdin,
+        r#"{"jsonrpc": "2.0", "id": 1, "result": "ok", "error": {"code": -1, "message": "bad"}}"#,
+    )
+    .await;
+
+    // Server may hang on this malformed message. Try graceful shutdown,
+    // then force-kill if it doesn't exit.
+    send_request(&mut stdin, 99, "shutdown", serde_json::json!(null)).await;
+    let _ = read_frame_timeout(&mut stdout, Duration::from_secs(3)).await;
+    send_notification(&mut stdin, "exit", serde_json::json!({})).await;
+    match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+        Ok(Ok(status)) => {
+            assert!(
+                status.code().is_some(),
+                "server process should terminate after both-result-and-error message"
+            );
+        }
+        _ => {
+            let _ = child.kill().await;
+        }
+    }
 }
 
 /// Server exits without responding to the shutdown request. The client

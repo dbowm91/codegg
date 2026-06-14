@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use url::Url;
 
-use super::client::LspClient;
+use super::client::{LspClient, LspClientOptions};
 use super::config::{LspConfig, LspRule};
 use super::download;
 use super::error::{LspError, SharedInitError};
@@ -1660,7 +1660,7 @@ async fn run_initialization_attempt(
 
         #[allow(unused_mut)]
         let mut client = tokio::select! {
-            result = LspClient::new(server, &binary, &root, &env, configuration) => result?,
+            result = LspClient::new(server, &binary, &root, &env, configuration, LspClientOptions::default()) => result?,
             _ = cancellation.cancelled() => {
                 return Err(LspError::InitializationCancelled("shutting down".to_string()));
             }
@@ -1897,9 +1897,13 @@ mod tests {
 
                 let result: Result<Arc<LspClient>, LspError> = match outcome {
                     FactoryOutcome::Success => {
-                        let client =
-                            LspClient::test_stub(server.id, &root, state.shutdown_count.clone())
-                                .await?;
+                        let client = LspClient::test_stub(
+                            server.id,
+                            &root,
+                            state.shutdown_count.clone(),
+                            LspClientOptions::default(),
+                        )
+                        .await?;
                         // Wait until released or cancellation observed.
                         // For cooperative factories, exit promptly on
                         // cancellation so the task body can drain.
@@ -2537,6 +2541,7 @@ mod tests {
                         "rust-analyzer",
                         Path::new("/tmp/root1"),
                         std::sync::Arc::new(AtomicUsize::new(0)),
+                        LspClientOptions::default(),
                     )
                     .await
                     .unwrap(),
@@ -2549,6 +2554,7 @@ mod tests {
                         "pyright",
                         Path::new("/tmp/root2"),
                         std::sync::Arc::new(AtomicUsize::new(0)),
+                        LspClientOptions::default(),
                     )
                     .await
                     .unwrap(),

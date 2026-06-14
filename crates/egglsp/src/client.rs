@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Tracks whether the client transport (writer pipe to the server) is
 /// still operational. When the background reader detects a write failure
@@ -316,6 +316,24 @@ pub struct DiagnosticCacheEntry {
     pub content_version: Option<i32>,
 }
 
+/// Configuration options for LspClient behavior.
+#[derive(Debug, Clone, Copy)]
+pub struct LspClientOptions {
+    /// Timeout for client-initiated requests. Default: 30s.
+    pub request_timeout: Duration,
+    /// Timeout for responding to server-initiated requests. Default: 5s.
+    pub server_request_timeout: Duration,
+}
+
+impl Default for LspClientOptions {
+    fn default() -> Self {
+        Self {
+            request_timeout: Duration::from_secs(30),
+            server_request_timeout: Duration::from_secs(5),
+        }
+    }
+}
+
 pub struct LspClient {
     pub server_id: String,
     pub root: PathBuf,
@@ -333,6 +351,7 @@ pub struct LspClient {
     /// cannot write a server-request response. Checked by `send_request` /
     /// `send_notification` to fail fast instead of writing to a broken pipe.
     pub(crate) transport_state: Arc<Mutex<ClientTransportState>>,
+    options: LspClientOptions,
     #[cfg(test)]
     test_shutdown_count: Option<Arc<std::sync::atomic::AtomicUsize>>,
     _reader_task: tokio::task::JoinHandle<()>,
@@ -345,6 +364,7 @@ impl LspClient {
         root: &Path,
         env: &[(String, String)],
         configuration: serde_json::Value,
+        options: LspClientOptions,
     ) -> Result<Self, LspError> {
         let args: Vec<&str> = server.args.iter().map(|s| &**s).collect();
         let binary_str = binary.to_str().ok_or_else(|| {
@@ -411,6 +431,7 @@ impl LspClient {
                 server_id,
                 reader_writer,
                 reader_context,
+                options.server_request_timeout,
             )
             .await;
         });
@@ -428,6 +449,7 @@ impl LspClient {
             diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
             pending,
             transport_state,
+            options,
             #[cfg(test)]
             test_shutdown_count: None,
             _reader_task: reader_task,
@@ -441,6 +463,7 @@ impl LspClient {
         server_id: &str,
         root: &Path,
         shutdown_count: Arc<std::sync::atomic::AtomicUsize>,
+        options: LspClientOptions,
     ) -> Result<Self, LspError> {
         let cwd = if root.is_dir() {
             root
@@ -504,6 +527,7 @@ impl LspClient {
                 reader_server_id,
                 reader_writer,
                 reader_context,
+                options.server_request_timeout,
             )
             .await;
         });
@@ -521,6 +545,7 @@ impl LspClient {
             diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
             pending,
             transport_state,
+            options,
             #[cfg(test)]
             test_shutdown_count: Some(shutdown_count),
             _reader_task: reader_task,
@@ -538,6 +563,7 @@ impl LspClient {
         server_id: String,
         writer: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
         server_request_context: ServerRequestContext,
+        server_request_timeout: Duration,
     ) {
         let writer = LspWriter::from_inner(writer);
         loop {
@@ -585,7 +611,7 @@ impl LspClient {
                 JsonRpcMessage::ServerRequest { id, method, params } => {
                     debug!(server = %server_id, id = %id, method = %method, "dispatching server request");
                     let reply = match tokio::time::timeout(
-                        Self::SERVER_REQUEST_TIMEOUT,
+                        server_request_timeout,
                         dispatch_server_request(&server_request_context, &method, params),
                     )
                     .await
@@ -1016,11 +1042,13 @@ impl LspClient {
         self.send_notification("exit", serde_json::json!({})).await
     }
 
+    #[allow(dead_code)]
     const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// Timeout for server-request dispatch. Current handlers are fast and
     /// local (hashmap lookups, vector construction), but this guard prevents
     /// a misbehaving server from blocking stdout consumption indefinitely.
+    #[allow(dead_code)]
     pub(crate) const SERVER_REQUEST_TIMEOUT: std::time::Duration =
         std::time::Duration::from_secs(5);
 
@@ -1051,7 +1079,7 @@ impl LspClient {
         }
 
         // Wait for the background reader to deliver the response.
-        let result = tokio::time::timeout(Self::REQUEST_TIMEOUT, rx).await;
+        let result = tokio::time::timeout(self.options.request_timeout, rx).await;
 
         match result {
             Ok(Ok(Ok(val))) => Ok(val),
@@ -1084,8 +1112,7 @@ impl LspClient {
             fail_all_pending(&self.pending, &reason).await;
             return Err(LspError::RequestTimeout(format!(
                 "LSP request '{}' timed out after {:?}",
-                method,
-                Self::REQUEST_TIMEOUT
+                method, self.options.request_timeout
             )));
         }
 
@@ -1106,8 +1133,7 @@ impl LspClient {
 
         Err(LspError::RequestTimeout(format!(
             "LSP request '{}' timed out after {:?}",
-            method,
-            Self::REQUEST_TIMEOUT
+            method, self.options.request_timeout
         )))
     }
 
@@ -2576,6 +2602,7 @@ mod tests {
             "fake-server",
             tempdir.path(),
             std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            LspClientOptions::default(),
         )
         .await
         .expect("test client should be created");

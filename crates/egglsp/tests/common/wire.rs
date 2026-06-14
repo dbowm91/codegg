@@ -77,6 +77,15 @@ async fn write_framed(stdin: &mut ChildStdin, body: &str) {
     stdin.flush().await.unwrap();
 }
 
+/// Send a Content-Length framed message with arbitrary JSON body.
+///
+/// This is useful for sending malformed JSON-RPC messages in integration
+/// tests where the body may not conform to the JSON-RPC specification.
+#[allow(dead_code)]
+pub async fn send_raw_frame(stdin: &mut ChildStdin, body: &str) {
+    write_framed(stdin, body).await;
+}
+
 /// Send a framed JSON-RPC request.
 pub async fn send_request(
     stdin: &mut ChildStdin,
