@@ -1041,7 +1041,7 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 
 The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing through real child-process stdio.
 
-Phase 2 is complete. The fake server binary exercises 11 protocol tests and 12 semantic tests through real stdio transport, plus 229 unit tests across the crate (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). The previously flaky transport test has been fixed.
+Phase 2 is complete. The fake server binary exercises 32 protocol tests and 12 semantic tests through real stdio transport, plus 234 unit tests across the crate (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). The previously flaky transport test has been fixed.
 
 ### Test Infrastructure
 
