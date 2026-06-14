@@ -30,7 +30,7 @@ pub struct DynamicRegistrationState {
 }
 
 /// A single dynamic registration entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DynamicRegistration {
     pub id: String,
     pub method: String,
@@ -136,6 +136,13 @@ impl DynamicRegistrationState {
     /// Current count of tracked registrations.
     pub fn count(&self) -> usize {
         self.registrations.len()
+    }
+
+    /// Return a deterministic snapshot of registrations sorted by ID.
+    pub fn snapshot(&self) -> Vec<DynamicRegistration> {
+        let mut registrations: Vec<_> = self.registrations.values().cloned().collect();
+        registrations.sort_by(|a, b| a.id.cmp(&b.id));
+        registrations
     }
 
     /// Remove all registrations.

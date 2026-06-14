@@ -41,9 +41,16 @@ pub(crate) enum ClientTransportState {
     Failed { reason: String },
 }
 
+/// Read-only snapshot of the transport state for integration tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientTransportSnapshot {
+    Running,
+    Failed { reason: String },
+}
+
 use lsp_types::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -351,6 +358,7 @@ pub struct LspClient {
     /// cannot write a server-request response. Checked by `send_request` /
     /// `send_notification` to fail fast instead of writing to a broken pipe.
     pub(crate) transport_state: Arc<Mutex<ClientTransportState>>,
+    pub(crate) dynamic_registrations: Arc<RwLock<crate::server_request::DynamicRegistrationState>>,
     options: LspClientOptions,
     #[cfg(test)]
     test_shutdown_count: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -424,6 +432,9 @@ impl LspClient {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let transport_state: Arc<Mutex<ClientTransportState>> =
             Arc::new(Mutex::new(ClientTransportState::Running));
+        let dynamic_registrations = Arc::new(RwLock::new(
+            crate::server_request::DynamicRegistrationState::new(),
+        ));
 
         // Spawn background stdout reader.
         let reader_diagnostics = diagnostics.clone();
@@ -445,9 +456,7 @@ impl LspClient {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default(),
             }],
-            dynamic_registrations: Arc::new(tokio::sync::RwLock::new(
-                crate::server_request::DynamicRegistrationState::new(),
-            )),
+            dynamic_registrations: dynamic_registrations.clone(),
         };
         let reader_task = tokio::spawn(async move {
             Self::background_reader(
@@ -476,6 +485,7 @@ impl LspClient {
             diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
             pending,
             transport_state,
+            dynamic_registrations,
             options,
             #[cfg(test)]
             test_shutdown_count: None,
@@ -517,6 +527,9 @@ impl LspClient {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let transport_state: Arc<Mutex<ClientTransportState>> =
             Arc::new(Mutex::new(ClientTransportState::Running));
+        let dynamic_registrations = Arc::new(RwLock::new(
+            crate::server_request::DynamicRegistrationState::new(),
+        ));
 
         let reader_diagnostics = diagnostics.clone();
         let reader_pending = pending.clone();
@@ -538,9 +551,7 @@ impl LspClient {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default(),
             }],
-            dynamic_registrations: Arc::new(tokio::sync::RwLock::new(
-                crate::server_request::DynamicRegistrationState::new(),
-            )),
+            dynamic_registrations: dynamic_registrations.clone(),
         };
 
         let reader_task = tokio::spawn(async move {
@@ -570,6 +581,7 @@ impl LspClient {
             diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
             pending,
             transport_state,
+            dynamic_registrations,
             options,
             #[cfg(test)]
             test_shutdown_count: Some(shutdown_count),
@@ -1179,6 +1191,28 @@ impl LspClient {
             fail_transport(&self.transport_state, &self.pending, e.to_string()).await;
         }
         result
+    }
+
+    /// Return the current number of pending client-initiated requests.
+    pub async fn pending_request_count(&self) -> usize {
+        self.pending.lock().await.len()
+    }
+
+    /// Return a read-only snapshot of the current transport state.
+    pub async fn transport_state_snapshot(&self) -> ClientTransportSnapshot {
+        match &*self.transport_state.lock().await {
+            ClientTransportState::Running => ClientTransportSnapshot::Running,
+            ClientTransportState::Failed { reason } => ClientTransportSnapshot::Failed {
+                reason: reason.clone(),
+            },
+        }
+    }
+
+    /// Return a deterministic snapshot of the dynamic registration map.
+    pub async fn dynamic_registration_snapshot(
+        &self,
+    ) -> Vec<crate::server_request::DynamicRegistration> {
+        self.dynamic_registrations.read().await.snapshot()
     }
 
     fn detect_language_id(&self, uri: &Url) -> String {

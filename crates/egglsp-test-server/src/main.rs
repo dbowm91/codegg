@@ -433,6 +433,13 @@ fn compact_json(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<invalid-json>".to_string())
 }
 
+fn deserialize_present_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(serde_json::Value::deserialize(deserializer)?))
+}
+
 // --- JSON-RPC message types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,7 +452,11 @@ struct JsonRpcMessage {
     params: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<JsonRpcError>,

@@ -1851,18 +1851,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "egglsp-test-server"
-version = "0.1.0"
-dependencies = [
- "base64",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "eggsentry"
 version = "0.1.0"
 dependencies = [

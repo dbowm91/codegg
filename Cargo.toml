@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp", "crates/egglsp-test-server"]
+members = [".", "crates/codegg-core", "crates/codegg-config", "crates/codegg-protocol", "crates/codegg-providers", "crates/eggsentry", "crates/eggcontext", "crates/egggit", "crates/egglsp"]
 resolver = "2"
 
 [package]

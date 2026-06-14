@@ -1229,7 +1229,7 @@ A cloneable error type used for concurrent initialization waiters. `SharedInitEr
 
 ## Phase 2: Scripted Stdio Integration Testing (Complete)
 
-All 44 Phase 2 integration tests are passing (32 protocol + 12 semantic). The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing. It reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts.
+The legacy fake-server suite still exercises 32 protocol tests and 12 semantic tests through real stdio transport. The `egglsp` package now also carries a smaller production-harness protocol subset under `tests/production_protocol_stdio.rs`, and `tests/scenario_engine.rs` wraps the fake-server self-tests. The fake LSP server binary is named `egglsp-test-server`, but it is built as a `[[bin]]` target from the `egglsp` package; it reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts.
 
 ### Architecture
 
@@ -1255,22 +1255,25 @@ Scenarios are JSON files with steps like `ExpectRequest`, `ExpectNotification`, 
 
 ### Binary Discovery
 
-Cargo exposes the test binary to package integration tests via `CARGO_BIN_EXE_egglsp-test-server`. The `EGGLSP_TEST_SERVER` env var can override the path for CI or manual runs.
+Cargo exposes the test binary to the `egglsp` package integration tests via `CARGO_BIN_EXE_egglsp-test-server`. The `EGGLSP_TEST_SERVER` env var can override the path for CI or manual runs.
 
 ### Test Counts
 
 - **32 protocol tests** in `tests/protocol_stdio.rs` — all passing ✅
 - **12 semantic tests** in `tests/semantic_stdio.rs` — all passing ✅
 - **235 unit tests** in the `egglsp` crate
-- **3 scenario-engine tests** in `crates/egglsp-test-server/tests/scenario_engine.rs` — package-local self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures
+- **3 scenario-engine tests** in `tests/scenario_engine.rs` — wrapper around `crates/egglsp-test-server/tests/scenario_engine.rs` for strict allow-listing, raw bytes, and grouped-frame fixtures
+- **Production-harness protocol subset** in `tests/production_protocol_stdio.rs` — launcher-path coverage through `ProductionClientHarness`
 
 ### Test Organization
 
 - `tests/protocol_stdio.rs` — Core protocol scenarios (init, shutdown, cancellation, diagnostics lifecycle, malformed input)
 - `tests/semantic_stdio.rs` — Feature-level scenarios (document lifecycle, hover, definition, references, symbols, call hierarchy, rename, code actions, semantic context composites, hunk source context)
-- `tests/common/harness.rs` — Reusable test harness with temp directory and scenario management
+- `tests/production_protocol_stdio.rs` — Production-harness protocol coverage for launcher-path behavior and transport edge cases
+- `tests/common/harness.rs` — Reusable fake-server test harness with temp directory and scenario management
+- `tests/common/production_harness.rs` — Minimal real-project harness for production launcher-path coverage
 - `tests/common/wire.rs` — Shared Content-Length framing helpers
-- `crates/egglsp-test-server/tests/scenario_engine.rs` — Package-local fake-server self-tests for strict mismatches, raw bytes, and grouped frames
+- `tests/scenario_engine.rs` — Package-local wrapper around the fake-server self-tests
 
 ### Test Coverage Matrix (Phase 2)
 
@@ -1311,11 +1314,11 @@ Phase 2 deliberately skips the following items (deferred to Phase 3 or omitted a
 ### Running
 
 ```bash
-# Run all Phase 2 integration tests (parallel-safe, default 1 thread per file)
-cargo test -p egglsp --tests
-
-# Run fake-server package self-tests
-cargo test -p egglsp-test-server
+# Run Phase 2 integration tests (parallel-safe)
+cargo test -p egglsp --test protocol_stdio
+cargo test -p egglsp --test semantic_stdio
+cargo test -p egglsp --test production_protocol_stdio
+cargo test -p egglsp --test scenario_engine
 
 # Force single-threaded to validate sequential stability
 cargo test -p egglsp --tests -- --test-threads=1

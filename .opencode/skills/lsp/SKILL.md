@@ -16,7 +16,7 @@ This skill covers the LSP module for language server integration in opencode-rs.
 
 ## Overview
 
-The LSP implementation lives in the `egglsp` workspace crate (`crates/egglsp/`). `src/lsp/mod.rs` is a thin compatibility shim that re-exports `egglsp::*` and bridges config/error types. The model-facing tool is at `src/tool/lsp.rs`.
+The LSP implementation lives in the `egglsp` workspace crate (`crates/egglsp/`). `src/lsp/mod.rs` is a thin compatibility shim that re-exports `egglsp::*` and bridges config/error types. The model-facing tool is at `src/tool/lsp.rs`. Phase 2 integration tests now live under `crates/egglsp/tests/`: the legacy fake-server suites use `FakeLspHarness`, the production-harness protocol subset uses `ProductionClientHarness`, and `scenario_engine.rs` includes the fake-server self-tests.
 
 LSP is exposed as a native tool via `LspTool`, returning compact agent-facing summaries (not raw LSP JSON). Model-facing line and column are 1-indexed; the wrapper converts to LSP 0-indexed.
 
@@ -37,6 +37,7 @@ crates/egglsp/src/          # Authoritative LSP implementation
 ├── root.rs                 # Project root detection
 ├── server.rs               # 39 server definitions
 ├── service.rs              # LspService - client management, file-based routing
+└── tests/                  # Phase 2 stdio integration tests (fake-server + production harness)
 
 src/lsp/mod.rs              # Thin re-export shim (compatibility only)
 src/tool/lsp.rs             # Model-facing LSP tool with compact DTOs
@@ -1039,18 +1040,19 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 
 ## Phase 2: Scripted Stdio Integration Tests
 
-The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing through real child-process stdio.
+The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is still named `egglsp-test-server`, but it is built as a `[[bin]]` target from the `egglsp` package and discovered via `CARGO_BIN_EXE_egglsp-test-server`, with `EGGLSP_TEST_SERVER` as an override for CI or manual runs.
 
-Phase 2 is complete. The fake server binary exercises 32 protocol tests and 12 semantic tests through real stdio transport, plus 235 unit tests across the crate (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). The fake-server package also runs 3 scenario-engine self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
+Phase 2 is complete. The legacy fake-server suite exercises 32 protocol tests and 12 semantic tests through real stdio transport, plus the crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). A smaller production-harness protocol subset lives in `tests/production_protocol_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
 
 ### Test Infrastructure
 
-- **Fake server binary**: `crates/egglsp-test-server/` — reads Content-Length framed JSON-RPC, executes scripted scenarios
+- **Fake server binary**: `crates/egglsp-test-server/src/main.rs` (built as the `egglsp-test-server` bin target from `egglsp`) — reads Content-Length framed JSON-RPC, executes scripted scenarios
+- **Production harness**: `tests/common/production_harness.rs` — launches the same binary against a minimal real-project root for launcher-path coverage
 - **Scenario format**: JSON files with step types (ExpectRequest, ExpectNotification, AllowRequest, AllowNotification, SendNotification, Delay, ExitNow)
 - **Transcript**: Machine-readable JSONL output for failure diagnostics
 - **Harness**: `tests/common/harness.rs` — temp directories, scenario management, `CARGO_BIN_EXE_egglsp-test-server` discovery with `EGGLSP_TEST_SERVER` override
 - **Wire helpers**: `tests/common/wire.rs` — shared Content-Length framing senders/readers
-- **Fake-server self-tests**: `crates/egglsp-test-server/tests/scenario_engine.rs` — strict mismatches, raw bytes, grouped frames
+- **Fake-server self-tests**: `tests/scenario_engine.rs` — includes `../egglsp-test-server/tests/scenario_engine.rs` for strict mismatches, raw bytes, grouped frames
 
 ### Core Protocol Tests (`tests/protocol_stdio.rs`)
 
@@ -1090,14 +1092,13 @@ These tests exercise the wire-level protocol for the LSP operations that Codegg'
 ### Running
 
 ```bash
-# Run all Phase 2 integration tests (parallel-safe)
+# Run Phase 2 integration tests (parallel-safe)
 cargo test -p egglsp --test protocol_stdio
 cargo test -p egglsp --test semantic_stdio
+cargo test -p egglsp --test production_protocol_stdio
+cargo test -p egglsp --test scenario_engine
 
-# Run fake-server package self-tests
-cargo test -p egglsp-test-server
-
-# Run unit tests (235 total)
+# Run unit tests
 cargo test -p egglsp --lib
 
 # Force single-threaded to validate sequential stability

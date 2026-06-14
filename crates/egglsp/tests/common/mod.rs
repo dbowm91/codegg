@@ -1,8 +1,11 @@
 pub mod harness;
+pub mod production_harness;
 pub mod wire;
 
 #[allow(unused_imports)]
 pub use harness::FakeLspHarness;
+#[allow(unused_imports)]
+pub use production_harness::ProductionClientHarness;
 #[allow(unused_imports)]
 pub use wire::{
     is_notification, is_response, is_server_request, read_frame, read_frame_timeout,

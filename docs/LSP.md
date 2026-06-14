@@ -1,6 +1,6 @@
 # LSP (Language Server Protocol)
 
-> **Note:** This document is partially outdated. For comprehensive LSP documentation, see `architecture/lsp.md` and `.opencode/skills/lsp/SKILL.md`.
+> **Note:** This document is partially outdated. For comprehensive LSP documentation, see `architecture/lsp.md` and `.opencode/skills/lsp/SKILL.md`. The phase 2 stdio test layout now lives under `crates/egglsp/tests/`, with the fake server built as the `egglsp-test-server` bin target from the `egglsp` package.
 
 codegg integrates with Language Server Protocol (LSP) to provide IDE-like features including diagnostics, code navigation, and intelligent completions.
 
@@ -15,6 +15,8 @@ The egglsp crate consists of:
 - **`src/client.rs`** - Low-level LSP client implementation
 - **`src/operations.rs`** - `LspOperations` for code actions (goto definition, find references, etc.), `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview`
 - **`src/diagnostics.rs`** - `DiagnosticsCollector` for collecting and debouncing diagnostics
+
+Phase 2 integration tests now live under `crates/egglsp/tests/`: the legacy fake-server suites use `FakeLspHarness`, the production-harness protocol subset uses `ProductionClientHarness`, and `scenario_engine.rs` includes the fake-server self-tests.
 
 ## Key Components
 
