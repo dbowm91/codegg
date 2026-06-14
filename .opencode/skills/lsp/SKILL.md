@@ -1093,20 +1093,24 @@ The fake server supports **captured-ID mode** for genuinely out-of-order concurr
 
 These tests exercise root-crate collectors against the fake LSP server via the production `LspClient`/`LspService` stack. They bridge the gap between `egglsp`-only tests and the real collectors.
 
+Preview tests are classified into two categories:
+- **Child-process production-chain**: fake server → LspClient → typed response → preview conversion (rename, format, source-action, out-of-root, overlapping)
+- **Local production-function**: directly exercises production selection/conversion functions with locally constructed typed values (command-only, no-edit, ambiguous, resource-operation)
+
 | Test | Coverage |
 |------|----------|
 | `composite_harness_initialization_smoke` | Composite harness initialization end-to-end |
 | `composite_service_layer_construction` | Service layer construction from composite harness |
 | `composite_document_symbols_via_direct_client` | Document symbols through direct client path |
 | `composite_semantic_context_collector_construction` | `SemanticContextCollector` construction and wiring |
-| `rename_preview_converts_through_production_path` | Rename preview conversion through production `LspClient` |
-| `format_preview_converts_through_production_path` | Format preview conversion through production `LspClient` |
-| `code_action_source_action_preview_converts_through_production_path` | Source-action preview conversion through production `LspClient` |
-| `preview_safety_out_of_root_rejected` | Out-of-root path rejection in preview |
-| `preview_safety_overlapping_edits_rejected` | Overlapping edit rejection in preview |
-| `preview_safety_command_only_code_action_rejected` | Command-only code action rejection in preview |
-| `preview_safety_no_edit_code_action_rejected` | No-edit code action rejection in preview |
-| `preview_safety_ambiguous_source_actions_rejected` | Ambiguous source action rejection in preview |
+| `rename_preview_converts_through_production_path` | Rename preview — child-process production-chain (fake server → LspClient → typed response → preview conversion) |
+| `format_preview_converts_through_production_path` | Format preview — child-process production-chain |
+| `code_action_source_action_preview_converts_through_production_path` | Source-action preview — child-process production-chain |
+| `preview_safety_out_of_root_rejected` | Out-of-root path rejection — child-process production-chain |
+| `preview_safety_overlapping_edits_rejected` | Overlapping edit rejection — child-process production-chain |
+| `preview_safety_command_only_code_action_rejected` | Command-only code action rejection — local production-function (directly exercises production selection/conversion with locally constructed typed values) |
+| `preview_safety_no_edit_code_action_rejected` | No-edit code action rejection — local production-function |
+| `preview_safety_ambiguous_source_actions_rejected` | Ambiguous source action rejection — local production-function |
 | `semantic_context_collector_exercises_real_workflow` | Full `SemanticContextCollector` workflow (source excerpt, diagnostics, symbols, definitions, references) |
 | `semantic_context_collector_capability_gating` | Capability-gated degradation when server lacks a capability |
 | `semantic_context_collector_failure_degradation` | Graceful degradation when optional operations error |

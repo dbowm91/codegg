@@ -1301,15 +1301,15 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 | Type hierarchy | D3 | `hierarchy_context_requests_round_trip_through_real_client` (typed `LspClient` methods: `prepare_type_hierarchy`, `supertypes`, `subtypes`) | ✅ |
 | Rename (WorkspaceEdit) | D4 | `edit_round_trips_do_not_mutate_disk` | ✅ |
 | Code action (edit-bearing) | D4 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
-| Rename preview (composite) | D5 | `rename_preview_converts_through_production_path` | ✅ |
-| Format preview (composite) | D5 | `format_preview_converts_through_production_path` | ✅ |
-| Source-action preview (composite) | D5 | `code_action_source_action_preview_converts_through_production_path` | ✅ |
-| Preview safety: out-of-root | D5 | `preview_safety_out_of_root_rejected` | ✅ |
-| Preview safety: overlapping | D5 | `preview_safety_overlapping_edits_rejected` | ✅ |
-| Preview safety: command-only | D5 | `preview_safety_command_only_code_action_rejected` | ✅ |
-| Preview safety: no-edit | D5 | `preview_safety_no_edit_code_action_rejected` | ✅ |
-| Preview safety: ambiguous | D5 | `preview_safety_ambiguous_source_actions_rejected` | ✅ |
-| Preview safety: resource operation | D5 | `preview_safety_resource_operation_rejected` | ✅ |
+| Rename preview (composite) | D5 | `rename_preview_converts_through_production_path` | ✅ | child-process |
+| Format preview (composite) | D5 | `format_preview_converts_through_production_path` | ✅ | child-process |
+| Source-action preview (composite) | D5 | `code_action_source_action_preview_converts_through_production_path` | ✅ | child-process |
+| Preview safety: out-of-root | D5 | `preview_safety_out_of_root_rejected` | ✅ | child-process |
+| Preview safety: overlapping | D5 | `preview_safety_overlapping_edits_rejected` | ✅ | child-process |
+| Preview safety: command-only | D5 | `preview_safety_command_only_code_action_rejected` | ✅ | local |
+| Preview safety: no-edit | D5 | `preview_safety_no_edit_code_action_rejected` | ✅ | local |
+| Preview safety: ambiguous | D5 | `preview_safety_ambiguous_source_actions_rejected` | ✅ | local |
+| Preview safety: resource operation | D5 | `preview_safety_resource_operation_rejected` | ✅ | local |
 | Semantic context composite | D6 | `semantic_context_collector_exercises_real_workflow` | ✅ |
 | Security context composite | D6 | `semantic_context_security_review_intent_collects_security_source` (renamed from `security_context_workflow_uses_semantic_collector`) | ✅ |
 | Security context tool orchestration | D6 | `security_context_tool_exercises_risk_filtering_and_call_expansion` (exercises real `LspTool::execute("securityContext")` with risk markers, call expansion, cycle suppression) | ✅ |

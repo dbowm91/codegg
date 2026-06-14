@@ -366,6 +366,19 @@ pub struct LspClient {
     _reader_task: tokio::task::JoinHandle<()>,
 }
 
+/// Snapshot of LspClient operational health.
+///
+/// This is an observational type — fields reflect the state at the time
+/// of the call and may change immediately afterward. It is not a
+/// synchronization primitive.
+#[derive(Debug, Clone)]
+pub struct LspClientHealthSnapshot {
+    /// Current transport state (Running or Failed).
+    pub transport: String,
+    /// Number of requests awaiting responses.
+    pub pending_requests: usize,
+}
+
 impl LspClient {
     pub async fn new(
         server: &LspServerDef,
@@ -1340,6 +1353,17 @@ impl LspClient {
     /// The count may change immediately after the call.
     pub async fn pending_request_count(&self) -> usize {
         self.pending.lock().await.len()
+    }
+
+    /// Returns a combined health snapshot of transport state and pending request count.
+    ///
+    /// This is an observational check, not a synchronization primitive.
+    /// The returned values reflect the state at the moment of the call.
+    pub async fn health_snapshot(&self) -> LspClientHealthSnapshot {
+        LspClientHealthSnapshot {
+            transport: format!("{:?}", self.transport_state_snapshot().await),
+            pending_requests: self.pending_request_count().await,
+        }
     }
 
     /// Returns an observation of the current transport state.

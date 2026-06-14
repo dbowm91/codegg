@@ -37,7 +37,8 @@ pub mod writer;
 
 pub use capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
 pub use client::{
-    ClientTransportSnapshot, DiagnosticCacheEntry, JsonRpcId, LspClient, LspClientOptions,
+    ClientTransportSnapshot, DiagnosticCacheEntry, JsonRpcId, LspClient, LspClientHealthSnapshot,
+    LspClientOptions,
 };
 pub use config::{LspConfig, LspRule};
 pub use diagnostics::{

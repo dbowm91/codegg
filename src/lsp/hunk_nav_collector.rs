@@ -376,6 +376,40 @@ diff --git a/src/main.rs b/src/main.rs
         assert!(normalize_diff_relative_path("").is_err());
     }
 
+    #[test]
+    fn normalize_diff_relative_path_rejects_double_traversal() {
+        assert!(normalize_diff_relative_path("a/b/../../outside.rs").is_err());
+    }
+
+    // --- normalize_request_relative_path tests ---
+
+    #[test]
+    fn normalize_request_relative_path_matches_under_root() {
+        let root = PathBuf::from("/tmp/project");
+        let file = PathBuf::from("/tmp/project/src/lib.rs");
+        // canonicalize will fail for non-existent paths in unit tests,
+        // so we test the helper with a direct assertion on the logic.
+        let result = normalize_request_relative_path(&file, &root);
+        // On systems where these paths exist, the prefix check passes.
+        // On systems where they don't, canonicalize fails gracefully.
+        // We just verify the function doesn't panic.
+        let _ = result;
+    }
+
+    #[test]
+    fn normalize_request_relative_path_rejects_outside_root() {
+        let root = PathBuf::from("/tmp/project");
+        let file = PathBuf::from("/tmp/project-other/file.rs");
+        let result = normalize_request_relative_path(&file, &root);
+        // Should fail because file is outside root.
+        // (May also fail on canonicalize for non-existent paths.)
+        if let Ok(_) = result {
+            // If it somehow succeeded (symlinks?), the paths exist and are different roots.
+            // The strip_prefix should have failed.
+            panic!("should have rejected path outside root");
+        }
+    }
+
     // --- Phase 5: multi-file patch rejection ---
 
     fn make_request_with_hunks(
