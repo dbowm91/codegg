@@ -1148,16 +1148,14 @@ The tracked initialization and quiescent shutdown features are covered by target
 | `forced_abort_after_grace_period` | Genuinely survives cooperative cancellation past the 300ms grace interval using a test-only `InitTaskBehavior::IgnoreCancellationUntilAbort` hook. Asserts the real `AbortHandle::abort()` path is reached and the factory future is dropped before shutdown returns. |
 | `aggregate_grace_across_independent_tasks` | Multiple independent initialization keys (distinct roots) each with blocked factories. Confirms `active_init_tasks.len() == N` and total shutdown time is bounded near one aggregate grace period rather than N × grace. |
 | `deadline_fallback_with_unresolvable_completion` | Constructs `InitTaskControl` values with receivers whose senders are intentionally retained (never resolving). Drives `await_init_task_completions` to the global deadline and verifies unresolved controls are logged/returned and state finalization continues. |
-| Phase 2: initialization handshake | `protocol_stdio::initialization_handshake` | Real stdio init/initialized/shutdown/exit through fake server |
-| Phase 2: server request during init | `protocol_stdio::server_request_during_init` | workspace/configuration interleaved with initialize |
-| Phase 2: apply-edit refusal | `protocol_stdio::apply_edit_refusal` | workspace/applyEdit rejected with applied:false |
-| Phase 2: notifications interleaved | `protocol_stdio::notifications_interleaved` | Notifications mixed with server requests |
-| Phase 2: concurrent responses | `protocol_stdio::concurrent_out_of_order_responses` | Multiple requests, out-of-order responses |
-| Phase 2: graceful shutdown | `protocol_stdio::graceful_shutdown` | Clean shutdown/exit sequence |
-| Phase 2: server exit | `protocol_stdio::server_exit_before_response` | Server exits without responding |
-| Phase 2: error response | `protocol_stdio::server_error_response` | JSON-RPC error response handling |
-| Phase 2: framing sizes | `protocol_stdio::framing_various_sizes` | Content-Length framing edge cases |
-| Phase 2: progress notifications | `protocol_stdio::progress_notification` | $/progress notifications |
+| Phase 2: initialization handshake | `production_protocol_stdio::initialization_handshake` | Real stdio init/initialized/shutdown/exit through fake server |
+| Phase 2: server request during init | `production_protocol_stdio::server_requests_during_init_and_dynamic_registration` | workspace/configuration interleaved with initialize |
+| Phase 2: apply-edit refusal | `production_protocol_stdio::apply_edit_refusal_keeps_client_usable` | workspace/applyEdit rejected with applied:false |
+| Phase 2: concurrent responses | `production_protocol_stdio::concurrent_out_of_order_responses_and_notifications` | Multiple requests, out-of-order responses |
+| Phase 2: timeout and cancellation | `production_protocol_stdio::request_timeout_and_late_response_are_dropped` | Production $/cancelRequest emission |
+| Phase 2: malformed frames | `production_protocol_stdio::malformed_frames_fail_transport` | 8 malformed framing cases → transport failure |
+| Phase 2: server exit | `production_protocol_stdio::server_exit_before_response_and_error_response` | Server exits without responding |
+| Phase 2: typed semantic | `production_semantic_stdio::typed_semantic_requests_collect_context_and_freshness` | Hover, definition, references, symbols, completion, code actions |
 
 The `FutureExitProbe` test-only RAII guard (`src/lsp/../service.rs`) is constructed at the top of test factory futures to prove that the future body was actually dropped. It is robust to all three exit paths (normal return, cooperative cancellation, forced abort) and is used by `shutdown_aborts_uncooperative_task`, `cooperative_cancellation_is_observed`, `forced_abort_is_awaited`, and `forced_abort_after_grace_period`.
 
@@ -1229,7 +1227,7 @@ A cloneable error type used for concurrent initialization waiters. `SharedInitEr
 
 ## Phase 2: Scripted Stdio Integration Testing (Complete)
 
-The legacy fake-server suite still exercises 32 protocol tests and 12 semantic tests through real stdio transport. The `egglsp` package now also carries a smaller production-harness protocol subset under `tests/production_protocol_stdio.rs`, and `tests/scenario_engine.rs` wraps the fake-server self-tests. The fake LSP server binary is named `egglsp-test-server`, but it is built as a `[[bin]]` target from the `egglsp` package; it reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts.
+The `egglsp` package carries production-harness integration tests under `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, and `tests/production_service_stdio.rs`, plus `tests/scenario_engine.rs` wrapping the fake-server self-tests. The fake LSP server binary is named `egglsp-test-server`, but it is built as a `[[bin]]` target from the `egglsp` package; it reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts.
 
 ### Architecture
 
@@ -1259,20 +1257,19 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 
 ### Test Counts
 
-- **32 protocol tests** in `tests/protocol_stdio.rs` — all passing ✅
-- **12 semantic tests** in `tests/semantic_stdio.rs` — all passing ✅
+- **11 production protocol tests** in `tests/production_protocol_stdio.rs` — all passing ✅
+- **3 production semantic tests** in `tests/production_semantic_stdio.rs` — all passing ✅
+- **5 production service tests** in `tests/production_service_stdio.rs` — all passing ✅
 - **235 unit tests** in the `egglsp` crate
 - **3 scenario-engine tests** in `tests/scenario_engine.rs` — wrapper around `crates/egglsp-test-server/tests/scenario_engine.rs` for strict allow-listing, raw bytes, and grouped-frame fixtures
-- **Production-harness protocol subset** in `tests/production_protocol_stdio.rs` — launcher-path coverage through `ProductionClientHarness`
 
 ### Test Organization
 
-- `tests/protocol_stdio.rs` — Core protocol scenarios (init, shutdown, cancellation, diagnostics lifecycle, malformed input)
-- `tests/semantic_stdio.rs` — Feature-level scenarios (document lifecycle, hover, definition, references, symbols, call hierarchy, rename, code actions, semantic context composites, hunk source context)
 - `tests/production_protocol_stdio.rs` — Production-harness protocol coverage for launcher-path behavior and transport edge cases
+- `tests/production_semantic_stdio.rs` — Production-harness semantic and edit-preview coverage
+- `tests/production_service_stdio.rs` — Production-harness LspService lifecycle coverage
 - `tests/common/harness.rs` — Reusable fake-server test harness with temp directory and scenario management
-- `tests/common/production_harness.rs` — Minimal real-project harness for production launcher-path coverage
-- `tests/common/wire.rs` — Shared Content-Length framing helpers
+- `tests/common/production_harness.rs` — Real-project harness for production launcher-path coverage
 - `tests/scenario_engine.rs` — Package-local wrapper around the fake-server self-tests
 
 ### Test Coverage Matrix (Phase 2)
@@ -1280,33 +1277,40 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 | Section | Plan ID | Tests | Status |
 |---------|---------|-------|--------|
 | Initialization handshake | C1 | `initialization_handshake` | ✅ |
-| Server requests during init | C2 | `server_request_during_init` | ✅ |
-| Apply-edit refusal | C3 | `apply_edit_refusal` | ✅ |
-| Interleaved notifications | C4 | `notifications_interleaved` | ✅ |
-| Concurrent out-of-order responses | C5 | `concurrent_out_of_order_responses`, `d2_concurrent_out_of_order_semantic` | ✅ |
-| Diagnostics lifecycle | C6 | `diagnostics_lifecycle` | ✅ |
+| Server requests during init + dynamic registration | C2 | `server_requests_during_init_and_dynamic_registration` | ✅ |
+| Apply-edit refusal | C3 | `apply_edit_refusal_keeps_client_usable` | ✅ |
+| Interleaved notifications | C4 | `concurrent_out_of_order_responses_and_notifications` | ✅ |
+| Concurrent out-of-order responses | C5 | `concurrent_out_of_order_responses_and_notifications` | ✅ |
+| Diagnostics lifecycle | C6 | `diagnostics_lifecycle_tracks_file_changes` | ✅ |
 | Cancellation write failure | C9 | Deterministic unit test in `client.rs` (OS-pipe flake avoided) | ✅ |
-| Graceful shutdown | C10 | `graceful_shutdown` | ✅ |
-| Ungraceful shutdown / EOF | C11 | `server_exit_before_response` | ✅ |
-| Server error response | — | `server_error_response` | ✅ |
-| Framing sizes | — | `framing_various_sizes` | ✅ |
-| Progress notifications | — | `progress_notification` | ✅ |
-| Document lifecycle | D1 | `d1_document_lifecycle` | ✅ |
-| Hover | D2 | `d2_hover_request_response` | ✅ |
-| Definition | D2 | `d2_definition_request_response` | ✅ |
-| References | D2 | `d2_references_request_response` | ✅ |
-| Document symbols | D2 | `d2_document_symbols_request_response` | ✅ |
-| Call hierarchy | D3 | `d3_call_hierarchy_flow` | ✅ |
-| Rename (WorkspaceEdit) | D4 | `d4_rename_workspace_edit` | ✅ |
-| Code action (edit-bearing) | D4 | `d4_code_action_with_edit` | ✅ |
-| Semantic context composite | D5 | `d5_semantic_context_composite` | ✅ |
-| Security context composite | D6 | `d6_security_context_composite` | ✅ |
-| Hunk source context | D7 | `d7_hunk_source_context` | ✅ |
+| Graceful shutdown | C10 | `server_exit_before_response_and_error_response` | ✅ |
+| Ungraceful shutdown / EOF | C11 | `server_exit_before_response_and_error_response` | ✅ |
+| Server error response | — | `error_response_is_reported` | ✅ |
+| Malformed frames | — | `malformed_frames_fail_transport` (8 cases) | ✅ |
+| Unknown frames | — | `unknown_json_rpc_frames_are_ignored` | ✅ |
+| Grouped/split writes | — | `grouped_frames_and_split_writes_are_processed` | ✅ |
+| Timeout and cancellation | C8 | `request_timeout_and_late_response_are_dropped` | ✅ |
+| Document lifecycle | D1 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
+| Hover | D2 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
+| Definition | D2 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
+| References | D2 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
+| Document symbols | D2 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
+| Call hierarchy | D3 | `hierarchy_context_requests_round_trip_through_real_client` | ✅ |
+| Type hierarchy | D3 | `hierarchy_context_requests_round_trip_through_real_client` | ✅ |
+| Rename (WorkspaceEdit) | D4 | `edit_round_trips_do_not_mutate_disk` | ✅ |
+| Code action (edit-bearing) | D4 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
+| Semantic context composite | D5 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
+| Security context composite | D6 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
+| Hunk source context | D7 | `typed_semantic_requests_collect_context_and_freshness` | ✅ |
+| LspService single-flight | — | `single_flight_init_uses_a_real_child` | ✅ |
+| LspService document lifecycle | — | `document_lifecycle_ownership_tracks_open_update_save_close` | ✅ |
+| LspService diagnostics | — | `service_diagnostics_warming_then_populated` | ✅ |
+| LspService delayed init shutdown | — | `shutdown_during_delayed_init_cancels_callers` | ✅ |
+| LspService in-flight shutdown | — | `shutdown_with_inflight_request_is_bounded` | ✅ |
 
 Phase 2 deliberately skips the following items (deferred to Phase 3 or omitted as nondeterministic at the OS-pipe level):
-- **C7** (configuration / dynamic registration) — deferred to Phase 3 real-server matrix
-- **C8** (timeout / `$/cancelRequest` end-to-end) — covered by deterministic unit tests in `client.rs`
-- **C12** (malformed framing byte-level) — covered by `framing_various_sizes` + unit tests in `writer.rs`
+- **C7** (configuration / dynamic registration with real-server matrix) — deferred to Phase 3
+- **C12** (malformed framing byte-level) — covered by `malformed_frames_fail_transport` + unit tests in `writer.rs`
 - **C13** (malformed JSON-RPC shapes) — covered by `classify_json_rpc_message` unit tests in `client.rs`
 - **C14** (server-response write failure end-to-end) — covered by deterministic writer unit test
 - **C15** (stderr drainage) — drain is in `launch::spawn_stderr_drain`; bounded by line cap (not yet a Phase 2 test)
@@ -1315,9 +1319,9 @@ Phase 2 deliberately skips the following items (deferred to Phase 3 or omitted a
 
 ```bash
 # Run Phase 2 integration tests (parallel-safe)
-cargo test -p egglsp --test protocol_stdio
-cargo test -p egglsp --test semantic_stdio
 cargo test -p egglsp --test production_protocol_stdio
+cargo test -p egglsp --test production_semantic_stdio
+cargo test -p egglsp --test production_service_stdio
 cargo test -p egglsp --test scenario_engine
 
 # Force single-threaded to validate sequential stability

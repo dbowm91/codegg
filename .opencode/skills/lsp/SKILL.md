@@ -16,7 +16,7 @@ This skill covers the LSP module for language server integration in opencode-rs.
 
 ## Overview
 
-The LSP implementation lives in the `egglsp` workspace crate (`crates/egglsp/`). `src/lsp/mod.rs` is a thin compatibility shim that re-exports `egglsp::*` and bridges config/error types. The model-facing tool is at `src/tool/lsp.rs`. Phase 2 integration tests now live under `crates/egglsp/tests/`: the legacy fake-server suites use `FakeLspHarness`, the production-harness protocol subset uses `ProductionClientHarness`, and `scenario_engine.rs` includes the fake-server self-tests.
+The LSP implementation lives in the `egglsp` workspace crate (`crates/egglsp/`). `src/lsp/mod.rs` is a thin compatibility shim that re-exports `egglsp::*` and bridges config/error types. The model-facing tool is at `src/tool/lsp.rs`. Phase 2 integration tests now live under `crates/egglsp/tests/`: the production-harness tests use `ProductionClientHarness`, and `scenario_engine.rs` includes the fake-server self-tests.
 
 LSP is exposed as a native tool via `LspTool`, returning compact agent-facing summaries (not raw LSP JSON). Model-facing line and column are 1-indexed; the wrapper converts to LSP 0-indexed.
 
@@ -1042,7 +1042,7 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 
 The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is still named `egglsp-test-server`, but it is built as a `[[bin]]` target from the `egglsp` package and discovered via `CARGO_BIN_EXE_egglsp-test-server`, with `EGGLSP_TEST_SERVER` as an override for CI or manual runs.
 
-Phase 2 is complete. The legacy fake-server suite exercises 32 protocol tests and 12 semantic tests through real stdio transport, plus the crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). A smaller production-harness protocol subset lives in `tests/production_protocol_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
+Phase 2 is complete. The production-harness integration tests cover 11 protocol tests, 3 semantic tests, and 5 service tests through real stdio transport, plus the crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). Tests live in `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, `tests/production_service_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
 
 ### Test Infrastructure
 
@@ -1051,51 +1051,49 @@ Phase 2 is complete. The legacy fake-server suite exercises 32 protocol tests an
 - **Scenario format**: JSON files with step types (ExpectRequest, ExpectNotification, AllowRequest, AllowNotification, SendNotification, Delay, ExitNow)
 - **Transcript**: Machine-readable JSONL output for failure diagnostics
 - **Harness**: `tests/common/harness.rs` — temp directories, scenario management, `CARGO_BIN_EXE_egglsp-test-server` discovery with `EGGLSP_TEST_SERVER` override
-- **Wire helpers**: `tests/common/wire.rs` — shared Content-Length framing senders/readers
 - **Fake-server self-tests**: `tests/scenario_engine.rs` — includes `../egglsp-test-server/tests/scenario_engine.rs` for strict mismatches, raw bytes, grouped frames
 
-### Core Protocol Tests (`tests/protocol_stdio.rs`)
+### Production Protocol Tests (`tests/production_protocol_stdio.rs`)
 
 | Test | Coverage |
 |------|----------|
 | `initialization_handshake` | Full init/initialized/shutdown/exit lifecycle |
-| `server_request_during_init` | workspace/configuration during initialization |
-| `apply_edit_refusal` | workspace/applyEdit rejection |
-| `notifications_interleaved` | Notifications mixed with server requests |
-| `concurrent_out_of_order_responses` | Multiple requests, reversed responses |
-| `graceful_shutdown` | Clean shutdown/exit sequence |
-| `server_exit_before_response` | Server exits without responding |
-| `server_error_response` | JSON-RPC error handling |
-| `framing_various_sizes` | Content-Length framing edge cases |
-| `progress_notification` | $/progress notifications |
-| `diagnostics_lifecycle` | publishDiagnostics around didOpen/didChange/didSave/didClose |
+| `server_requests_during_init_and_dynamic_registration` | workspace/configuration during initialization + registration |
+| `apply_edit_refusal_keeps_client_usable` | workspace/applyEdit rejection |
+| `concurrent_out_of_order_responses_and_notifications` | Multiple requests, reversed responses |
+| `request_timeout_and_late_response_are_dropped` | Production $/cancelRequest emission |
+| `malformed_frames_fail_transport` | 8 malformed framing cases → transport failure |
+| `unknown_json_rpc_frames_are_ignored` | Unknown frames don't break transport |
+| `grouped_frames_and_split_writes_are_processed` | Multiple frames in one write + split body |
+| `diagnostics_lifecycle_tracks_file_changes` | publishDiagnostics around didOpen/didChange/didSave/didClose |
+| `server_exit_before_response_and_error_response` | Server exit + error response handling |
+| `error_response_is_reported` | JSON-RPC error response handling |
 
-### Feature Tests (`tests/semantic_stdio.rs`)
+### Production Semantic Tests (`tests/production_semantic_stdio.rs`)
 
-These tests exercise the wire-level protocol for the LSP operations that Codegg's semantic, security, and hunk-source-context tools depend on. The fake server returns deterministic fixtures so the tests can assert on operation mapping, request/response shape, and DTO conversion paths.
+| Test | Coverage |
+|------|----------|
+| `typed_semantic_requests_collect_context_and_freshness` | Hover, definition, references, symbols, completion, code actions, semantic context, security context |
+| `edit_round_trips_do_not_mutate_disk` | Rename, formatting, code action previews |
+| `hierarchy_context_requests_round_trip_through_real_client` | Call hierarchy, type hierarchy |
 
-| Section | Test | Coverage |
-|---------|------|----------|
-| D1 | `d1_document_lifecycle` | didOpen/didChange/didSave/didClose wire shape; transcript records URI, languageId, version |
-| D2 | `d2_hover_request_response` | textDocument/hover: markdown contents shape |
-| D2 | `d2_definition_request_response` | textDocument/definition: Location array decoding |
-| D2 | `d2_references_request_response` | textDocument/references: list of locations |
-| D2 | `d2_document_symbols_request_response` | textDocument/documentSymbol: hierarchical symbol tree |
-| D2 | `d2_concurrent_out_of_order_semantic` | hover/definition/references/documentSymbol all issued concurrently, responses received out-of-order |
-| D3 | `d3_call_hierarchy_flow` | prepareCallHierarchy + callHierarchy/incomingCalls + callHierarchy/outgoingCalls |
-| D4 | `d4_rename_workspace_edit` | textDocument/rename: documentChanges with multi-file WorkspaceEdit |
-| D4 | `d4_code_action_with_edit` | textDocument/codeAction: edit-bearing action with documentChanges |
-| D5 | `d5_semantic_context_composite` | symbols + hover + definition + references + diagnostics composite flow |
-| D6 | `d6_security_context_composite` | diagnostics + prepareCallHierarchy + outgoingCalls composite flow |
-| D7 | `d7_hunk_source_context` | documentSymbol + definition + references for hunk source context |
+### Production Service Tests (`tests/production_service_stdio.rs`)
+
+| Test | Coverage |
+|------|----------|
+| `single_flight_init_uses_a_real_child` | Same-key concurrent init launches one child |
+| `document_lifecycle_ownership_tracks_open_update_save_close` | Document ownership routing |
+| `diagnostics_propagate_through_service_apis` | Diagnostics retrieval through service APIs |
+| `shutdown_during_delayed_init_cancels_waiters` | Delayed init shutdown cancellation |
+| `shutdown_with_inflight_request_completes_bounded` | In-flight request shutdown bounded |
 
 ### Running
 
 ```bash
 # Run Phase 2 integration tests (parallel-safe)
-cargo test -p egglsp --test protocol_stdio
-cargo test -p egglsp --test semantic_stdio
 cargo test -p egglsp --test production_protocol_stdio
+cargo test -p egglsp --test production_semantic_stdio
+cargo test -p egglsp --test production_service_stdio
 cargo test -p egglsp --test scenario_engine
 
 # Run unit tests
