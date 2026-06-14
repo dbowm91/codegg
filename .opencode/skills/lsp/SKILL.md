@@ -1042,7 +1042,9 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 
 The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is still named `egglsp-test-server`, but it is built as a `[[bin]]` target from the `egglsp` package and discovered via `CARGO_BIN_EXE_egglsp-test-server`, with `EGGLSP_TEST_SERVER` as an override for CI or manual runs.
 
-Phase 2 is complete. The production-harness integration tests cover 11 protocol tests, 3 semantic tests, and 5 service tests through real stdio transport, plus the crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path). Tests live in `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, `tests/production_service_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
+Phase 2 is complete. The production-harness integration tests cover 11 protocol tests, 3 semantic tests, and 5 service tests through real stdio transport, plus 16 root-crate composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path) also contribute coverage. Tests live in `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, `tests/production_service_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
+
+The fake server supports **captured-ID mode** for genuinely out-of-order concurrent responses, enabling deterministic testing of concurrent request handling. All integration tests use **bounded condition waits** (polling loops) instead of fixed sleeps. `LspClient` has **typed hierarchy methods** (`prepare_call_hierarchy`, `incoming_calls`, `outgoing_calls`, `prepare_type_hierarchy`, `supertypes`, `subtypes`) that replace manual JSON-RPC dispatch.
 
 ### Test Infrastructure
 
@@ -1087,6 +1089,28 @@ Phase 2 is complete. The production-harness integration tests cover 11 protocol 
 | `shutdown_during_delayed_init_cancels_waiters` | Delayed init shutdown cancellation |
 | `shutdown_with_inflight_request_completes_bounded` | In-flight request shutdown bounded |
 
+### Root Composite Tests (`tests/lsp_composite_stdio.rs`)
+
+These tests exercise root-crate collectors against the fake LSP server via the production `LspClient`/`LspService` stack. They bridge the gap between `egglsp`-only tests and the real collectors.
+
+| Test | Coverage |
+|------|----------|
+| `composite_harness_initialization_smoke` | Composite harness initialization end-to-end |
+| `composite_service_layer_construction` | Service layer construction from composite harness |
+| `composite_document_symbols_via_direct_client` | Document symbols through direct client path |
+| `composite_semantic_context_collector_construction` | `SemanticContextCollector` construction and wiring |
+| `rename_preview_converts_through_production_path` | Rename preview conversion through production `LspClient` |
+| `format_preview_converts_through_production_path` | Format preview conversion through production `LspClient` |
+| `code_action_source_action_preview_converts_through_production_path` | Source-action preview conversion through production `LspClient` |
+| `preview_safety_out_of_root_rejected` | Out-of-root path rejection in preview |
+| `preview_safety_overlapping_edits_rejected` | Overlapping edit rejection in preview |
+| `preview_safety_command_only_code_action_rejected` | Command-only code action rejection in preview |
+| `preview_safety_no_edit_code_action_rejected` | No-edit code action rejection in preview |
+| `preview_safety_ambiguous_source_actions_rejected` | Ambiguous source action rejection in preview |
+| `semantic_context_collector_exercises_real_workflow` | Full `SemanticContextCollector` workflow (source excerpt, diagnostics, symbols, definitions, references) |
+| `semantic_context_collector_capability_gating` | Capability-gated degradation when server lacks a capability |
+| `semantic_context_collector_failure_degradation` | Graceful degradation when optional operations error |
+
 ### Running
 
 ```bash
@@ -1095,6 +1119,9 @@ cargo test -p egglsp --test production_protocol_stdio
 cargo test -p egglsp --test production_semantic_stdio
 cargo test -p egglsp --test production_service_stdio
 cargo test -p egglsp --test scenario_engine
+
+# Run root composite tests (semantic/security/hunk collectors + preview safety)
+cargo test --test lsp_composite_stdio
 
 # Run unit tests
 cargo test -p egglsp --lib

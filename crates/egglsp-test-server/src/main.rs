@@ -1,6 +1,6 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
@@ -31,6 +31,8 @@ enum Step {
         id: IdMatcher,
         #[serde(default)]
         params: ValueMatcher,
+        #[serde(default)]
+        capture_id_as: Option<String>,
         #[serde(default)]
         then: Vec<Action>,
     },
@@ -70,6 +72,19 @@ enum Step {
     #[serde(alias = "ExitNow")]
     Exit {
         code: i32,
+    },
+    #[serde(alias = "SendCapturedResult")]
+    SendCapturedResult {
+        captured_id: String,
+        result: serde_json::Value,
+    },
+    #[serde(alias = "SendCapturedError")]
+    SendCapturedError {
+        captured_id: String,
+        code: i64,
+        message: String,
+        #[serde(default)]
+        data: Option<serde_json::Value>,
     },
 }
 
@@ -114,6 +129,19 @@ enum Action {
     SendFramesTogether {
         messages: Vec<serde_json::Value>,
     },
+    #[serde(alias = "SendCapturedResult")]
+    SendCapturedResult {
+        captured_id: String,
+        result: serde_json::Value,
+    },
+    #[serde(alias = "SendCapturedError")]
+    SendCapturedError {
+        captured_id: String,
+        code: i64,
+        message: String,
+        #[serde(default)]
+        data: Option<serde_json::Value>,
+    },
     CloseStdout,
     #[serde(alias = "ExitNow")]
     Exit {
@@ -129,18 +157,13 @@ enum ExitConfig {
 
 // --- Matchers ---
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 enum IdMatcher {
+    #[default]
     Any,
     Exact(serde_json::Value),
     Number,
     String,
-}
-
-impl Default for IdMatcher {
-    fn default() -> Self {
-        Self::Any
-    }
 }
 
 impl<'de> Deserialize<'de> for IdMatcher {
@@ -176,8 +199,9 @@ impl IdMatcher {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 enum ValueMatcher {
+    #[default]
     Any,
     Exact(serde_json::Value),
     Null,
@@ -189,12 +213,6 @@ enum ValueMatcher {
     String(String),
     Number(i64),
     Bool(bool),
-}
-
-impl Default for ValueMatcher {
-    fn default() -> Self {
-        Self::Any
-    }
 }
 
 impl<'de> Deserialize<'de> for ValueMatcher {
@@ -274,6 +292,7 @@ struct ErrorMatcher {
 }
 
 impl ErrorMatcher {
+    #[allow(clippy::incompatible_msrv)]
     fn matches(&self, actual: &JsonRpcError) -> bool {
         self.code == actual.code
             && self.message == actual.message
@@ -931,6 +950,8 @@ fn summarize_expect_response(
     out
 }
 
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)]
 fn read_until_request(
     reader: &mut FramedReader,
     transcript: &mut TranscriptWriter,
@@ -940,6 +961,7 @@ fn read_until_request(
     expected_params: &ValueMatcher,
     strict: bool,
     allowed_requests: &HashSet<String>,
+    allowed_notifications: &HashSet<String>,
 ) -> Result<Option<JsonRpcMessage>, StepFailure> {
     let expected_summary = summarize_expect_request(expected_method, expected_id, expected_params);
     loop {
@@ -953,6 +975,17 @@ fn read_until_request(
                     && is_request(&msg)
                 {
                     let reason = format!("allowed request {}", msg.method.as_deref().unwrap());
+                    record_allowed_entry(transcript, step_idx, &msg, &reason);
+                    continue;
+                }
+                if msg
+                    .method
+                    .as_deref()
+                    .is_some_and(|method| allowed_notifications.contains(method))
+                    && is_notification(&msg)
+                {
+                    let reason =
+                        format!("allowed notification {}", msg.method.as_deref().unwrap());
                     record_allowed_entry(transcript, step_idx, &msg, &reason);
                     continue;
                 }
@@ -985,6 +1018,7 @@ fn read_until_request(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn read_until_notification(
     reader: &mut FramedReader,
     transcript: &mut TranscriptWriter,
@@ -993,6 +1027,7 @@ fn read_until_notification(
     expected_params: &ValueMatcher,
     strict: bool,
     allowed_notifications: &HashSet<String>,
+    allowed_requests: &HashSet<String>,
 ) -> Result<Option<JsonRpcMessage>, StepFailure> {
     let expected_summary = summarize_expect_notification(expected_method, expected_params);
     loop {
@@ -1006,6 +1041,16 @@ fn read_until_notification(
                     && is_notification(&msg)
                 {
                     let reason = format!("allowed notification {}", msg.method.as_deref().unwrap());
+                    record_allowed_entry(transcript, step_idx, &msg, &reason);
+                    continue;
+                }
+                if msg
+                    .method
+                    .as_deref()
+                    .is_some_and(|method| allowed_requests.contains(method))
+                    && is_request(&msg)
+                {
+                    let reason = format!("allowed request {}", msg.method.as_deref().unwrap());
                     record_allowed_entry(transcript, step_idx, &msg, &reason);
                     continue;
                 }
@@ -1038,6 +1083,7 @@ fn read_until_notification(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn read_until_response(
     reader: &mut FramedReader,
     transcript: &mut TranscriptWriter,
@@ -1118,6 +1164,7 @@ fn execute_actions(
     transcript: &mut TranscriptWriter,
     step_idx: usize,
     request_counter: &mut u64,
+    captured_ids: &HashMap<String, serde_json::Value>,
 ) -> ActionControl {
     for action in actions {
         match action {
@@ -1242,6 +1289,70 @@ fn execute_actions(
                     "multiple frames",
                 );
             }
+            Action::SendCapturedResult {
+                captured_id,
+                result,
+            } => {
+                let id = captured_ids
+                    .get(captured_id.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!("SendCapturedResult: unknown captured_id {captured_id:?}")
+                    });
+                let msg = JsonRpcMessage {
+                    jsonrpc: Some("2.0".to_string()),
+                    method: None,
+                    params: None,
+                    id: Some(id),
+                    result: Some(result.clone()),
+                    error: None,
+                };
+                writer.write_message(&msg).unwrap_or_else(|e| {
+                    panic!("Failed to send captured response: {e}");
+                });
+                record_message_entry(transcript, "sent", step_idx, &msg);
+                record_action_event(
+                    transcript,
+                    step_idx,
+                    "SendCapturedResult",
+                    &format!("captured_id={captured_id}"),
+                );
+            }
+            Action::SendCapturedError {
+                captured_id,
+                code,
+                message,
+                data,
+            } => {
+                let id = captured_ids
+                    .get(captured_id.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!("SendCapturedError: unknown captured_id {captured_id:?}")
+                    });
+                let msg = JsonRpcMessage {
+                    jsonrpc: Some("2.0".to_string()),
+                    method: None,
+                    params: None,
+                    id: Some(id),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: *code,
+                        message: message.clone(),
+                        data: data.clone(),
+                    }),
+                };
+                writer.write_message(&msg).unwrap_or_else(|e| {
+                    panic!("Failed to send captured error response: {e}");
+                });
+                record_message_entry(transcript, "sent", step_idx, &msg);
+                record_action_event(
+                    transcript,
+                    step_idx,
+                    "SendCapturedError",
+                    &format!("captured_id={captured_id}"),
+                );
+            }
             Action::CloseStdout => {
                 writer.close_stdout().unwrap_or_else(|e| {
                     panic!("Failed to close stdout: {e}");
@@ -1301,6 +1412,7 @@ fn main() {
     let mut request_counter: u64 = 0;
     let mut allowed_requests: HashSet<String> = HashSet::new();
     let mut allowed_notifications: HashSet<String> = HashSet::new();
+    let mut captured_ids: HashMap<String, serde_json::Value> = HashMap::new();
     let mut exit_code: i32 = match &scenario.exit {
         ExitConfig::ExitCode { code } => *code,
     };
@@ -1316,6 +1428,7 @@ fn main() {
                 method,
                 id,
                 params,
+                capture_id_as,
                 then,
             } => {
                 let msg = match read_until_request(
@@ -1327,6 +1440,7 @@ fn main() {
                     params,
                     scenario.strict,
                     &allowed_requests,
+                    &allowed_notifications,
                 ) {
                     Ok(msg) => msg,
                     Err(failure) => {
@@ -1341,6 +1455,19 @@ fn main() {
                 };
 
                 if let Some(msg) = msg {
+                    if let Some(name) = capture_id_as {
+                        if let Some(id_val) = &msg.id {
+                            captured_ids.insert(name.clone(), id_val.clone());
+                            let detail = format!("captured id {name} = {id_val}");
+                            eprintln!("[fake-lsp] {detail}");
+                            record_action_event(
+                                &mut transcript,
+                                step_idx,
+                                "CaptureId",
+                                &detail,
+                            );
+                        }
+                    }
                     match execute_actions(
                         then,
                         &msg.id,
@@ -1348,6 +1475,7 @@ fn main() {
                         &mut transcript,
                         step_idx,
                         &mut request_counter,
+                        &captured_ids,
                     ) {
                         ActionControl::Continue => {}
                         ActionControl::Exit(code) => {
@@ -1374,6 +1502,7 @@ fn main() {
                     params,
                     scenario.strict,
                     &allowed_notifications,
+                    &allowed_requests,
                 ) {
                     Ok(msg) => msg,
                     Err(failure) => {
@@ -1395,6 +1524,7 @@ fn main() {
                         &mut transcript,
                         step_idx,
                         &mut request_counter,
+                        &captured_ids,
                     ) {
                         ActionControl::Continue => {}
                         ActionControl::Exit(code) => {
@@ -1443,6 +1573,7 @@ fn main() {
                         &mut transcript,
                         step_idx,
                         &mut request_counter,
+                        &captured_ids,
                     ) {
                         ActionControl::Continue => {}
                         ActionControl::Exit(code) => {
@@ -1502,6 +1633,70 @@ fn main() {
             Step::Exit { code } => {
                 exit_code = *code;
                 break;
+            }
+            Step::SendCapturedResult {
+                captured_id,
+                result,
+            } => {
+                let id = captured_ids
+                    .get(captured_id.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!("SendCapturedResult: unknown captured_id {captured_id:?}")
+                    });
+                let msg = JsonRpcMessage {
+                    jsonrpc: Some("2.0".to_string()),
+                    method: None,
+                    params: None,
+                    id: Some(id),
+                    result: Some(result.clone()),
+                    error: None,
+                };
+                writer.write_message(&msg).unwrap_or_else(|e| {
+                    panic!("Failed to send captured response: {e}");
+                });
+                record_message_entry(&mut transcript, "sent", step_idx, &msg);
+                record_action_event(
+                    &mut transcript,
+                    step_idx,
+                    "SendCapturedResult",
+                    &format!("captured_id={captured_id}"),
+                );
+            }
+            Step::SendCapturedError {
+                captured_id,
+                code,
+                message,
+                data,
+            } => {
+                let id = captured_ids
+                    .get(captured_id.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!("SendCapturedError: unknown captured_id {captured_id:?}")
+                    });
+                let msg = JsonRpcMessage {
+                    jsonrpc: Some("2.0".to_string()),
+                    method: None,
+                    params: None,
+                    id: Some(id),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: *code,
+                        message: message.clone(),
+                        data: data.clone(),
+                    }),
+                };
+                writer.write_message(&msg).unwrap_or_else(|e| {
+                    panic!("Failed to send captured error response: {e}");
+                });
+                record_message_entry(&mut transcript, "sent", step_idx, &msg);
+                record_action_event(
+                    &mut transcript,
+                    step_idx,
+                    "SendCapturedError",
+                    &format!("captured_id={captured_id}"),
+                );
             }
         }
     }

@@ -273,7 +273,7 @@ async fn apply_edit_refusal_keeps_client_usable() {
 
     let harness = start_harness(scenario, LspClientOptions::default(), json!({})).await;
     let original = std::fs::read_to_string(&harness.source_path).expect("source file should exist");
-    sleep(Duration::from_millis(100)).await;
+    // Initialization is complete; no arbitrary sleep needed.
 
     let hover = expect_ok(
         &harness,
@@ -310,92 +310,60 @@ async fn concurrent_out_of_order_responses_and_notifications() {
             },
             {"type": "ExpectNotification", "method": "initialized", "then": []},
             {
-                "type": "SendNotification",
-                "method": "textDocument/publishDiagnostics",
-                "params": {
-                    "uri": "__SOURCE_URI__",
-                    "diagnostics": [
-                        {
-                            "range": {
-                                "start": {"line": 0, "character": 0},
-                                "end": {"line": 0, "character": 3}
-                            },
-                            "message": "example diagnostic",
-                            "severity": 1
-                        }
-                    ]
-                }
-            },
-            {
                 "type": "ExpectRequest",
                 "method": "textDocument/hover",
-                "then": [{
-                    "type": "RespondResult",
-                    "result": {
-                        "contents": {"kind": "markdown", "value": "**fn** `harness_marker()`"}
-                    }
-                }]
+                "capture_id_as": "hover_id",
+                "then": [
+                    {"type": "SendNotification", "method": "textDocument/publishDiagnostics", "params": {
+                        "uri": "__SOURCE_URI__",
+                        "diagnostics": [{
+                            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}},
+                            "message": "example diagnostic",
+                            "severity": 1
+                        }]
+                    }}
+                ]
             },
             {
                 "type": "ExpectRequest",
                 "method": "textDocument/definition",
-                "then": [{
-                    "type": "RespondResult",
-                    "result": [
-                        {
-                            "uri": "__SOURCE_URI__",
-                            "range": {
-                                "start": {"line": 0, "character": 0},
-                                "end": {"line": 0, "character": 3}
-                            }
-                        }
-                    ]
-                }]
+                "capture_id_as": "def_id",
+                "then": [
+                    {"type": "SendNotification", "method": "$/progress", "params": {"token": "prog-1", "value": {"kind": "begin", "title": "working"}}}
+                ]
             },
             {
                 "type": "ExpectRequest",
                 "method": "textDocument/references",
-                "then": [{
-                    "type": "RespondResult",
-                    "result": [
-                        {
-                            "uri": "__SOURCE_URI__",
-                            "range": {
-                                "start": {"line": 0, "character": 0},
-                                "end": {"line": 0, "character": 3}
-                            }
-                        },
-                        {
-                            "uri": "__SOURCE_URI__",
-                            "range": {
-                                "start": {"line": 2, "character": 0},
-                                "end": {"line": 2, "character": 3}
-                            }
-                        }
-                    ]
-                }]
+                "capture_id_as": "ref_id",
+                "then": [
+                    {"type": "SendNotification", "method": "window/logMessage", "params": {"type": 3, "message": "log before response"}}
+                ]
             },
             {
                 "type": "ExpectRequest",
                 "method": "textDocument/documentSymbol",
-                "then": [{
-                    "type": "RespondResult",
-                    "result": [
-                        {
-                            "name": "harness_marker",
-                            "kind": 12,
-                            "range": {
-                                "start": {"line": 0, "character": 0},
-                                "end": {"line": 0, "character": 24}
-                            },
-                            "selectionRange": {
-                                "start": {"line": 0, "character": 7},
-                                "end": {"line": 0, "character": 20}
-                            }
-                        }
-                    ]
-                }]
+                "capture_id_as": "sym_id",
+                "then": []
             },
+            {"type": "SendCapturedResult", "captured_id": "sym_id", "result": [
+                {
+                    "name": "harness_marker",
+                    "kind": 12,
+                    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 24}},
+                    "selectionRange": {"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 20}}
+                }
+            ]},
+            {"type": "SendCapturedResult", "captured_id": "ref_id", "result": [
+                {"uri": "__SOURCE_URI__", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}}},
+                {"uri": "__SOURCE_URI__", "range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 3}}}
+            ]},
+            {"type": "SendCapturedResult", "captured_id": "def_id", "result": [
+                {"uri": "__SOURCE_URI__", "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}}}
+            ]},
+            {"type": "SendCapturedResult", "captured_id": "hover_id", "result": {
+                "contents": {"kind": "markdown", "value": "**fn** `harness_marker()`"}
+            }},
             {
                 "type": "ExpectRequest",
                 "method": "shutdown",
@@ -418,20 +386,26 @@ async fn concurrent_out_of_order_responses_and_notifications() {
     );
 
     let hover = expect_ok(&harness, hover).await;
-    assert!(hover.is_some());
+    assert!(hover.is_some(), "hover should return a result");
 
     let definition = expect_ok(&harness, definition).await;
-    assert!(definition.is_some());
+    assert!(definition.is_some(), "definition should return a result");
 
     let references = expect_ok(&harness, references).await;
-    assert_eq!(references.len(), 2);
+    assert_eq!(references.len(), 2, "references should return 2 results");
 
     let symbols = expect_ok(&harness, symbols).await;
-    assert_eq!(symbols.len(), 1);
+    assert_eq!(symbols.len(), 1, "symbols should return 1 result");
 
-    let diagnostics = harness.client.get_diagnostics(&uri.to_string()).await;
+    let diagnostics = harness.client.get_diagnostics(uri.as_ref()).await;
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(harness.client.pending_request_count().await, 0);
+
+    let transcript = std::fs::read_to_string(&harness.transcript_path).unwrap_or_default();
+    assert!(
+        transcript.contains("SendCapturedResult"),
+        "transcript should show captured-ID responses, was: {transcript}"
+    );
 
     harness.shutdown().await.expect("shutdown should succeed");
 }
@@ -512,12 +486,19 @@ async fn request_timeout_and_late_response_are_dropped() {
         ClientTransportSnapshot::Running
     ));
 
-    sleep(Duration::from_millis(1000)).await;
-    let transcript = std::fs::read_to_string(&harness.transcript_path).unwrap_or_default();
-    assert!(
-        transcript.contains("$/cancelRequest"),
-        "expected client timeout to emit $/cancelRequest, transcript was: {transcript}"
-    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let transcript = std::fs::read_to_string(&harness.transcript_path).unwrap_or_default();
+        if transcript.contains("$/cancelRequest") {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for $/cancelRequest in transcript, last: {transcript}"
+            );
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
     let hover = expect_ok(
         &harness,
         harness.client.hover(&uri, Position::new(0, 0)).await,
@@ -678,7 +659,7 @@ async fn unknown_json_rpc_frames_are_ignored() {
     assert_eq!(harness.client.pending_request_count().await, 0);
     assert!(harness
         .client
-        .get_diagnostics(&uri.to_string())
+        .get_diagnostics(uri.as_ref())
         .await
         .is_empty());
 
@@ -828,9 +809,18 @@ async fn diagnostics_lifecycle_tracks_file_changes() {
             .diagnostics_may_still_be_warming(&uri_str)
             .await
     );
-    sleep(Duration::from_millis(150)).await;
-    let diagnostics = harness.client.get_diagnostics(&uri_str).await;
-    assert_eq!(diagnostics.len(), 1);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut diagnostics;
+    loop {
+        diagnostics = harness.client.get_diagnostics(&uri_str).await;
+        if !diagnostics.is_empty() {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timed out waiting for diagnostics after didOpen");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
 
     expect_ok(
         &harness,

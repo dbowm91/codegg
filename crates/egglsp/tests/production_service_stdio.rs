@@ -597,14 +597,19 @@ async fn diagnostics_propagate_through_service_apis() {
         "diagnostics should be warming before the fake server publishes"
     );
 
-    sleep(Duration::from_millis(250)).await;
-
-    assert!(
-        !service
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if !service
             .diagnostics_may_still_be_warming(&key, &source_uri)
-            .await,
-        "warming should clear after diagnostics arrive"
-    );
+            .await
+        {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timed out waiting for diagnostics warming to clear");
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
 
     let diagnostics = expect_ok(
         &harness,

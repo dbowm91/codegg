@@ -358,6 +358,7 @@ pub struct LspClient {
     /// cannot write a server-request response. Checked by `send_request` /
     /// `send_notification` to fail fast instead of writing to a broken pipe.
     pub(crate) transport_state: Arc<Mutex<ClientTransportState>>,
+    #[allow(dead_code)] // read via ServerRequestContext; snapshot is #[cfg(test)]
     pub(crate) dynamic_registrations: Arc<RwLock<crate::server_request::DynamicRegistrationState>>,
     options: LspClientOptions,
     #[cfg(test)]
@@ -978,6 +979,148 @@ impl LspClient {
 
         let symbols: Vec<DocumentSymbol> = serde_json::from_value(result)?;
         Ok(symbols)
+    }
+
+    pub async fn prepare_call_hierarchy(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> Result<Vec<CallHierarchyItem>, LspError> {
+        let params = serde_json::to_value(CallHierarchyPrepareParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: url_to_uri(uri)?,
+                },
+                position,
+            },
+            work_done_progress_params: Default::default(),
+        })?;
+
+        let result = self
+            .send_request("textDocument/prepareCallHierarchy", params)
+            .await?;
+
+        if result.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let items: Vec<CallHierarchyItem> = serde_json::from_value(result)?;
+        Ok(items)
+    }
+
+    pub async fn incoming_calls(
+        &self,
+        item: CallHierarchyItem,
+    ) -> Result<Vec<CallHierarchyIncomingCall>, LspError> {
+        let params = serde_json::to_value(CallHierarchyIncomingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let result = self
+            .send_request("callHierarchy/incomingCalls", params)
+            .await?;
+
+        if result.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let calls: Vec<CallHierarchyIncomingCall> = serde_json::from_value(result)?;
+        Ok(calls)
+    }
+
+    pub async fn outgoing_calls(
+        &self,
+        item: CallHierarchyItem,
+    ) -> Result<Vec<CallHierarchyOutgoingCall>, LspError> {
+        let params = serde_json::to_value(CallHierarchyOutgoingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let result = self
+            .send_request("callHierarchy/outgoingCalls", params)
+            .await?;
+
+        if result.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let calls: Vec<CallHierarchyOutgoingCall> = serde_json::from_value(result)?;
+        Ok(calls)
+    }
+
+    pub async fn prepare_type_hierarchy(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> Result<Vec<TypeHierarchyItem>, LspError> {
+        let params = serde_json::to_value(TypeHierarchyPrepareParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: url_to_uri(uri)?,
+                },
+                position,
+            },
+            work_done_progress_params: Default::default(),
+        })?;
+
+        let result = self
+            .send_request("textDocument/prepareTypeHierarchy", params)
+            .await?;
+
+        if result.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let items: Vec<TypeHierarchyItem> = serde_json::from_value(result)?;
+        Ok(items)
+    }
+
+    pub async fn supertypes(
+        &self,
+        item: TypeHierarchyItem,
+    ) -> Result<Vec<TypeHierarchyItem>, LspError> {
+        let params = serde_json::to_value(TypeHierarchySupertypesParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let result = self
+            .send_request("typeHierarchy/supertypes", params)
+            .await?;
+
+        if result.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let items: Vec<TypeHierarchyItem> = serde_json::from_value(result)?;
+        Ok(items)
+    }
+
+    pub async fn subtypes(
+        &self,
+        item: TypeHierarchyItem,
+    ) -> Result<Vec<TypeHierarchyItem>, LspError> {
+        let params = serde_json::to_value(TypeHierarchySubtypesParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })?;
+
+        let result = self
+            .send_request("typeHierarchy/subtypes", params)
+            .await?;
+
+        if result.is_null() {
+            return Ok(Vec::new());
+        }
+
+        let items: Vec<TypeHierarchyItem> = serde_json::from_value(result)?;
+        Ok(items)
     }
 
     pub async fn code_actions(

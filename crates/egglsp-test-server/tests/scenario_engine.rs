@@ -263,3 +263,139 @@ async fn grouped_frames_action_writes_multiple_frames() {
         "transcript should record the grouped frame action"
     );
 }
+
+#[tokio::test]
+async fn captured_id_lookup() {
+    let scenario = serde_json::json!({
+        "name": "captured-id-lookup",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "id": {"type": "Number"},
+                "capture_id_as": "init_id",
+                "then": [
+                    {"type": "RespondResult", "result": {"capabilities": {}}}
+                ]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/hover",
+                "capture_id_as": "hover_id",
+                "then": [
+                    {"type": "SendCapturedResult", "captured_id": "hover_id", "result": {
+                        "contents": {"kind": "markdown", "value": "**fn** captured()"}
+                    }}
+                ]
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    });
+
+    let (mut child, mut stdin, mut stdout, transcript_path) = spawn_server(&scenario).await;
+
+    write_frame(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let init_resp = read_frame(&mut stdout)
+        .await
+        .expect("missing initialize response");
+    assert_eq!(init_resp["id"], 1);
+    assert!(init_resp.get("result").is_some(), "expected initialize result");
+
+    write_frame(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    )
+    .await;
+
+    write_frame(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/hover",
+            "params": {"textDocument": {"uri": "file:///test.rs"}, "position": {"line": 0, "character": 0}}
+        }),
+    )
+    .await;
+
+    let hover_resp = read_frame(&mut stdout)
+        .await
+        .expect("missing hover response via SendCapturedResult");
+    assert_eq!(hover_resp["id"], 2, "hover response should carry the captured hover_id");
+    assert_eq!(
+        hover_resp["result"]["contents"]["value"],
+        "**fn** captured()",
+        "hover result content should match"
+    );
+
+    let status = wait_for_exit(&mut child).await;
+    assert!(status.success(), "captured-id-lookup scenario should exit cleanly");
+
+    let transcript = std::fs::read_to_string(&transcript_path).expect("failed to read transcript");
+    assert!(
+        transcript.contains("captured id init_id"),
+        "transcript should record the init_id capture"
+    );
+    assert!(
+        transcript.contains("captured id hover_id"),
+        "transcript should record the hover_id capture"
+    );
+    assert!(
+        transcript.contains("SendCapturedResult"),
+        "transcript should record SendCapturedResult action"
+    );
+}
+
+#[tokio::test]
+async fn unknown_captured_name_failure() {
+    let scenario = serde_json::json!({
+        "name": "unknown-captured-name",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "SendCapturedResult", "captured_id": "nonexistent", "result": {"error": true}}
+                ]
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    });
+
+    let (mut child, mut stdin, _stdout, _transcript_path) = spawn_server(&scenario).await;
+
+    write_frame(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let status = wait_for_exit(&mut child).await;
+    assert!(
+        !status.success(),
+        "unknown captured name should cause a panic/nonzero exit"
+    );
+}

@@ -2,14 +2,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use egglsp::lsp_types::{
-    CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
-    CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
     CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionTriggerKind, CompletionItem,
     CompletionTriggerKind, Diagnostic, DiagnosticSeverity, DocumentFormattingParams,
     DocumentSymbol, FormattingOptions, GotoDefinitionResponse, HoverContents, Position, Range,
-    RenameParams, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, TypeHierarchyItem,
-    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams,
-    WorkspaceEdit,
+    RenameParams, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, WorkspaceEdit,
 };
 use egglsp::{
     ClientTransportSnapshot, LspClientOptions, LspDiagnosticFreshness, LspDiagnosticSource,
@@ -921,6 +917,7 @@ pub fn harness_marker() {
     let rename_value = send_typed_request(&harness, "textDocument/rename", rename_params).await;
     let rename_edit: WorkspaceEdit =
         serde_json::from_value(rename_value).expect("rename should parse as workspace edit");
+    #[allow(clippy::mutable_key_type)]
     let rename_changes = rename_edit.changes.expect("rename should use changes");
     assert_eq!(rename_changes.len(), 1);
 
@@ -1279,20 +1276,14 @@ async fn hierarchy_context_requests_round_trip_through_real_client() {
     let harness = start_harness(scenario, serde_json::json!({})).await;
     let uri = file_uri(&harness.source_path);
 
-    let prepare_result = send_typed_request(
+    let prepared = expect_ok(
         &harness,
-        "textDocument/prepareCallHierarchy",
-        CallHierarchyPrepareParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: lsp_uri(&uri) },
-                position: Position::new(3, 7),
-            },
-            work_done_progress_params: Default::default(),
-        },
+        harness
+            .client
+            .prepare_call_hierarchy(&uri, Position::new(3, 7))
+            .await,
     )
     .await;
-    let prepared: Vec<CallHierarchyItem> =
-        serde_json::from_value(prepare_result).expect("prepare should parse as items");
     assert_eq!(prepared.len(), 1);
     assert_eq!(prepared[0].name, "call_root");
 
@@ -1300,20 +1291,10 @@ async fn hierarchy_context_requests_round_trip_through_real_client() {
         &harness,
         harness
             .client
-            .send_request(
-                "callHierarchy/incomingCalls",
-                serde_json::to_value(CallHierarchyIncomingCallsParams {
-                    item: prepared[0].clone(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                })
-                .expect("serialize incoming call params"),
-            )
+            .incoming_calls(prepared[0].clone())
             .await,
     )
     .await;
-    let incoming: Vec<CallHierarchyIncomingCall> =
-        serde_json::from_value(incoming).expect("incoming calls should parse");
     assert_eq!(incoming.len(), 1);
     assert_eq!(incoming[0].from.name, "call_root");
 
@@ -1321,37 +1302,21 @@ async fn hierarchy_context_requests_round_trip_through_real_client() {
         &harness,
         harness
             .client
-            .send_request(
-                "callHierarchy/outgoingCalls",
-                serde_json::to_value(CallHierarchyOutgoingCallsParams {
-                    item: prepared[0].clone(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                })
-                .expect("serialize outgoing call params"),
-            )
+            .outgoing_calls(prepared[0].clone())
             .await,
     )
     .await;
-    let outgoing: Vec<CallHierarchyOutgoingCall> =
-        serde_json::from_value(outgoing).expect("outgoing calls should parse");
     assert_eq!(outgoing.len(), 1);
     assert_eq!(outgoing[0].to.name, "callee");
 
-    let types = send_typed_request(
+    let prepared_types = expect_ok(
         &harness,
-        "textDocument/prepareTypeHierarchy",
-        TypeHierarchyPrepareParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri: lsp_uri(&uri) },
-                position: Position::new(3, 7),
-            },
-            work_done_progress_params: Default::default(),
-        },
+        harness
+            .client
+            .prepare_type_hierarchy(&uri, Position::new(3, 7))
+            .await,
     )
     .await;
-    let prepared_types: Vec<TypeHierarchyItem> =
-        serde_json::from_value(types).expect("type hierarchy prepare should parse");
     assert_eq!(prepared_types.len(), 1);
     assert_eq!(prepared_types[0].name, "TypeRoot");
 
@@ -1359,20 +1324,10 @@ async fn hierarchy_context_requests_round_trip_through_real_client() {
         &harness,
         harness
             .client
-            .send_request(
-                "typeHierarchy/supertypes",
-                serde_json::to_value(TypeHierarchySupertypesParams {
-                    item: prepared_types[0].clone(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                })
-                .expect("serialize supertype params"),
-            )
+            .supertypes(prepared_types[0].clone())
             .await,
     )
     .await;
-    let supertypes: Vec<TypeHierarchyItem> =
-        serde_json::from_value(supertypes).expect("supertypes should parse");
     assert_eq!(supertypes.len(), 1);
     assert_eq!(supertypes[0].name, "BaseType");
 
@@ -1380,20 +1335,10 @@ async fn hierarchy_context_requests_round_trip_through_real_client() {
         &harness,
         harness
             .client
-            .send_request(
-                "typeHierarchy/subtypes",
-                serde_json::to_value(TypeHierarchySubtypesParams {
-                    item: prepared_types[0].clone(),
-                    work_done_progress_params: Default::default(),
-                    partial_result_params: Default::default(),
-                })
-                .expect("serialize subtype params"),
-            )
+            .subtypes(prepared_types[0].clone())
             .await,
     )
     .await;
-    let subtypes: Vec<TypeHierarchyItem> =
-        serde_json::from_value(subtypes).expect("subtypes should parse");
     assert_eq!(subtypes.len(), 2);
     assert_eq!(subtypes[0].name, "ChildOne");
     assert_eq!(subtypes[1].name, "ChildTwo");
