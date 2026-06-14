@@ -6,7 +6,7 @@ A lightweight, pure-Rust implementation of an AI coding agent.
 
 - **Pure Rust** - No runtime dependencies, fast compilation and execution
 - **Multiple Providers** - Use Anthropic, OpenAI, Google, Azure, Bedrock, and more
-- **LSP Support** - Built-in bidirectional Language Server Protocol support with server-request handling, timeout cancellation with transport-failure propagation, explicit leader/waiter initialization with shared completion fan-out, lifecycle-validated publication, quiescent shutdown with deadline-bounded (6s) cooperative cancellation and authoritative task-completion finalization (wrapper-owned oneshot completion receivers, start-registration barrier, and explicit wrapper cleanup with `ActiveTaskGuard` fallback), and code intelligence including semantic context packets and preview-only semantic checks
+- **LSP Support** - Built-in bidirectional Language Server Protocol support with server-request handling, timeout cancellation with transport-failure propagation, explicit leader/waiter initialization with shared completion fan-out, lifecycle-validated publication, quiescent shutdown with deadline-bounded (6s) cooperative cancellation and authoritative task-completion finalization (wrapper-owned oneshot completion receivers, start-registration barrier, and explicit wrapper cleanup with `ActiveTaskGuard` fallback), and code intelligence including semantic context packets and preview-only semantic checks. Phase 2 scripted stdio integration testing with deterministic fake LSP server.
 - **Plugin System** - WASM-based plugin extensibility
 - **TUI Interface** - Terminal user interface with syntax highlighting
 - **Server Mode** - Headless HTTP server for remote access
@@ -826,7 +826,8 @@ crates/
 ├── eggsentry/          # Security scanning (secrets, commands, deps, profiles)
 ├── eggcontext/         # Token counting and context utilities
 ├── egggit/             # Read-only git facts (status, diff, changed files)
-└── egglsp/             # Language Server Protocol client/service/operations
+├── egglsp/             # Language Server Protocol client/service/operations
+└── egglsp-test-server/ # Deterministic fake LSP server for protocol testing
 ```
 
 ## Security

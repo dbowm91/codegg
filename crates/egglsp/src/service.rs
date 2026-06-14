@@ -2349,22 +2349,18 @@ mod tests {
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
     }
 
-    /// Test: cancellation-uncooperative task is forcibly aborted.
-    /// The wrapper task's drop guard fires when the future is
-    /// dropped (via abort), removing the active-task entry.
+    /// Test: cooperative cancellation drops the factory future.
+    /// The factory uses `release.notified().await` which IS
+    /// cancellation-safe (dropping the future unsubscribes from
+    /// the notification), so this exercises the cooperative path.
+    /// We use the `FutureExitProbe` to assert that the future body
+    /// is actually dropped before shutdown returns.
     #[tokio::test]
-    async fn shutdown_aborts_uncooperative_task() {
-        // A factory that ignores cooperative cancellation and blocks
-        // until external release. This is the "uncooperative" path:
-        // the inner init task does not participate in cancellation,
-        // so shutdown must abort it and await the join.
-        //
-        // `Notify::notified().await` is cancellation-safe (dropping
-        // the future unsubscribes from the notification), so this
-        // is technically cancellation-aware. We use the
-        // `FutureExitProbe` to assert that the future body is
-        // actually dropped before shutdown returns — which is the
-        // property we care about.
+    async fn cooperative_cancellation_drops_factory_future() {
+        // A factory that blocks on `release.notified().await`,
+        // which is cancellation-safe. Shutdown signals the
+        // cancellation token, the `select!` resolves, and the
+        // factory future is dropped cooperatively.
         fn uncooperative_factory(
             counter: std::sync::Arc<AtomicUsize>,
             release: std::sync::Arc<Notify>,
@@ -2407,7 +2403,7 @@ mod tests {
         .await
         .expect("factory should enter");
 
-        // Shutdown should forcibly abort the uncooperative task.
+        // Shutdown cooperatively cancels the factory task.
         svc.shutdown_all().await;
 
         // The caller should get cancellation.
@@ -2421,9 +2417,6 @@ mod tests {
             1,
             "factory future must be dropped before shutdown returns"
         );
-
-        // Release so the aborted task can clean up.
-        release.notify_waiters();
 
         assert!(svc.clients.read().await.is_empty());
         assert!(svc.initializing.lock().await.is_empty());
@@ -2468,7 +2461,7 @@ mod tests {
         let second = tokio::spawn(async move { svc2.shutdown_all().await });
 
         // Give second caller a moment to observe ShuttingDown.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
 
         // Release the first shutdown.
         shutdown_gate.release.notify_waiters();
@@ -2682,11 +2675,13 @@ mod tests {
         );
     }
 
-    /// Test: forced abort is awaited — the task body actually exits
-    /// before shutdown returns.
+    /// Test: cooperative shutdown resolves waiters — the task body
+    /// exits cooperatively and the future is dropped before shutdown
+    /// returns.
     #[tokio::test]
-    async fn forced_abort_is_awaited() {
-        // Uncooperative factory: block forever until release.
+    async fn cooperative_shutdown_resolves_waiters() {
+        // Factory that blocks on `release.notified().await`,
+        // which is cancellation-safe.
         fn uncooperative_factory(
             counter: std::sync::Arc<AtomicUsize>,
             release: std::sync::Arc<Notify>,
@@ -2740,8 +2735,8 @@ mod tests {
         .await
         .expect("factory should enter");
 
-        // Shutdown should forcibly abort the uncooperative task and
-        // await its completion.
+        // Shutdown cooperatively cancels the factory task and
+        // awaits its completion.
         svc.shutdown_all().await;
 
         // Phase 7: the factory future body must have been dropped
@@ -2751,11 +2746,6 @@ mod tests {
             1,
             "factory future must be dropped before shutdown returns"
         );
-
-        // After shutdown returns, the task body should have been
-        // aborted. Release the factory's blocking await so the
-        // factory future can complete.
-        release.notify_waiters();
 
         let result = await_join(handle).await;
         expect_init_cancelled(result).await;
@@ -2779,7 +2769,7 @@ mod tests {
         // Second caller (joins in flight, after the first has
         // transitioned). The second caller should observe Stopped
         // promptly.
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
         let svc2 = svc.clone();
         let second = tokio::spawn(async move { svc2.shutdown_all().await });
 
@@ -2797,8 +2787,10 @@ mod tests {
     }
 
     /// Test: forced-finalization on deadline expiry.
-    /// Inject a task that does not complete within the cancellation
-    /// grace; verify shutdown still reaches Stopped and drains state.
+    /// This exercises the REAL forced-abort path: the factory uses
+    /// `std::future::pending()` which cannot be cancelled cooperatively,
+    /// so shutdown must wait for the grace period, then forcibly abort
+    /// via `AbortHandle`, and force-finalize state.
     #[tokio::test]
     async fn global_deadline_finalizes_state() {
         // Factory that blocks forever, ignoring cancellation.
@@ -3167,9 +3159,11 @@ mod tests {
         assert!(svc.active_init_tasks.lock().await.is_empty());
     }
 
-    /// Test: global deadline fallback semantics. The stuck
-    /// factory is forcibly aborted, the abort signal is
-    /// observed, all maps are drained, and the lifecycle is
+    /// Test: global deadline fallback semantics. This exercises
+    /// the real forced-abort path: the factory uses `std::future::pending()`
+    /// (genuinely uncooperative), so shutdown must wait for the grace
+    /// period, then forcibly abort via `AbortHandle`. The abort signal
+    /// is observed, all maps are drained, and the lifecycle is
     /// Stopped — all within the global deadline.
     #[tokio::test]
     async fn global_deadline_fallback_asserts_all_signals() {
@@ -3197,7 +3191,7 @@ mod tests {
         });
 
         // Give the task a moment to spawn and enter.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
 
         // Shutdown will hit the grace deadline, abort the
         // stuck task, await the abort completion, and
@@ -3220,6 +3214,138 @@ mod tests {
 
         let result = await_join(handle).await;
         expect_init_cancelled(result).await;
+    }
+
+    /// Test: aggregate grace across multiple independent tasks. Verify
+    /// that the grace period in `await_init_task_completions` is
+    /// applied once across all in-flight tasks (aggregate), not
+    /// per-task. Uses N independent roots to avoid single-flight
+    /// deduplication so N real init tasks are spawned.
+    #[tokio::test]
+    async fn aggregate_grace_across_independent_tasks() {
+        let (entered_tx, mut entered_rx) = watch::channel(false);
+        let release = Notify::new();
+        let state = std::sync::Arc::new(BlockingFactoryState::new_standard(
+            AtomicUsize::new(0),
+            entered_tx,
+            release,
+            FactoryOutcome::Success,
+            std::sync::Arc::new(AtomicUsize::new(0)),
+        ));
+        let svc = std::sync::Arc::new(LspService::test_new(
+            LspConfig::Disabled(false),
+            blocking_factory(state.clone()),
+        ));
+
+        // Create temporary directories so test_stub's cwd lookup succeeds.
+        let n = 8;
+        let mut roots = Vec::new();
+        for i in 0..n {
+            let dir = PathBuf::from(format!("/tmp/root_{}/src", i));
+            std::fs::create_dir_all(&dir).unwrap();
+            roots.push(dir);
+        }
+
+        // Launch N independent tasks with different file paths.
+        // Different roots produce different keys, so single-flight
+        // does not deduplicate them.
+        let mut handles = Vec::new();
+        for root in &roots {
+            let svc = svc.clone();
+            let file = root.join("lib.rs");
+            handles.push(tokio::spawn(async move {
+                svc.get_or_create_client(&file).await
+            }));
+        }
+
+        // Wait for all N factories to be entered.
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            while state.invocations.load(Ordering::SeqCst) < n {
+                entered_rx.changed().await.ok();
+            }
+        })
+        .await;
+        assert_eq!(
+            state.invocations.load(Ordering::SeqCst),
+            n,
+            "all factories should have been entered"
+        );
+        assert_eq!(
+            svc.active_init_tasks.lock().await.len(),
+            n,
+            "all init tasks should be tracked"
+        );
+
+        // Time the shutdown. The aggregate grace period is 300ms
+        // applied once across all tasks, not N × 300ms.
+        let start = std::time::Instant::now();
+        svc.shutdown_all().await;
+        let elapsed = start.elapsed();
+
+        // Should be ~300ms (one grace), not ~2400ms (8 × 300ms).
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "shutdown took {elapsed:?}, expected < 2s for aggregate grace"
+        );
+
+        // All tasks should be cancelled.
+        for handle in handles {
+            let result = await_join(handle).await;
+            expect_init_cancelled(result).await;
+        }
+        assert!(svc.active_init_tasks.lock().await.is_empty());
+    }
+
+    /// Test: deadline fallback with unresolvable completion receivers.
+    /// Directly exercises `await_init_task_completions` with receivers
+    /// whose senders are intentionally retained (never dropped, never
+    /// sent to), verifying that the deadline fires and returns them as
+    /// still-pending.
+    #[tokio::test]
+    async fn deadline_fallback_with_unresolvable_completion() {
+        let (tx1, rx1) = tokio::sync::oneshot::channel::<InitTaskExit>();
+        let (tx2, rx2) = tokio::sync::oneshot::channel::<InitTaskExit>();
+
+        // Retain senders — they will never be dropped or sent to.
+        let _tx1 = tx1;
+        let _tx2 = tx2;
+
+        // Create dummy abort handles from real tasks.
+        let handle1 = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let handle2 = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let abort1 = handle1.abort_handle();
+        let abort2 = handle2.abort_handle();
+
+        let tasks = vec![
+            InitTaskControl {
+                attempt_id: 1,
+                cancellation: CancellationToken::new(),
+                abort_handle: abort1,
+                completion: rx1,
+            },
+            InitTaskControl {
+                attempt_id: 2,
+                cancellation: CancellationToken::new(),
+                abort_handle: abort2,
+                completion: rx2,
+            },
+        ];
+
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let still_pending = await_init_task_completions(tasks, deadline).await;
+
+        // Both should be returned as still_pending.
+        assert_eq!(still_pending.len(), 2);
+
+        // Clean up the dummy tasks.
+        handle1.abort();
+        handle2.abort();
+        let _ = handle1.await;
+        let _ = handle2.await;
     }
 
     // ── Helpers for the new tests ──

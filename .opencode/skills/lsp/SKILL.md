@@ -945,6 +945,8 @@ regardless of client count. A second caller observing `ShuttingDown` awaits the 
 completion signal via the watch channel rather than racing independently. New client
 acquisition is rejected when the lifecycle is not `Running`.
 
+The quiescence tests now accurately distinguish cooperative cancellation paths (`cooperative_cancellation_drops_factory_future`, `cooperative_shutdown_resolves_waiters`) from forced-abort fallback paths, verifying that the `FutureExitProbe` RAII guard confirms the factory future body was actually dropped before shutdown returns.
+
 Each spawned init task is wrapped in `run_init_task_wrapper`, which awaits a
 start-registration barrier before doing any work. The barrier is a one-shot oneshot: the
 leader registration code sends on `start_tx` only after the `active_init_tasks` entry has
@@ -1018,11 +1020,11 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 - `shared_failure_is_identical_for_all_callers` — every waiter sees the same `SharedInitError`
 - `concurrent_shutdown_callers` — two `shutdown_all()` calls both observe the final `Stopped` state
 - `publication_race_remains_safe` — an init task that finishes after `ShuttingDown` does not publish a stale client
-- `shutdown_aborts_uncooperative_task` — hard abort works after the grace period; the `FutureExitProbe` RAII guard asserts the factory future body was actually dropped before shutdown returned
+- `cooperative_cancellation_drops_factory_future` — cooperative cancellation works via `CancellationToken`; the factory future body is dropped before shutdown returns
 - `shutdown_cancels_blocked_factory` — cooperative cancellation works via `CancellationToken`
 - `normal_completion_removes_active_task_entry` — explicit cleanup path: the wrapper removes the `active_init_tasks` entry without requiring shutdown
 - `ordinary_failure_removes_active_task_entry` — same, for ordinary initialization failures
-- `forced_abort_is_awaited` — the aborted task's completion receiver is awaited; the task body actually exits before shutdown returns; the `FutureExitProbe` proves the factory future was dropped
+- `cooperative_shutdown_resolves_waiters` — the aborted task's completion receiver is awaited; the task body actually exits before shutdown returns; the `FutureExitProbe` proves the factory future was dropped
 - `concurrent_shutdown_lost_wakeup_boundary` — late subscribers to the watch channel do not miss the `ShuttingDown → Stopped` transition
 - `global_deadline_finalizes_state` — a task that does not complete within the global deadline is still drained; lifecycle reaches `Stopped` and all maps are empty
 - `fast_completion_cannot_beat_registration` — the start-registration barrier prevents a fast-completing task from racing past the `active_init_tasks` insertion; run repeatedly in a bounded loop
@@ -1031,6 +1033,40 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 - `no_stale_active_entries_under_contention` — concurrent fast success attempts leave `active_init_tasks` empty without requiring shutdown
 - `lock_order_no_deadlock_under_overlap` — concurrent registration and shutdown overlap via test gates; neither path deadlocks
 - `global_deadline_fallback_asserts_all_signals` — a stuck factory is forcibly aborted, all maps are drained, and the lifecycle is `Stopped` — all within the global deadline
+- `aggregate_grace_across_independent_tasks` — the aggregate grace wait in `await_init_task_completions` is applied across independent in-flight tasks; total shutdown time is bounded by one grace period regardless of task count
+- `deadline_fallback_with_unresolvable_completion` — when a completion receiver never resolves, the global deadline forces finalization; lifecycle reaches `Stopped` and all maps are empty
+
+## Phase 2: Scripted Stdio Integration Tests
+
+The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing through real child-process stdio.
+
+### Test Infrastructure
+
+- **Fake server binary**: `crates/egglsp-test-server/` — reads Content-Length framed JSON-RPC, executes scripted scenarios
+- **Scenario format**: JSON files with step types (ExpectRequest, ExpectNotification, SendNotification, Delay, ExitNow)
+- **Transcript**: Machine-readable JSONL output for failure diagnostics
+- **Harness**: `tests/common/harness.rs` — temp directories, scenario management, binary discovery
+
+### Core Protocol Tests (`tests/protocol_stdio.rs`)
+
+| Test | Coverage |
+|------|----------|
+| `initialization_handshake` | Full init/initialized/shutdown/exit lifecycle |
+| `server_request_during_init` | workspace/configuration during initialization |
+| `apply_edit_refusal` | workspace/applyEdit rejection |
+| `notifications_interleaved` | Notifications mixed with server requests |
+| `concurrent_out_of_order_responses` | Multiple requests, reversed responses |
+| `graceful_shutdown` | Clean shutdown/exit sequence |
+| `server_exit_before_response` | Server exits without responding |
+| `server_error_response` | JSON-RPC error handling |
+| `framing_various_sizes` | Content-Length framing edge cases |
+| `progress_notification` | $/progress notifications |
+
+### Running
+
+```bash
+cargo test -p egglsp --test protocol_stdio -- --test-threads=1
+```
 
 ## See Also
 

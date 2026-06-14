@@ -1145,6 +1145,16 @@ The tracked initialization and quiescent shutdown features are covered by target
 | `no_stale_active_entries_under_contention` | Concurrent fast success attempts (single-flight) leave `active_init_tasks` empty without requiring shutdown. |
 | `lock_order_no_deadlock_under_overlap` | Concurrent registration and shutdown overlap via test gates; neither path deadlocks and both complete within bounded time. |
 | `global_deadline_fallback_asserts_all_signals` | A stuck factory is forcibly aborted, the abort signal is observed, all maps are drained, and the lifecycle is `Stopped` — all within the global deadline. |
+| Phase 2: initialization handshake | `protocol_stdio::initialization_handshake` | Real stdio init/initialized/shutdown/exit through fake server |
+| Phase 2: server request during init | `protocol_stdio::server_request_during_init` | workspace/configuration interleaved with initialize |
+| Phase 2: apply-edit refusal | `protocol_stdio::apply_edit_refusal` | workspace/applyEdit rejected with applied:false |
+| Phase 2: notifications interleaved | `protocol_stdio::notifications_interleaved` | Notifications mixed with server requests |
+| Phase 2: concurrent responses | `protocol_stdio::concurrent_out_of_order_responses` | Multiple requests, out-of-order responses |
+| Phase 2: graceful shutdown | `protocol_stdio::graceful_shutdown` | Clean shutdown/exit sequence |
+| Phase 2: server exit | `protocol_stdio::server_exit_before_response` | Server exits without responding |
+| Phase 2: error response | `protocol_stdio::server_error_response` | JSON-RPC error response handling |
+| Phase 2: framing sizes | `protocol_stdio::framing_various_sizes` | Content-Length framing edge cases |
+| Phase 2: progress notifications | `protocol_stdio::progress_notification` | $/progress notifications |
 
 The `FutureExitProbe` test-only RAII guard (`src/lsp/../service.rs`) is constructed at the top of test factory futures to prove that the future body was actually dropped. It is robust to all three exit paths (normal return, cooperative cancellation, forced abort) and is used by `shutdown_aborts_uncooperative_task`, `cooperative_cancellation_is_observed`, and `forced_abort_is_awaited`.
 
@@ -1211,6 +1221,50 @@ A cloneable error type used for concurrent initialization waiters. `SharedInitEr
 - **Position conversion**: `to_lsp_position()` converts 1-indexed model input to 0-indexed LSP positions exactly once at the wrapper boundary
 - **Client routing**: `workspaceSymbol` resolves client via `get_or_create_client_for_file` or `get_or_create_client_for_root_hint`, not arbitrary first-key selection
 - **Doctor subsystem**: `codegg doctor --subsystem lsp` provides non-mutating LSP diagnostics
+
+## Phase 2: Scripted Stdio Integration Testing
+
+The `egglsp-test-server` crate provides a deterministic fake LSP server for end-to-end protocol testing. It reads Content-Length framed JSON-RPC from stdin, executes scripted scenarios, and writes machine-readable transcripts.
+
+### Architecture
+
+```
+Integration test
+    |
+    | creates Scenario JSON file
+    v
+LspWriter / frame reader
+    |
+    | launches child process through spawn_server
+    v
+egglsp-test-server binary
+    |
+    | reads scenario, exchanges real framed messages
+    v
+transcript + assertions
+```
+
+### Scenario Format
+
+Scenarios are JSON files with steps like `ExpectRequest`, `ExpectNotification`, `SendNotification`, `Delay`, and `ExitNow`. Each step can trigger actions like `RespondResult`, `RespondError`, or `SendRequest`.
+
+### Binary Discovery
+
+The test binary is located via workspace `target/` directory search. The `EGGLSP_TEST_SERVER` env var can override the path for CI.
+
+### Test Organization
+
+- `tests/protocol_stdio.rs` — Core protocol scenarios (init, shutdown, cancellation, malformed input)
+- `tests/semantic_stdio.rs` — Feature-level scenarios (placeholder for continuation)
+- `tests/common/harness.rs` — Reusable test harness with temp directory and scenario management
+
+### Running
+
+```bash
+cargo test -p egglsp --test protocol_stdio -- --test-threads=1
+```
+
+Tests require `--test-threads=1` because they share the fake server binary path resolution.
 
 ## See Also
 

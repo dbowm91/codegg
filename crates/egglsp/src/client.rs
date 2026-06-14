@@ -1077,6 +1077,20 @@ impl LspClient {
     ) -> Result<serde_json::Value, LspError> {
         self.pending.lock().await.remove(&id);
 
+        // If the transport is already failed, skip the write (it would
+        // certainly fail) and drain any remaining pending requests.
+        if let ClientTransportState::Failed { ref reason } =
+            *self.transport_state.lock().await
+        {
+            let reason = reason.clone();
+            fail_all_pending(&self.pending, &reason).await;
+            return Err(LspError::RequestTimeout(format!(
+                "LSP request '{}' timed out after {:?}",
+                method,
+                Self::REQUEST_TIMEOUT
+            )));
+        }
+
         let cancel_params = serde_json::json!({ "id": id });
         if let Err(e) = self
             .writer
@@ -2584,6 +2598,15 @@ mod tests {
         pending.lock().await.insert(timeout_id.clone(), timeout_tx);
         pending.lock().await.insert(other_id, other_tx);
         client.pending = pending.clone();
+
+        // Deterministically set transport to Failed instead of relying on
+        // OS pipe-buffer behaviour after child termination (which is flaky).
+        {
+            let mut ts = client.transport_state.lock().await;
+            *ts = ClientTransportState::Failed {
+                reason: "test-induced transport failure".to_string(),
+            };
+        }
 
         let result = client
             .handle_request_timeout("test/method", timeout_id)
