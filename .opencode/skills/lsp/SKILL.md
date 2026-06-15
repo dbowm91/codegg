@@ -1040,7 +1040,7 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 
 ## Phase 2: Scripted Stdio Integration Tests
 
-The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is built as a `[[bin]]` target from the `egglsp` package; root tests use `codegg-lsp-test-server` (via `CARGO_BIN_EXE_codegg-lsp-test-server`), while `egglsp`-only tests use `egglsp-test-server` (via `CARGO_BIN_EXE_egglsp-test-server`), with `EGGLSP_TEST_SERVER` as an override for CI or manual runs.
+The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is built as a `[[bin]]` target from the `egglsp` package; root tests use `codegg-lsp-test-server` (via `CARGO_BIN_EXE_codegg-lsp-test-server`), while `egglsp`-only tests use `egglsp-test-server` (via `CARGO_BIN_EXE_egglsp-test-server`), with `EGGLSP_TEST_SERVER` as an override for CI or manual runs. The scenario engine lives in `egglsp::test_support` module; both binary wrappers are thin `main()` functions.
 
 Phase 2 is complete. The production-harness integration tests cover 11 protocol tests, 3 semantic tests, and 5 service tests through real stdio transport, plus 24 root-crate composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path) also contribute coverage. Tests live in `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, `tests/production_service_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
 
@@ -1048,7 +1048,7 @@ The fake server supports **captured-ID mode** for genuinely out-of-order concurr
 
 ### Test Infrastructure
 
-- **Fake server binary**: `crates/egglsp-test-server/src/main.rs` (built as `egglsp-test-server` for `egglsp` tests and `codegg-lsp-test-server` for root tests) — reads Content-Length framed JSON-RPC, executes scripted scenarios
+- **Fake server binary**: `crates/egglsp-test-server/src/main.rs` (thin wrapper calling `egglsp::test_support::run_or_exit()`; built as `egglsp-test-server` for `egglsp` tests and `codegg-lsp-test-server` for root tests) — reads Content-Length framed JSON-RPC, executes scripted scenarios
 - **Production harness**: `tests/common/production_harness.rs` — launches the same binary against a minimal real-project root for launcher-path coverage
 - **Scenario format**: JSON files with step types (ExpectRequest, ExpectNotification, AllowRequest, AllowNotification, SendNotification, Delay, ExitNow)
 - **Transcript**: Machine-readable JSONL output for failure diagnostics

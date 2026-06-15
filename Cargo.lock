@@ -1006,7 +1006,6 @@ dependencies = [
  "eggcontext",
  "egggit",
  "egglsp",
- "egglsp-test-server-support",
  "eggsentry",
  "flate2",
  "futures",
@@ -1849,16 +1848,6 @@ dependencies = [
  "walkdir",
  "xz2",
  "zip",
-]
-
-[[package]]
-name = "egglsp-test-server-support"
-version = "0.1.0"
-dependencies = [
- "base64",
- "libc",
- "serde",
- "serde_json",
 ]
 
 [[package]]

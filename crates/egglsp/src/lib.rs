@@ -70,3 +70,5 @@ pub use lsp_types;
 pub use overlay::{
     OverlayRestoreToken, OverlaySession, SemanticCheckPreview, SemanticSymbolSummary,
 };
+
+pub mod test_support;
