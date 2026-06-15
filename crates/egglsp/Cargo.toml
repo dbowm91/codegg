@@ -8,7 +8,7 @@ rust-version = "1.81"
 
 [[bin]]
 name = "egglsp-test-server"
-path = "../egglsp-test-server/src/main.rs"
+path = "src/bin/egglsp-test-server.rs"
 required-features = ["lsp-test-support"]
 
 [features]

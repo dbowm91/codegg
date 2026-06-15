@@ -437,9 +437,24 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[test]
     fn normalize_request_rejects_traversal() {
-        let (_temp, root, _file) = make_real_path_fixture();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        let file = root.join("src/lib.rs");
+        let other = temp.path().join("project-other").join("file.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, "fn other() {}\n").unwrap();
         let result = normalize_request_relative_path(Path::new("../project-other/file.rs"), &root);
-        assert!(result.is_err());
+        assert!(
+            result.is_err(),
+            "traversal to existing sibling should be rejected"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("outside allowed root"),
+            "should indicate containment failure: {err}"
+        );
     }
 
     #[test]
@@ -629,8 +644,10 @@ diff --git a/src/main.rs b/src/main.rs
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("project");
         let file = root.join("src/lib.rs");
+        let outside = temp.path().join("outside.rs");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "fn main() {}\n").unwrap();
+        std::fs::write(&outside, "fn outside() {}\n").unwrap();
 
         let service = Arc::new(LspService::new(LspConfig::default()));
         let operations = Arc::new(LspOperations::new(service.clone()));
@@ -641,7 +658,7 @@ diff --git a/src/main.rs b/src/main.rs
         let collector = HunkSourceNavigationCollector::new(sem_collector, nav);
 
         let request = HunkSourceNavigationRequest {
-            file_path: "/etc/passwd".to_string(),
+            file_path: outside.to_string_lossy().to_string(),
             hunks: vec![],
             patch: Some("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n".to_string()),
             intent: "navigation".to_string(),
@@ -659,8 +676,8 @@ diff --git a/src/main.rs b/src/main.rs
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("invalid file path") || err.contains("outside"),
-            "expected path rejection error: {err}"
+            err.contains("outside allowed root") || err.contains("invalid file path"),
+            "should indicate outside-root containment: {err}"
         );
     }
 }

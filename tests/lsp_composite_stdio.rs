@@ -2358,12 +2358,6 @@ async fn security_context_tool_enforces_call_node_limit_and_truncation() {
 
     let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
 
-    // Debug: print the call expansion section
-    eprintln!(
-        "CALL_EXPANSION: {}",
-        serde_json::to_string_pretty(&parsed["results"]["call_expansion"]).unwrap_or_default()
-    );
-
     // Risk markers must be present
     let markers = parsed["results"]["risk_markers"]
         .as_array()
@@ -2413,6 +2407,144 @@ async fn security_context_tool_enforces_call_node_limit_and_truncation() {
     assert_eq!(
         parsed["results"]["limits"]["call_expansion_truncated"], true,
         "limits.call_expansion_truncated must be true"
+    );
+
+    service.shutdown_all().await;
+}
+
+/// Phase 4: independent call-depth enforcement test.
+///
+/// Uses a linear chain entry→level1→level2→level3 with call_depth=2
+/// and a generous max_call_nodes=16, so only depth can stop traversal.
+/// The BFS should:
+/// - Collect entry (depth 0) as root
+/// - Expand entry → level1 (depth 0→1)
+/// - Expand level1 → level2 (depth 1→2)
+/// - Stop before expanding level2 → level3 (depth 2→3)
+#[tokio::test]
+async fn security_context_tool_enforces_call_depth_limit() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let base = manifest_dir.join("target/lsp-tests");
+    std::fs::create_dir_all(&base).expect("mkdir lsp-tests base");
+    let temp = tempfile::Builder::new()
+        .prefix("test-security-depth-limit-")
+        .tempdir_in(&base)
+        .expect("tempdir");
+    let root = temp.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+    std::fs::write(&source_path, SECURITY_CALL_GRAPH_DEPTH_SOURCE).expect("write source");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"lsp-security-depth-limit-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+
+    let scenario = substitute_placeholders(
+        scenario_security_call_graph_depth_limit(),
+        &root,
+        &root_uri,
+        &source_path,
+        &source_uri,
+        &scenario_path,
+        &transcript_path,
+    );
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&scenario).expect("scenario json"),
+    )
+    .expect("write scenario");
+
+    let service = Arc::new(LspService::new(make_service_config(
+        &scenario_path,
+        &transcript_path,
+    )));
+    let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
+
+    let result = timeout(
+        Duration::from_secs(30),
+        tool.execute(serde_json::json!({
+            "operation": "securityContext",
+            "file_path": source_path.to_str().unwrap(),
+            "line": 4,
+            "column": 5,
+            "security_preset": "unsafe_review",
+            "security_categories": ["unsafe", "process"],
+            "include_call_hierarchy": true,
+            "call_depth": 2,
+            "max_call_nodes": 16,
+            "call_direction": "outgoing"
+        })),
+    )
+    .await
+    .expect("securityContext timed out")
+    .expect("securityContext failed");
+
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
+
+    // Risk markers must be present
+    let markers = parsed["results"]["risk_markers"]
+        .as_array()
+        .expect("risk_markers should be an array");
+    assert!(!markers.is_empty(), "should have risk markers");
+
+    // Call expansion must be present
+    let expansion = parsed["results"]["call_expansion"]
+        .as_object()
+        .expect("call_expansion should be an object");
+    assert!(
+        expansion.get("root").is_some_and(|v| !v.is_null()),
+        "root should be present and non-null"
+    );
+    assert_eq!(expansion["direction"], "outgoing");
+
+    // Node count: with depth 2 we expect entry(0), level1(1), level2(2) = 3 nodes
+    let nodes = expansion["nodes"]
+        .as_array()
+        .expect("nodes should be an array");
+
+    // Root node must be retained
+    let node_names: Vec<&str> = nodes.iter().filter_map(|n| n["name"].as_str()).collect();
+    assert!(
+        node_names.contains(&"entry"),
+        "root node 'entry' must be retained, got: {node_names:?}"
+    );
+
+    // All nodes must have depth <= 2
+    for node in nodes {
+        let depth = node["depth"]
+            .as_u64()
+            .expect("node should have numeric depth");
+        assert!(
+            depth <= 2,
+            "node depth {depth} should be <= call_depth 2, node: {:?}",
+            node["name"]
+        );
+    }
+
+    // No level3 node should appear (depth 2→3 expansion must not happen)
+    let has_level3 = node_names.iter().any(|n| *n == "level3");
+    assert!(
+        !has_level3,
+        "level3 must not appear when call_depth=2, got nodes: {node_names:?}"
+    );
+
+    // The strict scenario enforces that no unexpected requests are made.
+    // If the BFS expanded level2 into level3 (depth 2→3), the fake server
+    // would receive an unexpected prepareCallHierarchy request and fail,
+    // causing the test to timeout. The fact that we reached here with a
+    // valid response proves depth limiting worked.
+    // Additionally, verify no level3 appears in the expansion output.
+    let expansion_text =
+        serde_json::to_string(&parsed["results"]["call_expansion"]).unwrap_or_default();
+    assert!(
+        !expansion_text.contains("\"level3\""),
+        "call_expansion should not contain level3 when call_depth=2, expansion: {expansion_text}"
     );
 
     service.shutdown_all().await;
@@ -2471,18 +2603,38 @@ async fn security_context_tool_filters_and_preserves_diagnostic_evidence() {
     )));
     let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
 
-    // Open the file first so diagnostics get synced
-    let _ = timeout(
-        Duration::from_secs(10),
-        tool.execute(serde_json::json!({
-            "operation": "semanticContext",
-            "file_path": source_path.to_str().unwrap(),
-            "intent": "security_review"
-        })),
-    )
-    .await;
+    // Initialize the client and open the file so the fake server sends
+    // publishDiagnostics on the initialized notification.
+    service
+        .open_file(&source_path, SECURITY_CALL_GRAPH_SOURCE)
+        .await
+        .expect("open_file should succeed");
 
-    // Now run securityContext
+    // Wait for the published diagnostics to appear in the client cache.
+    let diag_collector = DiagnosticsCollector::new(service.clone());
+    let source_uri_str = source_uri.clone();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "diagnostics never appeared for {source_uri_str} within 5s.\ntranscript:\n{}",
+                transcript_tail(&transcript_path),
+            );
+        }
+        match diag_collector.get_all_diagnostic_snapshots().await {
+            Ok(snapshots) => {
+                if let Some(snap) = snapshots.get(&source_uri_str) {
+                    if !snap.diagnostics.is_empty() {
+                        break;
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(Duration::from_millis(15)).await;
+    }
+
+    // Now run securityContext exactly once
     let result = timeout(
         Duration::from_secs(30),
         tool.execute(serde_json::json!({
@@ -2527,13 +2679,90 @@ async fn security_context_tool_filters_and_preserves_diagnostic_evidence() {
         "should contain COMMAND_INJECTION diagnostic, got: {diag_messages:?}"
     );
 
-    // Diagnostic evidence should be present
+    // Verify STYLE_ONLY diagnostic treatment:
+    // The STYLE_ONLY diagnostic (severity: info, line 9) is within the
+    // SECURITY_NEARBY_LINE_RADIUS (20 lines) of a risk marker (unsafe at line 14),
+    // so current policy INCLUDES it in security_relevant_diagnostics.
+    let style_diag = sec_diags.iter().find(|d| {
+        d.get("code")
+            .and_then(|c| c.as_str())
+            .is_some_and(|c| c == "STYLE_ONLY")
+    });
+    assert!(
+        style_diag.is_some(),
+        "STYLE_ONLY diagnostic should be present in security_relevant_diagnostics \
+         (near a risk marker within SECURITY_NEARBY_LINE_RADIUS)"
+    );
+
+    // Verify the COMMAND_INJECTION diagnostic has correct metadata
+    let cmd_inj = sec_diags.iter().find(|d| {
+        d.get("code")
+            .and_then(|c| c.as_str())
+            .is_some_and(|c| c == "COMMAND_INJECTION")
+    });
+    assert!(
+        cmd_inj.is_some(),
+        "COMMAND_INJECTION diagnostic should be present in security_relevant_diagnostics"
+    );
+    let cmd_inj = cmd_inj.unwrap();
+    assert_eq!(
+        cmd_inj.get("source").and_then(|s| s.as_str()),
+        Some("security-lint"),
+        "COMMAND_INJECTION source should be 'security-lint'"
+    );
+    assert_eq!(
+        cmd_inj.get("severity").and_then(|s| s.as_str()),
+        Some("error"),
+        "COMMAND_INJECTION severity should be 'error'"
+    );
+
+    // Diagnostic evidence should be a non-null object with expected fields
     let diag_evidence = &parsed["results"]["diagnostic_evidence"];
-    // diagnostic_evidence may be an object or array; just check it exists and is non-null
     assert!(
         !diag_evidence.is_null(),
         "diagnostic_evidence should be present"
     );
+    let diag_evidence_obj = diag_evidence
+        .as_object()
+        .expect("diagnostic_evidence should be an object");
+    assert!(
+        diag_evidence_obj.contains_key("freshness"),
+        "diagnostic_evidence should have 'freshness' field"
+    );
+    let freshness = diag_evidence_obj["freshness"]
+        .as_str()
+        .expect("freshness should be a string");
+    assert!(
+        freshness == "Fresh" || freshness == "PossiblyStale",
+        "freshness should be 'Fresh' or 'PossiblyStale', got: {freshness}"
+    );
+    assert!(
+        diag_evidence_obj.contains_key("source"),
+        "diagnostic_evidence should have 'source' field"
+    );
+    assert_eq!(
+        diag_evidence_obj["source"].as_str(),
+        Some("Pushed"),
+        "source should be 'Pushed' (diagnostics came via publishDiagnostics)"
+    );
+    assert!(
+        diag_evidence_obj.contains_key("usable_evidence"),
+        "diagnostic_evidence should have 'usable_evidence' field"
+    );
+    assert!(
+        diag_evidence_obj["usable_evidence"]
+            .as_bool()
+            .unwrap_or(false),
+        "usable_evidence should be true"
+    );
+    assert!(
+        diag_evidence_obj.contains_key("age_ms"),
+        "diagnostic_evidence should have 'age_ms' field"
+    );
+    let age_ms = diag_evidence_obj["age_ms"]
+        .as_f64()
+        .expect("age_ms should be a number");
+    assert!(age_ms >= 0.0, "age_ms should be >= 0, got: {age_ms}");
 
     // Notes and limits should be present
     assert!(
@@ -2920,6 +3149,33 @@ fn audit(input: &str) {
 
 fn log(input: &str) {
     eprintln!("{input}");
+}
+"#;
+
+/// Source file for call-depth enforcement testing: a linear chain
+/// entry → level1 → level2 → level3 (4 functions, 3 edges).
+///
+/// With `call_depth = 2` and a generous `max_call_nodes = 16`, only
+/// depth can stop traversal. The BFS should expand entry (depth 0→1),
+/// level1 (depth 1→2), and stop before expanding level2 (depth 2→3).
+const SECURITY_CALL_GRAPH_DEPTH_SOURCE: &str = r#"use std::process::Command;
+
+pub fn entry(input: &str) {
+    level1(input);
+}
+
+fn level1(input: &str) {
+    level2(input);
+}
+
+fn level2(input: &str) {
+    level3(input);
+}
+
+fn level3(input: &str) {
+    unsafe {
+        let _ = Command::new("sh").arg("-c").arg(input).output();
+    }
 }
 "#;
 
@@ -3858,6 +4114,140 @@ fn scenario_security_call_graph_with_diagnostics() -> serde_json::Value {
                     ]}
                 ]
             },
+            {"type": "ExpectRequest", "method": "shutdown", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": null}]},
+            {"type": "ExpectNotification", "method": "exit", "then": []}
+        ],
+        "exit": {"type": "ExitCode", "code": 0},
+        "strict": true
+    })
+}
+
+/// Scenario for call-depth enforcement: a linear chain entry→level1→level2→level3.
+///
+/// The fake server handles:
+/// 1. Semantic context collector: prepareCallHierarchy + incomingCalls + outgoingCalls for entry
+/// 2. BFS expansion depth 0→1: prepareCallHierarchy + outgoingCalls for entry (→level1)
+/// 3. BFS expansion depth 1→2: prepareCallHierarchy + outgoingCalls for level1 (→level2)
+///
+/// With call_depth=2, the BFS must NOT expand level2 into level3.
+/// Strict mode ensures any unexpected request fails the test.
+fn scenario_security_call_graph_depth_limit() -> serde_json::Value {
+    serde_json::json!({
+        "name": "security_call_graph_depth_limit",
+        "steps": [
+            {
+                "type": "ExpectRequest",
+                "method": "initialize",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": {
+                        "capabilities": {
+                            "definitionProvider": true,
+                            "referencesProvider": true,
+                            "documentSymbolProvider": true,
+                            "callHierarchyProvider": true
+                        }
+                    }}
+                ]
+            },
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {"type": "AllowNotification", "method": "textDocument/didOpen"},
+            {"type": "AllowNotification", "method": "textDocument/didChange"},
+            {"type": "AllowNotification", "method": "textDocument/didSave"},
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/documentSymbol",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {"name": "entry", "kind": 12,
+                         "range": {"start": {"line": 3, "character": 0}, "end": {"line": 5, "character": 1}},
+                         "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                        {"name": "level1", "kind": 12,
+                         "range": {"start": {"line": 7, "character": 0}, "end": {"line": 9, "character": 1}},
+                         "selectionRange": {"start": {"line": 7, "character": 3}, "end": {"line": 7, "character": 9}}},
+                        {"name": "level2", "kind": 12,
+                         "range": {"start": {"line": 11, "character": 0}, "end": {"line": 13, "character": 1}},
+                         "selectionRange": {"start": {"line": 11, "character": 3}, "end": {"line": 11, "character": 9}}},
+                        {"name": "level3", "kind": 12,
+                         "range": {"start": {"line": 15, "character": 0}, "end": {"line": 19, "character": 1}},
+                         "selectionRange": {"start": {"line": 15, "character": 3}, "end": {"line": 15, "character": 9}}}
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/definition",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}}
+                    ]}
+                ]
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/references",
+                "id": {"type": "Number"},
+                "then": [
+                    {"type": "RespondResult", "result": [
+                        {"uri": "__SOURCE_URI__",
+                         "range": {"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 11}}}
+                    ]}
+                ]
+            },
+            {"type": "ExpectRequest", "method": "textDocument/prepareCallHierarchy", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                     "range": {"start": {"line": 3, "character": 0}, "end": {"line": 5, "character": 1}},
+                     "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}}
+                ]}]},
+            {"type": "ExpectRequest", "method": "callHierarchy/incomingCalls", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": []}]},
+            {"type": "ExpectRequest", "method": "callHierarchy/outgoingCalls", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 5, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "level1", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 7, "character": 0}, "end": {"line": 9, "character": 1}},
+                            "selectionRange": {"start": {"line": 7, "character": 3}, "end": {"line": 7, "character": 9}}},
+                     "fromRanges": [{"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 11}}]}
+                ]}]},
+            {"type": "ExpectRequest", "method": "textDocument/prepareCallHierarchy", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                     "range": {"start": {"line": 3, "character": 0}, "end": {"line": 5, "character": 1}},
+                     "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}}
+                ]}]},
+            {"type": "ExpectRequest", "method": "callHierarchy/outgoingCalls", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"from": {"name": "entry", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 3, "character": 0}, "end": {"line": 5, "character": 1}},
+                               "selectionRange": {"start": {"line": 3, "character": 7}, "end": {"line": 3, "character": 12}}},
+                     "to": {"name": "level1", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 7, "character": 0}, "end": {"line": 9, "character": 1}},
+                            "selectionRange": {"start": {"line": 7, "character": 3}, "end": {"line": 7, "character": 9}}},
+                     "fromRanges": [{"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 11}}]}
+                ]}]},
+            {"type": "ExpectRequest", "method": "textDocument/prepareCallHierarchy", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"name": "level1", "kind": 12, "uri": "__SOURCE_URI__",
+                     "range": {"start": {"line": 7, "character": 0}, "end": {"line": 9, "character": 1}},
+                     "selectionRange": {"start": {"line": 7, "character": 3}, "end": {"line": 7, "character": 9}}}
+                ]}]},
+            {"type": "ExpectRequest", "method": "callHierarchy/outgoingCalls", "id": {"type": "Number"},
+                "then": [{"type": "RespondResult", "result": [
+                    {"from": {"name": "level1", "kind": 12, "uri": "__SOURCE_URI__",
+                               "range": {"start": {"line": 7, "character": 0}, "end": {"line": 9, "character": 1}},
+                               "selectionRange": {"start": {"line": 7, "character": 3}, "end": {"line": 7, "character": 9}}},
+                     "to": {"name": "level2", "kind": 12, "uri": "__SOURCE_URI__",
+                            "range": {"start": {"line": 11, "character": 0}, "end": {"line": 13, "character": 1}},
+                            "selectionRange": {"start": {"line": 11, "character": 3}, "end": {"line": 11, "character": 9}}},
+                     "fromRanges": [{"start": {"line": 8, "character": 4}, "end": {"line": 8, "character": 11}}]}
+                ]}]},
             {"type": "ExpectRequest", "method": "shutdown", "id": {"type": "Number"},
                 "then": [{"type": "RespondResult", "result": null}]},
             {"type": "ExpectNotification", "method": "exit", "then": []}
