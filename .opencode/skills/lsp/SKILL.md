@@ -25,11 +25,14 @@ LSP is exposed as a native tool via `LspTool`, returning compact agent-facing su
 ```
 crates/egglsp/src/          # Authoritative LSP implementation
 ├── client.rs               # LspClient - JSON-RPC, diagnostics cache, notification parser
+├── compatibility.rs        # LspCompatibilityProfile, readiness/restart policies, version detection
 ├── config.rs               # LspConfig, LspRule types
 ├── diagnostics.rs          # DiagnosticsCollector
-├── edit.rs               # Workspace edit preview, text edit application, unified diff generation
+├── document_sync.rs        # OpenDocumentRegistry, document replay after restart
+├── edit.rs                 # Workspace edit preview, text edit application, unified diff generation
 ├── download.rs             # Binary download/cache
 ├── error.rs                # LspError
+├── health.rs               # LspOperationalState, health state machine, snapshots
 ├── language.rs             # Language detection from file extensions
 ├── launch.rs               # Process spawning, Content-Length framing, background stderr drain
 ├── operations.rs           # LspOperations - goto definition, hover, etc.
@@ -37,6 +40,7 @@ crates/egglsp/src/          # Authoritative LSP implementation
 ├── root.rs                 # Project root detection
 ├── server.rs               # 39 server definitions
 ├── service.rs              # LspService - client management, file-based routing
+├── supervisor.rs           # LspProcessExitEvent, StderrRingBuffer (100 lines / 64KB cap)
 └── tests/                  # Phase 2 stdio integration tests (fake-server + production harness)
 
 src/lsp/mod.rs              # Thin re-export shim (compatibility only)
@@ -150,6 +154,85 @@ impl SemanticContextCollector {
 ```
 
 The collector handles: source excerpt construction, diagnostic snapshots with freshness metadata, document symbol flattening, definition/reference gathering with capability gating, call/type hierarchy summaries, per-section truncation, and structured unavailable metadata. Overlay translation and source-action hints are intentionally excluded — the tool handler owns both because overlay patch/content handling and source-action `WorkspaceEditPreview` payloads are tool-specific.
+
+### LspCompatibilityProfile (`compatibility.rs`)
+
+Per-server compatibility profile with readiness and restart policies:
+
+```rust
+pub struct LspCompatibilityProfile {
+    pub server_id: &'static str,
+    pub tier: CompatibilityTier,
+    pub known_limits: Vec<&'static str>,
+    pub readiness_policy: LspReadinessPolicy,
+    pub restart_policy: LspRestartPolicy,
+}
+
+pub struct LspReadinessPolicy {
+    pub requires_indexing: bool,
+    pub warmup_ms: u64,
+    pub max_warmup_ms: u64,
+}
+
+pub struct LspRestartPolicy {
+    pub mode: LspRestartMode,
+    pub max_restarts: u32,
+    pub backoff_ms: u64,
+}
+
+pub enum LspRestartMode {
+    Never,
+    OnCrash,
+    OnFailure { consecutive_failures: u32 },
+}
+```
+
+Key functions: `rust_analyzer_profile()`, `pyright_profile()`, `profile_for_server(id)`, `tier1_profiles()`, `require_server_binary(id)`.
+
+### LspCompatibilityStatus (`compatibility.rs`)
+
+| Status | Meaning |
+|--------|---------|
+| `Unknown` | Not yet checked or server not found |
+| `Passing` | Server binary found, initializes, basic operations work |
+| `PassingWithKnownLimits` | Server works but has documented limitations (e.g. no call hierarchy) |
+| `Failing` | Server found but fails to initialize or produce valid responses |
+| `Unsupported` | Server binary not found on PATH and no download available |
+
+### LspOperationalState (`health.rs`)
+
+Operational state machine for LSP server processes:
+
+```rust
+pub enum LspOperationalState {
+    Starting,
+    Initializing,
+    Indexing,
+    Ready,
+    Degraded { reason: String },
+    RestartScheduled { reason: String },
+    Restarting,
+    Failed { reason: String },
+    Stopping,
+    Stopped,
+}
+```
+
+**Transitions:**
+- `Starting → Initializing → Indexing → Ready`
+- `Ready → Degraded → RestartScheduled → Restarting → Initializing`
+- `Starting/Initializing/Indexing/Ready → Failed → RestartScheduled`
+- `Ready → Stopping → Stopped`
+
+`InvalidTransition` is returned for invalid state changes. `LspOperationalHealthSnapshot` carries the current state, generation, uptime, restart count, and last error.
+
+### StderrRingBuffer (`supervisor.rs`)
+
+Capped ring buffer (100 lines / 64KB) for capturing LSP server stderr. Oldest lines are dropped when the cap is exceeded. `LspProcessExitEvent` records the exit code and stderr tail for crash analysis.
+
+### OpenDocumentRegistry (`document_sync.rs`)
+
+Tracks open documents for replay after server restart. `OpenDocumentSnapshot` captures URI, language ID, version, and full text. On restart, all previously open documents are replayed via `textDocument/didOpen` notifications.
 
 ## Supported LSP Servers
 
@@ -634,8 +717,19 @@ pub enum LspError {
     CommandOnlySourceAction(String),
     NoEditForSourceAction(String),
     AmbiguousSourceAction(String, String),
+    Protocol(String),
+    WriterClosed(String),
+    InitializationCancelled(String),
+    ServerRestarted { server_id: String, old_generation: u64, new_generation: u64 },
+    ServerUnavailable(String),
+    ServerDegraded(String),
 }
 ```
+
+**Phase 3 additions:**
+- `ServerRestarted` — request targeted a server that has restarted; carries generation numbers for retry decisions
+- `ServerUnavailable` — server in non-operational state (`Failed`, `Restarting`, `Stopped`)
+- `ServerDegraded` — server in `Degraded` state; some operations may not work
 
 ### SharedInitError
 
@@ -1142,9 +1236,48 @@ cargo test -p egglsp --lib
 cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 ```
 
-## Phase 3: Real-Server Compatibility Matrix
+## Phase 3: Real-Server Compatibility & Resilience
 
-Phase 3 (deferred) covers opt-in tests against actual LSP servers — rust-analyzer, pyright, gopls, clangd, typescript-language-server. See `architecture/lsp.md` for the full matrix and mechanics.
+Phase 3 adds real-server compatibility testing, operational health tracking, process supervision, and document replay for crash recovery.
+
+### New Modules (crates/egglsp/src/)
+
+| Module | Purpose |
+|--------|---------|
+| `compatibility.rs` | Per-server compatibility profiles (`LspCompatibilityProfile`), readiness policies (`LspReadinessPolicy`), restart policies (`LspRestartPolicy`, `LspRestartMode`), version detection (`LspServerVersion`), compatibility reports (`LspCompatibilityReport`, `CompatibilityCheckStatus`), tier-1 profiles, and binary requirement checks |
+| `health.rs` | Operational state machine (`LspOperationalState`: Starting → Initializing → Indexing → Ready → Degraded → RestartScheduled → Restarting → Failed → Stopping → Stopped), invalid transition detection (`InvalidTransition`), and health snapshots (`LspOperationalHealthSnapshot`) |
+| `supervisor.rs` | Process exit event tracking (`LspProcessExitEvent`) and stderr ring buffering (`StderrRingBuffer`, 100 lines / 64KB cap) |
+| `document_sync.rs` | Open document registry (`OpenDocumentRegistry`) and document snapshots (`OpenDocumentSnapshot`) for replaying `didOpen` notifications after server restart |
+
+### New Feature Flag
+
+```toml
+[features]
+lsp-real-server-tests = []  # separate from lsp-test-support
+```
+
+### Real-Server Smoke Tests
+
+```bash
+# Run real-server smoke tests (opt-in, requires installed servers)
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
+
+# Run with specific server binaries on PATH
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust-analyzer
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- pyright
+```
+
+The smoke tests (`crates/egglsp/tests/real_server_smoke.rs`) exercise rust-analyzer and pyright/basedpyright against the production launcher, frame parser, and request routing. They are slow (200ms-2s startup plus indexing), non-hermetic (require installed binaries), and expensive in CI, so they are gated behind the `lsp-real-server-tests` feature.
+
+### Target Compatibility Matrix
+
+| Server | Language | Key Operations | Known Limitations |
+|--------|----------|----------------|-------------------|
+| **rust-analyzer** | Rust | hover, definition, references, symbols, call hierarchy, rename, code actions, semanticContext, securityContext, hunkSourceContext | Initial indexing may be slow on large workspaces; diagnostics may need warm-up delay |
+| **pyright** | Python | hover, definition, references, symbols, rename | No `prepareCallHierarchy` (Python doesn't have function-level call hierarchy); `codeAction` limited to organize imports |
+| **typescript-language-server** | TypeScript / JavaScript | hover, definition, references, symbols, rename, code actions | `prepareCallHierarchy` may be empty; large workspaces slow |
+| **gopls** | Go | hover, definition, references, symbols, rename, code actions | Call hierarchy not yet supported by gopls; securityContext will degrade gracefully |
+| **clangd** | C / C++ | hover, definition, references, symbols, rename, code actions | No call hierarchy; slow on large TUs |
 
 ## See Also
 

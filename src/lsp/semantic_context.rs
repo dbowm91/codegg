@@ -93,6 +93,8 @@ impl SemanticContextCollector {
                     source: snapshot.source,
                     age_ms,
                     usable_evidence: usable,
+                    server_generation: None,
+                    post_restart: false,
                 });
             }
             Err(e) => {

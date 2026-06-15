@@ -305,6 +305,8 @@ mod tests {
                 source: LspDiagnosticSource::Unknown,
                 age_ms: 1200,
                 usable_evidence: true,
+                server_generation: None,
+                post_restart: false,
             }),
             section_truncations: vec![],
             unavailable: vec![],

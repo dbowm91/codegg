@@ -241,6 +241,19 @@ impl From<egglsp::LspError> for LspError {
             egglsp::LspError::InitializationCancelled(s) => {
                 LspError::RequestFailed(format!("initialization cancelled: {}", s))
             }
+            egglsp::LspError::ServerRestarted {
+                server_id,
+                old_generation,
+                new_generation,
+            } => LspError::RequestFailed(format!(
+                "server restarted: {server_id} (gen {old_generation} -> {new_generation:?})"
+            )),
+            egglsp::LspError::ServerUnavailable(s) => {
+                LspError::RequestFailed(format!("server unavailable: {s}"))
+            }
+            egglsp::LspError::ServerDegraded(s) => {
+                LspError::RequestFailed(format!("server degraded: {s}"))
+            }
         }
     }
 }

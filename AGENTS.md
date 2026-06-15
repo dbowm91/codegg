@@ -30,6 +30,10 @@ This is a **Rust rewrite of an AI coding agent**, built for performance and effi
 | `ide/` | IDE integration (VS Code IPC, JetBrains remote mode) |
 | `lsp/` | Language Server Protocol support (diagnostics, code operations, preview-only semantic edits, temporary overlays, semantic context packets, securityContext call expansion, hunkSourceContext hunk-aware navigation, capability discovery and normalization, diagnostics cache lifecycle with freshness metadata, capability-gated operations, diagnostic evidence in context packets, shared semantic context API, initialization coordinator with explicit leader/waiter election, shared completion fan-out, lifecycle-validated publication, unpublished-client disposal, SharedInitError for concurrent init, lifecycle generation tracking, timeout-cancel transport-failure propagation, authoritative completion-receiver ownership of init task wrappers (no forwarding tasks wrap real `JoinHandle`s), start-registration barrier (one-shot oneshot that gates the wrapper body until `active_init_tasks` is installed), explicit wrapper cleanup + `ActiveTaskGuard` fallback (spawned follow-up task — no `try_lock`), watch-based concurrent shutdown coordination, deadline-driven quiescent shutdown bounded by 6s, aggregate grace wait via `await_init_task_completions` over completion receivers) — egglsp crate is authoritative implementation, src/lsp/ is thin shim; `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview` re-exported from egglsp. Phase 2 stdio integration tests now live in `crates/egglsp/tests/`; the legacy fake-server suites use `FakeLspHarness`, the production-harness protocol subset uses `ProductionClientHarness`, and `scenario_engine.rs` includes the fake-server self-tests (inlined, no external `include!`). `egglsp::test_support` is feature-gated behind `lsp-test-support` and `#[doc(hidden)]`; the root `lsp-test-support` feature forwards to `egglsp/lsp-test-support`. `base64` and `libc` are optional dependencies gated on `lsp-test-support`. The fake LSP server is built as the `codegg-lsp-test-server` bin target from the `egglsp` package. Fixture binaries require the `lsp-test-support` feature and are excluded from normal production builds. Root-crate composite tests in `tests/lsp_composite_stdio.rs` exercise `SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`, and security context tool orchestration against the fake server via the production stack (24 tests covering semantic/security/hunk collectors, workspace-edit-preview safety, and capability-gated degradation). The fake server supports captured-ID mode for genuinely out-of-order concurrent responses. |
 | `lsp/` (hunk_nav) | Hunk/source navigation: unified diff parser, range matching, HunkSourceNavigator, HunkSourceNavigationCollector, `HunkSourceContextPolicy` (decides when to invoke hunkSourceContext), `HunkSourceContextDecision` enum (Use/Skip), `decide_hunk_source_context()` pure policy function, `format_hunk_source_context_summary()` for compact agent-facing summaries |
+| `lsp/` (compatibility) | `crates/egglsp/src/compatibility.rs` — LspCompatibilityProfile, LspReadinessPolicy, LspRestartPolicy, LspRestartMode, LspServerVersion, LspCompatibilityReport, LspCompatibilityCheck, CompatibilityCheckStatus, rust_analyzer_profile(), pyright_profile(), profile_for_server(), tier1_profiles(), require_server_binary() |
+| `lsp/` (health) | `crates/egglsp/src/health.rs` — LspOperationalState (Starting/Initializing/Indexing/Ready/Deaded/RestartScheduled/Restarting/Failed/Stopping/Stopped), transition() state machine, InvalidTransition, LspOperationalHealthSnapshot |
+| `lsp/` (supervisor) | `crates/egglsp/src/supervisor.rs` — LspProcessExitEvent, StderrRingBuffer (100 lines / 64KB cap) |
+| `lsp/` (document_sync) | `crates/egglsp/src/document_sync.rs` — OpenDocumentRegistry, OpenDocumentSnapshot |
 | `mcp/` | Model Context Protocol client (local, remote, auth) with auto-reconnect |
 | `core/` | Core facade and transport adapters (inproc, stdio, socket) for request/response separation — `src/core/` is the transport layer; domain modules (bus, error, goal, memory, session, storage, snapshot, worktree, resilience, task_state, model_profile, protocol_conversions) live in `crates/codegg-core`. Also contains `runtime_deps` (`CoreRuntimeDeps`) for bundling runtime dependencies. |
 | `memory/` | Persistent memory system for session learning and namespace management — now in `crates/codegg-core` (`codegg-core` crate) |
@@ -142,6 +146,8 @@ These items are important for future agents to know when working with the codeba
 
 - **LSP Phase 2 integration tests**: `crates/egglsp/tests/` now owns the stdio integration surface. `production_protocol_stdio.rs`, `production_semantic_stdio.rs`, and `production_service_stdio.rs` use `ProductionClientHarness`, while `scenario_engine.rs` includes the fake-server self-tests (inlined, no external `include!`). `egglsp::test_support` is feature-gated behind `lsp-test-support` and `#[doc(hidden)]`; the root `lsp-test-support` feature forwards to `egglsp/lsp-test-support`. `base64` and `libc` are optional dependencies gated on `lsp-test-support`. The fake LSP server binary is built as the `codegg-lsp-test-server` bin target from the `egglsp` package. Scenario JSON is delivered via `CODEGG_FAKE_LSP_SCENARIO` env var, transcripts via `CODEGG_FAKE_LSP_TRANSCRIPT`. Cargo exposes the binary to tests via `CARGO_BIN_EXE_codegg-lsp-test-server`, with `EGGLSP_TEST_SERVER` as an override for manual or CI use. Tests exercise real stdio transport through `egglsp::launch::spawn_server` and `LspWriter`. Root-crate composite tests in `tests/lsp_composite_stdio.rs` (24 tests) exercise `SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`, and security context tool orchestration against the fake server via the production `LspClient`/`LspService` stack — these bridge the gap between `egglsp`-only tests and the real root-crate collectors. The fake server supports captured-ID mode for genuinely out-of-order concurrent responses. All integration tests use bounded condition waits (polling loops) instead of fixed sleeps. Typed hierarchy methods on `LspClient` (`prepare_call_hierarchy`, `incoming_calls`, `outgoing_calls`, `prepare_type_hierarchy`, `supertypes`, `subtypes`) are used in hierarchy tests.
 
+- **LSP Phase 3 operational health**: `LspOperationalState` enum with `transition()` state machine. `context_note()` returns bounded notes for semantic context. `LspProcessExitEvent` is the authoritative exit signal. `StderrRingBuffer` caps at 100 lines / 64KB. `OpenDocumentRegistry` tracks documents for restart replay. New `LspError` variants: `ServerRestarted`, `ServerUnavailable`, `ServerDegraded`.
+
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum at `types.rs:2-25`.
 
 - **DialogType is in component.rs**: Not in `types.rs`. FocusManager is in `component/focus.rs`.
@@ -167,6 +173,7 @@ These items are important for future agents to know when working with the codeba
 | **TTS init ignores providers** | `src/tts/mod.rs:45-49` | Known issue - macOS say adequate |
 | **Static CANONICAL_PATHS_CACHE** | `src/security/sandbox.rs:262` | Has 300s TTL + 100-entry cap now |
 | **OAuth replay protection TOCTOU** | `src/mcp/auth.rs:318-332` | Known issue |
+| Real-server tests are opt-in only | `crates/egglsp/tests/real_server_smoke.rs` | Phase 3 - Tier 1 only |
 
 ### Key Lessons from Review Sessions
 
@@ -385,6 +392,10 @@ These items were verified during review sessions:
 | `LspDiagnosticFreshness` enum variants | `Fresh`, `PossiblyStale`, `Stale`, `Unavailable` — freshness classification for diagnostics | `crates/egglsp/src/diagnostics.rs` |
 | `DiagnosticEvidenceMeta` struct | Carries `freshness`, `source`, `age_ms`, `usable_evidence` for semantic/security context packets; `age_ms` is age in milliseconds since diagnostics were received | `src/tool/lsp.rs` |
 | Capability-gated operations | `semanticContext` and `securityContext` check `LspCapabilitySnapshot` before optional expensive LSP calls (definitions, references, call hierarchy, type hierarchy); unsupported ops append notes instead of failing | `src/tool/lsp.rs` |
+| New compatibility module | `compatibility.rs` | `crates/egglsp/src/compatibility.rs` — `LspCompatibilityProfile`, `LspReadinessPolicy`, `LspRestartPolicy`, `LspRestartMode`, `LspServerVersion`, `LspCompatibilityReport`, `LspCompatibilityCheck`, `CompatibilityCheckStatus`, `rust_analyzer_profile()`, `pyright_profile()`, `profile_for_server()`, `tier1_profiles()`, `require_server_binary()` |
+| Health module | `health.rs` | `crates/egglsp/src/health.rs` — `LspOperationalState` (Starting/Initializing/Indexing/Ready/Deaded/RestartScheduled/Restarting/Failed/Stopping/Stopped), `transition()` state machine, `InvalidTransition`, `LspOperationalHealthSnapshot` |
+| Supervisor module | `supervisor.rs` | `crates/egglsp/src/supervisor.rs` — `LspProcessExitEvent`, `StderrRingBuffer` (100 lines / 64KB cap) |
+| Document sync module | `document_sync.rs` | `crates/egglsp/src/document_sync.rs` — `OpenDocumentRegistry`, `OpenDocumentSnapshot` |
 
 ### Security Notes
 
@@ -573,6 +584,9 @@ cargo test --features lsp-test-support --test lsp_composite_stdio
 cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 # Run real-server compatibility tests (opt-in, requires installed servers)
 cargo test -p egglsp --features lsp-real-server -- --ignored
+
+# Real-server Tier 1 tests (opt-in, requires installed servers)
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
 
 # Test the extracted workspace crates
 cargo test -p codegg-config

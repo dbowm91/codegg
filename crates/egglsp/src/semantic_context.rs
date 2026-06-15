@@ -244,6 +244,12 @@ pub struct SemanticDiagnosticEvidence {
     pub age_ms: i64,
     /// Whether the diagnostics are usable as evidence.
     pub usable_evidence: bool,
+    /// Server generation when these diagnostics were produced.
+    #[serde(default)]
+    pub server_generation: Option<u64>,
+    /// Whether these diagnostics were produced after a server restart.
+    #[serde(default)]
+    pub post_restart: bool,
 }
 
 /// Overlay diagnostics/symbols from proposed content preview.
@@ -579,6 +585,8 @@ mod tests {
             source: LspDiagnosticSource::Pushed,
             age_ms: 123,
             usable_evidence: true,
+            server_generation: None,
+            post_restart: false,
         };
 
         let json = serde_json::to_value(&evidence).unwrap();

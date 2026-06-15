@@ -4632,6 +4632,8 @@ diff --git a/src/lib.rs b/src/lib.rs
                 source: crate::lsp::diagnostics::LspDiagnosticSource::Pushed,
                 age_ms: 100,
                 usable_evidence: true,
+                server_generation: None,
+                post_restart: false,
             }),
             overlay: None,
             source_actions: vec![],
@@ -4823,6 +4825,8 @@ diff --git a/src/lib.rs b/src/lib.rs
                 source: crate::lsp::diagnostics::LspDiagnosticSource::Pulled,
                 age_ms: 250,
                 usable_evidence: true,
+                server_generation: None,
+                post_restart: false,
             }),
             overlay: Some(SemanticOverlay {
                 used: true,

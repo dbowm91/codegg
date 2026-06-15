@@ -64,6 +64,19 @@ pub enum LspError {
 
     #[error("initialization cancelled: {0}")]
     InitializationCancelled(String),
+
+    #[error("server restarted: {server_id} (gen {old_generation} -> {new_generation:?})")]
+    ServerRestarted {
+        server_id: String,
+        old_generation: u64,
+        new_generation: Option<u64>,
+    },
+
+    #[error("server unavailable: {0}")]
+    ServerUnavailable(String),
+
+    #[error("server degraded: {0}")]
+    ServerDegraded(String),
 }
 
 impl LspError {

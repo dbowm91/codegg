@@ -42,7 +42,7 @@ pub(crate) enum ClientTransportState {
 }
 
 /// Read-only snapshot of the transport state for integration tests.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ClientTransportSnapshot {
     Running,
     Failed { reason: String },

@@ -1,0 +1,56 @@
+name: LSP Real-Server Compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 6am UTC
+  push:
+    branches: [main]
+    paths:
+      - 'crates/egglsp/**'
+      - 'src/lsp/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  real-server-compat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        server:
+          - rust-analyzer
+          - basedpyright
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install rust-analyzer
+        if: matrix.server == 'rust-analyzer'
+        run: |
+          rustup component add rust-analyzer
+          echo "CODEGG_RA_BIN=$(which rust-analyzer)" >> $GITHUB_ENV
+
+      - name: Install basedpyright
+        if: matrix.server == 'basedpyright'
+        run: |
+          npm install -g basedpyright
+          echo "CODEGG_PYRIGHT_BIN=$(which basedpyright-langserver || which basedpyright)" >> $GITHUB_ENV
+
+      - name: Run real-server smoke tests
+        run: |
+          cargo test -p egglsp \
+            --features lsp-real-server-tests \
+            --test real_server_smoke \
+            -- --nocapture
+
+      - name: Upload compatibility reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-compatibility-${{ matrix.server }}
+          path: target/lsp-compatibility/
+          retention-days: 30

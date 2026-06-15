@@ -31,6 +31,159 @@ The crate uses a client-per-root pattern: `LspService` maintains a `HashMap<Stri
 
 ## Components
 
+### compatibility.rs - Server Compatibility Profiles
+
+Defines per-server compatibility profiles, readiness policies, and restart policies.
+
+```rust
+pub struct LspCompatibilityProfile {
+    pub server_id: &'static str,
+    pub tier: CompatibilityTier,
+    pub known_limits: Vec<&'static str>,
+    pub readiness_policy: LspReadinessPolicy,
+    pub restart_policy: LspRestartPolicy,
+}
+
+pub struct LspReadinessPolicy {
+    pub requires_indexing: bool,
+    pub warmup_ms: u64,
+    pub max_warmup_ms: u64,
+}
+
+pub struct LspRestartPolicy {
+    pub mode: LspRestartMode,
+    pub max_restarts: u32,
+    pub backoff_ms: u64,
+}
+
+pub enum LspRestartMode {
+    Never,
+    OnCrash,
+    OnFailure { consecutive_failures: u32 },
+}
+
+pub struct LspServerVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+    pub pre: Option<String>,
+}
+
+pub struct LspCompatibilityReport {
+    pub server_id: String,
+    pub status: CompatibilityCheckStatus,
+    pub version: Option<LspServerVersion>,
+    pub notes: Vec<String>,
+}
+
+pub enum CompatibilityCheckStatus {
+    Unknown,
+    Passing,
+    PassingWithKnownLimits,
+    Failing,
+    Unsupported,
+}
+```
+
+**Compatibility status model:**
+
+| Status | Meaning |
+|--------|---------|
+| `Unknown` | Not yet checked or server not found |
+| `Passing` | Server binary found, initializes, basic operations work |
+| `PassingWithKnownLimits` | Server works but has documented limitations (e.g. no call hierarchy) |
+| `Failing` | Server found but fails to initialize or produce valid responses |
+| `Unsupported` | Server binary not found on PATH and no download available |
+
+Key functions:
+
+```rust
+pub fn rust_analyzer_profile() -> LspCompatibilityProfile
+pub fn pyright_profile() -> LspCompatibilityProfile
+pub fn profile_for_server(server_id: &str) -> Option<LspCompatibilityProfile>
+pub fn tier1_profiles() -> Vec<LspCompatibilityProfile>
+pub async fn require_server_binary(server_id: &str) -> Result<PathBuf, LspError>
+```
+
+### health.rs - Operational Health State Machine
+
+Tracks the operational state of each LSP server process through its lifecycle.
+
+```rust
+pub enum LspOperationalState {
+    Starting,
+    Initializing,
+    Indexing,
+    Ready,
+    Degraded { reason: String },
+    RestartScheduled { reason: String },
+    Restarting,
+    Failed { reason: String },
+    Stopping,
+    Stopped,
+}
+
+pub struct LspOperationalHealthSnapshot {
+    pub server_id: String,
+    pub state: LspOperationalState,
+    pub generation: u64,
+    pub uptime_ms: u64,
+    pub restart_count: u32,
+    pub last_error: Option<String>,
+}
+```
+
+**State transitions:**
+
+```
+Starting → Initializing → Indexing → Ready
+Ready → Degraded → RestartScheduled → Restarting → Initializing
+Starting/Initializing/Indexing/Ready → Failed → RestartScheduled
+RestartScheduled → Restarting → Initializing
+Ready → Stopping → Stopped
+```
+
+`InvalidTransition` is returned when a requested transition is not valid from the current state (e.g. `Starting` → `Ready` skips `Initializing`).
+
+### supervisor.rs - Process Supervision
+
+Provides process exit event tracking and stderr ring buffering for LSP server processes.
+
+```rust
+pub struct LspProcessExitEvent {
+    pub server_id: String,
+    pub exit_code: Option<i32>,
+    pub stderr_tail: Vec<String>,
+    pub timestamp: std::time::Instant,
+}
+
+pub struct StderrRingBuffer {
+    lines: VecDeque<String>,
+    total_bytes: usize,
+}
+```
+
+`StderrRingBuffer` is capped at 100 lines / 64KB. When the cap is exceeded, oldest lines are dropped. The buffer is drained during initialization to capture startup errors and surfaced in `LspProcessExitEvent.stderr_tail`.
+
+### document_sync.rs - Document Replay Registry
+
+Tracks open documents so they can be replayed after a server restart.
+
+```rust
+pub struct OpenDocumentRegistry {
+    documents: HashMap<String, OpenDocumentSnapshot>,
+}
+
+pub struct OpenDocumentSnapshot {
+    pub uri: String,
+    pub language_id: String,
+    pub version: i32,
+    pub text: String,
+}
+```
+
+When a server crashes and restarts, the `OpenDocumentRegistry` replays `textDocument/didOpen` notifications for all previously open documents so the new server instance has a consistent view of the workspace.
+
 ### src/lsp/mod.rs - Codegg-side thin wrapper
 
 ```rust
@@ -1202,8 +1355,17 @@ pub enum LspError {
     Protocol(String),
     WriterClosed(String),
     InitializationCancelled(String),
+    ServerRestarted { server_id: String, old_generation: u64, new_generation: u64 },
+    ServerUnavailable(String),
+    ServerDegraded(String),
 }
 ```
+
+**New Phase 3 error variants:**
+
+- `ServerRestarted` — returned when a request targets a server that has been restarted since the request was queued. Carries the server ID and generation numbers so callers can decide whether to retry.
+- `ServerUnavailable` — returned when a server is in a non-operational state (e.g. `Failed`, `Restarting`, `Stopped`) and cannot serve requests.
+- `ServerDegraded` — returned when a server is in the `Degraded` state and some operations may not work correctly.
 
 ### SharedInitError
 
@@ -1361,60 +1523,91 @@ Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/t
 - **Depth-limit enforcement**: A dedicated test (`security_context_tool_enforces_call_depth_limit`) proves call_depth limiting independently of node-budget truncation using a chain `entry→level1→level2→level3` with `call_depth=2, max_call_nodes=16`.
 - **Hunk path tests**: Containment tests now use real temporary sibling files and are platform-neutral, replacing `/etc/passwd` references and nonexistent paths.
 
-## Phase 3: Real-Server Compatibility Matrix (Opt-in)
+## Phase 3: Real-Server Compatibility & Resilience (Complete)
 
-Phase 2 gives us confidence in the wire protocol. Phase 3 extends this confidence to real LSP servers — verifying that rust-analyzer, pyright, gopls, clangd, and typescript-language-server all work with the production launcher, frame parser, and request routing.
+Phase 3 builds on Phase 2's wire-protocol confidence by adding real-server compatibility testing, operational health tracking, process supervision, and document replay for crash recovery.
 
-### Why Deferred
+### New Modules (crates/egglsp/src/)
 
-Real-server smoke tests are:
-- **Slow** — server startup is 200ms-2s, plus indexing and warm-up
-- **Non-hermetic** — require installed binaries or downloaded releases
-- **Flaky** — diagnostics can take seconds to arrive, language versions vary
-- **Expensive in CI** — minutes of compute for marginal additional coverage
+| Module | Purpose |
+|--------|---------|
+| `compatibility.rs` | Per-server compatibility profiles (`LspCompatibilityProfile`), readiness policies (`LspReadinessPolicy`), restart policies (`LspRestartPolicy`, `LspRestartMode`), version detection (`LspServerVersion`), compatibility reports (`LspCompatibilityReport`, `CompatibilityCheckStatus`), tier-1 profiles, and binary requirement checks |
+| `health.rs` | Operational state machine (`LspOperationalState`: Starting → Initializing → Indexing → Ready → Degraded → RestartScheduled → Restarting → Failed → Stopping → Stopped), invalid transition detection (`InvalidTransition`), and health snapshots (`LspOperationalHealthSnapshot`) |
+| `supervisor.rs` | Process exit event tracking (`LspProcessExitEvent`) and stderr ring buffering (`StderrRingBuffer`, 100 lines / 64KB cap) |
+| `document_sync.rs` | Open document registry (`OpenDocumentRegistry`) and document snapshots (`OpenDocumentSnapshot`) for replaying `didOpen` notifications after server restart |
+
+### New Error Variants
+
+- `ServerRestarted { server_id, old_generation, new_generation }` — request targeted a server that has restarted; callers can retry against the new generation
+- `ServerUnavailable(String)` — server in non-operational state (`Failed`, `Restarting`, `Stopped`)
+- `ServerDegraded(String)` — server in `Degraded` state; some operations may not work
+
+### New Feature Flag
+
+```toml
+[features]
+lsp-real-server-tests = []  # separate from lsp-test-support
+```
+
+### Compatibility Status Model
+
+| Status | Meaning |
+|--------|---------|
+| `Unknown` | Not yet checked or server not found |
+| `Passing` | Server binary found, initializes, basic operations work |
+| `PassingWithKnownLimits` | Server works but has documented limitations (e.g. no call hierarchy in pyright) |
+| `Failing` | Server found but fails to initialize or produce valid responses |
+| `Unsupported` | Server binary not found on PATH and no download available |
+
+### Health State Model
+
+```
+Starting → Initializing → Indexing → Ready
+                              ↓
+Ready → Degraded → RestartScheduled → Restarting → Initializing
+Starting/Initializing/Indexing/Ready → Failed → RestartScheduled
+RestartScheduled → Restarting → Initializing
+Ready → Stopping → Stopped
+```
+
+All transitions are validated; invalid transitions return `InvalidTransition`.
+
+### Supervisor and Restart Policy
+
+`LspRestartPolicy` controls when a server is automatically restarted:
+
+- `Never` — no automatic restart
+- `OnCrash` — restart on unexpected process exit
+- `OnFailure { consecutive_failures }` — restart after N consecutive initialization failures
+
+`StderrRingBuffer` captures the last 100 lines (64KB) of server stderr for diagnostics. `LspProcessExitEvent` records the exit code and stderr tail for crash analysis.
+
+### Document Replay
+
+When a server restarts, `OpenDocumentRegistry` replays all previously open documents via `textDocument/didOpen` notifications so the new server instance has a consistent workspace view. `OpenDocumentSnapshot` captures the URI, language ID, version, and full text of each open document.
+
+### Real-Server Smoke Tests
+
+```bash
+# Run real-server smoke tests (opt-in, requires installed servers)
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke
+
+# Run with specific server binaries on PATH
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust-analyzer
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- pyright
+```
+
+The smoke tests (`crates/egglsp/tests/real_server_smoke.rs`) exercise rust-analyzer and pyright/basedpyright against the production launcher, frame parser, and request routing. They are slow (200ms-2s startup plus indexing), non-hermetic (require installed binaries), and expensive in CI, so they are gated behind the `lsp-real-server-tests` feature and run only on demand.
 
 ### Target Compatibility Matrix
 
-| Server | Language | Key Operations | Expected Behavior | Known Limitations |
-|--------|----------|----------------|-------------------|-------------------|
-| **rust-analyzer** | Rust | hover, definition, references, symbols, call hierarchy, rename, code actions, semanticContext, securityContext, hunkSourceContext | Full feature coverage | Initial indexing may be slow on large workspaces; diagnostics may need a warm-up delay |
-| **pyright** | Python | hover, definition, references, symbols, rename | Full feature coverage | No `prepareCallHierarchy` (Python doesn't have function-level call hierarchy); `codeAction` limited to pyright's organize imports |
-| **typescript-language-server** | TypeScript / JavaScript | hover, definition, references, symbols, rename, code actions | Full feature coverage | `prepareCallHierarchy` may be empty; large workspaces slow |
-| **gopls** | Go | hover, definition, references, symbols, rename, code actions | Full feature coverage | Call hierarchy not yet supported by gopls; securityContext will degrade gracefully |
-| **clangd** | C / C++ | hover, definition, references, symbols, rename, code actions | Full feature coverage | No call hierarchy; slow on large TUs |
-
-### Test Profile
-
-Real-server tests will be opt-in via a cargo feature flag:
-
-```bash
-cargo test -p egglsp --features lsp-real-server
-```
-
-Or per-server:
-
-```bash
-cargo test -p egglsp --features lsp-real-server-rust-analyzer
-```
-
-### Opt-In Mechanics
-
-The real-server tests are **not** in default CI. They will:
-
-1. Spawn the actual server binary (or download if not on PATH).
-2. Wait for initialization and a brief warm-up period.
-3. Open a small fixture file and exercise the operation under test.
-4. Assert on the shape and content of the response.
-5. Clean up via `kill_on_drop` and `LspService::shutdown_all()`.
-
-The fixtures are tiny (10-50 lines) and live in `tests/fixtures/real_servers/`. Each test sets a generous timeout (30-60s) and uses a unique scratch directory.
-
-### Open Questions for Phase 3
-
-- Should we record golden-output JSON responses and diff against them, or use shape-only assertions?
-- How do we handle servers that send unsolicited `workspace/diagnostic` (pull-mode) in addition to `textDocument/publishDiagnostics` (push-mode)?
-- Do we need a separate "warm-up" phase before assertions, or can we infer readiness from the first response?
-- Should real-server tests be nightly-only, or part of every PR?
+| Server | Language | Key Operations | Known Limitations |
+|--------|----------|----------------|-------------------|
+| **rust-analyzer** | Rust | hover, definition, references, symbols, call hierarchy, rename, code actions, semanticContext, securityContext, hunkSourceContext | Initial indexing may be slow on large workspaces; diagnostics may need warm-up delay |
+| **pyright** | Python | hover, definition, references, symbols, rename | No `prepareCallHierarchy` (Python doesn't have function-level call hierarchy); `codeAction` limited to organize imports |
+| **typescript-language-server** | TypeScript / JavaScript | hover, definition, references, symbols, rename, code actions | `prepareCallHierarchy` may be empty; large workspaces slow |
+| **gopls** | Go | hover, definition, references, symbols, rename, code actions | Call hierarchy not yet supported by gopls; securityContext will degrade gracefully |
+| **clangd** | C / C++ | hover, definition, references, symbols, rename, code actions | No call hierarchy; slow on large TUs |
 
 ## See Also
 

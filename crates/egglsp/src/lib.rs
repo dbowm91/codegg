@@ -18,11 +18,14 @@
 
 pub mod capability;
 pub mod client;
+pub mod compatibility;
 pub mod config;
 pub mod diagnostics;
+pub mod document_sync;
 pub mod download;
 pub mod edit;
 pub mod error;
+pub mod health;
 pub mod hunk_context;
 pub mod language;
 pub mod launch;
@@ -33,6 +36,7 @@ pub mod semantic_context;
 pub mod server;
 pub mod server_request;
 pub mod service;
+pub mod supervisor;
 pub mod writer;
 
 pub use capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
@@ -40,12 +44,18 @@ pub use client::{
     ClientTransportSnapshot, DiagnosticCacheEntry, JsonRpcId, LspClient, LspClientHealthSnapshot,
     LspClientOptions,
 };
+pub use compatibility::{
+    CompatibilityCheckStatus, LspCompatibilityCheck, LspCompatibilityProfile, LspReadinessPolicy,
+    LspRestartMode, LspRestartPolicy, LspServerVersion,
+};
 pub use config::{LspConfig, LspRule};
 pub use diagnostics::{
     DiagnosticsCollector, DiagnosticsOutput, LspDiagnosticFreshness, LspDiagnosticSnapshot,
     LspDiagnosticSource,
 };
+pub use document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
 pub use error::LspError;
+pub use health::{LspOperationalHealthSnapshot, LspOperationalState};
 pub use hunk_context::{
     HunkDescriptor, HunkEvidence, HunkLineRange, HunkSourceNavigationLimits,
     HunkSourceNavigationRequest, HunkSourceNavigationResponse,
@@ -70,6 +80,7 @@ pub use lsp_types;
 pub use overlay::{
     OverlayRestoreToken, OverlaySession, SemanticCheckPreview, SemanticSymbolSummary,
 };
+pub use supervisor::{LspProcessExitEvent, StderrRingBuffer};
 
 #[cfg(feature = "lsp-test-support")]
 #[doc(hidden)]
