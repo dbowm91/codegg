@@ -12,7 +12,7 @@ path = "src/bin/egglsp-test-server.rs"
 required-features = ["lsp-test-support"]
 
 [features]
-lsp-test-support = []
+lsp-test-support = ["dep:base64", "dep:libc"]
 
 [[test]]
 name = "production_protocol_stdio"
@@ -35,8 +35,8 @@ path = "tests/scenario_engine.rs"
 required-features = ["lsp-test-support"]
 
 [dependencies]
-base64 = "0.22"
-libc = "0.2"
+base64 = { version = "0.22", optional = true }
+libc = { version = "0.2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

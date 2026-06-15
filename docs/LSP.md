@@ -16,7 +16,7 @@ The egglsp crate consists of:
 - **`src/operations.rs`** - `LspOperations` for code actions (goto definition, find references, etc.), `WorkspaceEditPreview`/`FileEditPreview`/`TextEditPreview`
 - **`src/diagnostics.rs`** - `DiagnosticsCollector` for collecting and debouncing diagnostics
 
-Phase 2 integration tests now live under `crates/egglsp/tests/`: the legacy fake-server suites use `FakeLspHarness`, the production-harness protocol subset uses `ProductionClientHarness`, and `scenario_engine.rs` includes the fake-server self-tests.
+Phase 2 integration tests now live under `crates/egglsp/tests/`: the legacy fake-server suites use `FakeLspHarness`, the production-harness protocol subset uses `ProductionClientHarness`, and `scenario_engine.rs` contains inlined fake-server self-tests (no external `include!`). `egglsp::test_support` is feature-gated behind `lsp-test-support`.
 
 ## Key Components
 

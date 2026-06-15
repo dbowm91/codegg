@@ -71,4 +71,6 @@ pub use overlay::{
     OverlayRestoreToken, OverlaySession, SemanticCheckPreview, SemanticSymbolSummary,
 };
 
+#[cfg(feature = "lsp-test-support")]
+#[doc(hidden)]
 pub mod test_support;

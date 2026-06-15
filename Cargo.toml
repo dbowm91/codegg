@@ -192,7 +192,7 @@ server = [
     "tokio-tungstenite",
 ]
 image = ["dep:ratatui-image", "dep:image"]
-lsp-test-support = []
+lsp-test-support = ["egglsp/lsp-test-support"]
 
 [[test]]
 name = "lsp_composite_stdio"

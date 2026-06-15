@@ -1040,7 +1040,7 @@ The following tests in `crates/egglsp/src/service.rs` verify the quiescent shutd
 
 ## Phase 2: Scripted Stdio Integration Tests
 
-The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is built as a `[[bin]]` target from the `egglsp` package; root tests use `codegg-lsp-test-server` (via `CARGO_BIN_EXE_codegg-lsp-test-server`), while `egglsp`-only tests use `egglsp-test-server` (via `CARGO_BIN_EXE_egglsp-test-server`), with `EGGLSP_TEST_SERVER` as an override for CI or manual runs. The scenario engine lives in `egglsp::test_support` module; both binary wrappers are thin `main()` functions.
+The `egglsp` package now owns the phase 2 stdio integration-test surface under `crates/egglsp/tests/`. The fake LSP server binary is built as a `[[bin]]` target from the `egglsp` package; root tests use `codegg-lsp-test-server` (via `CARGO_BIN_EXE_codegg-lsp-test-server`), while `egglsp`-only tests use `egglsp-test-server` (via `CARGO_BIN_EXE_egglsp-test-server`), with `EGGLSP_TEST_SERVER` as an override for CI or manual runs. The scenario engine lives in `egglsp::test_support` module (feature-gated behind `lsp-test-support` and `#[doc(hidden)]`); both binary wrappers are thin `main()` functions.
 
 Phase 2 is complete. The production-harness integration tests cover 11 protocol tests, 3 semantic tests, and 5 service tests through real stdio transport, plus 24 root-crate composite tests in `tests/lsp_composite_stdio.rs` that bridge the gap between `egglsp`-only tests and the real root-crate collectors (`SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`). The crate unit tests (including `forced_abort_after_grace_period` which genuinely reaches the abort-after-grace path) also contribute coverage. Tests live in `tests/production_protocol_stdio.rs`, `tests/production_semantic_stdio.rs`, `tests/production_service_stdio.rs`, and `tests/scenario_engine.rs` includes the fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures. The previously flaky transport test has been fixed.
 
@@ -1053,7 +1053,7 @@ The fake server supports **captured-ID mode** for genuinely out-of-order concurr
 - **Scenario format**: JSON files with step types (ExpectRequest, ExpectNotification, AllowRequest, AllowNotification, SendNotification, Delay, ExitNow)
 - **Transcript**: Machine-readable JSONL output for failure diagnostics
 - **Harness**: `tests/common/harness.rs` — temp directories, scenario management, `CARGO_BIN_EXE_codegg-lsp-test-server` discovery with `EGGLSP_TEST_SERVER` override
-- **Fake-server self-tests**: `tests/scenario_engine.rs` — includes `../egglsp-test-server/tests/scenario_engine.rs` for strict mismatches, raw bytes, grouped frames
+- **Fake-server self-tests**: `tests/scenario_engine.rs` — inlined fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures (no longer `include!` from outside the package)
 
 ### Production Protocol Tests (`tests/production_protocol_stdio.rs`)
 
