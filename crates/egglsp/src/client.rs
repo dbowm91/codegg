@@ -122,7 +122,7 @@ impl<'de> Deserialize<'de> for JsonRpcId {
 type PendingMap =
     Arc<Mutex<HashMap<JsonRpcId, oneshot::Sender<Result<serde_json::Value, LspError>>>>>;
 
-async fn fail_all_pending(pending: &PendingMap, error_msg: &str) {
+pub(crate) async fn fail_all_pending(pending: &PendingMap, error_msg: &str) {
     let mut pending = pending.lock().await;
     let drained = std::mem::take(&mut *pending);
     for (_, tx) in drained {
@@ -344,7 +344,6 @@ impl Default for LspClientOptions {
 pub struct LspClient {
     pub server_id: String,
     pub root: PathBuf,
-    pub process: tokio::sync::Mutex<LspProcess>,
     pub writer: LspWriter,
     pub request_id: AtomicU64,
     pub capabilities: Arc<Mutex<Option<ServerCapabilities>>>,
@@ -360,6 +359,10 @@ pub struct LspClient {
     pub(crate) transport_state: Arc<Mutex<ClientTransportState>>,
     #[allow(dead_code)] // read via ServerRequestContext; snapshot is #[cfg(test)]
     pub(crate) dynamic_registrations: Arc<RwLock<crate::server_request::DynamicRegistrationState>>,
+    /// The child process handle, extracted during construction for
+    /// process monitoring. `None` after the handle has been taken by
+    /// the supervisor monitor task.
+    pub(crate) child: Mutex<Option<tokio::process::Child>>,
     options: LspClientOptions,
     #[cfg(test)]
     test_shutdown_count: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -428,7 +431,7 @@ impl LspClient {
             launch::spawn_stderr_drain(&server_id, stderr.into_inner());
         }
 
-        // Split process: stdout goes to background reader, stdin stays in LspClient.
+        // Split process: stdout and stdin first, then extract child.
         let stdout = process
             .stdout
             .take()
@@ -440,6 +443,9 @@ impl LspClient {
                 .take()
                 .ok_or_else(|| LspError::LaunchFailed("stdin not available".to_string()))?,
         );
+
+        // Extract child handle for process monitoring after stdout/stdin are taken.
+        let child = process.child;
 
         let diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -489,7 +495,6 @@ impl LspClient {
         Ok(Self {
             server_id,
             root: root.to_path_buf(),
-            process: tokio::sync::Mutex::new(process),
             writer,
             request_id: AtomicU64::new(0),
             capabilities: Arc::new(Mutex::new(None)),
@@ -500,6 +505,7 @@ impl LspClient {
             pending,
             transport_state,
             dynamic_registrations,
+            child: Mutex::new(Some(child)),
             options,
             #[cfg(test)]
             test_shutdown_count: None,
@@ -525,6 +531,7 @@ impl LspClient {
             launch::spawn_stderr_drain(server_id, stderr.into_inner());
         }
 
+        // Split process: stdout and stdin first, then extract child.
         let stdout = process
             .stdout
             .take()
@@ -535,6 +542,9 @@ impl LspClient {
                 .take()
                 .ok_or_else(|| LspError::LaunchFailed("stdin not available".to_string()))?,
         );
+
+        // Extract child handle for process monitoring after stdout/stdin are taken.
+        let child = process.child;
 
         let diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -585,7 +595,6 @@ impl LspClient {
         Ok(Self {
             server_id: server_id.clone(),
             root: root.to_path_buf(),
-            process: tokio::sync::Mutex::new(process),
             writer,
             request_id: AtomicU64::new(0),
             capabilities: Arc::new(Mutex::new(None)),
@@ -596,6 +605,7 @@ impl LspClient {
             pending,
             transport_state,
             dynamic_registrations,
+            child: Mutex::new(Some(child)),
             options,
             #[cfg(test)]
             test_shutdown_count: Some(shutdown_count),
@@ -2938,12 +2948,10 @@ mod tests {
         .expect("test client should be created");
         let timeout_id = JsonRpcId::Number(99);
         {
-            let mut process = client.process.lock().await;
-            process
-                .child
-                .kill()
-                .await
-                .expect("test process should terminate");
+            let mut child = client.child.lock().await;
+            if let Some(ref mut c) = *child {
+                c.kill().await.expect("test process should terminate");
+            }
         }
 
         let pending: PendingMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));

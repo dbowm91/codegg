@@ -13,18 +13,52 @@ use url::Url;
 
 use super::client::{LspClient, LspClientOptions};
 use super::config::{LspConfig, LspRule};
+use super::document_sync::OpenDocumentRegistry;
 use super::download;
 use super::error::{LspError, SharedInitError};
+use super::health::LspOperationalState;
 use super::language::{detect_language, language_id_to_server_id};
 use super::launch::LspLaunchSpec;
 use super::root;
 use super::server::{self, LspServerDef};
+use super::supervisor::LspProcessExitEvent;
 
 type ClientMap = Arc<RwLock<HashMap<String, Arc<LspClient>>>>;
 
 type InitResult = Result<Arc<LspClient>, SharedInitError>;
 type InitCompletionSender = tokio::sync::oneshot::Sender<InitResult>;
 type InitCompletionReceiver = tokio::sync::oneshot::Receiver<InitResult>;
+
+/// Per-server operational state tracked by the service.
+///
+/// Each client key (`"{root}:{server_id}"`) has an independent
+/// operational state that tracks health, restart attempts, and
+/// the last failure reason.
+#[derive(Debug, Clone)]
+struct OperationalServerState {
+    /// Current operational state.
+    state: LspOperationalState,
+    /// Number of consecutive restart attempts.
+    restart_attempts: u32,
+    /// Maximum restart attempts before declaring failure.
+    max_restart_attempts: u32,
+    /// Whether restart is enabled for this server.
+    restart_enabled: bool,
+    /// Timestamp of the last healthy state (for reset_after_healthy).
+    last_healthy_at: Option<Instant>,
+}
+
+impl Default for OperationalServerState {
+    fn default() -> Self {
+        Self {
+            state: LspOperationalState::Starting,
+            restart_attempts: 0,
+            max_restart_attempts: 3,
+            restart_enabled: false,
+            last_healthy_at: None,
+        }
+    }
+}
 
 // ── InitSlot: single-flight election ─────────────────────────────────
 
@@ -269,6 +303,16 @@ pub struct LspService {
     active_init_tasks: ActiveTaskMap,
     /// Maps document URI string → client key for O(1) ownership lookup.
     document_owners: Arc<RwLock<HashMap<String, String>>>,
+    /// Authoritative open-document registry for tracking document
+    /// state across restarts. Used for replaying didOpen/didChange
+    /// after a server restart.
+    document_registry: Arc<OpenDocumentRegistry>,
+    /// Per-server operational state (health, restart attempts).
+    operational_state: Arc<RwLock<HashMap<String, OperationalServerState>>>,
+    /// Channel for process exit events from monitor tasks.
+    exit_tx: tokio::sync::mpsc::Sender<LspProcessExitEvent>,
+    /// Receiver for process exit events. Taken once by `start_exit_receiver`.
+    exit_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<LspProcessExitEvent>>>>,
     /// Lifecycle state with generation tracking.
     lifecycle: Arc<RwLock<LifecycleState>>,
     /// `watch` channel that retains the latest lifecycle state for
@@ -292,11 +336,17 @@ pub struct LspService {
 impl LspService {
     pub fn new(config: LspConfig) -> Self {
         let (lifecycle_tx, _rx) = watch::channel(INITIAL_LIFECYCLE_STATE);
+        let (exit_tx, exit_rx) = tokio::sync::mpsc::channel(64);
+        let exit_rx = Arc::new(Mutex::new(Some(exit_rx)));
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
+            document_registry: Arc::new(OpenDocumentRegistry::new()),
+            operational_state: Arc::new(RwLock::new(HashMap::new())),
+            exit_tx,
+            exit_rx,
             lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
             lifecycle_tx,
             config,
@@ -309,17 +359,44 @@ impl LspService {
         }
     }
 
+    /// Start the process exit event receiver task.
+    ///
+    /// Must be called once after constructing the service. The task
+    /// runs in the background and handles exit events from monitor
+    /// tasks, triggering restart logic when enabled.
+    pub async fn start_exit_receiver(self: &Arc<Self>) {
+        let exit_rx = {
+            let mut rx = self.exit_rx.lock().await;
+            rx.take()
+        };
+        if let Some(exit_rx) = exit_rx {
+            let service = Arc::clone(self);
+            tokio::spawn(async move {
+                let mut rx = exit_rx;
+                while let Some(event) = rx.recv().await {
+                    service.handle_exit_event(event).await;
+                }
+                debug!("process exit receiver task terminated");
+            });
+        }
+    }
+
     /// Create a service backed by a test factory closure.
     #[cfg(test)]
     pub(crate) fn test_new<F>(config: LspConfig, factory: F) -> Self
     where
         F: Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static,
     {
+        let (exit_tx, exit_rx) = tokio::sync::mpsc::channel(64);
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
+            document_registry: Arc::new(OpenDocumentRegistry::new()),
+            operational_state: Arc::new(RwLock::new(HashMap::new())),
+            exit_tx,
+            exit_rx: Arc::new(Mutex::new(Some(exit_rx))),
             lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
             lifecycle_tx: watch::channel(INITIAL_LIFECYCLE_STATE).0,
             config,
@@ -338,11 +415,16 @@ impl LspService {
     where
         F: Fn(&'static LspServerDef, &Path) -> TestFactoryReturn + Send + Sync + 'static,
     {
+        let (exit_tx, exit_rx) = tokio::sync::mpsc::channel(64);
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             initializing: Arc::new(Mutex::new(HashMap::new())),
             active_init_tasks: Arc::new(Mutex::new(HashMap::new())),
             document_owners: Arc::new(RwLock::new(HashMap::new())),
+            document_registry: Arc::new(OpenDocumentRegistry::new()),
+            operational_state: Arc::new(RwLock::new(HashMap::new())),
+            exit_tx,
+            exit_rx: Arc::new(Mutex::new(Some(exit_rx))),
             lifecycle: Arc::new(RwLock::new(INITIAL_LIFECYCLE_STATE)),
             lifecycle_tx: watch::channel(INITIAL_LIFECYCLE_STATE).0,
             config,
@@ -501,6 +583,9 @@ impl LspService {
                     lifecycle,
                     key_clone.clone(),
                     cancel_for_task,
+                    self.exit_tx.clone(),
+                    self.operational_state.clone(),
+                    self.document_registry.clone(),
                     #[cfg(test)]
                     test_init,
                     #[cfg(test)]
@@ -612,7 +697,17 @@ impl LspService {
         self.document_owners
             .write()
             .await
-            .insert(uri.to_string(), key);
+            .insert(uri.to_string(), key.clone());
+
+        // Record in the authoritative document registry for restart replay.
+        let language_id = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
+        self.document_registry
+            .open(&key, uri.clone(), language_id, version, text.to_string())
+            .await;
 
         Ok(())
     }
@@ -641,7 +736,14 @@ impl LspService {
             .cloned()
             .unwrap_or(0)
             + 1;
-        client.update_file(&uri, text, version).await
+        client.update_file(&uri, text, version).await?;
+
+        // Record change in the authoritative document registry.
+        self.document_registry
+            .change(&key, &uri, version, text.to_string())
+            .await;
+
+        Ok(())
     }
 
     pub async fn close_file(&self, file_path: &Path) -> Result<(), LspError> {
@@ -681,6 +783,9 @@ impl LspService {
         client.opened_files.lock().await.remove(&uri_str);
         self.document_owners.write().await.remove(&uri_str);
 
+        // Remove from the authoritative document registry.
+        self.document_registry.close(&owner_key, &uri).await;
+
         Ok(())
     }
 
@@ -713,7 +818,12 @@ impl LspService {
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?;
-        client.save_file(&uri, text).await
+        client.save_file(&uri, text).await?;
+
+        // Record save in the authoritative document registry.
+        self.document_registry.save(&owner_key, &uri).await;
+
+        Ok(())
     }
 
     pub fn is_disabled(&self, server_id: &str) -> bool {
@@ -1199,6 +1309,615 @@ impl LspService {
             root.display()
         )))
     }
+
+    // ── Process exit handling ────────────────────────────────────────
+
+    /// Handle a process exit event from a monitor task.
+    ///
+    /// If restart is enabled and attempts remain, schedules a restart.
+    /// Otherwise, transitions the server to Failed.
+    async fn handle_exit_event(&self, event: LspProcessExitEvent) {
+        let key = format!("{}:{}", event.root.display(), event.server_id);
+
+        info!(
+            server = %event.server_id,
+            root = %event.root.display(),
+            status = ?event.status,
+            signal = ?event.signal,
+            expected = event.expected,
+            reason = %event.reason(),
+            "process exit observed"
+        );
+
+        if event.expected {
+            // Expected exit (graceful shutdown) — no restart needed.
+            let mut states = self.operational_state.write().await;
+            if let Some(state) = states.get_mut(&key) {
+                state.state = LspOperationalState::Stopped;
+            }
+            return;
+        }
+
+        // Unexpected exit — fail the transport.
+        let client = {
+            let clients = self.clients.read().await;
+            clients.get(&key).cloned()
+        };
+        if let Some(client) = &client {
+            use super::client::ClientTransportState;
+            let mut ts = client.transport_state.lock().await;
+            if matches!(*ts, ClientTransportState::Running) {
+                *ts = ClientTransportState::Failed {
+                    reason: event.reason(),
+                };
+            }
+            drop(ts);
+            // Fail all pending requests.
+            super::client::fail_all_pending(&client.pending, &event.reason()).await;
+        }
+
+        // Check restart policy.
+        let should_restart = {
+            let states = self.operational_state.read().await;
+            states
+                .get(&key)
+                .map(|s| s.restart_enabled && s.restart_attempts < s.max_restart_attempts)
+                .unwrap_or(false)
+        };
+
+        if should_restart {
+            // Increment restart attempts and transition to RestartScheduled.
+            {
+                let mut states = self.operational_state.write().await;
+                if let Some(state) = states.get_mut(&key) {
+                    state.restart_attempts += 1;
+                    let attempt = state.restart_attempts;
+                    let delay_ms = Self::restart_backoff_ms(attempt);
+                    state.state = LspOperationalState::RestartScheduled { attempt, delay_ms };
+                    info!(
+                        server = %event.server_id,
+                        attempt,
+                        delay_ms,
+                        "scheduling restart"
+                    );
+                }
+            }
+
+            // Schedule restart with backoff.
+            let service = Arc::new(self.clone_for_restart());
+            let key_clone = key.clone();
+            let server_id = event.server_id.clone();
+            let root = event.root.clone();
+            tokio::spawn(async move {
+                let delay = {
+                    let states = service.operational_state.read().await;
+                    match states.get(&key_clone) {
+                        Some(state) => match &state.state {
+                            super::health::LspOperationalState::RestartScheduled {
+                                delay_ms,
+                                ..
+                            } => Duration::from_millis(*delay_ms),
+                            _ => Duration::from_secs(1),
+                        },
+                        None => Duration::from_secs(1),
+                    }
+                };
+                tokio::time::sleep(delay).await;
+                if let Err(e) = service.restart_client(&key_clone).await {
+                    warn!(
+                        server = %server_id,
+                        root = %root.display(),
+                        error = %e,
+                        "restart failed"
+                    );
+                }
+            });
+        } else {
+            // No restart — transition to Failed.
+            let mut states = self.operational_state.write().await;
+            if let Some(state) = states.get_mut(&key) {
+                state.state = LspOperationalState::Failed {
+                    reason: event.reason(),
+                };
+            }
+            warn!(
+                server = %event.server_id,
+                root = %event.root.display(),
+                "server failed permanently (restart disabled or exhausted)"
+            );
+        }
+    }
+
+    /// Calculate exponential backoff delay in milliseconds for restart attempts.
+    fn restart_backoff_ms(attempt: u32) -> u64 {
+        // 500ms * 2^(attempt-1), capped at 8000ms.
+        let base = 500u64;
+        let delay = base.saturating_mul(1u64 << (attempt.saturating_sub(1)));
+        delay.min(8000)
+    }
+
+    /// Restart a client by key.
+    ///
+    /// Stops the old client, collects open documents, creates a new
+    /// client, and replays documents. Called by the exit handler when
+    /// restart is enabled.
+    #[allow(dead_code)] // Used by exit receiver task (not yet wired in Phase 3).
+    async fn restart_client(&self, key: &str) -> Result<(), LspError> {
+        // Verify service is still running.
+        {
+            let lc = self.lifecycle.read().await;
+            if lc.phase != ServiceLifecycle::Running {
+                return Err(LspError::InitializationCancelled(
+                    "service is not running".to_string(),
+                ));
+            }
+        }
+
+        // Collect open documents before removing the old client.
+        let open_docs = self.document_registry.open_documents(key).await;
+
+        info!(
+            key,
+            open_documents = open_docs.len(),
+            "starting client restart"
+        );
+
+        // Transition to Restarting.
+        {
+            let mut states = self.operational_state.write().await;
+            if let Some(state) = states.get_mut(key) {
+                let attempt = state.restart_attempts;
+                state.state = LspOperationalState::Restarting { attempt };
+            }
+        }
+
+        // Remove old client.
+        let old_client = {
+            let mut clients = self.clients.write().await;
+            clients.remove(key)
+        };
+
+        if let Some(old) = old_client {
+            // Shutdown old client (best-effort).
+            let _ = tokio::time::timeout(Duration::from_secs(2), old.shutdown()).await;
+        }
+
+        // Clear document ownership for this key.
+        {
+            let mut owners = self.document_owners.write().await;
+            owners.retain(|_, v| v != key);
+        }
+
+        // Parse key to get root and server_id.
+        let (root_str, _server_id) = match key.rsplit_once(':') {
+            Some((r, s)) => (r, s),
+            None => return Err(LspError::LaunchFailed("invalid client key".to_string())),
+        };
+        let root = PathBuf::from(root_str);
+
+        // Transition to Initializing.
+        {
+            let mut states = self.operational_state.write().await;
+            if let Some(state) = states.get_mut(key) {
+                state.state = LspOperationalState::Initializing;
+            }
+        }
+
+        // Create a new client through the normal initialization path.
+        // We use get_or_create_client with a synthetic file path.
+        let synthetic_file = root.join("src").join("lib.rs");
+        match self.get_or_create_client(&synthetic_file).await {
+            Ok((_new_key, _new_root)) => {
+                // Replay open documents.
+                self.replay_documents(key, &open_docs).await;
+
+                // Transition to Ready.
+                let mut states = self.operational_state.write().await;
+                if let Some(state) = states.get_mut(key) {
+                    state.state = LspOperationalState::Ready;
+                    state.last_healthy_at = Some(Instant::now());
+                }
+
+                info!(
+                    key,
+                    open_documents = open_docs.len(),
+                    "client restart completed successfully"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                // Transition to Failed.
+                let mut states = self.operational_state.write().await;
+                if let Some(state) = states.get_mut(key) {
+                    state.state = LspOperationalState::Failed {
+                        reason: format!("restart failed: {}", e),
+                    };
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Replay open documents to a restarted client.
+    #[allow(dead_code)] // Used by restart_client (not yet wired in Phase 3).
+    async fn replay_documents(
+        &self,
+        key: &str,
+        docs: &[super::document_sync::OpenDocumentSnapshot],
+    ) {
+        let client = {
+            let clients = self.clients.read().await;
+            clients.get(key).cloned()
+        };
+        let client = match client {
+            Some(c) => c,
+            None => {
+                warn!(key, "cannot replay documents: client not found");
+                return;
+            }
+        };
+
+        let mut replayed = 0;
+        for doc in docs {
+            let version = 1; // Reset version on replay.
+            if let Err(e) = client.open_file(&doc.uri, &doc.text, version).await {
+                warn!(
+                    uri = %doc.uri,
+                    error = %e,
+                    "failed to replay document"
+                );
+            } else {
+                // Update ownership.
+                self.document_owners
+                    .write()
+                    .await
+                    .insert(doc.uri.to_string(), key.to_string());
+                replayed += 1;
+            }
+        }
+
+        info!(key, replayed, total = docs.len(), "documents replayed");
+    }
+
+    /// Get a snapshot of operational health for the given client key.
+    pub async fn operational_health_snapshot(
+        &self,
+        key: &str,
+    ) -> Option<super::health::LspOperationalHealthSnapshot> {
+        let client = {
+            let clients = self.clients.read().await;
+            clients.get(key)?.clone()
+        };
+        let states = self.operational_state.read().await;
+        let op_state = states.get(key)?;
+
+        let transport = client.transport_state_snapshot().await;
+        let pending_requests = client.pending_request_count().await;
+        let open_documents = self.document_registry.document_count(key).await;
+
+        Some(super::health::LspOperationalHealthSnapshot {
+            server_id: key
+                .rsplit_once(':')
+                .map(|(_, s)| s.to_string())
+                .unwrap_or_default(),
+            root: PathBuf::from(key.rsplit_once(':').map(|(r, _)| r).unwrap_or("")),
+            generation: 0, // Will be set from lifecycle generation.
+            state: op_state.state.clone(),
+            transport,
+            pending_requests,
+            open_documents,
+            last_message_age_ms: None,
+            last_diagnostics_age_ms: None,
+            restart_attempts: op_state.restart_attempts,
+        })
+    }
+
+    /// Clone the service fields needed for restart tasks.
+    ///
+    /// This is a limited clone that shares the underlying Arc'd maps
+    /// and channels — it does not duplicate data.
+    fn clone_for_restart(&self) -> LspServiceClone {
+        LspServiceClone {
+            clients: self.clients.clone(),
+            document_owners: self.document_owners.clone(),
+            document_registry: self.document_registry.clone(),
+            operational_state: self.operational_state.clone(),
+            exit_tx: self.exit_tx.clone(),
+            lifecycle: self.lifecycle.clone(),
+            lifecycle_tx: self.lifecycle_tx.clone(),
+            initializing: self.initializing.clone(),
+            active_init_tasks: self.active_init_tasks.clone(),
+            config: self.config.clone(),
+        }
+    }
+}
+
+/// Minimal clone of `LspService` for use in restart tasks.
+///
+/// Shares all Arc'd maps and channels with the original service.
+/// Does not include test-only fields.
+struct LspServiceClone {
+    clients: ClientMap,
+    document_owners: Arc<RwLock<HashMap<String, String>>>,
+    document_registry: Arc<OpenDocumentRegistry>,
+    operational_state: Arc<RwLock<HashMap<String, OperationalServerState>>>,
+    exit_tx: tokio::sync::mpsc::Sender<LspProcessExitEvent>,
+    lifecycle: Arc<RwLock<LifecycleState>>,
+    #[allow(dead_code)]
+    lifecycle_tx: watch::Sender<LifecycleState>,
+    initializing: InitMap,
+    active_init_tasks: ActiveTaskMap,
+    config: LspConfig,
+}
+
+impl LspServiceClone {
+    /// Restart a client by key. Same logic as `LspService::restart_client`.
+    async fn restart_client(&self, key: &str) -> Result<(), LspError> {
+        {
+            let lc = self.lifecycle.read().await;
+            if lc.phase != ServiceLifecycle::Running {
+                return Err(LspError::InitializationCancelled(
+                    "service is not running".to_string(),
+                ));
+            }
+        }
+
+        let open_docs = self.document_registry.open_documents(key).await;
+        info!(
+            key,
+            open_documents = open_docs.len(),
+            "starting client restart"
+        );
+
+        {
+            let mut states = self.operational_state.write().await;
+            if let Some(state) = states.get_mut(key) {
+                let attempt = state.restart_attempts;
+                state.state = super::health::LspOperationalState::Restarting { attempt };
+            }
+        }
+
+        let old_client = {
+            let mut clients = self.clients.write().await;
+            clients.remove(key)
+        };
+
+        if let Some(old) = old_client {
+            let _ = tokio::time::timeout(Duration::from_secs(2), old.shutdown()).await;
+        }
+
+        {
+            let mut owners = self.document_owners.write().await;
+            owners.retain(|_, v| v != key);
+        }
+
+        let (root_str, _server_id) = match key.rsplit_once(':') {
+            Some((r, s)) => (r, s),
+            None => return Err(LspError::LaunchFailed("invalid client key".to_string())),
+        };
+        let root = PathBuf::from(root_str);
+
+        {
+            let mut states = self.operational_state.write().await;
+            if let Some(state) = states.get_mut(key) {
+                state.state = super::health::LspOperationalState::Initializing;
+            }
+        }
+
+        // Create a new client through the normal initialization path.
+        let synthetic_file = root.join("src").join("lib.rs");
+        let lang = crate::language::detect_language(synthetic_file.to_str().unwrap_or(""))
+            .ok_or_else(|| {
+                LspError::UnsupportedLanguage(format!(
+                    "cannot determine language for {}",
+                    synthetic_file.display()
+                ))
+            })?;
+        let sid = crate::language::language_id_to_server_id(lang).ok_or_else(|| {
+            LspError::UnsupportedLanguage(format!("no server for language '{}'", lang))
+        })?;
+        let server_def = crate::server::find_server(sid).ok_or_else(|| {
+            LspError::ServerNotFound(format!("server definition not found for '{}'", sid))
+        })?;
+        let project_root = crate::root::find_project_root(&synthetic_file).ok_or_else(|| {
+            LspError::LaunchFailed("could not determine project root".to_string())
+        })?;
+        let new_key = format!("{}:{}", project_root.display(), sid);
+
+        // Use the existing initialization path.
+        let config = self.config.clone();
+        let clients = self.clients.clone();
+        let initializing = self.initializing.clone();
+        let active_init_tasks = self.active_init_tasks.clone();
+        let lifecycle = self.lifecycle.clone();
+        let exit_tx = self.exit_tx.clone();
+        let op_state = self.operational_state.clone();
+        let doc_reg = self.document_registry.clone();
+
+        let attempt_id = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let cancellation = CancellationToken::new();
+
+        {
+            let mut init = initializing.lock().await;
+            init.insert(
+                new_key.clone(),
+                InitSlot {
+                    attempt_id,
+                    leader: tx,
+                    waiters: vec![],
+                    cancellation: cancellation.clone(),
+                },
+            );
+        }
+
+        let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<InitTaskExit>();
+
+        let task = tokio::spawn(run_init_task_wrapper(
+            attempt_id,
+            start_rx,
+            completion_tx,
+            server_def,
+            project_root.clone(),
+            config,
+            clients.clone(),
+            initializing.clone(),
+            active_init_tasks.clone(),
+            lifecycle.clone(),
+            new_key.clone(),
+            cancellation,
+            exit_tx,
+            op_state,
+            doc_reg,
+            #[cfg(test)]
+            None,
+            #[cfg(test)]
+            std::sync::Arc::new(AtomicBool::new(false)),
+        ));
+
+        let abort_handle = task.abort_handle();
+        {
+            let mut tasks = active_init_tasks.lock().await;
+            tasks.insert(
+                attempt_id,
+                InitTaskControl {
+                    attempt_id,
+                    cancellation: CancellationToken::new(),
+                    abort_handle,
+                    completion: completion_rx,
+                },
+            );
+        }
+
+        let slot_still_valid = {
+            let init = initializing.lock().await;
+            init.get(&new_key)
+                .is_some_and(|slot| slot.attempt_id == attempt_id)
+        };
+
+        if !slot_still_valid {
+            drop(start_tx);
+            task.abort();
+            let _ = task.await;
+            return Err(LspError::InitializationCancelled(
+                "service lifecycle changed".to_string(),
+            ));
+        }
+
+        if start_tx.send(()).is_err() {
+            task.abort();
+            let _ = task.await;
+            return Err(LspError::InitializationCancelled(
+                "init task exited early".to_string(),
+            ));
+        }
+
+        match rx.await {
+            Ok(Ok(_client)) => {
+                // Replay documents.
+                for doc in &open_docs {
+                    let version = 1;
+                    if let Some(c) = clients.read().await.get(&new_key) {
+                        let _ = c.open_file(&doc.uri, &doc.text, version).await;
+                    }
+                }
+
+                let mut states = self.operational_state.write().await;
+                if let Some(state) = states.get_mut(key) {
+                    state.state = super::health::LspOperationalState::Ready;
+                    state.last_healthy_at = Some(Instant::now());
+                }
+                info!(key, "client restart completed successfully");
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                let mut states = self.operational_state.write().await;
+                if let Some(state) = states.get_mut(key) {
+                    state.state = super::health::LspOperationalState::Failed {
+                        reason: format!("restart failed: {}", e),
+                    };
+                }
+                Err(e.into_lsp_error())
+            }
+            Err(_) => Err(LspError::InitializationCancelled(
+                "init channel dropped".to_string(),
+            )),
+        }
+    }
+}
+
+// ── Process monitor ─────────────────────────────────────────────────
+
+/// Monitor task that observes child process exit and sends an event
+/// through the exit channel. Runs until the process exits or the
+/// client is dropped.
+async fn spawn_process_monitor(
+    client: Arc<LspClient>,
+    key: String,
+    server_id: String,
+    root: PathBuf,
+    generation: u64,
+    exit_tx: tokio::sync::mpsc::Sender<LspProcessExitEvent>,
+) {
+    // Take the child handle from the client.
+    let child = {
+        let mut child_opt = client.child.lock().await;
+        child_opt.take()
+    };
+    let mut child = match child {
+        Some(c) => c,
+        None => {
+            debug!(
+                server = %server_id,
+                key = %key,
+                "no child handle available for monitoring"
+            );
+            return;
+        }
+    };
+
+    // Wait for the process to exit.
+    let exit_status = child.wait().await;
+    let (status, signal) = match &exit_status {
+        Ok(s) => (s.code(), {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                s.signal()
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        }),
+        Err(_) => (None, None),
+    };
+
+    let expected = {
+        let ts = client.transport_state.lock().await;
+        matches!(*ts, super::client::ClientTransportState::Failed { .. })
+    };
+
+    let event = LspProcessExitEvent::new(
+        server_id.clone(),
+        root.clone(),
+        generation,
+        status,
+        signal,
+        expected,
+        vec![], // Stderr tail — would need ring buffer integration.
+    );
+
+    info!(
+        server = %event.server_id,
+        root = %event.root.display(),
+        status = ?event.status,
+        expected = event.expected,
+        "process monitor: exit detected"
+    );
+
+    let _ = exit_tx.send(event).await;
 }
 
 // ── Spawned initialization attempt wrapper ───────────────────────────
@@ -1494,6 +2213,9 @@ async fn run_init_task_wrapper(
     lifecycle: Arc<RwLock<LifecycleState>>,
     key: String,
     cancellation: CancellationToken,
+    exit_tx: tokio::sync::mpsc::Sender<LspProcessExitEvent>,
+    operational_state: Arc<RwLock<HashMap<String, OperationalServerState>>>,
+    document_registry: Arc<OpenDocumentRegistry>,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
     #[cfg(test)] force_stuck: std::sync::Arc<AtomicBool>,
 ) {
@@ -1519,6 +2241,9 @@ async fn run_init_task_wrapper(
         lifecycle,
         key.clone(),
         cancellation,
+        exit_tx,
+        operational_state,
+        document_registry,
         #[cfg(test)]
         test_init_fn,
     );
@@ -1600,6 +2325,9 @@ async fn run_initialization_attempt(
     lifecycle: Arc<RwLock<LifecycleState>>,
     key: String,
     cancellation: CancellationToken,
+    exit_tx: tokio::sync::mpsc::Sender<LspProcessExitEvent>,
+    operational_state: Arc<RwLock<HashMap<String, OperationalServerState>>>,
+    _document_registry: Arc<OpenDocumentRegistry>,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
 ) {
     let init_opts: Option<serde_json::Value> = match &config {
@@ -1726,7 +2454,7 @@ async fn run_initialization_attempt(
             }
         };
 
-        info!(server = server.id, root = ?root, "LSP client initialized");
+        info!(server = server.id, root = %root.display(), key = %key, attempt_id, "LSP client initialized");
 
         // Cooperative cancellation before publication.
         tokio::select! {
@@ -1766,6 +2494,39 @@ async fn run_initialization_attempt(
             let senders = take_attempt(&initializing, &key, attempt_id).await;
             match (publish_outcome, senders) {
                 (PublishOutcome::Published, Some(senders)) => {
+                    // Spawn process monitor for the new client.
+                    let monitor_client = client.clone();
+                    let monitor_key = key.clone();
+                    let monitor_exit_tx = exit_tx.clone();
+                    let monitor_server_id = server.id.to_string();
+                    let monitor_root = root.clone();
+                    let monitor_generation = captured_generation;
+                    tokio::spawn(async move {
+                        spawn_process_monitor(
+                            monitor_client,
+                            monitor_key,
+                            monitor_server_id,
+                            monitor_root,
+                            monitor_generation,
+                            monitor_exit_tx,
+                        )
+                        .await;
+                    });
+
+                    // Initialize operational state for this server.
+                    {
+                        let mut states = operational_state.write().await;
+                        states
+                            .entry(key.clone())
+                            .or_insert_with(|| OperationalServerState {
+                                state: super::health::LspOperationalState::Ready,
+                                restart_attempts: 0,
+                                max_restart_attempts: 3,
+                                restart_enabled: false,
+                                last_healthy_at: Some(Instant::now()),
+                            });
+                    }
+
                     send_completion_result(senders, Ok(client.clone()));
                 }
                 (PublishOutcome::Existing(existing), Some(senders)) => {

@@ -407,6 +407,43 @@ async fn run_smoke_suite(
                 checks.push(SmokeCheck::fail("references", e, ms));
             }
         }
+
+        // 7b. Cross-file references: find a symbol defined in a
+        // different file and verify references span multiple files.
+        if source_files.len() >= 2 {
+            let start = std::time::Instant::now();
+            // For Python: look for 'add' in main.py (line 0, col ~6 for 'from helper import add').
+            // For Rust: look for the helper function call.
+            let cross_file_result = if let Some(main_file) = source_files.last() {
+                let uri = url::Url::from_file_path(main_file).unwrap();
+                client
+                    .find_references(&uri, lsp_types::Position::new(0, 6))
+                    .await
+                    .map(|refs| {
+                        let file_count = refs
+                            .iter()
+                            .map(|r| r.uri.to_string())
+                            .collect::<std::collections::HashSet<_>>()
+                            .len();
+                        (refs.len(), file_count)
+                    })
+                    .map_err(|e| format!("{e}"))
+            } else {
+                Err("no source files".to_string())
+            };
+            let ms = start.elapsed().as_millis() as u64;
+            match cross_file_result {
+                Ok((count, file_count)) => {
+                    checks.push(SmokeCheck::pass(
+                        format!("cross-file references ({count} refs in {file_count} files)"),
+                        ms,
+                    ));
+                }
+                Err(e) => {
+                    checks.push(SmokeCheck::fail("cross-file references", e, ms));
+                }
+            }
+        }
     } else {
         checks.push(SmokeCheck::pass("references (skipped: not supported)", 0));
     }

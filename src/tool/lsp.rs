@@ -266,6 +266,8 @@ struct DiagnosticEvidenceMeta {
     source: crate::lsp::diagnostics::LspDiagnosticSource,
     age_ms: i64,
     usable_evidence: bool,
+    server_generation: Option<u64>,
+    post_restart: bool,
 }
 
 #[derive(Serialize)]
@@ -2652,6 +2654,8 @@ impl SemanticContextPacket {
                     source: e.source,
                     age_ms: e.age_ms,
                     usable_evidence: e.usable_evidence,
+                    server_generation: e.server_generation,
+                    post_restart: e.post_restart,
                 });
 
         let symbols: Vec<SymbolSummary> = response
