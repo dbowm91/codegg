@@ -22,7 +22,7 @@
 //! - `LspProcess` - spawned server process with streams
 //! - `DiagnosticEntry` - file URI + diagnostic data
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -285,6 +285,8 @@ pub async fn dispatch_notification(
                                 received_at: std::time::Instant::now(),
                                 source: crate::diagnostics::LspDiagnosticSource::Pushed,
                                 content_version: version,
+                                server_generation: 0,
+                                post_restart: false,
                             },
                         );
                         debug!(uri, count, "received diagnostics via background reader");
@@ -294,6 +296,59 @@ pub async fn dispatch_notification(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Apply a `$/progress` notification to the progress tracker.
+///
+/// The expected payload shape is
+/// `{ "token": <token>, "value": { "kind": "begin" | "report" | "end", ... } }`.
+/// Tokens are stored as their string form (any non-string token
+/// is rendered to a debug string so the active set still observes
+/// the begin/end pair).
+///
+/// - `begin` inserts the token into `active_tokens`.
+/// - `report` does not change the active set but refreshes
+///   `last_progress_at`.
+/// - `end` removes the token from `active_tokens`.
+///
+/// All three kinds refresh `last_progress_at = Some(Instant::now())`
+/// so the `WaitForProgressEndOrTimeout` readiness policy can
+/// observe liveness.
+pub(crate) async fn update_progress_state(
+    progress_state: &Arc<Mutex<ProgressState>>,
+    params: &serde_json::Value,
+) {
+    let token = params.get("token").map(|v| match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    });
+    let kind = params
+        .get("value")
+        .and_then(|v| v.get("kind"))
+        .and_then(|v| v.as_str());
+    let Some(token) = token else {
+        return;
+    };
+    let Some(kind) = kind else {
+        return;
+    };
+    let mut state = progress_state.lock().await;
+    state.last_progress_at = Some(Instant::now());
+    match kind {
+        "begin" => {
+            state.active_tokens.insert(token);
+        }
+        "end" => {
+            state.active_tokens.remove(&token);
+        }
+        "report" => {
+            // Reports do not change the active set but are an
+            // explicit liveness signal.
+        }
+        other => {
+            debug!(kind = other, "ignoring unknown $/progress kind");
         }
     }
 }
@@ -315,12 +370,105 @@ pub struct DiagnosticEntry {
     pub diagnostic: lsp_types::Diagnostic,
 }
 
-#[derive(Debug, Clone)]
+/// Tracks in-flight `$/progress` tokens and the timestamp of the
+/// most recent progress notification. The
+/// `LspReadinessPolicy::WaitForProgressEndOrTimeout` policy uses
+/// this state to gate the transition from `Indexing` to `Ready`.
+///
+/// All mutations happen on the background reader task; readers
+/// (e.g. `wait_for_progress_end`, `progress_snapshot`,
+/// `operational_summary`) lock the inner `Mutex` briefly.
+#[derive(Debug, Default)]
+pub(crate) struct ProgressState {
+    /// Active progress tokens (i.e. `begin` received, `end` not yet
+    /// received).
+    pub active_tokens: HashSet<String>,
+    /// Timestamp of the most recent `$/progress` notification of
+    /// any kind. `None` until the first progress notification
+    /// arrives.
+    pub last_progress_at: Option<Instant>,
+}
+
+/// Snapshot of the in-flight progress state at a moment in time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgressSnapshot {
+    /// Number of active progress tokens (begins without matching
+    /// ends).
+    pub active_count: usize,
+    /// Age in milliseconds since the most recent progress
+    /// notification, or `None` if no progress has been observed.
+    pub last_progress_age_ms: Option<u64>,
+}
+
+/// Aggregated operational summary of an LSP client. Combines the
+/// last-message and last-diagnostics timestamps with the progress
+/// tracker so callers can build a single snapshot for readiness
+/// gating and operational notes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationalSummary {
+    /// Age in milliseconds since the most recent protocol message
+    /// arrived, or `None` if no message has been received.
+    pub last_message_age_ms: Option<u64>,
+    /// Age in milliseconds since the most recent diagnostics
+    /// notification arrived, or `None` if no diagnostics have
+    /// been received.
+    pub last_diagnostics_age_ms: Option<u64>,
+    /// Number of active progress tokens.
+    pub progress_active_count: usize,
+    /// Age in milliseconds since the most recent progress
+    /// notification, or `None` if no progress has been observed.
+    pub progress_last_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticCacheEntry {
     pub diagnostics: Vec<lsp_types::Diagnostic>,
+    /// Timestamp of the most recent diagnostic push. Monotonic
+    /// clock value — not meaningful across process restarts, so it
+    /// is skipped from serialization. `Instant` cannot be
+    /// serialized by `serde` without an external feature flag.
+    #[serde(skip, default = "std::time::Instant::now")]
     pub received_at: std::time::Instant,
     pub source: crate::diagnostics::LspDiagnosticSource,
     pub content_version: Option<i32>,
+    /// Server generation that produced these diagnostics.
+    ///
+    /// `0` is the sentinel for "never assigned" (entries from the
+    /// pre-Phase-3 era or unit tests that bypass the service). After
+    /// a server restart, the restart coordinator re-keys retained
+    /// diagnostics to `current - 1` so the freshness classifier
+    /// returns [`LspDiagnosticFreshness::Stale`] until new
+    /// diagnostics arrive.
+    #[serde(default)]
+    pub server_generation: u64,
+    /// Whether these diagnostics were produced by a server that has
+    /// been restarted at least once since the start of this client
+    /// key. `true` only when the entry arrived from a post-restart
+    /// client. Survives across multiple restarts (it is
+    /// monotonically sticky). See `LspDiagnosticSnapshot` for the
+    /// authoritative definition.
+    #[serde(default)]
+    pub post_restart: bool,
+}
+
+impl DiagnosticCacheEntry {
+    /// Return a new entry with `server_generation` set to
+    /// `generation`. The `post_restart` flag is set to `true` when
+    /// `generation > 0` because the entry originated from a
+    /// post-publication client (a generation `0` is reserved for the
+    /// "never assigned" sentinel and is not considered a restart).
+    ///
+    /// `received_at` and `content_version` are preserved.
+    pub fn with_generation(&self, generation: u64) -> Self {
+        Self {
+            diagnostics: self.diagnostics.clone(),
+            received_at: self.received_at,
+            source: self.source,
+            content_version: self.content_version,
+            server_generation: generation,
+            post_restart: self.post_restart || generation > 0,
+        }
+    }
 }
 
 /// Configuration options for LspClient behavior.
@@ -352,6 +500,23 @@ pub struct LspClient {
     pub last_content_change_at: Mutex<HashMap<String, Instant>>,
     pub diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>>,
     pub diagnostics_invalidated_at: Arc<Mutex<Option<Instant>>>,
+    /// Timestamp of the most recent protocol message received from
+    /// the server. Updated by the background reader on every
+    /// successfully parsed message. `None` until the first message
+    /// arrives.
+    pub last_message_at: Arc<Mutex<Option<Instant>>>,
+    /// Timestamp of the most recent diagnostics notification received
+    /// from the server. Updated by the background reader's
+    /// notification dispatcher. `None` until the first diagnostics
+    /// publish arrives.
+    pub last_diagnostics_at: Arc<Mutex<Option<Instant>>>,
+    /// Tracks in-flight `$/progress` tokens and the timestamp of
+    /// the most recent progress notification. Mutated by the
+    /// background reader on every `$/progress` notification.
+    /// Read by `progress_snapshot`, `wait_for_progress_end`, and
+    /// `operational_summary` to back the readiness policies in
+    /// `LspReadinessPolicy::WaitForProgressEndOrTimeout`.
+    pub(crate) progress_state: Arc<Mutex<ProgressState>>,
     pub pending: PendingMap,
     /// Transport health: transitions to `Failed` when the background reader
     /// cannot write a server-request response. Checked by `send_request` /
@@ -363,6 +528,11 @@ pub struct LspClient {
     /// process monitoring. `None` after the handle has been taken by
     /// the supervisor monitor task.
     pub(crate) child: Mutex<Option<tokio::process::Child>>,
+    /// Stderr pipe handle retained during construction so the
+    /// authoritative process runtime can take ownership of the
+    /// reader at monitor-startup time. `None` after the runtime has
+    /// taken it (or after the legacy stderr drain is used in tests).
+    pub(crate) stderr: Mutex<Option<tokio::process::ChildStderr>>,
     options: LspClientOptions,
     #[cfg(test)]
     test_shutdown_count: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -427,9 +597,13 @@ impl LspClient {
         configuration: serde_json::Value,
         options: LspClientOptions,
     ) -> Result<Self, LspError> {
-        if let Some(stderr) = process.stderr.take() {
-            launch::spawn_stderr_drain(&server_id, stderr.into_inner());
-        }
+        // Take the stderr pipe. The authoritative process runtime
+        // (see `crate::runtime`) is the preferred owner of the
+        // reader because it bounds capture and surfaces the tail in
+        // exit events. If no runtime is installed (e.g. legacy
+        // tests that construct clients directly), fall back to the
+        // legacy drain so existing behavior is preserved.
+        let stderr_handle = process.stderr.take().map(|b| b.into_inner());
 
         // Split process: stdout and stdin first, then extract child.
         let stdout = process
@@ -455,11 +629,18 @@ impl LspClient {
         let dynamic_registrations = Arc::new(RwLock::new(
             crate::server_request::DynamicRegistrationState::new(),
         ));
+        let last_message_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let last_diagnostics_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let progress_state: Arc<Mutex<ProgressState>> =
+            Arc::new(Mutex::new(ProgressState::default()));
 
         // Spawn background stdout reader.
         let reader_diagnostics = diagnostics.clone();
         let reader_pending = pending.clone();
         let reader_transport_state = transport_state.clone();
+        let reader_last_message_at = last_message_at.clone();
+        let reader_last_diagnostics_at = last_diagnostics_at.clone();
+        let reader_progress_state = progress_state.clone();
         let server_id_for_reader = server_id.clone();
         let reader_writer = writer.clone_inner();
         let reader_context = ServerRequestContext {
@@ -484,6 +665,9 @@ impl LspClient {
                 reader_diagnostics,
                 reader_pending,
                 reader_transport_state,
+                reader_last_message_at,
+                reader_last_diagnostics_at,
+                reader_progress_state,
                 server_id_for_reader,
                 reader_writer,
                 reader_context,
@@ -502,10 +686,14 @@ impl LspClient {
             last_content_change_at: Mutex::new(HashMap::new()),
             diagnostics,
             diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
+            last_message_at,
+            last_diagnostics_at,
+            progress_state,
             pending,
             transport_state,
             dynamic_registrations,
             child: Mutex::new(Some(child)),
+            stderr: Mutex::new(stderr_handle),
             options,
             #[cfg(test)]
             test_shutdown_count: None,
@@ -527,6 +715,10 @@ impl LspClient {
         };
         let mut process = launch::spawn_server("sleep", &["1000"], &[], Some(cwd)).await?;
 
+        // Test stubs retain the legacy stderr drain so the OS pipe
+        // never back-pressures the long-running `sleep` child used in
+        // service tests. The runtime path (production) owns the
+        // stderr reader instead.
         if let Some(stderr) = process.stderr.take() {
             launch::spawn_stderr_drain(server_id, stderr.into_inner());
         }
@@ -554,10 +746,17 @@ impl LspClient {
         let dynamic_registrations = Arc::new(RwLock::new(
             crate::server_request::DynamicRegistrationState::new(),
         ));
+        let last_message_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let last_diagnostics_at: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        let progress_state: Arc<Mutex<ProgressState>> =
+            Arc::new(Mutex::new(ProgressState::default()));
 
         let reader_diagnostics = diagnostics.clone();
         let reader_pending = pending.clone();
         let reader_transport_state = transport_state.clone();
+        let reader_last_message_at = last_message_at.clone();
+        let reader_last_diagnostics_at = last_diagnostics_at.clone();
+        let reader_progress_state = progress_state.clone();
         let server_id = server_id.to_string();
         let reader_server_id = server_id.clone();
         let reader_writer = writer.clone_inner();
@@ -584,6 +783,9 @@ impl LspClient {
                 reader_diagnostics,
                 reader_pending,
                 reader_transport_state,
+                reader_last_message_at,
+                reader_last_diagnostics_at,
+                reader_progress_state,
                 reader_server_id,
                 reader_writer,
                 reader_context,
@@ -602,10 +804,16 @@ impl LspClient {
             last_content_change_at: Mutex::new(HashMap::new()),
             diagnostics,
             diagnostics_invalidated_at: Arc::new(Mutex::new(None)),
+            last_message_at,
+            last_diagnostics_at,
+            progress_state,
             pending,
             transport_state,
             dynamic_registrations,
             child: Mutex::new(Some(child)),
+            // Test stubs use the legacy stderr drain; no runtime
+            // owns the stderr pipe.
+            stderr: Mutex::new(None),
             options,
             #[cfg(test)]
             test_shutdown_count: Some(shutdown_count),
@@ -621,6 +829,9 @@ impl LspClient {
         diagnostics: Arc<Mutex<HashMap<String, DiagnosticCacheEntry>>>,
         pending: PendingMap,
         transport_state: Arc<Mutex<ClientTransportState>>,
+        last_message_at: Arc<Mutex<Option<Instant>>>,
+        last_diagnostics_at: Arc<Mutex<Option<Instant>>>,
+        progress_state: Arc<Mutex<ProgressState>>,
         server_id: String,
         writer: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
         server_request_context: ServerRequestContext,
@@ -648,6 +859,11 @@ impl LspClient {
                     break;
                 }
             };
+
+            // Update the last-message timestamp as soon as the
+            // frame is successfully parsed. Diagnostics arrival is
+            // recorded separately inside the notification branch.
+            *last_message_at.lock().await = Some(Instant::now());
 
             match classify_json_rpc_message(value) {
                 JsonRpcMessage::Response { id, result } => {
@@ -717,6 +933,11 @@ impl LspClient {
                     }
                 }
                 JsonRpcMessage::Notification { method, params } => {
+                    if method == "textDocument/publishDiagnostics" {
+                        *last_diagnostics_at.lock().await = Some(Instant::now());
+                    } else if method == "$/progress" {
+                        update_progress_state(&progress_state, &params).await;
+                    }
                     dispatch_notification(&diagnostics, &method, params).await;
                 }
                 JsonRpcMessage::Unknown => {
@@ -1245,6 +1466,60 @@ impl LspClient {
         self.send_notification("exit", serde_json::json!({})).await
     }
 
+    /// Wait for the child process to exit, bounded by `timeout`.
+    ///
+    /// Returns:
+    /// - `Ok(Ok(()))` — child exited within the timeout.
+    /// - `Ok(Err(LspError::RequestTimeout))` — timeout elapsed.
+    /// - `Ok(Err(io_error))` — `wait()` itself failed.
+    /// - `Err(LspError::RequestFailed)` — no child handle is available
+    ///   (the supervisor monitor has already taken it).
+    pub async fn wait_for_child_exit(
+        &self,
+        timeout_duration: std::time::Duration,
+    ) -> Result<Result<(), LspError>, LspError> {
+        let mut guard = self.child.lock().await;
+        match guard.as_mut() {
+            Some(child) => match tokio::time::timeout(timeout_duration, child.wait()).await {
+                Ok(Ok(_status)) => Ok(Ok(())),
+                Ok(Err(err)) => Ok(Err(LspError::Io(err))),
+                Err(_elapsed) => Ok(Err(LspError::RequestTimeout(format!(
+                    "child did not exit within {timeout_duration:?}"
+                )))),
+            },
+            None => Err(LspError::RequestFailed(
+                "no child handle available (already taken by supervisor)".to_string(),
+            )),
+        }
+    }
+
+    /// Non-blocking check of child exit status.
+    ///
+    /// Returns `Some(Ok(status))` if the child has exited,
+    /// `Some(Err(err))` if the underlying `try_wait` failed,
+    /// `None` if the child is still running or the handle has been taken.
+    pub async fn try_wait_child(&self) -> Option<Result<std::process::ExitStatus, std::io::Error>> {
+        let mut guard = self.child.lock().await;
+        match guard.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => Some(Ok(status)),
+                Ok(None) => None,
+                Err(err) => Some(Err(err)),
+            },
+            None => None,
+        }
+    }
+
+    /// Take ownership of the stderr pipe handle. Used by the
+    /// authoritative process runtime to wire the stderr ring
+    /// buffer into the exit event. Returns `None` if a test stub
+    /// populated the field with `None` (the legacy stderr drain
+    /// path).
+    pub(crate) async fn take_stderr(&self) -> Option<tokio::process::ChildStderr> {
+        let mut guard = self.stderr.lock().await;
+        guard.take()
+    }
+
     #[allow(dead_code)]
     const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -1365,6 +1640,164 @@ impl LspClient {
         self.pending.lock().await.len()
     }
 
+    /// Returns the elapsed time (in milliseconds) since the most
+    /// recent protocol message was received from the server.
+    ///
+    /// Returns `None` if no message has been received yet.
+    /// Computed against the monotonic clock; non-negative.
+    pub async fn last_message_age_ms(&self) -> Option<u64> {
+        let guard = self.last_message_at.lock().await;
+        guard.map(|instant| {
+            let elapsed = instant.elapsed();
+            elapsed.as_millis().try_into().unwrap_or(u64::MAX)
+        })
+    }
+
+    /// Returns the elapsed time (in milliseconds) since the most
+    /// recent `textDocument/publishDiagnostics` notification was
+    /// received from the server.
+    ///
+    /// Returns `None` if no diagnostics notification has been
+    /// received yet. Computed against the monotonic clock; non-negative.
+    pub async fn last_diagnostics_age_ms(&self) -> Option<u64> {
+        let guard = self.last_diagnostics_at.lock().await;
+        guard.map(|instant| {
+            let elapsed = instant.elapsed();
+            elapsed.as_millis().try_into().unwrap_or(u64::MAX)
+        })
+    }
+
+    /// Return a snapshot of the in-flight progress state.
+    ///
+    /// `active_count` is the number of progress tokens that have
+    /// observed a `begin` without a matching `end`.
+    /// `last_progress_age_ms` is the age of the most recent
+    /// `$/progress` notification of any kind, or `None` if no
+    /// progress has been observed yet.
+    pub async fn progress_snapshot(&self) -> ProgressSnapshot {
+        let state = self.progress_state.lock().await;
+        let active_count = state.active_tokens.len();
+        let last_progress_age_ms = state
+            .last_progress_at
+            .map(|instant| instant.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
+        ProgressSnapshot {
+            active_count,
+            last_progress_age_ms,
+        }
+    }
+
+    /// Wait for all active progress tokens to complete (i.e. each
+    /// token that observed a `begin` observes a matching `end`),
+    /// or for `timeout` to elapse.
+    ///
+    /// Returns `true` when the active set drains to zero within
+    /// the timeout (or was already empty), `false` otherwise. The
+    /// wait is implemented as a coarse polling loop so it does
+    /// not require per-token notifications.
+    pub async fn wait_for_progress_end(&self, timeout: Duration) -> bool {
+        if timeout.is_zero() {
+            // Zero budget: report success only if no active tokens
+            // exist right now.
+            return self.progress_state.lock().await.active_tokens.is_empty();
+        }
+        let started = Instant::now();
+        let step = Duration::from_millis(20);
+        loop {
+            {
+                let state = self.progress_state.lock().await;
+                if state.active_tokens.is_empty() {
+                    return true;
+                }
+            }
+            if started.elapsed() >= timeout {
+                return self.progress_state.lock().await.active_tokens.is_empty();
+            }
+            tokio::time::sleep(step.min(timeout.saturating_sub(started.elapsed()))).await;
+        }
+    }
+
+    /// Wait for the first `textDocument/publishDiagnostics`
+    /// notification to arrive, bounded by `timeout`.
+    ///
+    /// Returns `true` when at least one diagnostic has already
+    /// been recorded (or arrives within the timeout), `false`
+    /// otherwise. Implemented as a coarse polling loop on
+    /// `last_diagnostics_at`.
+    pub async fn wait_for_first_diagnostics(&self, timeout: Duration) -> bool {
+        if timeout.is_zero() {
+            return self.last_diagnostics_at.lock().await.is_some();
+        }
+        let started = Instant::now();
+        let step = Duration::from_millis(20);
+        loop {
+            if self.last_diagnostics_at.lock().await.is_some() {
+                return true;
+            }
+            if started.elapsed() >= timeout {
+                return self.last_diagnostics_at.lock().await.is_some();
+            }
+            tokio::time::sleep(step.min(timeout.saturating_sub(started.elapsed()))).await;
+        }
+    }
+
+    /// Return a single aggregated [`OperationalSummary`] covering
+    /// the most recent message, diagnostics, and progress
+    /// observations.
+    pub async fn operational_summary(&self) -> OperationalSummary {
+        let last_message_age_ms = self
+            .last_message_at
+            .lock()
+            .await
+            .map(|i| i.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
+        let last_diagnostics_age_ms = self
+            .last_diagnostics_at
+            .lock()
+            .await
+            .map(|i| i.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
+        let state = self.progress_state.lock().await;
+        let progress_active_count = state.active_tokens.len();
+        let progress_last_age_ms = state
+            .last_progress_at
+            .map(|i| i.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
+        OperationalSummary {
+            last_message_age_ms,
+            last_diagnostics_age_ms,
+            progress_active_count,
+            progress_last_age_ms,
+        }
+    }
+
+    /// Re-key every diagnostic cache entry to a new `server_generation`
+    /// and `post_restart` flag.
+    ///
+    /// Used by the restart coordinator (Pass 5 / Phase 17) right
+    /// after a fresh client is published and BEFORE document replay
+    /// so the freshness classifier returns
+    /// [`LspDiagnosticFreshness::Stale`] for any retained diagnostic
+    /// until the new server emits its own first push.
+    ///
+    /// `received_at` and `content_version` are preserved per-entry
+    /// (the underlying observations are still real, only the
+    /// authoritative generation is updated).
+    ///
+    /// `post_restart` becomes `true` whenever `post_restart` is
+    /// requested and the new generation is non-zero.
+    pub async fn set_all_diagnostic_generations(&self, generation: u64, post_restart: bool) {
+        let mut map = self.diagnostics.lock().await;
+        for entry in map.values_mut() {
+            entry.server_generation = generation;
+            entry.post_restart = entry.post_restart || post_restart;
+        }
+    }
+
+    /// Return the latest `server_generation` observed across all
+    /// diagnostic cache entries. `0` when no entries exist (the
+    /// "no client" sentinel).
+    pub async fn current_diagnostic_generation(&self) -> u64 {
+        let map = self.diagnostics.lock().await;
+        map.values().map(|e| e.server_generation).max().unwrap_or(0)
+    }
+
     /// Returns a combined health snapshot of transport state and pending request count.
     ///
     /// This is an observational check, not a synchronization primitive.
@@ -1444,6 +1877,9 @@ impl LspClient {
     }
 
     pub async fn process_notification(&self, notification: &str) {
+        // Update the last-message timestamp for any notification
+        // routed through this path (test-only entry point).
+        *self.last_message_at.lock().await = Some(Instant::now());
         if let Some(diags) = parse_publish_diagnostics(notification) {
             let uri = diags.0;
             let diagnostics = diags.1;
@@ -1455,8 +1891,11 @@ impl LspClient {
                     received_at: std::time::Instant::now(),
                     source: crate::diagnostics::LspDiagnosticSource::Pushed,
                     content_version: None,
+                    server_generation: 0,
+                    post_restart: false,
                 },
             );
+            *self.last_diagnostics_at.lock().await = Some(Instant::now());
             debug!(uri, count, "received diagnostics");
         }
     }
@@ -1474,28 +1913,34 @@ impl LspClient {
         let (entry, freshness) = classify_diagnostic_freshness(entry, last_change, invalidated_at);
 
         match (entry, freshness) {
-            (Some(entry), freshness) => crate::diagnostics::LspDiagnosticSnapshot {
-                file_path: PathBuf::from(file_path),
-                diagnostics: entry
-                    .diagnostics
-                    .into_iter()
-                    .map(|d| crate::diagnostics::FileDiagnostic {
-                        file: uri.to_string(),
-                        line: d.range.start.line,
-                        column: d.range.start.character,
-                        message: d.message,
-                        severity: d.severity.unwrap_or(lsp_types::DiagnosticSeverity::ERROR),
-                        source: d.source,
-                        code: d.code.as_ref().map(|c| match c {
-                            lsp_types::NumberOrString::Number(n) => n.to_string(),
-                            lsp_types::NumberOrString::String(s) => s.clone(),
-                        }),
-                    })
-                    .collect(),
-                age_ms: entry.received_at.elapsed().as_millis() as i64,
-                source: entry.source,
-                freshness,
-            },
+            (Some(entry), freshness) => {
+                let server_generation = entry.server_generation;
+                let post_restart = entry.post_restart;
+                crate::diagnostics::LspDiagnosticSnapshot {
+                    file_path: PathBuf::from(file_path),
+                    diagnostics: entry
+                        .diagnostics
+                        .into_iter()
+                        .map(|d| crate::diagnostics::FileDiagnostic {
+                            file: uri.to_string(),
+                            line: d.range.start.line,
+                            column: d.range.start.character,
+                            message: d.message,
+                            severity: d.severity.unwrap_or(lsp_types::DiagnosticSeverity::ERROR),
+                            source: d.source,
+                            code: d.code.as_ref().map(|c| match c {
+                                lsp_types::NumberOrString::Number(n) => n.to_string(),
+                                lsp_types::NumberOrString::String(s) => s.clone(),
+                            }),
+                        })
+                        .collect(),
+                    age_ms: entry.received_at.elapsed().as_millis() as i64,
+                    source: entry.source,
+                    freshness,
+                    server_generation: Some(server_generation),
+                    post_restart,
+                }
+            }
             (None, _) => {
                 crate::diagnostics::LspDiagnosticSnapshot::unavailable(PathBuf::from(file_path))
             }
@@ -1980,6 +2425,8 @@ mod tests {
                 received_at: std::time::Instant::now(),
                 source: crate::diagnostics::LspDiagnosticSource::Pushed,
                 content_version: None,
+                server_generation: 0,
+                post_restart: false,
             },
         );
         let has_received = diagnostics.lock().await.contains_key(uri);
@@ -2019,6 +2466,8 @@ mod tests {
                 received_at: std::time::Instant::now(),
                 source: crate::diagnostics::LspDiagnosticSource::Pushed,
                 content_version: None,
+                server_generation: 0,
+                post_restart: false,
             },
         );
         let has_received = diagnostics.lock().await.contains_key(uri);
@@ -2178,6 +2627,8 @@ mod tests {
             received_at: Instant::now(),
             source: crate::diagnostics::LspDiagnosticSource::Pushed,
             content_version: None,
+            server_generation: 0,
+            post_restart: false,
         };
         let (out_entry, freshness) = classify_diagnostic_freshness(Some(entry), None, None);
         assert!(out_entry.is_some());
@@ -2192,6 +2643,8 @@ mod tests {
             received_at,
             source: crate::diagnostics::LspDiagnosticSource::Pushed,
             content_version: None,
+            server_generation: 0,
+            post_restart: false,
         };
         let changed_at = received_at + Duration::from_millis(50);
         let (out_entry, freshness) =
@@ -2222,6 +2675,8 @@ mod tests {
             received_at,
             source: crate::diagnostics::LspDiagnosticSource::Pushed,
             content_version: None,
+            server_generation: 0,
+            post_restart: false,
         };
         let invalidated_at = received_at + Duration::from_millis(100);
         let (out_entry, freshness) =
@@ -2238,6 +2693,8 @@ mod tests {
             received_at: invalidated_at + Duration::from_millis(100),
             source: crate::diagnostics::LspDiagnosticSource::Pushed,
             content_version: None,
+            server_generation: 0,
+            post_restart: false,
         };
         let (out_entry, freshness) =
             classify_diagnostic_freshness(Some(entry), None, Some(invalidated_at));
@@ -2267,6 +2724,8 @@ mod tests {
             received_at,
             source: crate::diagnostics::LspDiagnosticSource::Pushed,
             content_version: None,
+            server_generation: 0,
+            post_restart: false,
         };
         let invalidated_at = received_at + Duration::from_millis(1);
         let (out_entry, freshness) =
@@ -2290,10 +2749,132 @@ mod tests {
             received_at: Instant::now(),
             source: crate::diagnostics::LspDiagnosticSource::Pushed,
             content_version: None,
+            server_generation: 0,
+            post_restart: false,
         };
         let (out_entry, freshness) = classify_diagnostic_freshness(Some(entry), None, None);
         assert!(out_entry.is_some());
         assert_eq!(freshness, LspDiagnosticFreshness::Fresh);
+    }
+
+    // ── Pass 5 tests: DiagnosticCacheEntry generation metadata ──────
+
+    #[test]
+    fn cache_entry_default_generation_is_zero() {
+        // A freshly-constructed entry has the "never assigned"
+        // sentinel: generation 0, post_restart false. The
+        // `Default` shape matches the `0` literal for both
+        // fields.
+        let entry = DiagnosticCacheEntry {
+            diagnostics: Vec::new(),
+            received_at: Instant::now(),
+            source: crate::diagnostics::LspDiagnosticSource::Pushed,
+            content_version: None,
+            server_generation: 0,
+            post_restart: false,
+        };
+        assert_eq!(entry.server_generation, 0);
+        assert!(!entry.post_restart);
+
+        // `with_generation(0)` is a no-op (no sticky promotion).
+        let updated = entry.with_generation(0);
+        assert_eq!(updated.server_generation, 0);
+        assert!(!updated.post_restart);
+
+        // `with_generation(7)` promotes to generation 7 and
+        // sets `post_restart = true` (because generation > 0).
+        let updated = entry.with_generation(7);
+        assert_eq!(updated.server_generation, 7);
+        assert!(updated.post_restart);
+    }
+
+    #[tokio::test]
+    async fn set_all_diagnostic_generations_updates_all_entries() {
+        // Build a `LspClient` via the test stub and inject a few
+        // diagnostic cache entries. Then call
+        // `set_all_diagnostic_generations` and verify every
+        // entry is updated. Also exercise
+        // `current_diagnostic_generation`.
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let client = LspClient::test_stub(
+            "stub",
+            tempdir.path(),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        // Inject two entries with generation 0 / 0.
+        let uri_a = "file:///tmp/a.rs";
+        let uri_b = "file:///tmp/b.rs";
+        {
+            let mut map = client.diagnostics.lock().await;
+            map.insert(
+                uri_a.to_string(),
+                DiagnosticCacheEntry {
+                    diagnostics: Vec::new(),
+                    received_at: Instant::now(),
+                    source: crate::diagnostics::LspDiagnosticSource::Pushed,
+                    content_version: None,
+                    server_generation: 0,
+                    post_restart: false,
+                },
+            );
+            map.insert(
+                uri_b.to_string(),
+                DiagnosticCacheEntry {
+                    diagnostics: Vec::new(),
+                    received_at: Instant::now(),
+                    source: crate::diagnostics::LspDiagnosticSource::Pushed,
+                    content_version: None,
+                    server_generation: 0,
+                    post_restart: false,
+                },
+            );
+        }
+
+        // Initially the highest generation is 0.
+        assert_eq!(client.current_diagnostic_generation().await, 0);
+
+        // Promote everything to generation 3, post_restart=false
+        // (the restart coordinator's "previous generation" call).
+        client.set_all_diagnostic_generations(3, false).await;
+        assert_eq!(client.current_diagnostic_generation().await, 3);
+        {
+            let map = client.diagnostics.lock().await;
+            assert_eq!(map.get(uri_a).unwrap().server_generation, 3);
+            assert!(!map.get(uri_a).unwrap().post_restart);
+            assert_eq!(map.get(uri_b).unwrap().server_generation, 3);
+            assert!(!map.get(uri_b).unwrap().post_restart);
+        }
+
+        // Promote to generation 5, post_restart=true (the
+        // "post-restart entries are now from a new server" call).
+        // post_restart is sticky: it should latch to true.
+        client.set_all_diagnostic_generations(5, true).await;
+        assert_eq!(client.current_diagnostic_generation().await, 5);
+        {
+            let map = client.diagnostics.lock().await;
+            assert_eq!(map.get(uri_a).unwrap().server_generation, 5);
+            assert!(map.get(uri_a).unwrap().post_restart);
+            assert_eq!(map.get(uri_b).unwrap().server_generation, 5);
+            assert!(map.get(uri_b).unwrap().post_restart);
+        }
+
+        // Re-promote with post_restart=false (subsequent
+        // generation re-keying). The post_restart flag must
+        // remain true (it is sticky across resets).
+        client.set_all_diagnostic_generations(7, false).await;
+        assert_eq!(client.current_diagnostic_generation().await, 7);
+        {
+            let map = client.diagnostics.lock().await;
+            assert_eq!(map.get(uri_a).unwrap().server_generation, 7);
+            assert!(
+                map.get(uri_a).unwrap().post_restart,
+                "post_restart must be sticky"
+            );
+        }
     }
 
     // ── Phase 3 classifier hardening tests ──────────────────────────
@@ -3155,5 +3736,240 @@ mod tests {
     fn parse_lsp_headers_accepts_case_insensitive_name() {
         let header = b"content-length: 9\r\n\r\n";
         assert_eq!(parse_lsp_headers(header).unwrap().content_length, 9);
+    }
+
+    // ── ProgressState tracker tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn progress_tracker_records_begin_and_end() {
+        let dir = std::env::temp_dir().join("progress_tracker_basic");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = LspClient::test_stub(
+            "progress_basic",
+            &dir,
+            shutdown_count,
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        // Initially empty.
+        let snap = client.progress_snapshot().await;
+        assert_eq!(snap.active_count, 0);
+        assert!(snap.last_progress_age_ms.is_none());
+
+        // Begin token "rust-analyzer/indexing".
+        let begin_params = serde_json::json!({
+            "token": "rust-analyzer/indexing",
+            "value": { "kind": "begin", "title": "Indexing" }
+        });
+        update_progress_state(&client.progress_state, &begin_params).await;
+        let snap = client.progress_snapshot().await;
+        assert_eq!(snap.active_count, 1, "begin should register token");
+        assert!(snap.last_progress_age_ms.is_some());
+
+        // End token.
+        let end_params = serde_json::json!({
+            "token": "rust-analyzer/indexing",
+            "value": { "kind": "end" }
+        });
+        update_progress_state(&client.progress_state, &end_params).await;
+        let snap = client.progress_snapshot().await;
+        assert_eq!(snap.active_count, 0, "end should remove token");
+    }
+
+    #[tokio::test]
+    async fn progress_tracker_report_does_not_remove_token() {
+        let dir = std::env::temp_dir().join("progress_tracker_report");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = LspClient::test_stub(
+            "progress_report",
+            &dir,
+            shutdown_count,
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        // Begin.
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "rust-analyzer/cargo",
+                "value": { "kind": "begin", "title": "Cargo" }
+            }),
+        )
+        .await;
+        // Report (liveness only).
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "rust-analyzer/cargo",
+                "value": { "kind": "report", "message": "compiling dep 1" }
+            }),
+        )
+        .await;
+        let snap = client.progress_snapshot().await;
+        assert_eq!(
+            snap.active_count, 1,
+            "report must not remove the token (liveness only)"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_progress_end_returns_true_when_all_complete() {
+        let dir = std::env::temp_dir().join("progress_tracker_wait");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = LspClient::test_stub(
+            "progress_wait",
+            &dir,
+            shutdown_count,
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        // Begin two tokens.
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "a",
+                "value": { "kind": "begin" }
+            }),
+        )
+        .await;
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "b",
+                "value": { "kind": "begin" }
+            }),
+        )
+        .await;
+
+        // With active tokens, wait returns false within a short
+        // timeout.
+        let result = client
+            .wait_for_progress_end(std::time::Duration::from_millis(50))
+            .await;
+        assert!(!result, "should time out while tokens are active");
+
+        // End both.
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "a",
+                "value": { "kind": "end" }
+            }),
+        )
+        .await;
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "b",
+                "value": { "kind": "end" }
+            }),
+        )
+        .await;
+
+        let result = client
+            .wait_for_progress_end(std::time::Duration::from_millis(200))
+            .await;
+        assert!(result, "should succeed once all tokens are ended");
+    }
+
+    #[tokio::test]
+    async fn wait_for_first_diagnostics_returns_true_after_publish() {
+        let dir = std::env::temp_dir().join("diagnostics_wait_basic");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = LspClient::test_stub(
+            "diag_wait",
+            &dir,
+            shutdown_count,
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        // Initially no diagnostics → wait returns false within
+        // a short timeout.
+        let result = client
+            .wait_for_first_diagnostics(std::time::Duration::from_millis(50))
+            .await;
+        assert!(!result, "should time out before any diagnostics");
+
+        // Simulate a `textDocument/publishDiagnostics` push
+        // by directly invoking the free function with the
+        // client's public diagnostics map.
+        dispatch_notification(
+            &client.diagnostics,
+            "textDocument/publishDiagnostics",
+            serde_json::json!({
+                "uri": "file:///test.rs",
+                "diagnostics": []
+            }),
+        )
+        .await;
+        // Mark the diagnostics timestamp so `wait_for_first_diagnostics`
+        // can observe the publish.
+        *client.last_diagnostics_at.lock().await = Some(Instant::now());
+
+        // After push, wait should succeed.
+        let result = client
+            .wait_for_first_diagnostics(std::time::Duration::from_millis(200))
+            .await;
+        assert!(result, "should succeed after diagnostics publish");
+    }
+
+    #[tokio::test]
+    async fn operational_summary_reports_progress_and_diagnostics() {
+        let dir = std::env::temp_dir().join("operational_summary");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = LspClient::test_stub(
+            "op_summary",
+            &dir,
+            shutdown_count,
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        // Empty state.
+        let summary = client.operational_summary().await;
+        assert_eq!(summary.progress_active_count, 0);
+        assert!(summary.progress_last_age_ms.is_none());
+        assert!(summary.last_diagnostics_age_ms.is_none());
+
+        // Push diagnostics via the free function.
+        dispatch_notification(
+            &client.diagnostics,
+            "textDocument/publishDiagnostics",
+            serde_json::json!({
+                "uri": "file:///test.rs",
+                "diagnostics": []
+            }),
+        )
+        .await;
+        *client.last_diagnostics_at.lock().await = Some(Instant::now());
+
+        // Begin a progress token.
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "x",
+                "value": { "kind": "begin" }
+            }),
+        )
+        .await;
+
+        let summary = client.operational_summary().await;
+        assert_eq!(summary.progress_active_count, 1);
+        assert!(summary.progress_last_age_ms.is_some());
+        assert!(summary.last_diagnostics_age_ms.is_some());
     }
 }

@@ -21,9 +21,7 @@ use codegg::tui::command::COMMAND_REGISTRY;
 /// queried in these tests — the executor either errors out before any
 /// LSP request, or the workflow returns a stage-1 report.
 fn make_idle_lsp_tool() -> Arc<LspTool> {
-    Arc::new(LspTool::new(Arc::new(
-        LspService::new(LspConfig::default()),
-    )))
+    Arc::new(LspTool::new(LspService::new_arc(LspConfig::default())))
 }
 
 /// Initialize a temporary git repository in `root` so the diff-discovery

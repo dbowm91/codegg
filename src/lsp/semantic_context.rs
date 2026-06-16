@@ -3,6 +3,7 @@ use crate::lsp::lsp_types;
 use crate::lsp::operations::LspOperations;
 use crate::lsp::service::LspService;
 use egglsp::capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
+use egglsp::health::LspOperationalState;
 use egglsp::semantic_context::{
     SemanticContextRequest, SemanticContextResponse, SemanticDiagnosticEvidence,
     SemanticHierarchyItem, SemanticHierarchyRange, SemanticHierarchyRelation, SemanticLocation,
@@ -54,6 +55,16 @@ impl SemanticContextCollector {
         let mut response = SemanticContextResponse::new(&file_str);
         let mut limits = egglsp::semantic_context::SemanticContextLimits::default();
 
+        // Phase 0: consult the operational state for the file's
+        // server key. The note (if any) is attached first so the
+        // rest of the response carries explicit context. Terminal
+        // states (`Failed`, `Stopped`) without a live client are
+        // short-circuited — `Failed` returns an error, `Stopped`
+        // returns a response with `unavailable` populated.
+        if let Some(state_note) = self.operational_state_note(&file).await? {
+            response.push_note(state_note);
+        }
+
         // Phase 1: source excerpt
         let (excerpt, excerpt_truncated) = if has_position {
             build_source_excerpt(&file, request.line, request.excerpt_radius)?
@@ -75,6 +86,17 @@ impl SemanticContextCollector {
                 limits.diagnostics_truncated = truncated;
                 let age_ms = snapshot.age_ms;
                 let usable = snapshot.is_usable_evidence();
+                // Pull real generation metadata from the
+                // snapshot. The snapshot's `server_generation`
+                // and `post_restart` are populated by
+                // `LspClient::diagnostic_snapshot` from the
+                // underlying `DiagnosticCacheEntry` and reflect
+                // the current authoritative generation for the
+                // client servicing this file. `None`/`false`
+                // means no live client or no cache entry (e.g.
+                // `Unavailable` snapshots).
+                let server_generation = snapshot.server_generation;
+                let snapshot_post_restart = snapshot.post_restart;
                 response.diagnostics = snapshot
                     .diagnostics
                     .into_iter()
@@ -93,8 +115,8 @@ impl SemanticContextCollector {
                     source: snapshot.source,
                     age_ms,
                     usable_evidence: usable,
-                    server_generation: None,
-                    post_restart: false,
+                    server_generation,
+                    post_restart: snapshot_post_restart,
                 });
             }
             Err(e) => {
@@ -402,6 +424,47 @@ impl SemanticContextCollector {
             server_name.as_deref(),
             lang,
         ))
+    }
+
+    /// Query the operational state for the server that would
+    /// service `file` and return a string to attach to the
+    /// response's `notes`, or `Ok(None)` if the server is in a
+    /// non-notable state (e.g. `Ready`).
+    ///
+    /// - `Failed { reason }` returns `Err(reason)` so the caller
+    ///   surfaces the failure clearly to the agent.
+    /// - `Stopped` (with no live client) short-circuits to a
+    ///   response containing a single `LspUnavailable` entry and
+    ///   no live LSP data. This is returned via
+    ///   `Ok(Some("server unavailable: stopped"))` so the caller
+    ///   can still emit a structured response (rather than an
+    ///   opaque error).
+    /// - All other states (`Indexing`, `Restarting`,
+    ///   `RestartScheduled`, `Starting`, `Initializing`,
+    ///   `Degraded`, `Ready`) are reported via
+    ///   `LspOperationalState::context_note()` — which returns
+    ///   `Some` for the notable states and `None` for `Ready`
+    ///   (the silent default).
+    ///
+    /// Returns `Ok(None)` if no key exists for the file (the
+    /// service will discover one on demand and no operational
+    /// state has been recorded yet).
+    async fn operational_state_note(&self, file: &Path) -> Result<Option<String>, String> {
+        let key_result = self.service.get_or_create_client(file).await;
+        let key = match key_result {
+            Ok((k, _)) => k,
+            Err(_) => return Ok(None),
+        };
+        let state = self.service.operational_state_for_key(&key).await;
+        match state {
+            None => Ok(None),
+            Some(s) => match s {
+                LspOperationalState::Failed { reason } => {
+                    Err(format!("LSP server failed: {reason}"))
+                }
+                other => Ok(other.context_note()),
+            },
+        }
     }
 }
 
@@ -1081,7 +1144,7 @@ mod tests {
 
     #[test]
     fn test_collector_new() {
-        let service = Arc::new(LspService::new(egglsp::config::LspConfig::default()));
+        let service = LspService::new_arc(egglsp::config::LspConfig::default());
         let operations = Arc::new(LspOperations::new(service.clone()));
         let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
         let _collector =

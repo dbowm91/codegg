@@ -6,15 +6,15 @@ use codegg::tool::lsp::to_lsp_position;
 use codegg::tool::{Tool, ToolCategory};
 
 fn make_tool() -> codegg::tool::lsp::LspTool {
-    codegg::tool::lsp::LspTool::new(std::sync::Arc::new(codegg::lsp::service::LspService::new(
+    codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
         codegg::lsp::config::LspConfig::default(),
-    )))
+    ))
 }
 
 fn make_tool_with_root(root: &std::path::Path) -> codegg::tool::lsp::LspTool {
-    codegg::tool::lsp::LspTool::new(std::sync::Arc::new(codegg::lsp::service::LspService::new(
+    codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
         codegg::lsp::config::LspConfig::default(),
-    )))
+    ))
     .with_allowed_root(root.to_path_buf())
 }
 
@@ -616,9 +616,8 @@ fn parse_publish_diagnostics_number_not_string() {
 
 #[tokio::test]
 async fn lsp_disabled_config_rejects_clients() {
-    let service = std::sync::Arc::new(codegg::lsp::service::LspService::new(
-        codegg::lsp::config::LspConfig::Disabled(true),
-    ));
+    let service =
+        codegg::lsp::service::LspService::new_arc(codegg::lsp::config::LspConfig::Disabled(true));
     let tool = codegg::tool::lsp::LspTool::new(service);
     // No file_path → "file_path required" error (before LSP is even invoked)
     let err = tool

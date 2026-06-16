@@ -31,7 +31,9 @@ pub mod language;
 pub mod launch;
 pub mod operations;
 pub mod overlay;
+pub mod restart;
 pub mod root;
+pub mod runtime;
 pub mod semantic_context;
 pub mod server;
 pub mod server_request;
@@ -42,11 +44,12 @@ pub mod writer;
 pub use capability::{LspCapabilitySnapshot, LspSemanticOperation, LspUnavailable};
 pub use client::{
     ClientTransportSnapshot, DiagnosticCacheEntry, JsonRpcId, LspClient, LspClientHealthSnapshot,
-    LspClientOptions,
+    LspClientOptions, OperationalSummary, ProgressSnapshot,
 };
 pub use compatibility::{
-    CompatibilityCheckStatus, LspCompatibilityCheck, LspCompatibilityProfile, LspReadinessPolicy,
-    LspRestartMode, LspRestartPolicy, LspServerVersion,
+    CompatibilityCheckStatus, CompatibilityRequirement, LspCompatibilityCheck,
+    LspCompatibilityProfile, LspReadinessPolicy, LspRestartMode, LspRestartPolicy,
+    LspServerVersion,
 };
 pub use config::{LspConfig, LspRule};
 pub use diagnostics::{
@@ -71,7 +74,7 @@ pub use server_request::{
     dispatch_server_request, DynamicRegistration, DynamicRegistrationState, ServerRequestContext,
     ServerRequestReply,
 };
-pub use service::LspService;
+pub use service::{LspService, ReadinessResult};
 pub use writer::LspWriter;
 
 pub use edit::{FileEditPreview, TextEditPreview, WorkspaceEditPreview};
@@ -80,6 +83,11 @@ pub use lsp_types;
 pub use overlay::{
     OverlayRestoreToken, OverlaySession, SemanticCheckPreview, SemanticSymbolSummary,
 };
+pub use restart::{
+    backoff_delay, restart_client_coordinator, LspClientDescriptor, RestartShared, RestartTrigger,
+    ServicePhase,
+};
+pub use runtime::{LspProcessIntent, LspProcessRuntime};
 pub use supervisor::{LspProcessExitEvent, StderrRingBuffer};
 
 #[cfg(feature = "lsp-test-support")]

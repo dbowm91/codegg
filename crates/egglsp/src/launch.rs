@@ -50,6 +50,22 @@ impl LspLaunchSpec {
             extensions,
         }
     }
+
+    /// Default for test fixtures. Empty command; downstream code
+    /// should never spawn it. Available unconditionally because
+    /// the init pipeline's `Option<LspClientDescriptor>` path uses
+    /// it as a placeholder when the test factory doesn't provide
+    /// a real launch spec.
+    pub fn default_for_test() -> Self {
+        Self {
+            id: String::new(),
+            command: PathBuf::new(),
+            args: Vec::new(),
+            env: Vec::new(),
+            languages: Vec::new(),
+            extensions: Vec::new(),
+        }
+    }
 }
 
 pub struct LspProcess {

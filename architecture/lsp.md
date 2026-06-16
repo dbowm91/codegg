@@ -37,51 +37,75 @@ Defines per-server compatibility profiles, readiness policies, and restart polic
 
 ```rust
 pub struct LspCompatibilityProfile {
-    pub server_id: &'static str,
-    pub tier: CompatibilityTier,
-    pub known_limits: Vec<&'static str>,
+    pub server_id: String,
+    pub executable_candidates: Vec<String>,
+    pub default_args: Vec<String>,
+    pub root_markers: Vec<String>,
+    pub initialization_options: serde_json::Value,
+    pub workspace_configuration: serde_json::Value,
     pub readiness_policy: LspReadinessPolicy,
     pub restart_policy: LspRestartPolicy,
+    pub known_limitations: Vec<String>,
 }
 
-pub struct LspReadinessPolicy {
-    pub requires_indexing: bool,
-    pub warmup_ms: u64,
-    pub max_warmup_ms: u64,
+pub enum LspReadinessPolicy {
+    InitializedIsReady,
+    WaitForDiagnosticsOrTimeout { timeout: Duration },
+    WaitForProgressEndOrTimeout { timeout: Duration },
+    WarmupDelay { duration: Duration },
 }
 
 pub struct LspRestartPolicy {
     pub mode: LspRestartMode,
-    pub max_restarts: u32,
-    pub backoff_ms: u64,
+    pub max_attempts: u32,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+    pub reset_after_healthy: Duration,
 }
 
 pub enum LspRestartMode {
-    Never,
-    OnCrash,
-    OnFailure { consecutive_failures: u32 },
+    Disabled,
+    OnUnexpectedExit,
 }
 
 pub struct LspServerVersion {
-    pub major: u32,
-    pub minor: u32,
-    pub patch: u32,
-    pub pre: Option<String>,
+    pub raw: String,
+    pub parsed: Option<String>,
 }
 
 pub struct LspCompatibilityReport {
     pub server_id: String,
-    pub status: CompatibilityCheckStatus,
-    pub version: Option<LspServerVersion>,
-    pub notes: Vec<String>,
+    pub server_version: Option<String>,
+    pub platform: String,
+    pub initialize_ms: u64,
+    pub readiness_ms: Option<u64>,
+    pub capabilities: LspCapabilitySnapshot,
+    pub checks: Vec<LspCompatibilityCheck>,
+    pub stderr_tail: Vec<String>,
+    pub known_limitations: Vec<String>,
 }
 
 pub enum CompatibilityCheckStatus {
-    Unknown,
     Passing,
     PassingWithKnownLimits,
     Failing,
+    Skipped,
     Unsupported,
+}
+
+pub enum CompatibilityRequirement {
+    Required,
+    RequiredIfAdvertised,
+    Optional,
+    KnownLimitation,
+}
+
+pub struct LspCompatibilityCheck {
+    pub name: String,
+    pub status: CompatibilityCheckStatus,
+    pub requirement: CompatibilityRequirement,
+    pub detail: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 ```
 
@@ -89,11 +113,20 @@ pub enum CompatibilityCheckStatus {
 
 | Status | Meaning |
 |--------|---------|
-| `Unknown` | Not yet checked or server not found |
 | `Passing` | Server binary found, initializes, basic operations work |
 | `PassingWithKnownLimits` | Server works but has documented limitations (e.g. no call hierarchy) |
 | `Failing` | Server found but fails to initialize or produce valid responses |
+| `Skipped` | Check was skipped (advertised feature not exercised) |
 | `Unsupported` | Server binary not found on PATH and no download available |
+
+**Compatibility requirement model (used by `assert_required_checks`):**
+
+| Requirement | Behavior on failure |
+|-------------|---------------------|
+| `Required` | Test fails |
+| `RequiredIfAdvertised` | Test fails if the server advertised the capability |
+| `Optional` | Recorded but does not fail the test |
+| `KnownLimitation` | Expected failure; not an error |
 
 Key functions:
 
@@ -116,8 +149,8 @@ pub enum LspOperationalState {
     Indexing,
     Ready,
     Degraded { reason: String },
-    RestartScheduled { reason: String },
-    Restarting,
+    RestartScheduled { attempt: u32, delay_ms: u64 },
+    Restarting { attempt: u32 },
     Failed { reason: String },
     Stopping,
     Stopped,
@@ -125,13 +158,23 @@ pub enum LspOperationalState {
 
 pub struct LspOperationalHealthSnapshot {
     pub server_id: String,
-    pub state: LspOperationalState,
+    pub root: PathBuf,
     pub generation: u64,
-    pub uptime_ms: u64,
-    pub restart_count: u32,
+    pub state: LspOperationalState,
+    pub transport: Option<ClientTransportSnapshot>,
+    pub pending_requests: usize,
+    pub open_documents: usize,
+    pub last_message_age_ms: Option<u64>,
+    pub last_diagnostics_age_ms: Option<u64>,
+    pub restart_attempts: u32,
     pub last_error: Option<String>,
+    pub stderr_tail: Vec<String>,
 }
 ```
+
+`generation` reflects the authoritative per-key generation from `LspService::generation_for_key`; it is bumped by the restart coordinator after a successful reinit + replay, never speculatively. `last_error` is populated only for `Failed { reason }` transitions; healthy clients keep it `None`. The `stderr_tail` is sourced from the live `LspProcessRuntime` and is empty when no runtime is installed. The snapshot is constructible without a live client (during `RestartScheduled`, `Restarting`, `Failed`, `Stopped`).
+
+`LspOperationalState::context_note()` returns `None` for `Ready` and a bounded `Some("LSP state: ...")` for every other state. The note is appended to `SemanticContextResponse.notes`, `SecurityContextPacket.notes`, and hunk source context summary lines so root workflows expose the operational state explicitly.
 
 **State transitions:**
 
@@ -143,7 +186,7 @@ RestartScheduled → Restarting → Initializing
 Ready → Stopping → Stopped
 ```
 
-`InvalidTransition` is returned when a requested transition is not valid from the current state (e.g. `Starting` → `Ready` skips `Initializing`).
+`transition()` is the authoritative validator. All state mutations go through `LspService::transition_operational_state(key, next)` which calls `transition()` and updates timestamps/error metadata. `InvalidTransition` is returned when a requested transition is not valid from the current state (e.g. `Starting` → `Ready` skips `Initializing`).
 
 ### supervisor.rs - Process Supervision
 
@@ -152,18 +195,91 @@ Provides process exit event tracking and stderr ring buffering for LSP server pr
 ```rust
 pub struct LspProcessExitEvent {
     pub server_id: String,
-    pub exit_code: Option<i32>,
+    pub root: PathBuf,
+    pub generation: u64,
+    pub status: Option<i32>,
+    pub signal: Option<i32>,
+    pub expected: bool,
     pub stderr_tail: Vec<String>,
-    pub timestamp: std::time::Instant,
+    pub timestamp: SystemTime,
 }
 
 pub struct StderrRingBuffer {
-    lines: VecDeque<String>,
+    lines: Vec<String>,
     total_bytes: usize,
 }
 ```
 
-`StderrRingBuffer` is capped at 100 lines / 64KB. When the cap is exceeded, oldest lines are dropped. The buffer is drained during initialization to capture startup errors and surfaced in `LspProcessExitEvent.stderr_tail`.
+`StderrRingBuffer` is capped at 100 lines / 64KB. When the cap is exceeded, oldest lines are dropped. The buffer is drained during initialization to capture startup errors and surfaced in `LspProcessExitEvent.stderr_tail`. The `expected` flag is derived from `LspProcessIntent` at exit time, not from transport state.
+
+### runtime.rs - Authoritative Process Runtime Owner
+
+The single authoritative owner of an LSP server child process. One task owns the child handle, the bounded stderr ring buffer, the shutdown-intent receiver, and the kill channel. The monitor does **not** retain an `Arc<LspClient>` while awaiting the child.
+
+```rust
+pub enum LspProcessIntent {
+    Running,
+    GracefulShutdownRequested,
+    ForceKillRequested,
+}
+
+pub struct LspProcessRuntime {
+    pub server_id: String,
+    pub root: PathBuf,
+    pub generation: u64,
+    pub intent_tx: watch::Sender<LspProcessIntent>,
+    pub exit_rx: watch::Receiver<Option<LspProcessExitEvent>>,
+    pub kill_tx: mpsc::Sender<()>,
+}
+
+pub fn spawn_process_runtime(
+    server_id: String,
+    root: PathBuf,
+    generation: u64,
+    child: tokio::process::Child,
+    stderr: tokio::process::ChildStderr,
+) -> (LspProcessRuntime, tokio::task::JoinHandle<()>)
+```
+
+`LspProcessRuntime` is the runtime handle; `spawn_process_runtime` returns it together with the owner's `JoinHandle`. The owner task uses `tokio::select!` over `child.wait()`, the kill channel, and runtime cancellation, then publishes exactly one `LspProcessExitEvent` and terminates. A bounded stderr-reader task appends each line to the shared `StderrRingBuffer` until EOF or cancellation.
+
+`LspClient::shutdown()` sets the intent to `GracefulShutdownRequested`, sends `shutdown` / `exit`, awaits the runtime exit under a bounded deadline, then `ForceKillRequested` and a force kill on timeout. Hung processes are force-killed and reaped.
+
+Expected-vs-unexpected exit is determined by `LspProcessIntent::is_expected()` (true for `GracefulShutdownRequested` or `ForceKillRequested`). Transport state never determines expectedness. A zero exit with no shutdown intent is still unexpected.
+
+### restart.rs - Restart Descriptor and Coordinator
+
+The single source of truth for restart retry/backoff/exhaustion/cancellation. Manual and automatic restart call the same coordinator.
+
+```rust
+pub struct LspClientDescriptor {
+    pub key: String,
+    pub server_id: String,
+    pub root: PathBuf,
+    pub launch_spec: LspLaunchSpec,
+    pub initialization_options: Option<serde_json::Value>,
+    pub workspace_configuration: serde_json::Value,
+    pub readiness_policy: LspReadinessPolicy,
+    pub restart_policy: LspRestartPolicy,
+    pub seed_file: Option<PathBuf>,
+}
+
+pub enum RestartTrigger {
+    Automatic, // honors restart policy (Disabled => no-op)
+    Manual,    // always runs
+}
+
+pub trait RestartShared { /* service-internal surface */ }
+
+pub fn backoff_delay(attempt: u32, policy: &LspRestartPolicy) -> Duration
+pub async fn restart_client_coordinator<S, F>(...) -> Result<(), LspError>
+```
+
+`LspClientDescriptor` persists the per-client launch spec on first publish from the server definition, the user config rule, the resolved launch spec, and the compatibility profile. Resolution priority: explicit user config → profile default → server definition default. Restart reconstructs from the descriptor directly — no language detection, no `src/lib.rs` synthesis. The seed file is overwritten by the first currently open document for the key before calling `reinit_fn`.
+
+`restart_client_coordinator<S, F>` owns generation increment, restart-state transition, current-client removal, old runtime shutdown, retry/backoff loop, client reinitialization from the descriptor, readiness wait, document replay, ownership restoration, diagnostics stale marking, and final `Ready` / `Failed` transition. The coordinator aborts with `LspError::ServerRestarted` if a newer generation is observed at any boundary (cancel-pending check, before-spawn gate, post-spawn re-check, or post-replay re-check). On exhausted retries it transitions the operational state to `Failed { reason }` and returns `LspError::LaunchFailed("restart attempts exhausted (max=N)")`.
+
+`backoff_delay(attempt, policy)` is `min(policy.initial_backoff * 2^(attempt-1), policy.max_backoff)`. The 1-indexed `attempt` means attempt 1 is the first try, which still gets `initial_backoff` per the policy-driven algorithm. `reset_after_healthy` lazily resets `restart_attempts` to 0 when the next unexpected exit observes a healthy client.
 
 ### document_sync.rs - Document Replay Registry
 
@@ -182,7 +298,31 @@ pub struct OpenDocumentSnapshot {
 }
 ```
 
-When a server crashes and restarts, the `OpenDocumentRegistry` replays `textDocument/didOpen` notifications for all previously open documents so the new server instance has a consistent view of the workspace.
+On restart the coordinator replays `didOpen` for every open snapshot using the snapshot's preserved per-document version (not hard-coded 1), restores the `document_owners` map for each URI, updates the new client's `opened_files` state, and keeps registry entries intact. Closed documents are not replayed. Replay failure transitions the operational state to `Degraded` (not silent `Ready`).
+
+### Generation and Stale-Evidence Semantics
+
+Per-client generation is tracked in `generation_map: Arc<Mutex<HashMap<String, u64>>>` and accessed via `LspService::generation_for_key(key)` / `set_generation(key, gen)`. The first publish sets generation `1`; the restart coordinator bumps it after a successful reinit + replay.
+
+- Stale exit events whose `event.generation != current_generation` are silently dropped by `LspService::handle_exit_event`. Old exit events cannot fail a newer client.
+- Restart publication rechecks the expected generation before publishing and aborts with `LspError::ServerRestarted` if a newer generation is observed.
+- `DiagnosticCacheEntry.server_generation: u64` (0 is the "never assigned" sentinel) and `post_restart: bool` (monotonically sticky once a restart has been observed) are stamped on every cache entry. `LspDiagnosticSnapshot` exposes both fields; the root `SemanticContextCollector` propagates them to `SemanticDiagnosticEvidence`.
+- On restart, `mark_diagnostics_stale_for_key(key)` rewrites retained entries' `server_generation` to `current - 1` so the freshness classifier returns `LspDiagnosticFreshness::Stale` until the new server emits its first push.
+
+### Readiness and Operational Notes
+
+`LspService::wait_for_readiness(key, policy)` honors all four `LspReadinessPolicy` variants and returns `ReadinessResult::Ready { elapsed }` or `Degraded { reason, elapsed }`. The four variants drive the production `Indexing` → `Ready` and timeout → `Degraded` transitions:
+
+| Variant | Behavior |
+|---------|----------|
+| `InitializedIsReady` | Return `Ready` immediately after `initialized` notification |
+| `WaitForDiagnosticsOrTimeout { timeout }` | Wait for first `publishDiagnostics` or timeout |
+| `WaitForProgressEndOrTimeout { timeout }` | Wait for a `$window/workDoneProgress` end notification or timeout |
+| `WarmupDelay { duration }` | Fixed warmup delay after initialization |
+
+`LspClient` tracks `ProgressState` (active `$/progress` tokens + last progress timestamp) and exposes `progress_snapshot()`, `wait_for_progress_end(timeout)`, `wait_for_first_diagnostics(timeout)`, and `operational_summary()`. These back the `WaitForProgressEndOrTimeout` and `WaitForDiagnosticsOrTimeout` policies.
+
+`LspOperationalState::context_note()` returns `None` for `Ready` and a bounded `Some("LSP state: ...")` for every other state. The note is appended to `SemanticContextResponse.notes`, `SecurityContextPacket.notes`, and hunk source context summary lines so root workflows expose the operational state explicitly. Restarting/failed/degraded states are not silently treated as ready.
 
 ### src/lsp/mod.rs - Codegg-side thin wrapper
 
@@ -210,11 +350,28 @@ pub struct LspService {
     initializing: Arc<Mutex<HashMap<String, InitSlot>>>,
     active_init_tasks: Arc<Mutex<HashMap<u64, InitTaskControl>>>,
     document_owners: Arc<RwLock<HashMap<String, String>>>,
+    document_registry: Arc<OpenDocumentRegistry>,
+    operational_state: Arc<RwLock<HashMap<String, OperationalServerState>>>,
+    generation_map: Arc<Mutex<HashMap<String, u64>>>,
+    exit_tx: tokio::sync::mpsc::Sender<LspProcessExitEvent>,
+    exit_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<LspProcessExitEvent>>>>,
+    exit_receiver_started: Arc<AtomicBool>,
+    runtime_map: Arc<Mutex<HashMap<String, Arc<LspProcessRuntime>>>>,
+    descriptor_map: Arc<Mutex<HashMap<String, LspClientDescriptor>>>,
+    self_ref: OnceLock<Weak<LspService>>,
     lifecycle: Arc<RwLock<LifecycleState>>,
     lifecycle_tx: watch::Sender<LifecycleState>,
     config: LspConfig,
 }
 ```
+
+`LspService::new(config)` returns the bare value. `LspService::new_arc(config)` is the production constructor: it wires the back-reference via `Arc::new_cyclic` so the exit receiver can self-activate from `&self` callers via `ensure_exit_receiver_started`. The exit receiver auto-activates lazily on the first client-creating call (`get_or_create_client`, `get_or_create_client_for_file`, `ensure_file_open_from_disk`) — callers never need a separate setup step.
+
+`generation_map` is the per-key generation map. `LspService::generation_for_key(key)` and `LspService::set_generation(key, gen)` are the public accessors. The first publish sets generation `1`; the restart coordinator bumps it after a successful reinit + replay.
+
+`transition_operational_state(key, next)` is the centralized state mutator. It calls `health::transition()` to validate the move and updates timestamps/error metadata. All state assignments throughout the service, restart coordinator, and shutdown code go through this helper; direct assignments are not allowed.
+
+`runtime_map` and `descriptor_map` hold the per-key `LspProcessRuntime` handle and persisted `LspClientDescriptor` respectively. The descriptor is built by `LspClientDescriptor::from_profile(...)` with explicit `user > profile > server-definition` priority and read by the restart coordinator to seed a new client.
 
 `InitTaskControl` holds the authoritative terminal completion primitive for each spawned initialization task:
 
@@ -230,6 +387,9 @@ Documented on the struct for future contributors.
 
 ```rust
 impl LspService {
+    pub fn new(config: LspConfig) -> Self
+    pub fn new_arc(config: LspConfig) -> Arc<Self>  // production: wires back-reference
+    pub async fn ensure_exit_receiver_started(self: &Arc<Self>)
     pub async fn get_or_create_client(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
     pub async fn get_or_create_client_for_file(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
     pub async fn ensure_file_open_from_disk(&self, file_path: &Path) -> Result<(String, PathBuf), LspError>
@@ -239,6 +399,15 @@ impl LspService {
     pub async fn close_file(&self, file_path: &Path) -> Result<(), LspError>
     pub async fn save_file(&self, file_path: &Path, text: Option<&str>) -> Result<(), LspError>
     pub async fn shutdown_all(&self)
+    pub async fn generation_for_key(&self, key: &str) -> u64
+    pub async fn set_generation(&self, key: &str, generation: u64)
+    pub async fn operational_state_for_key(&self, key: &str) -> Option<LspOperationalState>
+    pub async fn wait_for_readiness(&self, key: &str, policy: LspReadinessPolicy) -> ReadinessResult
+    pub async fn mark_diagnostics_stale_for_key(&self, key: &str)
+    pub async fn operational_health_snapshot(&self, key: &str) -> LspOperationalHealthSnapshot
+    pub async fn restart_client(&self, key: &str) -> Result<(), LspError>
+    pub async fn descriptor_for_key(&self, key: &str) -> Option<LspClientDescriptor>
+    pub async fn set_descriptor_for_key(&self, key: &str, descriptor: LspClientDescriptor)
 }
 ```
 
@@ -921,7 +1090,10 @@ The `capabilities` LspTool operation returns the snapshot for the server associa
 
 ### Diagnostics Cache Lifecycle
 
-`DiagnosticCacheEntry` (in `crates/egglsp/src/client.rs`) stores per-file diagnostics with `received_at`, `source`, and `content_version` metadata. The cache is updated asynchronously when `publishDiagnostics` notifications arrive from the LSP server.
+`DiagnosticCacheEntry` (in `crates/egglsp/src/client.rs`) stores per-file diagnostics with `received_at`, `source`, `content_version`, `server_generation`, and `post_restart` metadata. The cache is updated asynchronously when `publishDiagnostics` notifications arrive from the LSP server.
+
+- `server_generation: u64` — the authoritative per-key generation at the time diagnostics were received. `0` is the "never assigned" sentinel for pre-Phase-3 entries and unit tests. After a server restart, the restart coordinator re-keys retained diagnostics to `current - 1` via `LspService::mark_diagnostics_stale_for_key` so the freshness classifier returns `LspDiagnosticFreshness::Stale` until the new server emits its first push.
+- `post_restart: bool` — `true` when the entry was produced by a server that has been restarted at least once since the start of the client key. Monotonically sticky (once set, it stays set across subsequent restarts).
 
 `LspClient::diagnostic_snapshot()` classifies freshness based on these fields:
 
@@ -931,11 +1103,13 @@ The `capabilities` LspTool operation returns the snapshot for the server associa
 
 ```rust
 pub struct LspDiagnosticSnapshot {
-    pub file_path: String,
-    pub diagnostics: Vec<DiagnosticSummary>,
+    pub file_path: PathBuf,
+    pub diagnostics: Vec<FileDiagnostic>,
     pub age_ms: i64,
     pub source: LspDiagnosticSource,
     pub freshness: LspDiagnosticFreshness,
+    pub server_generation: Option<u64>,
+    pub post_restart: bool,
 }
 ```
 
@@ -1507,9 +1681,32 @@ cargo test -p egglsp --features lsp-test-support --test scenario_engine
 # Run root composite tests (semantic/security/hunk collectors + preview safety)
 cargo test --features lsp-test-support --test lsp_composite_stdio
 
+# Run Phase 3 supervisor and restart tests (deterministic scripted, require lsp-test-support feature)
+cargo test -p egglsp --features lsp-test-support --test supervisor_restart_stdio
+
 # Force single-threaded to validate sequential stability
 cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 ```
+
+### Phase 3 Corrective Pass — Supervisor and Restart Tests
+
+`crates/egglsp/tests/supervisor_restart_stdio.rs` carries 9 deterministic scripted tests that exercise the new `LspProcessRuntime`, `restart_client_coordinator`, per-client generation safety, and readiness policy transitions against the fake server. The tests use bounded condition waits (polling loops) instead of fixed sleeps.
+
+| Test | Coverage |
+|------|----------|
+| `unexpected_exit_with_restart_disabled_becomes_failed` | Unexpected exit with `LspRestartMode::Disabled` transitions to `Failed`; no second process starts |
+| `graceful_shutdown_completes_and_does_not_restart` | `LspClient::shutdown()` triggers `GracefulShutdownRequested` intent; exit is expected; no restart scheduled |
+| `automatic_restart_after_unexpected_exit_succeeds` | Generation 1 exits; coordinator bumps to generation 2 after backoff; documents are replayed with preserved version; ownership is restored; `health` reports generation 2 and `Ready` |
+| `restart_initialization_failure_then_recovery` | Generation 2 init fails; generation 3 initializes successfully; attempt counter and backoff are correct |
+| `restart_exhaustion_leaves_failed_state` | Every restart fails; exactly `max_attempts` launches occur; final state is `Failed`; no additional process starts |
+| `shutdown_cancels_scheduled_restart` | Crash schedules a delayed restart; `shutdown_all()` cancels the timer; no replacement process starts |
+| `stale_exit_event_does_not_affect_newer_generation` | Generation 1 exit event is delayed; generation 2 is already ready; delayed event arrives and is silently dropped; pending requests survive |
+| `replay_uses_latest_content` | Open version 1; update to version 2 dirty content; crash/restart; replay contains version 2 text; closed document is not replayed |
+| `hung_process_is_force_killed_on_shutdown` | Server ignores `shutdown`/`exit`; shutdown deadline expires; process is killed and reaped; service reaches `Stopped` |
+
+### Real-Server CI
+
+`.github/workflows/lsp-real-server.yml` runs one Tier 1 server per matrix job (`rust-analyzer` and `basedpyright`) against `crates/egglsp/tests/real_server_smoke.rs` with the `lsp-real-server-tests` feature. The workflow pins `rust-toolchain@1.81.0` for the rust-analyzer job and installs `basedpyright@1.13.1` for the basedpyright job. Each matrix job runs only its own server test (e.g. `-- rust_analyzer` or `-- basedpyright`); artifact filenames are sanitized via the matrix job name.
 
 Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/transcript paths). The harness does not require `--test-threads=1`; that flag was only needed by the pre-Phase-2 test layout.
 
@@ -1531,10 +1728,12 @@ Phase 3 builds on Phase 2's wire-protocol confidence by adding real-server compa
 
 | Module | Purpose |
 |--------|---------|
-| `compatibility.rs` | Per-server compatibility profiles (`LspCompatibilityProfile`), readiness policies (`LspReadinessPolicy`), restart policies (`LspRestartPolicy`, `LspRestartMode`), version detection (`LspServerVersion`), compatibility reports (`LspCompatibilityReport`, `CompatibilityCheckStatus`), tier-1 profiles, and binary requirement checks |
-| `health.rs` | Operational state machine (`LspOperationalState`: Starting → Initializing → Indexing → Ready → Degraded → RestartScheduled → Restarting → Failed → Stopping → Stopped), invalid transition detection (`InvalidTransition`), and health snapshots (`LspOperationalHealthSnapshot`) |
-| `supervisor.rs` | Process exit event tracking (`LspProcessExitEvent`) and stderr ring buffering (`StderrRingBuffer`, 100 lines / 64KB cap) |
-| `document_sync.rs` | Open document registry (`OpenDocumentRegistry`) and document snapshots (`OpenDocumentSnapshot`) for replaying `didOpen` notifications after server restart |
+| `compatibility.rs` | Per-server compatibility profiles (`LspCompatibilityProfile`), readiness policies (`LspReadinessPolicy` — 4 variants: `InitializedIsReady` / `WaitForDiagnosticsOrTimeout` / `WaitForProgressEndOrTimeout` / `WarmupDelay`), restart policies (`LspRestartPolicy`, `LspRestartMode` — `Disabled` / `OnUnexpectedExit`), version detection (`LspServerVersion`), compatibility reports (`LspCompatibilityReport`, `CompatibilityCheckStatus`), check requirements (`LspCompatibilityCheck` with `CompatibilityRequirement` — `Required` / `RequiredIfAdvertised` / `Optional` / `KnownLimitation`), tier-1 profiles, and binary requirement checks |
+| `health.rs` | Operational state machine (`LspOperationalState`: Starting → Initializing → Indexing → Ready → Degraded → RestartScheduled → Restarting → Failed → Stopping → Stopped), invalid transition detection (`InvalidTransition`), `context_note()` for semantic/security/hunk context propagation, and health snapshots (`LspOperationalHealthSnapshot` with `transport: Option<...>`, real `last_message_age_ms` / `last_diagnostics_age_ms`, `restart_attempts`, `last_error`, `stderr_tail`) |
+| `runtime.rs` | Authoritative process runtime (`LspProcessRuntime` — single owner of the child, stderr ring buffer, intent receiver, kill channel) and explicit shutdown intent (`LspProcessIntent` — `Running` / `GracefulShutdownRequested` / `ForceKillRequested`) with `is_expected()` classifier |
+| `restart.rs` | Per-client launch spec persistence (`LspClientDescriptor` with `from_profile` precedence), restart trigger enum (`RestartTrigger` — `Automatic` / `Manual`), `RestartShared` trait surface, and the single restart coordinator (`restart_client_coordinator<S, F>`) owning retry/backoff/exhaustion/cancellation |
+| `supervisor.rs` | Process exit event tracking (`LspProcessExitEvent` — carries generation, status, signal, expected flag, stderr tail) and stderr ring buffering (`StderrRingBuffer`, 100 lines / 64KB cap) |
+| `document_sync.rs` | Open document registry (`OpenDocumentRegistry`) and document snapshots (`OpenDocumentSnapshot` — preserves per-document version for replay after server restart) |
 
 ### New Error Variants
 
@@ -1570,21 +1769,22 @@ RestartScheduled → Restarting → Initializing
 Ready → Stopping → Stopped
 ```
 
-All transitions are validated; invalid transitions return `InvalidTransition`.
+All transitions are validated by `health::transition()`; invalid transitions return `InvalidTransition`. All state mutations go through `LspService::transition_operational_state(key, next)`.
 
 ### Supervisor and Restart Policy
 
-`LspRestartPolicy` controls when a server is automatically restarted:
+`LspRestartMode` controls whether a server is automatically restarted:
 
-- `Never` — no automatic restart
-- `OnCrash` — restart on unexpected process exit
-- `OnFailure { consecutive_failures }` — restart after N consecutive initialization failures
+- `Disabled` (default) — no automatic restart; `Manual` triggers still run
+- `OnUnexpectedExit` — restart on unexpected process exit
 
-`StderrRingBuffer` captures the last 100 lines (64KB) of server stderr for diagnostics. `LspProcessExitEvent` records the exit code and stderr tail for crash analysis.
+`LspRestartPolicy` extends the mode with `max_attempts`, `initial_backoff`, `max_backoff`, and `reset_after_healthy`. The coordinator applies the policy-driven backoff `min(initial_backoff * 2^(attempt-1), max_backoff)` between attempts and lazily resets `restart_attempts` after the client has been healthy for `reset_after_healthy`.
+
+`LspProcessRuntime` is the single authoritative process owner (see `runtime.rs` above). `LspProcessExitEvent` records the exit code, signal, generation, expected flag, and stderr tail for crash analysis. The expected flag is derived from `LspProcessIntent` at exit time, not from transport state.
 
 ### Document Replay
 
-When a server restarts, `OpenDocumentRegistry` replays all previously open documents via `textDocument/didOpen` notifications so the new server instance has a consistent workspace view. `OpenDocumentSnapshot` captures the URI, language ID, version, and full text of each open document.
+When a server restarts, the restart coordinator replays all previously open documents via `textDocument/didOpen` notifications using the snapshot's preserved per-document version (not hard-coded 1), restores the `document_owners` map, updates the new client's `opened_files` state, and keeps registry entries intact. Closed documents are not replayed. Replay failure transitions the operational state to `Degraded` (not silent `Ready`). `OpenDocumentSnapshot` captures the URI, language ID, version, and full text of each open document.
 
 ### Real-Server Smoke Tests
 

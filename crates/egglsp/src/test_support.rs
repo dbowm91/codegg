@@ -1384,6 +1384,27 @@ pub fn run_or_exit() {
     let transcript_path =
         std::env::var("CODEGG_FAKE_LSP_TRANSCRIPT").expect("CODEGG_FAKE_LSP_TRANSCRIPT not set");
 
+    // Optional startup counter file. When set, the fake server
+    // APPENDS a single line to this file on startup. Tests that
+    // exercise process restart count lines to determine how many
+    // process starts have occurred (the transcript file is
+    // truncated on each start, so it cannot be used for this).
+    if let Ok(counter_path) = std::env::var("CODEGG_FAKE_LSP_START_COUNTER") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&counter_path)
+        {
+            let pid = std::process::id();
+            let started = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let _ = writeln!(f, "pid={pid} nanos={started}");
+        }
+    }
+
     let scenario_file = File::open(&scenario_path)
         .unwrap_or_else(|e| panic!("Failed to open scenario file {scenario_path}: {e}"));
     let scenario: Scenario = serde_json::from_reader(scenario_file)

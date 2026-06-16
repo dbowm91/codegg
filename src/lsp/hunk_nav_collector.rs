@@ -226,7 +226,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, "fn placeholder() {}\n").unwrap();
         }
-        let service = Arc::new(LspService::new(LspConfig::default()));
+        let service = LspService::new_arc(LspConfig::default());
         let operations = Arc::new(LspOperations::new(service.clone()));
         let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
         let sem_collector = SemanticContextCollector::new(service, operations, diagnostics, root);
@@ -649,7 +649,7 @@ diff --git a/src/main.rs b/src/main.rs
         std::fs::write(&file, "fn main() {}\n").unwrap();
         std::fs::write(&outside, "fn outside() {}\n").unwrap();
 
-        let service = Arc::new(LspService::new(LspConfig::default()));
+        let service = LspService::new_arc(LspConfig::default());
         let operations = Arc::new(LspOperations::new(service.clone()));
         let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
         let sem_collector =

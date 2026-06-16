@@ -79,7 +79,7 @@ pub struct Lsp {
 
 impl Lsp {
     pub fn new(config: LspConfig) -> Self {
-        let service = Arc::new(LspService::new(config));
+        let service = LspService::new_arc(config);
         let operations = Arc::new(LspOperations::new(service.clone()));
         let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
 

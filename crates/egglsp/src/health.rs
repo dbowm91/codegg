@@ -96,14 +96,22 @@ pub fn transition(
     let valid = match current {
         Starting => matches!(next, Initializing),
         Initializing => matches!(next, Indexing | Ready | Failed { .. } | Stopping),
-        Indexing => matches!(next, Ready | Degraded { .. } | Failed { .. } | Stopping),
+        Indexing => matches!(
+            next,
+            Ready | Degraded { .. } | Failed { .. } | Stopping | Stopped
+        ),
+        // `Ready` can transition to `Failed` when an unexpected
+        // exit occurs and restart is disabled or exhausted.
+        // `Stopped` is reachable via graceful shutdown.
         Ready => matches!(
             next,
-            Degraded { .. } | RestartScheduled { .. } | Stopping | Stopped
+            Degraded { .. } | RestartScheduled { .. } | Failed { .. } | Stopping | Stopped
         ),
+        // `Degraded` is a stable long-lived state; it can move
+        // to `Stopped` on graceful shutdown as well.
         Degraded { .. } => matches!(
             next,
-            Ready | RestartScheduled { .. } | Failed { .. } | Stopping
+            Ready | RestartScheduled { .. } | Failed { .. } | Stopping | Stopped
         ),
         RestartScheduled { .. } => matches!(next, Restarting { .. } | Stopping | Stopped),
         Restarting { .. } => matches!(next, Initializing | Failed { .. } | Stopping),
@@ -142,32 +150,132 @@ impl std::fmt::Display for InvalidTransition {
 impl std::error::Error for InvalidTransition {}
 
 /// Read-only snapshot of a client's operational health.
+///
+/// New fields added in Phase 3 / Pass 3 are `Option`/collection-shaped
+/// and have `#[serde(default)]` so older serialized snapshots remain
+/// deserializable. `transport` is `Option<ClientTransportSnapshot>`
+/// because the snapshot must be constructible when no live client
+/// exists (e.g. during `Restarting`, `Failed`, or `Stopped`).
+///
+/// `generation` reflects the authoritative per-key generation from
+/// `LspService::generation_for_key`; it is bumped by the restart
+/// coordinator after a successful reinit + replay, never speculatively.
+/// `last_error` is only populated for `Failed { reason }` transitions
+/// (e.g. exit reason, restart exhaustion); healthy clients keep it
+/// `None`. The `stderr_tail` is sourced from the live
+/// `LspProcessRuntime` and is empty when no runtime is installed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspOperationalHealthSnapshot {
     pub server_id: String,
     pub root: PathBuf,
     pub generation: u64,
     pub state: LspOperationalState,
-    pub transport: crate::client::ClientTransportSnapshot,
+    /// Transport snapshot, or `None` when no live client is present
+    /// (during restart, failure, or before initial publication).
+    #[serde(default)]
+    pub transport: Option<crate::client::ClientTransportSnapshot>,
     pub pending_requests: usize,
     pub open_documents: usize,
     pub last_message_age_ms: Option<u64>,
     pub last_diagnostics_age_ms: Option<u64>,
     pub restart_attempts: u32,
+    /// Last error observed for this client (e.g. exit reason, restart
+    /// failure, transition failure). `None` for healthy clients.
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// Bounded stderr tail captured from the process runtime. Capped at
+    /// 20 lines for snapshot construction; further truncated to 5
+    /// lines by `status_line`.
+    #[serde(default)]
+    pub stderr_tail: Vec<String>,
+}
+
+impl Default for LspOperationalHealthSnapshot {
+    fn default() -> Self {
+        Self {
+            server_id: String::new(),
+            root: PathBuf::new(),
+            generation: 0,
+            state: LspOperationalState::Starting,
+            transport: None,
+            pending_requests: 0,
+            open_documents: 0,
+            last_message_age_ms: None,
+            last_diagnostics_age_ms: None,
+            restart_attempts: 0,
+            last_error: None,
+            stderr_tail: Vec::new(),
+        }
+    }
 }
 
 impl LspOperationalHealthSnapshot {
+    /// Construct a snapshot from the operational state and per-client
+    /// observability fields.
+    ///
+    /// `transport` should be `None` when no live client exists. `stderr_tail`
+    /// should already be bounded (e.g. via the runtime's
+    /// `stderr_tail_capped`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_operational_state(
+        server_id: String,
+        root: PathBuf,
+        generation: u64,
+        state: LspOperationalState,
+        transport: Option<crate::client::ClientTransportSnapshot>,
+        pending_requests: usize,
+        open_documents: usize,
+        last_message_age_ms: Option<u64>,
+        last_diagnostics_age_ms: Option<u64>,
+        restart_attempts: u32,
+        last_error: Option<String>,
+        stderr_tail: Vec<String>,
+    ) -> Self {
+        Self {
+            server_id,
+            root,
+            generation,
+            state,
+            transport,
+            pending_requests,
+            open_documents,
+            last_message_age_ms,
+            last_diagnostics_age_ms,
+            restart_attempts,
+            last_error,
+            stderr_tail,
+        }
+    }
+
     /// Format a compact status line for logging or display.
+    ///
+    /// The stderr tail is truncated to 5 lines for compactness; full
+    /// tails are accessible via the `stderr_tail` field. The last
+    /// error is included when present.
     pub fn status_line(&self) -> String {
-        format!(
-            "{} [gen={}, state={}, transport={:?}, pending={}, open={}]",
+        let stderr_preview: Vec<String> = self
+            .stderr_tail
+            .iter()
+            .rev()
+            .take(5)
+            .rev()
+            .cloned()
+            .collect();
+        let mut line = format!(
+            "{} [gen={}, state={}, transport={:?}, pending={}, open={}, stderr_tail={:?}",
             self.server_id,
             self.generation,
             self.state.label(),
             self.transport,
             self.pending_requests,
             self.open_documents,
-        )
+            stderr_preview,
+        );
+        if let Some(err) = &self.last_error {
+            line.push_str(&format!(", last_error={err}"));
+        }
+        line.push(']');
+        line
     }
 }
 
@@ -205,8 +313,22 @@ mod tests {
             }
         )
         .is_ok());
+        // Ready -> Failed (unexpected exit, no restart budget)
+        assert!(transition(
+            &Ready,
+            Failed {
+                reason: "crash".into()
+            }
+        )
+        .is_ok());
+        // Ready -> Stopped (graceful shutdown)
+        assert!(transition(&Ready, Stopped).is_ok());
         // Degraded -> Ready
         assert!(transition(&Degraded { reason: "x".into() }, Ready).is_ok());
+        // Degraded -> Stopped (graceful shutdown from degraded)
+        assert!(transition(&Degraded { reason: "x".into() }, Stopped).is_ok());
+        // Indexing -> Stopped (graceful shutdown before ready)
+        assert!(transition(&Indexing, Stopped).is_ok());
         // RestartScheduled -> Restarting
         assert!(transition(
             &RestartScheduled {
@@ -263,5 +385,80 @@ mod tests {
         assert!(Stopped.is_terminal());
         assert!(!Ready.is_terminal());
         assert!(!Starting.is_terminal());
+    }
+
+    #[test]
+    fn snapshot_from_operational_state_roundtrip() {
+        use std::path::PathBuf;
+        use LspOperationalState::*;
+
+        let snap = LspOperationalHealthSnapshot::from_operational_state(
+            "rust-analyzer".to_string(),
+            PathBuf::from("/tmp"),
+            3,
+            Failed {
+                reason: "synthetic".to_string(),
+            },
+            None,
+            0,
+            4,
+            Some(120),
+            Some(50),
+            2,
+            Some("synthetic".to_string()),
+            vec!["line 1".to_string(), "line 2".to_string()],
+        );
+        assert_eq!(snap.server_id, "rust-analyzer");
+        assert_eq!(snap.generation, 3);
+        assert!(matches!(snap.state, Failed { .. }));
+        assert!(snap.transport.is_none());
+        assert_eq!(snap.pending_requests, 0);
+        assert_eq!(snap.open_documents, 4);
+        assert_eq!(snap.last_message_age_ms, Some(120));
+        assert_eq!(snap.last_diagnostics_age_ms, Some(50));
+        assert_eq!(snap.restart_attempts, 2);
+        assert_eq!(snap.last_error.as_deref(), Some("synthetic"));
+        assert_eq!(snap.stderr_tail.len(), 2);
+    }
+
+    #[test]
+    fn status_line_includes_last_error_and_truncates_stderr() {
+        use std::path::PathBuf;
+        use LspOperationalState::*;
+
+        let snap = LspOperationalHealthSnapshot::from_operational_state(
+            "rust-analyzer".to_string(),
+            PathBuf::from("/tmp"),
+            1,
+            Failed {
+                reason: "oops".to_string(),
+            },
+            None,
+            0,
+            0,
+            None,
+            None,
+            0,
+            Some("oops".to_string()),
+            (0..10).map(|i| format!("line {i}")).collect(),
+        );
+        let line = snap.status_line();
+        assert!(line.contains("last_error=oops"));
+        // 5 lines preview: line 5..=9
+        assert!(line.contains("line 5"));
+        assert!(line.contains("line 9"));
+        // Earlier lines are dropped from the preview.
+        assert!(!line.contains("\"line 0\""));
+    }
+
+    #[test]
+    fn default_snapshot_has_no_transport_and_no_stderr() {
+        let snap = LspOperationalHealthSnapshot::default();
+        assert_eq!(snap.server_id, "");
+        assert_eq!(snap.generation, 0);
+        assert!(matches!(snap.state, LspOperationalState::Starting));
+        assert!(snap.transport.is_none());
+        assert!(snap.stderr_tail.is_empty());
+        assert!(snap.last_error.is_none());
     }
 }

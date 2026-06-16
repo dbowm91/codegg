@@ -531,6 +531,21 @@ impl LspTool {
         ))
     }
 
+    /// Look up the operational state note (if any) for the
+    /// server that would service `file_path_str`. Returns
+    /// `Some(note)` for notable states (`Indexing`,
+    /// `Restarting`, `Degraded`, etc.) and `None` for `Ready`
+    /// or when the key is unknown. The note is suitable for
+    /// appending to a hunk-source-context response's `notes`
+    /// field.
+    async fn operational_state_note_for_file(&self, file_path_str: &str) -> Option<String> {
+        let p = std::path::Path::new(file_path_str);
+        let key_result = self.service.get_or_create_client(p).await.ok()?;
+        let key = key_result.0;
+        let state = self.service.operational_state_for_key(&key).await?;
+        state.context_note()
+    }
+
     /// Construct a [`HunkSourceNavigationCollector`] with explicit per-hunk
     /// limits instead of the global constants.
     fn build_hunk_source_navigation_collector(
@@ -2210,6 +2225,17 @@ impl Tool for LspTool {
                     .await
                     .map_err(|e| ToolError::Execution(format!("securityContext: {e}")))?;
 
+                // Capture operational/state notes from the
+                // semantic response so they propagate to the
+                // security packet. The semantic adapter only
+                // consumes `response.notes` to extract per-section
+                // errors; everything else (e.g. operational state
+                // notes) would otherwise be lost. We restore them
+                // here as a separate slot so the security packet
+                // shows both the original context and any
+                // new state observations.
+                let semantic_state_notes: Vec<String> = response.notes.clone();
+
                 let (overlay, overlay_diagnostics_truncated) = if has_proposed {
                     match self
                         .resolve_semantic_check_content(
@@ -2419,6 +2445,16 @@ impl Tool for LspTool {
                 if let Some(note) = settings.preset_note {
                     notes.push(note);
                 }
+                // Propagate operational/state notes from the
+                // semantic response (e.g. "LSP server indexing").
+                // These were added by `SemanticContextCollector`
+                // after consulting the operational state map and
+                // would otherwise be lost in the security packet.
+                for note in &semantic_state_notes {
+                    if !notes.iter().any(|existing| existing == note) {
+                        notes.push(note.clone());
+                    }
+                }
                 if let Some(ref evidence) = diag_evidence {
                     match evidence.freshness {
                         crate::lsp::diagnostics::LspDiagnosticFreshness::Stale => {
@@ -2544,10 +2580,23 @@ impl Tool for LspTool {
                     max_references_per_hunk: MAX_CONTEXT_REFERENCES,
                 };
 
-                let response = self
+                let mut response = self
                     .execute_hunk_source_context_typed(request)
                     .await
                     .map_err(ToolError::Execution)?;
+
+                // Inject operational state notes so the hunk
+                // summary reflects the LSP server's current health
+                // (indexing, restarting, degraded, etc.). The note
+                // is idempotent — re-runs with the same state
+                // produce the same note and dedupe naturally in
+                // `format_hunk_source_context_summary`.
+                if let Some(state_note) = self.operational_state_note_for_file(&file_path_str).await
+                {
+                    if !response.notes.iter().any(|n| n == &state_note) {
+                        response.push_note(state_note);
+                    }
+                }
 
                 let output = LspToolOutput {
                     operation: "hunkSourceContext".to_string(),
@@ -2915,18 +2964,18 @@ mod tests {
 
     #[test]
     fn lsp_tool_name() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         assert_eq!(tool.name(), "lsp");
         assert!(!tool.description().is_empty());
     }
 
     #[test]
     fn lsp_parameters_schema_snapshot() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let params = tool.parameters();
         let expected = json!({
             "type": "object",
@@ -3049,9 +3098,9 @@ mod tests {
     #[tokio::test]
     async fn semantic_check_content_accepts_content() {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let content = "fn main() { println!(\"hi\"); }".to_string();
         let resolved = tool
             .resolve_semantic_check_content(&path, Some(&content), None)
@@ -3063,9 +3112,9 @@ mod tests {
     #[tokio::test]
     async fn semantic_check_content_rejects_content_and_patch() {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .resolve_semantic_check_content(
                 &path,
@@ -3082,9 +3131,9 @@ mod tests {
     #[tokio::test]
     async fn semantic_check_content_rejects_missing_content_and_patch() {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .resolve_semantic_check_content(&path, None, None)
             .await
@@ -3098,9 +3147,9 @@ mod tests {
     async fn semantic_check_patch_applies_in_memory() {
         let (_dir, path) = temp_rs_file("fn main() {\n    println!(\"old\");\n}\n");
         let original = std::fs::read_to_string(&path).unwrap();
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let patch = "\
 --- a/src/main.rs
 +++ b/src/main.rs
@@ -3123,9 +3172,9 @@ mod tests {
     #[tokio::test]
     async fn semantic_check_patch_rejects_invalid_patch() {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .resolve_semantic_check_content(&path, None, Some(&"@@ -1,1 +1,1 @@\n x\n".to_string()))
             .await
@@ -3138,9 +3187,9 @@ mod tests {
     #[tokio::test]
     async fn semantic_check_patch_rejects_probable_multi_file_patch() {
         let (_dir, path) = temp_rs_file("fn main() {}\n");
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let patch = "\
 diff --git a/src/main.rs b/src/main.rs
 --- a/src/main.rs
@@ -3182,9 +3231,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     #[tokio::test]
     async fn lsp_execute_structured_attaches_native_provenance() {
         use crate::tool::Tool;
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let res = tool
             .execute_structured(json!({"operation": "no_such_op"}), None)
             .await;
@@ -3195,9 +3244,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn semantic_context_schema_includes_operation() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let params = tool.parameters();
         let ops = params["properties"]["operation"]["enum"]
             .as_array()
@@ -3207,9 +3256,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn semantic_context_requires_file_path_execution() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .execute(json!({
                 "operation": "semanticContext"
@@ -3224,9 +3273,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn semantic_context_requires_line_and_column_together() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .execute(json!({
                 "operation": "semanticContext",
@@ -3243,9 +3292,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn semantic_context_rejects_content_and_patch() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .execute(json!({
                 "operation": "semanticContext",
@@ -3267,9 +3316,9 @@ diff --git a/src/lib.rs b/src/lib.rs
     async fn semantic_context_patch_does_not_write_disk() {
         let (_dir, path) = temp_rs_file("fn main() {\n    println!(\"old\");\n}\n");
         let original = std::fs::read_to_string(&path).unwrap();
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )))
+        ))
         .with_allowed_root(_dir.path().to_path_buf());
         let _ = tool.execute(json!({
             "operation": "semanticContext",
@@ -3596,9 +3645,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn lsp_schema_descriptions_include_security_context_overlay() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let params = tool.parameters();
         let content_desc = params["properties"]["content"]["description"]
             .as_str()
@@ -3634,9 +3683,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_no_preset_preserves_defaults() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -3653,9 +3702,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_preset_sets_categories() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -3677,9 +3726,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_explicit_categories_override_preset() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -3704,9 +3753,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_invalid_preset_rejected() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -3725,9 +3774,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_preset_visible_in_output() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -3744,9 +3793,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn security_preset_schema_includes_enum() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let params = tool.parameters();
         let prop = params["properties"]["security_preset"]
             .as_object()
@@ -3926,9 +3975,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_dependency_review_omits_call_hierarchy_by_default() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -4093,9 +4142,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_call_depth_zero_omits_call_expansion() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -4115,9 +4164,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_call_depth_requires_line_column() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -4134,9 +4183,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_call_depth_over_max_rejected() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -4155,9 +4204,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_call_direction_invalid_rejected() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let err = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -4176,9 +4225,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_call_depth_one_with_position_returns_expansion_or_errors() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -4203,9 +4252,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[test]
     fn security_context_schema_includes_call_expansion_inputs() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let params = tool.parameters();
         assert!(
             params["properties"].get("call_depth").is_some(),
@@ -4439,9 +4488,9 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_call_expansion_truncated_limit_field_present() {
-        let tool = LspTool::new(std::sync::Arc::new(crate::lsp::service::LspService::new(
+        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        )));
+        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",

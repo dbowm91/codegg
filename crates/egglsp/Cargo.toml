@@ -40,6 +40,11 @@ name = "real_server_smoke"
 path = "tests/real_server_smoke.rs"
 required-features = ["lsp-real-server-tests"]
 
+[[test]]
+name = "supervisor_restart_stdio"
+path = "tests/supervisor_restart_stdio.rs"
+required-features = ["lsp-test-support"]
+
 [dependencies]
 base64 = { version = "0.22", optional = true }
 libc = { version = "0.2", optional = true }

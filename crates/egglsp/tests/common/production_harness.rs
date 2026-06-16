@@ -123,20 +123,20 @@ edition = "2021"
     pub async fn shutdown(self) -> Result<(), LspError> {
         let shutdown_result = self.client.shutdown().await;
 
-        let wait_result = {
-            let mut process = self.client.process.lock().await;
-            timeout(Duration::from_secs(5), process.child.wait()).await
-        };
+        let wait_result = self
+            .client
+            .wait_for_child_exit(Duration::from_secs(5))
+            .await;
 
         let diagnostics = self.diagnostics().await;
 
         match (shutdown_result, wait_result) {
-            (Ok(()), Ok(Ok(_status))) => Ok(()),
+            (Ok(()), Ok(Ok(()))) => Ok(()),
             (Ok(()), Ok(Err(err))) => Err(LspError::RequestFailed(format!(
                 "failed to wait for fake server exit: {err}\n{diagnostics}"
             ))),
-            (Ok(()), Err(_elapsed)) => Err(LspError::RequestFailed(format!(
-                "timed out waiting for fake server exit\n{diagnostics}"
+            (Ok(()), Err(err)) => Err(LspError::RequestFailed(format!(
+                "no child handle available: {err}\n{diagnostics}"
             ))),
             (Err(err), _) => Err(LspError::RequestFailed(format!(
                 "client shutdown failed: {err}\n{diagnostics}"
@@ -147,13 +147,10 @@ edition = "2021"
     pub async fn diagnostics(&self) -> String {
         let pending = self.client.pending_request_count().await;
         let transport = self.client.transport_state_snapshot().await;
-        let child_status = {
-            let mut process = self.client.process.lock().await;
-            match process.child.try_wait() {
-                Ok(Some(status)) => format!("{status:?}"),
-                Ok(None) => "running".to_string(),
-                Err(err) => format!("error: {err}"),
-            }
+        let child_status = match self.client.try_wait_child().await {
+            Some(Ok(status)) => format!("{status:?}"),
+            Some(Err(err)) => format!("error: {err}"),
+            None => "running or no handle".to_string(),
         };
 
         let transcript_tail = transcript_tail(&self.transcript_path);

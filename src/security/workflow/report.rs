@@ -1262,7 +1262,7 @@ pub async fn collect_hunk_source_context_for_file<E: HunkSourceContextExecutor +
             {
                 Ok(Ok(response)) => {
                     let evidence = evidence_from_hunk_source_context(&response);
-                    let summary = Some(format_hunk_source_context_summary(&response));
+                    let summary = Some(format_hunk_source_context_summary(&response, &[]));
                     HunkSourceContextFileResult {
                         evidence,
                         summary,
@@ -1588,9 +1588,7 @@ mod tests {
     #[tokio::test]
     async fn security_review_background_with_fixture_executor_uses_enrichment() {
         let _executor = FixtureSecurityContextExecutor::new();
-        let tool = Arc::new(LspTool::new(Arc::new(
-            LspService::new(LspConfig::default()),
-        )));
+        let tool = Arc::new(LspTool::new(LspService::new_arc(LspConfig::default())));
         let args = SecurityReviewCommandArgs {
             enrich: true,
             base: Some("HEAD".to_string()),
@@ -2211,7 +2209,7 @@ mod tests {
             notes: vec![],
         });
 
-        let summary = format_hunk_source_context_summary(&response);
+        let summary = format_hunk_source_context_summary(&response, &[]);
         assert!(
             summary.contains("src/test.rs"),
             "summary should contain file path"

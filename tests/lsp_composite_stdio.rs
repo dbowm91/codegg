@@ -26,6 +26,7 @@ use egglsp::operations::LspOperations;
 use egglsp::operations::{select_source_action_edit, SourceActionPreviewKind};
 use egglsp::{
     LspClient, LspClientOptions, LspConfig, LspError, LspLaunchSpec, LspRule, LspService,
+    RestartShared,
 };
 
 use codegg::tool::lsp::LspTool;
@@ -213,10 +214,7 @@ edition = "2021"
             )));
         }
 
-        let service = Arc::new(LspService::new(make_service_config(
-            &scenario_path,
-            &transcript_path,
-        )));
+        let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
         let operations = Arc::new(LspOperations::new(service.clone()));
         let diagnostics_collector = Arc::new(DiagnosticsCollector::new(service.clone()));
 
@@ -265,13 +263,10 @@ edition = "2021"
     ) -> String {
         let pending = client.pending_request_count().await;
         let transport = client.transport_state_snapshot().await;
-        let child_status = {
-            let mut process = client.process.lock().await;
-            match process.child.try_wait() {
-                Ok(Some(status)) => format!("{status:?}"),
-                Ok(None) => "running".to_string(),
-                Err(err) => format!("error: {err}"),
-            }
+        let child_status = match client.try_wait_child().await {
+            Some(Ok(status)) => format!("{status:?}"),
+            Some(Err(err)) => format!("error: {err}"),
+            None => "running or no handle".to_string(),
         };
         let transcript = transcript_tail(transcript_path);
 
@@ -300,20 +295,20 @@ edition = "2021"
     async fn shutdown(self) -> Result<(), LspError> {
         let shutdown_result = self.client.shutdown().await;
 
-        let wait_result = {
-            let mut process = self.client.process.lock().await;
-            timeout(Duration::from_secs(5), process.child.wait()).await
-        };
+        let wait_result = self
+            .client
+            .wait_for_child_exit(Duration::from_secs(5))
+            .await;
 
         let diagnostics = self.diagnostics().await;
 
         match (shutdown_result, wait_result) {
-            (Ok(()), Ok(Ok(_status))) => Ok(()),
+            (Ok(()), Ok(Ok(()))) => Ok(()),
             (Ok(()), Ok(Err(err))) => Err(LspError::RequestFailed(format!(
                 "failed to wait for fake server exit: {err}\n{diagnostics}"
             ))),
-            (Ok(()), Err(_elapsed)) => Err(LspError::RequestFailed(format!(
-                "timed out waiting for fake server exit\n{diagnostics}"
+            (Ok(()), Err(err)) => Err(LspError::RequestFailed(format!(
+                "no child handle available: {err}\n{diagnostics}"
             ))),
             (Err(err), _) => Err(LspError::RequestFailed(format!(
                 "client shutdown failed: {err}\n{diagnostics}"
@@ -1994,10 +1989,7 @@ fn setup_collector_for_scenario(
     )
     .expect("write scenario");
 
-    let service = Arc::new(LspService::new(make_service_config(
-        &scenario_path,
-        &transcript_path,
-    )));
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
     let operations = Arc::new(LspOperations::new(service.clone()));
     let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
     let collector = codegg::lsp::semantic_context::SemanticContextCollector::new(
@@ -2065,10 +2057,7 @@ async fn semantic_context_minimal_service_client() {
     .unwrap();
     std::fs::write(&transcript_path, "").unwrap();
 
-    let service = Arc::new(LspService::new(make_service_config(
-        &scenario_path,
-        &transcript_path,
-    )));
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
     let operations = Arc::new(LspOperations::new(service.clone()));
     let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
 
@@ -2331,10 +2320,7 @@ async fn security_context_tool_enforces_call_node_limit_and_truncation() {
     )
     .expect("write scenario");
 
-    let service = Arc::new(LspService::new(make_service_config(
-        &scenario_path,
-        &transcript_path,
-    )));
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
     let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
 
     let result = timeout(
@@ -2460,10 +2446,7 @@ async fn security_context_tool_enforces_call_depth_limit() {
     )
     .expect("write scenario");
 
-    let service = Arc::new(LspService::new(make_service_config(
-        &scenario_path,
-        &transcript_path,
-    )));
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
     let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
 
     let result = timeout(
@@ -2597,10 +2580,7 @@ async fn security_context_tool_filters_and_preserves_diagnostic_evidence() {
     )
     .expect("write scenario");
 
-    let service = Arc::new(LspService::new(make_service_config(
-        &scenario_path,
-        &transcript_path,
-    )));
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
     let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
 
     // Initialize the client and open the file so the fake server sends
@@ -2995,10 +2975,7 @@ async fn hunk_source_context_collector_exercises_real_workflow() {
     )
     .expect("write scenario");
 
-    let service = Arc::new(LspService::new(make_service_config(
-        &scenario_path,
-        &transcript_path,
-    )));
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
     let operations = Arc::new(LspOperations::new(service.clone()));
     let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
     let sem_collector = codegg::lsp::semantic_context::SemanticContextCollector::new(
@@ -3325,10 +3302,7 @@ async fn semantic_context_security_review_intent_collects_security_source() {
     )
     .expect("write scenario");
 
-    let service = Arc::new(LspService::new(make_service_config(
-        &scenario_path,
-        &transcript_path,
-    )));
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
     let operations = Arc::new(LspOperations::new(service.clone()));
     let diagnostics = Arc::new(DiagnosticsCollector::new(service.clone()));
     let collector = codegg::lsp::semantic_context::SemanticContextCollector::new(
@@ -4306,10 +4280,7 @@ async fn security_context_tool_degrades_on_call_hierarchy_error() {
     )
     .expect("write scenario");
 
-    let service = Arc::new(LspService::new(make_service_config(
-        &scenario_path,
-        &transcript_path,
-    )));
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
     let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
 
     // The tool must NOT fail — it should degrade gracefully
@@ -4457,10 +4428,7 @@ async fn security_context_tool_exercises_risk_filtering_and_call_expansion() {
     )
     .expect("write scenario");
 
-    let service = Arc::new(LspService::new(make_service_config(
-        &scenario_path,
-        &transcript_path,
-    )));
+    let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
     let tool = LspTool::new(service.clone()).with_allowed_root(root.clone());
 
     let result = timeout(
@@ -4545,6 +4513,135 @@ async fn security_context_tool_exercises_risk_filtering_and_call_expansion() {
     assert!(
         parsed["results"]["limits"].as_object().is_some(),
         "limits should be present"
+    );
+
+    service.shutdown_all().await;
+}
+
+// ── Operational state note propagation ──────────────────────────────
+
+/// Verify that when the LSP service is in a notable state
+/// (`Indexing`), the `SemanticContextCollector` surfaces a note
+/// to the agent in the response. The fake server scenario drives
+/// an indexing-style state by transitioning the operational
+/// state map directly before invoking the collector.
+#[tokio::test]
+async fn semantic_context_includes_indexing_note_when_state_is_indexing() {
+    let (collector, service, source_path, _root, _tempdir) = setup_collector_for_scenario(
+        serde_json::json!({
+            "name": "full_no_delay",
+            "steps": [
+                {"type": "ExpectRequest", "method": "initialize", "id": {"type": "Number"}, "then": [{"type": "RespondResult", "result": {"capabilities": {"documentSymbolProvider": true}}}]},
+                {"type": "ExpectNotification", "method": "initialized", "then": []},
+                {"type": "ExpectNotification", "method": "textDocument/didOpen", "then": []},
+                {"type": "ExpectRequest", "method": "textDocument/documentSymbol", "id": {"type": "Number"}, "then": [{"type": "RespondResult", "result": []}]},
+                {"type": "ExpectRequest", "method": "shutdown", "then": [{"type": "RespondResult", "result": null}]},
+                {"type": "ExpectNotification", "method": "exit", "then": []}
+            ],
+            "exit": {"type": "ExitCode", "code": 0},
+            "strict": true
+        }),
+    );
+
+    // Resolve the key the collector will use for the source.
+    let key = service
+        .get_or_create_client(&source_path)
+        .await
+        .expect("key resolution")
+        .0;
+
+    // Force the service into `Degraded` so `context_note()` is `Some`.
+    // (The state machine does not allow Ready -> Indexing, so
+    // we use Degraded which produces a context_note about the
+    // server being slow/degraded.)
+    service
+        .transition_operational_state(
+            &key,
+            egglsp::health::LspOperationalState::Degraded {
+                reason: "indexing takes too long".to_string(),
+            },
+        )
+        .await
+        .expect("transition to Degraded");
+
+    // Run the collector. We expect a successful response that
+    // contains a note about the server being degraded/indexing.
+    let request = egglsp::semantic_context::SemanticContextRequest::new(
+        source_path.to_string_lossy().as_ref(),
+        egglsp::semantic_context::SemanticContextIntent::Review,
+    )
+    .with_excerpt_radius(20);
+    let response = timeout(Duration::from_secs(15), collector.collect(request))
+        .await
+        .expect("collect should not time out")
+        .expect("collect should succeed");
+
+    let has_indexing_note = response
+        .notes
+        .iter()
+        .any(|n| n.to_lowercase().contains("index"));
+    assert!(
+        has_indexing_note,
+        "expected a note about indexing, got: {:?}",
+        response.notes
+    );
+
+    service.shutdown_all().await;
+}
+
+/// Verify that when the LSP service is in a `Failed` state, the
+/// `SemanticContextCollector` returns an `Err` so the agent sees
+/// the failure clearly.
+#[tokio::test]
+async fn semantic_context_returns_err_when_state_is_failed() {
+    let (collector, service, source_path, _root, _tempdir) = setup_collector_for_scenario(
+        serde_json::json!({
+            "name": "full_no_delay",
+            "steps": [
+                {"type": "ExpectRequest", "method": "initialize", "id": {"type": "Number"}, "then": [{"type": "RespondResult", "result": {"capabilities": {"documentSymbolProvider": true}}}]},
+                {"type": "ExpectNotification", "method": "initialized", "then": []},
+                {"type": "ExpectRequest", "method": "shutdown", "then": [{"type": "RespondResult", "result": null}]},
+                {"type": "ExpectNotification", "method": "exit", "then": []}
+            ],
+            "exit": {"type": "ExitCode", "code": 0},
+            "strict": true
+        }),
+    );
+
+    let key = service
+        .get_or_create_client(&source_path)
+        .await
+        .expect("key resolution")
+        .0;
+
+    // Force the service into `Failed` so the collector returns Err.
+    service
+        .transition_operational_state(
+            &key,
+            egglsp::health::LspOperationalState::Failed {
+                reason: "intentional failure for test".to_string(),
+            },
+        )
+        .await
+        .expect("transition to Failed");
+
+    let request = egglsp::semantic_context::SemanticContextRequest::new(
+        source_path.to_string_lossy().as_ref(),
+        egglsp::semantic_context::SemanticContextIntent::Review,
+    )
+    .with_excerpt_radius(20);
+    let result = timeout(Duration::from_secs(5), collector.collect(request))
+        .await
+        .expect("collect should not time out");
+
+    assert!(
+        result.is_err(),
+        "expected Err when state is Failed, got: {result:?}"
+    );
+    let err_msg = result.unwrap_err();
+    assert!(
+        err_msg.contains("intentional failure for test"),
+        "error should mention the failure reason, got: {err_msg}"
     );
 
     service.shutdown_all().await;

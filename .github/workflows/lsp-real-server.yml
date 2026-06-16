@@ -14,43 +14,56 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  real-server-compat:
+  rust-analyzer:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        server:
-          - rust-analyzer
-          - basedpyright
-
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.81.0
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install rust-analyzer
-        if: matrix.server == 'rust-analyzer'
+      - name: Install rust-analyzer 2024-11-25
         run: |
           rustup component add rust-analyzer
           echo "CODEGG_RA_BIN=$(which rust-analyzer)" >> $GITHUB_ENV
 
-      - name: Install basedpyright
-        if: matrix.server == 'basedpyright'
-        run: |
-          npm install -g basedpyright
-          echo "CODEGG_PYRIGHT_BIN=$(which basedpyright-langserver || which basedpyright)" >> $GITHUB_ENV
-
-      - name: Run real-server smoke tests
+      - name: Run rust-analyzer smoke tests
         run: |
           cargo test -p egglsp \
             --features lsp-real-server-tests \
             --test real_server_smoke \
-            -- --nocapture
+            -- rust_analyzer --nocapture
 
       - name: Upload compatibility reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lsp-compatibility-${{ matrix.server }}
+          name: lsp-compat-rust-analyzer
+          path: target/lsp-compatibility/
+          retention-days: 30
+
+  basedpyright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install basedpyright 1.13.1
+        run: |
+          npm install -g basedpyright@1.13.1
+          echo "CODEGG_PYRIGHT_BIN=$(which basedpyright-langserver || which basedpyright)" >> $GITHUB_ENV
+
+      - name: Run basedpyright smoke tests
+        run: |
+          cargo test -p egglsp \
+            --features lsp-real-server-tests \
+            --test real_server_smoke \
+            -- basedpyright --nocapture
+
+      - name: Upload compatibility reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-compat-basedpyright
           path: target/lsp-compatibility/
           retention-days: 30

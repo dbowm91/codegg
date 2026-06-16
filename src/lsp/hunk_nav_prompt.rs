@@ -10,7 +10,15 @@ const MAX_REFERENCES_SHOWN: usize = 5;
 ///
 /// The output is deterministic, bounded in size, and preserves
 /// freshness/truncation metadata. It does not dump raw JSON.
-pub fn format_hunk_source_context_summary(response: &HunkSourceNavigationResponse) -> String {
+///
+/// `extra_notes` carries caller-supplied notes (e.g. operational
+/// state notes from the LSP service) that are appended to the
+/// global notes section before per-hunk notes. Pass `&[]` when
+/// no extra notes are available.
+pub fn format_hunk_source_context_summary(
+    response: &HunkSourceNavigationResponse,
+    extra_notes: &[String],
+) -> String {
     let mut out = String::with_capacity(512);
 
     writeln!(&mut out, "Hunk Source Context").unwrap();
@@ -34,6 +42,11 @@ pub fn format_hunk_source_context_summary(response: &HunkSourceNavigationRespons
 
     // Global notes.
     for note in &response.notes {
+        writeln!(&mut out, "Note: {note}").unwrap();
+    }
+
+    // Caller-supplied notes (operational state, etc.).
+    for note in extra_notes {
         writeln!(&mut out, "Note: {note}").unwrap();
     }
 
@@ -325,14 +338,14 @@ mod tests {
     #[test]
     fn includes_file_path() {
         let resp = base_response();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("File: src/foo.rs"));
     }
 
     #[test]
     fn includes_hunk_id_and_focus() {
         let resp = base_response();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Hunk h0"));
         assert!(summary.contains("Focus: lines"));
     }
@@ -340,21 +353,21 @@ mod tests {
     #[test]
     fn includes_enclosing_symbol() {
         let resp = base_response();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Enclosing symbol: function parse_request"));
     }
 
     #[test]
     fn includes_related_symbols() {
         let resp = base_response();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Related symbols: validate_header, parse_body"));
     }
 
     #[test]
     fn includes_diagnostics() {
         let resp = base_response();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Diagnostics: 1 in hunk"));
         assert!(summary.contains("unused variable: x"));
     }
@@ -362,28 +375,28 @@ mod tests {
     #[test]
     fn includes_nearby_diagnostics() {
         let resp = base_response();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Nearby diagnostics: 1"));
     }
 
     #[test]
     fn includes_definitions() {
         let resp = base_response();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Definitions: 1 intersecting"));
     }
 
     #[test]
     fn includes_references() {
         let resp = base_response();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("References: 3 intersecting"));
     }
 
     #[test]
     fn includes_diagnostic_freshness() {
         let resp = base_response();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Diagnostic evidence:"));
         assert!(summary.contains("Fresh"));
         assert!(summary.contains("age_ms=1200"));
@@ -393,7 +406,7 @@ mod tests {
     fn truncation_flags_appear() {
         let mut resp = base_response();
         resp.limits.references_truncated = true;
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Truncation: references truncated"));
     }
 
@@ -401,14 +414,14 @@ mod tests {
     fn no_enclosing_symbol_shows_none() {
         let mut resp = base_response();
         resp.hunks[0].enclosing_symbol = None;
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Enclosing symbol: none"));
     }
 
     #[test]
     fn empty_response_produces_header_only() {
         let resp = HunkSourceNavigationResponse::new("src/empty.rs");
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Hunk Source Context"));
         assert!(summary.contains("File: src/empty.rs"));
     }
@@ -417,7 +430,7 @@ mod tests {
     fn truncated_flag_appears() {
         let mut resp = base_response();
         resp.truncated = true;
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Note: output truncated"));
     }
 
@@ -435,7 +448,7 @@ mod tests {
                 end_column: 1,
             })
             .collect();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("5 more"));
     }
 
@@ -453,11 +466,20 @@ mod tests {
                 code: None,
             })
             .collect();
-        let summary = format_hunk_source_context_summary(&resp);
+        let summary = format_hunk_source_context_summary(&resp, &[]);
         assert!(summary.contains("Diagnostics: 10 in hunk"));
         // Only first 5 messages shown
         assert!(summary.contains("diag0"));
         assert!(summary.contains("diag4"));
         assert!(!summary.contains("diag5"));
+    }
+
+    #[test]
+    fn extra_notes_are_appended() {
+        let resp = base_response();
+        let extra = vec!["server indexing".to_string(), "warmup pending".to_string()];
+        let summary = format_hunk_source_context_summary(&resp, &extra);
+        assert!(summary.contains("Note: server indexing"));
+        assert!(summary.contains("Note: warmup pending"));
     }
 }

@@ -63,10 +63,7 @@ edition = "2021"
 
         std::fs::write(&scenario_path, serde_json::to_string_pretty(&scenario)?)?;
 
-        let service = Arc::new(LspService::new(make_service_config(
-            &scenario_path,
-            &transcript_path,
-        )));
+        let service = LspService::new_arc(make_service_config(&scenario_path, &transcript_path));
 
         Ok(Self {
             tempdir,

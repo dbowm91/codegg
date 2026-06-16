@@ -23,6 +23,25 @@ pub enum LspReadinessPolicy {
 }
 
 /// Restart behavior for a specific server.
+///
+/// Restart is configured exclusively via the per-server
+/// compatibility profile (see
+/// [`LspCompatibilityProfile::restart_policy`]). There is no
+/// separate `[lsp.<server>.restart]` config schema yet — this is
+/// intentional to keep restart policy close to the readiness and
+/// initialization quirks that motivate it. The restart coordinator
+/// in `crate::restart` is the single source of truth for
+/// applying this policy on unexpected exits and explicit
+/// restart requests.
+///
+/// `max_attempts` is the cap on consecutive restart attempts
+/// before the server is transitioned to `Failed`. The counter
+/// resets lazily after the client has been healthy for
+/// `reset_after_healthy`. `initial_backoff` and `max_backoff`
+/// define the exponential backoff curve (capped) applied
+/// between attempts; the formula in
+/// `crate::restart::backoff_delay` is
+/// `min(initial * 2^(attempt-1), max)`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspRestartPolicy {
     pub mode: LspRestartMode,
@@ -87,11 +106,30 @@ pub enum CompatibilityCheckStatus {
     Unsupported,
 }
 
+/// How strictly a compatibility check must pass.
+///
+/// Used by the real-server harness to classify checks for the final
+/// assertion. A test fails when a `Required` check is not `Passing` or
+/// when a `RequiredIfAdvertised` check was advertised (server reports the
+/// capability) and failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompatibilityRequirement {
+    /// Check must pass unconditionally; failure fails the test.
+    Required,
+    /// Check must pass if the server advertised the corresponding capability.
+    RequiredIfAdvertised,
+    /// Check is informational; failures are recorded but do not fail the test.
+    Optional,
+    /// Check is known to be limited or unsupported; failure is expected.
+    KnownLimitation,
+}
+
 /// A single compatibility check result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspCompatibilityCheck {
     pub name: String,
     pub status: CompatibilityCheckStatus,
+    pub requirement: CompatibilityRequirement,
     pub detail: Option<String>,
     pub duration_ms: Option<u64>,
 }

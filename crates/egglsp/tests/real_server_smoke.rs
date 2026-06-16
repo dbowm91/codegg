@@ -8,16 +8,19 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use lsp_types::Position;
 use tempfile::TempDir;
 
-/// Timeout for server initialization.
-const _INIT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Timeout for server initialization handshake.
+const INIT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Timeout for `initialized` notification.
+const INITIALIZED_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout for readiness/indexing.
-const _READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for individual semantic requests.
-const _REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Total test timeout (enforced by the test harness).
-const _TEST_TIMEOUT: Duration = Duration::from_secs(60);
+const _TEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ── Server Binary Discovery ─────────────────────────────────────────
 
@@ -55,13 +58,64 @@ fn capture_version(bin: &Path) -> Option<String> {
         })
 }
 
-// ── Fixture Generators ──────────────────────────────────────────────
+/// Sanitize a server version string for use in a filename.
+fn sanitize_for_filename(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
 
-/// Create a minimal Rust project fixture in a temp directory.
-fn create_rust_fixture(dir: &Path) -> Vec<PathBuf> {
-    let cargo_toml = dir.join("Cargo.toml");
+// ── Fixture Metadata ────────────────────────────────────────────────
+
+/// Typed fixture metadata for a real-server smoke test.
+///
+/// Source files referenced by semantic requests are explicit; positions
+/// correspond to actual identifiers in the source text. Manifest files
+/// (`Cargo.toml`, `pyproject.toml`) are still written to disk so the
+/// language server recognizes the project, but they are not included in
+/// `source_files` and never receive semantic requests.
+#[allow(dead_code)]
+struct RealServerFixture {
+    /// Owns the temporary directory; dropping it deletes the project on disk.
+    tempdir: TempDir,
+    /// Absolute path to the project root.
+    root: PathBuf,
+    /// Source files eligible for semantic requests (no manifests).
+    source_files: Vec<PathBuf>,
+    /// The single source file the smoke suite drives most checks against.
+    primary_source: PathBuf,
+    /// Optional second source file used for cross-file reference checks.
+    secondary_source: Option<PathBuf>,
+    /// File the suite waits on for diagnostics (typically the broken-intent file).
+    diagnostics_file: PathBuf,
+    /// Position of a top-level item used for document symbols.
+    symbol_position: Position,
+    /// Position at the call site of a function (used for definition lookup).
+    definition_position: Position,
+    /// Position at the declaration of a function (used for references lookup).
+    references_position: Position,
+    /// Position at a function call / type use (used for hover).
+    hover_position: Position,
+    /// Expected symbol names from `document_symbols` (best-effort, not asserted).
+    expected_symbol_names: Vec<&'static str>,
+}
+
+/// Build a Rust fixture with a `Point` struct, an `add`/`greet` pair, a
+/// `broken()` for diagnostics, and a `caller()` that calls `add` from a
+/// different scope. Positions are adjacent to the source text so changes
+/// are obvious.
+fn rust_fixture() -> RealServerFixture {
+    let tempdir = tempfile::tempdir().unwrap();
+    let root = tempdir.path().to_path_buf();
+
     std::fs::write(
-        &cargo_toml,
+        root.join("Cargo.toml"),
         r#"[package]
 name = "test_fixture"
 version = "0.1.0"
@@ -70,9 +124,40 @@ edition = "2021"
     )
     .unwrap();
 
-    let src_dir = dir.join("src");
+    let src_dir = root.join("src");
     std::fs::create_dir_all(&src_dir).unwrap();
 
+    // Source: line numbers are 0-based for LSP Position::line. Keep this
+    // string and the position constants below adjacent so any edit is obvious.
+    // Line 0: pub fn add(a: i32, b: i32) -> i32 {
+    // Line 1:     a + b
+    // Line 2: }
+    // Line 3: (blank)
+    // Line 4: pub fn greet(name: &str) -> String {
+    // Line 5:     format!("Hello, {name}!")
+    // Line 6: }
+    // Line 7: (blank)
+    // Line 8: pub struct Point {
+    // Line 9:     pub x: f64,
+    // Line 10:    pub y: f64,
+    // Line 11: }
+    // Line 12: (blank)
+    // Line 13: impl Point {
+    // Line 14:     pub fn distance(&self, other: &Point) -> f64 {
+    // Line 15:         ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
+    // Line 16:     }
+    // Line 17: }
+    // Line 18: (blank)
+    // Line 19: // Intentional type error for diagnostics
+    // Line 20: pub fn broken() -> i32 {
+    // Line 21:     let x: String = 42;
+    // Line 22:     x
+    // Line 23: }
+    // Line 24: (blank)
+    // Line 25: // Call hierarchy target
+    // Line 26: pub fn caller() -> i32 {
+    // Line 27:     add(1, 2)
+    // Line 28: }
     let lib_rs = src_dir.join("lib.rs");
     std::fs::write(
         &lib_rs,
@@ -109,14 +194,34 @@ pub fn caller() -> i32 {
     )
     .unwrap();
 
-    vec![cargo_toml, lib_rs]
+    RealServerFixture {
+        tempdir,
+        root,
+        source_files: vec![lib_rs.clone()],
+        primary_source: lib_rs.clone(),
+        secondary_source: None,
+        diagnostics_file: lib_rs.clone(),
+        // `Point` struct on line 8, character 9 lands on the identifier.
+        symbol_position: Position::new(8, 9),
+        // `add` call site: line 27, character 4.
+        definition_position: Position::new(27, 4),
+        // `add` declaration: line 0, character 7.
+        references_position: Position::new(0, 7),
+        // `add` call site: line 27, character 4.
+        hover_position: Position::new(27, 4),
+        expected_symbol_names: vec!["add", "greet", "Point", "broken", "caller"],
+    }
 }
 
-/// Create a minimal Python project fixture in a temp directory.
-fn create_python_fixture(dir: &Path) -> Vec<PathBuf> {
-    let pyproject = dir.join("pyproject.toml");
+/// Build a Python fixture with a `Point` class, an `add` helper, a
+/// `broken()` for diagnostics, and a `caller()` that uses `add` from a
+/// different file.
+fn python_fixture() -> RealServerFixture {
+    let tempdir = tempfile::tempdir().unwrap();
+    let root = tempdir.path().to_path_buf();
+
     std::fs::write(
-        &pyproject,
+        root.join("pyproject.toml"),
         r#"[project]
 name = "test_fixture"
 version = "0.1.0"
@@ -124,7 +229,18 @@ version = "0.1.0"
     )
     .unwrap();
 
-    let helper_py = dir.join("helper.py");
+    // helper.py — secondary source.
+    // Line 0: def add(a: int, b: int) -> int:
+    // Line 1:     return a + b
+    // Line 2: (blank)
+    // Line 3: class Point:
+    // Line 4:     def __init__(self, x: float, y: float):
+    // Line 5:         self.x = x
+    // Line 6:         self.y = y
+    // Line 7: (blank)
+    // Line 8:     def distance(self, other: "Point") -> float:
+    // Line 9:         return ((self.x - other.x)**2 + (self.y - other.y)**2)**0.5
+    let helper_py = root.join("helper.py");
     std::fs::write(
         &helper_py,
         r#"def add(a: int, b: int) -> int:
@@ -141,7 +257,21 @@ class Point:
     )
     .unwrap();
 
-    let main_py = dir.join("main.py");
+    // main.py — primary source.
+    // Line 0: from helper import add, Point
+    // Line 1: (blank)
+    // Line 2: def greet(name: str) -> str:
+    // Line 3:     return f"Hello, {name}!"
+    // Line 4: (blank)
+    // Line 5: # Intentional type error for diagnostics
+    // Line 6: def broken() -> int:
+    // Line 7:     x: str = 42
+    // Line 8:     return x
+    // Line 9: (blank)
+    // Line 10: # Cross-file reference
+    // Line 11: def caller() -> int:
+    // Line 12:     return add(1, 2)
+    let main_py = root.join("main.py");
     std::fs::write(
         &main_py,
         r#"from helper import add, Point
@@ -161,7 +291,23 @@ def caller() -> int:
     )
     .unwrap();
 
-    vec![pyproject, helper_py, main_py]
+    RealServerFixture {
+        tempdir,
+        root,
+        source_files: vec![main_py.clone(), helper_py.clone()],
+        primary_source: main_py.clone(),
+        secondary_source: Some(helper_py.clone()),
+        diagnostics_file: main_py.clone(),
+        // `greet` def on line 2, character 4.
+        symbol_position: Position::new(2, 4),
+        // `add` call site in main.py: line 12, character 11.
+        definition_position: Position::new(12, 11),
+        // `add` import use in main.py: line 0, character 19.
+        references_position: Position::new(0, 19),
+        // `add` call site: line 12, character 11.
+        hover_position: Position::new(12, 11),
+        expected_symbol_names: vec!["greet", "broken", "caller"],
+    }
 }
 
 // ── Common Smoke Assertions ─────────────────────────────────────────
@@ -169,8 +315,8 @@ def caller() -> int:
 use egglsp::capability::LspCapabilitySnapshot;
 use egglsp::client::{LspClient, LspClientOptions};
 use egglsp::compatibility::{
-    self, CompatibilityCheckStatus, LspCompatibilityCheck, LspCompatibilityProfile,
-    LspCompatibilityReport,
+    self, CompatibilityCheckStatus, CompatibilityRequirement, LspCompatibilityCheck,
+    LspCompatibilityProfile, LspCompatibilityReport,
 };
 use egglsp::diagnostics::LspDiagnosticSnapshot;
 use egglsp::launch::LspLaunchSpec;
@@ -179,37 +325,76 @@ use egglsp::launch::LspLaunchSpec;
 struct SmokeCheck {
     name: String,
     result: Result<(), String>,
+    requirement: CompatibilityRequirement,
     duration_ms: u64,
 }
 
 impl SmokeCheck {
-    fn pass(name: impl Into<String>, duration_ms: u64) -> Self {
+    fn pass(
+        name: impl Into<String>,
+        requirement: CompatibilityRequirement,
+        duration_ms: u64,
+    ) -> Self {
         Self {
             name: name.into(),
             result: Ok(()),
+            requirement,
             duration_ms,
         }
     }
 
-    fn fail(name: impl Into<String>, reason: impl Into<String>, duration_ms: u64) -> Self {
+    fn fail(
+        name: impl Into<String>,
+        requirement: CompatibilityRequirement,
+        reason: impl Into<String>,
+        duration_ms: u64,
+    ) -> Self {
         Self {
             name: name.into(),
             result: Err(reason.into()),
+            requirement,
             duration_ms,
+        }
+    }
+
+    fn status(&self) -> CompatibilityCheckStatus {
+        match (&self.result, self.requirement) {
+            (Ok(()), _) => CompatibilityCheckStatus::Passing,
+            (Err(_), CompatibilityRequirement::KnownLimitation) => {
+                CompatibilityCheckStatus::PassingWithKnownLimits
+            }
+            (Err(_), _) => CompatibilityCheckStatus::Failing,
         }
     }
 
     fn to_compatibility_check(&self) -> LspCompatibilityCheck {
         LspCompatibilityCheck {
             name: self.name.clone(),
-            status: match &self.result {
-                Ok(()) => CompatibilityCheckStatus::Passing,
-                Err(_) => CompatibilityCheckStatus::Failing,
-            },
+            status: self.status(),
+            requirement: self.requirement,
             detail: self.result.as_ref().err().cloned(),
             duration_ms: Some(self.duration_ms),
         }
     }
+}
+
+/// Format a stage-timeout error with actionable detail.
+fn stage_timeout_error(
+    server_id: &str,
+    bin: &Path,
+    stage: &str,
+    elapsed: Duration,
+    stderr_tail: &[String],
+) -> String {
+    let stderr_summary = if stderr_tail.is_empty() {
+        "<no stderr captured>".to_string()
+    } else {
+        stderr_tail.join(" | ")
+    };
+    format!(
+        "stage '{stage}' timed out after {elapsed:?} for {server_id} at {} (stderr tail: {stderr_summary})",
+        bin.display()
+    )
 }
 
 /// Wait for diagnostics from a specific file, with timeout.
@@ -236,15 +421,14 @@ async fn wait_for_diagnostics(
 async fn run_smoke_suite(
     profile: &LspCompatibilityProfile,
     bin_path: &Path,
-    tempdir: &TempDir,
-    source_files: &[PathBuf],
+    fixture: &RealServerFixture,
     server_version: Option<String>,
 ) -> LspCompatibilityReport {
-    let root = tempdir.path().to_path_buf();
+    let root = fixture.root.clone();
     let mut checks: Vec<SmokeCheck> = Vec::new();
-    let mut stderr_tail: Vec<String> = Vec::new();
+    let stderr_tail: Vec<String> = Vec::new();
 
-    // Build launch spec
+    // Build launch spec.
     let spec = LspLaunchSpec::new(
         &profile.server_id,
         bin_path,
@@ -256,253 +440,620 @@ async fn run_smoke_suite(
 
     let client_options = LspClientOptions::default();
 
-    // 1. Launch and Initialize
-    let start = std::time::Instant::now();
-    let client_result =
-        LspClient::new_with_launch_spec(spec, &root, serde_json::json!({}), client_options).await;
-    let init_ms = start.elapsed().as_millis() as u64;
-
+    // 1. Process launch (separate timing from the LSP handshake).
+    let launch_start = std::time::Instant::now();
+    let workspace_config = profile.workspace_configuration.clone();
+    let client_result = match tokio::time::timeout(
+        INIT_TIMEOUT,
+        LspClient::new_with_launch_spec(spec, &root, workspace_config, client_options),
+    )
+    .await
+    {
+        Ok(Ok(c)) => Ok(c),
+        Ok(Err(e)) => Err(format!("{e}")),
+        Err(_elapsed) => Err(stage_timeout_error(
+            &profile.server_id,
+            bin_path,
+            "process_launch",
+            INIT_TIMEOUT,
+            &stderr_tail,
+        )),
+    };
+    let launch_ms = launch_start.elapsed().as_millis() as u64;
     let client = match client_result {
         Ok(c) => {
-            checks.push(SmokeCheck::pass("initialize", init_ms));
+            checks.push(SmokeCheck::pass(
+                "process_launch",
+                CompatibilityRequirement::Required,
+                launch_ms,
+            ));
             c
         }
         Err(e) => {
-            checks.push(SmokeCheck::fail("initialize", format!("{e}"), init_ms));
-            return LspCompatibilityReport {
-                server_id: profile.server_id.clone(),
-                server_version,
-                platform: std::env::consts::OS.to_string(),
-                initialize_ms: init_ms,
-                readiness_ms: None,
-                capabilities: LspCapabilitySnapshot::default(),
-                checks: checks.iter().map(|c| c.to_compatibility_check()).collect(),
-                stderr_tail,
-                known_limitations: profile.known_limitations.clone(),
-            };
+            checks.push(SmokeCheck::fail(
+                "process_launch",
+                CompatibilityRequirement::Required,
+                e,
+                launch_ms,
+            ));
+            return build_report(profile, server_version, 0, None, &checks, stderr_tail);
         }
     };
 
-    // 2. Capability Snapshot
-    let start = std::time::Instant::now();
-    let raw_caps = client.capabilities.lock().await.clone().unwrap_or_default();
-    let caps = LspCapabilitySnapshot::from_capabilities(&raw_caps, Some(&profile.server_id), None);
-    let cap_ms = start.elapsed().as_millis() as u64;
-    checks.push(SmokeCheck::pass("capability_snapshot", cap_ms));
+    // 2. Initialize handshake — real LSP `initialize` request.
+    let init_start = std::time::Instant::now();
+    let init_opts = profile.initialization_options.clone();
+    let server_caps =
+        match tokio::time::timeout(INIT_TIMEOUT, client.initialize(Some(init_opts))).await {
+            Ok(Ok(c)) => Ok(c),
+            Ok(Err(e)) => Err(format!("{e}")),
+            Err(_elapsed) => Err(stage_timeout_error(
+                &profile.server_id,
+                bin_path,
+                "initialize",
+                INIT_TIMEOUT,
+                &stderr_tail,
+            )),
+        };
+    let initialize_ms = init_start.elapsed().as_millis() as u64;
+    let server_caps = match server_caps {
+        Ok(c) => {
+            checks.push(SmokeCheck::pass(
+                "initialize",
+                CompatibilityRequirement::Required,
+                initialize_ms,
+            ));
+            c
+        }
+        Err(e) => {
+            checks.push(SmokeCheck::fail(
+                "initialize",
+                CompatibilityRequirement::Required,
+                e,
+                initialize_ms,
+            ));
+            return build_report(
+                profile,
+                server_version,
+                initialize_ms,
+                None,
+                &checks,
+                stderr_tail,
+            );
+        }
+    };
 
-    // 3. Open fixture files
-    for file in source_files {
-        let uri = url::Url::from_file_path(file).unwrap();
-        let content = std::fs::read_to_string(file).unwrap_or_default();
-        client.open_file(&uri, &content, 1).await.ok();
+    // 3. `initialized` notification.
+    let initialized_start = std::time::Instant::now();
+    let initialized_result =
+        match tokio::time::timeout(INITIALIZED_TIMEOUT, client.send_initialized()).await {
+            Ok(r) => r,
+            Err(_elapsed) => Err(egglsp::error::LspError::RequestFailed(stage_timeout_error(
+                &profile.server_id,
+                bin_path,
+                "initialized",
+                INITIALIZED_TIMEOUT,
+                &stderr_tail,
+            ))),
+        };
+    let initialized_ms = initialized_start.elapsed().as_millis() as u64;
+    match initialized_result {
+        Ok(()) => checks.push(SmokeCheck::pass(
+            "initialized",
+            CompatibilityRequirement::Required,
+            initialized_ms,
+        )),
+        Err(e) => {
+            checks.push(SmokeCheck::fail(
+                "initialized",
+                CompatibilityRequirement::Required,
+                format!("{e}"),
+                initialized_ms,
+            ));
+        }
     }
-    checks.push(SmokeCheck::pass("didOpen", 0));
 
-    // 4. Wait for readiness (diagnostics or timeout based on profile)
-    let start = std::time::Instant::now();
+    // 4. Capability snapshot — derived from the real InitializeResult.
+    let cap_start = std::time::Instant::now();
+    let caps =
+        LspCapabilitySnapshot::from_capabilities(&server_caps, Some(&profile.server_id), None);
+    let cap_ms = cap_start.elapsed().as_millis() as u64;
+    checks.push(SmokeCheck::pass(
+        "capability_snapshot",
+        CompatibilityRequirement::Required,
+        cap_ms,
+    ));
+
+    // 5. didOpen — only source files, never manifests.
+    let didopen_start = std::time::Instant::now();
+    let mut didopen_err: Option<String> = None;
+    for file in &fixture.source_files {
+        let uri = match url::Url::from_file_path(file) {
+            Ok(u) => u,
+            Err(()) => {
+                didopen_err = Some(format!("invalid uri for {}", file.display()));
+                break;
+            }
+        };
+        let content = std::fs::read_to_string(file).unwrap_or_default();
+        if let Err(e) = client.open_file(&uri, &content, 1).await {
+            didopen_err = Some(format!("{}: {e}", file.display()));
+            break;
+        }
+    }
+    let didopen_ms = didopen_start.elapsed().as_millis() as u64;
+    match didopen_err {
+        Some(e) => checks.push(SmokeCheck::fail(
+            "didOpen",
+            CompatibilityRequirement::Required,
+            e,
+            didopen_ms,
+        )),
+        None => checks.push(SmokeCheck::pass(
+            "didOpen",
+            CompatibilityRequirement::Required,
+            didopen_ms,
+        )),
+    }
+
+    // 6. Readiness wait — diagnostics- or progress-driven per profile.
+    let readiness_start = std::time::Instant::now();
     match &profile.readiness_policy {
         egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout { timeout } => {
-            if let Some(first_file) = source_files.first() {
-                let _ = wait_for_diagnostics(&client, first_file, *timeout).await;
-            }
+            let _ = wait_for_diagnostics(
+                &client,
+                &fixture.diagnostics_file,
+                std::cmp::min(*timeout, READINESS_TIMEOUT),
+            )
+            .await;
         }
         egglsp::compatibility::LspReadinessPolicy::WaitForProgressEndOrTimeout { timeout } => {
-            // For progress-based servers, just wait a bit
-            tokio::time::sleep(std::cmp::min(*timeout, Duration::from_secs(10))).await;
+            tokio::time::sleep(std::cmp::min(*timeout, READINESS_TIMEOUT)).await;
         }
         egglsp::compatibility::LspReadinessPolicy::WarmupDelay { duration } => {
             tokio::time::sleep(*duration).await;
         }
         egglsp::compatibility::LspReadinessPolicy::InitializedIsReady => {}
     }
-    let readiness_ms = start.elapsed().as_millis() as u64;
-    checks.push(SmokeCheck::pass("readiness_wait", readiness_ms));
+    let readiness_ms = readiness_start.elapsed().as_millis() as u64;
+    checks.push(SmokeCheck::pass(
+        "readiness_wait",
+        CompatibilityRequirement::Required,
+        readiness_ms,
+    ));
 
-    // 5. Document Symbols
+    // 7. Diagnostics intent check.
+    let diag_start = std::time::Instant::now();
+    let diagnostics_required = matches!(
+        profile.readiness_policy,
+        egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout { .. }
+    );
+    let diag_snapshot = wait_for_diagnostics(
+        &client,
+        &fixture.diagnostics_file,
+        std::cmp::min(READINESS_TIMEOUT, Duration::from_secs(5)),
+    )
+    .await;
+    let diag_ms = diag_start.elapsed().as_millis() as u64;
+    let diag_count = diag_snapshot
+        .as_ref()
+        .map(|s| s.diagnostics.len())
+        .unwrap_or(0);
+    if diagnostics_required {
+        if diag_count > 0 {
+            checks.push(SmokeCheck::pass(
+                format!("diagnostics ({diag_count} found)"),
+                CompatibilityRequirement::Required,
+                diag_ms,
+            ));
+        } else {
+            checks.push(SmokeCheck::fail(
+                "diagnostics",
+                CompatibilityRequirement::KnownLimitation,
+                "no diagnostics observed after bounded wait (server may be slow to index)",
+                diag_ms,
+            ));
+        }
+    } else {
+        checks.push(SmokeCheck::pass(
+            format!("diagnostics ({diag_count} found, not required)"),
+            CompatibilityRequirement::Optional,
+            diag_ms,
+        ));
+    }
+
+    let primary_uri = url::Url::from_file_path(&fixture.primary_source).unwrap();
+
+    // 8. Document symbols.
     if caps.supports_document_symbols {
         let start = std::time::Instant::now();
-        let result = if let Some(file) = source_files.first() {
-            let uri = url::Url::from_file_path(file).unwrap();
-            client
-                .document_symbols(&uri)
-                .await
-                .map(|s| s.len())
-                .map_err(|e| format!("{e}"))
-        } else {
-            Err("no source files".to_string())
-        };
+        let result =
+            tokio::time::timeout(REQUEST_TIMEOUT, client.document_symbols(&primary_uri)).await;
         let ms = start.elapsed().as_millis() as u64;
         match result {
-            Ok(count) => {
-                if count > 0 {
+            Ok(Ok(symbols)) => {
+                if !symbols.is_empty() {
                     checks.push(SmokeCheck::pass(
-                        format!("document_symbols ({count} found)"),
+                        format!("document_symbols ({} found)", symbols.len()),
+                        CompatibilityRequirement::RequiredIfAdvertised,
                         ms,
                     ));
                 } else {
                     checks.push(SmokeCheck::fail(
                         "document_symbols",
-                        "0 symbols found".to_string(),
+                        CompatibilityRequirement::RequiredIfAdvertised,
+                        "0 symbols found at primary source",
                         ms,
                     ));
                 }
             }
-            Err(e) => {
-                checks.push(SmokeCheck::fail("document_symbols", e, ms));
-            }
+            Ok(Err(e)) => checks.push(SmokeCheck::fail(
+                "document_symbols",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
+            )),
+            Err(_elapsed) => checks.push(SmokeCheck::fail(
+                "document_symbols",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    &profile.server_id,
+                    bin_path,
+                    "document_symbols",
+                    REQUEST_TIMEOUT,
+                    &stderr_tail,
+                ),
+                ms,
+            )),
         }
     } else {
         checks.push(SmokeCheck::pass(
             "document_symbols (skipped: not supported)",
+            CompatibilityRequirement::Optional,
             0,
         ));
     }
 
-    // 6. Definition
+    // 9. Definition (call site -> declaration).
     if caps.supports_definition {
         let start = std::time::Instant::now();
-        let result = if let Some(file) = source_files.first() {
-            let uri = url::Url::from_file_path(file).unwrap();
-            // Try to find definition at a function call site
-            client
-                .go_to_definition(&uri, lsp_types::Position::new(10, 5))
-                .await
-                .map(|d| d.is_some())
-                .map_err(|e| format!("{e}"))
-        } else {
-            Err("no source files".to_string())
-        };
+        let result = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            client.go_to_definition(&primary_uri, fixture.definition_position),
+        )
+        .await;
         let ms = start.elapsed().as_millis() as u64;
         match result {
-            Ok(found) => {
-                checks.push(SmokeCheck::pass(format!("definition (found={found})"), ms));
+            Ok(Ok(Some(_))) => {
+                checks.push(SmokeCheck::pass(
+                    "definition (found)",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
             }
-            Err(e) => {
-                checks.push(SmokeCheck::fail("definition", e, ms));
-            }
+            Ok(Ok(None)) => checks.push(SmokeCheck::fail(
+                "definition",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                "no definition returned at call site",
+                ms,
+            )),
+            Ok(Err(e)) => checks.push(SmokeCheck::fail(
+                "definition",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
+            )),
+            Err(_elapsed) => checks.push(SmokeCheck::fail(
+                "definition",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    &profile.server_id,
+                    bin_path,
+                    "definition",
+                    REQUEST_TIMEOUT,
+                    &stderr_tail,
+                ),
+                ms,
+            )),
         }
     } else {
-        checks.push(SmokeCheck::pass("definition (skipped: not supported)", 0));
+        checks.push(SmokeCheck::pass(
+            "definition (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
     }
 
-    // 7. References
+    // 10. References (declaration -> call sites).
     if caps.supports_references {
         let start = std::time::Instant::now();
-        let result = if let Some(file) = source_files.first() {
-            let uri = url::Url::from_file_path(file).unwrap();
-            client
-                .find_references(&uri, lsp_types::Position::new(0, 5))
-                .await
-                .map(|r| r.len())
-                .map_err(|e| format!("{e}"))
-        } else {
-            Err("no source files".to_string())
-        };
+        let result = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            client.find_references(&primary_uri, fixture.references_position),
+        )
+        .await;
         let ms = start.elapsed().as_millis() as u64;
         match result {
-            Ok(count) => {
-                checks.push(SmokeCheck::pass(format!("references ({count} found)"), ms));
+            Ok(Ok(refs)) => {
+                let count = refs.len();
+                checks.push(SmokeCheck::pass(
+                    format!("references ({count} found)"),
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
             }
-            Err(e) => {
-                checks.push(SmokeCheck::fail("references", e, ms));
-            }
+            Ok(Err(e)) => checks.push(SmokeCheck::fail(
+                "references",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
+            )),
+            Err(_elapsed) => checks.push(SmokeCheck::fail(
+                "references",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    &profile.server_id,
+                    bin_path,
+                    "references",
+                    REQUEST_TIMEOUT,
+                    &stderr_tail,
+                ),
+                ms,
+            )),
         }
 
-        // 7b. Cross-file references: find a symbol defined in a
-        // different file and verify references span multiple files.
-        if source_files.len() >= 2 {
+        // 10b. Cross-file references — only when the fixture has a
+        // secondary source AND the server advertised references. The
+        // assertion requires at least 2 distinct URIs.
+        if let Some(secondary) = fixture.secondary_source.as_ref() {
             let start = std::time::Instant::now();
-            // For Python: look for 'add' in main.py (line 0, col ~6 for 'from helper import add').
-            // For Rust: look for the helper function call.
-            let cross_file_result = if let Some(main_file) = source_files.last() {
-                let uri = url::Url::from_file_path(main_file).unwrap();
-                client
-                    .find_references(&uri, lsp_types::Position::new(0, 6))
-                    .await
-                    .map(|refs| {
-                        let file_count = refs
-                            .iter()
-                            .map(|r| r.uri.to_string())
-                            .collect::<std::collections::HashSet<_>>()
-                            .len();
-                        (refs.len(), file_count)
-                    })
-                    .map_err(|e| format!("{e}"))
-            } else {
-                Err("no source files".to_string())
-            };
+            let secondary_uri = url::Url::from_file_path(secondary).unwrap();
+            let result = tokio::time::timeout(
+                REQUEST_TIMEOUT,
+                client.find_references(&secondary_uri, Position::new(0, 4)),
+            )
+            .await;
             let ms = start.elapsed().as_millis() as u64;
-            match cross_file_result {
-                Ok((count, file_count)) => {
-                    checks.push(SmokeCheck::pass(
-                        format!("cross-file references ({count} refs in {file_count} files)"),
-                        ms,
-                    ));
+            match result {
+                Ok(Ok(refs)) => {
+                    let mut uris: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    for r in &refs {
+                        uris.insert(r.uri.to_string());
+                    }
+                    let count = refs.len();
+                    let file_count = uris.len();
+                    if file_count >= 2 {
+                        checks.push(SmokeCheck::pass(
+                            format!("cross-file references ({count} refs in {file_count} files)"),
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            ms,
+                        ));
+                    } else {
+                        checks.push(SmokeCheck::fail(
+                            "cross-file references",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            format!(
+                                "expected >= 2 distinct URIs, found {file_count} (refs: {count})"
+                            ),
+                            ms,
+                        ));
+                    }
                 }
-                Err(e) => {
-                    checks.push(SmokeCheck::fail("cross-file references", e, ms));
-                }
+                Ok(Err(e)) => checks.push(SmokeCheck::fail(
+                    "cross-file references",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    format!("{e}"),
+                    ms,
+                )),
+                Err(_elapsed) => checks.push(SmokeCheck::fail(
+                    "cross-file references",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    stage_timeout_error(
+                        &profile.server_id,
+                        bin_path,
+                        "cross-file references",
+                        REQUEST_TIMEOUT,
+                        &stderr_tail,
+                    ),
+                    ms,
+                )),
             }
         }
     } else {
-        checks.push(SmokeCheck::pass("references (skipped: not supported)", 0));
+        checks.push(SmokeCheck::pass(
+            "references (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
     }
 
-    // 8. Hover
+    // 11. Hover.
     if caps.supports_hover {
         let start = std::time::Instant::now();
-        let result = if let Some(file) = source_files.first() {
-            let uri = url::Url::from_file_path(file).unwrap();
-            client
-                .hover(&uri, lsp_types::Position::new(0, 5))
-                .await
-                .map(|h| h.is_some())
-                .map_err(|e| format!("{e}"))
-        } else {
-            Err("no source files".to_string())
-        };
+        let result = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            client.hover(&primary_uri, fixture.hover_position),
+        )
+        .await;
         let ms = start.elapsed().as_millis() as u64;
         match result {
-            Ok(found) => {
-                checks.push(SmokeCheck::pass(format!("hover (found={found})"), ms));
+            Ok(Ok(Some(_))) => {
+                checks.push(SmokeCheck::pass(
+                    "hover (found)",
+                    CompatibilityRequirement::RequiredIfAdvertised,
+                    ms,
+                ));
             }
-            Err(e) => {
-                checks.push(SmokeCheck::fail("hover", e, ms));
-            }
+            Ok(Ok(None)) => checks.push(SmokeCheck::fail(
+                "hover",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                "no hover returned at fixture position",
+                ms,
+            )),
+            Ok(Err(e)) => checks.push(SmokeCheck::fail(
+                "hover",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                format!("{e}"),
+                ms,
+            )),
+            Err(_elapsed) => checks.push(SmokeCheck::fail(
+                "hover",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                stage_timeout_error(
+                    &profile.server_id,
+                    bin_path,
+                    "hover",
+                    REQUEST_TIMEOUT,
+                    &stderr_tail,
+                ),
+                ms,
+            )),
         }
     } else {
-        checks.push(SmokeCheck::pass("hover (skipped: not supported)", 0));
+        checks.push(SmokeCheck::pass(
+            "hover (skipped: not supported)",
+            CompatibilityRequirement::Optional,
+            0,
+        ));
     }
 
-    // 9. Graceful Shutdown
+    // 12. Graceful shutdown.
     let start = std::time::Instant::now();
-    let shutdown_result = client.shutdown().await;
+    let shutdown_result = tokio::time::timeout(REQUEST_TIMEOUT, client.shutdown()).await;
     let shutdown_ms = start.elapsed().as_millis() as u64;
     match shutdown_result {
-        Ok(()) => {
-            checks.push(SmokeCheck::pass("shutdown", shutdown_ms));
-        }
-        Err(e) => {
-            checks.push(SmokeCheck::fail("shutdown", format!("{e}"), shutdown_ms));
-        }
+        Ok(Ok(())) => checks.push(SmokeCheck::pass(
+            "shutdown",
+            CompatibilityRequirement::Required,
+            shutdown_ms,
+        )),
+        Ok(Err(e)) => checks.push(SmokeCheck::fail(
+            "shutdown",
+            CompatibilityRequirement::Required,
+            format!("{e}"),
+            shutdown_ms,
+        )),
+        Err(_elapsed) => checks.push(SmokeCheck::fail(
+            "shutdown",
+            CompatibilityRequirement::Required,
+            stage_timeout_error(
+                &profile.server_id,
+                bin_path,
+                "shutdown",
+                REQUEST_TIMEOUT,
+                &stderr_tail,
+            ),
+            shutdown_ms,
+        )),
     }
 
-    // Collect stderr if available
-    if let Ok(lines) = std::fs::read_to_string(tempdir.path().join("stderr.log")) {
-        stderr_tail = lines.lines().take(20).map(String::from).collect();
-    }
+    build_report(
+        profile,
+        server_version,
+        initialize_ms,
+        Some(readiness_ms),
+        &checks,
+        stderr_tail,
+    )
+}
 
+fn build_report(
+    profile: &LspCompatibilityProfile,
+    server_version: Option<String>,
+    initialize_ms: u64,
+    readiness_ms: Option<u64>,
+    checks: &[SmokeCheck],
+    stderr_tail: Vec<String>,
+) -> LspCompatibilityReport {
     LspCompatibilityReport {
         server_id: profile.server_id.clone(),
         server_version,
         platform: std::env::consts::OS.to_string(),
-        initialize_ms: init_ms,
-        readiness_ms: Some(readiness_ms),
-        capabilities: caps,
+        initialize_ms,
+        readiness_ms,
+        capabilities: LspCapabilitySnapshot::default(),
         checks: checks.iter().map(|c| c.to_compatibility_check()).collect(),
         stderr_tail,
         known_limitations: profile.known_limitations.clone(),
     }
+}
+
+/// Format a compact one-line summary of a check for the assertion message.
+fn format_check_line(check: &LspCompatibilityCheck) -> String {
+    let detail = check
+        .detail
+        .as_deref()
+        .map(|d| format!(" — {d}"))
+        .unwrap_or_default();
+    format!(
+        "  [{:?}] {} = {:?}{}",
+        check.requirement, check.name, check.status, detail
+    )
+}
+
+/// Assert that every `Required` check is `Passing` and every
+/// `RequiredIfAdvertised` check that is recorded (i.e. the server
+/// advertised the corresponding capability) is not `Failing`. Also
+/// requires the `initialize` and `shutdown` checks to be present.
+fn assert_required_checks(report: &LspCompatibilityReport) {
+    let mut failures: Vec<String> = Vec::new();
+
+    let has_init = report.checks.iter().any(|c| c.name == "initialize");
+    if !has_init {
+        failures.push("missing required 'initialize' check".to_string());
+    }
+    let has_shutdown = report.checks.iter().any(|c| c.name == "shutdown");
+    if !has_shutdown {
+        failures.push("missing required 'shutdown' check".to_string());
+    }
+
+    for check in &report.checks {
+        let passed = matches!(
+            check.status,
+            CompatibilityCheckStatus::Passing | CompatibilityCheckStatus::PassingWithKnownLimits
+        );
+        match check.requirement {
+            CompatibilityRequirement::Required if !passed => {
+                failures.push(format!(
+                    "required check failed: {}",
+                    format_check_line(check)
+                ));
+            }
+            CompatibilityRequirement::RequiredIfAdvertised
+                if !passed
+                    && !is_skipped_check(&check.name)
+                    && !matches!(check.status, CompatibilityCheckStatus::Skipped) =>
+            {
+                failures.push(format!(
+                    "required-if-advertised check failed: {}",
+                    format_check_line(check)
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if !failures.is_empty() {
+        let mut msg = String::new();
+        msg.push_str(&format!(
+            "Compatibility regression for {} (version {:?})\n",
+            report.server_id, report.server_version
+        ));
+        msg.push_str("Failures:\n");
+        for f in &failures {
+            msg.push_str(&format!("  - {f}\n"));
+        }
+        msg.push_str("\nAll checks:\n");
+        for c in &report.checks {
+            msg.push_str(&format!("{}\n", format_check_line(c)));
+        }
+        panic!("{msg}");
+    }
+}
+
+fn is_skipped_check(name: &str) -> bool {
+    name.contains("skipped")
 }
 
 // ── Rust Analyzer Tests ────────────────────────────────────────────
@@ -520,44 +1071,12 @@ async fn rust_analyzer_smoke() {
     let version = capture_version(&bin);
     eprintln!("rust-analyzer version: {:?}", version);
 
-    let tempdir = tempfile::tempdir().unwrap();
-    let files = create_rust_fixture(tempdir.path());
-
+    let fixture = rust_fixture();
     let profile = compatibility::rust_analyzer_profile();
-    let report = run_smoke_suite(&profile, &bin, &tempdir, &files, version).await;
+    let report = run_smoke_suite(&profile, &bin, &fixture, version).await;
 
-    // Write compatibility report
-    let report_path = std::path::PathBuf::from("target/lsp-compatibility");
-    let _ = std::fs::create_dir_all(&report_path);
-    let json = serde_json::to_string_pretty(&report).unwrap();
-    let filename = format!(
-        "rust-analyzer-{}.json",
-        report.server_version.as_deref().unwrap_or("unknown")
-    );
-    let _ = std::fs::write(report_path.join(&filename), &json);
-    eprintln!("Compatibility report: {json}");
-
-    // Assert critical checks passed
-    for check in &report.checks {
-        if check.name == "initialize" {
-            assert_eq!(
-                check.status,
-                CompatibilityCheckStatus::Passing,
-                "rust-analyzer initialize failed: {:?}",
-                check.detail
-            );
-        }
-    }
-
-    // Shutdown should succeed
-    let shutdown_check = report.checks.iter().find(|c| c.name == "shutdown");
-    assert!(shutdown_check.is_some(), "no shutdown check in report");
-    assert_eq!(
-        shutdown_check.unwrap().status,
-        CompatibilityCheckStatus::Passing,
-        "rust-analyzer shutdown failed: {:?}",
-        shutdown_check.unwrap().detail
-    );
+    write_report(&report, "rust-analyzer");
+    assert_required_checks(&report);
 }
 
 // ── Pyright/Basedpyright Tests ─────────────────────────────────────
@@ -583,32 +1102,34 @@ async fn basedpyright_smoke() {
     let version = capture_version(&bin);
     eprintln!("pyright version: {:?}", version);
 
-    let tempdir = tempfile::tempdir().unwrap();
-    let files = create_python_fixture(tempdir.path());
-
+    let fixture = python_fixture();
     let profile = compatibility::pyright_profile();
-    let report = run_smoke_suite(&profile, &bin, &tempdir, &files, version).await;
+    let report = run_smoke_suite(&profile, &bin, &fixture, version).await;
 
-    // Write compatibility report
-    let report_path = std::path::PathBuf::from("target/lsp-compatibility");
-    let _ = std::fs::create_dir_all(&report_path);
-    let json = serde_json::to_string_pretty(&report).unwrap();
-    let filename = format!(
-        "pyright-{}.json",
-        report.server_version.as_deref().unwrap_or("unknown")
-    );
-    let _ = std::fs::write(report_path.join(&filename), &json);
-    eprintln!("Compatibility report: {json}");
+    write_report(&report, "pyright");
+    assert_required_checks(&report);
+}
 
-    // Assert critical checks
-    for check in &report.checks {
-        if check.name == "initialize" {
-            assert_eq!(
-                check.status,
-                CompatibilityCheckStatus::Passing,
-                "pyright initialize failed: {:?}",
-                check.detail
-            );
+/// Persist the compatibility report JSON to `target/lsp-compatibility/`
+/// with a sanitized filename, and echo the JSON for CI log capture.
+fn write_report(report: &LspCompatibilityReport, server_label: &str) {
+    let report_dir = std::path::PathBuf::from("target/lsp-compatibility");
+    let _ = std::fs::create_dir_all(&report_dir);
+    let json = match serde_json::to_string_pretty(report) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("failed to serialize compatibility report: {e}");
+            return;
         }
+    };
+    let version_part = sanitize_for_filename(report.server_version.as_deref().unwrap_or("unknown"));
+    let filename = format!("{server_label}-{version_part}.json");
+    let path = report_dir.join(&filename);
+    if let Err(e) = std::fs::write(&path, &json) {
+        eprintln!(
+            "failed to write compatibility report to {}: {e}",
+            path.display()
+        );
     }
+    eprintln!("Compatibility report for {server_label}: {json}");
 }

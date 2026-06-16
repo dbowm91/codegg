@@ -62,6 +62,11 @@ pub enum LspDiagnosticFreshness {
 ///
 /// Consumers may display stale diagnostics with appropriate labels but
 /// should never treat them as high-confidence evidence.
+///
+/// `server_generation` and `post_restart` carry the per-client
+/// generation metadata introduced in Pass 5 (Phase 17). `None`/`false`
+/// for snapshots synthesized manually (e.g. tests) and for
+/// `Unavailable` snapshots where the underlying entry is absent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspDiagnosticSnapshot {
     pub file_path: PathBuf,
@@ -69,6 +74,34 @@ pub struct LspDiagnosticSnapshot {
     pub age_ms: i64,
     pub source: LspDiagnosticSource,
     pub freshness: LspDiagnosticFreshness,
+    /// Server generation that produced these diagnostics.
+    ///
+    /// `None` when no cache entry exists (e.g. on `Unavailable`
+    /// snapshots) or when constructed manually. Otherwise the
+    /// authoritative `server_generation` of the cache entry at the
+    /// time the snapshot was built.
+    #[serde(default)]
+    pub server_generation: Option<u64>,
+    /// `true` when these diagnostics were produced by a server that
+    /// has been restarted at least once since the start of this
+    /// client key. See `DiagnosticCacheEntry::post_restart` for the
+    /// authoritative definition.
+    #[serde(default)]
+    pub post_restart: bool,
+}
+
+impl Default for LspDiagnosticSnapshot {
+    fn default() -> Self {
+        Self {
+            file_path: PathBuf::new(),
+            diagnostics: Vec::new(),
+            age_ms: 0,
+            source: LspDiagnosticSource::Unknown,
+            freshness: LspDiagnosticFreshness::Unavailable,
+            server_generation: None,
+            post_restart: false,
+        }
+    }
 }
 
 impl LspDiagnosticSnapshot {
@@ -79,6 +112,28 @@ impl LspDiagnosticSnapshot {
             age_ms: 0,
             source: LspDiagnosticSource::Unknown,
             freshness: LspDiagnosticFreshness::Unavailable,
+            server_generation: None,
+            post_restart: false,
+        }
+    }
+
+    /// Build a new snapshot with `server_generation` overwritten to
+    /// `generation`. The new snapshot's `post_restart` is preserved
+    /// from the input. Other fields are copied verbatim.
+    ///
+    /// Used by the restart coordinator to mark retained diagnostics
+    /// as belonging to the previous generation so the freshness
+    /// classifier returns [`LspDiagnosticFreshness::Stale`] until the
+    /// new server emits its first push.
+    pub fn with_generation(snap: LspDiagnosticSnapshot, generation: u64) -> Self {
+        Self {
+            file_path: snap.file_path,
+            diagnostics: snap.diagnostics,
+            age_ms: snap.age_ms,
+            source: snap.source,
+            freshness: snap.freshness,
+            server_generation: Some(generation),
+            post_restart: snap.post_restart,
         }
     }
 
@@ -92,6 +147,17 @@ impl LspDiagnosticSnapshot {
     pub fn diagnostics_may_still_be_warming(&self) -> bool {
         matches!(self.freshness, LspDiagnosticFreshness::PossiblyStale)
             && self.diagnostics.is_empty()
+    }
+
+    /// Returns `age_ms` as a non-negative `u64`.
+    ///
+    /// `LspDiagnosticSnapshot::age_ms` is `i64` because the underlying
+    /// timing primitive can yield a negative duration on some
+    /// platforms (e.g. when the monotonic clock is observed to step
+    /// backwards). Consumers that want a non-negative age should
+    /// call this helper instead of casting directly.
+    pub fn age_ms_or_default(&self) -> u64 {
+        self.age_ms.max(0) as u64
     }
 }
 
@@ -260,6 +326,8 @@ mod tests {
             age_ms: 0,
             source: LspDiagnosticSource::Pushed,
             freshness: LspDiagnosticFreshness::Fresh,
+            server_generation: None,
+            post_restart: false,
         };
         assert!(fresh.is_usable_evidence());
 
@@ -269,6 +337,8 @@ mod tests {
             age_ms: 100,
             source: LspDiagnosticSource::Pushed,
             freshness: LspDiagnosticFreshness::PossiblyStale,
+            server_generation: None,
+            post_restart: false,
         };
         assert!(possibly_stale.is_usable_evidence());
 
@@ -278,6 +348,8 @@ mod tests {
             age_ms: 0,
             source: LspDiagnosticSource::Pushed,
             freshness: LspDiagnosticFreshness::Stale,
+            server_generation: None,
+            post_restart: false,
         };
         assert!(!stale.is_usable_evidence());
 
@@ -289,5 +361,114 @@ mod tests {
     fn snapshot_age_is_non_negative() {
         let snap = LspDiagnosticSnapshot::unavailable(PathBuf::from("/tmp/test.rs"));
         assert!(snap.age_ms >= 0);
+    }
+
+    #[test]
+    fn age_ms_or_default_is_non_negative() {
+        let snap = LspDiagnosticSnapshot {
+            file_path: PathBuf::from("/tmp/a.rs"),
+            diagnostics: vec![],
+            age_ms: -10, // degenerate: should not happen, but be safe
+            source: LspDiagnosticSource::Pushed,
+            freshness: LspDiagnosticFreshness::Fresh,
+            server_generation: None,
+            post_restart: false,
+        };
+        assert_eq!(snap.age_ms_or_default(), 0);
+
+        let snap = LspDiagnosticSnapshot {
+            file_path: PathBuf::from("/tmp/b.rs"),
+            diagnostics: vec![],
+            age_ms: 1234,
+            source: LspDiagnosticSource::Pushed,
+            freshness: LspDiagnosticFreshness::Fresh,
+            server_generation: None,
+            post_restart: false,
+        };
+        assert_eq!(snap.age_ms_or_default(), 1234);
+    }
+
+    #[test]
+    fn snapshot_carries_generation_metadata() {
+        // Verify that the new fields are wired through the public
+        // surface: a manually-constructed snapshot carries the
+        // generation/post_restart fields verbatim, and serde
+        // default-missing fields round-trip cleanly.
+        let snap = LspDiagnosticSnapshot {
+            file_path: PathBuf::from("/tmp/x.rs"),
+            diagnostics: vec![],
+            age_ms: 0,
+            source: LspDiagnosticSource::Pushed,
+            freshness: LspDiagnosticFreshness::Fresh,
+            server_generation: Some(7),
+            post_restart: true,
+        };
+        assert_eq!(snap.server_generation, Some(7));
+        assert!(snap.post_restart);
+
+        // Default has no generation and is not post-restart.
+        let default_snap = LspDiagnosticSnapshot::default();
+        assert_eq!(default_snap.server_generation, None);
+        assert!(!default_snap.post_restart);
+        assert_eq!(default_snap.freshness, LspDiagnosticFreshness::Unavailable);
+
+        // Unavailable snapshots have None/False metadata.
+        let unavailable = LspDiagnosticSnapshot::unavailable(PathBuf::from("/tmp/y.rs"));
+        assert_eq!(unavailable.server_generation, None);
+        assert!(!unavailable.post_restart);
+
+        // Serde round-trip with `#[serde(default)]` on the new
+        // fields — deserializing JSON without the new fields
+        // succeeds and yields None/false.
+        let legacy_json = serde_json::json!({
+            "file_path": "/tmp/z.rs",
+            "diagnostics": [],
+            "age_ms": 0,
+            "source": "Pushed",
+            "freshness": "Fresh"
+        })
+        .to_string();
+        let parsed: LspDiagnosticSnapshot =
+            serde_json::from_str(&legacy_json).expect("legacy payload should deserialize");
+        assert_eq!(parsed.server_generation, None);
+        assert!(!parsed.post_restart);
+    }
+
+    #[test]
+    fn with_generation_returns_new_snapshot() {
+        // `with_generation` must produce a snapshot with the new
+        // generation, preserved diagnostics/source/freshness, and
+        // preserved post_restart flag.
+        let snap = LspDiagnosticSnapshot {
+            file_path: PathBuf::from("/tmp/g.rs"),
+            diagnostics: vec![],
+            age_ms: 0,
+            source: LspDiagnosticSource::Pushed,
+            freshness: LspDiagnosticFreshness::PossiblyStale,
+            server_generation: Some(2),
+            post_restart: true,
+        };
+        let updated = LspDiagnosticSnapshot::with_generation(snap, 9);
+        assert_eq!(updated.server_generation, Some(9));
+        assert!(updated.post_restart);
+        assert_eq!(updated.freshness, LspDiagnosticFreshness::PossiblyStale);
+        assert_eq!(updated.source, LspDiagnosticSource::Pushed);
+        assert_eq!(updated.file_path, PathBuf::from("/tmp/g.rs"));
+
+        // Input is moved (by value), so the post_restart is
+        // preserved.
+        let snap2 = LspDiagnosticSnapshot {
+            file_path: PathBuf::from("/tmp/h.rs"),
+            diagnostics: vec![],
+            age_ms: 0,
+            source: LspDiagnosticSource::Pushed,
+            freshness: LspDiagnosticFreshness::Stale,
+            server_generation: None,
+            post_restart: false,
+        };
+        let updated2 = LspDiagnosticSnapshot::with_generation(snap2, 3);
+        assert_eq!(updated2.server_generation, Some(3));
+        assert!(!updated2.post_restart);
+        assert_eq!(updated2.freshness, LspDiagnosticFreshness::Stale);
     }
 }

@@ -10,6 +10,18 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 /// Authoritative event emitted when a child process exits.
+///
+/// The `expected` flag is derived from the runtime's
+/// `LspProcessIntent` at the moment of observed exit, not from
+/// the exit code or signal: a graceful shutdown or forced kill
+/// requested by the runtime is always `expected = true`, while a
+/// spontaneous exit while the intent is still `Running` is
+/// `expected = false` regardless of status. The `is_crash` helper
+/// therefore only marks exits as crashes when both
+/// `expected == false` AND the status is non-zero (or missing).
+/// Exit events whose `generation` does not match the
+/// service-authoritative per-key generation are treated as stale
+/// and ignored by `LspService::handle_exit_event`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspProcessExitEvent {
     pub server_id: String,
@@ -46,6 +58,12 @@ impl LspProcessExitEvent {
             stderr_tail,
             timestamp: SystemTime::now(),
         }
+    }
+
+    /// Returns true when the runtime classified this exit as
+    /// deliberate (graceful shutdown or forced kill).
+    pub fn is_expected(&self) -> bool {
+        self.expected
     }
 
     /// Returns true if the exit indicates a crash (non-zero, unexpected).
@@ -196,5 +214,75 @@ mod tests {
         let buf = StderrRingBuffer::new();
         assert!(buf.is_empty());
         assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn graceful_shutdown_exit_with_status_zero_is_expected() {
+        // Runtime classifies an exit observed while the intent is
+        // `GracefulShutdownRequested` as expected, regardless of
+        // exit code.
+        let ev = LspProcessExitEvent::new(
+            "test",
+            PathBuf::from("/tmp"),
+            1,
+            Some(0),
+            None,
+            true,
+            vec![],
+        );
+        assert!(ev.is_expected());
+        assert!(!ev.is_crash());
+    }
+
+    #[test]
+    fn force_kill_exit_with_status_one_is_expected() {
+        // Forced kill is expected even when the child exits with
+        // a non-zero status — the intent is the source of truth.
+        let ev = LspProcessExitEvent::new(
+            "test",
+            PathBuf::from("/tmp"),
+            1,
+            Some(1),
+            None,
+            true,
+            vec![],
+        );
+        assert!(ev.is_expected());
+        assert!(!ev.is_crash());
+    }
+
+    #[test]
+    fn unexpected_exit_with_status_one_remains_unexpected() {
+        // A non-zero exit without an explicit shutdown intent is
+        // still unexpected — the runtime must not infer "expected"
+        // from transport state alone.
+        let ev = LspProcessExitEvent::new(
+            "test",
+            PathBuf::from("/tmp"),
+            1,
+            Some(1),
+            None,
+            false,
+            vec![],
+        );
+        assert!(!ev.is_expected());
+        assert!(ev.is_crash());
+    }
+
+    #[test]
+    fn zero_exit_unexpected_is_not_a_crash_but_is_unexpected() {
+        // A zero exit without an explicit shutdown intent is still
+        // unexpected. Do not equate zero exit with expected exit.
+        let ev = LspProcessExitEvent::new(
+            "test",
+            PathBuf::from("/tmp"),
+            1,
+            Some(0),
+            None,
+            false,
+            vec![],
+        );
+        assert!(!ev.is_expected());
+        assert!(!ev.is_crash());
     }
 }
