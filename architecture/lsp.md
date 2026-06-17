@@ -1696,7 +1696,7 @@ cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 
 ### Phase 3 Corrective Pass — Supervisor and Restart Tests
 
-`crates/egglsp/tests/supervisor_restart_stdio.rs` carries 11 deterministic scripted tests that exercise the new `LspProcessRuntime`, `restart_client_coordinator`, per-client generation safety, and readiness policy transitions against the fake server. The tests use bounded condition waits (polling loops) instead of fixed sleeps.
+`crates/egglsp/tests/supervisor_restart_stdio.rs` carries 13 deterministic scripted tests (11 base + 2 Pass 9 race tests for manual supersession and back-to-back deadlock) that exercise the new `LspProcessRuntime`, `restart_client_coordinator`, per-client generation safety, and readiness policy transitions against the fake server. The tests use bounded condition waits (polling loops) instead of fixed sleeps.
 
 | Test | Coverage |
 |------|----------|
@@ -1821,7 +1821,7 @@ The smoke tests (`crates/egglsp/tests/real_server_smoke.rs`) exercise rust-analy
 
 ## Phase 3 Final Closure: Runtime Termination, Generation-Safe Supervision, Restart Budgets, Readiness, and Fresh Evidence
 
-Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. Eleven passes (Pass 1 through Pass 11) make the runtime, restart, and freshness invariants explicit. All 331 lib tests pass, the 9 supervisor/restart scenarios pass across 3 consecutive runs, the production test surface is green, and the 24 root composite tests pass.
+Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. The 10-pass sequence (Pass 1 through Pass 10) makes the runtime, restart, and freshness invariants explicit. All 354 lib tests pass, the 13 supervisor/restart scenarios pass across 3 consecutive runs, the production test surface is green, and the 24 root composite tests pass.
 
 ### Generation-Aware Runtime Map
 
@@ -1960,6 +1960,30 @@ For advertised references, the smoke harness now requires a non-empty result. A 
 
 `generation_is_identical_across_health_and_exit_event` previously overwrote the generation-3 scenario before generation 2 started, causing the gen-2 process to read the gen-3 scenario. The test now writes the gen-3 scenario only AFTER `service.generation_for_key(&key) >= 2` is observed, and the gen-2 process is verified `Ready` before the gen-3 file is staged. The gen-3 process is also verified `Ready` before a stale gen-1 exit event is injected.
 
+### Restart Ownership and Live Outcome Semantics (Pass 1-10)
+
+The Pass 1-10 sequence added explicit ownership and outcome semantics on top of the supervisor/restart scaffolding. The goal is to make every restart attempt observable and bounded, so that two simultaneous restart requests cannot silently corrupt the live client.
+
+**Pass 1 — Restart completion channel and supersession waiter.** `RestartCompletion` is a `tokio::sync::watch` channel that tracks the in-flight coordinator's lifecycle. `RestartOwnerWaiter { completion: RestartCompletion }` is what `cancel_restart_ownership` returns — it lets a caller observe when the in-flight coordinator actually completes. `acquire_restart_ownership` returns `RestartLease { token }`; the coordinator checks the token at every cancellation boundary (pre-backoff, mid-sleep, post-spawn, pre-publish, pre-replay).
+
+**Pass 2 — Manual supersession with bounded wait.** `LspService::manual_restart_client(key)` now acquires the manual lease *first*, then waits under `MANUAL_SUPERSESSION_OWNER_TIMEOUT = 3s` for any in-flight automatic-restart owner to complete via its `RestartCompletion::Finished` signal. On timeout, the manual caller aborts without touching the live client; on observed completion, the manual caller proceeds and is the only live coordinator for `key`.
+
+**Pass 3 — Generation-aware runtime install.** `RuntimeInstallResult` (`Installed` / `Replaced { prior }` / `Rejected { existing_generation, requested_generation }`) is returned from `install_runtime`. A monitor that observes its own generation has been superseded terminates the orphan runtime rather than leaving it to drive future publication.
+
+**Pass 4 — Unpublished replacement and generation-scoped cleanup.** The coordinator's reinit closure now returns `UnpublishedReplacement { client, generation }` (with manual `Debug`) instead of `Arc<LspClient>`. Cleanup helpers `remove_unpublished_client_if_generation` and `terminate_unpublished_runtime` only touch unpublished resources when the stored generation matches the supplied one. A delayed old monitor cannot remove a newer generation's replacement.
+
+**Pass 5 — Unified internal restart entry.** `OwnedRestartOptions` (`automatic()` / `manual()` constructors) is the internal options type; `restart_client_owned` is the unified internal entry. `manual_restart_client` and `restart_client` are now thin delegators; manual teardown cannot bypass the ownership layer.
+
+**Pass 6 — Degraded as a live outcome.** `restart_client_coordinator` now returns `Result<RestartOutcome, LspError>` where `RestartOutcome = Ready | Degraded { reason }`. `ReadinessResult::Degraded` no longer maps to `LspError::LaunchFailed`; it is a *live* outcome. The live client remains published, the consumed attempt remains consumed, and `last_healthy_at` is NOT updated. The orchestrator then converts `RestartOutcome` back to `Result<(), LspError>` for the public API surface.
+
+**Pass 7 — Empty diagnostics readiness.** The fake-server scenario engine's default `emit_progress = true` emits an empty `textDocument/publishDiagnostics { uri: "file:///dummy", diagnostics: [] }` on the `initialized` notification, which accidentally satisfies `wait_for_first_diagnostics`. The new test file `crates/egglsp/tests/empty_diagnostics_readiness.rs` has two tests: `empty_diagnostics_publishes_satisfy_wait_for_first_diagnostics` (the realistic case) and `missing_diagnostics_notification_times_out` (sets `emit_progress: false` in scenario to verify the timeout path).
+
+**Pass 8 — User restart policy round-trip.** `LspClientDescriptor::from_resolved(...)` is the production constructor that accepts an explicit `readiness_policy` and `restart_policy`. It is called from `LspService` when the user has configured `[lsp.<server>.restart]`; the user override is validated via `LspRestartPolicyConfig::try_to_domain(&base_policy)` and merged with the profile's defaults. Invalid overrides fall back to the profile default with a warning. `from_profile(...)` is retained for the no-user-override path.
+
+**Pass 9 — Race tests for manual supersession.** Two new scripted supervisor tests in `supervisor_restart_stdio.rs`: `manual_restart_waits_for_in_flight_automatic_owner` (verifies that a manual restart issued while the automatic coordinator is still in flight returns a typed `InitializationCancelled` / `ServerRestarted` / `LaunchFailed` or succeeds after bounded wait — never panics, never corrupts the live client) and `manual_restart_back_to_back_does_not_deadlock` (two manual restarts on the same key both return within timeout — no deadlock under rapid back-to-back issuance). Both tests accept `Ok`, `InitializationCancelled`, `ServerRestarted`, or `LaunchFailed` (budget exhausted by the auto) as valid outcomes; the critical invariant is bounded execution and a coherent service state.
+
+**Pass 10 — Documentation sync.** This section. The architecture, skill guide, README, and AGENTS.md are all updated to reflect Pass 1-10 semantics.
+
 ### Final Invariant Checklist
 
 - [x] Old monitor cannot remove new runtime.
@@ -1984,6 +2008,16 @@ For advertised references, the smoke harness now requires a non-empty result. A 
 - [x] Real-server reports include stderr when emitted.
 - [x] Zero references fails advertised-reference check.
 - [x] No public unsupervised service constructor remains.
+- [x] Restart completion channel is the only completion signal.
+- [x] Manual supersession waits under bounded timeout for in-flight owner.
+- [x] Runtime install rejects same- or newer-generation replacement.
+- [x] Unpublished replacement cleanup is generation-scoped.
+- [x] Manual and automatic restarts share one internal entry point.
+- [x] Degraded readiness is a live outcome, not an error.
+- [x] Empty-diagnostics readiness and missing-diagnostics timeout are tested independently.
+- [x] User restart policy override round-trips through validation.
+- [x] Race tests cover manual supersession under in-flight automatic owner.
+- [x] Race tests cover back-to-back manual restarts (no deadlock).
 - [x] Documentation accurately states Phase 3 status.
 
 ## See Also
