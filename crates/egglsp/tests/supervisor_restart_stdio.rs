@@ -1825,13 +1825,6 @@ edition = "2021"
     )
     .unwrap();
 
-    // Write phase3 (recovery) so the gen-3 process reads it.
-    std::fs::write(
-        &scenario_path,
-        serde_json::to_string_pretty(&phase3).unwrap(),
-    )
-    .unwrap();
-
     // Trigger gen 1 crash by sending hover.
     let hover_handle = tokio::spawn({
         let service = service.clone();
@@ -1863,6 +1856,16 @@ edition = "2021"
         service.generation_for_key(&key).await >= 2
     })
     .await;
+
+    // Write phase3 (recovery) so the gen-3 process reads it
+    // (Pass 11 — was previously overwritten before gen 2
+    // started, causing the gen-2 process to read the gen-3
+    // scenario).
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&phase3).unwrap(),
+    )
+    .unwrap();
 
     // Health snapshot should now report generation 2.
     let snap = service
