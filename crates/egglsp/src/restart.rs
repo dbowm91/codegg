@@ -363,6 +363,61 @@ impl LspClientDescriptor {
             seed_file,
         }
     }
+
+    /// Pass 8 — Build a descriptor with explicit, fully-resolved
+    /// `readiness_policy` and `restart_policy`. Use this when
+    /// the caller has already validated user overrides via
+    /// [`crate::config::LspRestartPolicyConfig::try_to_domain`]
+    /// (or equivalent). The descriptor is the single source of
+    /// truth for restart policy at runtime; the user TOML path
+    /// funnels through this constructor so production and tests
+    /// share the same code.
+    ///
+    /// `user_initialization` and `user_workspace_configuration`
+    /// retain the existing priority logic from [`Self::from_profile`]
+    /// (user → profile → server default).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_resolved(
+        key: String,
+        server_id: impl Into<String>,
+        root: PathBuf,
+        launch_spec: LspLaunchSpec,
+        seed_file: Option<PathBuf>,
+        user_initialization: Option<serde_json::Value>,
+        user_workspace_configuration: Option<serde_json::Value>,
+        readiness_policy: LspReadinessPolicy,
+        restart_policy: LspRestartPolicy,
+    ) -> Self {
+        let server_id = server_id.into();
+        let profile = crate::compatibility::profile_for_server(&server_id);
+        let (initialization_options, workspace_configuration) = match profile {
+            Some(p) => (
+                user_initialization.or_else(|| {
+                    if p.initialization_options.is_null() {
+                        None
+                    } else {
+                        Some(p.initialization_options)
+                    }
+                }),
+                user_workspace_configuration.unwrap_or(p.workspace_configuration),
+            ),
+            None => (
+                user_initialization,
+                user_workspace_configuration.unwrap_or(serde_json::Value::Null),
+            ),
+        };
+        Self {
+            key,
+            server_id,
+            root,
+            launch_spec,
+            initialization_options,
+            workspace_configuration,
+            readiness_policy,
+            restart_policy,
+            seed_file,
+        }
+    }
 }
 
 /// Trigger for the restart coordinator. The trigger affects
@@ -2900,5 +2955,114 @@ mod tests {
             clients_after.contains_key("test:rust-analyzer"),
             "degraded restart must leave the live client published"
         );
+    }
+
+    // ── Pass 8 — User restart policy override reaches descriptor ──
+
+    /// Pass 8 — `LspClientDescriptor::from_resolved` accepts an
+    /// explicit restart policy and stores it verbatim on the
+    /// descriptor. The production path in `LspService` validates
+    /// the user `[lsp.<server>.restart]` TOML override via
+    /// `LspRestartPolicyConfig::try_to_domain` and threads the
+    /// resulting `LspRestartPolicy` through `from_resolved`. This
+    /// unit test locks down the descriptor-side contract.
+    #[test]
+    fn from_resolved_carries_user_restart_policy_override() {
+        use crate::compatibility::LspRestartMode;
+
+        let launch_spec = LspLaunchSpec::default_for_test();
+        let user_policy = LspRestartPolicy {
+            mode: LspRestartMode::OnUnexpectedExit,
+            max_attempts: 7,
+            initial_backoff: Duration::from_millis(250),
+            max_backoff: Duration::from_millis(5000),
+            reset_after_healthy: Duration::from_secs(120),
+        };
+        let descriptor = LspClientDescriptor::from_resolved(
+            "k".to_string(),
+            "rust-analyzer",
+            PathBuf::from("/tmp"),
+            launch_spec,
+            Some(PathBuf::from("/tmp/src/lib.rs")),
+            None,
+            None,
+            LspReadinessPolicy::InitializedIsReady,
+            user_policy.clone(),
+        );
+
+        assert_eq!(
+            descriptor.restart_policy.mode,
+            LspRestartMode::OnUnexpectedExit,
+            "user restart policy override must reach the descriptor"
+        );
+        assert_eq!(descriptor.restart_policy.max_attempts, 7);
+        assert_eq!(
+            descriptor.restart_policy.initial_backoff,
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            descriptor.restart_policy.max_backoff,
+            Duration::from_millis(5000)
+        );
+        assert_eq!(
+            descriptor.restart_policy.reset_after_healthy,
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            descriptor.restart_policy, user_policy,
+            "descriptor restart policy must equal the user override verbatim"
+        );
+    }
+
+    /// Pass 8 — `LspRestartPolicyConfig::try_to_domain`
+    /// validates a real user override (mode + max_attempts +
+    /// backoff windows). The full thread is:
+    /// `LspRule.restart -> LspRestartPolicyConfig ->
+    /// try_to_domain(base) -> LspRestartPolicy ->
+    /// LspClientDescriptor::from_resolved`. This test
+    /// exercises the conversion layer end-to-end on a
+    /// realistic config and asserts the resulting domain
+    /// policy matches the user intent.
+    #[test]
+    fn user_restart_policy_round_trips_through_validation() {
+        use crate::compatibility::LspRestartMode;
+        use crate::config::{
+            LspRestartModeConfig, LspRestartPolicyConfig,
+        };
+
+        let base = LspRestartPolicy::default();
+        let cfg = LspRestartPolicyConfig {
+            mode: Some(LspRestartModeConfig::OnUnexpectedExit),
+            max_attempts: Some(5),
+            initial_backoff_ms: Some(250),
+            max_backoff_ms: Some(5000),
+            reset_after_healthy_secs: Some(60),
+        };
+        let policy = cfg
+            .try_to_domain(&base)
+            .expect("valid user override must validate");
+        assert_eq!(policy.mode, LspRestartMode::OnUnexpectedExit);
+        assert_eq!(policy.max_attempts, 5);
+        assert_eq!(policy.initial_backoff, Duration::from_millis(250));
+        assert_eq!(policy.max_backoff, Duration::from_millis(5000));
+        assert_eq!(policy.reset_after_healthy, Duration::from_secs(60));
+
+        let launch_spec = LspLaunchSpec::default_for_test();
+        let descriptor = LspClientDescriptor::from_resolved(
+            "k".to_string(),
+            "rust-analyzer",
+            PathBuf::from("/tmp"),
+            launch_spec,
+            Some(PathBuf::from("/tmp/src/lib.rs")),
+            None,
+            None,
+            LspReadinessPolicy::InitializedIsReady,
+            policy,
+        );
+        assert_eq!(
+            descriptor.restart_policy.mode,
+            LspRestartMode::OnUnexpectedExit
+        );
+        assert_eq!(descriptor.restart_policy.max_attempts, 5);
     }
 }

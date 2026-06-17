@@ -11,8 +11,8 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use super::client::{DiagnosticCacheEntry, LspClient, LspClientOptions};
-use super::compatibility::{LspReadinessPolicy, LspRestartMode};
-use super::config::{LspConfig, LspRule};
+use super::compatibility::{LspReadinessPolicy, LspRestartMode, LspRestartPolicy};
+use super::config::{LspConfig, LspRestartPolicyConfig, LspRule};
 use super::document_sync::OpenDocumentRegistry;
 use super::download;
 use super::error::{LspError, SharedInitError};
@@ -4023,15 +4023,66 @@ async fn run_initialization_attempt(
         // launch spec. The coordinator reads this on restart
         // to seed a new client without re-detecting language
         // or project root.
-        let descriptor = LspClientDescriptor::from_profile(
-            key.clone(),
-            server.id,
-            root.clone(),
-            launch.clone(),
-            Some(root.clone()),
-            init_opts.clone(),
-            Some(configuration.clone()),
-        );
+        //
+        // Pass 8 — Thread the validated user restart policy
+        // override (if any) through `from_resolved`. The base
+        // profile defaults come from
+        // `compatibility::profile_for_server`; the user
+        // `[lsp.<server>.restart]` TOML block wins when
+        // present and validates via
+        // `LspRestartPolicyConfig::try_to_domain`.
+        let user_restart_config: Option<LspRestartPolicyConfig> = match &config {
+            LspConfig::Rules(rules) => match rules.get(server.id) {
+                Some(LspRule::Active { restart: Some(r), .. }) => Some(r.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let descriptor = if let Some(user_cfg) = user_restart_config {
+            // Resolve the base policy from the profile (or default
+            // when no profile is registered) so the user override
+            // can be validated against it.
+            let profile = super::compatibility::profile_for_server(server.id);
+            let base_policy = profile
+                .as_ref()
+                .map(|p| p.restart_policy.clone())
+                .unwrap_or_default();
+            let validated_restart = match user_cfg.try_to_domain(&base_policy) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        server = server.id,
+                        error = %e,
+                        "invalid user restart policy override; falling back to profile default"
+                    );
+                    base_policy
+                }
+            };
+            let base_readiness = profile
+                .map(|p| p.readiness_policy)
+                .unwrap_or(LspReadinessPolicy::InitializedIsReady);
+            LspClientDescriptor::from_resolved(
+                key.clone(),
+                server.id,
+                root.clone(),
+                launch.clone(),
+                Some(root.clone()),
+                init_opts.clone(),
+                Some(configuration.clone()),
+                base_readiness,
+                validated_restart,
+            )
+        } else {
+            LspClientDescriptor::from_profile(
+                key.clone(),
+                server.id,
+                root.clone(),
+                launch.clone(),
+                Some(root.clone()),
+                init_opts.clone(),
+                Some(configuration.clone()),
+            )
+        };
 
         #[allow(unused_mut)]
         let mut client = tokio::select! {
