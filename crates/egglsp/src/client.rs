@@ -472,8 +472,10 @@ impl DiagnosticCacheEntry {
     /// Return a new entry with `server_generation` set to
     /// `generation`. The `post_restart` flag is set to `true` when
     /// `generation > 0` because the entry originated from a
-    /// post-publication client (a generation `0` is reserved for the
-    /// "never assigned" sentinel and is not considered a restart).
+    /// post-publication client (a generation `2` or higher is a
+    /// post-restart client — generation `0` is the "never
+    /// assigned" sentinel and generation `1` is the cold-start
+    /// publication).
     ///
     /// `received_at` and `content_version` are preserved.
     pub fn with_generation(&self, generation: u64) -> Self {
@@ -483,7 +485,7 @@ impl DiagnosticCacheEntry {
             source: self.source,
             content_version: self.content_version,
             server_generation: generation,
-            post_restart: self.post_restart || generation > 0,
+            post_restart: self.post_restart || generation > 1,
         }
     }
 }

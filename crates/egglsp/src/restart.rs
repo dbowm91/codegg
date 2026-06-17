@@ -53,7 +53,7 @@ use futures::future::BoxFuture;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::client::LspClient;
+use crate::client::{DiagnosticCacheEntry, LspClient};
 use crate::compatibility::{LspReadinessPolicy, LspRestartMode, LspRestartPolicy};
 use crate::document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
 use crate::error::LspError;
@@ -274,6 +274,16 @@ pub trait RestartShared {
         reset_after_healthy: Duration,
     ) -> Option<u32>;
 
+    /// Capture the old client's diagnostic cache snapshot
+    /// for `key`. The coordinator calls this BEFORE invoking
+    /// the reinit so the snapshot is taken from the
+    /// not-yet-removed old client. Returns an empty map when
+    /// no live client exists.
+    async fn snapshot_diagnostics_for_restart(
+        &self,
+        key: &str,
+    ) -> HashMap<String, DiagnosticCacheEntry>;
+
     /// Transition the operational state for `key` through the
     /// central validator. Used by the coordinator for the
     /// `Restarting` / `Initializing` / `Ready` / `Failed` moves.
@@ -374,6 +384,13 @@ where
         descriptor.seed_file = Some(descriptor.root.clone());
     }
 
+    // Pass 6 — Transfer and Classify Diagnostics Across
+    // Restart. Capture the old client's diagnostic cache
+    // snapshot BEFORE invoking the reinit so the snapshot is
+    // taken from the not-yet-removed old client.
+    let retained_diagnostics =
+        shared.snapshot_diagnostics_for_restart(key).await;
+
     // Pass 5 — Shared Restart Budget. The coordinator no
     // longer uses a per-invocation `1..=max_attempts` loop.
     // The shared `restart_attempts` counter is the single
@@ -458,6 +475,22 @@ where
                 {
                     let mut clients = shared.clients().write().await;
                     clients.insert(key.to_string(), client.clone());
+                }
+
+                // Pass 6 — Install the retained diagnostics
+                // (captured from the old client BEFORE the
+                // reinit) on the new client. The
+                // `install_retained_diagnostics` method
+                // preserves the OLD `server_generation` and
+                // `post_restart` flags; only the new push
+                // overwrites them. The freshness classifier
+                // returns `Stale` because the retained entry's
+                // `server_generation` differs from
+                // `new_generation`.
+                if !retained_diagnostics.is_empty() {
+                    client
+                        .install_retained_diagnostics("restart", retained_diagnostics.clone())
+                        .await;
                 }
 
                 // Mark retained diagnostics as stale. The helper
@@ -839,6 +872,12 @@ mod tests {
             _reset_after_healthy: Duration,
         ) -> Option<u32> {
             None
+        }
+        async fn snapshot_diagnostics_for_restart(
+            &self,
+            _key: &str,
+        ) -> HashMap<String, DiagnosticCacheEntry> {
+            HashMap::new()
         }
         async fn transition_operational_state(
             &self,

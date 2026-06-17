@@ -2880,6 +2880,16 @@ impl RestartShared for LspService {
         self.reset_restart_attempts_if_healthy_inherent(key, reset_after_healthy)
             .await
     }
+    async fn snapshot_diagnostics_for_restart(
+        &self,
+        key: &str,
+    ) -> HashMap<String, super::client::DiagnosticCacheEntry> {
+        let clients = self.clients.read().await;
+        match clients.get(key) {
+            Some(c) => c.diagnostic_cache_snapshot().await,
+            None => HashMap::new(),
+        }
+    }
     async fn mark_diagnostics_stale_for_key(&self, key: &str) {
         self.mark_diagnostics_stale_for_key(key).await;
     }
@@ -6208,6 +6218,84 @@ mod tests {
             0,
             "counter is zero after healthy reset"
         );
+    }
+
+    // ── Pass 6: Transfer Diagnostics Across Restart ──────────────
+
+    /// `DiagnosticCacheEntry::with_generation` must mark
+    /// `post_restart` only for generation `2` or higher
+    /// (Pass 6). Generation `1` is the cold-start publication
+    /// and is NEVER post-restart.
+    #[tokio::test]
+    async fn generation_one_is_not_post_restart() {
+        use crate::client::DiagnosticCacheEntry;
+        use crate::diagnostics::LspDiagnosticSource;
+        use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
+        use std::time::Instant;
+
+        let entry = DiagnosticCacheEntry {
+            diagnostics: vec![Diagnostic {
+                range: Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 1,
+                    },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(NumberOrString::String("E001".to_string())),
+                code_description: None,
+                source: Some("test".to_string()),
+                message: "error".to_string(),
+                related_information: None,
+                tags: None,
+                data: None,
+            }],
+            received_at: Instant::now(),
+            source: LspDiagnosticSource::Pushed,
+            content_version: Some(1),
+            server_generation: 0,
+            post_restart: false,
+        };
+
+        // Generation 1: post_restart = false.
+        let gen1 = entry.with_generation(1);
+        assert!(
+            !gen1.post_restart,
+            "generation 1 must NOT be post_restart"
+        );
+        assert_eq!(gen1.server_generation, 1);
+
+        // Generation 2: post_restart = true.
+        let gen2 = entry.with_generation(2);
+        assert!(
+            gen2.post_restart,
+            "generation 2 must be post_restart"
+        );
+        assert_eq!(gen2.server_generation, 2);
+
+        // Generation 3: post_restart = true.
+        let gen3 = entry.with_generation(3);
+        assert!(
+            gen3.post_restart,
+            "generation 3 must be post_restart"
+        );
+        assert_eq!(gen3.server_generation, 3);
+    }
+
+    /// `snapshot_diagnostics_for_restart` returns the live
+    /// client's cache snapshot. When no live client exists
+    /// the snapshot is empty.
+    #[tokio::test]
+    async fn snapshot_diagnostics_returns_empty_when_no_client() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let snap = svc
+            .snapshot_diagnostics_for_restart("pass6:no_client")
+            .await;
+        assert!(snap.is_empty());
     }
 
     /// Build an `LspProcessRuntime` whose child process is
