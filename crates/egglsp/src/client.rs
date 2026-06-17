@@ -1488,6 +1488,26 @@ impl LspClient {
     }
 
     pub async fn shutdown(&self) -> Result<(), LspError> {
+        self.request_protocol_shutdown().await
+    }
+
+    /// Send the protocol-level LSP `shutdown` request and `exit`
+    /// notification to the server. This is the **protocol** shutdown
+    /// path: it does NOT wait on the child process, does NOT set
+    /// the runtime intent, and does NOT force-kill hung processes.
+    /// The authoritative process owner is the [`LspProcessRuntime`]
+    /// for the current generation, and it is responsible for
+    /// setting `LspProcessIntent::GracefulShutdownRequested`
+    /// **before** this method is called so the exit classification
+    /// marks the process as expected.
+    ///
+    /// Service-level shutdown uses [`crate::service::LspService`]
+    /// to drive the runtime intent, send this request under a
+    /// bounded deadline, then wait on the runtime and force-kill
+    /// hung processes. Direct callers of this method bypass that
+    /// coordination; only the production `LspService` shutdown path
+    /// or test harnesses should invoke it.
+    pub async fn request_protocol_shutdown(&self) -> Result<(), LspError> {
         #[cfg(test)]
         if let Some(counter) = &self.test_shutdown_count {
             counter.fetch_add(1, Ordering::SeqCst);

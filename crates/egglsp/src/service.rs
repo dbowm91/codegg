@@ -109,6 +109,188 @@ async fn remove_runtime_if_generation(
     }
 }
 
+/// Reason a runtime is being terminated. Recorded in logs and
+/// observability; the termination path is identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeTerminationReason {
+    /// Whole-service shutdown.
+    ServiceShutdown,
+    /// Operator-initiated manual restart.
+    ManualRestart,
+    /// Failed publication (client constructed but never published).
+    FailedPublication,
+}
+
+/// Outcome of a single runtime termination attempt.
+#[derive(Debug)]
+struct RuntimeTerminationOutcome {
+    /// Whether the runtime was found in the map (i.e. a runtime
+    /// matching the supplied generation was present at lookup time).
+    /// `false` means there was nothing to terminate.
+    runtime_present: bool,
+    /// Whether the process exited cleanly within the graceful
+    /// deadline.
+    exited: bool,
+    /// Whether a force kill was required.
+    forced: bool,
+    /// The exit event captured (or `None` when no exit was observed
+    /// before the absolute deadline).
+    event: Option<LspProcessExitEvent>,
+}
+
+/// Terminate a single runtime according to the documented sequence:
+///
+/// 1. Look up the runtime only when the stored generation matches.
+/// 2. Set the runtime intent to `GracefulShutdownRequested` BEFORE
+///    sending the protocol shutdown request.
+/// 3. Send the protocol shutdown under the graceful deadline.
+/// 4. Await the runtime's exit event under the graceful deadline.
+/// 5. On timeout, set the intent to `ForceKillRequested` and re-await
+///    under the absolute deadline.
+/// 6. Remove the runtime from the map (only when the stored
+///    generation still matches).
+///
+/// The `graceful_deadline` is the upper bound for the graceful
+/// shutdown. The `absolute_deadline` is the upper bound for the
+/// force-kill re-await. `reason` is logged at the start.
+async fn terminate_runtime(
+    runtime_map: &RuntimeMap,
+    key: &str,
+    generation: u64,
+    client: Option<Arc<LspClient>>,
+    graceful_deadline: Instant,
+    absolute_deadline: Instant,
+    reason: RuntimeTerminationReason,
+) -> RuntimeTerminationOutcome {
+    let runtime = match runtime_for_generation(runtime_map, key, generation).await {
+        Some(r) => r,
+        None => {
+            return RuntimeTerminationOutcome {
+                runtime_present: false,
+                exited: false,
+                forced: false,
+                event: None,
+            };
+        }
+    };
+
+    info!(
+        server = %runtime.server_id,
+        root = %runtime.root.display(),
+        generation,
+        reason = ?reason,
+        "terminating runtime"
+    );
+
+    // Step 1: set the runtime intent to graceful BEFORE the
+    // protocol shutdown request, so the exit classifier marks
+    // the resulting exit as expected.
+    runtime.request_graceful_shutdown();
+
+    // Step 2: send the protocol shutdown under the graceful
+    // deadline. Skip on test-only clients (the test stub
+    // short-circuits and counts via `test_shutdown_count`).
+    if let Some(client) = &client {
+        let remaining = graceful_deadline.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() {
+            let per_client = remaining.min(SHUTDOWN_CLIENT_TIMEOUT);
+            let res = tokio::time::timeout(per_client, client.request_protocol_shutdown()).await;
+            match res {
+                Ok(Ok(())) => {
+                    debug!(server = %runtime.server_id, "protocol shutdown sent");
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        server = %runtime.server_id,
+                        error = %e,
+                        "protocol shutdown failed; will force kill"
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        server = %runtime.server_id,
+                        "protocol shutdown timed out; will force kill"
+                    );
+                }
+            }
+        }
+    }
+
+    // Step 3: await the runtime's exit event under the graceful
+    // deadline. The runtime publishes exactly one event per
+    // generation; we take the first one.
+    let mut exit_rx = runtime.exit_rx.clone();
+    let mut event: Option<LspProcessExitEvent> = None;
+    loop {
+        if let Some(e) = exit_rx.borrow_and_update().clone() {
+            event = Some(e);
+            break;
+        }
+        let now = Instant::now();
+        if now >= graceful_deadline {
+            break;
+        }
+        let step = graceful_deadline
+            .saturating_duration_since(now)
+            .min(Duration::from_millis(50));
+        // Race the change notification against the step timeout.
+        match tokio::time::timeout(step, exit_rx.changed()).await {
+            Ok(Ok(())) => {
+                // A change was observed. The next loop iteration
+                // will pick up the published value via
+                // `borrow_and_update`.
+            }
+            Ok(Err(_closed)) => {
+                // Sender dropped without an event; treat as not
+                // exited.
+                break;
+            }
+            Err(_) => {
+                // Step timeout fired; loop will re-check the
+                // deadline.
+            }
+        }
+    }
+
+    let mut forced = false;
+    if event.is_none() {
+        // Step 4: graceful deadline expired; request force kill.
+        runtime.request_force_kill();
+        forced = true;
+        // Re-await under the absolute deadline.
+        loop {
+            if let Some(e) = exit_rx.borrow_and_update().clone() {
+                event = Some(e);
+                break;
+            }
+            if Instant::now() >= absolute_deadline {
+                break;
+            }
+            let step = absolute_deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(50));
+            match tokio::time::timeout(step, exit_rx.changed()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_closed)) => break,
+                Err(_) => {}
+            }
+        }
+    }
+
+    // Step 5: remove the runtime from the map only if the
+    // generation still matches. A concurrent restart that bumped
+    // the generation between our lookup and now must not be
+    // touched by this removal.
+    remove_runtime_if_generation(runtime_map, key, generation).await;
+
+    RuntimeTerminationOutcome {
+        runtime_present: true,
+        exited: event.is_some(),
+        forced,
+        event,
+    }
+}
+
 type InitResult = Result<Arc<LspClient>, SharedInitError>;
 type InitCompletionSender = tokio::sync::oneshot::Sender<InitResult>;
 type InitCompletionReceiver = tokio::sync::oneshot::Receiver<InitResult>;
@@ -1281,44 +1463,153 @@ impl LspService {
             let _ = await_init_task_completions(still_pending, abort_deadline).await;
         }
 
-        // Step 8: drain ready clients and shut them down concurrently
-        // under one shared deadline. Each per-client timeout is capped
-        // by the global deadline so the total shutdown duration is
-        // independent of client count.
+        // Step 8: drain ready clients AND terminate their runtimes
+        // concurrently under one shared deadline. Each per-client
+        // timeout is capped by the global deadline so the total
+        // shutdown duration is independent of client count.
+        //
+        // The `terminate_runtime` helper sets the runtime intent to
+        // graceful BEFORE sending the protocol shutdown request,
+        // waits on the runtime's exit under the graceful deadline,
+        // and force-kills on timeout. Clients without a live
+        // runtime (e.g. a unit-test stub) are still sent the
+        // protocol shutdown so the LSP handshake is closed cleanly.
         let clients_to_shutdown: Vec<(String, Arc<LspClient>)> = {
             let mut clients = self.clients.write().await;
             clients.drain().collect()
         };
 
+        // Snapshot the runtimes map BEFORE we drain clients, so we
+        // can pair each (key, client) tuple with its runtime's
+        // generation. The generation is required by the runtime
+        // helpers for safety.
+        let runtime_generations: HashMap<String, u64> = {
+            let map = self.runtime_map.lock().await;
+            map.iter()
+                .map(|(k, entry)| (k.clone(), entry.generation))
+                .collect()
+        };
+
         if !clients_to_shutdown.is_empty() {
+            let runtime_map = self.runtime_map.clone();
             let client_shutdown_futs: Vec<_> = clients_to_shutdown
                 .into_iter()
-                .map(|(key, client)| async move {
-                    let key_for_log = key;
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    let per_client = SHUTDOWN_CLIENT_TIMEOUT.min(remaining);
-                    if per_client.is_zero() {
-                        warn!(server = %key_for_log, "client shutdown skipped: deadline expired");
-                        return;
-                    }
-                    match tokio::time::timeout(per_client, client.shutdown()).await {
-                        Ok(Ok(())) => {
-                            debug!(server = %key_for_log, "client shut down");
+                .map(|(key, client)| {
+                    let runtime_map = runtime_map.clone();
+                    let generation = runtime_generations.get(&key).copied();
+                    async move {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            warn!(server = %key, "client shutdown skipped: deadline expired");
+                            return;
                         }
-                        Ok(Err(e)) => {
-                            warn!(
-                                server = %key_for_log,
-                                error = ?e,
-                                "graceful client shutdown error"
-                            );
-                        }
-                        Err(_) => {
-                            warn!(server = %key_for_log, "client shutdown timeout");
+                        if let Some(generation) = generation {
+                            // Drive the runtime-aware path: set
+                            // intent, send protocol shutdown, await
+                            // exit, force-kill on timeout.
+                            let graceful_deadline =
+                                Instant::now() + SHUTDOWN_CLIENT_TIMEOUT.min(remaining);
+                            let outcome = terminate_runtime(
+                                &runtime_map,
+                                &key,
+                                generation,
+                                Some(client.clone()),
+                                graceful_deadline,
+                                deadline,
+                                RuntimeTerminationReason::ServiceShutdown,
+                            )
+                            .await;
+                            if outcome.forced {
+                                warn!(
+                                    server = %key,
+                                    "runtime required force kill during shutdown"
+                                );
+                            } else if outcome.runtime_present {
+                                debug!(
+                                    server = %key,
+                                    generation,
+                                    "runtime terminated gracefully"
+                                );
+                            }
+                        } else {
+                            // No live runtime (test stub or already
+                            // gone). Send the protocol shutdown
+                            // directly under the remaining deadline
+                            // and let the helper count via the
+                            // test counter.
+                            let per_client = SHUTDOWN_CLIENT_TIMEOUT.min(remaining);
+                            match tokio::time::timeout(per_client, client.shutdown()).await {
+                                Ok(Ok(())) => {
+                                    debug!(server = %key, "client shut down");
+                                }
+                                Ok(Err(e)) => {
+                                    warn!(
+                                        server = %key,
+                                        error = ?e,
+                                        "graceful client shutdown error"
+                                    );
+                                }
+                                Err(_) => {
+                                    warn!(server = %key, "client shutdown timeout");
+                                }
+                            }
                         }
                     }
                 })
                 .collect();
             futures::future::join_all(client_shutdown_futs).await;
+        }
+
+        // Force-terminate any straggler runtimes (e.g. a runtime
+        // whose client was removed by a concurrent restart). The
+        // runtime map may still hold entries whose corresponding
+        // client is gone; this loop drains them under the
+        // absolute deadline.
+        let straggler_keys: Vec<(String, u64)> = {
+            let map = self.runtime_map.lock().await;
+            map.iter()
+                .map(|(k, entry)| (k.clone(), entry.generation))
+                .collect()
+        };
+        if !straggler_keys.is_empty() {
+            let runtime_map = self.runtime_map.clone();
+            let straggler_futs: Vec<_> = straggler_keys
+                .into_iter()
+                .map(|(key, generation)| {
+                    let runtime_map = runtime_map.clone();
+                    async move {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            warn!(
+                                server = %key,
+                                generation,
+                                "straggler runtime termination skipped: deadline expired"
+                            );
+                            return;
+                        }
+                        let graceful_deadline =
+                            Instant::now() + SHUTDOWN_CLIENT_TIMEOUT.min(remaining);
+                        let outcome = terminate_runtime(
+                            &runtime_map,
+                            &key,
+                            generation,
+                            None, // no live client to send protocol shutdown to
+                            graceful_deadline,
+                            deadline,
+                            RuntimeTerminationReason::ServiceShutdown,
+                        )
+                        .await;
+                        if outcome.forced {
+                            warn!(
+                                server = %key,
+                                generation,
+                                "straggler runtime required force kill"
+                            );
+                        }
+                    }
+                })
+                .collect();
+            futures::future::join_all(straggler_futs).await;
         }
 
         // Step 9: notify waiters of cancelled init tasks (if drain
@@ -5282,6 +5573,184 @@ mod tests {
         let map = runtime_map.lock().await;
         let entry = map.get("k").expect("gen-2 entry must remain");
         assert_eq!(entry.generation, 2);
+    }
+
+    // ── Pass 2: Service shutdown terminates runtimes ────────────
+
+    /// `terminate_runtime` flips the intent to graceful BEFORE
+    /// sending the protocol shutdown request. The runtime's exit
+    /// event must therefore classify as expected.
+    #[tokio::test]
+    async fn graceful_shutdown_marks_exit_expected() {
+        let runtime_map: RuntimeMap = Arc::new(Mutex::new(HashMap::new()));
+        let runtime = spawn_dummy_runtime("graceful").await;
+        install_runtime(&runtime_map, "k".to_string(), 1, runtime.clone()).await;
+
+        let abs_deadline = Instant::now() + Duration::from_secs(5);
+        let graceful_deadline = Instant::now() + Duration::from_secs(5);
+        let outcome = terminate_runtime(
+            &runtime_map,
+            "k",
+            1,
+            None,
+            graceful_deadline,
+            abs_deadline,
+            RuntimeTerminationReason::ServiceShutdown,
+        )
+        .await;
+        assert!(outcome.runtime_present, "runtime was present");
+        assert!(outcome.exited, "runtime observed an exit event");
+        assert!(!outcome.forced, "graceful path must not force-kill");
+        let event = outcome.event.expect("exit event captured");
+        assert!(
+            event.is_expected(),
+            "exit must be classified expected under graceful intent"
+        );
+        // Runtime entry removed.
+        assert!(runtime_map.lock().await.is_empty());
+    }
+
+    /// `terminate_runtime` force-kills and reaps a runtime that
+    /// does not exit within the graceful deadline. The force-kill
+    /// path is the production safety net for hung processes.
+    #[tokio::test]
+    async fn hung_process_is_force_killed_and_reaped_via_shutdown_all() {
+        // Build an LspService with a published client and a
+        // hung-style runtime. The runtime uses a real child
+        // (`sleep 60`) so the graceful deadline will expire and
+        // the service must force-kill.
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "/tmp/pass2_hung:rust-analyzer".to_string();
+
+        // Seed a hung runtime directly. We bypass normal init so
+        // the test is hermetic and doesn't need a real LSP server.
+        let runtime_map = svc.runtime_map.clone();
+        let hung_runtime = spawn_hung_runtime("hung").await;
+        install_runtime(&runtime_map, key.clone(), 1, hung_runtime.clone()).await;
+
+        // Seed a test-stub client so the runtime-aware path is
+        // taken (with a real client handle).
+        let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let dir = std::env::temp_dir().join("egglsp_pass2_hung");
+        let _ = std::fs::create_dir_all(&dir);
+        let client = Arc::new(
+            crate::client::LspClient::test_stub(
+                "rust-analyzer",
+                &dir,
+                shutdown_count,
+                crate::client::LspClientOptions::default(),
+            )
+            .await
+            .expect("test_stub"),
+        );
+        {
+            let mut clients = svc.clients.write().await;
+            clients.insert(key.clone(), client);
+        }
+
+        // Issue shutdown_all under a bounded timeout. The
+        // aggregate bound must hold even when the hung process
+        // is reaped.
+        let started = Instant::now();
+        let result = tokio::time::timeout(
+            crate::service::SHUTDOWN_GLOBAL_TIMEOUT + Duration::from_secs(5),
+            svc.shutdown_all(),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        assert!(
+            result.is_ok(),
+            "shutdown_all must return within the global deadline (elapsed: {elapsed:?})"
+        );
+
+        // Lifecycle is Stopped.
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+        // Client map is empty.
+        assert!(svc.clients.read().await.is_empty());
+        // Runtime map is empty.
+        assert!(svc.runtime_map.lock().await.is_empty());
+    }
+
+    /// `shutdown_all` leaves the runtime map empty when called on
+    /// a service that had multiple runtimes. This is the
+    /// unconditional postcondition: no live runtime may survive a
+    /// successful shutdown.
+    #[tokio::test]
+    async fn shutdown_all_leaves_no_live_runtime() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let runtime_map = svc.runtime_map.clone();
+
+        // Install two distinct runtimes (different generations,
+        // different keys).
+        let rt1 = spawn_dummy_runtime("r1").await;
+        let rt2 = spawn_dummy_runtime("r2").await;
+        install_runtime(&runtime_map, "key1".to_string(), 1, rt1).await;
+        install_runtime(&runtime_map, "key2".to_string(), 1, rt2).await;
+
+        assert_eq!(runtime_map.lock().await.len(), 2);
+
+        // Use a service lifecycle that bypasses init drain but
+        // still calls the runtime-termination step. The simplest
+        // path is to drive `shutdown_inner` directly: but that is
+        // private. Instead, exercise the public path by
+        // publishing a client for each key (so shutdown has
+        // something to drain) and then calling shutdown_all.
+        //
+        // The test_stub clients are cheap: no real server is
+        // launched. The runtime_map entries are still terminated
+        // because `terminate_runtime` is driven by the runtime
+        // map, not by the client map.
+        {
+            let mut clients = svc.clients.write().await;
+            let dir = std::env::temp_dir().join("egglsp_pass2_no_live");
+            let _ = std::fs::create_dir_all(&dir);
+            for key in ["key1", "key2"] {
+                let sc = std::sync::Arc::new(AtomicUsize::new(0));
+                let client = Arc::new(
+                    crate::client::LspClient::test_stub(
+                        "rust-analyzer",
+                        &dir,
+                        sc,
+                        crate::client::LspClientOptions::default(),
+                    )
+                    .await
+                    .expect("test_stub"),
+                );
+                clients.insert(key.to_string(), client);
+            }
+        }
+
+        svc.shutdown_all().await;
+
+        assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
+        assert!(svc.clients.read().await.is_empty());
+        assert!(runtime_map.lock().await.is_empty());
+    }
+
+    /// Build an `LspProcessRuntime` whose child process is
+    /// `/bin/sh -c 'sleep 60'` (a long-running, idle process).
+    /// The runtime's intent is `Running`; only an explicit
+    /// `request_force_kill` will terminate it. Used to exercise
+    /// the force-kill reaping path.
+    async fn spawn_hung_runtime(label: &'static str) -> LspProcessRuntime {
+        use std::process::Stdio;
+        use tokio::process::Command;
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("sleep 60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn hung sh");
+        let stderr_handle = child.stderr.take().expect("stderr for hung sh");
+        let (runtime, _join) = crate::runtime::spawn_process_runtime(
+            label.to_string(),
+            std::path::PathBuf::from("/tmp"),
+            0,
+            child,
+            stderr_handle,
+        );
+        runtime
     }
 
     /// Build a minimal `LspProcessRuntime` for helper tests. Uses
