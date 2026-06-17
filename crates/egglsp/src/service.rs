@@ -3901,10 +3901,10 @@ mod tests {
     #![allow(clippy::needless_borrow)]
 
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::{watch, Barrier, Notify};
     #[cfg(feature = "lsp-test-support")]
     use crate::compatibility::LspRestartPolicy;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::{watch, Barrier, Notify};
 
     fn rust_file() -> &'static Path {
         Path::new("/tmp/test.rs")
