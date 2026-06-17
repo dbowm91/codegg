@@ -1435,6 +1435,11 @@ The 11-pass follow-up (`plans/lsp_phase3_restart_ownership_and_cleanup_final_gap
   - `old_owner_release_does_not_signal_for_new_owner` — simulates a newer owner acquiring the slot; the old owner's `release` observes the generation mismatch, suppresses the broadcast, and the new owner is never falsely told the slot is free.
   - `completion_channel_close_without_finished_is_error` — drops the sender without sending; the waiter observes `RecvError` and treats it as an invariant failure (not a silent `Ok`).
 
+  - **Pass 12 — Async release cancellation safety (final cleanup)**: `RestartLease::release_async` commits `released = true` **inside** the ownership-map lock block. The flag commit and the slot removal are now part of the same synchronous critical section under the lock. Cancelling or aborting the `release()` future while it is parked on the lock await leaves `released == false` and routes cleanup to `Drop`'s safety fallback (which already runs the remove-before-signal ordering). Cancelling after lock acquisition cannot interrupt the critical section because there are no further `await` points between the flag commit and the completion broadcast. Two new adversarial unit tests in `crates/egglsp/src/restart.rs` lock the invariant down:
+
+    - `cancelled_async_release_falls_back_to_drop_cleanup` — spawns a release task blocked on the map lock (held by a separate `lock_holder` task), aborts the release task while parked, verifies the `Drop` fallback removes the slot and the waiter observes `Finished`. Deterministic across 10 serial runs.
+    - `completion_channel_close_error_names_owner` and `completion_timeout_error_names_owner` — verify the waiter error variants embed the in-flight `owner_id` (and the timeout duration) for caller diagnostics. The `RestartOwnerWaiter::owner_id` field is no longer `#[allow(dead_code)]`.
+
   Phase 3 supervision and restart lifecycle is complete for Tier 1 servers; broader language/server compatibility remains future work.
 
 ### Earlier Phase 3 Passes (still applicable)

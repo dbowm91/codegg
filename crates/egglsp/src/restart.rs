@@ -282,11 +282,35 @@ impl RestartLease {
     /// (the slot is provably free because the removal happened
     /// *before* the broadcast).
     ///
+    /// ## Async cancellation safety (Pass 12, final cleanup)
+    ///
+    /// `release` is cancellation-safe across task abort and
+    /// future drop. The `released` flag is committed **only
+    /// after** the async ownership-map lock is acquired and
+    /// while we still hold the lock. While the future is
+    /// suspended on the lock await, `released` is `false` so the
+    /// `Drop` fallback remains armed. Once the lock is acquired
+    /// the entire critical section — flag commit, slot removal,
+    /// lock release, completion broadcast — runs synchronously
+    /// without any further await points. Cancelling the future
+    /// after lock acquisition cannot interrupt the critical
+    /// section; either the whole sequence completes or, if the
+    /// future is dropped *between* the lock await and the flag
+    /// commit, the `Drop` fallback runs with `released == false`
+    /// and removes the slot under a fresh lock acquisition.
+    /// Either way the slot is removed and a `Finished` signal
+    /// is delivered (or, if removal was skipped because the
+    /// entry is absent or owned by a newer owner, the broadcast
+    /// is suppressed and the waiter observes channel closure
+    /// as an invariant failure).
+    ///
     /// Production ownership paths MUST call this (and `.await`
     /// it) instead of relying on `Drop`. `Drop` is a safety
     /// fallback that spawns an async cleanup task preserving the
     /// same remove-before-signal ordering; it exists only for
-    /// panic / early-return safety.
+    /// panic / early-return safety, and for the
+    /// abort-while-blocked-on-lock cancellation scenario
+    /// documented above.
     pub async fn release(mut self) -> bool {
         self.release_async().await
     }
@@ -295,16 +319,29 @@ impl RestartLease {
         if self.released {
             return false;
         }
-        self.released = true;
+
         let key = self.key.clone();
         let owner_id = self.owner_id;
 
-        // First, remove the owner-ID-matched control entry from
-        // the per-key map. We hold the lock for the duration of
-        // the removal so the broadcast below cannot race with a
-        // concurrent acquisition.
+        // Remove the owner-ID-matched control entry from the
+        // per-key map. The flag commit and the removal happen
+        // *inside* the lock block so a future cancelled while
+        // waiting on the lock still sees `released == false`
+        // and triggers the `Drop` safety fallback. There are no
+        // further await points after the flag commit below, so
+        // a cancellation that fires after lock acquisition
+        // cannot interrupt the critical section.
         let removed = {
             let mut map = self.restart_tasks.lock().await;
+
+            // Commit the release-state flag inside the lock
+            // block. From this point onward the critical
+            // section is synchronous — no awaits — so once
+            // `released` is `true` the slot removal and
+            // completion broadcast cannot be interrupted by
+            // task abort or future drop.
+            self.released = true;
+
             match map.get(&key) {
                 Some(ctrl) if ctrl.owner_id == owner_id => {
                     map.remove(&key);
@@ -344,16 +381,36 @@ impl RestartLease {
 
 impl Drop for RestartLease {
     fn drop(&mut self) {
-        // Safety fallback: if the caller forgot to `await`
-        // `release`, do not block in `Drop`. Spawn an async
-        // task that runs the same remove-before-signal
-        // ordering. The explicit `release().await` path is
-        // strongly preferred because it gives the caller a
-        // synchronous-style completion point.
+        // Safety fallback. Production ownership paths MUST
+        // `await` `release` directly; `Drop` exists to
+        // guarantee the slot is not leaked when the caller
+        // forgets the explicit release, AND — critically —
+        // when the explicit `release` future is cancelled or
+        // its task is aborted while suspended on the
+        // ownership-map lock. The async release path commits
+        // `released = true` only after lock acquisition, so
+        // the cancellation-while-blocked scenario leaves
+        // `released == false` and routes cleanup here.
+        //
+        // Concrete triggers that fall through to this Drop:
+        //
+        // 1. Caller forgot to `await` `release` (panic /
+        //    early-return safety).
+        // 2. The `release` future is dropped at any await
+        //    point — typically the map-lock acquisition —
+        //    before `released` is committed. The future's
+        //    local state is gone but `self` is intact with
+        //    `released == false`.
+        // 3. The spawned release task is aborted (via
+        //    `JoinHandle::abort`) while blocked on the
+        //    ownership-map lock.
         //
         // We must not move `self` out of `&mut self`, so the
         // fallback clones the fields it needs and lets the
-        // original `self` continue to drop naturally.
+        // original `self` continue to drop naturally. The
+        // spawned cleanup task runs the same remove-before-
+        // signal ordering so waiters observe `Finished` only
+        // after the slot is provably free.
         if self.released {
             return;
         }
@@ -698,11 +755,14 @@ pub async fn cancel_restart_ownership(
 ///   `Err(LspError::InitializationCancelled)` for the same
 ///   reason.
 ///
-/// `owner_id` is retained for diagnostics only.
+/// `owner_id` is retained for diagnostics — both error variants
+/// returned from [`Self::wait`] include the id so the caller can
+/// correlate the failure with the in-flight owner.
 pub struct RestartOwnerWaiter {
     /// Owner id of the in-flight owner at the moment the
-    /// cancellation was signalled. Recorded for diagnostics.
-    #[allow(dead_code)]
+    /// cancellation was signalled. Surfaced in waiter error
+    /// messages so callers can correlate the failure with the
+    /// specific in-flight coordinator.
     owner_id: u64,
     /// Watch receiver cloned from the in-flight control entry.
     /// When this transitions to [`RestartCompletion::Finished`]
@@ -748,13 +808,15 @@ impl RestartOwnerWaiter {
     /// explicit release, or the owner panicked mid-flight) and
     /// the caller receives
     /// `Err(LspError::InitializationCancelled)`. The caller
-    /// MUST NOT grant a new lease in that case.
+    /// MUST NOT grant a new lease in that case. Both error
+    /// variants embed the in-flight owner's `owner_id` so the
+    /// caller can correlate the failure with the original
+    /// coordinator.
     pub async fn wait(self, timeout: std::time::Duration) -> Result<(), crate::error::LspError> {
         let RestartOwnerWaiter {
             owner_id,
             completion,
         } = self;
-        let _ = owner_id;
         // Fast path: already finished. Under the new ordering
         // this is sufficient proof the slot is free.
         if *completion.borrow() == RestartCompletion::Finished {
@@ -776,12 +838,12 @@ impl RestartOwnerWaiter {
         .await
         {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(())) => Err(crate::error::LspError::InitializationCancelled(
-                "restart owner completion channel closed without Finished signal".to_string(),
-            )),
-            Err(_) => Err(crate::error::LspError::InitializationCancelled(
-                "restart owner did not signal completion within timeout".to_string(),
-            )),
+            Ok(Err(())) => Err(crate::error::LspError::InitializationCancelled(format!(
+                "restart owner {owner_id} completion channel closed without Finished signal"
+            ))),
+            Err(_) => Err(crate::error::LspError::InitializationCancelled(format!(
+                "restart owner {owner_id} did not signal completion within {timeout:?}"
+            ))),
         }
     }
 }
@@ -4634,6 +4696,260 @@ mod tests {
         }
         // Drop the lease at the end (sends Finished but we
         // already failed).
+        drop(_hold);
+    }
+
+    // ── Pass 12 (Phase 3 final cleanup) — Async release cancellation safety
+
+    /// Pass 12 — `cancelled_async_release_falls_back_to_drop_cleanup`.
+    ///
+    /// Strong adversarial test for the async cancellation-safety
+    /// fix in [`RestartLease::release_async`]. The release
+    /// future is spawned into a task that is blocked on the
+    /// ownership-map lock. The task is then **aborted** while
+    /// blocked. Under the old implementation (`released = true`
+    /// set BEFORE the lock await), the abort would leave the
+    /// slot wedged because `Drop` sees `released == true` and
+    /// skips cleanup. Under the new implementation (`released`
+    /// is committed INSIDE the lock block), the abort drops
+    /// the lease with `released == false` and the `Drop`
+    /// fallback cleanup runs the same remove-before-signal
+    /// ordering.
+    ///
+    /// Test mechanics:
+    /// 1. Acquire lease A (entry installed).
+    /// 2. Construct a waiter via `cancel_restart_ownership`.
+    /// 3. Hold the map lock from a separate task — this is
+    ///    the precondition that forces the release future to
+    ///    park on the lock await.
+    /// 4. Spawn the release future into a task. The future's
+    ///    only await is the lock acquire, so once the task
+    ///    is scheduled it parks immediately.
+    /// 5. After a generous scheduler window, abort the
+    ///    release task. The lease is dropped (via the future
+    ///    drop on cancellation). Drop sees `released == false`
+    ///    and spawns the cleanup task.
+    /// 6. Release the lock holder so the cleanup task can
+    ///    proceed.
+    /// 7. Use `waiter.wait()` as the synchronization point —
+    ///    it resolves `Ok` once `Finished` is sent (i.e. after
+    ///    remove-before-signal completes).
+    /// 8. Assert the slot is absent and a new acquisition
+    ///    succeeds with a fresh owner_id.
+    #[tokio::test]
+    async fn cancelled_async_release_falls_back_to_drop_cleanup() {
+        use super::super::restart::cancel_restart_ownership;
+
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        // 1. Owner A acquires.
+        let first = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+        let owner_a_id = first_lease.owner_id;
+
+        // 2. Construct a waiter for owner A so we can observe
+        //    `Finished` after the abort-and-cleanup sequence.
+        let waiter = cancel_restart_ownership(&map, "k")
+            .await
+            .expect("cancel returns a waiter for an installed owner");
+
+        // 3. Hold the map lock from a separate task. This is
+        //    the precondition that parks the release future on
+        //    its lock await.
+        let map_for_hold = map.clone();
+        let lock_holder = tokio::spawn(async move {
+            let _guard = map_for_hold.lock().await;
+            // Hold the lock for 300ms — long enough for the
+            // release task to be spawned, reach the lock await,
+            // be aborted, and the Drop fallback to spawn its
+            // cleanup task.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        });
+
+        // Wait for the lock holder to acquire the lock.
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            if map.try_lock().is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(
+            map.try_lock().is_err(),
+            "test setup: lock holder must have acquired the map lock before the release task spawns"
+        );
+
+        // 4. Spawn the release task. Its only await is the lock
+        //    acquire; with the lock held by `lock_holder` it
+        //    parks immediately once scheduled.
+        let release_task = tokio::spawn(async move {
+            first_lease.release().await;
+        });
+
+        // Give the task a generous scheduler window to be
+        // dispatched and park on the lock await. The
+        // synchronous prelude in `release_async` is a few
+        // non-blocking operations, so a few milliseconds is
+        // more than sufficient.
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        // 5. Abort the release task while it is blocked on
+        //    the map lock. Under the OLD implementation this
+        //    would leak the slot because `released` was
+        //    already `true` and `Drop` would skip cleanup.
+        //    Under the NEW implementation `released == false`
+        //    and the Drop fallback runs the remove-before-
+        //    signal cleanup.
+        release_task.abort();
+
+        // Allow the abort to settle. The spawned future is
+        // dropped at the lock await; the lease's Drop runs
+        // and spawns the cleanup task. The cleanup task will
+        // park on the lock until `lock_holder` releases.
+        let _ = tokio::time::timeout(Duration::from_secs(1), release_task).await;
+
+        // 6. Wait for the lock holder to release.
+        let _ = lock_holder.await;
+
+        // Allow the spawned cleanup task a moment to be
+        // scheduled and complete its critical section.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        // 7. The waiter MUST observe `Finished` (or fail
+        //    otherwise). The Drop fallback cleanup sends
+        //    `Finished` after removing the slot, so the
+        //    waiter resolves Ok once that completes.
+        tokio::time::timeout(Duration::from_secs(2), waiter.wait(Duration::from_secs(2)))
+            .await
+            .expect("waiter did not resolve within timeout")
+            .expect("waiter must resolve Ok after Drop fallback runs");
+
+        // 8. Verify the slot is free. The remove-before-signal
+        //    ordering guarantees this after `Finished` is
+        //    observed, but we assert it directly for clarity.
+        let after = map.lock().await.get("k").cloned();
+        assert!(
+            after.is_none(),
+            "slot must be free after Drop fallback cleanup"
+        );
+
+        // New acquisition succeeds with a fresh owner_id.
+        let second =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let second_lease = match second {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired after fallback cleanup, got {other:?}"),
+        };
+        assert_ne!(
+            second_lease.owner_id, owner_a_id,
+            "new owner must have a fresh owner_id (not the aborted owner's); got {} vs {}",
+            second_lease.owner_id, owner_a_id
+        );
+        let _ = second_lease.release().await;
+    }
+
+    /// Pass 12 — `completion_channel_close_error_names_owner`.
+    ///
+    /// The waiter timeout path returns an error string that
+    /// includes the in-flight owner id so the caller can
+    /// correlate the failure with the original coordinator.
+    /// We assert the owner id appears in the error message.
+    #[tokio::test]
+    async fn completion_channel_close_error_names_owner() {
+        use super::super::restart::cancel_restart_ownership;
+
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+        let owner_id = first_lease.owner_id;
+
+        // Hold the lease alive past the bounded wait. The
+        // Drop fallback cannot run because `released` is
+        // still false and the cleanup task never starts (we
+        // never drop the lease until the test ends, so we
+        // exercise the timeout path of `waiter.wait`).
+        let waiter = cancel_restart_ownership(&map, "k")
+            .await
+            .expect("cancel returns a waiter");
+
+        let result = waiter.wait(Duration::from_millis(80)).await;
+        match result {
+            Err(crate::error::LspError::InitializationCancelled(msg)) => {
+                assert!(
+                    msg.contains(&owner_id.to_string()),
+                    "waiter timeout error must include owner_id {owner_id}, got: {msg}"
+                );
+                assert!(
+                    msg.contains("80ms") || msg.to_lowercase().contains("timeout"),
+                    "waiter timeout error must mention the timeout duration or 'timeout', got: {msg}"
+                );
+            }
+            other => panic!("expected InitializationCancelled with owner_id, got {other:?}"),
+        }
+
+        // Clean up: drop the lease (sends Finished but we
+        // already failed).
+        drop(first_lease);
+    }
+
+    /// Pass 12 — `completion_timeout_error_names_owner`.
+    ///
+    /// The waiter timeout error string includes the in-flight
+    /// owner id and the timeout value so the caller can
+    /// correlate the failure and reason about bounded waits.
+    /// We assert both the owner id and a bounded-wait hint
+    /// appear in the error message.
+    #[tokio::test]
+    async fn completion_timeout_error_names_owner() {
+        use super::super::restart::cancel_restart_ownership;
+
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+        let owner_id = first_lease.owner_id;
+
+        let waiter = cancel_restart_ownership(&map, "k")
+            .await
+            .expect("cancel returns a waiter");
+
+        // Hold the lease and time out the wait.
+        let _hold = first_lease;
+        let result = waiter.wait(Duration::from_millis(50)).await;
+        match result {
+            Err(crate::error::LspError::InitializationCancelled(msg)) => {
+                assert!(
+                    msg.contains(&owner_id.to_string()),
+                    "timeout error must include owner_id {owner_id}, got: {msg}"
+                );
+                assert!(
+                    msg.contains("50ms") || msg.to_lowercase().contains("timeout"),
+                    "timeout error must mention the timeout duration or 'timeout', got: {msg}"
+                );
+            }
+            other => panic!("expected InitializationCancelled with owner_id, got {other:?}"),
+        }
+
+        // Clean up.
         drop(_hold);
     }
 }

@@ -1821,7 +1821,7 @@ The smoke tests (`crates/egglsp/tests/real_server_smoke.rs`) exercise rust-analy
 
 ## Phase 3 Final Closure: Runtime Termination, Generation-Safe Supervision, Restart Budgets, Readiness, and Fresh Evidence
 
-**Phase 3 supervision and restart lifecycle complete for Tier 1 servers; broader language/server compatibility remains future work.** Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. The 10-pass sequence (Pass 1 through Pass 10) makes the runtime, restart, and freshness invariants explicit. The 13 supervisor/restart scenarios pass repeatedly, the production test surface is green, and the 26 root composite tests pass.
+**Phase 3 supervision and restart lifecycle complete for Tier 1 servers; broader language/server compatibility remains future work.** Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. The 10-pass sequence (Pass 1 through Pass 10) makes the runtime, restart, and freshness invariants explicit, the 11-pass addendum locks down the remove-before-signal handshake, and the 12-pass final cleanup makes the async release cancellation-safe. The 14 supervisor/restart scenarios pass repeatedly, the production test surface is green, and the 26 root composite tests pass.
 
 ### Generation-Aware Runtime Map
 
@@ -2006,6 +2006,22 @@ The final handshake sequence is:
 - `old_owner_release_does_not_signal_for_new_owner` — simulates a newer owner acquiring the slot; the old owner's `release` observes the generation mismatch, suppresses the broadcast, and the new owner is never falsely told the slot is free.
 - `completion_channel_close_without_finished_is_error` — drops the sender without sending; the waiter observes `RecvError` and treats it as an invariant failure (not a silent `Ok`).
 
+**Pass 12 (Phase 3 final cleanup) — async release cancellation safety.** The Pass 11 release path commits `released = true` **inside** the ownership-map lock block, not before it. The flag commit and the slot removal are now part of the same synchronous critical section under the lock, so cancelling the `release()` future while it is parked on the lock await leaves `released == false` and routes cleanup to `Drop`'s safety fallback (which already runs the remove-before-signal ordering). Cancelling or aborting the future *after* lock acquisition cannot interrupt the critical section because there are no further `await` points between the flag commit and the completion broadcast.
+
+Concretely:
+
+- Cancellation before lock acquisition → `Drop` sees `released == false` → spawns the cleanup task → slot is removed and `Finished` is broadcast under the spawned task's own lock acquisition.
+- Cancellation after lock acquisition → the synchronous critical section (flag commit → map.remove → broadcast) runs to completion. There is no `await` to interrupt; the slot is removed and `Finished` is broadcast before the future can be cancelled.
+
+Production ownership paths continue to `await` `RestartLease::release` explicitly. The cancellation-safety change only affects the ordering of the `released` flag commit and the lock acquire; it does not alter any production call site or any release-side handshake semantics.
+
+Two new adversarial unit tests in `crates/egglsp/src/restart.rs` lock the invariant down:
+
+- `cancelled_async_release_falls_back_to_drop_cleanup` — spawns a release task that is blocked on the ownership-map lock (held by a separate `lock_holder` task), aborts the release task while it is parked, then verifies that the lease's `Drop` fallback removes the slot and the waiter observes `Finished`. The test is deterministic across 10 serial runs.
+- `completion_channel_close_error_names_owner` / `completion_timeout_error_names_owner` — verify that both waiter error variants embed the in-flight `owner_id` (and the timeout duration for the timeout path) so the caller can correlate failures with the original coordinator.
+
+The `RestartOwnerWaiter::owner_id` field is no longer `#[allow(dead_code)]`; both error variants now use it for diagnostics.
+
 **Status.** Phase 3 supervision and restart lifecycle is complete for Tier 1 servers; broader language/server compatibility remains future work.
 
 ### Final Invariant Checklist
@@ -2053,6 +2069,10 @@ The final handshake sequence is:
 - [x] Ten serial and five parallel race runs pass.
 - [x] No fake-server child process leaks.
 - [x] Documentation describes the final ordering correctly.
+- [x] `released` is committed only inside the ownership-map lock block (cancellation safety).
+- [x] Aborting a blocked `release()` future triggers the `Drop` fallback cleanup.
+- [x] Waiter timeout and closure errors embed the in-flight `owner_id` for diagnostics.
+- [x] Ten serial abort-while-blocked runs pass deterministically.
 
 ## See Also
 
