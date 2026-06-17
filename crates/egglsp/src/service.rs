@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use url::Url;
 
-use super::client::{LspClient, LspClientOptions};
+use super::client::{DiagnosticCacheEntry, LspClient, LspClientOptions};
 use super::compatibility::{LspReadinessPolicy, LspRestartMode};
 use super::config::{LspConfig, LspRule};
 use super::document_sync::OpenDocumentRegistry;
@@ -83,6 +83,41 @@ enum RuntimeInstallResult {
 struct RestartOwnerDiagnosticSnapshot {
     pre_wait_generation: u64,
     pre_wait_server_id: String,
+}
+
+/// Pass 5 — Options that differentiate manual and automatic
+/// restart flows within the unified `restart_client_owned`
+/// path. The two flows share lifecycle checks, lease
+/// acquisition, and coordinator handoff; they differ in
+/// whether to:
+/// - wait for an in-flight owner to release (manual only),
+/// - re-read generation and abort on advance (manual only),
+/// - terminate the old runtime before coordinator handoff
+///   (manual only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnedRestartOptions {
+    /// When true: cancel any in-flight owner and wait for its
+    /// completion signal under a bounded timeout; reject
+    /// collisions after the wait. When false: coalesce with
+    /// an in-flight automatic restart.
+    manual_supersession: bool,
+}
+
+impl OwnedRestartOptions {
+    /// Automatic restart — coalesce with in-flight automatic
+    /// restart; do NOT supersede.
+    fn automatic() -> Self {
+        Self {
+            manual_supersession: false,
+        }
+    }
+    /// Manual restart — supersede in-flight automatic
+    /// restart; reject concurrent manual restarts.
+    fn manual() -> Self {
+        Self {
+            manual_supersession: true,
+        }
+    }
 }
 
 /// Install `runtime` for `key` if no entry exists with the same or
@@ -2543,8 +2578,17 @@ impl LspService {
     /// `Restarting` → `Initializing` → `Ready` or `Failed`), and
     /// generates a fresh generation for the new client.
     pub async fn restart_client(&self, key: &str) -> Result<(), LspError> {
-        self.restart_client_with_trigger(key, RestartTrigger::Automatic)
-            .await
+        // Automatic restart — coalesce with any in-flight
+        // automatic restart, no manual supersession. The
+        // unified `restart_client_owned` path handles
+        // ownership + teardown internally.
+        self.restart_client_owned(
+            key,
+            RestartTrigger::Automatic,
+            None,
+            OwnedRestartOptions::automatic(),
+        )
+        .await
     }
 
     /// Restart a client by key under a manual trigger.
@@ -2554,45 +2598,63 @@ impl LspService {
     /// BEFORE the replacement is started so a manual restart
     /// cannot leave two live processes.
     ///
-    /// ## Final sequencing (Phase 3 closure)
-    ///
-    /// The required sequence — never touch the live client /
-    /// runtime before owning the restart slot:
-    ///
-    /// 1. Verify the service is `Running`.
-    /// 2. Inspect the current restart owner. If an automatic
-    ///    owner exists: cancel its token (intent) and wait for
-    ///    its explicit completion signal under a bounded timeout
-    ///    (`MANUAL_SUPERSESSION_OWNER_TIMEOUT`, 3s by default).
-    ///    This is what makes cancellation-vs-completion
-    ///    observable: cancelling a token only signals intent; a
-    ///    waiter cannot proceed until the in-flight owner has
-    ///    signaled `Finished` (releasing its slot). A timeout
-    ///    returns `InitializationCancelled` without touching the
-    ///    live client.
-    /// 3. Acquire the manual restart lease. If a *new* automatic
-    ///    owner raced in during the wait, reject as
-    ///    `AlreadyInProgress` (the manual-vs-automatic collision
-    ///    path returns a typed busy error; manual-vs-manual is
-    ///    the same).
-    /// 4. **Re-read** the authoritative generation, current
-    ///    client, runtime, and descriptor. The values captured
-    ///    before the wait may have changed; only the post-wait
-    ///    snapshot is used for teardown. If a newer generation
-    ///    appeared while we were waiting, return
-    ///    `ServerRestarted` so the caller can re-issue.
-    /// 5. Snapshot diagnostics from the live old client.
-    /// 6. Terminate the old runtime via `terminate_runtime` with
-    ///    `Some(old_client.clone())` so the protocol `shutdown`
-    ///    request is sent through the live client.
-    /// 7. Remove the old client only AFTER termination has begun.
-    /// 8. Hand off to the coordinator with the pre-captured
-    ///    diagnostics; the coordinator publishes the replacement
-    ///    and applies the readiness policy.
-    /// 9. Release the restart ownership lease (signals
-    ///    `Finished` on the completion channel).
+    /// Pass 5 — This entry point delegates to the unified
+    /// [`Self::restart_client_owned`] path with manual-mode
+    /// options so manual and automatic restarts share the
+    /// same ownership + teardown + handoff logic.
     pub async fn manual_restart_client(&self, key: &str) -> Result<(), LspError> {
-        // 1. Service must be Running.
+        self.restart_client_owned(
+            key,
+            RestartTrigger::Manual,
+            None,
+            OwnedRestartOptions::manual(),
+        )
+        .await
+    }
+
+    /// Private restart entry point that applies a specific
+    /// `RestartTrigger` to the coordinator.
+
+    /// Pass 5 — Single internal entry point for all restart
+    /// paths (manual and automatic). Manual callers pass
+    /// `OwnedRestartOptions::manual()`, automatic callers pass
+    /// `OwnedRestartOptions::automatic()`. The two flows share:
+    ///
+    /// 1. Lifecycle check (service must be `Running`).
+    /// 2. (Manual only) Cancel any existing owner and wait
+    ///    for its explicit completion signal under a bounded
+    ///    timeout — this is what makes cancellation-vs-completion
+    ///    observable.
+    /// 3. Acquire the per-key lease. Automatic callers
+    ///    coalesce with an in-flight automatic lease; manual
+    ///    callers reject collisions (manual-vs-manual and
+    ///    manual-vs-automatic raced-during-supersession).
+    /// 4. (Manual only) Re-read the live authoritative
+    ///    generation. If a newer generation appeared during the
+    ///    supersession wait, return `ServerRestarted` so the
+    ///    caller can re-issue. This prevents the manual
+    ///    teardown from targeting a runtime that the in-flight
+    ///    automatic restart has already replaced.
+    /// 5. Snapshot retained diagnostics from the live client.
+    /// 6. (Manual only) Terminate the old runtime via
+    ///    `terminate_runtime` with `RuntimeTerminationReason::ManualRestart`,
+    ///    then remove the old client from the live map.
+    /// 7. Hand off to the coordinator with the lease token,
+    ///    retained diagnostics, and a freshly built reinit
+    ///    closure.
+    /// 8. Release the lease — sends `Finished` on the
+    ///    completion channel so the next waiter observes
+    ///    completion.
+    async fn restart_client_owned(
+        &self,
+        key: &str,
+        trigger: RestartTrigger,
+        caller_retained_diagnostics: Option<
+            HashMap<String, DiagnosticCacheEntry>,
+        >,
+        options: OwnedRestartOptions,
+    ) -> Result<(), LspError> {
+        // 1. Lifecycle check.
         {
             let lc = self.lifecycle.read().await;
             if lc.phase != ServiceLifecycle::Running {
@@ -2602,43 +2664,58 @@ impl LspService {
             }
         }
 
-        // 2. Inspect the current restart owner. If one exists,
-        //    cancel its token (intent) and wait for its
-        //    completion signal under a bounded timeout. The
-        //    waiter holds a `RestartOwnerWaiter` that resolves
-        //    only when the owner explicitly signals `Finished`
-        //    (i.e. calls `release` on its lease).
-        {
-            let waiter =
-                super::restart::cancel_restart_ownership(&self.restart_tasks, key).await;
+        // 2. Manual supersession — cancel existing owner and
+        //    wait for completion under bounded timeout.
+        if options.manual_supersession {
+            let waiter = super::restart::cancel_restart_ownership(
+                &self.restart_tasks,
+                key,
+            )
+            .await;
             if let Some(waiter) = waiter {
                 debug!(
                     key,
                     owner_id = format_args!("{:?}", waiter).as_str(),
-                    "manual restart: waiting for in-flight owner completion"
+                    "restart: waiting for in-flight owner completion"
                 );
-                if let Err(e) = waiter.wait(MANUAL_SUPERSESSION_OWNER_TIMEOUT).await {
+                if let Err(e) =
+                    waiter.wait(MANUAL_SUPERSESSION_OWNER_TIMEOUT).await
+                {
                     warn!(
                         key,
                         error = %e,
-                        "manual restart: prior owner did not complete within timeout; aborting"
+                        "restart: prior owner did not complete within timeout; aborting"
                     );
                     return Err(e);
                 }
             }
         }
 
-        // 3. Acquire the manual restart lease.
+        // 3. Acquire the lease.
         let lease = match acquire_restart_ownership(
             &self.restart_tasks,
             &self.restart_owner_counter,
             key,
-            RestartTrigger::Manual,
+            trigger,
         )
         .await
         {
             RestartLeaseAcquisition::Acquired(lease) => lease,
             RestartLeaseAcquisition::AlreadyInProgress { existing_trigger } => {
+                debug!(
+                    key,
+                    ?existing_trigger,
+                    ?trigger,
+                    "restart already in progress; coalescing"
+                );
+                // Automatic callers coalesce: the existing
+                // automatic restart counts as this one.
+                if matches!(trigger, RestartTrigger::Automatic) {
+                    return Ok(());
+                }
+                // Manual callers reject collisions so the
+                // caller can distinguish "in progress" from
+                // "done".
                 let msg = match existing_trigger {
                     RestartTrigger::Manual => "another manual restart is in progress",
                     RestartTrigger::Automatic => {
@@ -2649,22 +2726,13 @@ impl LspService {
             }
         };
 
-        // 4. Re-read the authoritative generation, client, runtime,
-        //    and descriptor. The values captured before the
-        //    ownership wait may have shifted (e.g. the
-        //    in-flight coordinator that just finished may have
-        //    succeeded and bumped the generation, or shutdown
-        //    may have begun). We operate on the live, post-wait
-        //    state.
-        let current_generation = self.generation_for_key(key).await;
-        if current_generation > 0 {
-            // A newer generation appearing while we were
-            // waiting means someone else restarted the client;
-            // operating on the cached pre-wait generation would
-            // terminate a different runtime than we expect.
-            // Bail with a typed stale error so the caller can
-            // re-issue.
-            let pre_wait_snapshot = self.restart_owner_diagnostic_snapshot(key).await;
+        // 4. Manual-only: re-read generation. If a newer
+        //    generation appeared during the wait, the manual
+        //    teardown would target a stale runtime.
+        let mut current_generation = self.generation_for_key(key).await;
+        if options.manual_supersession && current_generation > 0 {
+            let pre_wait_snapshot =
+                self.restart_owner_diagnostic_snapshot(key).await;
             if pre_wait_snapshot.pre_wait_generation != 0
                 && pre_wait_snapshot.pre_wait_generation < current_generation
             {
@@ -2683,16 +2751,17 @@ impl LspService {
             }
         }
 
-        // 5. Snapshot diagnostics from the live client BEFORE
-        //    removing it. The live client still owns its
-        //    diagnostic cache at this point.
-        let retained_diagnostics = self.snapshot_diagnostics_for_restart(key).await;
+        // 5. Snapshot retained diagnostics. If the caller
+        //    provided a snapshot (e.g. from a prior teardown),
+        //    use it; otherwise capture now.
+        let retained_diagnostics = match caller_retained_diagnostics {
+            Some(map) => map,
+            None => self.snapshot_diagnostics_for_restart(key).await,
+        };
 
-        // 6/7. Terminate the old runtime via `terminate_runtime`
-        //      and remove the old client only after termination
-        //      has begun. The reinit closure inserts the
-        //      replacement.
-        if current_generation > 0 {
+        // 6. Manual-only: terminate the old runtime and remove
+        //    the old client before the coordinator runs.
+        if options.manual_supersession && current_generation > 0 {
             let old_client = {
                 let clients = self.clients.read().await;
                 clients.get(key).cloned()
@@ -2718,9 +2787,14 @@ impl LspService {
             }
         }
 
-        // 8. Hand off to the coordinator. The manual lease
-        //    token is threaded through so a shutdown that
-        //    arrives mid-coordinator is still observable.
+        // Reset generation-read sentinel after manual teardown
+        // — the live client is gone so the coordinator will
+        // publish a fresh generation via its reinit closure.
+        if options.manual_supersession {
+            current_generation = self.generation_for_key(key).await;
+        }
+
+        // 7. Hand off to the coordinator.
         let descriptor = match self.descriptor_for_key(key).await {
             Some(d) => d,
             None => {
@@ -2732,10 +2806,10 @@ impl LspService {
         };
         let reinit_fn = self.build_reinit_fn(key.to_string());
 
-        let result = restart_client_coordinator(
+        let outcome = restart_client_coordinator(
             self,
             key,
-            RestartTrigger::Manual,
+            trigger,
             lease.token(),
             Some(retained_diagnostics),
             descriptor,
@@ -2743,114 +2817,25 @@ impl LspService {
         )
         .await;
 
-        // 9. Release the lease — sends `Finished` on the
-        //    completion channel so the next waiter (if any)
-        //    observes completion.
+        // 8. Release the lease.
         let _ = lease.release();
-        result
-    }
 
-    /// Private restart entry point that applies a specific
-    /// `RestartTrigger` to the coordinator.
-
-    /// Private restart entry point that applies a specific
-    /// `RestartTrigger` to the coordinator.
-    ///
-    /// Pass 1 — Per-key ownership is acquired BEFORE any
-    /// coordinator work. Concurrent restart callers for the same
-    /// key resolve deterministically: the first wins the lease;
-    /// the rest observe `AlreadyInProgress`. Manual supersession
-    /// (Pass 2) explicitly cancels the existing automatic
-    /// owner's lease token and waits for the prior work to abort
-    /// before proceeding.
-    async fn restart_client_with_trigger(
-        &self,
-        key: &str,
-        trigger: RestartTrigger,
-    ) -> Result<(), LspError> {
-        // Verify service is still running.
-        {
-            let lc = self.lifecycle.read().await;
-            if lc.phase != ServiceLifecycle::Running {
-                return Err(LspError::InitializationCancelled(
-                    "service is not running".to_string(),
-                ));
-            }
-        }
-
-        // Look up the descriptor (created during initial init).
-        let descriptor = self.descriptor_for_key(key).await.ok_or_else(|| {
-            LspError::LaunchFailed(format!(
-                "no descriptor stored for key {key} — was the client ever initialized?"
-            ))
-        })?;
-
-        // Pass 1 — Acquire per-key restart ownership. The first
-        // caller wins; concurrent callers observe
-        // `AlreadyInProgress`. Manual callers cancel any
-        // existing automatic lease so they can supersede.
-        let lease = match acquire_restart_ownership(
-            &self.restart_tasks,
-            &self.restart_owner_counter,
-            key,
-            trigger,
-        )
-        .await
-        {
-            RestartLeaseAcquisition::Acquired(lease) => lease,
-            RestartLeaseAcquisition::AlreadyInProgress { existing_trigger } => {
-                debug!(
+        // Pass 6 — Map RestartOutcome to Result<(), LspError>.
+        // Ready and Degraded are both success outcomes; Degraded
+        // is logged distinctly and does NOT bubble up as an
+        // error to the caller.
+        match outcome {
+            Ok(super::restart::RestartOutcome::Ready) => Ok(()),
+            Ok(super::restart::RestartOutcome::Degraded { reason }) => {
+                info!(
                     key,
-                    ?existing_trigger,
-                    ?trigger,
-                    "restart already in progress; coalescing"
+                    reason = %reason,
+                    "restart completed in degraded mode; client is live"
                 );
-                // For automatic triggers the existing restart
-                // counts as this one; treat as success.
-                if matches!(trigger, RestartTrigger::Automatic) {
-                    return Ok(());
-                }
-                // Manual-vs-manual collisions are rejected so
-                // callers can distinguish "in progress" from
-                // "done". Manual-vs-automatic collisions are
-                // supersession and proceed by cancelling the
-                // existing lease and waiting for the next
-                // acquisition slot.
-                return Err(LspError::InitializationCancelled(
-                    "another manual restart is in progress".to_string(),
-                ));
+                Ok(())
             }
-        };
-
-        // Pass 2 — Capture retained diagnostics BEFORE the old
-        // client is removed. For automatic restarts the old
-        // client is still present (the supervisor removed it
-        // before scheduling). For manual restarts the caller
-        // passes a pre-captured snapshot via
-        // `restart_client_with_retained_diagnostics` so we don't
-        // miss the diagnostics window.
-        let retained_diagnostics = self.snapshot_diagnostics_for_restart(key).await;
-
-        // Build a reinit closure that owns the necessary state by
-        // `Arc::clone` of every field the closure body needs. The
-        // closure is `'static + Send` so the coordinator can hold
-        // it across awaits without lifetime issues.
-        let reinit_fn = self.build_reinit_fn(key.to_string());
-
-        let result = restart_client_coordinator(
-            self,
-            key,
-            trigger,
-            lease.token(),
-            Some(retained_diagnostics),
-            descriptor,
-            reinit_fn,
-        )
-        .await;
-
-        // Release the lease so subsequent restarts can proceed.
-        let _ = lease.release();
-        result
+            Err(e) => Err(e),
+        }
     }
 
     /// Get a snapshot of operational health for the given client key.

@@ -84,7 +84,8 @@ pub use overlay::{
     OverlayRestoreToken, OverlaySession, SemanticCheckPreview, SemanticSymbolSummary,
 };
 pub use restart::{
-    backoff_delay, restart_client_coordinator, LspClientDescriptor, RestartTrigger, ServicePhase,
+    backoff_delay, restart_client_coordinator, LspClientDescriptor, RestartOutcome,
+    RestartTrigger, ServicePhase,
 };
 pub use runtime::{spawn_process_runtime, LspProcessIntent, LspProcessRuntime};
 pub use supervisor::{LspProcessExitEvent, StderrRingBuffer};

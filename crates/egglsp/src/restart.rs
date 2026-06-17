@@ -784,6 +784,29 @@ impl std::fmt::Debug for UnpublishedReplacement {
 /// 2. Remove the unpublished client from the clients map
 ///    only when its bound generation matches (Pass 4
 ///    invariant: cancellation does not remove a newer client).
+/// Pass 6 — Result of a restart attempt. The coordinator
+/// distinguishes a fully healthy replacement from a *live*
+/// degraded replacement so callers can log degraded outcomes
+/// distinctly and not report "restart failed" when the
+/// client is actually operational.
+///
+/// Semantics:
+/// - `Ready` — replacement is published, marked operational,
+///   and reached its readiness policy. `last_healthy_at` is
+///   updated.
+/// - `Degraded { reason }` — replacement is published and
+///   marked operational, but the readiness policy timed out.
+///   The live client remains usable; `last_healthy_at` is
+///   NOT updated (a degraded restart does not earn a fresh
+///   restart budget). The consumed restart attempt remains
+///   consumed; a later process exit continues from the
+///   existing budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestartOutcome {
+    Ready,
+    Degraded { reason: String },
+}
+
 pub async fn restart_client_coordinator<S, F>(
     shared: &S,
     key: &str,
@@ -792,7 +815,7 @@ pub async fn restart_client_coordinator<S, F>(
     retained_diagnostics_input: Option<HashMap<String, DiagnosticCacheEntry>>,
     mut descriptor: LspClientDescriptor,
     mut reinit_fn: F,
-) -> Result<(), LspError>
+) -> Result<RestartOutcome, LspError>
 where
     S: RestartShared,
     F: FnMut(
@@ -1060,6 +1083,12 @@ where
                 // before being marked Ready. Cold start and restart
                 // share the same readiness helper so behavior is
                 // consistent across the two paths.
+                //
+                // Pass 6 — A live replacement that times out on
+                // readiness is returned as `RestartOutcome::Degraded`
+                // (not as `LaunchFailed`). The live client remains
+                // published and observable; the caller logs
+                // degraded distinctly.
                 let readiness = shared
                     .wait_for_readiness(key, &descriptor.readiness_policy)
                     .await;
@@ -1076,7 +1105,7 @@ where
                             key,
                             elapsed_ms = elapsed.as_millis() as u64,
                             reason = %reason,
-                            "restart readiness degraded"
+                            "restart readiness degraded; returning live outcome"
                         );
                         if let Err(e) = shared
                             .transition_operational_state(
@@ -1089,13 +1118,21 @@ where
                         {
                             warn!(key, error = %e, "failed to transition to Degraded");
                         }
-                        // Degraded does not set last_healthy_at —
-                        // a Degraded client does not earn a fresh
-                        // restart budget (Pass 3 — Ready counts,
-                        // Degraded does not).
-                        return Err(LspError::LaunchFailed(format!(
-                            "restart readiness degraded: {reason}"
-                        )));
+                        // Pass 6 — Degraded is a live outcome. The
+                        // consumed restart attempt remains
+                        // consumed (the reservation already
+                        // incremented the counter). The client
+                        // stays published. Do NOT set
+                        // last_healthy_at — a degraded restart
+                        // does not earn a fresh restart budget.
+                        info!(
+                            server = %descriptor.server_id,
+                            root = %descriptor.root.display(),
+                            effective_attempt,
+                            reason = %reason,
+                            "client restart completed (degraded)"
+                        );
+                        return Ok(RestartOutcome::Degraded { reason });
                     }
                 }
 
@@ -1118,7 +1155,7 @@ where
                     effective_attempt,
                     "client restart completed"
                 );
-                return Ok(());
+                return Ok(RestartOutcome::Ready);
             }
             Err(e) => {
                 warn!(
@@ -1540,6 +1577,11 @@ mod tests {
         /// production this lives on `LspService` directly
         /// (`restart_tasks: RestartTaskMap`).
         restart_task_map: RestartTaskMap,
+        /// Pass 6 — Optional override for `wait_for_readiness`.
+        /// When `Some`, the mock returns this value instead of
+        /// the default `Ready`. Pass 6 tests use this to drive
+        /// a `Degraded` outcome.
+        forced_readiness: Arc<StdMutex<Option<ReadinessResult>>>,
     }
 
     #[derive(Debug, Clone)]
@@ -1561,6 +1603,7 @@ mod tests {
                 marked_stale: Arc::new(StdMutex::new(None)),
                 runtime_map: Arc::new(Mutex::new(HashMap::new())),
                 restart_task_map: Arc::new(Mutex::new(HashMap::new())),
+                forced_readiness: Arc::new(StdMutex::new(None)),
             }
         }
     }
@@ -1656,6 +1699,9 @@ mod tests {
             _key: &str,
             _policy: &LspReadinessPolicy,
         ) -> crate::service::ReadinessResult {
+            if let Some(forced) = self.forced_readiness.lock().unwrap().clone() {
+                return forced;
+            }
             crate::service::ReadinessResult::Ready {
                 elapsed: Duration::ZERO,
             }
@@ -2631,6 +2677,228 @@ mod tests {
         assert!(
             result.is_none(),
             "cleanup must return None when no runtime matches the expected generation"
+        );
+    }
+
+    // ── Pass 6 — Degraded restart is a live outcome ──────────────
+
+    /// Pass 6 — When the readiness policy returns
+    /// `ReadinessResult::Degraded`, the coordinator MUST return
+    /// `Ok(RestartOutcome::Degraded { .. })` rather than
+    /// `Err(LaunchFailed(_))`. We drive the coordinator
+    /// against a `MockShared` whose readiness policy times out
+    /// (no client present, no diagnostics, no progress) and
+    /// assert the live outcome.
+    #[tokio::test]
+    async fn degraded_restart_returns_live_outcome() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 1;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+        // The readiness policy that always times out (no
+        // client, no diagnostics, no progress — i.e. degraded).
+        descriptor.readiness_policy =
+            LspReadinessPolicy::WaitForProgressEndOrTimeout {
+                timeout: Duration::from_millis(50),
+            };
+
+        // Force the readiness helper to return Degraded so
+        // the coordinator exercises the live-outcome branch.
+        *shared.forced_readiness.lock().unwrap() = Some(
+            crate::service::ReadinessResult::Degraded {
+                reason: "diagnostics wait timed out".to_string(),
+                elapsed: Duration::from_millis(50),
+            },
+        );
+
+        // Reinit closure: build a client stub and publish.
+        let shared_for_reinit = shared.clone();
+        let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
+            let shared = shared_for_reinit.clone();
+            Box::pin(async move {
+                let stub = LspClient::test_stub(
+                    "test-stub",
+                    std::path::Path::new("/tmp"),
+                    Arc::new(AtomicUsize::new(0)),
+                    crate::client::LspClientOptions::default(),
+                )
+                .await?;
+                let client = Arc::new(stub);
+                client.bind_server_generation(gen).await;
+                shared.set_generation("test:rust-analyzer", gen).await;
+                {
+                    let mut map = shared.clients.write().await;
+                    map.insert(
+                        "test:rust-analyzer".to_string(),
+                        client.clone(),
+                    );
+                }
+                Ok(UnpublishedReplacement {
+                    client,
+                    generation: gen,
+                })
+            })
+                as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+        };
+
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            None,
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+
+        match result {
+            Ok(RestartOutcome::Degraded { reason }) => {
+                assert!(
+                    !reason.is_empty(),
+                    "degraded outcome must include a reason"
+                );
+            }
+            other => panic!("expected Degraded live outcome, got {other:?}"),
+        }
+    }
+
+    /// Pass 6 — A degraded restart MUST NOT reset the restart
+    /// budget counter. The coordinator already incremented
+    /// `restart_attempts` via the reservation helper; the
+    /// readiness-timeout branch must not roll it back.
+    #[tokio::test]
+    async fn degraded_restart_does_not_reset_budget() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 2;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+        descriptor.readiness_policy =
+            LspReadinessPolicy::WaitForProgressEndOrTimeout {
+                timeout: Duration::from_millis(50),
+            };
+
+        let shared_for_reinit = shared.clone();
+        let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
+            let shared = shared_for_reinit.clone();
+            Box::pin(async move {
+                let stub = LspClient::test_stub(
+                    "test-stub",
+                    std::path::Path::new("/tmp"),
+                    Arc::new(AtomicUsize::new(0)),
+                    crate::client::LspClientOptions::default(),
+                )
+                .await?;
+                let client = Arc::new(stub);
+                client.bind_server_generation(gen).await;
+                shared.set_generation("test:rust-analyzer", gen).await;
+                {
+                    let mut map = shared.clients.write().await;
+                    map.insert(
+                        "test:rust-analyzer".to_string(),
+                        client.clone(),
+                    );
+                }
+                Ok(UnpublishedReplacement {
+                    client,
+                    generation: gen,
+                })
+            })
+                as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+        };
+
+        let _ = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            None,
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+
+        // The consumed restart attempt must remain consumed.
+        let attempts = shared.restart_attempts("test:rust-analyzer").await;
+        assert_eq!(
+            attempts, 1,
+            "degraded restart must not reset the budget; expected 1, got {attempts}"
+        );
+    }
+
+    /// Pass 6 — A degraded restart MUST leave the live client
+    /// published and observable in the live-clients map. A
+    /// later process exit continues from the existing budget.
+    #[tokio::test]
+    async fn degraded_client_remains_published() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 2;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+        descriptor.readiness_policy =
+            LspReadinessPolicy::WaitForProgressEndOrTimeout {
+                timeout: Duration::from_millis(50),
+            };
+
+        *shared.forced_readiness.lock().unwrap() = Some(
+            crate::service::ReadinessResult::Degraded {
+                reason: "diagnostics wait timed out".to_string(),
+                elapsed: Duration::from_millis(50),
+            },
+        );
+
+        let shared_for_reinit = shared.clone();
+        let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
+            let shared = shared_for_reinit.clone();
+            Box::pin(async move {
+                let stub = LspClient::test_stub(
+                    "test-stub",
+                    std::path::Path::new("/tmp"),
+                    Arc::new(AtomicUsize::new(0)),
+                    crate::client::LspClientOptions::default(),
+                )
+                .await?;
+                let client = Arc::new(stub);
+                client.bind_server_generation(gen).await;
+                shared.set_generation("test:rust-analyzer", gen).await;
+                {
+                    let mut map = shared.clients.write().await;
+                    map.insert(
+                        "test:rust-analyzer".to_string(),
+                        client.clone(),
+                    );
+                }
+                Ok(UnpublishedReplacement {
+                    client,
+                    generation: gen,
+                })
+            })
+                as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+        };
+
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            None,
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+        assert!(
+            matches!(result, Ok(RestartOutcome::Degraded { .. })),
+            "expected Degraded live outcome, got {result:?}"
+        );
+
+        // The live client MUST still be in the clients map.
+        let clients_after = shared.clients.read().await;
+        assert!(
+            clients_after.contains_key("test:rust-analyzer"),
+            "degraded restart must leave the live client published"
         );
     }
 }
