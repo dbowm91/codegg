@@ -244,6 +244,79 @@ pub fn tier1_profiles() -> Vec<LspCompatibilityProfile> {
     vec![rust_analyzer_profile(), pyright_profile()]
 }
 
+/// Pass 6 — Evaluate a references-result compatibility check.
+///
+/// The standard rule for advertised references is:
+/// - Zero locations → `RequiredIfAdvertised` failure
+///   (no `references (0 found)` passing report).
+/// - One or more locations → pass.
+///
+/// Profiles that need stricter rules (e.g. Python cross-file
+/// references) can use [`evaluate_references_check_with_min`]
+/// directly.
+///
+/// `advertised` must reflect the server's actual capability
+/// (typically `LspCapabilitySnapshot::supports_references`).
+/// When `advertised` is `false`, the check is recorded as
+/// `Unsupported` regardless of the count, so the harness never
+/// reports a passing result for a server that did not advertise
+/// the operation.
+pub fn evaluate_references_check(
+    advertised: bool,
+    locations: &[lsp_types::Location],
+    min_required: usize,
+) -> LspCompatibilityCheck {
+    evaluate_references_check_with_min(advertised, locations, min_required, 1)
+}
+
+/// Pass 6 — Variant that requires a minimum count of distinct
+/// URIs in the references result. Used by the Python cross-file
+/// fixture which still requires at least two distinct URIs.
+pub fn evaluate_references_check_with_min(
+    advertised: bool,
+    locations: &[lsp_types::Location],
+    min_required: usize,
+    min_distinct_uris: usize,
+) -> LspCompatibilityCheck {
+    let name = "references";
+    if !advertised {
+        return LspCompatibilityCheck {
+            name: name.to_string(),
+            status: CompatibilityCheckStatus::Unsupported,
+            requirement: CompatibilityRequirement::RequiredIfAdvertised,
+            detail: Some("references not advertised by server".to_string()),
+            duration_ms: None,
+        };
+    }
+    let count = locations.len();
+    let mut distinct_uris: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for loc in locations {
+        distinct_uris.insert(loc.uri.to_string());
+    }
+    let distinct = distinct_uris.len();
+    if count < min_required || distinct < min_distinct_uris {
+        return LspCompatibilityCheck {
+            name: name.to_string(),
+            status: CompatibilityCheckStatus::Failing,
+            requirement: CompatibilityRequirement::RequiredIfAdvertised,
+            detail: Some(format!(
+                "expected at least {min_required} reference(s) across {min_distinct_uris} distinct URI(s); got {count} reference(s) across {distinct} distinct URI(s)"
+            )),
+            duration_ms: None,
+        };
+    }
+    LspCompatibilityCheck {
+        name: name.to_string(),
+        status: CompatibilityCheckStatus::Passing,
+        requirement: CompatibilityRequirement::RequiredIfAdvertised,
+        detail: Some(format!(
+            "{count} reference(s) across {distinct} distinct URI(s)"
+        )),
+        duration_ms: None,
+    }
+}
+
 /// Resolve a server binary from environment variable or PATH candidates.
 ///
 /// Returns `None` if no binary is found. Does not download or install.
@@ -267,6 +340,7 @@ pub fn require_server_binary(env_var: &str, candidates: &[&str]) -> Option<std::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn rust_analyzer_profile_has_root_markers() {
@@ -311,5 +385,69 @@ mod tests {
         let py = pyright_profile();
         // rust-analyzer uses progress-based, pyright uses diagnostics-based
         assert_ne!(ra.readiness_policy, py.readiness_policy);
+    }
+
+    // ── Pass 6 references-check tests ──────────────────────────────
+
+    fn loc(uri: &str) -> lsp_types::Location {
+        lsp_types::Location {
+            uri: lsp_types::Uri::from_str(uri).expect("valid uri"),
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 0,
+                    character: 1,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn empty_references_fail_required_if_advertised() {
+        let check = evaluate_references_check(true, &[], 1);
+        assert_eq!(check.status, CompatibilityCheckStatus::Failing);
+        assert_eq!(
+            check.requirement,
+            CompatibilityRequirement::RequiredIfAdvertised
+        );
+        assert!(check.detail.as_deref().unwrap_or("").contains("0 reference"));
+    }
+
+    #[test]
+    fn single_rust_reference_passes() {
+        let refs = vec![loc("file:///tmp/main.rs")];
+        let check = evaluate_references_check(true, &refs, 1);
+        assert_eq!(check.status, CompatibilityCheckStatus::Passing);
+        assert!(check.detail.as_deref().unwrap_or("").contains("1 reference"));
+    }
+
+    #[test]
+    fn python_cross_file_references_still_require_two_uris() {
+        // Two refs but same URI — must fail (only 1 distinct URI).
+        let refs = vec![
+            loc("file:///tmp/a.py"),
+            loc("file:///tmp/a.py"),
+        ];
+        let check = evaluate_references_check_with_min(true, &refs, 2, 2);
+        assert_eq!(check.status, CompatibilityCheckStatus::Failing);
+        // Two refs across two distinct URIs — must pass.
+        let refs2 = vec![
+            loc("file:///tmp/a.py"),
+            loc("file:///tmp/b.py"),
+        ];
+        let check2 = evaluate_references_check_with_min(true, &refs2, 2, 2);
+        assert_eq!(check2.status, CompatibilityCheckStatus::Passing);
+    }
+
+    #[test]
+    fn unadvertised_references_are_unsupported() {
+        let check = evaluate_references_check(false, &[], 1);
+        assert_eq!(check.status, CompatibilityCheckStatus::Unsupported);
+        // Even with refs present, unadvertised stays Unsupported.
+        let check2 = evaluate_references_check(false, &[loc("file:///tmp/a.rs")], 1);
+        assert_eq!(check2.status, CompatibilityCheckStatus::Unsupported);
     }
 }

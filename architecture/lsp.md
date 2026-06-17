@@ -369,7 +369,7 @@ pub struct LspService {
 }
 ```
 
-`LspService::new(config)` returns the bare value. `LspService::new_arc(config)` is the production constructor: it wires the back-reference via `Arc::new_cyclic` so the exit receiver can self-activate from `&self` callers via `ensure_exit_receiver_started`. The exit receiver auto-activates lazily on the first client-creating call (`get_or_create_client`, `get_or_create_client_for_file`, `ensure_file_open_from_disk`) — callers never need a separate setup step.
+`LspService::new(config)` is the **crate-private** (test-only) bare constructor — it returns a `Self` without the cyclic back-reference wired, so the exit-receiver task is NOT auto-started. It is restricted to `pub(crate)` so production callers cannot accidentally create an un-supervised service. `LspService::new_arc(config) -> Arc<Self>` is the production constructor: it builds the service via `Arc::new_cyclic(|weak| Self { ..., self_ref: OnceLock::from(weak.clone()), ... })`, which wires the back-reference and guarantees `ensure_exit_receiver_started` can self-activate from `&self` callers. The test `new_arc_wires_self_ref` proves the production constructor populates `self_ref` (read via the `Weak` upgrade). No public production path creates an un-supervised service.
 
 `generation_map` is the per-key generation map. `LspService::generation_for_key(key)` and `LspService::set_generation(key, gen)` are the public accessors. The first publish sets generation `1`; the restart coordinator bumps it after a successful reinit + replay.
 
@@ -1954,7 +1954,7 @@ For advertised references, the smoke harness now requires a non-empty result. A 
 
 ### Supervised Constructor Invariant
 
-`LspService::new(config)` is the bare constructor — it returns a `Self` without the cyclic back-reference wired, so the exit-receiver task is NOT auto-started. It is retained for tests that explicitly assert on the un-supervised path. `LspService::new_arc(config) -> Arc<Self>` is the production constructor: it builds the service via `Arc::new_cyclic(|weak| Self { ..., self_ref: OnceLock::from(weak.clone()), ... })`, which wires the back-reference and guarantees `ensure_exit_receiver_started` can self-activate from `&self` callers. The test `new_arc_wires_self_ref` proves the production constructor populates `self_ref` (read via the `Weak` upgrade). No public production path creates an un-supervised service.
+`LspService::new(config)` is the bare constructor — it returns a `Self` without the cyclic back-reference wired, so the exit-receiver task is NOT auto-started. As of LSP Phase 3 final closure (Pass 7), this constructor is **crate-private** (`pub(crate)`) so production callers cannot accidentally create an un-supervised service. It is retained for tests that explicitly assert on the un-supervised path. `LspService::new_arc(config) -> Arc<Self>` is the production constructor: it builds the service via `Arc::new_cyclic(|weak| Self { ..., self_ref: OnceLock::from(weak.clone()), ... })`, which wires the back-reference and guarantees `ensure_exit_receiver_started` can self-activate from `&self` callers. The test `new_arc_wires_self_ref` proves the production constructor populates `self_ref` (read via the `Weak` upgrade). No public production path creates an un-supervised service.
 
 ### Test Timing Fix
 

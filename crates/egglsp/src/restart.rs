@@ -46,11 +46,13 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::client::{DiagnosticCacheEntry, LspClient};
@@ -59,6 +61,7 @@ use crate::document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
 use crate::error::LspError;
 use crate::health::LspOperationalState;
 use crate::launch::LspLaunchSpec;
+use crate::service::ReadinessResult;
 
 /// Service lifecycle phase. Mirrors the private enum in
 /// `service.rs` so the coordinator can reason about cancellation
@@ -69,6 +72,140 @@ pub enum ServicePhase {
     ShuttingDown,
     Stopped,
 }
+
+// ── Restart ownership: per-key serialization ────────────────────────
+
+/// Per-key restart ownership token.
+///
+/// One owner at a time per key. Owners must cancel their token
+/// (or drop the lease) when finished. Concurrent acquisitions
+/// from the same key resolve deterministically — the first
+/// caller wins and others observe `AlreadyInProgress`.
+#[derive(Debug, Clone)]
+pub struct RestartTaskControl {
+    /// Monotonic owner id. Used by [`RestartLease`] to ensure
+    /// cleanup only removes its own entry.
+    pub owner_id: u64,
+    /// Trigger type recorded for diagnostics.
+    pub trigger: RestartTrigger,
+    /// Cancellation token shared with the coordinator. Cancelling
+    /// the lease wakes the in-progress restart so it can abort
+    /// cleanly (e.g. when a manual restart supersedes an
+    /// automatic one).
+    pub token: CancellationToken,
+}
+
+/// Outcome of an attempt to acquire per-key restart ownership.
+#[derive(Debug)]
+pub enum RestartLeaseAcquisition {
+    /// Ownership was granted. The lease must be released (via
+    /// `release` or `Drop`) when the owner is finished.
+    Acquired(RestartLease),
+    /// Another restart for the same key is already in progress.
+    /// The existing owner remains the only coordinator for the
+    /// key. The semantics depend on the trigger type:
+    /// - `Automatic`: the existing restart counts as this one.
+    ///   Callers should treat the request as already handled.
+    /// - `Manual`: a manual restart that loses the race to
+    ///   another manual call is rejected so callers can
+    ///   distinguish "in progress" from "done".
+    AlreadyInProgress { existing_trigger: RestartTrigger },
+}
+
+/// RAII guard for restart ownership. The `Drop` impl releases
+/// the lease when the owner falls out of scope.
+pub struct RestartLease {
+    key: String,
+    owner_id: u64,
+    released: bool,
+    restart_tasks: Arc<Mutex<HashMap<String, RestartTaskControl>>>,
+}
+
+impl std::fmt::Debug for RestartLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestartLease")
+            .field("key", &self.key)
+            .field("owner_id", &self.owner_id)
+            .field("released", &self.released)
+            .finish()
+    }
+}
+
+impl RestartLease {
+    /// Cancel the lease's token. The in-progress restart
+    /// observes the cancellation through the shared token.
+    pub fn cancel(&self) {
+        if let Some(ctrl) = self.try_lock_control() {
+            ctrl.token.cancel();
+        }
+    }
+
+    /// Return the current token if the lease is still installed.
+    pub fn token(&self) -> Option<CancellationToken> {
+        self.try_lock_control().map(|c| c.token)
+    }
+
+    /// Explicitly release the lease. Idempotent. Returns true if
+    /// the lease was released by this call.
+    pub fn release(mut self) -> bool {
+        self.release_internal()
+    }
+
+    fn release_internal(&mut self) -> bool {
+        if self.released {
+            return false;
+        }
+        self.released = true;
+        let key = self.key.clone();
+        let owner_id = self.owner_id;
+        // Acquire the lock synchronously via try_lock; fall back
+        // to a blocking spawn if the lock is contended. This is a
+        // rare path and the lock is only held across short
+        // operations.
+        match self.restart_tasks.try_lock() {
+            Ok(mut map) => {
+                if let Some(ctrl) = map.get(&key) {
+                    if ctrl.owner_id == owner_id {
+                        map.remove(&key);
+                        return true;
+                    }
+                }
+                false
+            }
+            Err(_) => {
+                let map = self.restart_tasks.clone();
+                tokio::spawn(async move {
+                    let mut map = map.lock().await;
+                    if let Some(ctrl) = map.get(&key) {
+                        if ctrl.owner_id == owner_id {
+                            map.remove(&key);
+                        }
+                    }
+                });
+                true
+            }
+        }
+    }
+
+    fn try_lock_control(&self) -> Option<RestartTaskControl> {
+        self.restart_tasks
+            .try_lock()
+            .ok()
+            .and_then(|map| map.get(&self.key).cloned())
+    }
+}
+
+impl Drop for RestartLease {
+    fn drop(&mut self) {
+        // Best-effort sync release; if the lock is contended we
+        // spawn an async cleanup task. The Drop must not block.
+        let _ = self.release_internal();
+    }
+}
+
+/// Type alias for the per-key restart-ownership map. Production
+/// code owns one of these in `LspService`.
+pub type RestartTaskMap = Arc<Mutex<HashMap<String, RestartTaskControl>>>;
 
 /// Persisted per-client descriptor that fully describes how to
 /// (re)create the client.
@@ -205,6 +342,52 @@ pub fn backoff_delay(attempt: u32, policy: &LspRestartPolicy) -> Duration {
     candidate.min(policy.max_backoff)
 }
 
+/// Try to acquire per-key restart ownership.
+///
+/// Returns [`RestartLeaseAcquisition::Acquired`] if the caller
+/// wins the race (the returned lease must be released or
+/// cancelled). Returns [`RestartLeaseAcquisition::AlreadyInProgress`]
+/// when another restart for `key` is already in flight. The
+/// manual-vs-automatic policy is documented on the enum.
+pub async fn acquire_restart_ownership(
+    restart_tasks: &RestartTaskMap,
+    restart_owner_counter: &AtomicU64,
+    key: &str,
+    trigger: RestartTrigger,
+) -> RestartLeaseAcquisition {
+    let mut map = restart_tasks.lock().await;
+    if let Some(existing) = map.get(key) {
+        return RestartLeaseAcquisition::AlreadyInProgress {
+            existing_trigger: existing.trigger,
+        };
+    }
+    let owner_id = restart_owner_counter.fetch_add(1, Ordering::Relaxed);
+    map.insert(
+        key.to_string(),
+        RestartTaskControl {
+            owner_id,
+            trigger,
+            token: CancellationToken::new(),
+        },
+    );
+    RestartLeaseAcquisition::Acquired(RestartLease {
+        key: key.to_string(),
+        owner_id,
+        released: false,
+        restart_tasks: restart_tasks.clone(),
+    })
+}
+
+/// Cancel any active restart ownership for `key`. Used by
+/// shutdown to ensure in-flight coordinators see the
+/// cancellation token before they publish.
+pub async fn cancel_restart_ownership(restart_tasks: &RestartTaskMap, key: &str) {
+    let mut map = restart_tasks.lock().await;
+    if let Some(ctrl) = map.remove(key) {
+        ctrl.token.cancel();
+    }
+}
+
 /// The surface a service must expose to drive the restart
 /// coordinator.
 ///
@@ -263,6 +446,20 @@ pub trait RestartShared {
     /// exists (the coordinator treats that as a no-op).
     async fn increment_restart_attempts(&self, key: &str) -> u32;
 
+    /// Atomically reserve one restart attempt under the
+    /// `restart_attempts` budget. Returns the new attempt number
+    /// on success. Returns `Err(LspError::LaunchFailed)` when the
+    /// budget is exhausted (`restart_attempts >= max_attempts`).
+    /// Implementations MUST NOT spawn a replacement process
+    /// until this returns `Ok`. The check + increment happen
+    /// under one lock so a rapid sequence of reservations never
+    /// exceeds the budget.
+    async fn reserve_restart_attempt(
+        &self,
+        key: &str,
+        max_attempts: u32,
+    ) -> Result<u32, LspError>;
+
     /// Reset the `restart_attempts` counter to `0` if the
     /// service has been healthy for at least
     /// `reset_after_healthy`. Returns the previous counter
@@ -307,32 +504,69 @@ pub trait RestartShared {
     /// replay step, on a client that is about to be replaced. No-op
     /// when no client is currently published for `key`.
     async fn mark_diagnostics_stale_for_key(&self, key: &str);
+
+    /// Execute the configured readiness policy against the
+    /// live client for `key`. Used by the restart coordinator
+    /// after a successful reinit + replay so the replacement
+    /// reaches the configured readiness state before being
+    /// marked `Ready`. Cold start and restart share this helper.
+    async fn wait_for_readiness(
+        &self,
+        key: &str,
+        policy: &LspReadinessPolicy,
+    ) -> ReadinessResult;
 }
 
 /// Run the restart coordinator. See the module docs for the
 /// full algorithm.
 ///
-/// `attempt` is the externally-computed attempt number
-/// (`operational_state.restart_attempts + 1` when the caller has
-/// already incremented the counter, or the un-incremented value
-/// for read-only intent). It is informational — the coordinator
-/// always runs an internal `1..=policy.max_attempts` loop for
-/// backoff calculation.
+/// ## Pass 11 — Attempt reservation
+///
+/// The coordinator now reserves each restart attempt through
+/// [`RestartShared::reserve_restart_attempt`], which atomically
+/// checks the budget and increments the counter under one lock.
+/// The caller no longer pre-increments `restart_attempts`; the
+/// helper enforces "exactly N replacement launches for N
+/// configured attempts". An exhausted reservation is rejected
+/// with [`LspError::LaunchFailed`] before any spawn occurs.
+///
+/// ## Cancellation
+///
+/// The optional `lease_token` is checked at every cancellation
+/// boundary (before backoff, during backoff sleep chunks,
+/// before spawn, immediately after spawn, before publication,
+/// before document replay, before readiness). When the token
+/// fires, the coordinator aborts with
+/// [`LspError::InitializationCancelled`].
+///
+/// ## Generation safety
 ///
 /// On entry the coordinator captures `expected_generation` from
 /// the shared `RestartShared` impl; if a newer generation is
-/// observed at any boundary (cancel-pending check, before-spawn
-/// gate, post-spawn re-check, or post-replay re-check) the
-/// coordinator aborts with `LspError::ServerRestarted` so a
-/// concurrent restart cannot stomp a fresher publication. On
-/// exhaustion the coordinator transitions the operational state
-/// to `Failed { reason }` and returns
-/// `LspError::LaunchFailed("restart attempts exhausted (max=N)")`.
+/// observed at any boundary the coordinator aborts with
+/// [`LspError::ServerRestarted`] so a concurrent restart cannot
+/// stomp a fresher publication.
 ///
-/// The caller is responsible for incrementing `restart_attempts`
-/// before invoking the coordinator. Resetting it on healthy
-/// operation is also the caller's responsibility (handled lazily
-/// when handling the next unexpected exit).
+/// ## Readiness
+///
+/// After a successful reinit, replay, and diagnostic install,
+/// the coordinator executes the descriptor's
+/// [`LspReadinessPolicy`] via the shared service. Only after
+/// the policy resolves (Ready, Degraded, or client missing)
+/// does the coordinator transition to `Ready` or `Degraded`
+/// and set `last_healthy_at`.
+///
+/// ## Diagnostics provenance
+///
+/// The coordinator installs retained diagnostics on the new
+/// client BEFORE the first `publishDiagnostics` from the new
+/// server overwrites them. The retained entries keep their
+/// original `server_generation` and `post_restart` metadata;
+/// the freshness classifier derives `Stale` from the
+/// `server_generation != current_client_generation` comparison,
+/// not from destructive metadata rewrite. The coordinator does
+/// NOT call `mark_diagnostics_stale_for_key` (Pass 9 — the
+/// rewrite would destroy provenance).
 ///
 /// The coordinator owns replacement generation selection.
 /// `next_generation_for_key` is called exactly once per restart
@@ -342,8 +576,9 @@ pub trait RestartShared {
 pub async fn restart_client_coordinator<S, F>(
     shared: &S,
     key: &str,
-    _trigger: RestartTrigger,
-    attempt: u32,
+    trigger: RestartTrigger,
+    lease_token: Option<CancellationToken>,
+    retained_diagnostics_input: Option<HashMap<String, DiagnosticCacheEntry>>,
     mut descriptor: LspClientDescriptor,
     mut reinit_fn: F,
 ) -> Result<(), LspError>
@@ -355,7 +590,7 @@ where
     // Manual triggers always run.
     let policy = descriptor.restart_policy.clone();
     let max_attempts = policy.max_attempts.max(1);
-    match _trigger {
+    match trigger {
         RestartTrigger::Automatic => {
             if matches!(policy.mode, LspRestartMode::Disabled) {
                 return Err(LspError::InitializationCancelled(
@@ -385,28 +620,34 @@ where
     }
 
     // Pass 6 — Transfer and Classify Diagnostics Across
-    // Restart. Capture the old client's diagnostic cache
-    // snapshot BEFORE invoking the reinit so the snapshot is
+    // Restart. The caller passes the snapshot via
+    // `retained_diagnostics_input`. When None (e.g. an
+    // automatic restart where the caller has not yet taken
+    // the snapshot), capture it here from the live client map.
+    // The snapshot is captured BEFORE the reinit so it is
     // taken from the not-yet-removed old client.
-    let retained_diagnostics = shared.snapshot_diagnostics_for_restart(key).await;
+    let retained_diagnostics: HashMap<String, DiagnosticCacheEntry> = match retained_diagnostics_input
+    {
+        Some(map) => map,
+        None => shared.snapshot_diagnostics_for_restart(key).await,
+    };
 
-    // Pass 5 — Shared Restart Budget. The coordinator no
-    // longer uses a per-invocation `1..=max_attempts` loop.
-    // The shared `restart_attempts` counter is the single
-    // bound: every actual replacement launch (whether the
-    // first or the nth) consumes one attempt. The counter
-    // resets only when the service has been healthy for
-    // `reset_after_healthy` (handled by the exit handler
-    // before scheduling this coordinator).
-    //
-    // The caller has already incremented `restart_attempts`
-    // for this invocation, so the `attempt` parameter is
-    // the value AFTER the increment. We use it as the
-    // starting effective_attempt and increment for any
-    // additional retries within this invocation.
-    let mut effective_attempt = if attempt == 0 { 1 } else { attempt };
-
+    // Pass 11 — Exact attempt budget. Each spawn reserves one
+    // attempt through `reserve_restart_attempt`. The check +
+    // increment happen under one lock so a rapid sequence of
+    // reservations cannot exceed `max_attempts`.
+    let mut effective_attempt: u32;
     loop {
+        // ── Cancellation: lease token (manual supersession,
+        // shutdown).
+        if let Some(token) = lease_token.as_ref() {
+            if token.is_cancelled() {
+                return Err(LspError::InitializationCancelled(
+                    "restart lease cancelled".to_string(),
+                ));
+            }
+        }
+
         // Cancel-pending: if the service is shutting down, abort.
         let phase = shared.service_phase().await;
         if phase != ServicePhase::Running {
@@ -426,9 +667,15 @@ where
             });
         }
 
+        // Reserve one attempt. The helper atomically checks
+        // `restart_attempts < max_attempts` and increments; an
+        // exhausted budget returns `Err` before any spawn.
+        let reserved = shared.reserve_restart_attempt(key, max_attempts).await?;
+        effective_attempt = reserved;
+
         // Backoff: sleep `backoff_delay(attempt - 1)` between
         // attempts. The first attempt has no backoff. The
-        // sleep is chunked so that cancellation is responsive.
+        // sleep is chunked so cancellation is responsive.
         if effective_attempt > 1 {
             let delay = backoff_delay(effective_attempt - 1, &policy);
             debug!(
@@ -438,8 +685,17 @@ where
                 delay_ms = delay.as_millis() as u64,
                 "restart backoff"
             );
-            if let Err(e) = cancellable_sleep(delay, shared).await {
+            if let Err(e) = cancellable_sleep(delay, shared, lease_token.as_ref()).await {
                 return Err(e);
+            }
+        }
+
+        // ── Cancellation: re-check after backoff.
+        if let Some(token) = lease_token.as_ref() {
+            if token.is_cancelled() {
+                return Err(LspError::InitializationCancelled(
+                    "restart lease cancelled".to_string(),
+                ));
             }
         }
 
@@ -470,35 +726,57 @@ where
         // Try the reinit.
         match reinit_fn(&descriptor, new_generation).await {
             Ok(client) => {
+                // ── Cancellation: re-check after spawn.
+                if let Some(token) = lease_token.as_ref() {
+                    if token.is_cancelled() {
+                        // Cancelled after spawn but before
+                        // publication. The new client is not
+                        // published; the caller (or the runtime
+                        // harness) is responsible for cleanup.
+                        warn!(
+                            key,
+                            generation = new_generation,
+                            "restart cancelled after spawn; replacement not published"
+                        );
+                        return Err(LspError::InitializationCancelled(
+                            "restart lease cancelled after spawn".to_string(),
+                        ));
+                    }
+                }
+
                 // Publish: store the new client in the live map.
                 {
                     let mut clients = shared.clients().write().await;
                     clients.insert(key.to_string(), client.clone());
                 }
 
-                // Pass 6 — Install the retained diagnostics
+                // Pass 9 — Install the retained diagnostics
                 // (captured from the old client BEFORE the
                 // reinit) on the new client. The
                 // `install_retained_diagnostics` method
                 // preserves the OLD `server_generation` and
-                // `post_restart` flags; only the new push
+                // `post_restart` flags; only a new
+                // `publishDiagnostics` from the new server
                 // overwrites them. The freshness classifier
                 // returns `Stale` because the retained entry's
                 // `server_generation` differs from
-                // `new_generation`.
+                // `new_generation` (Pass 9 — freshness is
+                // derived, not encoded by destructive
+                // rewrite).
                 if !retained_diagnostics.is_empty() {
                     client
                         .install_retained_diagnostics("restart", retained_diagnostics.clone())
                         .await;
                 }
 
-                // Mark retained diagnostics as stale. The helper
-                // rewrites every entry's `server_generation` to
-                // `new_generation - 1` and `post_restart = false`,
-                // so the freshness classifier returns `Stale` for
-                // any retained diagnostic until the new server
-                // emits its own first push.
-                shared.mark_diagnostics_stale_for_key(key).await;
+                // ── Cancellation: re-check before replay.
+                if let Some(token) = lease_token.as_ref() {
+                    if token.is_cancelled() {
+                        return Err(LspError::InitializationCancelled(
+                            "restart lease cancelled before document replay".to_string(),
+                        ));
+                    }
+                }
 
                 // Document replay: send didOpen for every snapshot
                 // and restore ownership. On failure this
@@ -512,6 +790,46 @@ where
                         "document replay failed; client will not be marked Ready"
                     );
                     return Err(replay_err);
+                }
+
+                // Pass 4 — Apply readiness policy. The replacement
+                // must reach the configured readiness condition
+                // before being marked Ready. Cold start and restart
+                // share the same readiness helper so behavior is
+                // consistent across the two paths.
+                let readiness = shared.wait_for_readiness(key, &descriptor.readiness_policy).await;
+                match readiness {
+                    ReadinessResult::Ready { elapsed } => {
+                        debug!(
+                            key,
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            "restart readiness reached"
+                        );
+                    }
+                    ReadinessResult::Degraded { reason, elapsed } => {
+                        warn!(
+                            key,
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            reason = %reason,
+                            "restart readiness degraded"
+                        );
+                        if let Err(e) = shared
+                            .transition_operational_state(
+                                key,
+                                LspOperationalState::Degraded { reason: reason.clone() },
+                            )
+                            .await
+                        {
+                            warn!(key, error = %e, "failed to transition to Degraded");
+                        }
+                        // Degraded does not set last_healthy_at —
+                        // a Degraded client does not earn a fresh
+                        // restart budget (Pass 3 — Ready counts,
+                        // Degraded does not).
+                        return Err(LspError::LaunchFailed(format!(
+                            "restart readiness degraded: {reason}"
+                        )));
+                    }
                 }
 
                 // Transition to Ready.
@@ -543,17 +861,13 @@ where
                     error = %e,
                     "restart attempt failed; will retry"
                 );
-                // Pass 5 — Shared Restart Budget. The
-                // per-invocation loop is bounded by
-                // `max_attempts`. We increment the shared
-                // counter so a future invocation sees the
-                // updated value (the cross-invocation
-                // bound).
+                // Pass 11 — attempt already consumed; the
+                // reservation helper incremented the counter.
+                // The loop continues until `reserve_restart_attempt`
+                // rejects an exhausted budget.
                 if effective_attempt >= max_attempts {
                     break;
                 }
-                let _ = shared.increment_restart_attempts(key).await;
-                effective_attempt = effective_attempt.saturating_add(1);
             }
         }
     }
@@ -579,9 +893,14 @@ where
 }
 
 /// Sleep `delay` in small chunks, aborting early if the service
-/// transitions to a non-running phase. Also aborts if a newer
-/// generation has been published during the wait.
-async fn cancellable_sleep<S: RestartShared>(delay: Duration, shared: &S) -> Result<(), LspError> {
+/// transitions to a non-running phase or the lease token is
+/// cancelled. Also aborts if a newer generation has been
+/// published during the wait.
+async fn cancellable_sleep<S: RestartShared>(
+    delay: Duration,
+    shared: &S,
+    lease_token: Option<&CancellationToken>,
+) -> Result<(), LspError> {
     // 50ms is a reasonable responsiveness trade-off.
     const CHUNK: Duration = Duration::from_millis(50);
     let mut remaining = delay;
@@ -591,6 +910,15 @@ async fn cancellable_sleep<S: RestartShared>(delay: Duration, shared: &S) -> Res
         remaining = remaining.saturating_sub(step);
         if remaining.is_zero() {
             break;
+        }
+        // Cancellation: lease token (manual supersession /
+        // shutdown).
+        if let Some(token) = lease_token {
+            if token.is_cancelled() {
+                return Err(LspError::InitializationCancelled(
+                    "restart lease cancelled during backoff".to_string(),
+                ));
+            }
         }
         let phase = shared.service_phase().await;
         if phase != ServicePhase::Running {
@@ -865,6 +1193,22 @@ mod tests {
             map.insert(key.to_string(), next);
             next
         }
+        async fn reserve_restart_attempt(
+            &self,
+            key: &str,
+            max_attempts: u32,
+        ) -> Result<u32, LspError> {
+            let mut map = self.attempt_map.lock().unwrap();
+            let current = map.get(key).copied().unwrap_or(0);
+            if current >= max_attempts {
+                return Err(LspError::LaunchFailed(format!(
+                    "restart attempts exhausted (max={max_attempts})"
+                )));
+            }
+            let next = current.saturating_add(1);
+            map.insert(key.to_string(), next);
+            Ok(next)
+        }
         async fn reset_restart_attempts_if_healthy(
             &self,
             _key: &str,
@@ -894,6 +1238,15 @@ mod tests {
             let new_gen = self.generation_for_key(key).await;
             let old_gen = new_gen.saturating_sub(1);
             *self.marked_stale.lock().unwrap() = Some((key.to_string(), old_gen));
+        }
+        async fn wait_for_readiness(
+            &self,
+            _key: &str,
+            _policy: &LspReadinessPolicy,
+        ) -> crate::service::ReadinessResult {
+            crate::service::ReadinessResult::Ready {
+                elapsed: Duration::ZERO,
+            }
         }
     }
 
@@ -997,7 +1350,8 @@ mod tests {
             &shared,
             "test:rust-analyzer",
             RestartTrigger::Automatic,
-            1,
+            None,
+            None,
             descriptor,
             AlwaysFailReinit::make(),
         )
@@ -1021,7 +1375,8 @@ mod tests {
             &shared,
             "test:rust-analyzer",
             RestartTrigger::Automatic,
-            1,
+            None,
+            None,
             descriptor,
             AlwaysFailReinit::make(),
         )
@@ -1037,7 +1392,8 @@ mod tests {
             &shared,
             "test:rust-analyzer",
             RestartTrigger::Automatic,
-            1,
+            None,
+            None,
             descriptor,
             SucceedAfterReinit::make(Arc::new(shared.clone()), vec![3]),
         )
@@ -1077,7 +1433,8 @@ mod tests {
             &*shared,
             "test:rust-analyzer",
             RestartTrigger::Automatic,
-            1,
+            None,
+            None,
             descriptor,
             StaleGenReinit::make(shared.clone(), Some(2)),
         )
@@ -1113,7 +1470,8 @@ mod tests {
             &shared,
             "test:rust-analyzer",
             RestartTrigger::Automatic,
-            1,
+            None,
+            None,
             descriptor,
             SucceedAfterReinit::make(Arc::new(shared.clone()), vec![1]),
         )
@@ -1142,7 +1500,8 @@ mod tests {
             &shared,
             "test:rust-analyzer",
             RestartTrigger::Automatic,
-            1,
+            None,
+            None,
             descriptor.clone(),
             AlwaysFailReinit::make(),
         )
@@ -1155,7 +1514,8 @@ mod tests {
             &shared,
             "test:rust-analyzer",
             RestartTrigger::Manual,
-            1,
+            None,
+            None,
             descriptor,
             AlwaysFailReinit::make(),
         )
@@ -1196,7 +1556,8 @@ mod tests {
             &shared,
             "test:rust-analyzer",
             RestartTrigger::Automatic,
-            1,
+            None,
+            None,
             descriptor,
             SucceedAfterReinit::make(Arc::new(shared.clone()), vec![1]),
         )
@@ -1258,7 +1619,8 @@ mod tests {
             &shared,
             "test:rust-analyzer",
             RestartTrigger::Automatic,
-            1,
+            None,
+            None,
             descriptor,
             SucceedAfterReinit::make(Arc::new(shared.clone()), vec![1]),
         )
@@ -1277,15 +1639,17 @@ mod tests {
         assert_eq!(owners.get(&uri.to_string()).unwrap(), "test:rust-analyzer");
     }
 
-    /// When the coordinator publishes a new client it must call
-    /// `mark_diagnostics_stale_for_key` BEFORE the document
-    /// replay step. The MockShared records the previous
-    /// generation (current - 1) on every call; we assert that
-    /// the recorded generation is `expected - 1` (i.e. the old
-    /// generation), which is exactly the value the production
-    /// `LspService` would set on every cache entry.
+    /// Pass 9 — Retained diagnostic provenance. The coordinator
+    /// installs retained diagnostics with their ORIGINAL
+    /// `server_generation` and `post_restart` metadata. The
+    /// freshness classifier derives `Stale` from the generation
+    /// mismatch (`entry.server_generation !=
+    /// current_client_generation`), not from a destructive
+    /// rewrite. This test asserts the coordinator does NOT call
+    /// `mark_diagnostics_stale_for_key` after a successful
+    /// restart.
     #[tokio::test]
-    async fn mark_diagnostics_stale_for_key_sets_old_generation() {
+    async fn coordinator_preserves_retained_diagnostic_metadata() {
         let shared = MockShared::new();
         // Seed a document so replay has something to do.
         let uri = Url::parse("file:///tmp/m.rs").unwrap();
@@ -1295,14 +1659,17 @@ mod tests {
             .await;
 
         // The coordinator will increment the generation from 0
-        // (initial) to 1 on success, so the recorded old
-        // generation should be 0 (1 - 1 = 0).
+        // (initial) to 1 on success. After Pass 9 the
+        // coordinator does NOT call
+        // `mark_diagnostics_stale_for_key`, so the recorded
+        // stale-marker must remain `None`.
         let descriptor = dummy_descriptor("test:rust-analyzer");
         let result = restart_client_coordinator(
             &shared,
             "test:rust-analyzer",
             RestartTrigger::Automatic,
-            1,
+            None,
+            None,
             descriptor,
             SucceedAfterReinit::make(Arc::new(shared.clone()), vec![1]),
         )
@@ -1311,12 +1678,229 @@ mod tests {
 
         let recorded = shared.marked_stale.lock().unwrap().clone();
         assert_eq!(
-            recorded,
-            Some(("test:rust-analyzer".to_string(), 0)),
-            "mark_diagnostics_stale_for_key should record (key, old_generation=0) after a single restart"
+            recorded, None,
+            "mark_diagnostics_stale_for_key must NOT be called by the coordinator (Pass 9 — provenance is preserved by install_retained_diagnostics)"
         );
 
         // New generation is 1.
         assert_eq!(shared.generation_for_key("test:rust-analyzer").await, 1);
+    }
+
+    // ── Pass 1 — Per-key restart ownership serialization ─────────
+
+    /// First acquisition wins; second sees `AlreadyInProgress`.
+    #[tokio::test]
+    async fn acquire_restart_ownership_serializes_concurrent_callers() {
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first = acquire_restart_ownership(&map, &counter, "k1", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+        let second = acquire_restart_ownership(&map, &counter, "k1", RestartTrigger::Automatic).await;
+        match second {
+            RestartLeaseAcquisition::AlreadyInProgress { existing_trigger } => {
+                assert_eq!(existing_trigger, RestartTrigger::Automatic);
+            }
+            other => panic!("expected AlreadyInProgress, got {other:?}"),
+        }
+
+        // Different key can still acquire.
+        let third = acquire_restart_ownership(&map, &counter, "k2", RestartTrigger::Automatic).await;
+        assert!(matches!(third, RestartLeaseAcquisition::Acquired(_)));
+
+        // Release the first; second acquire succeeds now.
+        let _ = first_lease.release();
+        let fourth = acquire_restart_ownership(&map, &counter, "k1", RestartTrigger::Automatic).await;
+        assert!(matches!(fourth, RestartLeaseAcquisition::Acquired(_)));
+    }
+
+    /// Owner cleanup must not remove a newer owner's entry.
+    #[tokio::test]
+    async fn restart_lease_cleanup_is_owner_safe() {
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        // Older owner acquires.
+        let older = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let older_lease = match older {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            _ => unreachable!(),
+        };
+        // Simulate newer owner: forcibly remove old entry and insert new one.
+        {
+            let mut m = map.lock().await;
+            m.remove("k");
+            let new_id = counter.fetch_add(1, Ordering::Relaxed);
+            m.insert(
+                "k".to_string(),
+                RestartTaskControl {
+                    owner_id: new_id,
+                    trigger: RestartTrigger::Automatic,
+                    token: CancellationToken::new(),
+                },
+            );
+        }
+        // Older owner's release must NOT remove the new entry.
+        let _ = older_lease.release();
+        let after = map.lock().await;
+        assert!(after.contains_key("k"), "newer owner entry must remain");
+    }
+
+    /// Lease token cancellation propagates to the in-progress
+    /// coordinator. We start a long-backoff coordinator and
+    /// cancel the lease token; the coordinator must observe the
+    /// cancellation and abort with `InitializationCancelled`.
+    #[tokio::test]
+    async fn lease_token_cancellation_aborts_coordinator() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(500);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(500);
+
+        let token = CancellationToken::new();
+        let token_for_coordinator = token.clone();
+        // Spawn the coordinator; it will loop forever (AlwaysFail)
+        // with 500ms backoffs. Cancel after a short delay.
+        let coordinator = tokio::spawn(async move {
+            restart_client_coordinator(
+                &shared,
+                "test:rust-analyzer",
+                RestartTrigger::Automatic,
+                Some(token_for_coordinator),
+                None,
+                descriptor,
+                AlwaysFailReinit::make(),
+            )
+            .await
+        });
+        // Cancel after 80ms — well before the first backoff completes.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        token.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), coordinator)
+            .await
+            .expect("coordinator did not abort within timeout")
+            .expect("coordinator task panicked");
+        assert!(
+            matches!(result, Err(LspError::InitializationCancelled(_))),
+            "expected InitializationCancelled, got {result:?}"
+        );
+    }
+
+    /// Pass 3 — exact attempt budget. With `max_attempts = 3`,
+    /// the coordinator MUST spawn exactly 3 reinit calls before
+    /// returning `LaunchFailed`. The mock increments a counter
+    /// each time the reinit closure is invoked.
+    #[tokio::test]
+    async fn max_three_allows_exactly_three_replacement_spawns() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 3;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        let reinit = move |_desc: &LspClientDescriptor, _gen: u64| {
+            let counter_clone = counter_clone.clone();
+            Box::pin(async move {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                Err(LspError::LaunchFailed("always fail".to_string()))
+            }) as BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        };
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            None,
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+        assert!(matches!(result, Err(LspError::LaunchFailed(_))));
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            3,
+            "expected exactly 3 reinit invocations (one per reserved attempt)"
+        );
+    }
+
+    /// Pass 3 — pre-seeded counter at the budget MUST reject the
+    /// next reservation before any spawn.
+    #[tokio::test]
+    async fn attempt_at_budget_is_rejected_before_spawn() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 3;
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        let reinit = move |_desc: &LspClientDescriptor, _gen: u64| {
+            let counter_clone = counter_clone.clone();
+            Box::pin(async move {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                Err(LspError::LaunchFailed("always fail".to_string()))
+            }) as BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        };
+        // Seed the counter at 3 (budget exhausted).
+        for _ in 0..3 {
+            let _ = shared.reserve_restart_attempt("test:rust-analyzer", 3).await;
+        }
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            None,
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+        assert!(matches!(result, Err(LspError::LaunchFailed(_))));
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            0,
+            "no reinit invocations should have occurred (budget was pre-exhausted)"
+        );
+    }
+
+    /// Pass 3 — failed initialization counts as one replacement
+    /// launch. With `max_attempts = 2`, the reinit fails twice
+    /// (counter == 2) and the coordinator returns LaunchFailed.
+    #[tokio::test]
+    async fn failed_initialization_consumes_attempt() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 2;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        let reinit = move |_desc: &LspClientDescriptor, _gen: u64| {
+            let counter_clone = counter_clone.clone();
+            Box::pin(async move {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                Err(LspError::LaunchFailed("always fail".to_string()))
+            }) as BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        };
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            None,
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+        assert!(matches!(result, Err(LspError::LaunchFailed(_))));
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            2,
+            "each failed initialization must consume one attempt"
+        );
+        assert_eq!(shared.restart_attempts("test:rust-analyzer").await, 2);
     }
 }

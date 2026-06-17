@@ -796,6 +796,12 @@ async fn run_smoke_suite(
     }
 
     // 10. References (declaration -> call sites).
+    //
+    // Pass 6 — Use the shared `evaluate_references_check` helper
+    // so the rule (zero locations → `RequiredIfAdvertised`
+    // failure) is consistent across harness and unit tests. The
+    // Rust fixture passes if at least one reference is found;
+    // the Python cross-file check requires two distinct URIs.
     if caps.supports_references {
         let start = std::time::Instant::now();
         let result = tokio::time::timeout(
@@ -804,22 +810,18 @@ async fn run_smoke_suite(
         )
         .await;
         let ms = start.elapsed().as_millis() as u64;
-        match result {
+        let check = match result {
             Ok(Ok(refs)) => {
-                let count = refs.len();
-                checks.push(SmokeCheck::pass(
-                    format!("references ({count} found)"),
-                    CompatibilityRequirement::RequiredIfAdvertised,
-                    ms,
-                ));
+                compatibility::evaluate_references_check(caps.supports_references, &refs, 1)
             }
-            Ok(Err(e)) => checks.push(SmokeCheck::fail(
+            Ok(Err(e)) => SmokeCheck::fail(
                 "references",
                 CompatibilityRequirement::RequiredIfAdvertised,
                 format!("{e}"),
                 ms,
-            )),
-            Err(_elapsed) => checks.push(SmokeCheck::fail(
+            )
+            .to_compatibility_check(),
+            Err(_elapsed) => SmokeCheck::fail(
                 "references",
                 CompatibilityRequirement::RequiredIfAdvertised,
                 stage_timeout_error(
@@ -830,12 +832,35 @@ async fn run_smoke_suite(
                     &stderr_tail,
                 ),
                 ms,
-            )),
+            )
+            .to_compatibility_check(),
+        };
+        let detail = check.detail.clone();
+        let status = check.status.clone();
+        let _ = check; // consumed below
+        let pass = matches!(
+            status,
+            CompatibilityCheckStatus::Passing | CompatibilityCheckStatus::PassingWithKnownLimits
+        );
+        if pass {
+            checks.push(SmokeCheck::pass(
+                format!("references ({})", detail.unwrap_or_default()),
+                CompatibilityRequirement::RequiredIfAdvertised,
+                ms,
+            ));
+        } else {
+            checks.push(SmokeCheck::fail(
+                "references",
+                CompatibilityRequirement::RequiredIfAdvertised,
+                detail.unwrap_or_else(|| "0 references found".to_string()),
+                ms,
+            ));
         }
 
         // 10b. Cross-file references — only when the fixture has a
         // secondary source AND the server advertised references. The
-        // assertion requires at least 2 distinct URIs.
+        // Python cross-file assertion requires at least 2 distinct
+        // URIs; the Rust fixture does not have a secondary source.
         if let Some(secondary) = fixture.secondary_source.as_ref() {
             let start = std::time::Instant::now();
             let secondary_uri = url::Url::from_file_path(secondary).unwrap();
@@ -847,16 +872,20 @@ async fn run_smoke_suite(
             let ms = start.elapsed().as_millis() as u64;
             match result {
                 Ok(Ok(refs)) => {
-                    let mut uris: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
-                    for r in &refs {
-                        uris.insert(r.uri.to_string());
-                    }
-                    let count = refs.len();
-                    let file_count = uris.len();
-                    if file_count >= 2 {
+                    let check = compatibility::evaluate_references_check_with_min(
+                        caps.supports_references,
+                        &refs,
+                        1,
+                        2,
+                    );
+                    let pass = matches!(
+                        check.status,
+                        CompatibilityCheckStatus::Passing
+                            | CompatibilityCheckStatus::PassingWithKnownLimits
+                    );
+                    if pass {
                         checks.push(SmokeCheck::pass(
-                            format!("cross-file references ({count} refs in {file_count} files)"),
+                            format!("cross-file references ({})", check.detail.unwrap_or_default()),
                             CompatibilityRequirement::RequiredIfAdvertised,
                             ms,
                         ));
@@ -864,9 +893,7 @@ async fn run_smoke_suite(
                         checks.push(SmokeCheck::fail(
                             "cross-file references",
                             CompatibilityRequirement::RequiredIfAdvertised,
-                            format!(
-                                "expected >= 2 distinct URIs, found {file_count} (refs: {count})"
-                            ),
+                            check.detail.unwrap_or_else(|| "<no detail>".to_string()),
                             ms,
                         ));
                     }

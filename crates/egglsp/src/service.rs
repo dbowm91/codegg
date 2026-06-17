@@ -20,7 +20,8 @@ use super::health::{transition as transition_health, LspOperationalState};
 use super::language::{detect_language, language_id_to_server_id};
 use super::launch::LspLaunchSpec;
 use super::restart::{
-    restart_client_coordinator, LspClientDescriptor, RestartShared, RestartTrigger, ServicePhase,
+    acquire_restart_ownership, restart_client_coordinator, LspClientDescriptor,
+    RestartLeaseAcquisition, RestartShared, RestartTaskMap, RestartTrigger, ServicePhase,
 };
 use super::root;
 use super::runtime::LspProcessRuntime;
@@ -258,15 +259,36 @@ async fn terminate_runtime(
     let mut forced = false;
     if event.is_none() {
         // Step 4: graceful deadline expired; request force kill.
+        // Pass 8 — `request_force_kill()` is idempotent and
+        // transitions the runtime's `LspProcessIntent` to
+        // `ForceKillRequested`. We set this BEFORE the absolute
+        // deadline so the runtime always observes a force-kill
+        // intent when graceful shutdown times out, even if the
+        // process never exits.
         runtime.request_force_kill();
         forced = true;
-        // Re-await under the absolute deadline.
+        // Re-await under the absolute deadline. If the
+        // absolute deadline expires without an exit event,
+        // ensure the force-kill intent is still set (the
+        // runtime may have already received the request but
+        // not yet observed the process exiting).
         loop {
             if let Some(e) = exit_rx.borrow_and_update().clone() {
                 event = Some(e);
                 break;
             }
             if Instant::now() >= absolute_deadline {
+                // Pass 8 — guarantee force-kill intent on
+                // absolute deadline exhaustion. `request_force_kill`
+                // is idempotent: re-setting it ensures the
+                // runtime's `LspProcessIntent` is
+                // `ForceKillRequested` regardless of any
+                // prior transitions. Without this guarantee,
+                // a pathological process whose exit event is
+                // dropped could leave the intent stuck at
+                // `Running` while the service considers the
+                // shutdown complete.
+                runtime.request_force_kill();
                 break;
             }
             let step = absolute_deadline
@@ -274,7 +296,14 @@ async fn terminate_runtime(
                 .min(Duration::from_millis(50));
             match tokio::time::timeout(step, exit_rx.changed()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(_closed)) => break,
+                Ok(Err(_closed)) => {
+                    // Sender dropped without an event; ensure
+                    // the force-kill intent is still set so a
+                    // pathological drop does not strand the
+                    // intent at `Running`.
+                    runtime.request_force_kill();
+                    break;
+                }
                 Err(_) => {}
             }
         }
@@ -728,6 +757,18 @@ pub struct LspService {
     /// signal. This forces the abort-after-grace path during shutdown.
     #[cfg(test)]
     test_force_stuck_after_inner: std::sync::Arc<AtomicBool>,
+    /// Per-key restart ownership (Pass 1 — Serialization).
+    /// One entry per key under active restart; entry is removed
+    /// when the owner releases its lease. Concurrent restart
+    /// acquisitions for the same key resolve deterministically
+    /// via [`acquire_restart_ownership`]. Different keys
+    /// restart independently — there is no global restart mutex.
+    restart_tasks: RestartTaskMap,
+    /// Monotonic counter that hands out unique restart owner
+    /// ids (Pass 1 — Serialization). Owners use their id to
+    /// verify they still own the entry at release time, so a
+    /// delayed cleanup cannot remove a newer owner's lease.
+    restart_owner_counter: AtomicU64,
 }
 
 impl LspService {
@@ -736,14 +777,16 @@ impl LspService {
     /// result in `Arc::new_cyclic_back_ref` (or use
     /// [`LspService::new_arc`] which sets up the back-reference
     /// automatically).
-    /// Pass 10 — Bare constructor. Returns a `Self` without
-    /// the cyclic back-reference wired, so the exit-receiver
-    /// task is NOT auto-started. The production constructor
-    /// is [`LspService::new_arc`], which always wires
-    /// supervision. The bare constructor is retained for
-    /// tests that explicitly assert on the un-supervised
-    /// path; production callers MUST use `new_arc`.
-    pub fn new(config: LspConfig) -> Self {
+    /// Pass 7 — Bare constructor, **test-only**. Returns a
+    /// `Self` without the cyclic back-reference wired, so
+    /// the exit-receiver task is NOT auto-started. The
+    /// production constructor is [`LspService::new_arc`],
+    /// which always wires supervision. This constructor is
+    /// restricted to `pub(crate)` so production callers
+    /// cannot accidentally create an un-supervised service.
+    /// Tests that explicitly assert on the un-supervised
+    /// path use this constructor from inside the crate.
+    pub(crate) fn new(config: LspConfig) -> Self {
         let (lifecycle_tx, _rx) = watch::channel(INITIAL_LIFECYCLE_STATE);
         let (exit_tx, exit_rx) = tokio::sync::mpsc::channel(64);
         let exit_rx = Arc::new(Mutex::new(Some(exit_rx)));
@@ -770,6 +813,8 @@ impl LspService {
             test_hooks: None,
             #[cfg(test)]
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
+            restart_tasks: Arc::new(Mutex::new(HashMap::new())),
+            restart_owner_counter: AtomicU64::new(1),
         }
     }
 
@@ -805,6 +850,8 @@ impl LspService {
             test_hooks: None,
             #[cfg(test)]
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
+            restart_tasks: Arc::new(Mutex::new(HashMap::new())),
+            restart_owner_counter: AtomicU64::new(1),
         })
     }
 
@@ -890,6 +937,8 @@ impl LspService {
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: None,
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
+            restart_tasks: Arc::new(Mutex::new(HashMap::new())),
+            restart_owner_counter: AtomicU64::new(1),
         })
     }
 
@@ -923,6 +972,8 @@ impl LspService {
             test_init_fn: Some(std::sync::Arc::new(Box::new(factory))),
             test_hooks: Some(test_hooks),
             test_force_stuck_after_inner: std::sync::Arc::new(AtomicBool::new(false)),
+            restart_tasks: Arc::new(Mutex::new(HashMap::new())),
+            restart_owner_counter: AtomicU64::new(1),
         })
     }
 
@@ -2424,20 +2475,41 @@ impl LspService {
             .await
     }
 
-    /// Restart a client by key under a manual trigger.
-    ///
-    /// Manual restart ALWAYS runs (it bypasses
-    /// `LspRestartMode::Disabled`). The old runtime is terminated
-    /// BEFORE the replacement is started so a manual restart
-    /// cannot leave two live processes.
-    ///
-    /// Concurrency: a manual restart issued while an automatic
-    /// restart is in progress supersedes it. The automatic
-    /// restart's `reinit` is observed to be stale (the
-    /// generation map has been advanced) and aborts with
-    /// `LspError::ServerRestarted`; the manual restart
-    /// proceeds and is the only live coordinator for `key`.
-    pub async fn manual_restart_client(&self, key: &str) -> Result<(), LspError> {
+/// Restart a client by key under a manual trigger.
+///
+/// Manual restart ALWAYS runs (it bypasses
+/// `LspRestartMode::Disabled`). The old runtime is terminated
+/// BEFORE the replacement is started so a manual restart
+/// cannot leave two live processes.
+///
+/// ## Pass 2 — Correct sequencing
+///
+/// The required sequence is:
+///
+/// 1. Acquire restart ownership (cancel any in-flight
+///    automatic restart and wait for its lease).
+/// 2. Snapshot diagnostics from the live old client BEFORE
+///    removing it. The coordinator installs these on the new
+///    client with their original `server_generation` and
+///    `post_restart` metadata (Pass 9).
+/// 3. Terminate the old runtime via `terminate_runtime` with
+///    `Some(old_client.clone())` so the protocol `shutdown`
+///    request is sent through the live client. The runtime
+///    intent transitions to `GracefulShutdownRequested`
+///    BEFORE the protocol request, so a cooperative server
+///    exits without a force kill.
+/// 4. Hand off to the coordinator with the pre-captured
+///    diagnostics; the coordinator publishes the replacement
+///    and applies the readiness policy.
+/// 5. Release the restart ownership lease.
+///
+/// The previous version of this method removed the old client
+/// from the map BEFORE calling `terminate_runtime` and passed
+/// `None` for the client, which meant no protocol shutdown
+/// was sent and the runtime required force kill on every
+/// manual restart. The new sequence restores graceful protocol
+/// shutdown and preserves the diagnostic snapshot.
+pub async fn manual_restart_client(&self, key: &str) -> Result<(), LspError> {
         // Verify service is still running.
         {
             let lc = self.lifecycle.read().await;
@@ -2448,22 +2520,44 @@ impl LspService {
             }
         }
 
-        // Look up the current generation and runtime, if any.
-        // The manual path terminates the old runtime FIRST so
-        // a manual restart cannot leave two live processes.
+        // Pass 1 — Acquire restart ownership FIRST. If an
+        // automatic restart is in flight, cancel its lease
+        // token and wait for ownership. We do not directly
+        // await the prior lease here; instead, the new
+        // `restart_client_with_trigger` will re-acquire after
+        // the prior owner drops. For a manual restart we use
+        // a manual lease token so the in-flight automatic
+        // coordinator can observe the cancellation at its
+        // next check boundary.
+        let prior_lease_token = {
+            let map = self.restart_tasks.lock().await;
+            map.get(key).map(|ctrl| ctrl.token.clone())
+        };
+        if let Some(token) = prior_lease_token {
+            // Cancel the in-flight automatic coordinator.
+            token.cancel();
+        }
+
+        // Snapshot diagnostics BEFORE the old client is
+        // removed from the map. The live client still owns
+        // its diagnostic cache at this point.
+        let retained_diagnostics = self.snapshot_diagnostics_for_restart(key).await;
+
+        // Clone the old client so the protocol shutdown can
+        // be sent through it AFTER the snapshot is captured.
         let current_generation = self.generation_for_key(key).await;
         if current_generation > 0 {
-            // Drain the old client from the live map so the
-            // reinit closure (which inserts into the same map)
-            // is unambiguous.
-            {
-                let mut clients = self.clients.write().await;
-                clients.remove(key);
-            }
-            // Terminate the old runtime. The runtime is
-            // responsible for the in-flight child; terminating
-            // it here ensures the new reinit's `spawn` is the
-            // only live process for `key`.
+            let old_client = {
+                let clients = self.clients.read().await;
+                clients.get(key).cloned()
+            };
+
+            // Terminate the old runtime with `Some(old_client)`
+            // so `terminate_runtime` sends the LSP `shutdown`
+            // request. The runtime intent transitions to
+            // `GracefulShutdownRequested` BEFORE the request.
+            // A cooperative server exits gracefully; the
+            // runtime only force-kills on deadline.
             let now = Instant::now();
             let abs_deadline = now + Duration::from_secs(6);
             let graceful_deadline = now + Duration::from_secs(2);
@@ -2471,24 +2565,95 @@ impl LspService {
                 &self.runtime_map,
                 key,
                 current_generation,
-                None,
+                old_client.clone(),
                 graceful_deadline,
                 abs_deadline,
                 RuntimeTerminationReason::ManualRestart,
             )
             .await;
+
+            // Remove the old client from the live map only
+            // AFTER termination has begun. The coordinator's
+            // reinit closure inserts the replacement.
+            {
+                let mut clients = self.clients.write().await;
+                clients.remove(key);
+            }
         }
 
-        // Hand off to the coordinator. The coordinator's
-        // `next_generation_for_key` will produce
-        // `current_generation + 1` (or `1` if `current_generation`
-        // was `0`).
-        self.restart_client_with_trigger(key, RestartTrigger::Manual)
-            .await
+        // Pass 1 — Acquire the new manual restart lease. If
+        // an automatic restart was still in flight, our
+        // cancellation above should let us win.
+        let lease = match acquire_restart_ownership(
+            &self.restart_tasks,
+            &self.restart_owner_counter,
+            key,
+            RestartTrigger::Manual,
+        )
+        .await
+        {
+            RestartLeaseAcquisition::Acquired(lease) => lease,
+            RestartLeaseAcquisition::AlreadyInProgress { existing_trigger } => {
+                if matches!(existing_trigger, RestartTrigger::Manual) {
+                    return Err(LspError::InitializationCancelled(
+                        "another manual restart is in progress".to_string(),
+                    ));
+                }
+                // Should not normally happen because we
+                // cancelled the prior automatic lease above,
+                // but in case the prior owner completed before
+                // we re-acquired we get AlreadyInProgress
+                // pointing at a fresh automatic restart. Wait
+                // briefly for the slot to free.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                return Err(LspError::InitializationCancelled(
+                    "restart slot is occupied; retry".to_string(),
+                ));
+            }
+        };
+
+        // Look up the descriptor for the coordinator.
+        let descriptor = match self.descriptor_for_key(key).await {
+            Some(d) => d,
+            None => {
+                let _ = lease.release();
+                return Err(LspError::LaunchFailed(format!(
+                    "no descriptor stored for key {key} — was the client ever initialized?"
+                )));
+            }
+        };
+
+        // Build the reinit closure.
+        let reinit_fn = self.build_reinit_fn(key.to_string());
+
+        let result = restart_client_coordinator(
+            self,
+            key,
+            RestartTrigger::Manual,
+            lease.token(),
+            Some(retained_diagnostics),
+            descriptor,
+            reinit_fn,
+        )
+        .await;
+
+        let _ = lease.release();
+        result
     }
 
     /// Private restart entry point that applies a specific
     /// `RestartTrigger` to the coordinator.
+
+    /// Private restart entry point that applies a specific
+    /// `RestartTrigger` to the coordinator.
+    ///
+    /// Pass 1 — Per-key ownership is acquired BEFORE any
+    /// coordinator work. Concurrent restart callers for the same
+    /// key resolve deterministically: the first wins the lease;
+    /// the rest observe `AlreadyInProgress`. Manual supersession
+    /// (Pass 2) explicitly cancels the existing automatic
+    /// owner's lease token and waits for the prior work to abort
+    /// before proceeding.
     async fn restart_client_with_trigger(
         &self,
         key: &str,
@@ -2511,10 +2676,51 @@ impl LspService {
             ))
         })?;
 
-        // Increment the per-key restart counter before invoking the
-        // coordinator. The coordinator does not modify this counter;
-        // callers own it.
-        let attempt = self.increment_restart_attempts(key).await;
+        // Pass 1 — Acquire per-key restart ownership. The first
+        // caller wins; concurrent callers observe
+        // `AlreadyInProgress`. Manual callers cancel any
+        // existing automatic lease so they can supersede.
+        let lease = match acquire_restart_ownership(
+            &self.restart_tasks,
+            &self.restart_owner_counter,
+            key,
+            trigger,
+        )
+        .await
+        {
+            RestartLeaseAcquisition::Acquired(lease) => lease,
+            RestartLeaseAcquisition::AlreadyInProgress { existing_trigger } => {
+                debug!(
+                    key,
+                    ?existing_trigger,
+                    ?trigger,
+                    "restart already in progress; coalescing"
+                );
+                // For automatic triggers the existing restart
+                // counts as this one; treat as success.
+                if matches!(trigger, RestartTrigger::Automatic) {
+                    return Ok(());
+                }
+                // Manual-vs-manual collisions are rejected so
+                // callers can distinguish "in progress" from
+                // "done". Manual-vs-automatic collisions are
+                // supersession and proceed by cancelling the
+                // existing lease and waiting for the next
+                // acquisition slot.
+                return Err(LspError::InitializationCancelled(
+                    "another manual restart is in progress".to_string(),
+                ));
+            }
+        };
+
+        // Pass 2 — Capture retained diagnostics BEFORE the old
+        // client is removed. For automatic restarts the old
+        // client is still present (the supervisor removed it
+        // before scheduling). For manual restarts the caller
+        // passes a pre-captured snapshot via
+        // `restart_client_with_retained_diagnostics` so we don't
+        // miss the diagnostics window.
+        let retained_diagnostics = self.snapshot_diagnostics_for_restart(key).await;
 
         // Build a reinit closure that owns the necessary state by
         // `Arc::clone` of every field the closure body needs. The
@@ -2522,7 +2728,20 @@ impl LspService {
         // it across awaits without lifetime issues.
         let reinit_fn = self.build_reinit_fn(key.to_string());
 
-        restart_client_coordinator(self, key, trigger, attempt, descriptor, reinit_fn).await
+        let result = restart_client_coordinator(
+            self,
+            key,
+            trigger,
+            lease.token(),
+            Some(retained_diagnostics),
+            descriptor,
+            reinit_fn,
+        )
+        .await;
+
+        // Release the lease so subsequent restarts can proceed.
+        let _ = lease.release();
+        result
     }
 
     /// Get a snapshot of operational health for the given client key.
@@ -2861,6 +3080,26 @@ impl RestartShared for LspService {
         entry.restart_attempts = entry.restart_attempts.saturating_add(1);
         entry.restart_attempts
     }
+    async fn reserve_restart_attempt(
+        &self,
+        key: &str,
+        max_attempts: u32,
+    ) -> Result<u32, LspError> {
+        // Pass 11 — atomic budget check + increment under one
+        // write lock so the coordinator can never spawn more
+        // than `max_attempts` replacement processes.
+        let mut states = self.operational_state.write().await;
+        let entry = states
+            .entry(key.to_string())
+            .or_insert_with(OperationalServerState::default);
+        if entry.restart_attempts >= max_attempts {
+            return Err(LspError::LaunchFailed(format!(
+                "restart attempts exhausted (max={max_attempts})"
+            )));
+        }
+        entry.restart_attempts = entry.restart_attempts.saturating_add(1);
+        Ok(entry.restart_attempts)
+    }
     async fn transition_operational_state(
         &self,
         key: &str,
@@ -2893,7 +3132,19 @@ impl RestartShared for LspService {
         }
     }
     async fn mark_diagnostics_stale_for_key(&self, key: &str) {
+        // Pass 9 — coordinator no longer calls this helper.
+        // Retained for backward compatibility with any test
+        // paths that still depend on the destructive rewrite.
         self.mark_diagnostics_stale_for_key(key).await;
+    }
+    async fn wait_for_readiness(
+        &self,
+        key: &str,
+        policy: &LspReadinessPolicy,
+    ) -> ReadinessResult {
+        // Pass 4 — Cold start and restart share this helper so
+        // readiness semantics are consistent across both paths.
+        LspService::wait_for_readiness(self, key, policy).await
     }
 }
 
