@@ -1380,7 +1380,7 @@ The smoke tests (`crates/egglsp/tests/real_server_smoke.rs`) exercise rust-analy
 
 ## Phase 3 Corrective Pass — Status
 
-The Phase 3 supervision and restart lifecycle is **complete for Tier 1 servers**; broader language/server compatibility remains future work. The 10-pass final closure turns the structural scaffolding (compatibility profiles, health state machine, runtime owner, restart coordinator, document replay) into an operationally trustworthy lifecycle:
+The Phase 3 supervision and restart lifecycle is **complete for Tier 1 servers**; broader language/server compatibility remains future work. The 11-pass final closure turns the structural scaffolding (compatibility profiles, health state machine, runtime owner, restart coordinator, document replay) into an operationally trustworthy lifecycle:
 
 After the 11-pass closure, a follow-up **10-pass restart ownership / supersession / outcome** sequence (`plans/lsp_phase3_restart_ownership_and_cleanup_final_gap.md`) added explicit restart ownership primitives, live outcome semantics for degraded readiness, and user restart-policy override plumbing. That work is documented in a dedicated section below ("Restart ownership and live outcome semantics (10-pass)").
 
@@ -1398,7 +1398,7 @@ After the 11-pass closure, a follow-up **10-pass restart ownership / supersessio
 
 ### Restart ownership and live outcome semantics (10-pass)
 
-The 10-pass follow-up (`plans/lsp_phase3_restart_ownership_and_cleanup_final_gap.md`) made restart attempts observable and bounded, so two simultaneous restart requests cannot silently corrupt the live client. The numbering below is independent of the 11-pass closure above.
+The 11-pass follow-up (`plans/lsp_phase3_restart_ownership_and_cleanup_final_gap.md`) made restart attempts observable and bounded, so two simultaneous restart requests cannot silently corrupt the live client. The numbering below is independent of the 11-pass closure above.
 
 - **Pass 1 — Restart completion channel**: `RestartCompletion` is a `tokio::sync::watch` enum (`Running` / `Finished`) that is the only completion signal for an in-flight coordinator. `RestartOwnerWaiter { completion: RestartCompletion }` is what `cancel_restart_ownership` returns. `acquire_restart_ownership` returns `RestartLease { token }`; the coordinator checks the token at every cancellation boundary (pre-backoff, mid-sleep, post-spawn, pre-publish, pre-replay). Cancellation of the lease token is *intent* — only `Finished` on the watch channel allows re-acquisition.
 - **Pass 2 — Manual supersession with bounded wait**: `LspService::manual_restart_client(key)` acquires the manual lease first, then waits under `MANUAL_SUPERSESSION_OWNER_TIMEOUT = 3s` for any in-flight automatic-restart owner to complete via its `RestartCompletion::Finished` signal. On timeout, the manual caller aborts without touching the live client; on observed completion, the manual caller proceeds and is the only live coordinator for `key`.
@@ -1413,6 +1413,29 @@ The 10-pass follow-up (`plans/lsp_phase3_restart_ownership_and_cleanup_final_gap
 - **Pass 2 — Manual pre-wait generation capture**: `LspService::capture_manual_supersession_snapshot` is taken BEFORE the lease cancellation so the post-wait comparison can detect a generation advance that occurred during the wait. The previous helper read the generation AFTER the wait and almost always saw the same value as the post-wait check (a no-op comparison). Covered by `manual_revalidates_generation_after_wait` (unit) and the integration race test.
 - **Pass 3 — Publication boundary cancellation policy**: once the replacement is installed in the live clients map, lease-token cancellation is non-aborting — the coordinator continues to a coherent `Ready` or `Degraded` outcome. Pre-publication cancellation still reaps the unpublished client/runtime (Pass 4 invariant). Covered by `post_publication_cancellation_returns_live_outcome` (unit).
 - **Pass 10 — Documentation sync**: `architecture/lsp.md`, `AGENTS.md`, and this skill guide are all updated to reflect the 10-pass ownership / supersession / outcome semantics. The final invariant checklist in `architecture/lsp.md` is extended with eight new items (restart completion channel, manual supersession bounded wait, runtime install generation rejection, unpublished replacement cleanup, unified restart entry, degraded-as-live-outcome, empty-diagnostics readiness, user restart policy round-trip, race test coverage).
+- **Pass 11 — Final closure: remove-before-signal handshake**: `RestartLease::release` is now `async fn` and the per-key `RestartTaskControl` is **removed** from the per-key map before `RestartCompletion::Finished` is broadcast on the watch channel. This inverts the previous "send Finished, then remove" ordering — `Finished` is now the *consequence* of slot removal, not the trigger. Lock contention cannot produce a false `InitializationCancelled` result after a successful owner completion, because the broadcast is what guarantees the slot is free.
+
+  The final handshake sequence is:
+
+  1. Caller cancels the lease token (or the coordinator observes one of its cancellation boundaries).
+  2. The owner unwinds and reaches the `release` point.
+  3. The owner locks `restart_tasks`, **removes** the owner-ID-matched control entry, and releases the lock.
+  4. **Only then** does the owner broadcast `RestartCompletion::Finished`.
+  5. The waiter observes `Finished`, returns `Ok`, and immediately proceeds to acquire a new lease.
+  6. A new owner acquires the now-free slot without racing the old owner.
+
+  `RestartOwnerWaiter::wait` no longer needs a separate `verify_slot_free` post-check — the completion signal is the slot-release signal. If removal was skipped (entry absent or owned by a newer owner) the broadcast is suppressed: the sender is dropped, the waiter observes channel closure, and the closure is treated as an invariant failure rather than a success.
+
+  `Drop` of `RestartLease` is a safety fallback for panic / early-return paths. It marks the lease as released, spawns an async cleanup task, and runs the same remove-before-signal ordering inside the spawned task. Production ownership paths MUST `await` `RestartLease::release` directly; `Drop` exists only to guarantee the slot is not leaked if the caller forgets.
+
+  Four new adversarial unit tests in `crates/egglsp/src/restart.rs` lock the invariant down:
+
+  - `finished_is_not_observable_until_slot_is_removed` — establishes a watch subscriber before the owner releases, then asserts the subscriber does not see `Finished` until the per-key map entry is gone.
+  - `drop_fallback_removes_before_finished` — drops the lease without calling `release`, asserts the cleanup task removes the slot before signaling.
+  - `old_owner_release_does_not_signal_for_new_owner` — simulates a newer owner acquiring the slot; the old owner's `release` observes the generation mismatch, suppresses the broadcast, and the new owner is never falsely told the slot is free.
+  - `completion_channel_close_without_finished_is_error` — drops the sender without sending; the waiter observes `RecvError` and treats it as an invariant failure (not a silent `Ok`).
+
+  Phase 3 supervision and restart lifecycle is complete for Tier 1 servers; broader language/server compatibility remains future work.
 
 ### Earlier Phase 3 Passes (still applicable)
 

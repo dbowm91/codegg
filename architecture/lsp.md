@@ -1984,6 +1984,30 @@ The Pass 1-10 sequence added explicit ownership and outcome semantics on top of 
 
 **Pass 10 — Documentation sync.** This section. The architecture, skill guide, README, and AGENTS.md are all updated to reflect Pass 1-10 semantics.
 
+**Pass 11 (Phase 3 final closure) — remove-before-signal handshake.** `RestartLease::release` is now `async fn` and the per-key slot is removed from the per-key map **before** `RestartCompletion::Finished` is broadcast on the watch channel. This inverts the previous "send Finished, then remove" ordering: `Finished` is now the *consequence* of slot removal, not the trigger. Lock contention cannot produce a false `InitializationCancelled` result after a successful owner completion, because the broadcast is what guarantees the slot is free.
+
+The final handshake sequence is:
+
+1. Caller cancels the lease token (or the coordinator observes one of its cancellation boundaries).
+2. The owner unwinds its critical sections and reaches the `release` point.
+3. The owner locks `restart_tasks`, **removes** the owner-ID-matched `RestartTaskControl` from the per-key map, and releases the lock.
+4. **Only then** does the owner broadcast `RestartCompletion::Finished` on the watch channel.
+5. The waiter (e.g. a manual supersession caller) observes `Finished`, returns `Ok`, and immediately proceeds to acquire a new lease.
+6. A new owner acquires the now-free slot without racing the old owner.
+
+**Waiter simplification.** Because removal happens *before* the broadcast, `RestartOwnerWaiter::wait` no longer needs a separate `verify_slot_free` post-check after observing `Finished`. The completion signal is the slot-release signal — by the time the waiter wakes up, the slot is provably free. If removal was skipped (entry absent, or owned by a newer owner) the broadcast is deliberately suppressed: the sender is dropped, any waiter observes channel closure, and the closure is treated as an invariant failure rather than a success.
+
+**`Drop` safety fallback.** `Drop` of `RestartLease` is a safety net for panic / early-return paths. It marks the lease as released, spawns an async cleanup task, and runs the same remove-before-signal ordering inside the spawned task. Production ownership paths MUST `await` `RestartLease::release` directly; `Drop` exists only to guarantee the slot is not leaked if the caller forgets. Because `Drop` cannot move `self` out of `&mut self`, the fallback clones the `key`, `owner_id`, `restart_tasks` `Arc`, and `completion_tx` sender, and lets the original `self` continue to drop naturally.
+
+**Adversarial unit tests.** Four new unit tests in `crates/egglsp/src/restart.rs` lock the invariant down:
+
+- `finished_is_not_observable_until_slot_is_removed` — establishes a watch subscriber before the owner releases, then asserts the subscriber does not see `Finished` until the per-key map entry is gone.
+- `drop_fallback_removes_before_finished` — drops the lease without calling `release`, asserts the cleanup task removes the slot before signaling.
+- `old_owner_release_does_not_signal_for_new_owner` — simulates a newer owner acquiring the slot; the old owner's `release` observes the generation mismatch, suppresses the broadcast, and the new owner is never falsely told the slot is free.
+- `completion_channel_close_without_finished_is_error` — drops the sender without sending; the waiter observes `RecvError` and treats it as an invariant failure (not a silent `Ok`).
+
+**Status.** Phase 3 supervision and restart lifecycle is complete for Tier 1 servers; broader language/server compatibility remains future work.
+
 ### Final Invariant Checklist
 
 - [x] Old monitor cannot remove new runtime.
@@ -2019,6 +2043,16 @@ The Pass 1-10 sequence added explicit ownership and outcome semantics on top of 
 - [x] Race tests cover manual supersession under in-flight automatic owner.
 - [x] Race tests cover back-to-back manual restarts (no deadlock).
 - [x] Documentation accurately states Phase 3 status.
+- [x] Slot removal occurs before `Finished`.
+- [x] Waiter cannot complete while old owner entry remains installed.
+- [x] Waiter success permits immediate new acquisition.
+- [x] Drop fallback preserves remove-before-signal ordering.
+- [x] Delayed old-owner cleanup cannot remove a newer owner.
+- [x] Channel closure without `Finished` remains an error.
+- [x] All explicit release call sites await async release.
+- [x] Ten serial and five parallel race runs pass.
+- [x] No fake-server child process leaks.
+- [x] Documentation describes the final ordering correctly.
 
 ## See Also
 
