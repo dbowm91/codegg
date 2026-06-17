@@ -87,7 +87,7 @@ pub use restart::{
     backoff_delay, restart_client_coordinator, LspClientDescriptor, RestartShared, RestartTrigger,
     ServicePhase,
 };
-pub use runtime::{LspProcessIntent, LspProcessRuntime};
+pub use runtime::{spawn_process_runtime, LspProcessIntent, LspProcessRuntime};
 pub use supervisor::{LspProcessExitEvent, StderrRingBuffer};
 
 #[cfg(feature = "lsp-test-support")]

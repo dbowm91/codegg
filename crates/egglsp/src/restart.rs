@@ -454,11 +454,7 @@ pub trait RestartShared {
     /// until this returns `Ok`. The check + increment happen
     /// under one lock so a rapid sequence of reservations never
     /// exceeds the budget.
-    async fn reserve_restart_attempt(
-        &self,
-        key: &str,
-        max_attempts: u32,
-    ) -> Result<u32, LspError>;
+    async fn reserve_restart_attempt(&self, key: &str, max_attempts: u32) -> Result<u32, LspError>;
 
     /// Reset the `restart_attempts` counter to `0` if the
     /// service has been healthy for at least
@@ -510,11 +506,7 @@ pub trait RestartShared {
     /// after a successful reinit + replay so the replacement
     /// reaches the configured readiness state before being
     /// marked `Ready`. Cold start and restart share this helper.
-    async fn wait_for_readiness(
-        &self,
-        key: &str,
-        policy: &LspReadinessPolicy,
-    ) -> ReadinessResult;
+    async fn wait_for_readiness(&self, key: &str, policy: &LspReadinessPolicy) -> ReadinessResult;
 }
 
 /// Run the restart coordinator. See the module docs for the
@@ -626,11 +618,11 @@ where
     // the snapshot), capture it here from the live client map.
     // The snapshot is captured BEFORE the reinit so it is
     // taken from the not-yet-removed old client.
-    let retained_diagnostics: HashMap<String, DiagnosticCacheEntry> = match retained_diagnostics_input
-    {
-        Some(map) => map,
-        None => shared.snapshot_diagnostics_for_restart(key).await,
-    };
+    let retained_diagnostics: HashMap<String, DiagnosticCacheEntry> =
+        match retained_diagnostics_input {
+            Some(map) => map,
+            None => shared.snapshot_diagnostics_for_restart(key).await,
+        };
 
     // Pass 11 — Exact attempt budget. Each spawn reserves one
     // attempt through `reserve_restart_attempt`. The check +
@@ -797,7 +789,9 @@ where
                 // before being marked Ready. Cold start and restart
                 // share the same readiness helper so behavior is
                 // consistent across the two paths.
-                let readiness = shared.wait_for_readiness(key, &descriptor.readiness_policy).await;
+                let readiness = shared
+                    .wait_for_readiness(key, &descriptor.readiness_policy)
+                    .await;
                 match readiness {
                     ReadinessResult::Ready { elapsed } => {
                         debug!(
@@ -816,7 +810,9 @@ where
                         if let Err(e) = shared
                             .transition_operational_state(
                                 key,
-                                LspOperationalState::Degraded { reason: reason.clone() },
+                                LspOperationalState::Degraded {
+                                    reason: reason.clone(),
+                                },
                             )
                             .await
                         {
@@ -1694,12 +1690,14 @@ mod tests {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
 
-        let first = acquire_restart_ownership(&map, &counter, "k1", RestartTrigger::Automatic).await;
+        let first =
+            acquire_restart_ownership(&map, &counter, "k1", RestartTrigger::Automatic).await;
         let first_lease = match first {
             RestartLeaseAcquisition::Acquired(l) => l,
             other => panic!("expected Acquired, got {other:?}"),
         };
-        let second = acquire_restart_ownership(&map, &counter, "k1", RestartTrigger::Automatic).await;
+        let second =
+            acquire_restart_ownership(&map, &counter, "k1", RestartTrigger::Automatic).await;
         match second {
             RestartLeaseAcquisition::AlreadyInProgress { existing_trigger } => {
                 assert_eq!(existing_trigger, RestartTrigger::Automatic);
@@ -1708,12 +1706,14 @@ mod tests {
         }
 
         // Different key can still acquire.
-        let third = acquire_restart_ownership(&map, &counter, "k2", RestartTrigger::Automatic).await;
+        let third =
+            acquire_restart_ownership(&map, &counter, "k2", RestartTrigger::Automatic).await;
         assert!(matches!(third, RestartLeaseAcquisition::Acquired(_)));
 
         // Release the first; second acquire succeeds now.
         let _ = first_lease.release();
-        let fourth = acquire_restart_ownership(&map, &counter, "k1", RestartTrigger::Automatic).await;
+        let fourth =
+            acquire_restart_ownership(&map, &counter, "k1", RestartTrigger::Automatic).await;
         assert!(matches!(fourth, RestartLeaseAcquisition::Acquired(_)));
     }
 
@@ -1846,7 +1846,9 @@ mod tests {
         };
         // Seed the counter at 3 (budget exhausted).
         for _ in 0..3 {
-            let _ = shared.reserve_restart_attempt("test:rust-analyzer", 3).await;
+            let _ = shared
+                .reserve_restart_attempt("test:rust-analyzer", 3)
+                .await;
         }
         let result = restart_client_coordinator(
             &shared,

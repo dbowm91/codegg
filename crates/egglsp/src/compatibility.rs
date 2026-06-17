@@ -289,8 +289,7 @@ pub fn evaluate_references_check_with_min(
         };
     }
     let count = locations.len();
-    let mut distinct_uris: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut distinct_uris: std::collections::HashSet<String> = std::collections::HashSet::new();
     for loc in locations {
         distinct_uris.insert(loc.uri.to_string());
     }
@@ -413,7 +412,11 @@ mod tests {
             check.requirement,
             CompatibilityRequirement::RequiredIfAdvertised
         );
-        assert!(check.detail.as_deref().unwrap_or("").contains("0 reference"));
+        assert!(check
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("0 reference"));
     }
 
     #[test]
@@ -421,23 +424,21 @@ mod tests {
         let refs = vec![loc("file:///tmp/main.rs")];
         let check = evaluate_references_check(true, &refs, 1);
         assert_eq!(check.status, CompatibilityCheckStatus::Passing);
-        assert!(check.detail.as_deref().unwrap_or("").contains("1 reference"));
+        assert!(check
+            .detail
+            .as_deref()
+            .unwrap_or("")
+            .contains("1 reference"));
     }
 
     #[test]
     fn python_cross_file_references_still_require_two_uris() {
         // Two refs but same URI — must fail (only 1 distinct URI).
-        let refs = vec![
-            loc("file:///tmp/a.py"),
-            loc("file:///tmp/a.py"),
-        ];
+        let refs = vec![loc("file:///tmp/a.py"), loc("file:///tmp/a.py")];
         let check = evaluate_references_check_with_min(true, &refs, 2, 2);
         assert_eq!(check.status, CompatibilityCheckStatus::Failing);
         // Two refs across two distinct URIs — must pass.
-        let refs2 = vec![
-            loc("file:///tmp/a.py"),
-            loc("file:///tmp/b.py"),
-        ];
+        let refs2 = vec![loc("file:///tmp/a.py"), loc("file:///tmp/b.py")];
         let check2 = evaluate_references_check_with_min(true, &refs2, 2, 2);
         assert_eq!(check2.status, CompatibilityCheckStatus::Passing);
     }

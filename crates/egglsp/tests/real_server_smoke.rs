@@ -6,8 +6,10 @@
 //! server binaries are not available.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
+use egglsp::runtime::spawn_process_runtime;
 use lsp_types::Position;
 use tempfile::TempDir;
 
@@ -414,6 +416,117 @@ async fn wait_for_diagnostics(
     }
 }
 
+// ── Runtime-Backed Harness ─────────────────────────────────────────
+
+/// Outcome of a bounded harness shutdown.
+#[derive(Debug)]
+pub enum HarnessShutdownResult {
+    /// Server exited gracefully within the deadline.
+    Graceful {
+        event: egglsp::LspProcessExitEvent,
+        stderr_tail: Vec<String>,
+    },
+    /// Graceful deadline expired; server was force-killed.
+    ForceKilled {
+        event: egglsp::LspProcessExitEvent,
+        stderr_tail: Vec<String>,
+    },
+    /// Absolute deadline expired; force-kill was attempted.
+    TimeoutExpired { stderr_tail: Vec<String> },
+}
+
+/// Owns an [`LspClient`] and its companion [`LspProcessRuntime`]
+/// for the duration of a smoke test.
+///
+/// After construction the client no longer owns the child process
+/// or stderr handle — both are managed by the runtime. This allows
+/// the test to capture real stderr output in exit events and to
+/// exercise production readiness primitives (`wait_for_progress_end`,
+/// `wait_for_first_diagnostics`).
+pub struct RealServerHarness {
+    client: Arc<LspClient>,
+    runtime: egglsp::LspProcessRuntime,
+}
+
+impl RealServerHarness {
+    /// Take the child and stderr from the provided `Arc<LspClient>` and
+    /// wire them into a fresh `LspProcessRuntime` (generation 1).
+    async fn new(client: Arc<LspClient>) -> Option<Self> {
+        let server_id = client.server_id.clone();
+        let root = client.root.clone();
+
+        let child = match client.take_child_for_runtime().await {
+            Some(c) => c,
+            None => return None,
+        };
+        let stderr = match client.take_stderr_for_runtime().await {
+            Some(s) => s,
+            None => return None,
+        };
+
+        let (runtime, _join) = spawn_process_runtime(server_id, root, 1, child, stderr);
+
+        Some(Self { client, runtime })
+    }
+
+    /// Execute the full bounded shutdown sequence:
+    ///
+    /// 1. `runtime.request_graceful_shutdown()` — sets intent so the
+    ///    exit classifier marks a clean exit as `expected`.
+    /// 2. `client.request_protocol_shutdown()` — sends LSP `shutdown`
+    ///    request + `exit` notification.
+    /// 3. `runtime.wait_for_exit()` under `graceful_timeout`.
+    /// 4. Force kill and re-wait on `absolute_timeout` exhaustion.
+    async fn shutdown_and_collect(
+        &self,
+        graceful_timeout: Duration,
+        absolute_timeout: Duration,
+    ) -> HarnessShutdownResult {
+        self.runtime.request_graceful_shutdown();
+
+        let proto_shutdown = self.client.request_protocol_shutdown();
+
+        let graceful_deadline = tokio::time::Instant::now() + graceful_timeout;
+        let graceful_result =
+            tokio::time::timeout_at(graceful_deadline, self.runtime.wait_for_exit()).await;
+
+        let stderr_tail = self.runtime.stderr_tail_capped(20);
+
+        match graceful_result {
+            Ok(Some(event)) => {
+                let _ = proto_shutdown.await;
+                HarnessShutdownResult::Graceful { event, stderr_tail }
+            }
+            Ok(None) => {
+                let _ = proto_shutdown.await;
+                HarnessShutdownResult::TimeoutExpired { stderr_tail }
+            }
+            Err(_) => {
+                self.runtime.request_force_kill();
+
+                let force_kill_deadline = tokio::time::Instant::now() + absolute_timeout;
+                let force_result =
+                    tokio::time::timeout_at(force_kill_deadline, self.runtime.wait_for_exit())
+                        .await;
+
+                match force_result {
+                    Ok(Some(event)) => HarnessShutdownResult::ForceKilled { event, stderr_tail },
+                    Ok(None) => HarnessShutdownResult::TimeoutExpired { stderr_tail },
+                    Err(_) => HarnessShutdownResult::TimeoutExpired { stderr_tail },
+                }
+            }
+        }
+    }
+
+    pub fn client(&self) -> &Arc<LspClient> {
+        &self.client
+    }
+
+    pub fn runtime(&self) -> &egglsp::LspProcessRuntime {
+        &self.runtime
+    }
+}
+
 // ── Smoke Test Runner ──────────────────────────────────────────────
 
 /// Run the common smoke test suite against a live server.
@@ -604,31 +717,41 @@ async fn run_smoke_suite(
         )),
     }
 
-    // 6. Readiness wait — diagnostics- or progress-driven per profile.
+    // 6. Readiness wait — use production readiness primitives.
     let readiness_start = std::time::Instant::now();
+    let readiness_passed;
     match &profile.readiness_policy {
         egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout { timeout } => {
-            let _ = wait_for_diagnostics(
-                &client,
-                &fixture.diagnostics_file,
-                std::cmp::min(*timeout, READINESS_TIMEOUT),
-            )
-            .await;
+            let effective = std::cmp::min(*timeout, READINESS_TIMEOUT);
+            readiness_passed = client.wait_for_first_diagnostics(effective).await;
         }
         egglsp::compatibility::LspReadinessPolicy::WaitForProgressEndOrTimeout { timeout } => {
-            tokio::time::sleep(std::cmp::min(*timeout, READINESS_TIMEOUT)).await;
+            let effective = std::cmp::min(*timeout, READINESS_TIMEOUT);
+            readiness_passed = client.wait_for_progress_end(effective).await;
         }
         egglsp::compatibility::LspReadinessPolicy::WarmupDelay { duration } => {
             tokio::time::sleep(*duration).await;
+            readiness_passed = true;
         }
-        egglsp::compatibility::LspReadinessPolicy::InitializedIsReady => {}
-    }
+        egglsp::compatibility::LspReadinessPolicy::InitializedIsReady => {
+            readiness_passed = true;
+        }
+    };
     let readiness_ms = readiness_start.elapsed().as_millis() as u64;
-    checks.push(SmokeCheck::pass(
-        "readiness_wait",
-        CompatibilityRequirement::Required,
-        readiness_ms,
-    ));
+    if readiness_passed {
+        checks.push(SmokeCheck::pass(
+            "readiness_wait",
+            CompatibilityRequirement::Required,
+            readiness_ms,
+        ));
+    } else {
+        checks.push(SmokeCheck::fail(
+            "readiness_wait",
+            CompatibilityRequirement::Required,
+            "readiness signal not observed within timeout",
+            readiness_ms,
+        ));
+    }
 
     // 7. Diagnostics intent check.
     let diag_start = std::time::Instant::now();
@@ -885,7 +1008,10 @@ async fn run_smoke_suite(
                     );
                     if pass {
                         checks.push(SmokeCheck::pass(
-                            format!("cross-file references ({})", check.detail.unwrap_or_default()),
+                            format!(
+                                "cross-file references ({})",
+                                check.detail.unwrap_or_default()
+                            ),
                             CompatibilityRequirement::RequiredIfAdvertised,
                             ms,
                         ));

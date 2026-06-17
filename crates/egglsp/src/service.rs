@@ -2475,41 +2475,41 @@ impl LspService {
             .await
     }
 
-/// Restart a client by key under a manual trigger.
-///
-/// Manual restart ALWAYS runs (it bypasses
-/// `LspRestartMode::Disabled`). The old runtime is terminated
-/// BEFORE the replacement is started so a manual restart
-/// cannot leave two live processes.
-///
-/// ## Pass 2 — Correct sequencing
-///
-/// The required sequence is:
-///
-/// 1. Acquire restart ownership (cancel any in-flight
-///    automatic restart and wait for its lease).
-/// 2. Snapshot diagnostics from the live old client BEFORE
-///    removing it. The coordinator installs these on the new
-///    client with their original `server_generation` and
-///    `post_restart` metadata (Pass 9).
-/// 3. Terminate the old runtime via `terminate_runtime` with
-///    `Some(old_client.clone())` so the protocol `shutdown`
-///    request is sent through the live client. The runtime
-///    intent transitions to `GracefulShutdownRequested`
-///    BEFORE the protocol request, so a cooperative server
-///    exits without a force kill.
-/// 4. Hand off to the coordinator with the pre-captured
-///    diagnostics; the coordinator publishes the replacement
-///    and applies the readiness policy.
-/// 5. Release the restart ownership lease.
-///
-/// The previous version of this method removed the old client
-/// from the map BEFORE calling `terminate_runtime` and passed
-/// `None` for the client, which meant no protocol shutdown
-/// was sent and the runtime required force kill on every
-/// manual restart. The new sequence restores graceful protocol
-/// shutdown and preserves the diagnostic snapshot.
-pub async fn manual_restart_client(&self, key: &str) -> Result<(), LspError> {
+    /// Restart a client by key under a manual trigger.
+    ///
+    /// Manual restart ALWAYS runs (it bypasses
+    /// `LspRestartMode::Disabled`). The old runtime is terminated
+    /// BEFORE the replacement is started so a manual restart
+    /// cannot leave two live processes.
+    ///
+    /// ## Pass 2 — Correct sequencing
+    ///
+    /// The required sequence is:
+    ///
+    /// 1. Acquire restart ownership (cancel any in-flight
+    ///    automatic restart and wait for its lease).
+    /// 2. Snapshot diagnostics from the live old client BEFORE
+    ///    removing it. The coordinator installs these on the new
+    ///    client with their original `server_generation` and
+    ///    `post_restart` metadata (Pass 9).
+    /// 3. Terminate the old runtime via `terminate_runtime` with
+    ///    `Some(old_client.clone())` so the protocol `shutdown`
+    ///    request is sent through the live client. The runtime
+    ///    intent transitions to `GracefulShutdownRequested`
+    ///    BEFORE the protocol request, so a cooperative server
+    ///    exits without a force kill.
+    /// 4. Hand off to the coordinator with the pre-captured
+    ///    diagnostics; the coordinator publishes the replacement
+    ///    and applies the readiness policy.
+    /// 5. Release the restart ownership lease.
+    ///
+    /// The previous version of this method removed the old client
+    /// from the map BEFORE calling `terminate_runtime` and passed
+    /// `None` for the client, which meant no protocol shutdown
+    /// was sent and the runtime required force kill on every
+    /// manual restart. The new sequence restores graceful protocol
+    /// shutdown and preserves the diagnostic snapshot.
+    pub async fn manual_restart_client(&self, key: &str) -> Result<(), LspError> {
         // Verify service is still running.
         {
             let lc = self.lifecycle.read().await;
@@ -3080,11 +3080,7 @@ impl RestartShared for LspService {
         entry.restart_attempts = entry.restart_attempts.saturating_add(1);
         entry.restart_attempts
     }
-    async fn reserve_restart_attempt(
-        &self,
-        key: &str,
-        max_attempts: u32,
-    ) -> Result<u32, LspError> {
+    async fn reserve_restart_attempt(&self, key: &str, max_attempts: u32) -> Result<u32, LspError> {
         // Pass 11 — atomic budget check + increment under one
         // write lock so the coordinator can never spawn more
         // than `max_attempts` replacement processes.
@@ -3137,11 +3133,7 @@ impl RestartShared for LspService {
         // paths that still depend on the destructive rewrite.
         self.mark_diagnostics_stale_for_key(key).await;
     }
-    async fn wait_for_readiness(
-        &self,
-        key: &str,
-        policy: &LspReadinessPolicy,
-    ) -> ReadinessResult {
+    async fn wait_for_readiness(&self, key: &str, policy: &LspReadinessPolicy) -> ReadinessResult {
         // Pass 4 — Cold start and restart share this helper so
         // readiness semantics are consistent across both paths.
         LspService::wait_for_readiness(self, key, policy).await
