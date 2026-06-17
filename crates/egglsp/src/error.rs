@@ -77,6 +77,9 @@ pub enum LspError {
 
     #[error("server degraded: {0}")]
     ServerDegraded(String),
+
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 impl LspError {
