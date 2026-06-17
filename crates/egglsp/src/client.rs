@@ -1574,6 +1574,24 @@ impl LspClient {
         guard.take()
     }
 
+    /// Pass 9 — Take the child handle from the client. Used by
+    /// real-server smoke tests to spawn a `LspProcessRuntime`
+    /// so the compatibility report can capture stderr output.
+    /// Returns `None` for test stubs.
+    pub async fn take_child_for_runtime(&self) -> Option<tokio::process::Child> {
+        let mut guard = self.child.lock().await;
+        guard.take()
+    }
+
+    /// Pass 9 — Take the stderr handle from the client. Used
+    /// by real-server smoke tests to wire the stderr ring
+    /// buffer into a `LspProcessRuntime`. Returns `None` for
+    /// test stubs.
+    pub async fn take_stderr_for_runtime(&self) -> Option<tokio::process::ChildStderr> {
+        let mut guard = self.stderr.lock().await;
+        guard.take()
+    }
+
     #[allow(dead_code)]
     const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -2258,6 +2276,49 @@ mod tests {
     use super::*;
     use crate::LspDiagnosticFreshness;
     use std::time::Duration;
+
+    /// Pass 9 — `take_child_for_runtime` and
+    /// `take_stderr_for_runtime` are idempotent and
+    /// returnable. The first call returns the handle; the
+    /// second returns `None` (already taken). The real-server
+    /// smoke harness relies on this to safely attempt the
+    /// take only once and then proceed.
+    #[tokio::test]
+    async fn take_child_and_stderr_are_idempotent() {
+        let dir = std::env::temp_dir().join("egglsp_pass9_take");
+        let _ = std::fs::create_dir_all(&dir);
+        let shutdown_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = LspClient::test_stub(
+            "pass9",
+            &dir,
+            shutdown_count,
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        // test_stub spawns a real `sleep 1000` process so the
+        // child handle is real (not None).
+        let child = client.take_child_for_runtime().await;
+        assert!(
+            child.is_some(),
+            "test_stub spawns a real child that can be taken"
+        );
+        // Second take returns None (idempotent).
+        let child_again = client.take_child_for_runtime().await;
+        assert!(
+            child_again.is_none(),
+            "second take_child_for_runtime must return None"
+        );
+
+        // Stderr is consumed by the legacy drain in test_stub,
+        // so the take returns None.
+        let stderr = client.take_stderr_for_runtime().await;
+        assert!(
+            stderr.is_none(),
+            "test_stub consumes stderr via the legacy drain"
+        );
+    }
 
     #[test]
     fn classify_response_message() {
