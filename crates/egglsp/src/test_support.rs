@@ -14,9 +14,15 @@ struct Scenario {
     exit: ExitConfig,
     #[serde(default = "default_strict")]
     strict: bool,
+    #[serde(default = "default_emit_progress")]
+    pub emit_progress: bool,
 }
 
 fn default_strict() -> bool {
+    true
+}
+
+fn default_emit_progress() -> bool {
     true
 }
 
@@ -1532,6 +1538,42 @@ pub fn run_or_exit() {
                             exit_code = code;
                             break;
                         }
+                    }
+                    if method == "initialized" && scenario.emit_progress {
+                        let token = "init-progress".to_string();
+                        let begin = JsonRpcMessage {
+                            jsonrpc: Some("2.0".to_string()),
+                            method: Some("$/progress".to_string()),
+                            params: Some(
+                                serde_json::json!({ "token": &token, "value": { "kind": "begin", "title": "Indexing" } }),
+                            ),
+                            id: None,
+                            result: None,
+                            error: None,
+                        };
+                        let end = JsonRpcMessage {
+                            jsonrpc: Some("2.0".to_string()),
+                            method: Some("$/progress".to_string()),
+                            params: Some(
+                                serde_json::json!({ "token": &token, "value": { "kind": "end" } }),
+                            ),
+                            id: None,
+                            result: None,
+                            error: None,
+                        };
+                        let diag = JsonRpcMessage {
+                            jsonrpc: Some("2.0".to_string()),
+                            method: Some("textDocument/publishDiagnostics".to_string()),
+                            params: Some(
+                                serde_json::json!({ "uri": "file:///dummy", "diagnostics": [] }),
+                            ),
+                            id: None,
+                            result: None,
+                            error: None,
+                        };
+                        let _ = writer.write_message(&begin);
+                        let _ = writer.write_message(&end);
+                        let _ = writer.write_message(&diag);
                     }
                 } else if scenario.strict {
                     eprintln!("[fake-lsp] EOF waiting for notification {method} in strict mode");

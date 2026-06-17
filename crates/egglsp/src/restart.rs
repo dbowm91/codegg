@@ -1,10 +1,8 @@
 //! Restart coordination for LSP clients.
 //!
-//! Pass 4 of the LSP Phase 3 corrective plan consolidates the two
-//! divergent restart implementations (`LspService::restart_client`
-//! and `LspServiceClone::restart_client`) into a single coordinator
-//! that owns the retry, backoff, exhaustion, cancellation, document
-//! replay, and ownership-restoration flow.
+//! Consolidates the retry, backoff, exhaustion, cancellation,
+//! document replay, and ownership-restoration flow into a single
+//! coordinator driven by [`restart_client_coordinator`].
 //!
 //! ## Design
 //!

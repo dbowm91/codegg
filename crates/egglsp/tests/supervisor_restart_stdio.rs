@@ -275,6 +275,7 @@ fn make_service_config(
             env: Some(env),
             initialization: None,
             workspace_configuration: None,
+            restart: None,
         },
     );
 

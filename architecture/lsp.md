@@ -281,6 +281,10 @@ pub async fn restart_client_coordinator<S, F>(...) -> Result<(), LspError>
 
 `backoff_delay(attempt, policy)` is `min(policy.initial_backoff * 2^(attempt-1), policy.max_backoff)`. The 1-indexed `attempt` means attempt 1 is the first try, which still gets `initial_backoff` per the policy-driven algorithm. `reset_after_healthy` lazily resets `restart_attempts` to 0 when the next unexpected exit observes a healthy client.
 
+#### User-configurable restart
+
+User-configurable restart overrides profile defaults via the `[lsp.<server>.restart]` TOML section. The `LspRestartPolicyConfig` struct (in `crates/egglsp/src/config.rs`, mirrored in `crates/codegg-config/src/schema.rs`) has optional fields: `mode`, `max_attempts`, `initial_backoff_ms`, `max_backoff_ms`, `reset_after_healthy_secs`. `LspClientDescriptor::from_profile` merges non-None user fields into the profile defaults using `merge_with_profile()`, so explicit user config wins over profile defaults over server-definition defaults. The merged result is persisted in the `descriptor_map` and read by the restart coordinator on each restart attempt.
+
 ### document_sync.rs - Document Replay Registry
 
 Tracks open documents so they can be replayed after a server restart.
@@ -370,6 +374,8 @@ pub struct LspService {
 `generation_map` is the per-key generation map. `LspService::generation_for_key(key)` and `LspService::set_generation(key, gen)` are the public accessors. The first publish sets generation `1`; the restart coordinator bumps it after a successful reinit + replay.
 
 `transition_operational_state(key, next)` is the centralized state mutator. It calls `health::transition()` to validate the move and updates timestamps/error metadata. All state assignments throughout the service, restart coordinator, and shutdown code go through this helper; direct assignments are not allowed.
+
+Exit metadata is persisted per-key in the `runtime_map` and `descriptor_map` so that operational health snapshots remain available even after a client is removed (during `RestartScheduled`, `Restarting`, `Failed`, `Stopped`). The `LspOperationalHealthSnapshot` carries the authoritative `generation` from `generation_map`, real `last_message_age_ms` / `last_diagnostics_age_ms`, `restart_attempts`, and any `last_error` from the most recent `Failed` transition. `stderr_tail` is sourced from the live `LspProcessRuntime` and is empty when no runtime is installed.
 
 `runtime_map` and `descriptor_map` hold the per-key `LspProcessRuntime` handle and persisted `LspClientDescriptor` respectively. The descriptor is built by `LspClientDescriptor::from_profile(...)` with explicit `user > profile > server-definition` priority and read by the restart coordinator to seed a new client.
 

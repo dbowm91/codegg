@@ -19,8 +19,10 @@ const INITIALIZED_TIMEOUT: Duration = Duration::from_secs(10);
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for individual semantic requests.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Timeout for capturing server version.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Total test timeout (enforced by the test harness).
-const _TEST_TIMEOUT: Duration = Duration::from_secs(120);
+const TEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ── Server Binary Discovery ─────────────────────────────────────────
 
@@ -42,20 +44,17 @@ fn require_server_binary(env_var: &str, candidates: &[&str]) -> Option<PathBuf> 
 }
 
 /// Capture server version by running `--version`.
-fn capture_version(bin: &Path) -> Option<String> {
-    std::process::Command::new(bin)
+async fn capture_version(bin: &Path) -> Option<String> {
+    let output = tokio::process::Command::new(bin)
         .arg("--version")
         .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout)
-                    .ok()
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
-            }
-        })
+        .await;
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8(o.stdout)
+            .ok()
+            .map(|s| s.trim().to_string()),
+        _ => None,
+    }
 }
 
 /// Sanitize a server version string for use in a filename.
@@ -476,7 +475,15 @@ async fn run_smoke_suite(
                 e,
                 launch_ms,
             ));
-            return build_report(profile, server_version, 0, None, &checks, stderr_tail);
+            return build_report(
+                profile,
+                server_version,
+                0,
+                None,
+                LspCapabilitySnapshot::default(),
+                &checks,
+                stderr_tail,
+            );
         }
     };
 
@@ -517,6 +524,7 @@ async fn run_smoke_suite(
                 server_version,
                 initialize_ms,
                 None,
+                LspCapabilitySnapshot::default(),
                 &checks,
                 stderr_tail,
             );
@@ -673,11 +681,34 @@ async fn run_smoke_suite(
         match result {
             Ok(Ok(symbols)) => {
                 if !symbols.is_empty() {
-                    checks.push(SmokeCheck::pass(
-                        format!("document_symbols ({} found)", symbols.len()),
-                        CompatibilityRequirement::RequiredIfAdvertised,
-                        ms,
-                    ));
+                    let names: Vec<String> = symbols.iter().map(|s| s.name.clone()).collect();
+                    let missing: Vec<&str> = fixture
+                        .expected_symbol_names
+                        .iter()
+                        .filter(|name| !names.iter().any(|n| n == *name))
+                        .copied()
+                        .collect();
+                    if missing.is_empty() {
+                        checks.push(SmokeCheck::pass(
+                            format!(
+                                "document_symbols ({} found, all expected names present: {:?})",
+                                symbols.len(),
+                                fixture.expected_symbol_names
+                            ),
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            ms,
+                        ));
+                    } else {
+                        checks.push(SmokeCheck::fail(
+                            "document_symbols",
+                            CompatibilityRequirement::RequiredIfAdvertised,
+                            format!(
+                                "expected symbol names {:?} not found in {:?}",
+                                missing, names
+                            ),
+                            ms,
+                        ));
+                    }
                 } else {
                     checks.push(SmokeCheck::fail(
                         "document_symbols",
@@ -953,6 +984,7 @@ async fn run_smoke_suite(
         server_version,
         initialize_ms,
         Some(readiness_ms),
+        caps,
         &checks,
         stderr_tail,
     )
@@ -963,6 +995,7 @@ fn build_report(
     server_version: Option<String>,
     initialize_ms: u64,
     readiness_ms: Option<u64>,
+    capabilities: LspCapabilitySnapshot,
     checks: &[SmokeCheck],
     stderr_tail: Vec<String>,
 ) -> LspCompatibilityReport {
@@ -972,7 +1005,7 @@ fn build_report(
         platform: std::env::consts::OS.to_string(),
         initialize_ms,
         readiness_ms,
-        capabilities: LspCapabilitySnapshot::default(),
+        capabilities,
         checks: checks.iter().map(|c| c.to_compatibility_check()).collect(),
         stderr_tail,
         known_limitations: profile.known_limitations.clone(),
@@ -1068,12 +1101,26 @@ async fn rust_analyzer_smoke() {
         }
     };
 
-    let version = capture_version(&bin);
+    let version = tokio::time::timeout(VERSION_TIMEOUT, capture_version(&bin))
+        .await
+        .ok()
+        .flatten();
     eprintln!("rust-analyzer version: {:?}", version);
 
     let fixture = rust_fixture();
     let profile = compatibility::rust_analyzer_profile();
-    let report = run_smoke_suite(&profile, &bin, &fixture, version).await;
+    let report = match tokio::time::timeout(
+        TEST_TIMEOUT,
+        run_smoke_suite(&profile, &bin, &fixture, version),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_elapsed) => {
+            eprintln!("rust-analyzer smoke test timed out after {TEST_TIMEOUT:?}");
+            return;
+        }
+    };
 
     write_report(&report, "rust-analyzer");
     assert_required_checks(&report);
@@ -1099,12 +1146,26 @@ async fn basedpyright_smoke() {
         }
     };
 
-    let version = capture_version(&bin);
+    let version = tokio::time::timeout(VERSION_TIMEOUT, capture_version(&bin))
+        .await
+        .ok()
+        .flatten();
     eprintln!("pyright version: {:?}", version);
 
     let fixture = python_fixture();
     let profile = compatibility::pyright_profile();
-    let report = run_smoke_suite(&profile, &bin, &fixture, version).await;
+    let report = match tokio::time::timeout(
+        TEST_TIMEOUT,
+        run_smoke_suite(&profile, &bin, &fixture, version),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_elapsed) => {
+            eprintln!("pyright smoke test timed out after {TEST_TIMEOUT:?}");
+            return;
+        }
+    };
 
     write_report(&report, "pyright");
     assert_required_checks(&report);

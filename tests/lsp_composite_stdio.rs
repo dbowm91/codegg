@@ -340,6 +340,7 @@ fn make_service_config(scenario_path: &Path, transcript_path: &Path) -> LspConfi
             env: Some(env),
             initialization: None,
             workspace_configuration: None,
+            restart: None,
         },
     );
 

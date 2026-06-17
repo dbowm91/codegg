@@ -918,6 +918,57 @@ impl Default for LspConfig {
     }
 }
 
+/// Restart mode as serialized in the config layer.
+///
+/// Mirrors the `egglsp` crate's `LspRestartModeConfig`.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LspRestartModeConfig {
+    Disabled,
+    OnUnexpectedExit,
+}
+
+/// Restart policy as serialized in the config layer.
+///
+/// Mirrors the `egglsp` crate's `LspRestartPolicyConfig`.
+#[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct LspRestartPolicyConfig {
+    /// `"disabled"` or `"on_unexpected_exit"`.
+    pub mode: Option<LspRestartModeConfig>,
+    /// Max consecutive restart attempts before marking the server failed.
+    pub max_attempts: Option<u32>,
+    /// Initial backoff in milliseconds.
+    pub initial_backoff_ms: Option<u64>,
+    /// Maximum backoff in milliseconds.
+    pub max_backoff_ms: Option<u64>,
+    /// Seconds of health required before resetting the attempt counter.
+    pub reset_after_healthy_secs: Option<u64>,
+}
+
+impl LspRestartPolicyConfig {
+    /// Merge non-None fields from `other` into `self`.
+    pub fn merge_with_profile(&mut self, other: &LspRestartPolicyConfig) {
+        if other.mode.is_some() {
+            self.mode.clone_from(&other.mode);
+        }
+        if other.max_attempts.is_some() {
+            self.max_attempts.clone_from(&other.max_attempts);
+        }
+        if other.initial_backoff_ms.is_some() {
+            self.initial_backoff_ms
+                .clone_from(&other.initial_backoff_ms);
+        }
+        if other.max_backoff_ms.is_some() {
+            self.max_backoff_ms.clone_from(&other.max_backoff_ms);
+        }
+        if other.reset_after_healthy_secs.is_some() {
+            self.reset_after_healthy_secs
+                .clone_from(&other.reset_after_healthy_secs);
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum LspRule {
@@ -931,6 +982,7 @@ pub enum LspRule {
         env: Option<HashMap<String, String>>,
         initialization: Option<HashMap<String, serde_json::Value>>,
         workspace_configuration: Option<HashMap<String, serde_json::Value>>,
+        restart: Option<LspRestartPolicyConfig>,
     },
 }
 

@@ -33,41 +33,36 @@ type InitResult = Result<Arc<LspClient>, SharedInitError>;
 type InitCompletionSender = tokio::sync::oneshot::Sender<InitResult>;
 type InitCompletionReceiver = tokio::sync::oneshot::Receiver<InitResult>;
 
+/// Summary of the last observed process exit event, persisted
+/// for health snapshots when no live runtime exists.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct LspProcessExitSummary {
+    generation: u64,
+    status: Option<i32>,
+    signal: Option<i32>,
+    expected: bool,
+    reason: String,
+}
+
 /// Per-server operational state tracked by the service.
 ///
 /// Each client key (`"{root}:{server_id}"`) has an independent
 /// operational state that tracks health, restart attempts, and
-/// the last failure reason.
+/// the last failure reason. Generations are tracked separately
+/// in the `generation_map`.
 #[derive(Debug, Clone)]
 struct OperationalServerState {
     /// Current operational state.
     state: LspOperationalState,
     /// Number of consecutive restart attempts.
     restart_attempts: u32,
-    /// Maximum restart attempts before declaring failure.
-    ///
-    /// Vestigial snapshot of the per-key policy from the
-    /// descriptor (the descriptor is the source of truth —
-    /// the restart coordinator in `crate::restart` reads from
-    /// there). Kept for backward compatibility with older code
-    /// paths and operational snapshots.
-    #[allow(dead_code)]
-    max_restart_attempts: u32,
-    /// Whether restart is enabled for this server.
-    ///
-    /// Vestigial mirror of `LspRestartPolicy::mode != Disabled`.
-    /// The descriptor is the source of truth.
-    #[allow(dead_code)]
-    restart_enabled: bool,
     /// Timestamp of the last healthy state (for reset_after_healthy).
     last_healthy_at: Option<Instant>,
-    /// Per-client generation. `0` for an entry that has never been
-    /// published. On first publication, set to `1`. On every
-    /// restart that creates a new runtime, incremented.
-    ///
-    /// Stale process-exit events whose `event.generation` does not
-    /// match the authoritative value here are ignored.
-    generation: u64,
+    /// Summary of the last observed exit event.
+    last_exit: Option<LspProcessExitSummary>,
+    /// Persisted stderr tail from the last exit.
+    last_stderr_tail: Vec<String>,
 }
 
 impl Default for OperationalServerState {
@@ -75,10 +70,9 @@ impl Default for OperationalServerState {
         Self {
             state: LspOperationalState::Starting,
             restart_attempts: 0,
-            max_restart_attempts: 3,
-            restart_enabled: false,
             last_healthy_at: None,
-            generation: 0,
+            last_exit: None,
+            last_stderr_tail: Vec::new(),
         }
     }
 }
@@ -574,17 +568,6 @@ impl LspService {
             // safe — though no-op in this branch.
             self.exit_receiver_started.store(false, Ordering::Release);
         }
-    }
-
-    /// Backwards-compatible alias for
-    /// [`LspService::ensure_exit_receiver_started`].
-    ///
-    /// Preserved for callers that previously invoked
-    /// `start_exit_receiver()` explicitly. New code should use
-    /// `ensure_exit_receiver_started` (or rely on the automatic
-    /// activation from the first client-creating path).
-    pub async fn start_exit_receiver(self: &Arc<Self>) {
-        self.ensure_exit_receiver_started().await;
     }
 
     /// Internal entry point for `&self` callers (e.g. the
@@ -1771,7 +1754,7 @@ impl LspService {
     /// Set the authoritative generation for `key`.
     ///
     /// Called by the publication path (first publish sets it to
-    /// `1`) and by the restart coordinator (Pass 4) on every
+    /// `1`) and by the restart coordinator on every
     /// successful restart (increments the existing value).
     pub async fn set_generation(&self, key: &str, generation: u64) {
         let mut map = self.generation_map.lock().await;
@@ -1809,27 +1792,31 @@ impl LspService {
         &self,
         key: &str,
     ) -> Option<(u64, super::health::LspOperationalHealthSnapshot)> {
-        let (op_state, generation) = {
+        let op_state = {
             let states = self.operational_state.read().await;
-            let s = states.get(key)?;
-            (s.clone(), s.generation)
+            states.get(key)?.clone()
         };
+
+        let generation = self.generation_for_key(key).await;
 
         let open_documents = self.document_registry.document_count(key).await;
         let last_error = match &op_state.state {
             super::health::LspOperationalState::Failed { reason } => Some(reason.clone()),
-            _ => None,
+            _ => op_state
+                .last_exit
+                .as_ref()
+                .filter(|e| !e.expected)
+                .map(|e| e.reason.clone()),
         };
 
-        // Stderr tail is only available when a process runtime is
-        // still tracked. If the runtime has been removed (e.g.
-        // after a successful shutdown), the snapshot has an empty
-        // tail.
+        // Stderr tail prefers the live runtime; falls back to the
+        // persisted tail from the last exit.
         let stderr_tail = {
             let map = self.runtime_map.lock().await;
-            map.get(key)
-                .map(|runtime| runtime.stderr_tail_capped(20))
-                .unwrap_or_default()
+            match map.get(key) {
+                Some(runtime) => runtime.stderr_tail_capped(20),
+                None => op_state.last_stderr_tail.clone(),
+            }
         };
 
         let snapshot = super::health::LspOperationalHealthSnapshot::from_operational_state(
@@ -1883,6 +1870,21 @@ impl LspService {
             reason = %event.reason(),
             "process exit observed"
         );
+
+        // Persist exit metadata before any restart or state transition.
+        {
+            let mut states = self.operational_state.write().await;
+            if let Some(entry) = states.get_mut(&key) {
+                entry.last_exit = Some(LspProcessExitSummary {
+                    generation: event.generation,
+                    status: event.status,
+                    signal: event.signal,
+                    expected: event.expected,
+                    reason: event.reason(),
+                });
+                entry.last_stderr_tail = event.stderr_tail.clone();
+            }
+        }
 
         if event.expected {
             // Expected exit (graceful shutdown) — no restart needed.
@@ -2082,20 +2084,25 @@ impl LspService {
         let open_documents = self.document_registry.document_count(key).await;
 
         // Last error comes from the operational state for
-        // `Failed { reason }` transitions. Other states leave it
-        // `None`.
+        // `Failed { reason }` transitions. For other states, fall
+        // back to the persisted exit summary for non-expected exits.
         let last_error = match &op_state.state {
             super::health::LspOperationalState::Failed { reason } => Some(reason.clone()),
-            _ => None,
+            _ => op_state
+                .last_exit
+                .as_ref()
+                .filter(|e| !e.expected)
+                .map(|e| e.reason.clone()),
         };
 
-        // Stderr tail is only available when a process runtime is
-        // still tracked.
+        // Stderr tail prefers the live runtime; falls back to the
+        // persisted tail from the last exit.
         let stderr_tail = {
             let map = self.runtime_map.lock().await;
-            map.get(key)
-                .map(|runtime| runtime.stderr_tail_capped(20))
-                .unwrap_or_default()
+            match map.get(key) {
+                Some(runtime) => runtime.stderr_tail_capped(20),
+                None => op_state.last_stderr_tail.clone(),
+            }
         };
 
         Some(
@@ -2208,7 +2215,7 @@ impl LspService {
            + 'static {
         let clients = self.clients.clone();
         let document_owners = self.document_owners.clone();
-        let operational_state = self.operational_state.clone();
+        let generation_map = self.generation_map.clone();
         let runtime_map = self.runtime_map.clone();
         let exit_tx = self.exit_tx.clone();
 
@@ -2217,7 +2224,7 @@ impl LspService {
             let descriptor = descriptor.clone();
             let clients = clients.clone();
             let document_owners = document_owners.clone();
-            let operational_state = operational_state.clone();
+            let generation_map = generation_map.clone();
             let runtime_map = runtime_map.clone();
             let exit_tx = exit_tx.clone();
 
@@ -2256,13 +2263,11 @@ impl LspService {
 
                 // 6. Increment generation in the generation map.
                 let generation = {
-                    let states = operational_state.read().await;
-                    states
-                        .get(&key)
-                        .map(|s| s.generation)
-                        .unwrap_or(0)
-                        .saturating_add(1)
-                        .max(1)
+                    let mut map = generation_map.lock().await;
+                    let current = map.get(&key).copied().unwrap_or(0);
+                    let next = current.saturating_add(1).max(1);
+                    map.insert(key.clone(), next);
+                    next
                 };
 
                 // 7. Spawn the process monitor.
@@ -2431,8 +2436,8 @@ async fn spawn_process_monitor(
         }
     };
 
-    // Install the runtime handle so callers (e.g. the coordinator
-    // introduced in Pass 4) can request graceful/forced shutdown
+    // Install the runtime handle so callers (e.g. the restart
+    // coordinator) can request graceful/forced shutdown
     // and read the stderr snapshot.
     {
         let mut map = runtime_map.lock().await;
@@ -3263,13 +3268,10 @@ async fn run_initialization_attempt(
                                 .or_insert_with(|| OperationalServerState {
                                     state: super::health::LspOperationalState::Ready,
                                     restart_attempts: 0,
-                                    max_restart_attempts: 3,
-                                    restart_enabled: false,
                                     last_healthy_at: Some(Instant::now()),
-                                    generation: 0,
+                                    last_exit: None,
+                                    last_stderr_tail: Vec::new(),
                                 });
-                        let next_generation = entry.generation.saturating_add(1).max(1);
-                        entry.generation = next_generation;
                         let initial_state = match &readiness_decision {
                             ReadinessDecision::Ready { .. } => {
                                 entry.last_healthy_at = Some(Instant::now());
@@ -5041,7 +5043,7 @@ mod tests {
         let _ = handle2.await;
     }
 
-    // ── Pass 3: per-client generation and operational health ──
+    // ── per-client generation and operational health ──
 
     /// Per-client generation starts at `0` (no client published) and
     /// becomes `1` on first publish. A subsequent publish (e.g. via
@@ -5055,7 +5057,7 @@ mod tests {
         // sentinel (`0`).
         assert_eq!(svc.generation_for_key(&key).await, 0);
 
-        // First publish: insert with `generation: 1` and update
+        // First publish: insert operational state and update
         // the generation map.
         {
             let mut states = svc.operational_state.write().await;
@@ -5063,7 +5065,6 @@ mod tests {
                 key.clone(),
                 OperationalServerState {
                     state: LspOperationalState::Ready,
-                    generation: 1,
                     ..Default::default()
                 },
             );
@@ -5072,22 +5073,10 @@ mod tests {
         assert_eq!(svc.generation_for_key(&key).await, 1);
 
         // Subsequent publish (e.g. restart): increment to 2.
-        {
-            let mut states = svc.operational_state.write().await;
-            if let Some(s) = states.get_mut(&key) {
-                s.generation = s.generation.saturating_add(1).max(1);
-            }
-        }
         svc.set_generation(&key, 2).await;
         assert_eq!(svc.generation_for_key(&key).await, 2);
 
         // And again → 3.
-        {
-            let mut states = svc.operational_state.write().await;
-            if let Some(s) = states.get_mut(&key) {
-                s.generation = s.generation.saturating_add(1).max(1);
-            }
-        }
         svc.set_generation(&key, 3).await;
         assert_eq!(svc.generation_for_key(&key).await, 3);
     }
@@ -5102,17 +5091,16 @@ mod tests {
         let svc = LspService::new(LspConfig::Disabled(false));
         let key = "/tmp:rust-analyzer".to_string();
 
-        // Insert an operational state with `generation: 5` and
-        // store it in the generation map. We also stage a
-        // hypothetical `Ready` state so we can verify the
-        // post-stale-event state is unchanged.
+        // Insert an operational state and store it in the
+        // generation map. We also stage a hypothetical `Ready`
+        // state so we can verify the post-stale-event state is
+        // unchanged.
         {
             let mut states = svc.operational_state.write().await;
             states.insert(
                 key.clone(),
                 OperationalServerState {
                     state: LspOperationalState::Ready,
-                    generation: 5,
                     ..Default::default()
                 },
             );
@@ -5140,7 +5128,6 @@ mod tests {
         // stale event did not touch it.
         let states = svc.operational_state.read().await;
         let entry = states.get(&key).expect("entry still present");
-        assert_eq!(entry.generation, 5);
         assert!(matches!(entry.state, LspOperationalState::Ready));
     }
 
@@ -5164,7 +5151,6 @@ mod tests {
                     state: LspOperationalState::Failed {
                         reason: "synthetic failure".to_string(),
                     },
-                    generation: 1,
                     ..Default::default()
                 },
             );
@@ -5253,7 +5239,6 @@ mod tests {
                 key.clone(),
                 OperationalServerState {
                     state: LspOperationalState::Ready,
-                    generation: 1,
                     ..Default::default()
                 },
             );
@@ -5277,8 +5262,6 @@ mod tests {
             entry.state,
             LspOperationalState::Degraded { ref reason } if reason == "slow"
         ));
-        // Generation is preserved across the transition.
-        assert_eq!(entry.generation, 1);
     }
 
     // ── wait_for_readiness tests ────────────────────────────────────────
@@ -5402,10 +5385,9 @@ mod tests {
                 OperationalServerState {
                     state: LspOperationalState::Ready,
                     restart_attempts: 0,
-                    max_restart_attempts: 3,
-                    restart_enabled: false,
                     last_healthy_at: Some(Instant::now()),
-                    generation: 1,
+                    last_exit: None,
+                    last_stderr_tail: Vec::new(),
                 },
             );
         }
