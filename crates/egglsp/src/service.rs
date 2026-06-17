@@ -6063,6 +6063,7 @@ mod tests {
     /// observing the call attempts to coordinate (failing
     /// for a different reason — no real LSP server — but
     /// bypassing the disabled-policy check).
+    #[cfg(feature = "lsp-test-support")]
     #[tokio::test]
     async fn manual_restart_bypasses_disabled_policy() {
         let svc = LspService::new_arc(LspConfig::Disabled(false));
