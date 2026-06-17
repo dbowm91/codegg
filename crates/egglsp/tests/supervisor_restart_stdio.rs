@@ -2332,9 +2332,9 @@ edition = "2021"
         | Err(egglsp::LspError::LaunchFailed(_)) => {
             // acceptable bounded outcome
         }
-        Err(other) => panic!(
-            "manual restart returned unexpected error during supersession race: {other:?}"
-        ),
+        Err(other) => {
+            panic!("manual restart returned unexpected error during supersession race: {other:?}")
+        }
     }
 
     // After shutdown, the service is stopped and any live

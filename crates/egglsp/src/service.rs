@@ -2827,7 +2827,7 @@ impl LspService {
                 current_generation,
                 "manual restart: generation advanced during ownership wait; aborting"
             );
-            let _ = lease.release();
+            let _ = lease.release().await;
             return Err(LspError::ServerRestarted {
                 server_id: pre_wait_snapshot.pre_wait_server_id,
                 old_generation: pre_wait_snapshot.pre_wait_generation,
@@ -2882,7 +2882,7 @@ impl LspService {
         let descriptor = match self.descriptor_for_key(key).await {
             Some(d) => d,
             None => {
-                let _ = lease.release();
+                let _ = lease.release().await;
                 return Err(LspError::LaunchFailed(format!(
                     "no descriptor stored for key {key} — was the client ever initialized?"
                 )));
@@ -2902,7 +2902,7 @@ impl LspService {
         .await;
 
         // 8. Release the lease.
-        let _ = lease.release();
+        let _ = lease.release().await;
 
         // Pass 6 — Map RestartOutcome to Result<(), LspError>.
         // Ready and Degraded are both success outcomes; Degraded
@@ -6854,12 +6854,9 @@ mod tests {
         // 4. Call manual_restart_client. The call must return
         //    `ServerRestarted` because the generation advanced
         //    from 1 (pre-wait) to 2 (post-wait).
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            svc.manual_restart_client(&key),
-        )
-        .await
-        .expect("manual_restart_client did not return within 10s");
+        let result = tokio::time::timeout(Duration::from_secs(10), svc.manual_restart_client(&key))
+            .await
+            .expect("manual_restart_client did not return within 10s");
 
         // 5. Result must be ServerRestarted with old=1, new=2.
         match result {
@@ -6875,9 +6872,7 @@ mod tests {
                     "post-wait generation must be 2 (advanced during wait)"
                 );
             }
-            other => panic!(
-                "expected ServerRestarted {{ old=1, new=Some(2) }}, got {other:?}"
-            ),
+            other => panic!("expected ServerRestarted {{ old=1, new=Some(2) }}, got {other:?}"),
         }
 
         // 6. The gen-2 runtime entry must remain in runtime_map.
@@ -6942,12 +6937,9 @@ mod tests {
         // installed for the key → LaunchFailed in the
         // coordinator), but it must NOT return ServerRestarted
         // because the generation did not advance.
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            svc.manual_restart_client(&key),
-        )
-        .await
-        .expect("manual_restart_client did not return within 10s");
+        let result = tokio::time::timeout(Duration::from_secs(10), svc.manual_restart_client(&key))
+            .await
+            .expect("manual_restart_client did not return within 10s");
 
         match &result {
             Err(LspError::ServerRestarted { .. }) => {
@@ -7053,12 +7045,9 @@ mod tests {
         //    `ServerRestarted` (depending on internal ordering);
         //    either is acceptable for this test — what matters
         //    is that the live client and runtime are preserved.
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            svc.manual_restart_client(&key),
-        )
-        .await
-        .expect("manual_restart_client did not return within 5s");
+        let result = tokio::time::timeout(Duration::from_secs(5), svc.manual_restart_client(&key))
+            .await
+            .expect("manual_restart_client did not return within 5s");
 
         // 5. The result must be an error (not Ok) because the
         //    manual path did not complete.
@@ -7077,7 +7066,7 @@ mod tests {
 
         // Release the lease so subsequent tests do not see a
         // stuck owner.
-        let _ = lease.release();
+        let _ = lease.release().await;
 
         // 6. The original generation MUST be preserved.
         let current_generation = svc.generation_for_key(&key).await;
@@ -7162,12 +7151,9 @@ mod tests {
         });
 
         // Manual call — must return exactly ServerRestarted.
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            svc.manual_restart_client(&key),
-        )
-        .await
-        .expect("manual_restart_client did not return within 10s");
+        let result = tokio::time::timeout(Duration::from_secs(10), svc.manual_restart_client(&key))
+            .await
+            .expect("manual_restart_client did not return within 10s");
 
         assert!(
             matches!(result, Err(LspError::ServerRestarted { .. })),
