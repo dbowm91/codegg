@@ -388,8 +388,7 @@ where
     // Restart. Capture the old client's diagnostic cache
     // snapshot BEFORE invoking the reinit so the snapshot is
     // taken from the not-yet-removed old client.
-    let retained_diagnostics =
-        shared.snapshot_diagnostics_for_restart(key).await;
+    let retained_diagnostics = shared.snapshot_diagnostics_for_restart(key).await;
 
     // Pass 5 — Shared Restart Budget. The coordinator no
     // longer uses a per-invocation `1..=max_attempts` loop.
@@ -903,14 +902,9 @@ mod tests {
     struct AlwaysFailReinit;
     impl AlwaysFailReinit {
         fn make(
-        ) -> impl FnMut(
-            &LspClientDescriptor,
-            u64,
-        ) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
         {
-            |_desc, _gen| {
-                Box::pin(async { Err(LspError::LaunchFailed("always fail".to_string())) })
-            }
+            |_desc, _gen| Box::pin(async { Err(LspError::LaunchFailed("always fail".to_string())) })
         }
     }
 
@@ -921,10 +915,7 @@ mod tests {
         fn make(
             shared: Arc<MockShared>,
             successes_at: Vec<u32>,
-        ) -> impl FnMut(
-            &LspClientDescriptor,
-            u64,
-        ) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
         {
             let count = Arc::new(AtomicU32::new(0));
             move |_desc, generation| {
@@ -942,7 +933,9 @@ mod tests {
                         // process monitor; for the unit test
                         // the generation_map is updated
                         // directly.
-                        shared.set_generation("test:rust-analyzer", generation).await;
+                        shared
+                            .set_generation("test:rust-analyzer", generation)
+                            .await;
                         // Build a minimal dummy client via LspClient::test_stub.
                         let client = LspClient::test_stub(
                             "test-stub",
@@ -965,10 +958,7 @@ mod tests {
         fn make(
             shared: Arc<MockShared>,
             set_new_generation_after: Option<u32>,
-        ) -> impl FnMut(
-            &LspClientDescriptor,
-            u64,
-        ) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
         {
             let count = Arc::new(AtomicU32::new(0));
             move |_desc, _gen| {

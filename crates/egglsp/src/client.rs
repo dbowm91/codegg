@@ -2288,14 +2288,10 @@ mod tests {
         let dir = std::env::temp_dir().join("egglsp_pass9_take");
         let _ = std::fs::create_dir_all(&dir);
         let shutdown_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let client = LspClient::test_stub(
-            "pass9",
-            &dir,
-            shutdown_count,
-            LspClientOptions::default(),
-        )
-        .await
-        .expect("test_stub should succeed");
+        let client =
+            LspClient::test_stub("pass9", &dir, shutdown_count, LspClientOptions::default())
+                .await
+                .expect("test_stub should succeed");
 
         // test_stub spawns a real `sleep 1000` process so the
         // child handle is real (not None).
@@ -4112,10 +4108,7 @@ mod tests {
         let result = client
             .wait_for_progress_end(std::time::Duration::from_millis(50))
             .await;
-        assert!(
-            !result,
-            "report without begin must NOT complete the cycle"
-        );
+        assert!(!result, "report without begin must NOT complete the cycle");
     }
 
     /// Pass 7 — A complete begin/end cycle completes the

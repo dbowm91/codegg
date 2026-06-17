@@ -2342,14 +2342,13 @@ impl LspService {
         // fresh budget on the next crash.
         if let Some(d) = &descriptor {
             if let Some(prev) = self
-                .reset_restart_attempts_if_healthy_inherent(&key, d.restart_policy.reset_after_healthy)
+                .reset_restart_attempts_if_healthy_inherent(
+                    &key,
+                    d.restart_policy.reset_after_healthy,
+                )
                 .await
             {
-                debug!(
-                    key,
-                    prev,
-                    "restart_attempts reset by healthy interval"
-                );
+                debug!(key, prev, "restart_attempts reset by healthy interval");
             }
         }
 
@@ -2418,7 +2417,8 @@ impl LspService {
     /// `Restarting` → `Initializing` → `Ready` or `Failed`), and
     /// generates a fresh generation for the new client.
     pub async fn restart_client(&self, key: &str) -> Result<(), LspError> {
-        self.restart_client_with_trigger(key, RestartTrigger::Automatic).await
+        self.restart_client_with_trigger(key, RestartTrigger::Automatic)
+            .await
     }
 
     /// Restart a client by key under a manual trigger.
@@ -2519,15 +2519,7 @@ impl LspService {
         // it across awaits without lifetime issues.
         let reinit_fn = self.build_reinit_fn(key.to_string());
 
-        restart_client_coordinator(
-            self,
-            key,
-            trigger,
-            attempt,
-            descriptor,
-            reinit_fn,
-        )
-        .await
+        restart_client_coordinator(self, key, trigger, attempt, descriptor, reinit_fn).await
     }
 
     /// Get a snapshot of operational health for the given client key.
@@ -6051,12 +6043,9 @@ mod tests {
         //   2. Fail to find a descriptor → LaunchFailed.
         // We tolerate the error; we only care about the
         // pre-termination step.
-        let _ = tokio::time::timeout(
-            Duration::from_secs(15),
-            svc.manual_restart_client(&key),
-        )
-        .await
-        .expect("manual_restart_client did not return within 15s");
+        let _ = tokio::time::timeout(Duration::from_secs(15), svc.manual_restart_client(&key))
+            .await
+            .expect("manual_restart_client did not return within 15s");
 
         // The old runtime was terminated and removed from
         // the map.
@@ -6102,12 +6091,9 @@ mod tests {
         // The manual call will fail because the launch spec
         // is bogus (a real LSP server isn't available), but
         // the call is NOT rejected at the policy gate.
-        let result = tokio::time::timeout(
-            Duration::from_secs(15),
-            svc.manual_restart_client(&key),
-        )
-        .await
-        .expect("manual_restart_client did not return within 15s");
+        let result = tokio::time::timeout(Duration::from_secs(15), svc.manual_restart_client(&key))
+            .await
+            .expect("manual_restart_client did not return within 15s");
         // The result may be Ok or Err depending on whether
         // the launch spec can produce a real client. What
         // matters is that the call is NOT rejected with
@@ -6142,12 +6128,9 @@ mod tests {
         // The call proceeds (and will fail later in the
         // coordinator because no descriptor exists for the
         // key), but the early-return path is correct.
-        let _ = tokio::time::timeout(
-            Duration::from_secs(15),
-            svc.manual_restart_client(&key),
-        )
-        .await
-        .expect("manual_restart_client did not return within 15s");
+        let _ = tokio::time::timeout(Duration::from_secs(15), svc.manual_restart_client(&key))
+            .await
+            .expect("manual_restart_client did not return within 15s");
     }
 
     // ── Pass 5: Shared Restart Budget ────────────────────────────
@@ -6171,10 +6154,7 @@ mod tests {
         // (within the reset interval). Reset must NOT fire.
         svc.set_last_healthy_now(&key).await;
         let reset = svc
-            .reset_restart_attempts_if_healthy_inherent(
-                &key,
-                Duration::from_secs(60),
-            )
+            .reset_restart_attempts_if_healthy_inherent(&key, Duration::from_secs(60))
             .await;
         assert!(
             reset.is_none(),
@@ -6184,15 +6164,9 @@ mod tests {
         // Wait for the interval to elapse, then reset must fire.
         tokio::time::sleep(Duration::from_millis(20)).await;
         let reset = svc
-            .reset_restart_attempts_if_healthy_inherent(
-                &key,
-                Duration::from_millis(10),
-            )
+            .reset_restart_attempts_if_healthy_inherent(&key, Duration::from_millis(10))
             .await;
-        assert!(
-            reset.is_some(),
-            "healthy interval elapsed: reset must fire"
-        );
+        assert!(reset.is_some(), "healthy interval elapsed: reset must fire");
     }
 
     /// `restart_attempts` increments across restart
@@ -6214,10 +6188,7 @@ mod tests {
         svc.set_last_healthy_now(&key).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
         let reset = svc
-            .reset_restart_attempts_if_healthy_inherent(
-                &key,
-                Duration::from_millis(10),
-            )
+            .reset_restart_attempts_if_healthy_inherent(&key, Duration::from_millis(10))
             .await;
         assert_eq!(reset, Some(3));
         assert_eq!(
@@ -6270,26 +6241,17 @@ mod tests {
 
         // Generation 1: post_restart = false.
         let gen1 = entry.with_generation(1);
-        assert!(
-            !gen1.post_restart,
-            "generation 1 must NOT be post_restart"
-        );
+        assert!(!gen1.post_restart, "generation 1 must NOT be post_restart");
         assert_eq!(gen1.server_generation, 1);
 
         // Generation 2: post_restart = true.
         let gen2 = entry.with_generation(2);
-        assert!(
-            gen2.post_restart,
-            "generation 2 must be post_restart"
-        );
+        assert!(gen2.post_restart, "generation 2 must be post_restart");
         assert_eq!(gen2.server_generation, 2);
 
         // Generation 3: post_restart = true.
         let gen3 = entry.with_generation(3);
-        assert!(
-            gen3.post_restart,
-            "generation 3 must be post_restart"
-        );
+        assert!(gen3.post_restart, "generation 3 must be post_restart");
         assert_eq!(gen3.server_generation, 3);
     }
 

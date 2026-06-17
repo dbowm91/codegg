@@ -254,6 +254,9 @@ impl From<egglsp::LspError> for LspError {
             egglsp::LspError::ServerDegraded(s) => {
                 LspError::RequestFailed(format!("server degraded: {s}"))
             }
+            egglsp::LspError::InvalidConfig(s) => {
+                LspError::RequestFailed(format!("invalid configuration: {s}"))
+            }
         }
     }
 }
