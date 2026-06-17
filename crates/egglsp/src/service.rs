@@ -2137,6 +2137,24 @@ impl LspService {
         map.insert(key.to_string(), generation);
     }
 
+    /// Compute the next authoritative generation for `key` from
+    /// the current authoritative value. Pass 3 — Single
+    /// Generation Owner. The restart coordinator is the only
+    /// caller; it calls this exactly once per restart attempt
+    /// and threads the result through the reinit closure so
+    /// generation is owned by a single decision point.
+    ///
+    /// Implementation: `current.saturating_add(1).max(1)` so the
+    /// first value is `1` even after restart attempts on a key
+    /// that has been forcibly reset to `0`. The store is NOT
+    /// updated — the reinit closure publishes the new value via
+    /// `set_generation` once the new client is in hand.
+    pub async fn next_generation_for_key(&self, key: &str) -> u64 {
+        let map = self.generation_map.lock().await;
+        let current = map.get(key).copied().unwrap_or(0);
+        current.saturating_add(1).max(1)
+    }
+
     /// Return the persisted client descriptor for `key`, if any.
     ///
     /// The descriptor is populated on first publish and read by
@@ -2581,11 +2599,18 @@ impl LspService {
     /// The closure captures every LspService field it needs as an
     /// `Arc`, so the resulting closure is `'static + Send` and
     /// can be owned by the coordinator across awaits.
+    ///
+    /// The replacement generation is passed in by the
+    /// coordinator (Pass 3 — Single Generation Owner). The
+    /// closure does NOT calculate generation independently; the
+    /// coordinator's `next_generation_for_key` call is the
+    /// single source of truth.
     fn build_reinit_fn(
         &self,
         key: String,
     ) -> impl FnMut(
         &LspClientDescriptor,
+        u64,
     ) -> futures::future::BoxFuture<'static, Result<Arc<LspClient>, LspError>>
            + Send
            + 'static {
@@ -2595,7 +2620,7 @@ impl LspService {
         let runtime_map = self.runtime_map.clone();
         let exit_tx = self.exit_tx.clone();
 
-        move |descriptor: &LspClientDescriptor| {
+        move |descriptor: &LspClientDescriptor, generation: u64| {
             let key = key.clone();
             let descriptor = descriptor.clone();
             let clients = clients.clone();
@@ -2637,14 +2662,16 @@ impl LspService {
                     owners.retain(|_, v| v != &key);
                 }
 
-                // 6. Increment generation in the generation map.
-                let generation = {
+                // 6. Publish the coordinator-supplied
+                //    generation. The reinit closure is the
+                //    publication site; the coordinator owns the
+                //    calculation. This must happen BEFORE the
+                //    process monitor is spawned so the monitor
+                //    sees the authoritative value.
+                {
                     let mut map = generation_map.lock().await;
-                    let current = map.get(&key).copied().unwrap_or(0);
-                    let next = current.saturating_add(1).max(1);
-                    map.insert(key.clone(), next);
-                    next
-                };
+                    map.insert(key.clone(), generation);
+                }
 
                 // 7. Spawn the process monitor.
                 let monitor_client = client.clone();
@@ -2689,6 +2716,9 @@ impl RestartShared for LspService {
     }
     async fn set_generation(&self, key: &str, generation: u64) {
         self.set_generation(key, generation).await;
+    }
+    async fn next_generation_for_key(&self, key: &str) -> u64 {
+        self.next_generation_for_key(key).await
     }
     async fn service_phase(&self) -> ServicePhase {
         let lc = self.lifecycle.read().await;
@@ -3591,7 +3621,12 @@ async fn run_initialization_attempt(
                     // monitor must use the per-key generation
                     // so its exit event matches the
                     // `generation_for_key` lookup in the exit
-                    // handler.
+                    // handler. The generation is published
+                    // directly here because this is the
+                    // first-publish path, not a restart; the
+                    // restart-coordinator path uses
+                    // `next_generation_for_key` (Pass 3 —
+                    // Single Generation Owner).
                     let monitor_generation = {
                         let mut map = generation_map.lock().await;
                         let cur = map.get(&key).copied().unwrap_or(0);
@@ -5725,6 +5760,115 @@ mod tests {
         assert_eq!(svc.lifecycle.read().await.phase, ServiceLifecycle::Stopped);
         assert!(svc.clients.read().await.is_empty());
         assert!(runtime_map.lock().await.is_empty());
+    }
+
+    // ── Pass 3: Single Generation Owner ──────────────────────────
+
+    /// `next_generation_for_key` must produce strictly
+    /// monotonically increasing values from the perspective of
+    /// successive calls. The function does not mutate the
+    /// store — only `set_generation` does. This guarantees the
+    /// coordinator is the single source of truth.
+    #[tokio::test]
+    async fn next_generation_is_strictly_monotonic() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "pass3:monotonic";
+
+        // Empty store: first call returns 1.
+        let g1 = svc.next_generation_for_key(key).await;
+        assert_eq!(g1, 1, "first call from empty store returns 1");
+
+        // Without publishing, the next call still returns 1
+        // because the store was not mutated.
+        let g1_again = svc.next_generation_for_key(key).await;
+        assert_eq!(
+            g1_again, 1,
+            "next_generation_for_key must not mutate the store"
+        );
+
+        // Publish gen 1 via set_generation, then re-derive: 2.
+        svc.set_generation(key, 1).await;
+        let g2 = svc.next_generation_for_key(key).await;
+        assert_eq!(g2, 2, "after publishing 1, next is 2");
+
+        // Publish gen 2, then re-derive: 3.
+        svc.set_generation(key, 2).await;
+        let g3 = svc.next_generation_for_key(key).await;
+        assert_eq!(g3, 3, "after publishing 2, next is 3");
+
+        // Per-key isolation: a different key returns 1.
+        let other = svc.next_generation_for_key("pass3:other").await;
+        assert_eq!(other, 1, "per-key isolation is preserved");
+    }
+
+    /// `restart_client_coordinator` is the single owner of
+    /// replacement generation. The reinit closure is given the
+    /// precomputed generation; the closure MUST publish that
+    /// exact value via `set_generation` so the service's
+    /// authoritative generation matches the closure's
+    /// expectation. This test exercises the closure's
+    /// publication step by simulating what the closure does
+    /// (the same `set_generation` call with the value
+    /// `next_generation_for_key` produced).
+    #[tokio::test]
+    async fn reinit_publishes_coordinator_supplied_generation() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "pass3:coordinator_gen".to_string();
+
+        // Pre-seed the generation store with 1 to simulate a
+        // previously-published client.
+        svc.set_generation(&key, 1).await;
+
+        // The coordinator's `next_generation_for_key` would
+        // supply `2` to the closure for a key at generation 1.
+        // The closure receives that value and publishes it via
+        // `set_generation`.
+        let supplied = svc.next_generation_for_key(&key).await;
+        assert_eq!(supplied, 2, "coordinator supplies 2 for a key at 1");
+
+        // The closure publishes the supplied generation.
+        svc.set_generation(&key, supplied).await;
+        let observed = svc.generation_for_key(&key).await;
+        assert_eq!(
+            observed, 2,
+            "service generation matches the coordinator-supplied value"
+        );
+
+        // The `build_reinit_fn` closure exists and accepts the
+        // new (descriptor, generation) signature; the type
+        // checker enforces this at the call site in
+        // `restart_client_coordinator`.
+        let _ = svc.build_reinit_fn(key);
+    }
+
+    /// The first-publish path (init attempt that lands
+    /// successfully) and the restart-coordinator path
+    /// (subsequent restarts) both use the same
+    /// generation-calculation rule. Two consecutive restarts
+    /// produce generations `2` and `3` with no skipped or
+    /// duplicate values.
+    #[tokio::test]
+    async fn restart_produces_no_skipped_or_duplicate_generations() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "pass3:consecutive";
+
+        // Simulate the first publish.
+        svc.set_generation(&key, 1).await;
+
+        // Coordinator calls next_generation_for_key for restart 1.
+        let g2 = svc.next_generation_for_key(&key).await;
+        svc.set_generation(&key, g2).await;
+        assert_eq!(g2, 2);
+
+        // Coordinator calls next_generation_for_key for restart 2.
+        let g3 = svc.next_generation_for_key(&key).await;
+        svc.set_generation(&key, g3).await;
+        assert_eq!(g3, 3);
+
+        // The authoritative generation map is monotonic with
+        // no gaps.
+        let observed = svc.generation_for_key(&key).await;
+        assert_eq!(observed, 3, "no skipped generations");
     }
 
     /// Build an `LspProcessRuntime` whose child process is

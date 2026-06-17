@@ -33,7 +33,7 @@
 //!       during the wait abandons the coordinator).
 //!    d. Transition operational state to `Restarting { attempt }`
 //!       (attempt 1) or `Initializing` (subsequent attempts).
-//!    e. Call `reinit_fn(&descriptor)`. On success: store the new
+//!    e. Call `reinit_fn(&descriptor, new_generation)`. On success: store the new
 //!       client, replay documents, set `expected_generation + 1`,
 //!       transition to `Ready`, mark `last_healthy_at = now`, and
 //!       return `Ok(())`. On failure: continue to the next attempt.
@@ -239,6 +239,18 @@ pub trait RestartShared {
     /// Set the authoritative generation for `key`.
     async fn set_generation(&self, key: &str, generation: u64);
 
+    /// Compute the next authoritative generation for `key` from
+    /// the current authoritative value. Implementations MUST
+    /// guarantee that successive calls return strictly
+    /// monotonically increasing values when the value is
+    /// observed between calls (no observed gaps or duplicates
+    /// from the coordinator's perspective). The
+    /// `restart_client_coordinator` calls this exactly once per
+    /// restart attempt and threads the result through the
+    /// reinit closure so generation is owned by a single
+    /// decision point.
+    async fn next_generation_for_key(&self, key: &str) -> u64;
+
     /// Return the current service lifecycle phase.
     async fn service_phase(&self) -> ServicePhase;
 
@@ -300,6 +312,12 @@ pub trait RestartShared {
 /// before invoking the coordinator. Resetting it on healthy
 /// operation is also the caller's responsibility (handled lazily
 /// when handling the next unexpected exit).
+///
+/// The coordinator owns replacement generation selection.
+/// `next_generation_for_key` is called exactly once per restart
+/// attempt and the result is threaded through the reinit closure
+/// so generation is owned by a single decision point. The
+/// reinit closure MUST NOT calculate generation independently.
 pub async fn restart_client_coordinator<S, F>(
     shared: &S,
     key: &str,
@@ -310,7 +328,7 @@ pub async fn restart_client_coordinator<S, F>(
 ) -> Result<(), LspError>
 where
     S: RestartShared,
-    F: FnMut(&LspClientDescriptor) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>,
+    F: FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>,
 {
     // Honor `LspRestartMode::Disabled` for automatic triggers.
     // Manual triggers always run.
@@ -406,8 +424,14 @@ where
             );
         }
 
+        // Compute the replacement generation BEFORE invoking the
+        // reinit. The coordinator is the single decision point for
+        // generation; the reinit closure receives the value and
+        // does not calculate it.
+        let new_generation = shared.next_generation_for_key(key).await;
+
         // Try the reinit.
-        match reinit_fn(&descriptor).await {
+        match reinit_fn(&descriptor, new_generation).await {
             Ok(client) => {
                 // Publish: store the new client in the live map.
                 {
@@ -415,14 +439,12 @@ where
                     clients.insert(key.to_string(), client.clone());
                 }
 
-                // Generation: increment to expected + 1 BEFORE
-                // document replay and diagnostic-stale marking.
-                // This invalidates any pending stale process-exit
-                // events for the previous generation and makes the
-                // new generation authoritative for subsequent
-                // freshness checks.
-                let new_generation = expected_generation.saturating_add(1).max(1);
-                shared.set_generation(key, new_generation).await;
+                // Generation: the reinit closure has already
+                // published the new generation via
+                // `set_generation` (Pass 3 — Single Generation
+                // Owner). The coordinator's
+                // `next_generation_for_key` call was the single
+                // source of truth.
 
                 // Mark retained diagnostics as stale. The helper
                 // rewrites every entry's `server_generation` to
@@ -714,6 +736,7 @@ mod tests {
 
     // ── Mock shared + tests ─────────────────────────────────────
 
+    #[derive(Clone)]
     struct MockShared {
         clients: Arc<RwLock<HashMap<String, Arc<LspClient>>>>,
         document_owners: Arc<RwLock<HashMap<String, String>>>,
@@ -765,6 +788,11 @@ mod tests {
             let mut map = self.generation_map.lock().await;
             map.insert(key.to_string(), generation);
         }
+        async fn next_generation_for_key(&self, key: &str) -> u64 {
+            let map = self.generation_map.lock().await;
+            let current = map.get(key).copied().unwrap_or(0);
+            current.saturating_add(1).max(1)
+        }
         async fn service_phase(&self) -> ServicePhase {
             *self.service_phase.lock().unwrap()
         }
@@ -801,25 +829,46 @@ mod tests {
     struct AlwaysFailReinit;
     impl AlwaysFailReinit {
         fn make(
-        ) -> impl FnMut(&LspClientDescriptor) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        ) -> impl FnMut(
+            &LspClientDescriptor,
+            u64,
+        ) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
         {
-            |_desc| Box::pin(async { Err(LspError::LaunchFailed("always fail".to_string())) })
+            |_desc, _gen| {
+                Box::pin(async { Err(LspError::LaunchFailed("always fail".to_string())) })
+            }
         }
     }
 
-    struct SucceedAfterReinit;
+    struct SucceedAfterReinit {
+        shared: Arc<MockShared>,
+    }
     impl SucceedAfterReinit {
         fn make(
+            shared: Arc<MockShared>,
             successes_at: Vec<u32>,
-        ) -> impl FnMut(&LspClientDescriptor) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        ) -> impl FnMut(
+            &LspClientDescriptor,
+            u64,
+        ) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
         {
             let count = Arc::new(AtomicU32::new(0));
-            move |_desc| {
+            move |_desc, generation| {
                 let count = count.clone();
                 let successes_at = successes_at.clone();
+                let shared = shared.clone();
                 Box::pin(async move {
                     let n = count.fetch_add(1, AOrdering::SeqCst) + 1;
                     if successes_at.contains(&n) {
+                        // Pass 3 — Single Generation Owner. The
+                        // reinit closure publishes the
+                        // coordinator-supplied generation. In
+                        // the production service this is done
+                        // via `set_generation` and the spawned
+                        // process monitor; for the unit test
+                        // the generation_map is updated
+                        // directly.
+                        shared.set_generation("test:rust-analyzer", generation).await;
                         // Build a minimal dummy client via LspClient::test_stub.
                         let client = LspClient::test_stub(
                             "test-stub",
@@ -842,10 +891,13 @@ mod tests {
         fn make(
             shared: Arc<MockShared>,
             set_new_generation_after: Option<u32>,
-        ) -> impl FnMut(&LspClientDescriptor) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        ) -> impl FnMut(
+            &LspClientDescriptor,
+            u64,
+        ) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
         {
             let count = Arc::new(AtomicU32::new(0));
-            move |_desc| {
+            move |_desc, _gen| {
                 let shared = shared.clone();
                 let count = count.clone();
                 Box::pin(async move {
@@ -922,7 +974,7 @@ mod tests {
             RestartTrigger::Automatic,
             1,
             descriptor,
-            SucceedAfterReinit::make(vec![3]),
+            SucceedAfterReinit::make(Arc::new(shared.clone()), vec![3]),
         )
         .await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -998,7 +1050,7 @@ mod tests {
             RestartTrigger::Automatic,
             1,
             descriptor,
-            SucceedAfterReinit::make(vec![1]),
+            SucceedAfterReinit::make(Arc::new(shared.clone()), vec![1]),
         )
         .await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -1081,7 +1133,7 @@ mod tests {
             RestartTrigger::Automatic,
             1,
             descriptor,
-            SucceedAfterReinit::make(vec![1]),
+            SucceedAfterReinit::make(Arc::new(shared.clone()), vec![1]),
         )
         .await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -1143,7 +1195,7 @@ mod tests {
             RestartTrigger::Automatic,
             1,
             descriptor,
-            SucceedAfterReinit::make(vec![1]),
+            SucceedAfterReinit::make(Arc::new(shared.clone()), vec![1]),
         )
         .await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -1187,7 +1239,7 @@ mod tests {
             RestartTrigger::Automatic,
             1,
             descriptor,
-            SucceedAfterReinit::make(vec![1]),
+            SucceedAfterReinit::make(Arc::new(shared.clone()), vec![1]),
         )
         .await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
