@@ -1750,22 +1750,17 @@ impl LspClient {
     /// wait is implemented as a coarse polling loop so it does
     /// not require per-token notifications.
     pub async fn wait_for_progress_end(&self, timeout: Duration) -> bool {
-        if timeout.is_zero() {
-            // Zero budget: report success only if no active tokens
-            // exist right now.
-            return self.progress_state.lock().await.active_tokens.is_empty();
-        }
         let started = Instant::now();
         let step = Duration::from_millis(20);
         loop {
             {
                 let state = self.progress_state.lock().await;
-                if state.active_tokens.is_empty() {
+                if state.completed_cycle {
                     return true;
                 }
             }
             if started.elapsed() >= timeout {
-                return self.progress_state.lock().await.active_tokens.is_empty();
+                return self.progress_state.lock().await.completed_cycle;
             }
             tokio::time::sleep(step.min(timeout.saturating_sub(started.elapsed()))).await;
         }
@@ -3993,6 +3988,115 @@ mod tests {
             .wait_for_progress_end(std::time::Duration::from_millis(200))
             .await;
         assert!(result, "should succeed once all tokens are ended");
+    }
+
+    /// Pass 7 — An empty active-token set is NOT sufficient on
+    /// its own. A fresh client that has never observed any
+    /// `$/progress` notification must not pass
+    /// `wait_for_progress_end`, even with a generous timeout.
+    #[tokio::test]
+    async fn progress_wait_does_not_succeed_before_begin() {
+        let dir = std::env::temp_dir().join("progress_wait_no_begin");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = LspClient::test_stub(
+            "progress_no_begin",
+            &dir,
+            shutdown_count,
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        // No progress notifications have been observed.
+        // `active_tokens` is empty AND `completed_cycle` is false.
+        let result = client
+            .wait_for_progress_end(std::time::Duration::from_millis(50))
+            .await;
+        assert!(
+            !result,
+            "wait_for_progress_end must NOT succeed before any progress was observed"
+        );
+    }
+
+    /// Pass 7 — A progress report without a prior begin
+    /// (i.e., a `$/progress` notification with `kind = "end"`
+    /// but no matching `begin`) does NOT complete the cycle.
+    /// The `completed_cycle` flag only flips to true when
+    /// every active token has observed a matching end.
+    #[tokio::test]
+    async fn progress_report_without_begin_does_not_complete_cycle() {
+        let dir = std::env::temp_dir().join("progress_no_begin_only_end");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = LspClient::test_stub(
+            "progress_no_begin_only_end",
+            &dir,
+            shutdown_count,
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        // Send only an `end` notification (no `begin`).
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "orphan",
+                "value": { "kind": "end" }
+            }),
+        )
+        .await;
+
+        let result = client
+            .wait_for_progress_end(std::time::Duration::from_millis(50))
+            .await;
+        assert!(
+            !result,
+            "report without begin must NOT complete the cycle"
+        );
+    }
+
+    /// Pass 7 — A complete begin/end cycle completes the
+    /// cycle and `wait_for_progress_end` succeeds.
+    #[tokio::test]
+    async fn progress_wait_succeeds_after_begin_end() {
+        let dir = std::env::temp_dir().join("progress_begin_end");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shutdown_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = LspClient::test_stub(
+            "progress_begin_end",
+            &dir,
+            shutdown_count,
+            LspClientOptions::default(),
+        )
+        .await
+        .expect("test_stub should succeed");
+
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "x",
+                "value": { "kind": "begin", "title": "Indexing" }
+            }),
+        )
+        .await;
+        update_progress_state(
+            &client.progress_state,
+            &serde_json::json!({
+                "token": "x",
+                "value": { "kind": "end" }
+            }),
+        )
+        .await;
+
+        let result = client
+            .wait_for_progress_end(std::time::Duration::from_millis(200))
+            .await;
+        assert!(
+            result,
+            "wait_for_progress_end must succeed after a full begin/end cycle"
+        );
     }
 
     #[tokio::test]
