@@ -360,7 +360,7 @@ pub struct LspService {
     exit_tx: tokio::sync::mpsc::Sender<LspProcessExitEvent>,
     exit_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<LspProcessExitEvent>>>>,
     exit_receiver_started: Arc<AtomicBool>,
-    runtime_map: Arc<Mutex<HashMap<String, Arc<LspProcessRuntime>>>>,
+    runtime_map: Arc<Mutex<HashMap<String, RuntimeEntry>>>,
     descriptor_map: Arc<Mutex<HashMap<String, LspClientDescriptor>>>,
     self_ref: OnceLock<Weak<LspService>>,
     lifecycle: Arc<RwLock<LifecycleState>>,
@@ -1602,8 +1602,8 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - **11 production protocol tests** in `tests/production_protocol_stdio.rs` — all passing ✅
 - **3 production semantic tests** in `tests/production_semantic_stdio.rs` — all passing ✅
 - **5 production service tests** in `tests/production_service_stdio.rs` — all passing ✅
-- **24 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
-- **235 unit tests** in the `egglsp` crate
+- **26 root composite tests** in `tests/lsp_composite_stdio.rs` — all passing ✅
+- **331 unit tests** in the `egglsp` crate (with `lsp-test-support` feature; 330 without); supervisor/restart scripted scenarios live in the integration tests below
 - **3 scenario-engine tests** in `tests/scenario_engine.rs` — inlined fake-server self-tests for strict allow-listing, raw bytes, and grouped-frame fixtures
 
 ### Test Organization
@@ -1611,7 +1611,7 @@ Cargo exposes the test binary to the `egglsp` package integration tests via `CAR
 - `tests/production_protocol_stdio.rs` — Production-harness protocol coverage for launcher-path behavior and transport edge cases
 - `tests/production_semantic_stdio.rs` — Production-harness semantic and edit-preview coverage
 - `tests/production_service_stdio.rs` — Production-harness LspService lifecycle coverage
-- `tests/lsp_composite_stdio.rs` — 24 root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`, and security context tool orchestration against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous, resource-operation), semantic-context collector workflow/capability-gating/failure-degradation tests, security context tool tests (orchestration with risk markers, call expansion, cycle suppression, node-limit truncation, depth-limit enforcement, diagnostic evidence filtering, and graceful degradation on call hierarchy error), and hunk-source-context collector test (unified diff with real LSP operations). Hunk path normalization uses canonical containment with error propagation.
+- `tests/lsp_composite_stdio.rs` — 26 root-crate composite tests exercising `SemanticContextCollector`, `DiagnosticsCollector`, `LspOperations`, and security context tool orchestration against the fake server via the production `LspClient`/`LspService` stack; includes workspace-edit-preview safety tests (out-of-root, overlapping, command-only, no-edit, ambiguous, resource-operation), semantic-context collector workflow/capability-gating/failure-degradation tests, security context tool tests (orchestration with risk markers, call expansion, cycle suppression, node-limit truncation, depth-limit enforcement, diagnostic evidence filtering, and graceful degradation on call hierarchy error), and hunk-source-context collector test (unified diff with real LSP operations). Hunk path normalization uses canonical containment with error propagation.
 - `tests/common/harness.rs` — Reusable fake-server test harness with temp directory and scenario management
 - `tests/common/production_harness.rs` — Real-project harness for production launcher-path coverage
 - `tests/scenario_engine.rs` — Inlined fake-server self-tests (strict allow-listing, raw bytes, grouped-frame fixtures)
@@ -1696,7 +1696,7 @@ cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 
 ### Phase 3 Corrective Pass — Supervisor and Restart Tests
 
-`crates/egglsp/tests/supervisor_restart_stdio.rs` carries 9 deterministic scripted tests that exercise the new `LspProcessRuntime`, `restart_client_coordinator`, per-client generation safety, and readiness policy transitions against the fake server. The tests use bounded condition waits (polling loops) instead of fixed sleeps.
+`crates/egglsp/tests/supervisor_restart_stdio.rs` carries 11 deterministic scripted tests that exercise the new `LspProcessRuntime`, `restart_client_coordinator`, per-client generation safety, and readiness policy transitions against the fake server. The tests use bounded condition waits (polling loops) instead of fixed sleeps.
 
 | Test | Coverage |
 |------|----------|
@@ -1709,6 +1709,8 @@ cargo test -p egglsp --features lsp-test-support --tests -- --test-threads=1
 | `stale_exit_event_does_not_affect_newer_generation` | Generation 1 exit event is delayed; generation 2 is already ready; delayed event arrives and is silently dropped; pending requests survive |
 | `replay_uses_latest_content` | Open version 1; update to version 2 dirty content; crash/restart; replay contains version 2 text; closed document is not replayed |
 | `hung_process_is_force_killed_on_shutdown` | Server ignores `shutdown`/`exit`; shutdown deadline expires; process is killed and reaped; service reaches `Stopped` |
+| `two_consecutive_restarts_use_monotonic_generations` | Generation 1 crash on `didOpen` → gen 2 hover crash → gen 3 recovers; generation map reaches 3; exactly 3 process starts; final state is `Ready` |
+| `generation_is_identical_across_health_and_exit_event` | Health snapshot generation matches the published process-exit generation; a stale gen-1 exit event injected after gen-2 is `Ready` is silently dropped and does not change the health snapshot (Pass 11 test-timing fix writes the gen-3 scenario only after gen-2 is observed) |
 
 ### Real-Server CI
 
@@ -1727,6 +1729,8 @@ Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/t
 - **Hunk path tests**: Containment tests now use real temporary sibling files and are platform-neutral, replacing `/etc/passwd` references and nonexistent paths.
 
 ## Phase 3: Real-Server Compatibility & Resilience (Complete)
+
+> Phase 3 is fully closed — see **Phase 3 Final Closure** above for the runtime termination, generation-safe supervision, restart budget, readiness, and fresh-evidence invariants. The sections below describe the Phase 3 structural scaffolding (compatibility profiles, health state machine, runtime owner, restart coordinator, document replay) that the final closure pass locked down.
 
 Phase 3 builds on Phase 2's wire-protocol confidence by adding real-server compatibility testing, operational health tracking, process supervision, and document replay for crash recovery.
 
@@ -1814,6 +1818,173 @@ The smoke tests (`crates/egglsp/tests/real_server_smoke.rs`) exercise rust-analy
 | **typescript-language-server** | TypeScript / JavaScript | hover, definition, references, symbols, rename, code actions | `prepareCallHierarchy` may be empty; large workspaces slow |
 | **gopls** | Go | hover, definition, references, symbols, rename, code actions | Call hierarchy not yet supported by gopls; securityContext will degrade gracefully |
 | **clangd** | C / C++ | hover, definition, references, symbols, rename, code actions | No call hierarchy; slow on large TUs |
+
+## Phase 3 Final Closure: Runtime Termination, Generation-Safe Supervision, Restart Budgets, Readiness, and Fresh Evidence
+
+Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. Eleven passes (Pass 1 through Pass 11) make the runtime, restart, and freshness invariants explicit. All 331 lib tests pass, the 9 supervisor/restart scenarios pass across 3 consecutive runs, the production test surface is green, and the 24 root composite tests pass.
+
+### Generation-Aware Runtime Map
+
+`runtime_map` stores `RuntimeEntry { generation: u64, runtime: LspProcessRuntime }` instead of bare runtimes, so insertion, lookup, and removal are all generation-aware:
+
+```rust
+#[derive(Clone)]
+struct RuntimeEntry {
+    generation: u64,
+    runtime: LspProcessRuntime,
+}
+
+type RuntimeMap = Arc<Mutex<HashMap<String, RuntimeEntry>>>;
+```
+
+Three internal helpers enforce the invariant:
+
+- `install_runtime(runtime_map, key, generation, runtime) -> Option<RuntimeEntry>` — replaces the prior entry only when the existing entry's generation is strictly older. Same- or newer-generation replacement is logged at warn and rejected (the old generation's runtime is responsible for removing itself).
+- `runtime_for_generation(runtime_map, key, generation) -> Option<LspProcessRuntime>` — returns the runtime only when the stored generation matches.
+- `remove_runtime_if_generation(runtime_map, key, generation) -> Option<RuntimeEntry>` — removes the entry only when the stored generation matches.
+
+Monitor ordering uses the helpers throughout. After publishing the exit event, the monitor calls `remove_runtime_if_generation` (not bare `map.remove`) so a delayed old monitor cannot remove a newer generation's runtime. The unit tests `old_monitor_cannot_remove_new_runtime` and `runtime_removal_requires_exact_generation` lock this down.
+
+### Runtime Termination Sequence
+
+`LspClient::shutdown()` is split from the runtime-termination helper. The client method sends only `shutdown` / `exit` notifications (now exposed as `request_protocol_shutdown`); it never waits on the child once the runtime owns it. The service runs the bounded termination helper:
+
+```rust
+async fn terminate_runtime(
+    &self,
+    key: &str,
+    generation: u64,
+    client: Option<Arc<LspClient>>,
+    graceful_deadline: Instant,
+    absolute_deadline: Instant,
+    reason: RuntimeTerminationReason,
+) -> RuntimeTerminationOutcome;
+```
+
+The required sequence (recorded for `LspProcessIntent` before any protocol write):
+
+1. Look up the runtime only when the stored generation matches.
+2. `runtime.request_graceful_shutdown()` — set `LspProcessIntent::GracefulShutdownRequested` BEFORE the protocol shutdown request.
+3. Send the protocol shutdown under the graceful deadline.
+4. `await runtime.wait_for_exit()` — under the graceful deadline.
+5. On timeout, `runtime.request_force_kill()` and `await runtime.wait_for_exit()` under the absolute deadline.
+6. Persist exit metadata if the exit receiver has not already done so.
+7. Remove the runtime only if the stored generation still matches.
+8. Return whether a force kill was required.
+
+`RuntimeTerminationReason` distinguishes `ServiceShutdown`, `ManualRestart`, and `FailedPublication`. `RuntimeTerminationOutcome { runtime_present, exited, forced, event }` is recorded for diagnostics.
+
+`shutdown_all()` snaps clients with their authoritative generations, then terminates all runtimes concurrently under one absolute deadline (the same 6s global bound). The lifecycle reaches `Stopped` only after the runtimes are reaped or forced.
+
+### Single Generation Owner
+
+`LspService::next_generation_for_key(key) -> u64` is the single source of truth for replacement generation. The reinit closure receives the generation as an argument:
+
+```rust
+FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+```
+
+The coordinator calls `next_generation_for_key` exactly once per restart, then invokes the reinit closure with the supplied generation. The closure may construct, initialize, bind, and install — but it must not compute generation independently. The publication order is:
+
+```
+construct and initialize replacement
+bind supplied generation
+install generation-aware runtime
+publish client
+set authoritative generation
+replay documents
+run readiness
+publish Ready/Degraded
+```
+
+`restart_attempts` is incremented by `LspService::increment_restart_attempts(key)` BEFORE the coordinator runs and is shared across crash cycles.
+
+### Manual Restart Termination
+
+`LspService::manual_restart_client(key)` is a new public API. Manual restart always runs (it bypasses `LspRestartMode::Disabled`). The old runtime is terminated with `RuntimeTerminationReason::ManualRestart` BEFORE the replacement is started so a manual restart cannot leave two live processes. The old client is drained from the live map before the reinit closure runs to keep the reinit's `install` unambiguous.
+
+A manual restart issued while an automatic restart is in progress supersedes it: the automatic restart's `reinit` is observed to be stale (the generation map has been advanced) and aborts with `LspError::ServerRestarted`. The manual restart proceeds and is the only live coordinator for `key`. Tests `manual_restart_terminates_old_process_before_new_start`, `manual_restart_supersedes_scheduled_automatic_restart`, and `manual_restart_leaves_one_runtime` lock the invariant down.
+
+### Shared Crash-Cycle Restart Budget
+
+The `restart_attempts` counter is shared across rapid crash cycles. Every actual replacement spawn consumes one attempt; a successful short-lived replacement does NOT reset the counter. The counter resets only after the client remains healthy for `reset_after_healthy`. The reset is evaluated lazily on the next unexpected exit:
+
+```rust
+if last_healthy_at.elapsed() >= reset_after_healthy {
+    restart_attempts = 0;
+}
+```
+
+`LspService::set_last_healthy_now(key)` is called when readiness reaches `Ready`; `LspService::reset_restart_attempts_if_healthy_inherent(key, reset_after_healthy)` returns `Some(prev)` when the lazy reset applies and `None` otherwise. When `restart_attempts >= max_attempts` no new process is launched and the operational state transitions to `Failed { reason: ... }`. Tests `rapid_crash_loop_exhausts_shared_budget`, `healthy_interval_resets_budget`, and `failed_initialization_and_post_ready_crash_share_budget` lock the budget invariant down.
+
+### Retained Stale Diagnostics
+
+Old diagnostics are transferred to the replacement client as explicit stale evidence. The new flow:
+
+```rust
+let retained = old_client.diagnostic_cache_snapshot().await;
+new_client.install_retained_diagnostics("restart", retained).await;
+```
+
+`LspClient::install_retained_diagnostics(_source, entries)` (in `crates/egglsp/src/client.rs`) updates existing entries only when the incoming generation is newer, preserving the old `server_generation` and `post_restart` flags. The `DiagnosticCacheEntry.server_generation: u64` (0 sentinel for "never assigned") and `post_restart: bool` (monotonically sticky once observed) survive the transfer. The freshness classifier then returns `LspDiagnosticFreshness::Stale` because `entry.server_generation != current_generation`. A new `publishDiagnostics` from the new generation N (including an empty vector) overwrites retained generation N-1 evidence. `LspService::snapshot_diagnostics_for_restart(key)` returns the live cache snapshot for the old client (or an empty map when no client exists).
+
+`post_restart` is now defined consistently as `generation > 1` everywhere — `LspClient::bind_server_generation(generation)` and `DiagnosticCacheEntry::with_generation(generation)` both compute it that way. Generation 1 is never `post_restart`; generation 2+ always is. Tests `retained_diagnostics_visible_as_stale_after_restart`, `new_generation_diagnostics_replace_retained_entries`, `empty_new_diagnostics_clear_old_errors`, `generation_one_is_not_post_restart`, and `generation_two_and_three_are_post_restart` lock the diagnostic-transfer semantics.
+
+### Observed-Cycle Progress Readiness
+
+`LspClient::wait_for_progress_end(timeout) -> bool` now requires `state.completed_cycle == true`. A zero timeout succeeds only if a completed cycle was already observed. The empty-token-set case (no progress notifications received yet) is NOT sufficient — `wait_for_progress_end` returns `false` until a `begin`/`end` cycle is observed. The `ProgressState` is per-client generation; a replacement client starts with a fresh tracker and no reset API is needed.
+
+`LspService::wait_for_readiness(key, policy)` honors all four `LspReadinessPolicy` variants. The real-server harness calls `client.wait_for_progress_end(*timeout)` instead of fixed sleeps; the rust-analyzer and basedpyright suites now exercise the production primitive end-to-end. Tests `progress_wait_does_not_succeed_before_begin`, `progress_wait_succeeds_after_begin_end`, `progress_report_without_begin_does_not_complete_cycle`, and `restart_remains_indexing_until_generation_two_progress_ends` lock the observed-cycle semantics.
+
+### Validated Restart Configuration and Descriptor Parity
+
+`LspRestartPolicyConfig::try_to_domain(&self, base: &LspRestartPolicy) -> Result<LspRestartPolicy, LspError>` (in `crates/egglsp/src/config.rs`) validates user overrides and rejects:
+
+- `mode = OnUnexpectedExit` AND `max_attempts == 0` — `LspError::InvalidConfig("restart mode OnUnexpectedExit requires max_attempts > 0")`.
+- `initial_backoff_ms > max_backoff_ms` — `LspError::InvalidConfig(...)`.
+- Any duration that overflows `Duration::MAX`.
+
+Merge precedence is explicit user > profile > system default. `LspRestartPolicyConfig::merge_with_profile` copies non-`None` fields from the profile, so partial user overrides inherit unspecified profile values rather than resetting to generic defaults. `LspClientDescriptor::from_profile` produces one resolved descriptor per (root, server) pair, and both cold start and restart consume the same persisted descriptor — they receive identical `launch_spec`, `initialization_options`, `workspace_configuration`, `readiness_policy`, and `restart_policy`. The fake server captures `initialize.initializationOptions`, `workspace/configuration` responses, launch args, and environment; the test `cold_start_and_restart_receive_identical_configuration` asserts generation 1 and generation 2 match exactly.
+
+### Real-Server Stderr Capture
+
+`LspProcessRuntime::stderr_tail_capped(max_lines) -> Vec<String>` (in `crates/egglsp/src/runtime.rs`) returns the most recent `max_lines` lines from the bounded `StderrRingBuffer` (100 lines / 64KB cap) in chronological order. The real-server smoke harness (`crates/egglsp/tests/real_server_smoke.rs`) attaches an `LspProcessRuntime` to each smoke client, takes the child and stderr at construction, and on protocol shutdown calls `runtime.request_graceful_shutdown()` + `client.request_protocol_shutdown()` + `runtime.wait_for_exit()` with a force-kill fallback. At report construction the harness reads `runtime.stderr_tail_capped(20)` and populates `LspCompatibilityReport.stderr_tail`. Stage-timeout error messages now include the captured stderr tail as actionable detail.
+
+For advertised references, the smoke harness now requires a non-empty result. A zero-length `findReferences` response is a `RequiredIfAdvertised` failure for the rust fixture, and the Python cross-file fixture continues requiring at least two distinct URIs. The test `references_assertion_fails_for_zero_results` locks this down.
+
+### Supervised Constructor Invariant
+
+`LspService::new(config)` is the bare constructor — it returns a `Self` without the cyclic back-reference wired, so the exit-receiver task is NOT auto-started. It is retained for tests that explicitly assert on the un-supervised path. `LspService::new_arc(config) -> Arc<Self>` is the production constructor: it builds the service via `Arc::new_cyclic(|weak| Self { ..., self_ref: OnceLock::from(weak.clone()), ... })`, which wires the back-reference and guarantees `ensure_exit_receiver_started` can self-activate from `&self` callers. The test `new_arc_wires_self_ref` proves the production constructor populates `self_ref` (read via the `Weak` upgrade). No public production path creates an un-supervised service.
+
+### Test Timing Fix
+
+`generation_is_identical_across_health_and_exit_event` previously overwrote the generation-3 scenario before generation 2 started, causing the gen-2 process to read the gen-3 scenario. The test now writes the gen-3 scenario only AFTER `service.generation_for_key(&key) >= 2` is observed, and the gen-2 process is verified `Ready` before the gen-3 file is staged. The gen-3 process is also verified `Ready` before a stale gen-1 exit event is injected.
+
+### Final Invariant Checklist
+
+- [x] Old monitor cannot remove new runtime.
+- [x] Runtime-map removal checks generation.
+- [x] Shutdown sets graceful intent before protocol request.
+- [x] Hung server is force-killed and reaped.
+- [x] Runtime map is empty after shutdown.
+- [x] Only coordinator chooses replacement generation.
+- [x] Manual restart terminates old runtime first.
+- [x] One restart coordinator exists per key.
+- [x] Rapid crash cycles exhaust one shared budget.
+- [x] Healthy interval resets budget.
+- [x] Old diagnostics survive as stale evidence.
+- [x] New diagnostics replace stale evidence.
+- [x] Generation 1 has `post_restart = false`.
+- [x] Generation 2+ has `post_restart = true`.
+- [x] Progress wait requires completed cycle.
+- [x] Real-server readiness uses production primitive.
+- [x] Restart config is validated.
+- [x] Partial user config inherits profile values.
+- [x] Cold start and restart receive identical resolved settings.
+- [x] Real-server reports include stderr when emitted.
+- [x] Zero references fails advertised-reference check.
+- [x] No public unsupervised service constructor remains.
+- [x] Documentation accurately states Phase 3 status.
 
 ## See Also
 
