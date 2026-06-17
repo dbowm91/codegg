@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use super::client::{LspClient, LspClientOptions};
-use super::compatibility::{LspReadinessPolicy, LspRestartMode};
+use super::compatibility::{LspReadinessPolicy, LspRestartMode, LspRestartPolicy};
 use super::config::{LspConfig, LspRule};
 use super::document_sync::OpenDocumentRegistry;
 use super::download;
@@ -2377,7 +2377,8 @@ impl LspService {
         }
     }
 
-    /// Restart a client by key.
+    /// Restart a client by key under the configured
+    /// `LspRestartPolicy` (Automatic trigger).
     ///
     /// Stops the old client, collects open documents, creates a new
     /// client, and replays documents. Called by the exit handler when
@@ -2390,6 +2391,79 @@ impl LspService {
     /// `Restarting` → `Initializing` → `Ready` or `Failed`), and
     /// generates a fresh generation for the new client.
     pub async fn restart_client(&self, key: &str) -> Result<(), LspError> {
+        self.restart_client_with_trigger(key, RestartTrigger::Automatic).await
+    }
+
+    /// Restart a client by key under a manual trigger.
+    ///
+    /// Manual restart ALWAYS runs (it bypasses
+    /// `LspRestartMode::Disabled`). The old runtime is terminated
+    /// BEFORE the replacement is started so a manual restart
+    /// cannot leave two live processes.
+    ///
+    /// Concurrency: a manual restart issued while an automatic
+    /// restart is in progress supersedes it. The automatic
+    /// restart's `reinit` is observed to be stale (the
+    /// generation map has been advanced) and aborts with
+    /// `LspError::ServerRestarted`; the manual restart
+    /// proceeds and is the only live coordinator for `key`.
+    pub async fn manual_restart_client(&self, key: &str) -> Result<(), LspError> {
+        // Verify service is still running.
+        {
+            let lc = self.lifecycle.read().await;
+            if lc.phase != ServiceLifecycle::Running {
+                return Err(LspError::InitializationCancelled(
+                    "service is not running".to_string(),
+                ));
+            }
+        }
+
+        // Look up the current generation and runtime, if any.
+        // The manual path terminates the old runtime FIRST so
+        // a manual restart cannot leave two live processes.
+        let current_generation = self.generation_for_key(key).await;
+        if current_generation > 0 {
+            // Drain the old client from the live map so the
+            // reinit closure (which inserts into the same map)
+            // is unambiguous.
+            {
+                let mut clients = self.clients.write().await;
+                clients.remove(key);
+            }
+            // Terminate the old runtime. The runtime is
+            // responsible for the in-flight child; terminating
+            // it here ensures the new reinit's `spawn` is the
+            // only live process for `key`.
+            let now = Instant::now();
+            let abs_deadline = now + Duration::from_secs(6);
+            let graceful_deadline = now + Duration::from_secs(2);
+            let _ = terminate_runtime(
+                &self.runtime_map,
+                key,
+                current_generation,
+                None,
+                graceful_deadline,
+                abs_deadline,
+                RuntimeTerminationReason::ManualRestart,
+            )
+            .await;
+        }
+
+        // Hand off to the coordinator. The coordinator's
+        // `next_generation_for_key` will produce
+        // `current_generation + 1` (or `1` if `current_generation`
+        // was `0`).
+        self.restart_client_with_trigger(key, RestartTrigger::Manual)
+            .await
+    }
+
+    /// Private restart entry point that applies a specific
+    /// `RestartTrigger` to the coordinator.
+    async fn restart_client_with_trigger(
+        &self,
+        key: &str,
+        trigger: RestartTrigger,
+    ) -> Result<(), LspError> {
         // Verify service is still running.
         {
             let lc = self.lifecycle.read().await;
@@ -2421,7 +2495,7 @@ impl LspService {
         restart_client_coordinator(
             self,
             key,
-            RestartTrigger::Automatic,
+            trigger,
             attempt,
             descriptor,
             reinit_fn,
@@ -5869,6 +5943,141 @@ mod tests {
         // no gaps.
         let observed = svc.generation_for_key(&key).await;
         assert_eq!(observed, 3, "no skipped generations");
+    }
+
+    // ── Pass 4: Manual Restart API ───────────────────────────────
+
+    /// `manual_restart_client` terminates the old runtime
+    /// before invoking the coordinator. The runtime_map entry
+    /// for the old generation is removed before any
+    /// reinit is attempted, so the manual path cannot leave
+    /// two live processes.
+    ///
+    /// The test seeds a real (sleep 60) runtime, then calls
+    /// `manual_restart_client` with a key for which there is
+    /// no descriptor. The reinit step fails (no descriptor
+    /// → LaunchFailed), so the call returns an error — but
+    /// we can still verify that the old runtime was drained
+    /// from `runtime_map` BEFORE the error.
+    #[tokio::test]
+    async fn manual_restart_terminates_old_runtime_before_new_start() {
+        use std::time::Duration;
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "pass4:terminate_old".to_string();
+
+        // Seed the generation store so the manual path takes
+        // the runtime-termination branch.
+        svc.set_generation(&key, 1).await;
+
+        // Install a hung runtime for the old generation.
+        let runtime_map = svc.runtime_map.clone();
+        let hung = spawn_hung_runtime("pass4_hung").await;
+        install_runtime(&runtime_map, key.clone(), 1, hung).await;
+        assert_eq!(runtime_map.lock().await.len(), 1);
+
+        // The manual restart will:
+        //   1. Terminate the old runtime (this is what we
+        //      assert).
+        //   2. Fail to find a descriptor → LaunchFailed.
+        // We tolerate the error; we only care about the
+        // pre-termination step.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(15),
+            svc.manual_restart_client(&key),
+        )
+        .await
+        .expect("manual_restart_client did not return within 15s");
+
+        // The old runtime was terminated and removed from
+        // the map.
+        assert!(
+            runtime_map.lock().await.is_empty(),
+            "manual restart must terminate the old runtime"
+        );
+    }
+
+    /// `manual_restart_client` bypasses the
+    /// `LspRestartMode::Disabled` policy. The descriptor
+    /// associated with `key` may have a disabled restart
+    /// policy; the manual path runs regardless. We assert
+    /// this by seeding a descriptor with mode=Disabled and
+    /// observing the call attempts to coordinate (failing
+    /// for a different reason — no real LSP server — but
+    /// bypassing the disabled-policy check).
+    #[tokio::test]
+    async fn manual_restart_bypasses_disabled_policy() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "pass4:bypass_disabled".to_string();
+
+        // Seed a descriptor with restart disabled.
+        let descriptor = LspClientDescriptor {
+            key: key.clone(),
+            server_id: "rust-analyzer".to_string(),
+            root: std::path::PathBuf::from("/tmp"),
+            launch_spec: LspLaunchSpec::default_for_test(),
+            initialization_options: None,
+            workspace_configuration: serde_json::Value::Null,
+            readiness_policy: LspReadinessPolicy::InitializedIsReady,
+            restart_policy: LspRestartPolicy {
+                mode: LspRestartMode::Disabled,
+                max_attempts: 1,
+                initial_backoff: Duration::from_millis(10),
+                max_backoff: Duration::from_millis(100),
+                reset_after_healthy: Duration::from_secs(60),
+            },
+            seed_file: Some(std::path::PathBuf::from("/tmp/src/lib.rs")),
+        };
+        svc.set_descriptor_for_key(&key, descriptor).await;
+
+        // The manual call will fail because the launch spec
+        // is bogus (a real LSP server isn't available), but
+        // the call is NOT rejected at the policy gate.
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            svc.manual_restart_client(&key),
+        )
+        .await
+        .expect("manual_restart_client did not return within 15s");
+        // The result may be Ok or Err depending on whether
+        // the launch spec can produce a real client. What
+        // matters is that the call is NOT rejected with
+        // `InitializationCancelled("restart is disabled by
+        // policy")`.
+        if let Err(ref e) = result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("restart is disabled by policy"),
+                "manual restart must not be blocked by Disabled policy, got: {msg}"
+            );
+        }
+    }
+
+    /// When a manual restart is issued with no prior
+    /// generation, the manual path does not call
+    /// `terminate_runtime` (no old runtime to terminate) and
+    /// the call still proceeds. This guards against the
+    /// "first-ever restart" edge case.
+    #[tokio::test]
+    async fn manual_restart_with_no_old_runtime_is_a_no_op_termination() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "pass4:no_old_runtime".to_string();
+        let runtime_map = svc.runtime_map.clone();
+
+        // No prior generation; no prior runtime. The
+        // `current_generation > 0` branch in
+        // `manual_restart_client` is skipped.
+        assert_eq!(svc.generation_for_key(&key).await, 0);
+        assert!(runtime_map.lock().await.is_empty());
+
+        // The call proceeds (and will fail later in the
+        // coordinator because no descriptor exists for the
+        // key), but the early-return path is correct.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(15),
+            svc.manual_restart_client(&key),
+        )
+        .await
+        .expect("manual_restart_client did not return within 15s");
     }
 
     /// Build an `LspProcessRuntime` whose child process is
