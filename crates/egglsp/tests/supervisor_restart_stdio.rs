@@ -1544,6 +1544,376 @@ edition = "2021"
     assert_eq!(starts, 1, "expected only the initial process (no restart)");
 }
 
+// ── Test 10: Two consecutive restarts use monotonic generations ───
+
+/// Build a scenario that initializes successfully, opens a file,
+/// and then crashes when it receives a hover request.
+fn hover_crash_scenario(
+    name: &str,
+    root_uri: &str,
+    source_uri: &str,
+    exit_code: i32,
+) -> serde_json::Value {
+    json!({
+        "name": name,
+        "steps": [
+            init_capture_step(root_uri),
+            {"type": "ExpectNotification", "method": "initialized", "then": []},
+            {
+                "type": "ExpectNotification",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "type": "ObjectContains",
+                    "value": {
+                        "textDocument": {
+                            "uri": source_uri,
+                            "languageId": "rust",
+                            "version": 1,
+                            "text": SOURCE_TEXT
+                        }
+                    }
+                },
+                "then": []
+            },
+            {
+                "type": "ExpectRequest",
+                "method": "textDocument/hover",
+                "then": [{"type": "Exit", "code": exit_code}]
+            }
+        ],
+        "exit": {"type": "ExitCode", "code": exit_code},
+        "strict": true
+    })
+}
+
+/// Verifies that generation increments monotonically across
+/// multiple crash-restart cycles.
+///
+/// - Phase 1: gen 1 crashes on didOpen → coordinator restarts → gen 2
+/// - Phase 2: gen 2 crashes on hover → coordinator restarts → gen 3
+/// - Phase 3: gen 3 is healthy
+///
+/// Phase 2 crashes on hover (not didOpen) so the coordinator's
+/// document replay succeeds and gen 2 reaches Ready before the
+/// user-triggered crash.
+#[tokio::test]
+async fn two_consecutive_restarts_use_monotonic_generations() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let start_counter_path = root.join("start_counter.log");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        r#"[package]
+name = "test"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    std::fs::write(&source_path, SOURCE_TEXT).unwrap();
+
+    let phase1 = crash_scenario("phase1_crash", &root_uri, &source_uri, 1);
+    let phase2 = hover_crash_scenario("phase2_hover_crash", &root_uri, &source_uri, 2);
+    let phase3 = successful_scenario("phase3_recovery", &root_uri, &source_uri, None);
+
+    // Write phase1, init gen 1, open → crashes on didOpen.
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&phase1).unwrap(),
+    )
+    .unwrap();
+
+    let config = make_service_config(
+        &scenario_path,
+        &transcript_path,
+        &root.join("start_counter.log"),
+    );
+    let service = LspService::new_arc(config);
+    let key = canonical_root_key(&root, "rust-analyzer");
+
+    service
+        .get_or_create_client_for_file(&source_path)
+        .await
+        .expect("init gen1");
+    service
+        .open_file(&source_path, SOURCE_TEXT)
+        .await
+        .expect("open");
+
+    let descriptor = service.descriptor_for_key(&key).await.expect("desc");
+    service
+        .set_descriptor_for_key(&key, {
+            let mut d = descriptor;
+            d.restart_policy = short_restart_policy();
+            d
+        })
+        .await;
+
+    // Write phase2 (hover-crash) so the coordinator's gen-2
+    // process reads it. Phase 2 succeeds init+didOpen, reaches
+    // Ready, then crashes on hover.
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&phase2).unwrap(),
+    )
+    .unwrap();
+
+    // Wait for gen 2 to reach Ready.
+    wait_for("generation 2", Duration::from_secs(15), || async {
+        service.generation_for_key(&key).await >= 2
+    })
+    .await;
+
+    let state = service
+        .operational_state_for_key(&key)
+        .await
+        .expect("state");
+    assert!(
+        matches!(state, LspOperationalState::Ready),
+        "gen 2 should be Ready, got {state:?}"
+    );
+
+    // Write phase3 (recovery) so the gen-3 process reads it.
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&phase3).unwrap(),
+    )
+    .unwrap();
+
+    // Trigger gen 2 crash by sending hover.
+    let hover_handle = tokio::spawn({
+        let service = service.clone();
+        let key = key.clone();
+        async move {
+            service
+                .send_request(
+                    &key,
+                    "textDocument/hover",
+                    json!({
+                        "textDocument": {"uri": source_uri},
+                        "position": {"line": 0, "character": 0}
+                    }),
+                )
+                .await
+        }
+    });
+    let hover_result = tokio::time::timeout(Duration::from_secs(10), hover_handle)
+        .await
+        .expect("hover task timed out")
+        .expect("hover task panicked");
+    assert!(
+        hover_result.is_err(),
+        "expected hover to fail after gen-2 crash, got {hover_result:?}"
+    );
+
+    // Wait for gen 3.
+    wait_for("generation 3", Duration::from_secs(15), || async {
+        service.generation_for_key(&key).await >= 3
+    })
+    .await;
+
+    let state = service
+        .operational_state_for_key(&key)
+        .await
+        .expect("state after gen 3");
+    assert!(
+        matches!(state, LspOperationalState::Ready),
+        "gen 3 should be Ready, got {state:?}"
+    );
+
+    assert_eq!(
+        service.generation_for_key(&key).await,
+        3,
+        "expected generation 3 after two consecutive restarts"
+    );
+
+    let starts = count_process_starts(&start_counter_path);
+    assert_eq!(
+        starts, 3,
+        "expected exactly 3 process starts (gen 1 + gen 2 + gen 3)"
+    );
+
+    let _ = tokio::time::timeout(Duration::from_secs(15), service.shutdown_all()).await;
+}
+
+// ── Test 11: Generation is identical across health and exit event ─
+
+/// Verifies that the health snapshot's generation field matches
+/// the generation reported by a process exit event. Also verifies
+/// that stale exit events (for an older generation) are ignored
+/// and do not corrupt the health snapshot.
+#[tokio::test]
+async fn generation_is_identical_across_health_and_exit_event() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let root = tempdir.path().to_path_buf();
+    let source_path = root.join("src/lib.rs");
+    let scenario_path = root.join("scenario.json");
+    let transcript_path = root.join("transcript.jsonl");
+    let start_counter_path = root.join("start_counter.log");
+    let root_uri = path_to_uri(&root);
+    let source_uri = path_to_uri(&source_path);
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        r#"[package]
+name = "test"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    std::fs::write(&source_path, SOURCE_TEXT).unwrap();
+
+    let phase1 = successful_scenario("phase1_ok", &root_uri, &source_uri, None);
+    let phase2 = hover_crash_scenario("phase2_hover_crash", &root_uri, &source_uri, 1);
+    let phase3 = successful_scenario("phase3_recover", &root_uri, &source_uri, None);
+
+    // Write phase1, init gen 1.
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&phase1).unwrap(),
+    )
+    .unwrap();
+
+    let config = make_service_config(
+        &scenario_path,
+        &transcript_path,
+        &root.join("start_counter.log"),
+    );
+    let service = LspService::new_arc(config);
+    let key = canonical_root_key(&root, "rust-analyzer");
+
+    service
+        .get_or_create_client_for_file(&source_path)
+        .await
+        .expect("init gen1");
+
+    // Health snapshot should report generation 1.
+    let snap = service
+        .operational_health_snapshot(&key)
+        .await
+        .expect("health snapshot");
+    assert_eq!(
+        snap.generation, 1,
+        "health snapshot generation should be 1 after init"
+    );
+
+    // Enable restart on the descriptor.
+    let descriptor = service.descriptor_for_key(&key).await.expect("desc");
+    service
+        .set_descriptor_for_key(&key, {
+            let mut d = descriptor;
+            d.restart_policy = short_restart_policy();
+            d
+        })
+        .await;
+
+    // Write phase2 (hover-crash) so the coordinator's gen-2
+    // process reads it. Phase 2 succeeds init+didOpen, reaches
+    // Ready, then crashes on hover.
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&phase2).unwrap(),
+    )
+    .unwrap();
+
+    // Write phase3 (recovery) so the gen-3 process reads it.
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_string_pretty(&phase3).unwrap(),
+    )
+    .unwrap();
+
+    // Trigger gen 1 crash by sending hover.
+    let hover_handle = tokio::spawn({
+        let service = service.clone();
+        let key = key.clone();
+        async move {
+            service
+                .send_request(
+                    &key,
+                    "textDocument/hover",
+                    json!({
+                        "textDocument": {"uri": source_uri},
+                        "position": {"line": 0, "character": 0}
+                    }),
+                )
+                .await
+        }
+    });
+    let hover_result = tokio::time::timeout(Duration::from_secs(10), hover_handle)
+        .await
+        .expect("hover task timed out")
+        .expect("hover task panicked");
+    assert!(
+        hover_result.is_err(),
+        "expected hover to fail after gen-1 crash, got {hover_result:?}"
+    );
+
+    // Wait for gen 2.
+    wait_for("generation 2", Duration::from_secs(15), || async {
+        service.generation_for_key(&key).await >= 2
+    })
+    .await;
+
+    // Health snapshot should now report generation 2.
+    let snap = service
+        .operational_health_snapshot(&key)
+        .await
+        .expect("health snapshot after restart");
+    assert_eq!(
+        snap.generation, 2,
+        "health snapshot generation should be 2 after restart"
+    );
+    assert!(
+        matches!(snap.state, LspOperationalState::Ready),
+        "expected Ready after successful restart, got {:?}",
+        snap.state
+    );
+
+    // Inject a stale gen-1 exit event. The handler should
+    // ignore it, and the health snapshot must remain at gen 2.
+    let stale_event = egglsp::LspProcessExitEvent::new(
+        "rust-analyzer",
+        root.clone(),
+        1, // gen 1 — stale
+        Some(1),
+        None,
+        false,
+        vec!["stale stderr".to_string()],
+    );
+    service.publish_test_exit_event(stale_event).await;
+
+    // Give the handler time to process (and ignore) the event.
+    sleep(Duration::from_millis(300)).await;
+
+    // Health snapshot must still report generation 2.
+    let snap_after = service
+        .operational_health_snapshot(&key)
+        .await
+        .expect("health snapshot after stale event");
+    assert_eq!(
+        snap_after.generation, 2,
+        "stale exit event should not change health snapshot generation"
+    );
+    assert!(
+        matches!(snap_after.state, LspOperationalState::Ready),
+        "stale exit event should not change state from Ready; got {:?}",
+        snap_after.state
+    );
+
+    // Cleanup.
+    let _ = tokio::time::timeout(Duration::from_secs(15), service.shutdown_all()).await;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 /// Construct a minimal `LspClientDescriptor` for tests that seed
