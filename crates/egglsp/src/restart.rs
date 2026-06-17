@@ -3838,4 +3838,204 @@ mod tests {
         // already failed).
         drop(_hold);
     }
+
+    // ── Pass 2 — Manual supersession ownership invariants ────────────
+
+    /// Pass 2 — `cancelled_owner_retains_slot_until_finished`.
+    /// Strong ownership invariant assertion: while a waiter is
+    /// still pending for a cancelled owner, the ownership entry
+    /// MUST remain installed in the per-key map with the same
+    /// `owner_id`. A second acquisition is rejected with
+    /// `AlreadyInProgress`. Only an explicit owner release (which
+    /// signals `Finished` and removes the entry) frees the slot
+    /// for a new acquisition.
+    #[tokio::test]
+    async fn cancelled_owner_retains_slot_until_finished() {
+        use super::super::restart::cancel_restart_ownership;
+
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+        let original_owner_id = first_lease.owner_id;
+
+        // Cancel via the public function. The waiter is NOT yet
+        // awaited — we explicitly hold it pending.
+        let waiter = cancel_restart_ownership(&map, "k")
+            .await
+            .expect("cancel returns a waiter for an installed owner");
+
+        // Invariant 1: the entry remains installed.
+        let entry = {
+            let m = map.lock().await;
+            m.get("k").cloned()
+        };
+        let ctrl = entry.expect("ownership entry must remain installed");
+        assert_eq!(
+            ctrl.owner_id, original_owner_id,
+            "owner_id must not change while waiter is pending"
+        );
+
+        // Invariant 2: second acquisition is rejected.
+        let second =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        assert!(
+            matches!(second, RestartLeaseAcquisition::AlreadyInProgress { .. }),
+            "second acquisition must be rejected while owner is still installed"
+        );
+
+        // Invariant 3: waiter has NOT returned Ok (the slot is
+        // still occupied).
+        assert!(
+            !waiter.is_finished(),
+            "waiter must NOT report finished while owner is installed"
+        );
+
+        // Cleanup: release the lease so the entry is removed.
+        let _ = first_lease.release();
+
+        // After release the waiter can return Ok and the slot
+        // is free for a new acquisition.
+        let third =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let third_lease = match third {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired after release, got {other:?}"),
+        };
+        assert_ne!(
+            third_lease.owner_id, original_owner_id,
+            "new owner must have a fresh owner_id"
+        );
+        let _ = third_lease.release();
+    }
+
+    /// Pass 4 — `manual_acquires_only_after_finished`. A manual
+    /// supersession that cancels an in-flight owner MUST NOT
+    /// acquire the slot until the in-flight owner explicitly
+    /// signals `Finished` AND removes its own entry. We model
+    /// this by holding a lease alive across the cancellation
+    /// and release sequence and asserting that a second
+    /// acquisition is blocked while the lease is held.
+    #[tokio::test]
+    async fn manual_acquires_only_after_finished() {
+        use super::super::restart::cancel_restart_ownership;
+
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        // Old owner acquires and is NOT released yet.
+        let first =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+
+        // Manual supersession cancels the old owner.
+        let waiter = cancel_restart_ownership(&map, "k")
+            .await
+            .expect("cancel returns a waiter for an installed owner");
+
+        // While the old lease is still alive, a manual
+        // acquisition must be rejected — the slot is not free.
+        let second =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Manual).await;
+        assert!(
+            matches!(second, RestartLeaseAcquisition::AlreadyInProgress { .. }),
+            "manual acquisition must be blocked while old owner is still installed"
+        );
+
+        // The waiter must not be finished yet (no Finished
+        // signal has been sent).
+        assert!(
+            !waiter.is_finished(),
+            "waiter must NOT report finished while old owner is still installed"
+        );
+
+        // Now the old owner releases. The waiter observes
+        // Finished AND the slot becomes free.
+        let _ = first_lease.release();
+
+        // Bound the wait so we cannot hang in CI.
+        let wait_result = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if waiter.is_finished() {
+                    break;
+                }
+                // The waiter was consumed; we already cloned the
+                // map for verification. Poll until Finished.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            wait_result.is_ok(),
+            "waiter did not observe Finished after release"
+        );
+
+        // Manual acquisition now succeeds.
+        let third =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Manual).await;
+        let third_lease = match third {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired after release, got {other:?}"),
+        };
+        let _ = third_lease.release();
+    }
+
+    // ── Pass 2 — Waiter timeout/close behaviour ──────────────────────
+
+    /// Pass 2 — `closed_completion_after_release_observes_finished`.
+    /// Once the original owner releases (sending `Finished` and
+    /// removing its own entry), a waiter constructed BEFORE the
+    /// release MUST observe `Finished` and the
+    /// `verify_slot_free` step MUST succeed. This is the happy
+    /// path that lets manual supersession proceed after the
+    /// in-flight automatic restart exits cleanly.
+    #[tokio::test]
+    async fn finished_signal_after_release_resolves_waiter() {
+        use super::super::restart::cancel_restart_ownership;
+
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+
+        let waiter = cancel_restart_ownership(&map, "k")
+            .await
+            .expect("cancel returns a waiter");
+
+        // Drop the lease from a separate task so the waiter can
+        // observe Finished asynchronously. We move the lease
+        // into the spawned task and let it drop there.
+        let release_task = tokio::spawn(async move {
+            // Small delay so the waiter is definitely awaiting
+            // before we drop (and therefore release) the lease.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            drop(first_lease);
+        });
+
+        // The waiter must observe Finished AND verify the slot
+        // is free within a bounded window.
+        tokio::time::timeout(Duration::from_secs(2), waiter.wait(Duration::from_secs(2)))
+            .await
+            .expect("wait timed out")
+            .expect("waiter must resolve Ok after release");
+
+        let _ = release_task.await;
+
+        // Slot must now be free.
+        let is_free = map.lock().await.get("k").is_none();
+        assert!(is_free, "slot must be free after release");
+    }
 }
