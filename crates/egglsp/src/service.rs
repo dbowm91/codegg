@@ -6963,6 +6963,157 @@ mod tests {
         }
     }
 
+    /// Pass 2 — `manual_timeout_preserves_original_generation`.
+    /// When the in-flight automatic owner does NOT signal
+    /// completion within `MANUAL_SUPERSESSION_OWNER_TIMEOUT`
+    /// (3s), the manual restart path must abort with a typed
+    /// `InitializationCancelled`/`ServerRestarted` error AND
+    /// the original generation must remain unchanged. The
+    /// manual teardown MUST NOT have touched the live client
+    /// or runtime.
+    ///
+    /// This test is the timeout baseline for
+    /// `manual_detects_generation_advance_during_wait` and
+    /// `manual_same_generation_proceeds_after_wait` — the
+    /// owner-timeout path is the third branch of the manual
+    /// supersession state machine.
+    ///
+    /// Test mechanics:
+    /// 1. Seed `generation_for_key` with `1`.
+    /// 2. Install a gen-1 runtime entry and a gen-1 client
+    ///    entry so the manual teardown has a concrete target
+    ///    to NOT touch.
+    /// 3. Manually acquire a per-key restart ownership lease
+    ///    (simulating an in-flight automatic restart).
+    /// 4. NEVER release the lease — the manual wait must time
+    ///    out.
+    /// 5. Call `manual_restart_client` with a short outer
+    ///    timeout. The call returns either `ServerRestarted`
+    ///    or `InitializationCancelled` (the deterministic
+    ///    waiter-timeout path); the live client and runtime
+    ///    must both remain.
+    #[tokio::test]
+    async fn manual_timeout_preserves_original_generation() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "pass2:timeout_preserves_generation".to_string();
+
+        // 1. Seed initial generation.
+        svc.set_generation(&key, 1).await;
+        let original_generation = svc.generation_for_key(&key).await;
+        assert_eq!(original_generation, 1, "pre-wait generation must be 1");
+
+        // 2. Install a gen-1 runtime entry so the manual teardown
+        //    has a concrete target to NOT touch.
+        let runtime_map = svc.runtime_map.clone();
+        let gen1_runtime = spawn_dummy_runtime("pass2_timeout_gen1").await;
+        install_runtime(&runtime_map, key.clone(), 1, gen1_runtime.clone()).await;
+
+        // Install a test-stub client in the clients map so the
+        // manual teardown takes the runtime-aware branch.
+        let shutdown_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let dir = std::env::temp_dir().join("egglsp_pass2_timeout_preserves");
+        let _ = std::fs::create_dir_all(&dir);
+        let client = Arc::new(
+            crate::client::LspClient::test_stub(
+                "rust-analyzer",
+                &dir,
+                shutdown_count,
+                crate::client::LspClientOptions::default(),
+            )
+            .await
+            .expect("test_stub"),
+        );
+        {
+            let mut clients = svc.clients.write().await;
+            clients.insert(key.clone(), client.clone());
+        }
+
+        // 3. Acquire an ownership lease that will NEVER be
+        //    released — the manual wait must time out.
+        let acquired = acquire_restart_ownership(
+            &svc.restart_tasks,
+            &svc.restart_owner_counter,
+            &key,
+            RestartTrigger::Automatic,
+        )
+        .await;
+        let lease = match acquired {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            RestartLeaseAcquisition::AlreadyInProgress { .. } => {
+                panic!("slot must be free for test")
+            }
+        };
+
+        // 4. Manual restart with a short outer timeout. The
+        //    inner `MANUAL_SUPERSESSION_OWNER_TIMEOUT` is 3s;
+        //    the test waits up to 5s and the call should
+        //    return BEFORE that bound (the in-flight owner
+        //    times out at 3s). The exact error variant may be
+        //    `InitializationCancelled` (waiter timeout) or
+        //    `ServerRestarted` (depending on internal ordering);
+        //    either is acceptable for this test — what matters
+        //    is that the live client and runtime are preserved.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            svc.manual_restart_client(&key),
+        )
+        .await
+        .expect("manual_restart_client did not return within 5s");
+
+        // 5. The result must be an error (not Ok) because the
+        //    manual path did not complete.
+        assert!(
+            result.is_err(),
+            "manual must return an error when the in-flight owner times out, got {result:?}"
+        );
+        match &result {
+            Err(LspError::InitializationCancelled(_)) | Err(LspError::ServerRestarted { .. }) => {
+                // Expected: typed busy/restart error.
+            }
+            other => panic!(
+                "manual must return InitializationCancelled or ServerRestarted on owner timeout, got {other:?}"
+            ),
+        }
+
+        // Release the lease so subsequent tests do not see a
+        // stuck owner.
+        let _ = lease.release();
+
+        // 6. The original generation MUST be preserved.
+        let current_generation = svc.generation_for_key(&key).await;
+        assert_eq!(
+            current_generation, 1,
+            "manual timeout must NOT bump the generation; pre=1 post={current_generation}"
+        );
+
+        // 7. The gen-1 runtime entry MUST remain.
+        let entry = {
+            let m = runtime_map.lock().await;
+            m.get(&key).cloned()
+        };
+        assert!(
+            entry.is_some(),
+            "manual timeout must NOT tear down the live runtime"
+        );
+        assert_eq!(
+            entry.unwrap().generation,
+            1,
+            "runtime entry generation must be preserved at 1"
+        );
+
+        // 8. The clients map MUST still contain the gen-1
+        //    client — manual timeout must not have touched
+        //    it.
+        let client_count = {
+            let clients = svc.clients.read().await;
+            clients.contains_key(&key)
+        };
+        assert!(
+            client_count,
+            "manual timeout must NOT remove the live client"
+        );
+    }
+
     /// Pass 4 — `manual_generation_advance_returns_server_restarted`.
     /// Strong assertion: the manual path must return exactly
     /// `LspError::ServerRestarted` (not `Ok`, not `LaunchFailed`,

@@ -3730,6 +3730,232 @@ mod tests {
         );
     }
 
+    /// Pass 3 — `cancellation_after_publication_finishes_replacement`.
+    /// Strong assertion locking down the post-publication
+    /// cancellation policy: when the lease token is cancelled
+    /// AFTER the replacement has been published AND installed
+    /// in the live clients map (the publication boundary), the
+    /// coordinator MUST finish the replacement to a coherent
+    /// `Ready` (or `Degraded`) outcome. The replacement MUST
+    /// remain published, the generation MUST be coherent
+    /// (advancing exactly once, from 0 to 1 in this test), and
+    /// the `restart_attempts` counter MUST be exactly 1 (the
+    /// consumed attempt is not refunded by post-publication
+    /// cancellation).
+    ///
+    /// Test mechanics: the reinit closure does NOT publish and
+    /// does NOT cancel. A separate task cancels the lease
+    /// token AFTER the coordinator has published (cancellation
+    /// observably fires *after* the publication boundary). The
+    /// forced readiness mock returns `Ready` so the coordinator
+    /// can reach the success branch.
+    #[tokio::test]
+    async fn cancellation_after_publication_finishes_replacement() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 1;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+
+        let lease_token = CancellationToken::new();
+
+        // Reinit closure: build a stub and return it without
+        // publishing (the coordinator publishes at its own
+        // boundary) and without cancelling.
+        let shared_for_reinit = shared.clone();
+        let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
+            let shared = shared_for_reinit.clone();
+            Box::pin(async move {
+                let stub = LspClient::test_stub(
+                    "post-pub-finish-stub",
+                    std::path::Path::new("/tmp"),
+                    Arc::new(AtomicUsize::new(0)),
+                    crate::client::LspClientOptions::default(),
+                )
+                .await?;
+                let client = Arc::new(stub);
+                client.bind_server_generation(gen).await;
+                shared.set_generation("test:rust-analyzer", gen).await;
+                Ok(UnpublishedReplacement {
+                    client,
+                    generation: gen,
+                })
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+        };
+
+        // Force readiness to Ready so the coordinator can reach
+        // the success branch.
+        *shared.forced_readiness.lock().unwrap() =
+            Some(crate::service::ReadinessResult::Ready {
+                elapsed: Duration::from_millis(50),
+            });
+
+        // Cancel the lease token from a separate task AFTER
+        // the coordinator has had a chance to publish. The
+        // delay (40ms) is larger than the typical
+        // reinit-publish window (under 20ms on a developer
+        // machine) so the cancellation observably fires AFTER
+        // publication.
+        let token_clone = lease_token.clone();
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            token_clone.cancel();
+        });
+
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            Some(lease_token),
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+
+        let _ = cancel_task.await;
+
+        // Strong assertion: the result must be `Ready`
+        // (post-publication cancellation is non-aborting).
+        // Must NOT be `InitializationCancelled`, `LaunchFailed`,
+        // or `ServerRestarted`.
+        match result {
+            Ok(RestartOutcome::Ready) => {}
+            other => panic!(
+                "expected Ready (post-publication cancellation is non-aborting), got {other:?}"
+            ),
+        }
+
+        // Replacement remains published.
+        let after = shared.clients.read().await;
+        assert!(
+            after.contains_key("test:rust-analyzer"),
+            "post-publication cancellation must leave the live client published"
+        );
+
+        // Generation coherence: exactly 1 attempt consumed
+        // (the one we reserved at the start of the loop).
+        // The coordinator must NOT have rolled back the
+        // counter on post-publication cancellation.
+        let attempts = shared.restart_attempts("test:rust-analyzer").await;
+        assert_eq!(
+            attempts, 1,
+            "post-publication cancellation must NOT refund the consumed attempt"
+        );
+
+        // Generation advanced exactly once (0 → 1).
+        let gen = shared.generation_for_key("test:rust-analyzer").await;
+        assert_eq!(
+            gen, 1,
+            "generation must advance exactly once across the restart"
+        );
+    }
+
+    /// Pass 3 — `cancellation_before_publication_still_reaps_replacement`.
+    /// Strong assertion locking down the pre-publication
+    /// cancellation policy (Pass 4 invariant): when the lease
+    /// token is cancelled BEFORE the replacement has been
+    /// installed in the live clients map, the coordinator MUST
+    /// reap the unpublished replacement. The result is
+    /// `InitializationCancelled("...after spawn")` and the
+    /// clients map must NOT contain the unpublished client.
+    ///
+    /// This is the regression guard for the reaping invariant
+    /// that the post-publication policy (Pass 3) preserves:
+    /// cancellation between reinit return and coordinator
+    /// publication must NOT leak the unpublished client.
+    #[tokio::test]
+    async fn cancellation_before_publication_still_reaps_replacement() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 1;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+
+        let lease_token = CancellationToken::new();
+
+        // Reinit closure: build a stub, publish it (so the
+        // reaping branch can verify the entry is removed),
+        // then cancel the lease token. The cancellation
+        // observably fires AFTER the closure has returned its
+        // UnpublishedReplacement, but BEFORE the coordinator's
+        // publication step has committed the new client to the
+        // live map. The coordinator's pre-publish
+        // cancellation check sees the cancelled token and runs
+        // the reaping path.
+        let shared_for_reinit = shared.clone();
+        let token_for_reinit = lease_token.clone();
+        let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
+            let shared = shared_for_reinit.clone();
+            let token = token_for_reinit.clone();
+            Box::pin(async move {
+                let stub = LspClient::test_stub(
+                    "pre-pub-reap-stub",
+                    std::path::Path::new("/tmp"),
+                    Arc::new(AtomicUsize::new(0)),
+                    crate::client::LspClientOptions::default(),
+                )
+                .await?;
+                let client = Arc::new(stub);
+                client.bind_server_generation(gen).await;
+                shared.set_generation("test:rust-analyzer", gen).await;
+                // Publish to the clients map (the closure
+                // owns publication in some test paths; here we
+                // publish to ensure the reaping branch has a
+                // concrete target to remove).
+                {
+                    let mut map = shared.clients.write().await;
+                    map.insert("test:rust-analyzer".to_string(), client.clone());
+                }
+                // Cancel the lease token from inside the
+                // closure so the coordinator's pre-publication
+                // cancellation check fires.
+                token.cancel();
+                Ok(UnpublishedReplacement {
+                    client,
+                    generation: gen,
+                })
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+        };
+
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            Some(lease_token),
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+
+        // Pre-publication cancellation returns
+        // `InitializationCancelled("...after spawn")` (the
+        // post-spawn branch fires because the closure has
+        // already returned when the cancellation is observed).
+        match result {
+            Err(LspError::InitializationCancelled(msg)) => {
+                assert!(
+                    msg.contains("after spawn"),
+                    "expected post-spawn cancellation, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected InitializationCancelled with 'after spawn' message, got {other:?}"
+            ),
+        }
+
+        // The clients map must NOT contain the unpublished
+        // replacement — the reaping invariant from Pass 4 is
+        // preserved by the pre-publication cancellation
+        // policy in Pass 3.
+        let after = shared.clients.read().await;
+        assert!(
+            !after.contains_key("test:rust-analyzer"),
+            "pre-publication cancellation must reap the unpublished client"
+        );
+    }
+
     /// Once the owner releases after a cancellation, the slot
     /// becomes free and a new acquisition succeeds. This locks
     /// down the invariant that `Finished` is the ownership
