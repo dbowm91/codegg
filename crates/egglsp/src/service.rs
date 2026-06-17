@@ -2318,13 +2318,33 @@ impl LspService {
         }
 
         // Check restart policy via the descriptor (single source of truth).
-        let should_restart = match self.descriptor_for_key(&key).await {
+        let descriptor = self.descriptor_for_key(&key).await;
+        let should_restart = match &descriptor {
             Some(d) => {
                 d.restart_policy.mode == LspRestartMode::OnUnexpectedExit
                     && d.restart_policy.max_attempts > 0
             }
             None => false,
         };
+
+        // Pass 5 — Shared Restart Budget. Before scheduling a
+        // restart, lazily reset the counter if the previous
+        // run stayed healthy for `reset_after_healthy`. This
+        // makes the budget span rapid crash cycles: a server
+        // that survives for the full reset interval earns a
+        // fresh budget on the next crash.
+        if let Some(d) = &descriptor {
+            if let Some(prev) = self
+                .reset_restart_attempts_if_healthy_inherent(&key, d.restart_policy.reset_after_healthy)
+                .await
+            {
+                debug!(
+                    key,
+                    prev,
+                    "restart_attempts reset by healthy interval"
+                );
+            }
+        }
 
         if should_restart {
             // Delegate the entire restart lifecycle to
@@ -2771,6 +2791,31 @@ impl LspService {
             })
         }
     }
+
+    /// Pass 5 — Shared Restart Budget. Reset the
+    /// `restart_attempts` counter to `0` if the previous
+    /// run stayed healthy for at least
+    /// `reset_after_healthy`. Returns the previous counter
+    /// value when the reset was applied, or `None` when the
+    /// service has not been healthy long enough (or there is
+    /// no prior healthy timestamp for the key).
+    async fn reset_restart_attempts_if_healthy_inherent(
+        &self,
+        key: &str,
+        reset_after_healthy: Duration,
+    ) -> Option<u32> {
+        let mut states = self.operational_state.write().await;
+        let entry = states.get_mut(key)?;
+        let last_healthy = entry.last_healthy_at?;
+        let elapsed = last_healthy.elapsed();
+        if elapsed >= reset_after_healthy {
+            let prev = entry.restart_attempts;
+            entry.restart_attempts = 0;
+            Some(prev)
+        } else {
+            None
+        }
+    }
 }
 
 // ── RestartShared impl for LspService ────────────────────────────
@@ -2826,6 +2871,14 @@ impl RestartShared for LspService {
         if let Some(state) = states.get_mut(key) {
             state.last_healthy_at = Some(Instant::now());
         }
+    }
+    async fn reset_restart_attempts_if_healthy(
+        &self,
+        key: &str,
+        reset_after_healthy: Duration,
+    ) -> Option<u32> {
+        self.reset_restart_attempts_if_healthy_inherent(key, reset_after_healthy)
+            .await
     }
     async fn mark_diagnostics_stale_for_key(&self, key: &str) {
         self.mark_diagnostics_stale_for_key(key).await;
@@ -6078,6 +6131,83 @@ mod tests {
         )
         .await
         .expect("manual_restart_client did not return within 15s");
+    }
+
+    // ── Pass 5: Shared Restart Budget ────────────────────────────
+
+    /// `reset_restart_attempts_if_healthy_inherent` resets
+    /// the counter to `0` only when the service has been
+    /// healthy for at least `reset_after_healthy`. If the
+    /// last healthy timestamp is missing or the interval
+    /// has not yet elapsed, the call returns `None` and the
+    /// counter is unchanged.
+    #[tokio::test]
+    async fn healthy_reset_only_fires_after_reset_interval() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "pass5:healthy_reset";
+
+        // Create the entry so `set_last_healthy_now` has
+        // somewhere to write.
+        let _ = svc.increment_restart_attempts(&key).await;
+
+        // Set a healthy timestamp and immediately check
+        // (within the reset interval). Reset must NOT fire.
+        svc.set_last_healthy_now(&key).await;
+        let reset = svc
+            .reset_restart_attempts_if_healthy_inherent(
+                &key,
+                Duration::from_secs(60),
+            )
+            .await;
+        assert!(
+            reset.is_none(),
+            "healthy interval not yet elapsed: reset must NOT fire"
+        );
+
+        // Wait for the interval to elapse, then reset must fire.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let reset = svc
+            .reset_restart_attempts_if_healthy_inherent(
+                &key,
+                Duration::from_millis(10),
+            )
+            .await;
+        assert!(
+            reset.is_some(),
+            "healthy interval elapsed: reset must fire"
+        );
+    }
+
+    /// `restart_attempts` increments across restart
+    /// invocations. The shared counter is the cross-
+    /// invocation bound, so a rapid crash cycle drains the
+    /// budget across cycles rather than per-invocation.
+    #[tokio::test]
+    async fn restart_attempts_increments_under_load() {
+        let svc = LspService::new_arc(LspConfig::Disabled(false));
+        let key = "pass5:increment";
+
+        // Increment to 3 manually.
+        for _ in 0..3 {
+            let _ = svc.increment_restart_attempts(&key).await;
+        }
+        assert_eq!(svc.restart_attempts(&key).await, 3);
+
+        // Healthy reset clears the counter.
+        svc.set_last_healthy_now(&key).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let reset = svc
+            .reset_restart_attempts_if_healthy_inherent(
+                &key,
+                Duration::from_millis(10),
+            )
+            .await;
+        assert_eq!(reset, Some(3));
+        assert_eq!(
+            svc.restart_attempts(&key).await,
+            0,
+            "counter is zero after healthy reset"
+        );
     }
 
     /// Build an `LspProcessRuntime` whose child process is

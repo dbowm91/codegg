@@ -263,6 +263,17 @@ pub trait RestartShared {
     /// exists (the coordinator treats that as a no-op).
     async fn increment_restart_attempts(&self, key: &str) -> u32;
 
+    /// Reset the `restart_attempts` counter to `0` if the
+    /// service has been healthy for at least
+    /// `reset_after_healthy`. Returns the previous counter
+    /// value when the reset was applied, or `None` when the
+    /// service has not been healthy long enough.
+    async fn reset_restart_attempts_if_healthy(
+        &self,
+        key: &str,
+        reset_after_healthy: Duration,
+    ) -> Option<u32>;
+
     /// Transition the operational state for `key` through the
     /// central validator. Used by the coordinator for the
     /// `Restarting` / `Initializing` / `Ready` / `Failed` moves.
@@ -363,12 +374,23 @@ where
         descriptor.seed_file = Some(descriptor.root.clone());
     }
 
-    // The caller has already incremented `restart_attempts`, so
-    // the externally-computed `attempt` is the "real" attempt
-    // number. We use it for the `Restarting { attempt }` state.
-    let effective_attempt = if attempt == 0 { 1 } else { attempt };
+    // Pass 5 — Shared Restart Budget. The coordinator no
+    // longer uses a per-invocation `1..=max_attempts` loop.
+    // The shared `restart_attempts` counter is the single
+    // bound: every actual replacement launch (whether the
+    // first or the nth) consumes one attempt. The counter
+    // resets only when the service has been healthy for
+    // `reset_after_healthy` (handled by the exit handler
+    // before scheduling this coordinator).
+    //
+    // The caller has already incremented `restart_attempts`
+    // for this invocation, so the `attempt` parameter is
+    // the value AFTER the increment. We use it as the
+    // starting effective_attempt and increment for any
+    // additional retries within this invocation.
+    let mut effective_attempt = if attempt == 0 { 1 } else { attempt };
 
-    for inner_attempt in 1..=max_attempts {
+    loop {
         // Cancel-pending: if the service is shutting down, abort.
         let phase = shared.service_phase().await;
         if phase != ServicePhase::Running {
@@ -388,16 +410,15 @@ where
             });
         }
 
-        // Backoff: sleep `backoff_delay(inner_attempt)` between
-        // attempts. The first attempt also gets a backoff per the
-        // policy-driven algorithm. The sleep is chunked so that
-        // cancellation is responsive.
-        if inner_attempt > 1 {
-            let delay = backoff_delay(inner_attempt - 1, &policy);
+        // Backoff: sleep `backoff_delay(attempt - 1)` between
+        // attempts. The first attempt has no backoff. The
+        // sleep is chunked so that cancellation is responsive.
+        if effective_attempt > 1 {
+            let delay = backoff_delay(effective_attempt - 1, &policy);
             debug!(
                 server = %descriptor.server_id,
                 root = %descriptor.root.display(),
-                inner_attempt,
+                effective_attempt,
                 delay_ms = delay.as_millis() as u64,
                 "restart backoff"
             );
@@ -409,7 +430,7 @@ where
         // Transition operational state. First attempt uses
         // `Restarting`; subsequent attempts use `Initializing`
         // (mirrors the cold-start flow).
-        let next_state = if inner_attempt == 1 {
+        let next_state = if effective_attempt == 1 {
             LspOperationalState::Restarting {
                 attempt: effective_attempt,
             }
@@ -438,13 +459,6 @@ where
                     let mut clients = shared.clients().write().await;
                     clients.insert(key.to_string(), client.clone());
                 }
-
-                // Generation: the reinit closure has already
-                // published the new generation via
-                // `set_generation` (Pass 3 — Single Generation
-                // Owner). The coordinator's
-                // `next_generation_for_key` call was the single
-                // source of truth.
 
                 // Mark retained diagnostics as stale. The helper
                 // rewrites every entry's `server_generation` to
@@ -484,7 +498,7 @@ where
                 info!(
                     server = %descriptor.server_id,
                     root = %descriptor.root.display(),
-                    inner_attempt,
+                    effective_attempt,
                     "client restart completed"
                 );
                 return Ok(());
@@ -493,11 +507,21 @@ where
                 warn!(
                     server = %descriptor.server_id,
                     root = %descriptor.root.display(),
-                    inner_attempt,
+                    effective_attempt,
                     error = %e,
                     "restart attempt failed; will retry"
                 );
-                // Continue to the next attempt.
+                // Pass 5 — Shared Restart Budget. The
+                // per-invocation loop is bounded by
+                // `max_attempts`. We increment the shared
+                // counter so a future invocation sees the
+                // updated value (the cross-invocation
+                // bound).
+                if effective_attempt >= max_attempts {
+                    break;
+                }
+                let _ = shared.increment_restart_attempts(key).await;
+                effective_attempt = effective_attempt.saturating_add(1);
             }
         }
     }
@@ -742,6 +766,7 @@ mod tests {
         document_owners: Arc<RwLock<HashMap<String, String>>>,
         document_registry: Arc<OpenDocumentRegistry>,
         generation_map: Arc<Mutex<HashMap<String, u64>>>,
+        attempt_map: Arc<StdMutex<HashMap<String, u32>>>,
         operational_state: Arc<StdMutex<MockOpState>>,
         service_phase: Arc<StdMutex<ServicePhase>>,
         /// Records the most recent (key, generation) pair passed to
@@ -763,6 +788,7 @@ mod tests {
                 document_owners: Arc::new(RwLock::new(HashMap::new())),
                 document_registry: Arc::new(OpenDocumentRegistry::new()),
                 generation_map: Arc::new(Mutex::new(HashMap::new())),
+                attempt_map: Arc::new(StdMutex::new(HashMap::new())),
                 operational_state: Arc::new(StdMutex::new(MockOpState::Empty)),
                 service_phase: Arc::new(StdMutex::new(ServicePhase::Running)),
                 marked_stale: Arc::new(StdMutex::new(None)),
@@ -797,13 +823,22 @@ mod tests {
             *self.service_phase.lock().unwrap()
         }
         async fn restart_attempts(&self, key: &str) -> u32 {
-            // Mock ignores the key; tests use generation_map
-            // for the actual attempt counter if needed.
-            let _ = key;
-            0
+            let map = self.attempt_map.lock().unwrap();
+            map.get(key).copied().unwrap_or(0)
         }
-        async fn increment_restart_attempts(&self, _key: &str) -> u32 {
-            1
+        async fn increment_restart_attempts(&self, key: &str) -> u32 {
+            let mut map = self.attempt_map.lock().unwrap();
+            let current = map.get(key).copied().unwrap_or(0);
+            let next = current.saturating_add(1);
+            map.insert(key.to_string(), next);
+            next
+        }
+        async fn reset_restart_attempts_if_healthy(
+            &self,
+            _key: &str,
+            _reset_after_healthy: Duration,
+        ) -> Option<u32> {
+            None
         }
         async fn transition_operational_state(
             &self,
