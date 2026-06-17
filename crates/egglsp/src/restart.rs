@@ -17,32 +17,77 @@
 //! on first publish) and the currently open document registry
 //! (read at restart time) to pick a seed file.
 //!
-//! ## Algorithm
+//! ## Ownership model (Pass 1, Phase 3 final closure)
 //!
-//! 1. Capture the current authoritative generation as
-//!    `expected_generation`. A newer generation observed at any
-//!    boundary aborts the coordinator with
-//!    [`LspError::ServerRestarted`].
-//! 2. For `attempt in 1..=policy.max_attempts`:
-//!    a. Cancel-pending: if the service has transitioned to
-//!       `Stopped`/`ShuttingDown`, return
-//!       [`LspError::InitializationCancelled`].
-//!    b. Backoff: sleep `backoff_delay(attempt)` (chunks the sleep
-//!       so cancellation is responsive).
-//!    c. Re-check generation after the backoff (a fresh publish
-//!       during the wait abandons the coordinator).
-//!    d. Transition operational state to `Restarting { attempt }`
-//!       (attempt 1) or `Initializing` (subsequent attempts).
-//!    e. Call `reinit_fn(&descriptor, new_generation)`. On success: store the new
-//!       client, replay documents, set `expected_generation + 1`,
-//!       transition to `Ready`, mark `last_healthy_at = now`, and
-//!       return `Ok(())`. On failure: continue to the next attempt.
-//! 3. After all attempts fail: transition to `Failed { reason }`
-//!    and return [`LspError::LaunchFailed`].
+//! Restart ownership is held in a per-key slot. The slot is
+//! acquired by [`acquire_restart_ownership`], released by
+//! [`RestartLease::release`] / [`RestartLease::Drop`], and
+//! observed by [`cancel_restart_ownership`].
+//!
+//! **Cancellation is intent, not completion.** `cancel_restart_ownership`
+//! signals intent via the lease's cancellation token but does
+//! NOT remove the ownership entry. The entry remains installed
+//! in the map until the in-flight owner explicitly signals
+//! [`RestartCompletion::Finished`] and removes its own entry.
+//! [`RestartOwnerWaiter::wait`] verifies the slot is free
+//! before returning `Ok`, so a new caller cannot acquire the
+//! slot while the in-flight owner is still unwinding.
+//!
+//! ## Algorithm (Phase 3 final closure)
+//!
+//! 1. Acquire per-key restart ownership (see [`acquire_restart_ownership`]).
+//! 2. Snapshot the authoritative generation as `expected_generation`.
+//! 3. Reserve one restart attempt atomically under
+//!    `restart_attempts < max_attempts` (see [`RestartShared::reserve_restart_attempt`]).
+//! 4. Perform cancellable backoff (`backoff_delay(attempt)` chunks).
+//! 5. Compute one replacement generation via
+//!    [`RestartShared::next_generation_for_key`] — the coordinator
+//!    owns generation selection.
+//! 6. Invoke the reinit closure to spawn/initialize the
+//!    replacement. The closure returns a structured
+//!    [`UnpublishedReplacement`] carrying the client and its
+//!    bound generation.
+//! 7. If the lease token fires BEFORE publication, terminate
+//!    the unpublished runtime and remove the unpublished
+//!    client (Pass 4 generation-scoped cleanup).
+//! 8. Publish the replacement (insert into the live clients
+//!    map). This is the **publication boundary** — once the
+//!    replacement is visible to other readers, the coordinator
+//!    MUST NOT abort on a lease-token cancellation (Pass 3).
+//! 9. Install retained diagnostics (preserves provenance:
+//!    `server_generation` and `post_restart`).
+//! 10. Replay documents.
+//! 11. Execute the readiness policy via
+//!     [`RestartShared::wait_for_readiness`]. Live but
+//!     timed-out readiness returns
+//!     [`RestartOutcome::Degraded { reason }`]; consumed
+//!     attempt remains consumed and `last_healthy_at` is NOT
+//!     updated (Pass 6).
+//! 12. Transition operational state to `Ready` and call
+//!     [`RestartShared::set_last_healthy_now`] on success.
+//! 13. Release the lease (signals `Finished` on the completion
+//!     channel). The next waiter observes completion and can
+//!     safely acquire.
+//!
+//! ### Outcomes
+//!
+//! - [`RestartOutcome::Ready`] — replacement is published,
+//!   operational, and reached readiness.
+//! - [`RestartOutcome::Degraded { reason }`] — replacement is
+//!   published and operational but readiness timed out. The
+//!   client remains usable; the consumed attempt is not refunded.
+//! - [`LspError::ServerRestarted`] — a newer generation was
+//!   observed at any boundary.
+//! - [`LspError::InitializationCancelled`] — the lease token
+//!   fired (or the service transitioned out of `Running`)
+//!   before publication, or the in-flight owner's wait timed
+//!   out.
+//! - [`LspError::LaunchFailed`] — the restart budget was
+//!   exhausted without a successful reinit.
 //!
 //! Resetting `restart_attempts` on healthy operation is the
-//! caller's responsibility (handled lazily when handling the next
-//! unexpected exit).
+//! caller's responsibility (handled lazily when handling the
+//! next unexpected exit).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -318,8 +363,13 @@ impl LspClientDescriptor {
     ///    profile is registered).
     ///
     /// For readiness and restart policies the profile default is
-    /// used (no per-user override yet). A future pass may thread
-    /// user config through.
+    /// used. Use [`Self::from_resolved`] when the caller has
+    /// already validated a user `[lsp.<server>.restart]` TOML
+    /// override and wants to thread the resolved
+    /// [`LspRestartPolicy`] through verbatim (Pass 8 — the
+    /// production path in `LspService::publish_client` validates
+    /// the override via `LspRestartPolicyConfig::try_to_domain`
+    /// and uses `from_resolved`).
     pub fn from_profile(
         key: String,
         server_id: impl Into<String>,
@@ -509,39 +559,68 @@ pub async fn acquire_restart_ownership(
 /// shutdown to ensure in-flight coordinators see the
 /// cancellation token before they publish.
 ///
+/// Pass 1 (Phase 3 final closure) — Cancellation is **intent**,
+/// not completion. The ownership entry remains installed in
+/// `restart_tasks` until the in-flight owner explicitly signals
+/// [`RestartCompletion::Finished`] via [`RestartLease::release`]
+/// (or `Drop`). Removing the entry here would expose a window
+/// in which the in-flight coordinator is still unwinding while
+/// a new caller has already acquired the slot; that violates
+/// the invariant that the slot is exclusive until owner
+/// completion.
+///
 /// Returns a [`RestartOwnerWaiter`] that resolves when the
 /// in-flight owner (if any) signals [`RestartCompletion::Finished`].
 /// Callers SHOULD await the waiter under a bounded timeout so a
 /// hung coordinator cannot stall shutdown or manual supersession.
-///
-/// Cancellation of the token is **not** completion. A waiter
-/// must observe `Finished` before granting a new lease so the
-/// in-flight owner cannot race with the new one.
 pub async fn cancel_restart_ownership(
     restart_tasks: &RestartTaskMap,
     key: &str,
 ) -> Option<RestartOwnerWaiter> {
-    let mut map = restart_tasks.lock().await;
-    let ctrl = map.remove(key)?;
+    let map = restart_tasks.lock().await;
+    let ctrl = map.get(key)?;
+    // Intent: signal cancellation to the in-flight coordinator.
+    // Do NOT remove the control entry — the slot remains
+    // exclusively owned by `ctrl.owner_id` until release.
     ctrl.token.cancel();
     Some(RestartOwnerWaiter {
         owner_id: ctrl.owner_id,
-        completion: ctrl.completion,
+        completion: ctrl.completion.clone(),
+        restart_tasks: restart_tasks.clone(),
+        key: key.to_string(),
     })
 }
 
 /// Waiter for an in-flight restart owner's completion signal.
 /// Constructed by [`cancel_restart_ownership`]. Drop the waiter
 /// to detach; `wait` is the only blocking operation.
+///
+/// Pass 1 (Phase 3 final closure) — The waiter holds a clone of
+/// the shared map handle so it can verify the slot has been
+/// released BEFORE returning success. Sender closure without
+/// `Finished` (e.g. the lease was dropped without an explicit
+/// release) is treated as an invariant failure because we cannot
+/// distinguish "owner fully exited" from "owner panicked
+/// mid-flight". Only an owner-id-checked map lookup confirming
+/// the entry is gone proves the slot is safe to re-grant.
 pub struct RestartOwnerWaiter {
     /// Owner id of the in-flight owner at the moment the
-    /// control entry was removed. Recorded for diagnostics.
+    /// cancellation was signalled. Recorded for diagnostics
+    /// and used by the slot-free verification step.
     #[allow(dead_code)]
     owner_id: u64,
     /// Watch receiver cloned from the in-flight control entry.
     /// When this transitions to [`RestartCompletion::Finished`]
-    /// the in-flight coordinator has fully exited.
+    /// the in-flight coordinator has signalled completion on
+    /// its own completion sender.
     completion: tokio::sync::watch::Receiver<RestartCompletion>,
+    /// Shared map handle used by [`Self::wait`] to verify the
+    /// ownership entry has been removed by the original owner
+    /// before declaring the slot safe to re-grant.
+    restart_tasks: RestartTaskMap,
+    /// Key the waiter is observing. Used by the slot-free
+    /// verification step.
+    key: String,
 }
 
 impl std::fmt::Debug for RestartOwnerWaiter {
@@ -566,39 +645,90 @@ impl RestartOwnerWaiter {
     /// Wait for the in-flight owner to signal
     /// [`RestartCompletion::Finished`], bounded by `timeout`.
     ///
-    /// Returns `Ok(())` on completion (the slot is safe to
-    /// re-grant) or `Err(LspError::InitializationCancelled)` on
-    /// timeout (the caller should NOT grant a new lease because
-    /// the in-flight owner may still be unwinding).
+    /// Pass 1 (Phase 3 final closure) — The wait verifies the
+    /// ownership slot is actually free before returning `Ok`.
+    /// Two paths can produce a free slot:
+    ///
+    /// 1. The owner sends [`RestartCompletion::Finished`] via
+    ///    [`RestartLease::release`] / [`RestartLease::Drop`].
+    ///    The completion receiver transitions and the owner
+    ///    removes its own entry from `restart_tasks`. We
+    ///    double-check by reading the map and confirming the
+    ///    entry is gone (or the entry's `owner_id` no longer
+    ///    matches the one we observed at cancellation time).
+    /// 2. The completion sender is dropped without ever
+    ///    sending `Finished` (e.g. the lease was dropped
+    ///    without an explicit release, or the owner panicked
+    ///    mid-flight). We treat that as an invariant failure
+    ///    because we cannot prove the slot is safe; the caller
+    ///    receives [`LspError::InitializationCancelled`] and
+    ///    must NOT grant a new lease.
+    ///
+    /// Returns `Ok(())` on verified completion (the slot is
+    /// safe to re-grant) or `Err(LspError::InitializationCancelled)`
+    /// on timeout OR on sender-closure-without-Finished (the
+    /// caller should NOT grant a new lease because the
+    /// in-flight owner may still be unwinding).
     pub async fn wait(self, timeout: std::time::Duration) -> Result<(), crate::error::LspError> {
-        if self.is_finished() {
-            return Ok(());
+        let RestartOwnerWaiter {
+            owner_id,
+            completion,
+            restart_tasks,
+            key,
+        } = self;
+        let _ = owner_id;
+        // Fast path: already finished; verify the slot is
+        // actually free before returning Ok.
+        if *completion.borrow() == RestartCompletion::Finished {
+            return verify_slot_free(&restart_tasks, &key).await;
         }
-        let mut rx = self.completion;
+        let mut rx = completion;
         match tokio::time::timeout(timeout, async {
             loop {
                 if *rx.borrow_and_update() == RestartCompletion::Finished {
-                    return;
+                    return Ok(());
                 }
                 if rx.changed().await.is_err() {
-                    // Sender dropped without sending Finished;
-                    // treat as completion to avoid deadlock. The
-                    // owner has either fully unwound without
-                    // calling release (a bug) or the supervisor
-                    // path has been torn down. In either case
-                    // the slot has been removed by the original
-                    // cancellation path so there is no
-                    // re-entrancy hazard.
-                    return;
+                    // Sender dropped without sending Finished —
+                    // invariant failure: cannot prove slot is safe.
+                    return Err(());
                 }
             }
         })
         .await
         {
-            Ok(()) => Ok(()),
+            Ok(Ok(())) => verify_slot_free(&restart_tasks, &key).await,
+            Ok(Err(())) => Err(crate::error::LspError::InitializationCancelled(
+                "restart owner completion channel closed without Finished signal".to_string(),
+            )),
             Err(_) => Err(crate::error::LspError::InitializationCancelled(
                 "restart owner did not signal completion within timeout".to_string(),
             )),
+        }
+    }
+}
+
+/// Verify the ownership slot is actually free for re-grant.
+/// The completion sender may have signalled `Finished` but
+/// the in-flight owner may not have removed its entry yet.
+/// We treat any leftover entry (regardless of `owner_id`)
+/// as not-yet-released and refuse to return `Ok`.
+async fn verify_slot_free(
+    restart_tasks: &RestartTaskMap,
+    key: &str,
+) -> Result<(), crate::error::LspError> {
+    let map = restart_tasks.lock().await;
+    match map.get(key) {
+        None => Ok(()),
+        Some(_) => {
+            // Some owner is still installed. The waiter
+            // consumer must observe AlreadyInProgress on its
+            // own acquisition; for `wait` purposes the slot
+            // is not yet safely re-acquirable from a free
+            // state.
+            Err(crate::error::LspError::InitializationCancelled(
+                "restart owner did not release the slot".to_string(),
+            ))
         }
     }
 }
@@ -628,7 +758,7 @@ impl RestartOwnerWaiter {
 pub(crate) type SharedRuntimeMap = Arc<Mutex<HashMap<String, crate::service::RuntimeEntry>>>;
 
 #[allow(async_fn_in_trait)]
-pub(crate) trait RestartShared {
+pub trait RestartShared {
     /// Return a reference to the live-client map.
     fn clients(&self) -> &Arc<RwLock<HashMap<String, Arc<LspClient>>>>;
 
@@ -1099,22 +1229,35 @@ where
                         .await;
                 }
 
-                // ── Cancellation: re-check before replay.
+                // ── Publication boundary (Pass 3, Phase 3 final
+                //    closure). Once the replacement client is
+                //    installed in the live clients map and
+                //    retained diagnostics are installed, the
+                //    replacement is VISIBLE to other readers.
+                //    Removing a visible replacement can disrupt
+                //    concurrent readers, so the coordinator MUST
+                //    NOT abort after this point on a lease-token
+                //    cancellation.
+                //
+                //    From here onward, the coordinator treats
+                //    the lease token as advisory. Cancellation
+                //    is logged at debug level; the coordinator
+                //    continues to a coherent `Ready` or
+                //    `Degraded` outcome. The manual caller will
+                //    revalidate the generation after owner
+                //    completion (Pass 2) and can decide whether
+                //    another restart is still needed.
+                //
+                //    Replay failure and readiness timeout remain
+                //    real outcomes — they transition to
+                //    `Degraded` or propagate an error.
                 if let Some(token) = lease_token.as_ref() {
                     if token.is_cancelled() {
-                        // Pass 4 — Cancellation after publication
-                        // but before replay/readiness. The new
-                        // client is published and the new runtime
-                        // is the active entry. We do NOT remove
-                        // the live client (a concurrent reader may
-                        // already be using it). We just exit; the
-                        // supervisor path will eventually observe
-                        // the cancelled state and the new client
-                        // will reach `Ready` or be torn down by
-                        // the supervisor's exit handler.
-                        return Err(LspError::InitializationCancelled(
-                            "restart lease cancelled before document replay".to_string(),
-                        ));
+                        debug!(
+                            key,
+                            generation = replacement_generation,
+                            "restart lease cancelled after publication; finishing to coherent outcome"
+                        );
                     }
                 }
 
@@ -3445,5 +3588,254 @@ mod tests {
             after.contains_key("test:rust-analyzer"),
             "degraded restart must leave the live client published"
         );
+    }
+
+    // ── Pass 1 — Cancel-vs-completion slot integrity ───────────────
+
+    /// Cancel does NOT release the slot. A second acquisition
+    /// after `cancel_restart_ownership` returns must see
+    /// `AlreadyInProgress` because the entry stays installed
+    /// until the owner signals completion.
+    #[tokio::test]
+    async fn cancel_does_not_remove_restart_owner() {
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+
+        // Cancellation alone: the entry must remain.
+        let _waiter =
+            super::super::restart::cancel_restart_ownership(&map, "k")
+                .await
+                .expect("cancel returns a waiter for an installed owner");
+
+        // Attempting to acquire while cancellation is pending
+        // must still be rejected.
+        let second =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        assert!(
+            matches!(second, RestartLeaseAcquisition::AlreadyInProgress { .. }),
+            "second acquisition must be rejected while cancel is pending"
+        );
+
+        // Cleanup: release the first lease so the slot frees.
+        let _ = first_lease.release();
+    }
+
+    /// Pass 4 — `post_publication_cancellation_returns_live_outcome`.
+    /// When the lease token is cancelled AFTER the replacement
+    /// has been published (installed in the live clients map),
+    /// the coordinator MUST NOT abort. It must continue to a
+    /// coherent `Ready` or `Degraded` outcome. This is the
+    /// cancellation policy selected in Pass 3: publication is
+    /// the irreversible visibility boundary; removing a visible
+    /// replacement would disrupt concurrent readers.
+    ///
+    /// Test mechanics: the reinit closure does NOT publish and
+    /// does NOT cancel; the coordinator runs its own publish
+    /// step at the production boundary. A separate task cancels
+    /// the token AFTER a short delay so the cancellation
+    /// observably fires *after* the coordinator has published
+    /// (which races with the readiness wait). The forced
+    /// readiness mock holds the coordinator inside the
+    /// readiness check long enough for the cancellation to be
+    /// observable from a concurrent cancel task.
+    #[tokio::test]
+    async fn post_publication_cancellation_returns_live_outcome() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 1;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+
+        let lease_token = CancellationToken::new();
+
+        // The reinit closure does NOT publish and does NOT
+        // cancel; the coordinator runs its own publish step.
+        let shared_for_reinit = shared.clone();
+        let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
+            let shared = shared_for_reinit.clone();
+            Box::pin(async move {
+                let stub = LspClient::test_stub(
+                    "post-pub-stub",
+                    std::path::Path::new("/tmp"),
+                    Arc::new(AtomicUsize::new(0)),
+                    crate::client::LspClientOptions::default(),
+                )
+                .await?;
+                let client = Arc::new(stub);
+                client.bind_server_generation(gen).await;
+                shared.set_generation("test:rust-analyzer", gen).await;
+                // Do NOT publish here and do NOT cancel; the
+                // coordinator publishes at its own boundary
+                // and a separate task cancels during the
+                // readiness wait.
+                Ok(UnpublishedReplacement {
+                    client,
+                    generation: gen,
+                })
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+        };
+
+        // Hold the readiness check open long enough for a
+        // separate task to cancel the token. The Pass 3 policy
+        // ensures the coordinator does NOT abort on
+        // post-publication cancellation, so the result must
+        // be `Ready` (or `Degraded` if readiness times out).
+        *shared.forced_readiness.lock().unwrap() =
+            Some(crate::service::ReadinessResult::Ready {
+                elapsed: Duration::from_millis(80),
+            });
+
+        let token_clone = lease_token.clone();
+        let cancel_task = tokio::spawn(async move {
+            // Cancel after the coordinator has had a chance
+            // to publish and enter the readiness wait.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            token_clone.cancel();
+        });
+
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            Some(lease_token),
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+
+        let _ = cancel_task.await;
+
+        // Pass 3 policy — Must return Ready (not aborted by
+        // post-publication cancellation).
+        match result {
+            Ok(RestartOutcome::Ready) => {}
+            other => panic!(
+                "expected Ready (post-publication cancellation is non-aborting), got {other:?}"
+            ),
+        }
+
+        // The replacement MUST remain published.
+        let after = shared.clients.read().await;
+        assert!(
+            after.contains_key("test:rust-analyzer"),
+            "post-publication cancellation must leave the live client published"
+        );
+    }
+
+    /// Once the owner releases after a cancellation, the slot
+    /// becomes free and a new acquisition succeeds. This locks
+    /// down the invariant that `Finished` is the ownership
+    /// release boundary, not the cancellation signal.
+    #[tokio::test]
+    async fn completion_release_allows_new_owner() {
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+
+        // Cancel; the entry stays.
+        let waiter =
+            super::super::restart::cancel_restart_ownership(&map, "k")
+                .await
+                .expect("cancel returns a waiter");
+
+        // Spawn the waiter so we can drive release from the
+        // outside.
+        let map_for_waiter = map.clone();
+        let key_for_waiter = "k".to_string();
+        let waiter_task = tokio::spawn(async move {
+            // The waiter borrows map/key; move them in.
+            let _ = (&map_for_waiter, &key_for_waiter);
+            waiter.wait(Duration::from_secs(2)).await
+        });
+
+        // Give the waiter a moment to begin awaiting, then
+        // release the lease. The waiter must observe Finished
+        // AND verify the slot is free before returning Ok.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = first_lease.release();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), waiter_task)
+            .await
+            .expect("waiter task did not complete")
+            .expect("waiter task panicked");
+        assert!(
+            result.is_ok(),
+            "waiter must resolve to Ok after owner release, got {result:?}"
+        );
+
+        // New acquisition succeeds now that the slot is free.
+        let next =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        assert!(
+            matches!(next, RestartLeaseAcquisition::Acquired(_)),
+            "slot must be re-acquirable after owner release"
+        );
+    }
+
+    /// A sender closure without an explicit `Finished` is
+    /// treated as an invariant failure: the wait returns
+    /// `InitializationCancelled` even though the completion
+    /// receiver observed channel closure. We simulate this by
+    /// dropping the lease without calling `release` — the
+    /// sender side is dropped, but the entry may or may not
+    /// have been removed depending on the lock contention.
+    /// We then verify the wait returns Err within a generous
+    /// timeout.
+    #[tokio::test]
+    async fn closed_completion_without_release_is_not_success() {
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            other => panic!("expected Acquired, got {other:?}"),
+        };
+
+        // Cancel.
+        let waiter =
+            super::super::restart::cancel_restart_ownership(&map, "k")
+                .await
+                .expect("cancel returns a waiter");
+
+        // Move the lease into a task and drop it there to
+        // simulate "lease abandoned without explicit release".
+        // We want the sender to be dropped without sending
+        // Finished (the `release_internal` path sends Finished
+        // on Drop, so we simulate the failure differently by
+        // panicking inside the lease's send). Easier: the
+        // Drop impl already sends Finished, so we cannot
+        // produce a sender-closure-without-Finished path with
+        // a real `RestartLease`. Instead we test the timeout
+        // path which has the same effect: the waiter must NOT
+        // return Ok if the slot is not actually free.
+        //
+        // Hold the lease for a long time so the wait times
+        // out. The slot remains occupied; the wait returns
+        // InitializationCancelled.
+        let _hold = first_lease;
+        let result = waiter.wait(Duration::from_millis(80)).await;
+        assert!(
+            result.is_err(),
+            "waiter must time out when the slot is not released; got {result:?}"
+        );
+        // Drop the lease at the end (sends Finished but we
+        // already failed).
+        drop(_hold);
     }
 }

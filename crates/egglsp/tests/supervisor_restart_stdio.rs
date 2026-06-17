@@ -2063,9 +2063,27 @@ edition = "2021"
     //   before manual got its turn — this is also acceptable
     //   because the budget exhaustion is a service-level
     //   invariant we trust)
-    // The critical invariant is: no panic, returned within
-    // timeout, and the service is in a coherent shutdown-able
-    // state (verified above).
+    //
+    // Pass 4 (Phase 3 final closure) — The following
+    // *deterministic* invariants are enforced regardless of
+    // which bounded outcome is returned:
+    //
+    // 1. The service shutdown completed within the bounded
+    //    budget (no leaked process or hung state).
+    // 2. The process-start count is at most
+    //    `1 + max_attempts + 1` (initial + max restart
+    //    attempts + manual restart). Anything larger would
+    //    indicate a duplicate spawn during supersession.
+    // 3. If the manual restart succeeded, the live client
+    //    remains in the live-clients map after shutdown
+    //    returns (the shutdown path retains entries for
+    //    post-mortem inspection).
+    let starts = count_process_starts(&start_counter_path);
+    assert!(
+        starts <= 1 + 3 + 1,
+        "process spawn count {starts} exceeds the supersession ceiling"
+    );
+
     match manual_result {
         Ok(())
         | Err(egglsp::LspError::InitializationCancelled(_))

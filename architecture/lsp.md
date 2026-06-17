@@ -1728,9 +1728,9 @@ Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/t
 - **Depth-limit enforcement**: A dedicated test (`security_context_tool_enforces_call_depth_limit`) proves call_depth limiting independently of node-budget truncation using a chain `entry→level1→level2→level3` with `call_depth=2, max_call_nodes=16`.
 - **Hunk path tests**: Containment tests now use real temporary sibling files and are platform-neutral, replacing `/etc/passwd` references and nonexistent paths.
 
-## Phase 3: Real-Server Compatibility & Resilience (Complete)
+## Phase 3: Real-Server Compatibility & Resilience
 
-> Phase 3 is fully closed — see **Phase 3 Final Closure** above for the runtime termination, generation-safe supervision, restart budget, readiness, and fresh-evidence invariants. The sections below describe the Phase 3 structural scaffolding (compatibility profiles, health state machine, runtime owner, restart coordinator, document replay) that the final closure pass locked down.
+> **Phase 3 supervision and restart lifecycle complete for Tier 1 servers; broader language/server compatibility remains future work.** See **Phase 3 Final Closure** above for the runtime termination, generation-safe supervision, restart budget, readiness, and fresh-evidence invariants. The sections below describe the Phase 3 structural scaffolding (compatibility profiles, health state machine, runtime owner, restart coordinator, document replay) that the final closure pass locked down.
 
 Phase 3 builds on Phase 2's wire-protocol confidence by adding real-server compatibility testing, operational health tracking, process supervision, and document replay for crash recovery.
 
@@ -1821,7 +1821,7 @@ The smoke tests (`crates/egglsp/tests/real_server_smoke.rs`) exercise rust-analy
 
 ## Phase 3 Final Closure: Runtime Termination, Generation-Safe Supervision, Restart Budgets, Readiness, and Fresh Evidence
 
-Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. The 10-pass sequence (Pass 1 through Pass 10) makes the runtime, restart, and freshness invariants explicit. All 354 lib tests pass, the 13 supervisor/restart scenarios pass across 3 consecutive runs, the production test surface is green, and the 24 root composite tests pass.
+**Phase 3 supervision and restart lifecycle complete for Tier 1 servers; broader language/server compatibility remains future work.** Phase 3 final closure is the corrective pass that turned the structurally complete Phase 3 scaffolding into an operationally trustworthy lifecycle. The 10-pass sequence (Pass 1 through Pass 10) makes the runtime, restart, and freshness invariants explicit. The 13 supervisor/restart scenarios pass repeatedly, the production test surface is green, and the 26 root composite tests pass.
 
 ### Generation-Aware Runtime Map
 

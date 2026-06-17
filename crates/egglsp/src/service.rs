@@ -2737,6 +2737,26 @@ impl LspService {
 
         // 2. Manual supersession — cancel existing owner and
         //    wait for completion under bounded timeout.
+        //
+        //    Pass 2 (Phase 3 final closure) — Capture the
+        //    pre-wait generation BEFORE cancelling the owner.
+        //    The previous implementation re-read the generation
+        //    AFTER the wait, which usually returned the same
+        //    value (no advance was observable because the
+        //    waiter already blocked until the in-flight owner
+        //    finished). To detect a generation advance that
+        //    occurs *during* the wait, we must snapshot the
+        //    generation immediately before cancelling, then
+        //    compare against the post-wait generation.
+        let pre_wait_snapshot = if options.manual_supersession {
+            self.capture_manual_supersession_snapshot(key).await
+        } else {
+            RestartOwnerDiagnosticSnapshot {
+                pre_wait_generation: 0,
+                pre_wait_server_id: String::new(),
+            }
+        };
+
         if options.manual_supersession {
             let waiter = super::restart::cancel_restart_ownership(&self.restart_tasks, key).await;
             if let Some(waiter) = waiter {
@@ -2791,28 +2811,28 @@ impl LspService {
             }
         };
 
-        // 4. Manual-only: re-read generation. If a newer
+        // 4. Manual-only: compare the post-wait generation
+        //    against the pre-wait snapshot. If a newer
         //    generation appeared during the wait, the manual
-        //    teardown would target a stale runtime.
+        //    teardown would target a stale runtime and the
+        //    caller must observe `ServerRestarted` instead.
         let mut current_generation = self.generation_for_key(key).await;
-        if options.manual_supersession && current_generation > 0 {
-            let pre_wait_snapshot = self.restart_owner_diagnostic_snapshot(key).await;
-            if pre_wait_snapshot.pre_wait_generation != 0
-                && pre_wait_snapshot.pre_wait_generation < current_generation
-            {
-                warn!(
-                    key,
-                    pre_wait_generation = pre_wait_snapshot.pre_wait_generation,
-                    current_generation,
-                    "manual restart: generation advanced during ownership wait; aborting"
-                );
-                let _ = lease.release();
-                return Err(LspError::ServerRestarted {
-                    server_id: pre_wait_snapshot.pre_wait_server_id,
-                    old_generation: pre_wait_snapshot.pre_wait_generation,
-                    new_generation: Some(current_generation),
-                });
-            }
+        if options.manual_supersession
+            && pre_wait_snapshot.pre_wait_generation != 0
+            && current_generation > pre_wait_snapshot.pre_wait_generation
+        {
+            warn!(
+                key,
+                pre_wait_generation = pre_wait_snapshot.pre_wait_generation,
+                current_generation,
+                "manual restart: generation advanced during ownership wait; aborting"
+            );
+            let _ = lease.release();
+            return Err(LspError::ServerRestarted {
+                server_id: pre_wait_snapshot.pre_wait_server_id,
+                old_generation: pre_wait_snapshot.pre_wait_generation,
+                new_generation: Some(current_generation),
+            });
         }
 
         // 5. Snapshot retained diagnostics. If the caller
@@ -3180,13 +3200,25 @@ impl LspService {
         }
     }
 
-    /// Internal: read the current authoritative state for `key`
-    /// after a manual restart has finished waiting on an
-    /// in-flight owner. Used by the manual supersession path
-    /// to detect a generation advance during the wait. Fields
-    /// default to the "no prior owner" sentinel (`0`,
+    /// Internal: capture the current authoritative state for
+    /// `key` BEFORE the manual supersession path cancels any
+    /// in-flight owner and waits for its completion.
+    ///
+    /// Pass 2 (Phase 3 final closure) — The snapshot is taken
+    /// *before* cancellation so the post-wait comparison can
+    /// detect a generation advance that occurs during the wait
+    /// (e.g. the in-flight owner successfully published a new
+    /// generation before the manual waiter resolved). The
+    /// previous helper was called AFTER the wait and almost
+    /// always read the same value as the post-wait check, so
+    /// the comparison was effectively a no-op.
+    ///
+    /// Fields default to the "no prior owner" sentinel (`0`,
     /// `String::new()`) when no live client exists for `key`.
-    async fn restart_owner_diagnostic_snapshot(&self, key: &str) -> RestartOwnerDiagnosticSnapshot {
+    async fn capture_manual_supersession_snapshot(
+        &self,
+        key: &str,
+    ) -> RestartOwnerDiagnosticSnapshot {
         let pre_wait_generation = self.generation_for_key(key).await;
         let pre_wait_server_id = self
             .descriptor_for_key(key)
