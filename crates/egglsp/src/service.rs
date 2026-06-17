@@ -29,6 +29,86 @@ use super::supervisor::LspProcessExitEvent;
 
 type ClientMap = Arc<RwLock<HashMap<String, Arc<LspClient>>>>;
 
+/// Authoritative process runtime paired with the generation that
+/// installed it. The explicit `generation` field is the source of
+/// truth for runtime-map safety: insertion, lookup, and removal
+/// all go through generation-aware helpers so a delayed old
+/// monitor cannot remove a newer generation's runtime.
+#[derive(Clone)]
+struct RuntimeEntry {
+    generation: u64,
+    runtime: LspProcessRuntime,
+}
+
+type RuntimeMap = Arc<Mutex<HashMap<String, RuntimeEntry>>>;
+
+/// Install `runtime` for `key` if no entry exists with the same or
+/// newer generation. Returns the prior entry on replacement, `None`
+/// when no prior entry existed. Replacement of a same- or
+/// newer-generation entry is rejected (logged at warn and skipped)
+/// because the old generation's runtime is responsible for removing
+/// itself — concurrent replacement here would defeat the
+/// generation-safety invariant.
+async fn install_runtime(
+    runtime_map: &RuntimeMap,
+    key: String,
+    generation: u64,
+    runtime: LspProcessRuntime,
+) -> Option<RuntimeEntry> {
+    let mut map = runtime_map.lock().await;
+    if let Some(existing) = map.get(&key) {
+        if existing.generation >= generation {
+            warn!(
+                key = %key,
+                existing_generation = existing.generation,
+                requested_generation = generation,
+                "refusing to install runtime: existing entry has same or newer generation"
+            );
+            return Some(existing.clone());
+        }
+    }
+    let prior = map.remove(&key);
+    map.insert(
+        key,
+        RuntimeEntry {
+            generation,
+            runtime,
+        },
+    );
+    prior
+}
+
+/// Return the runtime for `key` only if its recorded generation
+/// matches `generation`. Returns `None` when the key has no entry
+/// or the stored generation differs.
+async fn runtime_for_generation(
+    runtime_map: &RuntimeMap,
+    key: &str,
+    generation: u64,
+) -> Option<LspProcessRuntime> {
+    let map = runtime_map.lock().await;
+    map.get(key)
+        .filter(|entry| entry.generation == generation)
+        .map(|entry| entry.runtime.clone())
+}
+
+/// Remove the runtime for `key` only if its recorded generation
+/// matches `generation`. Returns the removed entry on success,
+/// `None` when the key has no entry or the stored generation
+/// differs. A delayed old monitor cannot remove a newer generation's
+/// runtime through this helper.
+async fn remove_runtime_if_generation(
+    runtime_map: &RuntimeMap,
+    key: &str,
+    generation: u64,
+) -> Option<RuntimeEntry> {
+    let mut map = runtime_map.lock().await;
+    match map.get(key) {
+        Some(entry) if entry.generation == generation => map.remove(key),
+        _ => None,
+    }
+}
+
 type InitResult = Result<Arc<LspClient>, SharedInitError>;
 type InitCompletionSender = tokio::sync::oneshot::Sender<InitResult>;
 type InitCompletionReceiver = tokio::sync::oneshot::Receiver<InitResult>;
@@ -421,10 +501,15 @@ pub struct LspService {
     /// can request activation from any public entry point without
     /// spawning duplicate receivers.
     exit_receiver_started: Arc<AtomicBool>,
-    /// Per-key authoritative process runtimes. Keyed by client key.
-    /// The runtime owns the child, stderr ring buffer, intent
-    /// receiver, kill receiver, and exit event publication.
-    runtime_map: Arc<Mutex<HashMap<String, LspProcessRuntime>>>,
+    /// Per-key authoritative process runtimes, paired with the
+    /// generation that installed them. The runtime owns the child,
+    /// stderr ring buffer, intent receiver, kill receiver, and exit
+    /// event publication. The explicit `generation` field on
+    /// [`RuntimeEntry`] is the source of truth for runtime-map
+    /// safety: insertion, lookup, and removal all go through
+    /// generation-aware helpers so a delayed monitor cannot remove
+    /// a newer generation's runtime.
+    runtime_map: Arc<Mutex<HashMap<String, RuntimeEntry>>>,
     /// Per-key persisted client descriptors. Populated on first
     /// publish in `run_initialization_attempt` and read by the
     /// restart coordinator (`restart::restart_client_coordinator`)
@@ -1814,7 +1899,7 @@ impl LspService {
         let stderr_tail = {
             let map = self.runtime_map.lock().await;
             match map.get(key) {
-                Some(runtime) => runtime.stderr_tail_capped(20),
+                Some(entry) => entry.runtime.stderr_tail_capped(20),
                 None => op_state.last_stderr_tail.clone(),
             }
         };
@@ -2100,7 +2185,7 @@ impl LspService {
         let stderr_tail = {
             let map = self.runtime_map.lock().await;
             match map.get(key) {
-                Some(runtime) => runtime.stderr_tail_capped(20),
+                Some(entry) => entry.runtime.stderr_tail_capped(20),
                 None => op_state.last_stderr_tail.clone(),
             }
         };
@@ -2165,7 +2250,7 @@ impl LspService {
     #[cfg(feature = "lsp-test-support")]
     pub async fn test_runtime_intent(&self, key: &str) -> Option<super::runtime::LspProcessIntent> {
         let map = self.runtime_map.lock().await;
-        map.get(key).map(|rt| rt.intent())
+        map.get(key).map(|entry| entry.runtime.intent())
     }
 
     /// Test-only: seed the operational state for `key` so the
@@ -2374,7 +2459,7 @@ async fn spawn_process_monitor(
     root: PathBuf,
     generation: u64,
     exit_tx: tokio::sync::mpsc::Sender<LspProcessExitEvent>,
-    runtime_map: Arc<Mutex<HashMap<String, LspProcessRuntime>>>,
+    runtime_map: RuntimeMap,
 ) {
     // Take the child handle from the client.
     let child = {
@@ -2438,11 +2523,11 @@ async fn spawn_process_monitor(
 
     // Install the runtime handle so callers (e.g. the restart
     // coordinator) can request graceful/forced shutdown
-    // and read the stderr snapshot.
-    {
-        let mut map = runtime_map.lock().await;
-        map.insert(key.clone(), runtime.clone());
-    }
+    // and read the stderr snapshot. Installation goes through
+    // `install_runtime` so a delayed install (e.g. from a
+    // retry that already lost to a newer generation) cannot
+    // silently overwrite the active runtime.
+    install_runtime(&runtime_map, key.clone(), generation, runtime.clone()).await;
 
     // Forward the runtime's exit event to the service exit channel.
     // We do NOT hold the `Arc<LspClient>` across this await — the
@@ -2458,11 +2543,12 @@ async fn spawn_process_monitor(
     };
 
     // Remove the runtime from the map now that the event is
-    // published. The runtime task is free to terminate.
-    {
-        let mut map = runtime_map.lock().await;
-        map.remove(&key);
-    }
+    // published. Removal goes through
+    // `remove_runtime_if_generation` so a delayed old monitor
+    // cannot remove a newer generation's runtime (e.g. a
+    // restart that bumped generation between our install and
+    // exit). The runtime task is free to terminate.
+    remove_runtime_if_generation(&runtime_map, &key, generation).await;
 
     let _ = exit_tx.send(exit_event).await;
 }
@@ -2846,7 +2932,7 @@ async fn run_init_task_wrapper(
     generation_map: Arc<Mutex<HashMap<String, u64>>>,
     descriptor_map: Arc<Mutex<HashMap<String, LspClientDescriptor>>>,
     document_registry: Arc<OpenDocumentRegistry>,
-    runtime_map: Arc<Mutex<HashMap<String, LspProcessRuntime>>>,
+    runtime_map: RuntimeMap,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
     #[cfg(test)] force_stuck: std::sync::Arc<AtomicBool>,
 ) {
@@ -2965,7 +3051,7 @@ async fn run_initialization_attempt(
     generation_map: Arc<Mutex<HashMap<String, u64>>>,
     descriptor_map: Arc<Mutex<HashMap<String, LspClientDescriptor>>>,
     _document_registry: Arc<OpenDocumentRegistry>,
-    runtime_map: Arc<Mutex<HashMap<String, LspProcessRuntime>>>,
+    runtime_map: RuntimeMap,
     #[cfg(test)] test_init_fn: Option<std::sync::Arc<TestInitFn>>,
 ) {
     let init_opts: Option<serde_json::Value> = match &config {
@@ -5129,6 +5215,99 @@ mod tests {
         let states = svc.operational_state.read().await;
         let entry = states.get(&key).expect("entry still present");
         assert!(matches!(entry.state, LspOperationalState::Ready));
+    }
+
+    // ── Pass 1: Generation-aware runtime map helpers ────────────
+
+    /// Direct unit test for the helper: removal requires an exact
+    /// generation match. A stale monitor with a different generation
+    /// must not remove the active runtime.
+    #[tokio::test]
+    async fn runtime_removal_requires_exact_generation() {
+        let runtime_map: RuntimeMap = Arc::new(Mutex::new(HashMap::new()));
+
+        // Build two distinct LspProcessRuntime handles for the same
+        // key, one for gen 1 and one for gen 2.
+        let runtime1 = spawn_dummy_runtime("gen1").await;
+        let runtime2 = spawn_dummy_runtime("gen2").await;
+
+        install_runtime(&runtime_map, "k".to_string(), 1, runtime1).await;
+        install_runtime(&runtime_map, "k".to_string(), 2, runtime2).await;
+
+        // Stale removal with gen 1 should be a no-op (the map
+        // still holds gen 2).
+        let removed = remove_runtime_if_generation(&runtime_map, "k", 1).await;
+        assert!(removed.is_none(), "stale removal must not affect gen 2");
+        let map = runtime_map.lock().await;
+        assert_eq!(map.get("k").map(|e| e.generation), Some(2));
+
+        // Exact removal with gen 2 succeeds.
+        drop(map);
+        let removed = remove_runtime_if_generation(&runtime_map, "k", 2).await;
+        assert!(removed.is_some());
+        assert!(runtime_map.lock().await.is_empty());
+    }
+
+    /// Sequence test: a delayed gen-1 monitor must not remove a
+    /// live gen-2 runtime. The active runtime must remain in the
+    /// map and be reachable for shutdown intent.
+    #[tokio::test]
+    async fn old_monitor_cannot_remove_new_runtime() {
+        let runtime_map: RuntimeMap = Arc::new(Mutex::new(HashMap::new()));
+
+        let gen1_runtime = spawn_dummy_runtime("gen1").await;
+        let gen2_runtime = spawn_dummy_runtime("gen2").await;
+
+        // Install gen 1, then upgrade to gen 2.
+        install_runtime(&runtime_map, "k".to_string(), 1, gen1_runtime).await;
+        install_runtime(&runtime_map, "k".to_string(), 2, gen2_runtime).await;
+
+        // The gen-1 monitor resumes and tries to remove its entry.
+        // It must NOT touch the gen-2 runtime.
+        let stale = remove_runtime_if_generation(&runtime_map, "k", 1).await;
+        assert!(
+            stale.is_none(),
+            "stale gen-1 monitor must not remove the gen-2 runtime"
+        );
+
+        // The map still contains the gen-2 runtime, and
+        // `runtime_for_generation` returns it for shutdown intent.
+        let live = runtime_for_generation(&runtime_map, "k", 2).await;
+        assert!(
+            live.is_some(),
+            "gen-2 runtime must still be reachable after stale removal attempt"
+        );
+
+        // And the runtime_map entry's generation is 2.
+        let map = runtime_map.lock().await;
+        let entry = map.get("k").expect("gen-2 entry must remain");
+        assert_eq!(entry.generation, 2);
+    }
+
+    /// Build a minimal `LspProcessRuntime` for helper tests. Uses
+    /// `/bin/sh -c 'exit 0'` (a process guaranteed to exist on
+    /// macOS and Linux and to have a stderr pipe) so the runtime
+    /// constructor is satisfied. The runtime's task exits as soon
+    /// as the child does, so the handle is safe to drop.
+    async fn spawn_dummy_runtime(label: &'static str) -> LspProcessRuntime {
+        use std::process::Stdio;
+        use tokio::process::Command;
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("exit 0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn sh");
+        let stderr_handle = child.stderr.take().expect("stderr for sh");
+        let (runtime, _join) = crate::runtime::spawn_process_runtime(
+            label.to_string(),
+            std::path::PathBuf::from("/tmp"),
+            0,
+            child,
+            stderr_handle,
+        );
+        runtime
     }
 
     /// Even when the live client has been removed (e.g. after a
