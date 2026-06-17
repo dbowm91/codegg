@@ -314,12 +314,14 @@ mod tests {
         assert_eq!(policy.reset_after_healthy, Duration::from_secs(120));
     }
 
-    /// Pass 8 — \`try_to_domain\` falls back to the base
+    /// Pass 8 — `try_to_domain` falls back to the base
     /// policy for missing fields.
     #[test]
     fn try_to_domain_falls_back_to_base() {
-        let mut base = LspRestartPolicy::default();
-        base.max_attempts = 7;
+        let base = LspRestartPolicy {
+            max_attempts: 7,
+            ..LspRestartPolicy::default()
+        };
         let cfg = LspRestartPolicyConfig::default();
         let policy = cfg.try_to_domain(&base).expect("empty config");
         assert_eq!(policy.max_attempts, 7);

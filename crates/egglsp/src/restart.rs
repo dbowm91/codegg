@@ -909,6 +909,7 @@ mod tests {
     }
 
     struct SucceedAfterReinit {
+        #[allow(dead_code)]
         shared: Arc<MockShared>,
     }
     impl SucceedAfterReinit {

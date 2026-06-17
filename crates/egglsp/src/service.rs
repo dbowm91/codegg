@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use super::client::{LspClient, LspClientOptions};
-use super::compatibility::{LspReadinessPolicy, LspRestartMode, LspRestartPolicy};
+use super::compatibility::{LspReadinessPolicy, LspRestartMode};
 use super::config::{LspConfig, LspRule};
 use super::document_sync::OpenDocumentRegistry;
 use super::download;
@@ -117,7 +117,8 @@ enum RuntimeTerminationReason {
     ServiceShutdown,
     /// Operator-initiated manual restart.
     ManualRestart,
-    /// Failed publication (client constructed but never published).
+    /// Client constructed but never published (failure cleanup).
+    #[allow(dead_code)]
     FailedPublication,
 }
 
@@ -129,12 +130,14 @@ struct RuntimeTerminationOutcome {
     /// `false` means there was nothing to terminate.
     runtime_present: bool,
     /// Whether the process exited cleanly within the graceful
-    /// deadline.
+    /// deadline. Read in test code.
+    #[allow(dead_code)]
     exited: bool,
     /// Whether a force kill was required.
     forced: bool,
     /// The exit event captured (or `None` when no exit was observed
-    /// before the absolute deadline).
+    /// before the absolute deadline). Read in test code.
+    #[allow(dead_code)]
     event: Option<LspProcessExitEvent>,
 }
 
@@ -3894,9 +3897,14 @@ enum PublishOutcome {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
+    #![allow(clippy::needless_borrow)]
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::{watch, Barrier, Notify};
+    #[cfg(feature = "lsp-test-support")]
+    use crate::compatibility::LspRestartPolicy;
 
     fn rust_file() -> &'static Path {
         Path::new("/tmp/test.rs")
