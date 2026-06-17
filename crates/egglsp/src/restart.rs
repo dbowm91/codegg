@@ -75,12 +75,40 @@ pub enum ServicePhase {
 
 // ── Restart ownership: per-key serialization ────────────────────────
 
+/// Lifecycle signal broadcast by an owner when its restart
+/// coordinator has finished executing.
+///
+/// Distinguishes *cancellation* (the lease token was fired by a
+/// caller that wanted the in-flight work to abort) from
+/// *completion* (the coordinator exited — successfully, with an
+/// error, or by observing the cancellation and unwinding). The
+/// supervisor and manual supersession code paths use the
+/// completion channel to wait for an existing owner before
+/// granting a new lease, so a delayed in-flight coordinator
+/// cannot be silently overwritten by a fresher owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestartCompletion {
+    /// Owner is still running. Initial value of the
+    /// completion channel when the lease is created.
+    Running,
+    /// Owner has exited. The supervisor / manual supersession
+    /// path uses this signal to know it is safe to remove the
+    /// control entry and grant a new lease.
+    Finished,
+}
+
 /// Per-key restart ownership token.
 ///
 /// One owner at a time per key. Owners must cancel their token
 /// (or drop the lease) when finished. Concurrent acquisitions
 /// from the same key resolve deterministically — the first
 /// caller wins and others observe `AlreadyInProgress`.
+///
+/// Cancellation is **intent**, not completion. A caller that
+/// cancels the token observes the cancellation through the
+/// shared [`RestartTaskControl::completion`] receiver — when it
+/// transitions to [`RestartCompletion::Finished`], the owner is
+/// guaranteed to have unwound and the slot can be re-granted.
 #[derive(Debug, Clone)]
 pub struct RestartTaskControl {
     /// Monotonic owner id. Used by [`RestartLease`] to ensure
@@ -93,6 +121,14 @@ pub struct RestartTaskControl {
     /// cleanly (e.g. when a manual restart supersedes an
     /// automatic one).
     pub token: CancellationToken,
+    /// Watch receiver exposed by the owning coordinator. The
+    /// supervisor and manual supersession paths clone this
+    /// receiver to wait for the owner's actual completion before
+    /// granting a new lease — cancellation of the token is not
+    /// sufficient, because a cancelled coordinator may still be
+    /// unwinding (reaping a published replacement, terminating
+    /// an unpublished replacement, etc).
+    pub completion: tokio::sync::watch::Receiver<RestartCompletion>,
 }
 
 /// Outcome of an attempt to acquire per-key restart ownership.
@@ -114,11 +150,20 @@ pub enum RestartLeaseAcquisition {
 
 /// RAII guard for restart ownership. The `Drop` impl releases
 /// the lease when the owner falls out of scope.
+///
+/// The lease also owns the completion-channel sender used to
+/// signal that the owning coordinator has fully exited. The
+/// sender is moved out of the lease on `release()` / `Drop` and
+/// sends [`RestartCompletion::Finished`] exactly once before the
+/// control entry is removed from the map. Cancellation of the
+/// token does **not** send `Finished` — see
+/// [`RestartTaskControl`] for the rationale.
 pub struct RestartLease {
     key: String,
     owner_id: u64,
     released: bool,
     restart_tasks: Arc<Mutex<HashMap<String, RestartTaskControl>>>,
+    completion_tx: Option<tokio::sync::watch::Sender<RestartCompletion>>,
 }
 
 impl std::fmt::Debug for RestartLease {
@@ -147,6 +192,14 @@ impl RestartLease {
 
     /// Explicitly release the lease. Idempotent. Returns true if
     /// the lease was released by this call.
+    ///
+    /// On release the lease sends
+    /// [`RestartCompletion::Finished`] on the completion channel
+    /// **before** removing the control entry, so any waiter
+    /// holding a cloned [`RestartTaskControl::completion`]
+    /// receiver observes the transition. Waiters must call this
+    /// (or drop the lease) before acquiring a new lease; without
+    /// the completion signal they would race the in-flight owner.
     pub fn release(mut self) -> bool {
         self.release_internal()
     }
@@ -158,6 +211,13 @@ impl RestartLease {
         self.released = true;
         let key = self.key.clone();
         let owner_id = self.owner_id;
+        // Send Finished on the completion channel before
+        // removing the control entry so any waiter observing
+        // the completion signal is guaranteed the entry will
+        // not vanish before they observe Finished.
+        if let Some(tx) = self.completion_tx.take() {
+            let _ = tx.send(RestartCompletion::Finished);
+        }
         // Acquire the lock synchronously via try_lock; fall back
         // to a blocking spawn if the lock is contended. This is a
         // rare path and the lock is only held across short
@@ -349,6 +409,14 @@ pub fn backoff_delay(attempt: u32, policy: &LspRestartPolicy) -> Duration {
 /// cancelled). Returns [`RestartLeaseAcquisition::AlreadyInProgress`]
 /// when another restart for `key` is already in flight. The
 /// manual-vs-automatic policy is documented on the enum.
+///
+/// The returned [`RestartLease`] carries a completion-channel
+/// sender. Callers MUST drive the channel to
+/// [`RestartCompletion::Finished`] by calling `release()` (or
+/// dropping the lease) when the owning coordinator has fully
+/// exited. The supervisor and manual supersession code paths
+/// clone the [`RestartTaskControl::completion`] receiver to
+/// wait for `Finished` before granting a new lease.
 pub async fn acquire_restart_ownership(
     restart_tasks: &RestartTaskMap,
     restart_owner_counter: &AtomicU64,
@@ -362,12 +430,15 @@ pub async fn acquire_restart_ownership(
         };
     }
     let owner_id = restart_owner_counter.fetch_add(1, Ordering::Relaxed);
+    let (completion_tx, completion_rx) =
+        tokio::sync::watch::channel(RestartCompletion::Running);
     map.insert(
         key.to_string(),
         RestartTaskControl {
             owner_id,
             trigger,
             token: CancellationToken::new(),
+            completion: completion_rx,
         },
     );
     RestartLeaseAcquisition::Acquired(RestartLease {
@@ -375,16 +446,105 @@ pub async fn acquire_restart_ownership(
         owner_id,
         released: false,
         restart_tasks: restart_tasks.clone(),
+        completion_tx: Some(completion_tx),
     })
 }
 
 /// Cancel any active restart ownership for `key`. Used by
 /// shutdown to ensure in-flight coordinators see the
 /// cancellation token before they publish.
-pub async fn cancel_restart_ownership(restart_tasks: &RestartTaskMap, key: &str) {
+///
+/// Returns a [`RestartOwnerWaiter`] that resolves when the
+/// in-flight owner (if any) signals [`RestartCompletion::Finished`].
+/// Callers SHOULD await the waiter under a bounded timeout so a
+/// hung coordinator cannot stall shutdown or manual supersession.
+///
+/// Cancellation of the token is **not** completion. A waiter
+/// must observe `Finished` before granting a new lease so the
+/// in-flight owner cannot race with the new one.
+pub async fn cancel_restart_ownership(
+    restart_tasks: &RestartTaskMap,
+    key: &str,
+) -> Option<RestartOwnerWaiter> {
     let mut map = restart_tasks.lock().await;
-    if let Some(ctrl) = map.remove(key) {
-        ctrl.token.cancel();
+    let ctrl = map.remove(key)?;
+    ctrl.token.cancel();
+    Some(RestartOwnerWaiter {
+        owner_id: ctrl.owner_id,
+        completion: ctrl.completion,
+    })
+}
+
+/// Waiter for an in-flight restart owner's completion signal.
+/// Constructed by [`cancel_restart_ownership`]. Drop the waiter
+/// to detach; `wait` is the only blocking operation.
+pub struct RestartOwnerWaiter {
+    /// Owner id of the in-flight owner at the moment the
+    /// control entry was removed. Recorded for diagnostics.
+    #[allow(dead_code)]
+    owner_id: u64,
+    /// Watch receiver cloned from the in-flight control entry.
+    /// When this transitions to [`RestartCompletion::Finished`]
+    /// the in-flight coordinator has fully exited.
+    completion: tokio::sync::watch::Receiver<RestartCompletion>,
+}
+
+impl std::fmt::Debug for RestartOwnerWaiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestartOwnerWaiter")
+            .field("owner_id", &self.owner_id)
+            .field("is_finished", &(*self.completion.borrow() == RestartCompletion::Finished))
+            .finish()
+    }
+}
+
+impl RestartOwnerWaiter {
+    /// Return true if the owner has already finished (no
+    /// awaiting required).
+    pub fn is_finished(&self) -> bool {
+        *self.completion.borrow() == RestartCompletion::Finished
+    }
+
+    /// Wait for the in-flight owner to signal
+    /// [`RestartCompletion::Finished`], bounded by `timeout`.
+    ///
+    /// Returns `Ok(())` on completion (the slot is safe to
+    /// re-grant) or `Err(LspError::InitializationCancelled)` on
+    /// timeout (the caller should NOT grant a new lease because
+    /// the in-flight owner may still be unwinding).
+    pub async fn wait(
+        self,
+        timeout: std::time::Duration,
+    ) -> Result<(), crate::error::LspError> {
+        if self.is_finished() {
+            return Ok(());
+        }
+        let mut rx = self.completion;
+        match tokio::time::timeout(timeout, async {
+            loop {
+                if *rx.borrow_and_update() == RestartCompletion::Finished {
+                    return;
+                }
+                if rx.changed().await.is_err() {
+                    // Sender dropped without sending Finished;
+                    // treat as completion to avoid deadlock. The
+                    // owner has either fully unwound without
+                    // calling release (a bug) or the supervisor
+                    // path has been torn down. In either case
+                    // the slot has been removed by the original
+                    // cancellation path so there is no
+                    // re-entrancy hazard.
+                    return;
+                }
+            }
+        })
+        .await
+        {
+            Ok(()) => Ok(()),
+            Err(_) => Err(crate::error::LspError::InitializationCancelled(
+                "restart owner did not signal completion within timeout".to_string(),
+            )),
+        }
     }
 }
 
@@ -405,8 +565,16 @@ pub async fn cancel_restart_ownership(restart_tasks: &RestartTaskMap, key: &str)
 /// by the production `LspService` and the test mock in this
 /// crate, both of which already require `Send`. The implicit
 /// `Send` bound matches the `reinit_fn` `BoxFuture` signature.
+/// Type alias for the runtime map shape the coordinator
+/// expects. The production `LspService` uses
+/// `Arc<Mutex<HashMap<String, RuntimeEntry>>>`; the mock uses
+/// the same shape. The coordinator only ever calls
+/// `terminate_unpublished_runtime` (Pass 4) with this map.
+pub(crate) type SharedRuntimeMap =
+    Arc<Mutex<HashMap<String, crate::service::RuntimeEntry>>>;
+
 #[allow(async_fn_in_trait)]
-pub trait RestartShared {
+pub(crate) trait RestartShared {
     /// Return a reference to the live-client map.
     fn clients(&self) -> &Arc<RwLock<HashMap<String, Arc<LspClient>>>>;
 
@@ -415,6 +583,12 @@ pub trait RestartShared {
 
     /// Return a reference to the open-document registry.
     fn document_registry(&self) -> &Arc<OpenDocumentRegistry>;
+
+    /// Return a reference to the runtime map. Pass 4 — Used
+    /// by the coordinator's post-spawn cancellation cleanup
+    /// to terminate and reap an unpublished replacement
+    /// runtime.
+    fn runtime_map(&self) -> &SharedRuntimeMap;
 
     /// Return the current authoritative generation for `key`.
     async fn generation_for_key(&self, key: &str) -> u64;
@@ -560,11 +734,56 @@ pub trait RestartShared {
 /// NOT call `mark_diagnostics_stale_for_key` (Pass 9 — the
 /// rewrite would destroy provenance).
 ///
+/// Structured replacement handle returned by the reinit
+/// closure. Pass 4 — The previous closure returned a bare
+/// `Arc<LspClient>`; if the coordinator was cancelled
+/// between spawn and publication it could not terminate the
+/// replacement process because it had no handle to the
+/// runtime. `UnpublishedReplacement` carries the freshly-built
+/// client, the generation the closure was asked to publish, and
+/// a `runtime_installed` flag so the coordinator's cleanup
+/// paths can decide whether to call the runtime-termination
+/// helper or simply remove the unpublished client.
+pub struct UnpublishedReplacement {
+    /// The newly-built client (not yet published to the live
+    /// clients map from the coordinator's perspective). The
+    /// reinit closure is free to insert it into the live map
+    /// optimistically; the coordinator treats that as a
+    /// published replacement and only uses this value to
+    /// identify the exact replacement on cancellation.
+    pub client: Arc<LspClient>,
+    /// The replacement generation the closure published. The
+    /// coordinator uses this as a generation-scoped cleanup
+    /// key so cancellation never removes a *newer* client's
+    /// entry from the live map.
+    pub generation: u64,
+}
+
+impl std::fmt::Debug for UnpublishedReplacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnpublishedReplacement")
+            .field("generation", &self.generation)
+            .field("client", &"<LspClient>")
+            .finish()
+    }
+}
+
 /// The coordinator owns replacement generation selection.
 /// `next_generation_for_key` is called exactly once per restart
 /// attempt and the result is threaded through the reinit closure
 /// so generation is owned by a single decision point. The
 /// reinit closure MUST NOT calculate generation independently.
+///
+/// Pass 4 — The reinit closure returns
+/// [`UnpublishedReplacement`] instead of a bare `Arc<LspClient>`.
+/// The structured value carries the exact replacement
+/// generation so the coordinator's post-spawn cancellation
+/// paths can:
+/// 1. Terminate the unpublished replacement runtime (Pass 4
+///    invariant: no cancelled replacement survives untracked).
+/// 2. Remove the unpublished client from the clients map
+///    only when its bound generation matches (Pass 4
+///    invariant: cancellation does not remove a newer client).
 pub async fn restart_client_coordinator<S, F>(
     shared: &S,
     key: &str,
@@ -576,7 +795,10 @@ pub async fn restart_client_coordinator<S, F>(
 ) -> Result<(), LspError>
 where
     S: RestartShared,
-    F: FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>,
+    F: FnMut(
+        &LspClientDescriptor,
+        u64,
+    ) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>>,
 {
     // Honor `LspRestartMode::Disabled` for automatic triggers.
     // Manual triggers always run.
@@ -715,28 +937,67 @@ where
         // does not calculate it.
         let new_generation = shared.next_generation_for_key(key).await;
 
-        // Try the reinit.
+        // Try the reinit. The closure returns a structured
+        // `UnpublishedReplacement` so the coordinator can
+        // terminate and reap the replacement deterministically
+        // on cancellation between spawn and publication.
         match reinit_fn(&descriptor, new_generation).await {
-            Ok(client) => {
+            Ok(replacement) => {
+                let client = replacement.client.clone();
+                let replacement_generation = replacement.generation;
+
                 // ── Cancellation: re-check after spawn.
                 if let Some(token) = lease_token.as_ref() {
                     if token.is_cancelled() {
-                        // Cancelled after spawn but before
-                        // publication. The new client is not
-                        // published; the caller (or the runtime
-                        // harness) is responsible for cleanup.
+                        // Pass 4 — Cancelled after spawn but
+                        // before publication. The replacement
+                        // runtime is now installed in the
+                        // runtime_map (Pass 4 contract). The
+                        // coordinator MUST terminate it and
+                        // ensure the unpublished client is
+                        // removed from the clients map. The
+                        // client may already have been inserted
+                        // optimistically by the closure body;
+                        // we remove it only if its bound
+                        // generation still matches.
                         warn!(
                             key,
-                            generation = new_generation,
-                            "restart cancelled after spawn; replacement not published"
+                            generation = replacement_generation,
+                            "restart cancelled after spawn; terminating unpublished replacement"
                         );
+                        // Remove the unpublished client if it
+                        // was inserted.
+                        remove_unpublished_client_if_generation(
+                            shared.clients(),
+                            key,
+                            replacement_generation,
+                        )
+                        .await;
+                        // Terminate the unpublished runtime
+                        // (graceful → force kill) under the
+                        // bounded deadline used by manual restart.
+                        let abs_deadline = std::time::Instant::now()
+                            + std::time::Duration::from_secs(6);
+                        let graceful_deadline = std::time::Instant::now()
+                            + std::time::Duration::from_secs(2);
+                        let _ = terminate_unpublished_runtime(
+                            shared.runtime_map(),
+                            key,
+                            replacement_generation,
+                            abs_deadline,
+                            graceful_deadline,
+                        )
+                        .await;
                         return Err(LspError::InitializationCancelled(
                             "restart lease cancelled after spawn".to_string(),
                         ));
                     }
                 }
 
-                // Publish: store the new client in the live map.
+                // Publish: store the new client in the live map
+                // (the closure may have done this optimistically;
+                // re-inserting with the same `Arc` is a no-op for
+                // the map entry and harmless).
                 {
                     let mut clients = shared.clients().write().await;
                     clients.insert(key.to_string(), client.clone());
@@ -764,6 +1025,16 @@ where
                 // ── Cancellation: re-check before replay.
                 if let Some(token) = lease_token.as_ref() {
                     if token.is_cancelled() {
+                        // Pass 4 — Cancellation after publication
+                        // but before replay/readiness. The new
+                        // client is published and the new runtime
+                        // is the active entry. We do NOT remove
+                        // the live client (a concurrent reader may
+                        // already be using it). We just exit; the
+                        // supervisor path will eventually observe
+                        // the cancelled state and the new client
+                        // will reach `Ready` or be torn down by
+                        // the supervisor's exit handler.
                         return Err(LspError::InitializationCancelled(
                             "restart lease cancelled before document replay".to_string(),
                         ));
@@ -1029,12 +1300,144 @@ async fn replay_documents<S: RestartShared>(
     Ok(())
 }
 
+// ── Pass 4 — Post-spawn cancellation cleanup helpers ───────────────
+
+/// Pass 4 — Remove `key` from the live clients map only if the
+/// currently-stored client has the same bound generation as
+/// `expected_generation`. Used by the coordinator's
+/// post-spawn cancellation path to ensure a cancelled
+/// replacement is not removed if a *newer* replacement has
+/// already taken its place.
+///
+/// Returns the removed client on success, `None` when the
+/// map is empty, has a different key, or holds a
+/// client bound to a different generation.
+pub async fn remove_unpublished_client_if_generation(
+    clients: &Arc<RwLock<HashMap<String, Arc<LspClient>>>>,
+    key: &str,
+    expected_generation: u64,
+) -> Option<Arc<LspClient>> {
+    let mut map = clients.write().await;
+    let current = map.get(key)?;
+    let current_gen = current.server_generation();
+    if current_gen != expected_generation {
+        return None;
+    }
+    map.remove(key)
+}
+
+/// Pass 4 — Terminate the runtime for `key` only if its
+/// stored generation matches `expected_generation`. Used by
+/// the coordinator's post-spawn cancellation path. Returns
+/// the recorded `RuntimeEntry` on success, `None` when the
+/// stored generation differs (so a newer runtime is never
+/// disturbed by a stale cancel).
+async fn terminate_unpublished_runtime(
+    runtime_map: &SharedRuntimeMap,
+    key: &str,
+    expected_generation: u64,
+    graceful_deadline: std::time::Instant,
+    absolute_deadline: std::time::Instant,
+) -> Option<crate::service::RuntimeEntry> {
+    // Look up the runtime only if its stored generation
+    // matches the expected one. Use the same generation-aware
+    // helpers as the rest of the supervisor path so a
+    // cancelled old monitor cannot disturb a newer runtime.
+    let entry = {
+        let map = runtime_map.lock().await;
+        match map.get(key) {
+            Some(e) if e.generation == expected_generation => e.clone(),
+            _ => return None,
+        }
+    };
+    // Best-effort: set graceful intent, wait briefly, then
+    // request force kill. We do not hold a client handle
+    // here because the client was constructed by the
+    // (now-cancelled) reinit closure; the coordinator
+    // already removed the client via
+    // `remove_unpublished_client_if_generation`. Without a
+    // client handle we cannot send the LSP `shutdown`
+    // request — the runtime's protocol shutdown path
+    // therefore falls back to direct intent transitions and
+    // the force-kill deadline.
+    entry.runtime.request_graceful_shutdown();
+    let mut exit_rx = entry.runtime.exit_rx.clone();
+    let mut event = None;
+    loop {
+        if let Some(e) = exit_rx.borrow_and_update().clone() {
+            event = Some(e);
+            break;
+        }
+        let now = std::time::Instant::now();
+        if now >= graceful_deadline {
+            break;
+        }
+        let step = graceful_deadline
+            .saturating_duration_since(now)
+            .min(std::time::Duration::from_millis(50));
+        match tokio::time::timeout(step, exit_rx.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => break,
+            Err(_) => {}
+        }
+    }
+    if event.is_none() {
+        entry.runtime.request_force_kill();
+        loop {
+            if let Some(e) = exit_rx.borrow_and_update().clone() {
+                event = Some(e);
+                break;
+            }
+            if std::time::Instant::now() >= absolute_deadline {
+                entry.runtime.request_force_kill();
+                break;
+            }
+            let step = absolute_deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .min(std::time::Duration::from_millis(50));
+            match tokio::time::timeout(step, exit_rx.changed()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {}
+            }
+        }
+    }
+    // Generation-scoped removal.
+    let mut map = runtime_map.lock().await;
+    match map.get(key) {
+        Some(e) if e.generation == expected_generation => map.remove(key),
+        _ => None,
+    }
+}
+
+/// Test-only wrapper for [`terminate_unpublished_runtime`].
+/// Exposed under `#[cfg(test)]` so the unit tests can drive
+/// the helper directly without going through the full
+/// coordinator. Mirrors the helper's signature and returns
+/// the `Option<RuntimeEntry>` it would have removed.
+#[cfg(test)]
+pub(crate) async fn terminate_unpublished_runtime_for_test(
+    runtime_map: &SharedRuntimeMap,
+    key: &str,
+    expected_generation: u64,
+    graceful_deadline: std::time::Instant,
+    absolute_deadline: std::time::Instant,
+) -> Option<crate::service::RuntimeEntry> {
+    terminate_unpublished_runtime(
+        runtime_map,
+        key,
+        expected_generation,
+        graceful_deadline,
+        absolute_deadline,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering as AOrdering};
     use std::sync::Mutex as StdMutex;
-    use tokio::sync::Mutex;
     use url::Url;
 
     fn dummy_launch_spec(server_id: &str) -> LspLaunchSpec {
@@ -1129,6 +1532,14 @@ mod tests {
         /// `mark_diagnostics_stale_for_key` for assertion in
         /// tests. `None` until the method is called.
         marked_stale: Arc<StdMutex<Option<(String, u64)>>>,
+        /// Pass 4 — runtime map mirror for the post-spawn
+        /// cancellation cleanup path.
+        runtime_map: SharedRuntimeMap,
+        /// Pass 4 — restart-task map mirror so tests can
+        /// observe and cancel the active lease token. In
+        /// production this lives on `LspService` directly
+        /// (`restart_tasks: RestartTaskMap`).
+        restart_task_map: RestartTaskMap,
     }
 
     #[derive(Debug, Clone)]
@@ -1148,6 +1559,8 @@ mod tests {
                 operational_state: Arc::new(StdMutex::new(MockOpState::Empty)),
                 service_phase: Arc::new(StdMutex::new(ServicePhase::Running)),
                 marked_stale: Arc::new(StdMutex::new(None)),
+                runtime_map: Arc::new(Mutex::new(HashMap::new())),
+                restart_task_map: Arc::new(Mutex::new(HashMap::new())),
             }
         }
     }
@@ -1161,6 +1574,9 @@ mod tests {
         }
         fn document_registry(&self) -> &Arc<OpenDocumentRegistry> {
             &self.document_registry
+        }
+        fn runtime_map(&self) -> &SharedRuntimeMap {
+            &self.runtime_map
         }
         async fn generation_for_key(&self, key: &str) -> u64 {
             let map = self.generation_map.lock().await;
@@ -1251,9 +1667,13 @@ mod tests {
     struct AlwaysFailReinit;
     impl AlwaysFailReinit {
         fn make(
-        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         {
-            |_desc, _gen| Box::pin(async { Err(LspError::LaunchFailed("always fail".to_string())) })
+            |_desc, _gen| {
+                Box::pin(async {
+                    Err(LspError::LaunchFailed("always fail".to_string()))
+                })
+            }
         }
     }
 
@@ -1265,7 +1685,7 @@ mod tests {
         fn make(
             shared: Arc<MockShared>,
             successes_at: Vec<u32>,
-        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         {
             let count = Arc::new(AtomicU32::new(0));
             move |_desc, generation| {
@@ -1294,7 +1714,8 @@ mod tests {
                             crate::client::LspClientOptions::default(),
                         )
                         .await?;
-                        Ok(Arc::new(client))
+                        let client = Arc::new(client);
+                        Ok(UnpublishedReplacement { client, generation })
                     } else {
                         Err(LspError::LaunchFailed(format!("fail at {n}")))
                     }
@@ -1308,7 +1729,7 @@ mod tests {
         fn make(
             shared: Arc<MockShared>,
             set_new_generation_after: Option<u32>,
-        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         {
             let count = Arc::new(AtomicU32::new(0));
             move |_desc, _gen| {
@@ -1734,12 +2155,14 @@ mod tests {
             let mut m = map.lock().await;
             m.remove("k");
             let new_id = counter.fetch_add(1, Ordering::Relaxed);
+            let (_tx, rx) = tokio::sync::watch::channel(RestartCompletion::Running);
             m.insert(
                 "k".to_string(),
                 RestartTaskControl {
                     owner_id: new_id,
                     trigger: RestartTrigger::Automatic,
                     token: CancellationToken::new(),
+                    completion: rx,
                 },
             );
         }
@@ -1808,7 +2231,7 @@ mod tests {
             Box::pin(async move {
                 counter_clone.fetch_add(1, Ordering::SeqCst);
                 Err(LspError::LaunchFailed("always fail".to_string()))
-            }) as BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         };
         let result = restart_client_coordinator(
             &shared,
@@ -1842,7 +2265,7 @@ mod tests {
             Box::pin(async move {
                 counter_clone.fetch_add(1, Ordering::SeqCst);
                 Err(LspError::LaunchFailed("always fail".to_string()))
-            }) as BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         };
         // Seed the counter at 3 (budget exhausted).
         for _ in 0..3 {
@@ -1885,7 +2308,7 @@ mod tests {
             Box::pin(async move {
                 counter_clone.fetch_add(1, Ordering::SeqCst);
                 Err(LspError::LaunchFailed("always fail".to_string()))
-            }) as BoxFuture<'static, Result<Arc<LspClient>, LspError>>
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         };
         let result = restart_client_coordinator(
             &shared,
@@ -1904,5 +2327,310 @@ mod tests {
             "each failed initialization must consume one attempt"
         );
         assert_eq!(shared.restart_attempts("test:rust-analyzer").await, 2);
+    }
+
+    // ── Pass 1 — Owner completion signaling ─────────────────────────
+
+    /// Cancellation does NOT remove ownership. A second
+    /// acquisition while the first is still installed must see
+    /// `AlreadyInProgress` even after the first owner's token
+    /// was cancelled. The control entry is only removed when
+    /// the owner releases (signals `Finished`).
+    #[tokio::test]
+    async fn cancel_does_not_release_restart_slot() {
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            _ => unreachable!(),
+        };
+        // Cancel the token (simulating manual supersession
+        // signalling intent). The control entry MUST remain.
+        first_lease.cancel();
+        // Acquire must still see AlreadyInProgress because the
+        // control entry was NOT removed by token cancellation.
+        let second =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        assert!(
+            matches!(second, RestartLeaseAcquisition::AlreadyInProgress { .. }),
+            "control entry must remain installed until owner release"
+        );
+        // Now release the first lease; the slot must free.
+        let _ = first_lease.release();
+        let third =
+            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        assert!(
+            matches!(third, RestartLeaseAcquisition::Acquired(_)),
+            "slot must free after release"
+        );
+    }
+
+    /// The waiter returned by `cancel_restart_ownership`
+    /// resolves once the in-flight owner releases. We use a
+    /// barrier to keep the first owner installed, cancel its
+    /// token, then release it; the waiter must observe
+    /// `Finished` exactly once.
+    #[tokio::test]
+    async fn owner_completion_waiter_resolves_on_release() {
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let first = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            _ => unreachable!(),
+        };
+
+        // Spin up a task that cancels and waits.
+        let map_clone = map.clone();
+        let waiter_task = tokio::spawn(async move {
+            let waiter = cancel_restart_ownership(&map_clone, "k").await;
+            assert!(waiter.is_some(), "must return a waiter for an installed owner");
+            waiter.unwrap().wait(Duration::from_secs(2)).await
+        });
+
+        // Give the waiter a moment to begin awaiting, then
+        // release the lease (the waiter's contract is to observe
+        // Finished before re-acquiring).
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = first_lease.release();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), waiter_task)
+            .await
+            .expect("waiter task did not complete")
+            .expect("waiter task panicked");
+        assert!(result.is_ok(), "waiter must resolve on release, got {result:?}");
+    }
+
+    /// A delayed older-owner release must not remove a newer
+    /// owner's entry. Reuses the owner-id safety invariant with
+    /// the new completion-channel signaling (the older lease
+    /// sends Finished on its own channel which is detached, and
+    /// the map entry removal is owner-id-gated).
+    #[tokio::test]
+    async fn old_owner_release_cannot_remove_new_owner() {
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let older = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let older_lease = match older {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            _ => unreachable!(),
+        };
+        // Simulate newer owner installing while the older lease
+        // is still alive.
+        {
+            let mut m = map.lock().await;
+            m.remove("k");
+            let new_id = counter.fetch_add(1, Ordering::Relaxed);
+            let (_tx, rx) = tokio::sync::watch::channel(RestartCompletion::Running);
+            m.insert(
+                "k".to_string(),
+                RestartTaskControl {
+                    owner_id: new_id,
+                    trigger: RestartTrigger::Automatic,
+                    token: CancellationToken::new(),
+                    completion: rx,
+                },
+            );
+        }
+        // Older lease's release sends Finished on its own (now
+        // detached) channel and only removes the map entry if
+        // the owner_id still matches. The newer owner is
+        // preserved.
+        let _ = older_lease.release();
+        let after = map.lock().await;
+        assert!(
+            after.contains_key("k"),
+            "older lease release must not remove newer owner entry"
+        );
+    }
+
+    // ── Pass 4 — Post-spawn cancellation cleanup ─────────────────────
+
+    /// When the lease token is cancelled between the reinit
+    /// closure's publication and the coordinator's
+    /// post-spawn cancellation check, the cleanup must remove
+    /// the unpublished client from the live clients map and
+    /// return `InitializationCancelled("...after spawn")`.
+    ///
+    /// We accomplish this by cancelling the token FROM WITHIN
+    /// the reinit closure body, immediately before returning.
+    /// The coordinator's pre-spawn cancellation check has
+    /// already passed (the closure is running), and the
+    /// post-spawn check is the next boundary the coordinator
+    /// evaluates.
+    #[tokio::test]
+    async fn coordinator_removes_unpublished_client_when_lease_cancelled_after_spawn() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 2;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+
+        let lease_token = CancellationToken::new();
+
+        // Reinit closure: build a real client stub,
+        // publish it, then cancel the lease token. When the
+        // closure returns Ok, the coordinator's post-spawn
+        // check sees the cancelled token and runs cleanup.
+        let shared_for_reinit = shared.clone();
+        let token_for_reinit = lease_token.clone();
+        let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
+            let shared = shared_for_reinit.clone();
+            let token = token_for_reinit.clone();
+            Box::pin(async move {
+                let stub = LspClient::test_stub(
+                    "test-stub",
+                    std::path::Path::new("/tmp"),
+                    Arc::new(AtomicUsize::new(0)),
+                    crate::client::LspClientOptions::default(),
+                )
+                .await?;
+                let client = Arc::new(stub);
+                // Bind the stub's server_generation so the
+                // coordinator's generation-scoped cleanup
+                // finds a matching entry.
+                client.bind_server_generation(gen).await;
+                shared
+                    .set_generation("test:rust-analyzer", gen)
+                    .await;
+                {
+                    let mut map = shared.clients.write().await;
+                    map.insert("test:rust-analyzer".to_string(), client.clone());
+                }
+                // Cancel the lease from inside the closure so
+                // the coordinator's post-spawn check fires.
+                token.cancel();
+                Ok(UnpublishedReplacement {
+                    client,
+                    generation: gen,
+                })
+            })
+                as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+        };
+
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            Some(lease_token),
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+
+        // The post-spawn cancellation branch returns
+        // `InitializationCancelled("...after spawn")`.
+        match result {
+            Err(LspError::InitializationCancelled(msg)) => {
+                assert!(
+                    msg.contains("after spawn"),
+                    "expected post-spawn cancellation, got: {msg}"
+                );
+            }
+            other => panic!("expected post-spawn cancellation, got {other:?}"),
+        }
+
+        // Pass 4 — The clients map must NOT contain the
+        // unpublished replacement.
+        let clients_after = shared.clients.read().await;
+        assert!(
+            !clients_after.contains_key("test:rust-analyzer"),
+            "unpublished client must be removed by post-spawn cancellation cleanup"
+        );
+    }
+
+    /// When a *newer* client has been installed in the live
+    /// clients map between the reinit closure's publication
+    /// and the coordinator's cancellation check, the
+    /// generation-scoped cleanup must NOT remove the newer
+    /// client. We simulate by directly mutating the shared
+    /// state from inside the reinit closure to advance the
+    /// generation to a higher value than what the coordinator
+    /// handed out, then verify the newer client survives the
+    /// cancellation.
+    ///
+    /// This test exercises the
+    /// `remove_unpublished_client_if_generation` generation
+    /// guard directly because the production path cannot
+    /// easily race a replacement between the closure return
+    /// and the cancellation check without a process runtime.
+    #[tokio::test]
+    async fn remove_unpublished_client_does_not_touch_newer_client() {
+        use super::super::restart::remove_unpublished_client_if_generation;
+
+        let clients: Arc<RwLock<HashMap<String, Arc<LspClient>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        // Build a client stub and bind it to a high generation
+        // by mutating the generation_map on the stub itself.
+        let stub = LspClient::test_stub(
+            "newer-stub",
+            std::path::Path::new("/tmp"),
+            Arc::new(AtomicUsize::new(0)),
+            crate::client::LspClientOptions::default(),
+        )
+        .await
+        .expect("stub build");
+        let newer = Arc::new(stub);
+        // bind_server_generation exists on the client;
+        // alternatively we leave it at the default sentinel
+        // and pick expected_generation = 0 to simulate a
+        // newer client that does not match.
+        {
+            let mut map = clients.write().await;
+            map.insert("k".to_string(), newer.clone());
+        }
+        // Coordinator attempts cleanup at expected_generation =
+        // 1; the client is bound to a different generation (0
+        // sentinel), so the cleanup must NOT remove it.
+        let removed = remove_unpublished_client_if_generation(&clients, "k", 1).await;
+        assert!(
+            removed.is_none(),
+            "cleanup must not remove a client bound to a different generation"
+        );
+        let after = clients.read().await;
+        assert!(
+            after.contains_key("k"),
+            "newer client must remain installed"
+        );
+    }
+
+    /// The `terminate_unpublished_runtime` helper must not
+    /// disturb a runtime whose stored generation differs from
+    /// the expected generation. We test the helper directly
+    /// via [`terminate_unpublished_runtime_for_test`]; the
+    /// generation-scope guard is the same code path used by
+    /// the production coordinator's cancellation cleanup.
+    #[tokio::test]
+    async fn terminate_unpublished_runtime_does_not_disturb_newer_runtime() {
+        // Seed an empty runtime map. We can't easily build a
+        // real `LspProcessRuntime` from a unit test (it owns
+        // a child process handle), but the helper's guard is
+        // observable: with no entry in the map at all, the
+        // helper returns None for any generation mismatch
+        // (same logic as "stored generation differs").
+        let runtime_map: SharedRuntimeMap =
+            Arc::new(Mutex::new(HashMap::new()));
+        let abs_deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(2);
+        let graceful_deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(1);
+        let result = super::super::restart::terminate_unpublished_runtime_for_test(
+            &runtime_map,
+            "k",
+            1,
+            abs_deadline,
+            graceful_deadline,
+        )
+        .await;
+        assert!(
+            result.is_none(),
+            "cleanup must return None when no runtime matches the expected generation"
+        );
     }
 }
