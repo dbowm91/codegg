@@ -41,6 +41,21 @@ pub(crate) struct RuntimeEntry {
     pub(crate) runtime: LspProcessRuntime,
 }
 
+impl RuntimeEntry {
+    /// Test-only constructor that builds a `RuntimeEntry` with a
+    /// `dummy_for_test` `LspProcessRuntime`. Used by unit tests
+    /// that need to populate the runtime map without spawning a
+    /// real process. The runtime is safe to clone and inspect
+    /// but will never publish an exit event.
+    #[cfg(test)]
+    pub(crate) fn stub_for_test() -> Self {
+        Self {
+            generation: 0,
+            runtime: LspProcessRuntime::dummy_for_test("test-stub", 0),
+        }
+    }
+}
+
 type RuntimeMap = Arc<Mutex<HashMap<String, RuntimeEntry>>>;
 
 /// Outcome of a runtime installation attempt. Distinguishes
@@ -67,7 +82,9 @@ type RuntimeMap = Arc<Mutex<HashMap<String, RuntimeEntry>>>;
 #[allow(dead_code)] // Variant fields are read by callers / tests; the enum itself is `pub(crate)`-style.
 enum RuntimeInstallResult {
     Installed,
-    Replaced { prior: RuntimeEntry },
+    Replaced {
+        prior: RuntimeEntry,
+    },
     Rejected {
         existing_generation: u64,
         requested_generation: u64,
@@ -173,6 +190,62 @@ async fn install_runtime(
         Some(prior) => RuntimeInstallResult::Replaced { prior },
         None => RuntimeInstallResult::Installed,
     }
+}
+
+/// Test-only wrapper for [`install_runtime`] that accepts a
+/// pre-built `RuntimeEntry`. Used by unit tests in `restart.rs`
+/// that exercise the rejection contract without spawning a real
+/// process. Returns the same [`RuntimeInstallResult`] enum as
+/// the production helper.
+#[cfg(test)]
+pub(crate) async fn install_runtime_for_test(
+    runtime_map: &RuntimeMap,
+    key: &str,
+    entry: RuntimeEntry,
+    generation: u64,
+) -> RuntimeInstallResult {
+    install_runtime(runtime_map, key.to_string(), generation, entry.runtime).await
+}
+
+/// Mirror of [`RuntimeInstallResult`] exposed under
+/// `#[cfg(test)]` so cross-module tests can pattern-match on it.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) enum RuntimeInstallResultForTest {
+    Installed,
+    Replaced,
+    Rejected {
+        existing_generation: u64,
+        requested_generation: u64,
+    },
+}
+
+#[cfg(test)]
+impl RuntimeInstallResultForTest {
+    fn from(result: &RuntimeInstallResult) -> Self {
+        match result {
+            RuntimeInstallResult::Installed => Self::Installed,
+            RuntimeInstallResult::Replaced { .. } => Self::Replaced,
+            RuntimeInstallResult::Rejected {
+                existing_generation,
+                requested_generation,
+            } => Self::Rejected {
+                existing_generation: *existing_generation,
+                requested_generation: *requested_generation,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn install_runtime_for_test_v2(
+    runtime_map: &RuntimeMap,
+    key: &str,
+    entry: RuntimeEntry,
+    generation: u64,
+) -> RuntimeInstallResultForTest {
+    let result = install_runtime(runtime_map, key.to_string(), generation, entry.runtime).await;
+    RuntimeInstallResultForTest::from(&result)
 }
 
 /// Return the runtime for `key` only if its recorded generation
@@ -2649,9 +2722,7 @@ impl LspService {
         &self,
         key: &str,
         trigger: RestartTrigger,
-        caller_retained_diagnostics: Option<
-            HashMap<String, DiagnosticCacheEntry>,
-        >,
+        caller_retained_diagnostics: Option<HashMap<String, DiagnosticCacheEntry>>,
         options: OwnedRestartOptions,
     ) -> Result<(), LspError> {
         // 1. Lifecycle check.
@@ -2667,20 +2738,14 @@ impl LspService {
         // 2. Manual supersession — cancel existing owner and
         //    wait for completion under bounded timeout.
         if options.manual_supersession {
-            let waiter = super::restart::cancel_restart_ownership(
-                &self.restart_tasks,
-                key,
-            )
-            .await;
+            let waiter = super::restart::cancel_restart_ownership(&self.restart_tasks, key).await;
             if let Some(waiter) = waiter {
                 debug!(
                     key,
                     owner_id = format_args!("{:?}", waiter).as_str(),
                     "restart: waiting for in-flight owner completion"
                 );
-                if let Err(e) =
-                    waiter.wait(MANUAL_SUPERSESSION_OWNER_TIMEOUT).await
-                {
+                if let Err(e) = waiter.wait(MANUAL_SUPERSESSION_OWNER_TIMEOUT).await {
                     warn!(
                         key,
                         error = %e,
@@ -2731,8 +2796,7 @@ impl LspService {
         //    teardown would target a stale runtime.
         let mut current_generation = self.generation_for_key(key).await;
         if options.manual_supersession && current_generation > 0 {
-            let pre_wait_snapshot =
-                self.restart_owner_diagnostic_snapshot(key).await;
+            let pre_wait_snapshot = self.restart_owner_diagnostic_snapshot(key).await;
             if pre_wait_snapshot.pre_wait_generation != 0
                 && pre_wait_snapshot.pre_wait_generation < current_generation
             {
@@ -3111,10 +3175,7 @@ impl LspService {
                     .await;
                 });
 
-                Ok(super::restart::UnpublishedReplacement {
-                    client,
-                    generation,
-                })
+                Ok(super::restart::UnpublishedReplacement { client, generation })
             })
         }
     }
@@ -3125,10 +3186,7 @@ impl LspService {
     /// to detect a generation advance during the wait. Fields
     /// default to the "no prior owner" sentinel (`0`,
     /// `String::new()`) when no live client exists for `key`.
-    async fn restart_owner_diagnostic_snapshot(
-        &self,
-        key: &str,
-    ) -> RestartOwnerDiagnosticSnapshot {
+    async fn restart_owner_diagnostic_snapshot(&self, key: &str) -> RestartOwnerDiagnosticSnapshot {
         let pre_wait_generation = self.generation_for_key(key).await;
         let pre_wait_server_id = self
             .descriptor_for_key(key)

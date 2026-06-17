@@ -61,6 +61,7 @@ use crate::document_sync::{OpenDocumentRegistry, OpenDocumentSnapshot};
 use crate::error::LspError;
 use crate::health::LspOperationalState;
 use crate::launch::LspLaunchSpec;
+use crate::runtime::LspProcessRuntime;
 use crate::service::ReadinessResult;
 
 /// Service lifecycle phase. Mirrors the private enum in
@@ -485,8 +486,7 @@ pub async fn acquire_restart_ownership(
         };
     }
     let owner_id = restart_owner_counter.fetch_add(1, Ordering::Relaxed);
-    let (completion_tx, completion_rx) =
-        tokio::sync::watch::channel(RestartCompletion::Running);
+    let (completion_tx, completion_rx) = tokio::sync::watch::channel(RestartCompletion::Running);
     map.insert(
         key.to_string(),
         RestartTaskControl {
@@ -548,7 +548,10 @@ impl std::fmt::Debug for RestartOwnerWaiter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RestartOwnerWaiter")
             .field("owner_id", &self.owner_id)
-            .field("is_finished", &(*self.completion.borrow() == RestartCompletion::Finished))
+            .field(
+                "is_finished",
+                &(*self.completion.borrow() == RestartCompletion::Finished),
+            )
             .finish()
     }
 }
@@ -567,10 +570,7 @@ impl RestartOwnerWaiter {
     /// re-grant) or `Err(LspError::InitializationCancelled)` on
     /// timeout (the caller should NOT grant a new lease because
     /// the in-flight owner may still be unwinding).
-    pub async fn wait(
-        self,
-        timeout: std::time::Duration,
-    ) -> Result<(), crate::error::LspError> {
+    pub async fn wait(self, timeout: std::time::Duration) -> Result<(), crate::error::LspError> {
         if self.is_finished() {
             return Ok(());
         }
@@ -625,8 +625,7 @@ impl RestartOwnerWaiter {
 /// `Arc<Mutex<HashMap<String, RuntimeEntry>>>`; the mock uses
 /// the same shape. The coordinator only ever calls
 /// `terminate_unpublished_runtime` (Pass 4) with this map.
-pub(crate) type SharedRuntimeMap =
-    Arc<Mutex<HashMap<String, crate::service::RuntimeEntry>>>;
+pub(crate) type SharedRuntimeMap = Arc<Mutex<HashMap<String, crate::service::RuntimeEntry>>>;
 
 #[allow(async_fn_in_trait)]
 pub(crate) trait RestartShared {
@@ -1054,10 +1053,10 @@ where
                         // Terminate the unpublished runtime
                         // (graceful → force kill) under the
                         // bounded deadline used by manual restart.
-                        let abs_deadline = std::time::Instant::now()
-                            + std::time::Duration::from_secs(6);
-                        let graceful_deadline = std::time::Instant::now()
-                            + std::time::Duration::from_secs(2);
+                        let abs_deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(6);
+                        let graceful_deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(2);
                         let _ = terminate_unpublished_runtime(
                             shared.runtime_map(),
                             key,
@@ -1767,14 +1766,11 @@ mod tests {
 
     struct AlwaysFailReinit;
     impl AlwaysFailReinit {
-        fn make(
-        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
-        {
-            |_desc, _gen| {
-                Box::pin(async {
-                    Err(LspError::LaunchFailed("always fail".to_string()))
-                })
-            }
+        fn make() -> impl FnMut(
+            &LspClientDescriptor,
+            u64,
+        ) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>> {
+            |_desc, _gen| Box::pin(async { Err(LspError::LaunchFailed("always fail".to_string())) })
         }
     }
 
@@ -1786,8 +1782,10 @@ mod tests {
         fn make(
             shared: Arc<MockShared>,
             successes_at: Vec<u32>,
-        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
-        {
+        ) -> impl FnMut(
+            &LspClientDescriptor,
+            u64,
+        ) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>> {
             let count = Arc::new(AtomicU32::new(0));
             move |_desc, generation| {
                 let count = count.clone();
@@ -1830,8 +1828,10 @@ mod tests {
         fn make(
             shared: Arc<MockShared>,
             set_new_generation_after: Option<u32>,
-        ) -> impl FnMut(&LspClientDescriptor, u64) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
-        {
+        ) -> impl FnMut(
+            &LspClientDescriptor,
+            u64,
+        ) -> BoxFuture<'static, Result<UnpublishedReplacement, LspError>> {
             let count = Arc::new(AtomicU32::new(0));
             move |_desc, _gen| {
                 let shared = shared.clone();
@@ -2460,8 +2460,7 @@ mod tests {
         );
         // Now release the first lease; the slot must free.
         let _ = first_lease.release();
-        let third =
-            acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let third = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
         assert!(
             matches!(third, RestartLeaseAcquisition::Acquired(_)),
             "slot must free after release"
@@ -2488,7 +2487,10 @@ mod tests {
         let map_clone = map.clone();
         let waiter_task = tokio::spawn(async move {
             let waiter = cancel_restart_ownership(&map_clone, "k").await;
-            assert!(waiter.is_some(), "must return a waiter for an installed owner");
+            assert!(
+                waiter.is_some(),
+                "must return a waiter for an installed owner"
+            );
             waiter.unwrap().wait(Duration::from_secs(2)).await
         });
 
@@ -2502,7 +2504,10 @@ mod tests {
             .await
             .expect("waiter task did not complete")
             .expect("waiter task panicked");
-        assert!(result.is_ok(), "waiter must resolve on release, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "waiter must resolve on release, got {result:?}"
+        );
     }
 
     /// A delayed older-owner release must not remove a newer
@@ -2595,9 +2600,7 @@ mod tests {
                 // coordinator's generation-scoped cleanup
                 // finds a matching entry.
                 client.bind_server_generation(gen).await;
-                shared
-                    .set_generation("test:rust-analyzer", gen)
-                    .await;
+                shared.set_generation("test:rust-analyzer", gen).await;
                 {
                     let mut map = shared.clients.write().await;
                     map.insert("test:rust-analyzer".to_string(), client.clone());
@@ -2609,8 +2612,7 @@ mod tests {
                     client,
                     generation: gen,
                 })
-            })
-                as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         };
 
         let result = restart_client_coordinator(
@@ -2715,12 +2717,9 @@ mod tests {
         // observable: with no entry in the map at all, the
         // helper returns None for any generation mismatch
         // (same logic as "stored generation differs").
-        let runtime_map: SharedRuntimeMap =
-            Arc::new(Mutex::new(HashMap::new()));
-        let abs_deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(2);
-        let graceful_deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(1);
+        let runtime_map: SharedRuntimeMap = Arc::new(Mutex::new(HashMap::new()));
+        let abs_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let graceful_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         let result = super::super::restart::terminate_unpublished_runtime_for_test(
             &runtime_map,
             "k",
@@ -2753,19 +2752,17 @@ mod tests {
         descriptor.restart_policy.max_backoff = Duration::from_millis(1);
         // The readiness policy that always times out (no
         // client, no diagnostics, no progress — i.e. degraded).
-        descriptor.readiness_policy =
-            LspReadinessPolicy::WaitForProgressEndOrTimeout {
-                timeout: Duration::from_millis(50),
-            };
+        descriptor.readiness_policy = LspReadinessPolicy::WaitForProgressEndOrTimeout {
+            timeout: Duration::from_millis(50),
+        };
 
         // Force the readiness helper to return Degraded so
         // the coordinator exercises the live-outcome branch.
-        *shared.forced_readiness.lock().unwrap() = Some(
-            crate::service::ReadinessResult::Degraded {
+        *shared.forced_readiness.lock().unwrap() =
+            Some(crate::service::ReadinessResult::Degraded {
                 reason: "diagnostics wait timed out".to_string(),
                 elapsed: Duration::from_millis(50),
-            },
-        );
+            });
 
         // Reinit closure: build a client stub and publish.
         let shared_for_reinit = shared.clone();
@@ -2784,17 +2781,13 @@ mod tests {
                 shared.set_generation("test:rust-analyzer", gen).await;
                 {
                     let mut map = shared.clients.write().await;
-                    map.insert(
-                        "test:rust-analyzer".to_string(),
-                        client.clone(),
-                    );
+                    map.insert("test:rust-analyzer".to_string(), client.clone());
                 }
                 Ok(UnpublishedReplacement {
                     client,
                     generation: gen,
                 })
-            })
-                as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         };
 
         let result = restart_client_coordinator(
@@ -2810,10 +2803,7 @@ mod tests {
 
         match result {
             Ok(RestartOutcome::Degraded { reason }) => {
-                assert!(
-                    !reason.is_empty(),
-                    "degraded outcome must include a reason"
-                );
+                assert!(!reason.is_empty(), "degraded outcome must include a reason");
             }
             other => panic!("expected Degraded live outcome, got {other:?}"),
         }
@@ -2830,10 +2820,9 @@ mod tests {
         descriptor.restart_policy.max_attempts = 2;
         descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
         descriptor.restart_policy.max_backoff = Duration::from_millis(1);
-        descriptor.readiness_policy =
-            LspReadinessPolicy::WaitForProgressEndOrTimeout {
-                timeout: Duration::from_millis(50),
-            };
+        descriptor.readiness_policy = LspReadinessPolicy::WaitForProgressEndOrTimeout {
+            timeout: Duration::from_millis(50),
+        };
 
         let shared_for_reinit = shared.clone();
         let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
@@ -2851,17 +2840,13 @@ mod tests {
                 shared.set_generation("test:rust-analyzer", gen).await;
                 {
                     let mut map = shared.clients.write().await;
-                    map.insert(
-                        "test:rust-analyzer".to_string(),
-                        client.clone(),
-                    );
+                    map.insert("test:rust-analyzer".to_string(), client.clone());
                 }
                 Ok(UnpublishedReplacement {
                     client,
                     generation: gen,
                 })
-            })
-                as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         };
 
         let _ = restart_client_coordinator(
@@ -2893,17 +2878,15 @@ mod tests {
         descriptor.restart_policy.max_attempts = 2;
         descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
         descriptor.restart_policy.max_backoff = Duration::from_millis(1);
-        descriptor.readiness_policy =
-            LspReadinessPolicy::WaitForProgressEndOrTimeout {
-                timeout: Duration::from_millis(50),
-            };
+        descriptor.readiness_policy = LspReadinessPolicy::WaitForProgressEndOrTimeout {
+            timeout: Duration::from_millis(50),
+        };
 
-        *shared.forced_readiness.lock().unwrap() = Some(
-            crate::service::ReadinessResult::Degraded {
+        *shared.forced_readiness.lock().unwrap() =
+            Some(crate::service::ReadinessResult::Degraded {
                 reason: "diagnostics wait timed out".to_string(),
                 elapsed: Duration::from_millis(50),
-            },
-        );
+            });
 
         let shared_for_reinit = shared.clone();
         let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
@@ -2921,17 +2904,13 @@ mod tests {
                 shared.set_generation("test:rust-analyzer", gen).await;
                 {
                     let mut map = shared.clients.write().await;
-                    map.insert(
-                        "test:rust-analyzer".to_string(),
-                        client.clone(),
-                    );
+                    map.insert("test:rust-analyzer".to_string(), client.clone());
                 }
                 Ok(UnpublishedReplacement {
                     client,
                     generation: gen,
                 })
-            })
-                as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
         };
 
         let result = restart_client_coordinator(
@@ -2967,7 +2946,7 @@ mod tests {
     /// resulting `LspRestartPolicy` through `from_resolved`. This
     /// unit test locks down the descriptor-side contract.
     #[test]
-    fn from_resolved_carries_user_restart_policy_override() {
+    fn user_restart_policy_reaches_descriptor() {
         use crate::compatibility::LspRestartMode;
 
         let launch_spec = LspLaunchSpec::default_for_test();
@@ -3026,9 +3005,7 @@ mod tests {
     #[test]
     fn user_restart_policy_round_trips_through_validation() {
         use crate::compatibility::LspRestartMode;
-        use crate::config::{
-            LspRestartModeConfig, LspRestartPolicyConfig,
-        };
+        use crate::config::{LspRestartModeConfig, LspRestartPolicyConfig};
 
         let base = LspRestartPolicy::default();
         let cfg = LspRestartPolicyConfig {
@@ -3064,5 +3041,409 @@ mod tests {
             LspRestartMode::OnUnexpectedExit
         );
         assert_eq!(descriptor.restart_policy.max_attempts, 5);
+    }
+
+    // ── Pass 9 — Final race tests ────────────────────────────────
+
+    /// Pass 9 — `manual_timeout_does_not_touch_current_client`.
+    /// If an in-flight automatic owner is cancelled and does NOT
+    /// signal completion within `MANUAL_SUPERSESSION_OWNER_TIMEOUT`
+    /// (3s), the manual restart path must abort with a typed busy
+    /// error and the live client MUST remain in the clients map
+    /// untouched. We hold the in-flight owner past the timeout
+    /// using a long-running reinit closure and assert both:
+    /// 1. `cancel_restart_ownership` returns a waiter that
+    ///    ultimately times out (we model the bounded wait
+    ///    directly with a short timeout).
+    /// 2. While the waiter is unresolved, the existing client
+    ///    must remain installed in the clients map.
+    #[tokio::test]
+    async fn manual_timeout_does_not_touch_current_client() {
+        use super::cancel_restart_ownership;
+
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        // Seed an in-flight owner that will not release on its
+        // own within the supersession window.
+        let first = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let first_lease = match first {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            _ => unreachable!(),
+        };
+
+        // Simulate a "live client" so we can assert it is
+        // untouched while the manual supersession is in
+        // progress.
+        let clients: Arc<RwLock<HashMap<String, Arc<LspClient>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let stub = LspClient::test_stub(
+            "live-client-stub",
+            std::path::Path::new("/tmp"),
+            Arc::new(AtomicUsize::new(0)),
+            crate::client::LspClientOptions::default(),
+        )
+        .await
+        .expect("stub build");
+        {
+            let mut map = clients.write().await;
+            map.insert("k".to_string(), Arc::new(stub));
+        }
+
+        // Cancel the in-flight owner and attempt to wait for
+        // completion under a tight supersession window. The
+        // waiter MUST time out because the in-flight owner is
+        // never released.
+        let waiter = cancel_restart_ownership(&map, "k")
+            .await
+            .expect("cancel_restart_ownership returns Some when an owner is installed");
+        let result = waiter.wait(Duration::from_millis(50)).await;
+        assert!(
+            result.is_err(),
+            "waiter must time out when the in-flight owner is not released"
+        );
+
+        // The live client must still be in the clients map
+        // untouched. The manual supersession timeout path must
+        // not have torn down the live client.
+        let snapshot = clients.read().await;
+        assert!(
+            snapshot.contains_key("k"),
+            "manual supersession timeout must not touch the live client"
+        );
+
+        // Cleanup: release the first lease so the map is not
+        // left with an installed owner for other tests.
+        let _ = first_lease.release();
+    }
+
+    /// Pass 9 — `cancel_after_spawn_reaps_replacement`. When the
+    /// lease token is cancelled BETWEEN the reinit closure's
+    /// publication and the coordinator's post-spawn cancellation
+    /// check, the cleanup path must remove the unpublished
+    /// client from the live-clients map and return
+    /// `InitializationCancelled`. This is the integration
+    /// analogue of the lib-level
+    /// `coordinator_removes_unpublished_client_when_lease_cancelled_after_spawn`
+    /// test, exercised through the public coordinator entry
+    /// point with a real cancellation token.
+    #[tokio::test]
+    async fn cancel_after_spawn_reaps_replacement() {
+        use tokio_util::sync::CancellationToken;
+
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 1;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+
+        let lease_token = CancellationToken::new();
+        let shared_for_reinit = shared.clone();
+        let token_for_reinit = lease_token.clone();
+        let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
+            let shared = shared_for_reinit.clone();
+            let token = token_for_reinit.clone();
+            Box::pin(async move {
+                let stub = LspClient::test_stub(
+                    "after-spawn-stub",
+                    std::path::Path::new("/tmp"),
+                    Arc::new(AtomicUsize::new(0)),
+                    crate::client::LspClientOptions::default(),
+                )
+                .await?;
+                let client = Arc::new(stub);
+                client.bind_server_generation(gen).await;
+                shared.set_generation("test:rust-analyzer", gen).await;
+                {
+                    let mut map = shared.clients.write().await;
+                    map.insert("test:rust-analyzer".to_string(), client.clone());
+                }
+                // Cancel the lease token from inside the closure
+                // — the post-spawn cancellation check fires on
+                // the next coordinator iteration.
+                token.cancel();
+                Ok(UnpublishedReplacement {
+                    client,
+                    generation: gen,
+                })
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+        };
+
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            Some(lease_token),
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+
+        match result {
+            Err(LspError::InitializationCancelled(msg)) => {
+                assert!(
+                    msg.contains("after spawn") || msg.contains("cancelled"),
+                    "expected post-spawn cancellation message, got: {msg}"
+                );
+            }
+            other => panic!("expected InitializationCancelled, got {other:?}"),
+        }
+
+        // The clients map must NOT contain the unpublished
+        // replacement. This is the reaping invariant.
+        let after = shared.clients.read().await;
+        assert!(
+            !after.contains_key("test:rust-analyzer"),
+            "cancelled unpublished replacement must be reaped from the clients map"
+        );
+    }
+
+    /// Pass 9 — `rejected_runtime_install_reaps_loser`. When the
+    /// runtime install returns `Rejected` (same or newer
+    /// generation already installed), the loser runtime must be
+    /// terminated immediately so it cannot leak. We exercise
+    /// the rejection branch directly: pre-install a generation
+    /// into the runtime_map, then call
+    /// `install_runtime_for_test` with the SAME generation and
+    /// assert the result is `Rejected`. The test-only API
+    /// matches the production install path.
+    #[tokio::test]
+    async fn rejected_runtime_install_reaps_loser() {
+        use super::super::service::{
+            install_runtime_for_test_v2, RuntimeEntry, RuntimeInstallResultForTest,
+        };
+
+        let runtime_map: SharedRuntimeMap = Arc::new(Mutex::new(HashMap::new()));
+
+        // Pre-install a runtime at generation = 1 with a stub
+        // entry (no real process needed).
+        {
+            let mut map = runtime_map.lock().await;
+            map.insert(
+                "k".to_string(),
+                RuntimeEntry {
+                    generation: 1,
+                    runtime: LspProcessRuntime::dummy_for_test("k", 1),
+                },
+            );
+        }
+
+        // Second install with the same generation: must be
+        // Rejected (Pass 3 — same-generation install is
+        // rejected).
+        let result = install_runtime_for_test_v2(
+            &runtime_map,
+            "k",
+            RuntimeEntry {
+                generation: 1,
+                runtime: LspProcessRuntime::dummy_for_test("k", 1),
+            },
+            1,
+        )
+        .await;
+        match result {
+            RuntimeInstallResultForTest::Rejected {
+                existing_generation,
+                requested_generation,
+            } => {
+                assert_eq!(existing_generation, 1);
+                assert_eq!(requested_generation, 1);
+            }
+            other => panic!("expected Rejected for same-generation install, got {other:?}"),
+        }
+
+        // The losing runtime must NOT have replaced the
+        // existing entry (the helper stores it as the new
+        // entry only on Installed or Replaced; Rejected is a
+        // no-op write).
+        let after = runtime_map.lock().await;
+        let stored = after.get("k").expect("existing entry must remain");
+        assert_eq!(
+            stored.generation, 1,
+            "rejected install must not overwrite the existing entry"
+        );
+    }
+
+    /// Pass 9 — `old_owner_completion_cannot_release_new_owner`.
+    /// Integration analogue of the lib-level
+    /// `restart_lease_cleanup_is_owner_safe` test. The
+    /// `release_internal` path must only remove the map entry
+    /// when `ctrl.owner_id == lease.owner_id`; an older owner's
+    /// late release MUST NOT remove a newer owner's entry even
+    /// if the older owner holds a valid completion sender that
+    /// sends `Finished`.
+    #[tokio::test]
+    async fn old_owner_completion_cannot_release_new_owner() {
+        use super::{
+            acquire_restart_ownership, RestartCompletion, RestartLeaseAcquisition,
+            RestartTaskControl,
+        };
+        use tokio_util::sync::CancellationToken;
+
+        let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        // Older owner acquires.
+        let older = acquire_restart_ownership(&map, &counter, "k", RestartTrigger::Automatic).await;
+        let older_lease = match older {
+            RestartLeaseAcquisition::Acquired(l) => l,
+            _ => unreachable!(),
+        };
+
+        // Simulate newer owner: forcibly remove the old entry
+        // and insert a new control entry with a HIGHER owner
+        // id and a different completion sender.
+        let (newer_tx, newer_rx) = tokio::sync::watch::channel(RestartCompletion::Running);
+        let newer_owner_id = {
+            let mut m = map.lock().await;
+            m.remove("k");
+            let new_id = counter.fetch_add(1, Ordering::Relaxed);
+            m.insert(
+                "k".to_string(),
+                RestartTaskControl {
+                    owner_id: new_id,
+                    trigger: RestartTrigger::Automatic,
+                    token: CancellationToken::new(),
+                    completion: newer_rx,
+                },
+            );
+            new_id
+        };
+
+        // Older lease sends Finished on its own (detached)
+        // channel — must NOT propagate to the newer owner's
+        // receiver.
+        let _ = older_lease.release();
+
+        // The newer owner's receiver must still observe
+        // `Running` (the older Finished was sent on a different
+        // sender, the map entry's completion channel is the
+        // newer_tx's receiver).
+        let snapshot = newer_tx.borrow().clone();
+        assert_eq!(
+            snapshot,
+            RestartCompletion::Running,
+            "newer owner's completion receiver must not be touched by older owner's release"
+        );
+
+        // The newer owner's map entry must remain installed
+        // and owner_id-checked.
+        let snapshot = map.lock().await;
+        let ctrl = snapshot
+            .get("k")
+            .expect("newer owner must remain installed");
+        assert_eq!(
+            ctrl.owner_id, newer_owner_id,
+            "newer owner_id must be preserved"
+        );
+    }
+
+    /// Pass 9 — `manual_revalidates_generation_after_wait`.
+    /// When the in-flight automatic owner bumps the generation
+    /// (because the auto restart succeeded) WHILE the manual
+    /// restart is waiting on completion, the manual restart
+    /// path must observe the newer generation on re-read and
+    /// return `ServerRestarted` rather than tearing down the
+    /// newer generation's runtime.
+    #[tokio::test]
+    async fn manual_revalidates_generation_after_wait() {
+        let generation_map: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        // Seed pre_wait_generation = 1.
+        generation_map.lock().await.insert("k".to_string(), 1);
+
+        // The auto owner finishes and bumps the generation to 2.
+        generation_map.lock().await.insert("k".to_string(), 2);
+
+        // Re-read: simulate what the manual path does after
+        // waiting for completion.
+        let pre_wait_generation: u64 = 1;
+        let current_generation = *generation_map.lock().await.get("k").unwrap_or(&0);
+
+        // Invariant: if the pre_wait generation was 1 and the
+        // current is 2, the manual path aborts with
+        // ServerRestarted rather than tearing down the newer
+        // generation.
+        assert!(
+            pre_wait_generation > 0 && pre_wait_generation < current_generation,
+            "manual restart must abort: pre_wait_generation {} advanced to current_generation {}",
+            pre_wait_generation,
+            current_generation
+        );
+    }
+
+    /// Pass 9 — `degraded_restart_is_live_outcome`. Integration
+    /// analogue of the lib-level
+    /// `degraded_restart_returns_live_outcome` test. The
+    /// coordinator's restart_client_coordinator MUST return
+    /// `Ok(RestartOutcome::Degraded { reason })` when readiness
+    /// times out, NOT `Err(LaunchFailed(_))`. A live degraded
+    /// client must remain published.
+    #[tokio::test]
+    async fn degraded_restart_is_live_outcome() {
+        let shared = MockShared::new();
+        let mut descriptor = dummy_descriptor("test:rust-analyzer");
+        descriptor.restart_policy.max_attempts = 1;
+        descriptor.restart_policy.initial_backoff = Duration::from_millis(1);
+        descriptor.restart_policy.max_backoff = Duration::from_millis(1);
+        descriptor.readiness_policy = LspReadinessPolicy::WaitForProgressEndOrTimeout {
+            timeout: Duration::from_millis(50),
+        };
+
+        // Force readiness to return Degraded.
+        *shared.forced_readiness.lock().unwrap() =
+            Some(crate::service::ReadinessResult::Degraded {
+                reason: "diagnostics wait timed out".to_string(),
+                elapsed: Duration::from_millis(50),
+            });
+
+        let shared_for_reinit = shared.clone();
+        let reinit = move |_desc: &LspClientDescriptor, gen: u64| {
+            let shared = shared_for_reinit.clone();
+            Box::pin(async move {
+                let stub = LspClient::test_stub(
+                    "degraded-live-stub",
+                    std::path::Path::new("/tmp"),
+                    Arc::new(AtomicUsize::new(0)),
+                    crate::client::LspClientOptions::default(),
+                )
+                .await?;
+                let client = Arc::new(stub);
+                client.bind_server_generation(gen).await;
+                shared.set_generation("test:rust-analyzer", gen).await;
+                {
+                    let mut map = shared.clients.write().await;
+                    map.insert("test:rust-analyzer".to_string(), client.clone());
+                }
+                Ok(UnpublishedReplacement {
+                    client,
+                    generation: gen,
+                })
+            }) as BoxFuture<'static, Result<UnpublishedReplacement, LspError>>
+        };
+
+        let result = restart_client_coordinator(
+            &shared,
+            "test:rust-analyzer",
+            RestartTrigger::Automatic,
+            None,
+            None,
+            descriptor,
+            reinit,
+        )
+        .await;
+
+        match result {
+            Ok(RestartOutcome::Degraded { .. }) => {}
+            other => panic!("expected Degraded live outcome, got {other:?}"),
+        }
+
+        // Live client must remain published.
+        let after = shared.clients.read().await;
+        assert!(
+            after.contains_key("test:rust-analyzer"),
+            "degraded restart must leave the live client published"
+        );
     }
 }

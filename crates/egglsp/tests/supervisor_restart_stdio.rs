@@ -1964,16 +1964,17 @@ fn make_test_descriptor(
 // Suppress unused-import warning for `LspProcessRuntime` re-export.
 // ── Pass 9 — Final race tests ────────────────────────────────────────
 
-/// Pass 9 — A manual restart MUST wait for an in-flight automatic
-/// restart owner to complete before touching the live client.
-/// We seed the service with a descriptor that auto-restarts on
-/// exit, crash the first generation, then issue a manual restart
-/// while the automatic restart is mid-coordinator. The manual
-/// call must either succeed (after the auto finishes) or return
+/// Pass 9 — `manual_waits_for_cancelled_automatic_completion`.
+/// A manual restart MUST wait for an in-flight automatic restart
+/// owner to complete before touching the live client. We seed
+/// the service with a descriptor that auto-restarts on exit,
+/// crash the first generation, then issue a manual restart while
+/// the automatic restart is mid-coordinator. The manual call
+/// must either succeed (after the auto finishes) or return
 /// `InitializationCancelled` (auto did not finish in time); the
 /// live client must never be in an inconsistent state.
 #[tokio::test]
-async fn manual_restart_waits_for_in_flight_automatic_owner() {
+async fn manual_waits_for_cancelled_automatic_completion() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let root = tempdir.path().to_path_buf();
     let source_path = root.join("src/lib.rs");
@@ -2010,11 +2011,7 @@ edition = "2021"
     )
     .unwrap();
 
-    let config = make_service_config(
-        &scenario_path,
-        &transcript_path,
-        &start_counter_path,
-    );
+    let config = make_service_config(&scenario_path, &transcript_path, &start_counter_path);
     let service = LspService::new_arc(config);
     let key = service
         .get_or_create_client_for_file(&source_path)
@@ -2076,9 +2073,9 @@ edition = "2021"
         | Err(egglsp::LspError::LaunchFailed(_)) => {
             // acceptable
         }
-        Err(other) => panic!(
-            "manual restart returned unexpected error during auto supersession: {other:?}"
-        ),
+        Err(other) => {
+            panic!("manual restart returned unexpected error during auto supersession: {other:?}")
+        }
     }
 }
 
@@ -2126,11 +2123,7 @@ edition = "2021"
     )
     .unwrap();
 
-    let config = make_service_config(
-        &scenario_path,
-        &transcript_path,
-        &start_counter_path,
-    );
+    let config = make_service_config(&scenario_path, &transcript_path, &start_counter_path);
     let service = LspService::new_arc(config);
     let _key = service
         .get_or_create_client_for_file(&source_path)
@@ -2149,23 +2142,17 @@ edition = "2021"
 
     // First manual restart: succeeds (or returns ServerRestarted
     // if a generation advance raced — both are acceptable).
-    let first = tokio::time::timeout(
-        Duration::from_secs(10),
-        service.manual_restart_client(&key),
-    )
-    .await
-    .expect("first manual restart timed out")
-    .expect("first manual restart errored");
+    let first = tokio::time::timeout(Duration::from_secs(10), service.manual_restart_client(&key))
+        .await
+        .expect("first manual restart timed out")
+        .expect("first manual restart errored");
 
     // The first manual restart has finished (we either succeeded
     // or got a typed busy error). Now issue a second manual
     // restart; it should complete promptly without deadlock.
-    let second = tokio::time::timeout(
-        Duration::from_secs(10),
-        service.manual_restart_client(&key),
-    )
-    .await
-    .expect("second manual restart timed out (deadlock?)");
+    let second = tokio::time::timeout(Duration::from_secs(10), service.manual_restart_client(&key))
+        .await
+        .expect("second manual restart timed out (deadlock?)");
 
     // Acceptable outcomes for the second call: Ok, busy error,
     // or no-client error (the first tear-down removed the

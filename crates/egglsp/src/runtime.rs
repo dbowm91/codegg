@@ -164,6 +164,37 @@ impl LspProcessRuntime {
         }
     }
 
+    /// Construct an `LspProcessRuntime` without spawning a child
+    /// process. The runtime's intent starts as `Running`, the exit
+    /// channel is initialized to `None`, and the stderr ring
+    /// buffer is empty. Used by unit tests that need a
+    /// `RuntimeEntry` to populate the runtime map but cannot
+    /// afford to spawn a real process. The returned runtime is
+    /// safe to clone and inspect, but `wait_for_exit` will only
+    /// return if a caller manually publishes an event through
+    /// the underlying channel — which is intentional.
+    #[cfg(test)]
+    pub fn dummy_for_test(server_id: &str, generation: u64) -> Self {
+        use std::sync::Mutex as StdMutex;
+        let (intent_tx, _intent_rx) = watch::channel(LspProcessIntent::Running);
+        let (exit_tx, exit_rx) = watch::channel(None);
+        let (kill_tx, _kill_rx) = mpsc::channel(1);
+        // Keep the exit sender alive by leaking into a
+        // never-collected handle; the test relies on the
+        // construction succeeding, not on the runtime
+        // publishing an exit.
+        let _ = Box::leak(Box::new(exit_tx));
+        Self {
+            server_id: server_id.to_string(),
+            root: PathBuf::from("/tmp"),
+            generation,
+            intent_tx,
+            exit_rx,
+            kill_tx,
+            stderr_buffer: Arc::new(StdMutex::new(crate::supervisor::StderrRingBuffer::new())),
+        }
+    }
+
     /// Returns the generation this runtime was spawned for.
     pub fn generation(&self) -> u64 {
         self.generation

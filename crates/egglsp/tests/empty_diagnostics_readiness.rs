@@ -103,7 +103,7 @@ fn empty_diagnostics_scenario(root_uri: &str, source_uri: &str) -> serde_json::V
 /// return `true`. The cache must contain an entry with an
 /// empty vector.
 #[tokio::test]
-async fn empty_diagnostics_publishes_satisfy_wait_for_first_diagnostics() {
+async fn empty_publish_diagnostics_satisfies_readiness() {
     let mut harness = ProductionClientHarness::start(
         empty_diagnostics_scenario("__ROOT_URI__", "__SOURCE_URI__"),
         LspClientOptions::default(),
@@ -118,7 +118,10 @@ async fn empty_diagnostics_publishes_satisfy_wait_for_first_diagnostics() {
     let client = harness.client.clone();
     let source_uri = format!(
         "file://{}",
-        harness.source_path.to_string_lossy().trim_start_matches('/')
+        harness
+            .source_path
+            .to_string_lossy()
+            .trim_start_matches('/')
     );
     let did_open = json!({
         "textDocument": {
@@ -213,7 +216,10 @@ async fn missing_diagnostics_notification_times_out() {
     let client = harness.client.clone();
     let source_uri = format!(
         "file://{}",
-        harness.source_path.to_string_lossy().trim_start_matches('/')
+        harness
+            .source_path
+            .to_string_lossy()
+            .trim_start_matches('/')
     );
     let did_open = json!({
         "textDocument": {
