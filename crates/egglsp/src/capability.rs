@@ -105,11 +105,19 @@ pub struct LspCapabilitySnapshot {
     pub language_id: Option<String>,
     pub server_name: Option<String>,
     // Phase 4: split diagnostics into advertised push/pull.
+    // `supports_push_diagnostics` is always false at init — it is NOT
+    // derived from text_document_sync. It is kept as a legacy escape
+    // hatch and defaults to false.
     pub supports_push_diagnostics: bool,
     pub supports_pull_diagnostics: bool,
-    // Legacy alias kept for backward compatibility — true when either
-    // push or pull is advertised. New code should query the
-    // `supports_*_diagnostics` flags directly.
+    // Set to true when a `publishDiagnostics` notification is
+    // actually received from the server. This is the authoritative
+    // signal for push diagnostics support.
+    pub observed_push_diagnostics: bool,
+    // Legacy alias kept for backward compatibility — true when pull
+    // is advertised, push was observed, or the legacy push flag is
+    // set. New code should query the `supports_*_diagnostics` flags
+    // directly.
     pub supports_diagnostics: bool,
     pub supports_document_symbols: bool,
     pub supports_workspace_symbols: bool,
@@ -326,13 +334,13 @@ impl LspCapabilitySnapshot {
         // Diagnostics support — split into push and pull.
         // Pull is advertised via `caps.diagnostic_provider`.
         let supports_pull_diagnostics = caps.diagnostic_provider.is_some();
-        // Push is implicit in the LSP spec but not advertised in
-        // ServerCapabilities on lsp-types 0.97 — many servers publish
-        // diagnostics without advertising. We treat push as supported
-        // when a text-document-sync provider is present, which is the
-        // conservative protocol-level signal.
-        let supports_push_diagnostics = caps.text_document_sync.is_some();
-        let supports_diagnostics = supports_push_diagnostics || supports_pull_diagnostics;
+        // Push is NOT derived from text_document_sync (sync is a
+        // prerequisite, not an advertisement of push diagnostics).
+        // Both flags default to false and are flipped by observation.
+        let supports_push_diagnostics = false;
+        let observed_push_diagnostics = false;
+        let supports_diagnostics =
+            supports_pull_diagnostics || observed_push_diagnostics || supports_push_diagnostics;
 
         // Declaration / implementation — enums with `Simple(bool)`.
         let supports_declaration = caps
@@ -376,6 +384,7 @@ impl LspCapabilitySnapshot {
             server_name: server_name.map(String::from),
             supports_push_diagnostics,
             supports_pull_diagnostics,
+            observed_push_diagnostics,
             supports_diagnostics,
             supports_document_symbols: one_of_bool_or_options_supported(
                 &caps.document_symbol_provider,
@@ -423,7 +432,11 @@ impl LspCapabilitySnapshot {
     /// Returns `true` when the snapshot indicates the server supports `op`.
     pub fn supports(&self, op: LspSemanticOperation) -> bool {
         match op {
-            LspSemanticOperation::Diagnostics => self.supports_diagnostics,
+            LspSemanticOperation::Diagnostics => {
+                self.supports_pull_diagnostics
+                    || self.observed_push_diagnostics
+                    || self.supports_push_diagnostics
+            }
             LspSemanticOperation::DocumentSymbols => self.supports_document_symbols,
             LspSemanticOperation::WorkspaceSymbols => self.supports_workspace_symbols,
             LspSemanticOperation::Definition => self.supports_definition,
@@ -557,8 +570,9 @@ mod tests {
         LspCapabilitySnapshot {
             language_id: Some("rust".into()),
             server_name: Some("rust-analyzer".into()),
-            supports_push_diagnostics: true,
+            supports_push_diagnostics: false,
             supports_pull_diagnostics: false,
+            observed_push_diagnostics: true,
             supports_diagnostics: true,
             supports_document_symbols: true,
             supports_workspace_symbols: true,
@@ -591,8 +605,9 @@ mod tests {
         LspCapabilitySnapshot {
             language_id: Some("python".into()),
             server_name: Some("pylsp".into()),
-            supports_push_diagnostics: true,
+            supports_push_diagnostics: false,
             supports_pull_diagnostics: false,
+            observed_push_diagnostics: true,
             supports_diagnostics: true,
             supports_document_symbols: true,
             supports_workspace_symbols: false,
@@ -857,6 +872,115 @@ mod tests {
         assert!(!snap2.supports_push_diagnostics);
         assert!(snap2.supports_pull_diagnostics);
         assert!(snap2.supports_diagnostics);
+    }
+
+    // ── Pass 3: Separated advertised vs. observed diagnostics ──────
+
+    #[test]
+    fn text_sync_alone_does_not_imply_push_diagnostics() {
+        // ServerCapabilities with text_document_sync but no
+        // diagnostic_provider → both push and pull must be false.
+        let mut caps = ServerCapabilities::default();
+        caps.text_document_sync = Some(lsp_types::TextDocumentSyncCapability::Options(
+            lsp_types::TextDocumentSyncOptions::default(),
+        ));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(!snap.supports_push_diagnostics, "push must NOT be derived from text_sync");
+        assert!(!snap.supports_pull_diagnostics);
+        assert!(
+            !snap.supports_diagnostics,
+            "diagnostics should be false when neither push nor pull is advertised"
+        );
+    }
+
+    #[test]
+    fn observed_push_diagnostics_enables_diagnostics() {
+        // A snapshot with observed_push_diagnostics=true should
+        // report diagnostics as supported even when pull is false.
+        let mut snap = LspCapabilitySnapshot::from_capabilities(
+            &ServerCapabilities::default(),
+            Some("s"),
+            Some("rust"),
+        );
+        assert!(!snap.supports(LspSemanticOperation::Diagnostics));
+        // Simulate observation of a publishDiagnostics notification.
+        snap.observed_push_diagnostics = true;
+        snap.supports_diagnostics = snap.supports_pull_diagnostics
+            || snap.observed_push_diagnostics
+            || snap.supports_push_diagnostics;
+        assert!(
+            snap.supports(LspSemanticOperation::Diagnostics),
+            "diagnostics should be true after push is observed"
+        );
+        assert!(snap.supports_diagnostics, "legacy alias must reflect observation");
+    }
+
+    #[test]
+    fn pull_advertised_without_observed_push_still_works() {
+        // Pull advertised + no push observation → diagnostics supported.
+        let mut caps = ServerCapabilities::default();
+        caps.diagnostic_provider = Some(lsp_types::DiagnosticServerCapabilities::Options(
+            lsp_types::DiagnosticOptions {
+                identifier: None,
+                inter_file_dependencies: false,
+                workspace_diagnostics: false,
+                work_done_progress_options: Default::default(),
+            },
+        ));
+        let snap = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(snap.supports_pull_diagnostics);
+        assert!(!snap.observed_push_diagnostics);
+        assert!(!snap.supports_push_diagnostics);
+        assert!(snap.supports_diagnostics, "pull alone should set legacy alias");
+        assert!(snap.supports(LspSemanticOperation::Diagnostics));
+    }
+
+    #[test]
+    fn supports_diagnostics_legacy_alias_reflects_all_three_sources() {
+        // Only push_legacy set → true.
+        let mut snap = LspCapabilitySnapshot::from_capabilities(
+            &ServerCapabilities::default(),
+            Some("s"),
+            Some("rust"),
+        );
+        snap.supports_push_diagnostics = true;
+        snap.supports_diagnostics = snap.supports_pull_diagnostics
+            || snap.observed_push_diagnostics
+            || snap.supports_push_diagnostics;
+        assert!(snap.supports_diagnostics);
+
+        // Only pull set → true.
+        let mut caps = ServerCapabilities::default();
+        caps.diagnostic_provider = Some(lsp_types::DiagnosticServerCapabilities::Options(
+            lsp_types::DiagnosticOptions {
+                identifier: None,
+                inter_file_dependencies: false,
+                workspace_diagnostics: false,
+                work_done_progress_options: Default::default(),
+            },
+        ));
+        let snap2 = LspCapabilitySnapshot::from_capabilities(&caps, Some("s"), Some("rust"));
+        assert!(snap2.supports_diagnostics);
+
+        // Only observed set → true.
+        let mut snap3 = LspCapabilitySnapshot::from_capabilities(
+            &ServerCapabilities::default(),
+            Some("s"),
+            Some("rust"),
+        );
+        snap3.observed_push_diagnostics = true;
+        snap3.supports_diagnostics = snap3.supports_pull_diagnostics
+            || snap3.observed_push_diagnostics
+            || snap3.supports_push_diagnostics;
+        assert!(snap3.supports_diagnostics);
+
+        // None set → false.
+        let snap4 = LspCapabilitySnapshot::from_capabilities(
+            &ServerCapabilities::default(),
+            Some("s"),
+            Some("rust"),
+        );
+        assert!(!snap4.supports_diagnostics);
     }
 
     #[test]

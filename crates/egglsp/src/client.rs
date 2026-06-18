@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -561,6 +561,11 @@ pub struct LspClient {
     /// `0` (never assigned) and is bumped by the restart coordinator
     /// after a successful reinit.
     pub(crate) server_generation: Arc<AtomicU64>,
+    /// Set to true when a `publishDiagnostics` notification is
+    /// actually received from the server. Used to augment the
+    /// normalized capability snapshot so `supports_diagnostics`
+    /// reflects observed behavior, not text_sync derivation.
+    pub(crate) observed_push_diagnostics: Arc<AtomicBool>,
     options: LspClientOptions,
     #[cfg(test)]
     test_shutdown_count: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -662,6 +667,7 @@ impl LspClient {
         let progress_state: Arc<Mutex<ProgressState>> =
             Arc::new(Mutex::new(ProgressState::default()));
         let server_generation: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+        let observed_push_diagnostics: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
         // Spawn background stdout reader.
         let reader_diagnostics = diagnostics.clone();
@@ -671,6 +677,7 @@ impl LspClient {
         let reader_last_diagnostics_at = last_diagnostics_at.clone();
         let reader_progress_state = progress_state.clone();
         let reader_server_generation = server_generation.clone();
+        let reader_observed_push_diagnostics = observed_push_diagnostics.clone();
         let server_id_for_reader = server_id.clone();
         let reader_writer = writer.clone_inner();
         let reader_context = ServerRequestContext {
@@ -699,6 +706,7 @@ impl LspClient {
                 reader_last_diagnostics_at,
                 reader_progress_state,
                 reader_server_generation,
+                reader_observed_push_diagnostics,
                 server_id_for_reader,
                 reader_writer,
                 reader_context,
@@ -727,6 +735,7 @@ impl LspClient {
             child: Mutex::new(Some(child)),
             stderr: Mutex::new(stderr_handle),
             server_generation,
+            observed_push_diagnostics,
             options,
             #[cfg(test)]
             test_shutdown_count: None,
@@ -784,6 +793,7 @@ impl LspClient {
         let progress_state: Arc<Mutex<ProgressState>> =
             Arc::new(Mutex::new(ProgressState::default()));
         let server_generation: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
+        let observed_push_diagnostics: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
         let reader_diagnostics = diagnostics.clone();
         let reader_pending = pending.clone();
@@ -792,6 +802,7 @@ impl LspClient {
         let reader_last_diagnostics_at = last_diagnostics_at.clone();
         let reader_progress_state = progress_state.clone();
         let reader_server_generation = server_generation.clone();
+        let reader_observed_push_diagnostics = observed_push_diagnostics.clone();
         let server_id = server_id.to_string();
         let reader_server_id = server_id.clone();
         let reader_writer = writer.clone_inner();
@@ -822,6 +833,7 @@ impl LspClient {
                 reader_last_diagnostics_at,
                 reader_progress_state,
                 reader_server_generation,
+                reader_observed_push_diagnostics,
                 reader_server_id,
                 reader_writer,
                 reader_context,
@@ -852,6 +864,7 @@ impl LspClient {
             // owns the stderr pipe.
             stderr: Mutex::new(None),
             server_generation,
+            observed_push_diagnostics,
             options,
             #[cfg(test)]
             test_shutdown_count: Some(shutdown_count),
@@ -871,6 +884,7 @@ impl LspClient {
         last_diagnostics_at: Arc<Mutex<Option<Instant>>>,
         progress_state: Arc<Mutex<ProgressState>>,
         server_generation: Arc<AtomicU64>,
+        observed_push_diagnostics: Arc<AtomicBool>,
         server_id: String,
         writer: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
         server_request_context: ServerRequestContext,
@@ -974,6 +988,7 @@ impl LspClient {
                 JsonRpcMessage::Notification { method, params } => {
                     if method == "textDocument/publishDiagnostics" {
                         *last_diagnostics_at.lock().await = Some(Instant::now());
+                        observed_push_diagnostics.store(true, Ordering::Relaxed);
                     } else if method == "$/progress" {
                         update_progress_state(&progress_state, &params).await;
                     }
@@ -1089,6 +1104,12 @@ impl LspClient {
         &self,
     ) -> Option<crate::capability::LspCapabilitySnapshot> {
         self.normalized_capabilities.lock().await.clone()
+    }
+
+    /// Returns `true` if the client has received at least one
+    /// `publishDiagnostics` notification from the server.
+    pub fn has_observed_push_diagnostics(&self) -> bool {
+        self.observed_push_diagnostics.load(Ordering::Relaxed)
     }
 
     pub async fn open_file(&self, uri: &Url, text: &str, version: i32) -> Result<(), LspError> {

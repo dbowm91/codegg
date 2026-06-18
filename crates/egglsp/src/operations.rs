@@ -827,7 +827,19 @@ impl LspOperations {
     ) -> Option<LspCapabilitySnapshot> {
         let (key, _) = self.service.get_or_create_client(file_path).await.ok()?;
         // Prefer the stored override-aware snapshot.
-        if let Some(snap) = self.service.normalized_capabilities_for_key(&key).await {
+        if let Some(mut snap) = self.service.normalized_capabilities_for_key(&key).await {
+            // Augment with observation state: if the client has
+            // received a publishDiagnostics notification, mark the
+            // snapshot accordingly so supports_diagnostics reflects
+            // observed behavior.
+            if self.service.has_observed_push_diagnostics_for_key(&key).await
+                && !snap.observed_push_diagnostics
+            {
+                snap.observed_push_diagnostics = true;
+                snap.supports_diagnostics = snap.supports_pull_diagnostics
+                    || snap.observed_push_diagnostics
+                    || snap.supports_push_diagnostics;
+            }
             return Some(snap);
         }
         // Fallback: rebuild from raw capabilities (should not happen in

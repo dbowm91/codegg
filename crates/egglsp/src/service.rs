@@ -2199,6 +2199,16 @@ impl LspService {
         client.get_normalized_capabilities().await
     }
 
+    /// Returns `true` if the client for `key` has received at least
+    /// one `publishDiagnostics` notification from the server.
+    pub async fn has_observed_push_diagnostics_for_key(&self, key: &str) -> bool {
+        let clients = self.clients.read().await;
+        clients
+            .get(key)
+            .map(|c| c.has_observed_push_diagnostics())
+            .unwrap_or(false)
+    }
+
     pub async fn get_or_create_client_for_file(
         &self,
         file_path: &Path,
