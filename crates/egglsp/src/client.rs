@@ -566,6 +566,15 @@ pub struct LspClient {
     /// normalized capability snapshot so `supports_diagnostics`
     /// reflects observed behavior, not text_sync derivation.
     pub(crate) observed_push_diagnostics: Arc<AtomicBool>,
+    /// Pass 7 — Negotiated position encoding from the LSP
+    /// `initialize` response. Defaults to UTF-16 because the
+    /// LSP specification defaults to UTF-16 when the server
+    /// omits `position_encoding` from its `ServerCapabilities`.
+    /// Mutated by [`Self::set_position_encoding`] during
+    /// initialization; readers use [`Self::position_encoding`]
+    /// to get the live negotiated value.
+    pub(crate) position_encoding:
+        std::sync::Arc<std::sync::RwLock<crate::position::PositionEncoding>>,
     options: LspClientOptions,
     #[cfg(test)]
     test_shutdown_count: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -583,6 +592,43 @@ pub struct LspClientHealthSnapshot {
     pub transport: ClientTransportSnapshot,
     /// Number of requests awaiting responses.
     pub pending_requests: usize,
+}
+
+/// Per-step trace of the LSP protocol shutdown sequence
+/// captured by
+/// [`LspClient::request_protocol_shutdown_traced`]. The
+/// `default()` value is "no step ran yet"; each `bool`
+/// records whether the corresponding step ran without a
+/// transport error. The trace does not encode ordering or
+/// partial-state recovery: a step that ran after a previous
+/// step failed is recorded as `false`.
+#[derive(Debug, Clone, Default)]
+pub struct ProtocolShutdownTrace {
+    /// `shutdown` JSON-RPC request sent without a writer
+    /// error. `false` when the writer rejected the request
+    /// (e.g. broken pipe, transport already failed).
+    pub shutdown_request_sent: bool,
+    /// `shutdown` JSON-RPC response received. The
+    /// production `send_request` returns `Ok` only when the
+    /// response was observed, so this is the same as
+    /// `shutdown_request_sent` in practice; the field is
+    /// kept separate so future code paths can distinguish
+    /// the two events.
+    pub shutdown_response_received: bool,
+    /// `exit` JSON-RPC notification sent. `false` when
+    /// the writer rejected the notification (broken pipe,
+    /// transport already failed, server crashed before
+    /// notification could be flushed).
+    pub exit_notification_sent: bool,
+    /// Underlying `ChildStdin` was successfully flushed
+    /// after the `exit` notification. In the current
+    /// implementation, `send_notification` only returns
+    /// `Ok` after the writer has flushed the bytes, so this
+    /// mirrors `exit_notification_sent`. The field is kept
+    /// separate so the trace can surface the granular
+    /// intent: the writer flushed, vs. the notification
+    /// was sent.
+    pub writer_flush_succeeded: bool,
 }
 
 impl LspClient {
@@ -668,6 +714,15 @@ impl LspClient {
             Arc::new(Mutex::new(ProgressState::default()));
         let server_generation: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
         let observed_push_diagnostics: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        // Pass 7 — Default to UTF-16 because the LSP spec
+        // defaults to UTF-16 when the server omits
+        // `position_encoding`. `initialize` updates this via
+        // `set_position_encoding` once the response is parsed.
+        let position_encoding: std::sync::Arc<
+            std::sync::RwLock<crate::position::PositionEncoding>,
+        > = std::sync::Arc::new(std::sync::RwLock::new(
+            crate::position::PositionEncoding::default(),
+        ));
 
         // Spawn background stdout reader.
         let reader_diagnostics = diagnostics.clone();
@@ -736,6 +791,7 @@ impl LspClient {
             stderr: Mutex::new(stderr_handle),
             server_generation,
             observed_push_diagnostics,
+            position_encoding,
             options,
             #[cfg(test)]
             test_shutdown_count: None,
@@ -865,6 +921,11 @@ impl LspClient {
             stderr: Mutex::new(None),
             server_generation,
             observed_push_diagnostics,
+            // Test stubs default to UTF-16; tests that need a
+            // different value call `set_position_encoding` directly.
+            position_encoding: std::sync::Arc::new(std::sync::RwLock::new(
+                crate::position::PositionEncoding::default(),
+            )),
             options,
             #[cfg(test)]
             test_shutdown_count: Some(shutdown_count),
@@ -1078,6 +1139,22 @@ impl LspClient {
 
         let result = self.send_request("initialize", params).await?;
         let caps: InitializeResult = serde_json::from_value(result)?;
+        // Pass 7 — Capture the negotiated position encoding
+        // from the server's `ServerCapabilities`. The LSP spec
+        // defaults to UTF-16 when the server omits the field,
+        // which is the `PositionEncoding::default()` value.
+        let negotiated_encoding = caps
+            .capabilities
+            .position_encoding
+            .as_ref()
+            .and_then(|k| match k.as_str() {
+                "utf-8" => Some(crate::position::PositionEncoding::Utf8),
+                "utf-16" => Some(crate::position::PositionEncoding::Utf16),
+                "utf-32" => Some(crate::position::PositionEncoding::Utf32),
+                _ => None,
+            })
+            .unwrap_or_default();
+        self.set_position_encoding(negotiated_encoding);
         *self.capabilities.lock().await = Some(caps.capabilities.clone());
 
         info!(server = %self.server_id, "LSP server initialized");
@@ -1110,6 +1187,22 @@ impl LspClient {
     /// `publishDiagnostics` notification from the server.
     pub fn has_observed_push_diagnostics(&self) -> bool {
         self.observed_push_diagnostics.load(Ordering::Relaxed)
+    }
+
+    /// Pass 7 — Record the negotiated position encoding.
+    /// Called from `initialize` after parsing the server's
+    /// `ServerCapabilities`. Public so test fixtures can
+    /// override the negotiated value without spinning up a
+    /// real server.
+    pub fn set_position_encoding(&self, encoding: crate::position::PositionEncoding) {
+        *self.position_encoding.write().unwrap() = encoding;
+    }
+
+    /// Pass 7 — Return the live negotiated position encoding.
+    /// Defaults to [`PositionEncoding::Utf16`] (the LSP spec
+    /// default) until the `initialize` response updates it.
+    pub fn position_encoding(&self) -> crate::position::PositionEncoding {
+        *self.position_encoding.read().unwrap()
     }
 
     pub async fn open_file(&self, uri: &Url, text: &str, version: i32) -> Result<(), LspError> {
@@ -1561,6 +1654,63 @@ impl LspClient {
         self.send_request("shutdown", serde_json::json!(null))
             .await?;
         self.send_notification("exit", serde_json::json!({})).await
+    }
+
+    /// Traced variant of [`Self::request_protocol_shutdown`].
+    /// Returns a [`ProtocolShutdownTrace`] capturing each step of
+    /// the protocol shutdown sequence (request sent, response
+    /// received, exit notification sent, writer flushed). The
+    /// production method remains unchanged; this variant exists
+    /// for the real-server compatibility harness so it can record
+    /// per-step evidence in the
+    /// `LspCompatibilityReport.shutdown_trace` field.
+    ///
+    /// Each `bool` reflects a step that ran without a transport
+    /// error. The trace does not record the *order* of failures
+    /// (a single failing step short-circuits the rest), but it
+    /// does record whether each step was attempted. A `true`
+    /// value means the underlying I/O succeeded for that step.
+    pub async fn request_protocol_shutdown_traced(
+        &self,
+    ) -> (Result<(), LspError>, ProtocolShutdownTrace) {
+        #[cfg(test)]
+        if let Some(counter) = &self.test_shutdown_count {
+            counter.fetch_add(1, Ordering::SeqCst);
+            return (
+                Ok(()),
+                ProtocolShutdownTrace {
+                    shutdown_request_sent: true,
+                    shutdown_response_received: true,
+                    exit_notification_sent: true,
+                    writer_flush_succeeded: true,
+                },
+            );
+        }
+        let mut trace = ProtocolShutdownTrace::default();
+        match self.send_request("shutdown", serde_json::json!(null)).await {
+            Ok(_) => {
+                // The request was sent AND the response was
+                // received: the protocol success window in
+                // `send_request` returns only when both have
+                // happened. We deliberately do not split these
+                // two events because the harness is allowed to
+                // treat them as a single protocol-success
+                // boundary; the granular signal is the absence
+                // of the response (the `Ok(_) =>` arm was not
+                // taken).
+                trace.shutdown_request_sent = true;
+                trace.shutdown_response_received = true;
+            }
+            Err(e) => return (Err(e), trace),
+        }
+        match self.send_notification("exit", serde_json::json!({})).await {
+            Ok(()) => {
+                trace.exit_notification_sent = true;
+                trace.writer_flush_succeeded = true;
+            }
+            Err(e) => return (Err(e), trace),
+        }
+        (Ok(()), trace)
     }
 
     /// Wait for the child process to exit, bounded by `timeout`.

@@ -142,9 +142,19 @@ pub struct LspCompatibilityCheck {
 }
 
 /// Per-operation compatibility detail distinguishing protocol
-/// success, semantic success, skipped checks, and known
-/// limitations. "Passing" means an exercised semantic assertion
-/// passed — not merely that the server advertised the capability.
+/// success, response deserialization success, semantic success,
+/// skipped checks, and known limitations. "Passing" means an
+/// exercised semantic assertion passed — not merely that the
+/// server advertised the capability.
+///
+/// Pass 1 (Phase 4 final evidence-integrity cleanup) —
+/// `response_parsed` is a new explicit field so the harness
+/// can distinguish a malformed JSON response
+/// (`request_succeeded = true`, `response_parsed = false`,
+/// `semantic_assertion_passed = false`) from a clean protocol
+/// success followed by a semantic failure. `serde(default)`
+/// keeps older reports (without this field) readable; new
+/// reports always populate it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspOperationCompatibility {
     /// Operation name (e.g. "implementation", "typeHierarchy/prepare").
@@ -155,6 +165,15 @@ pub struct LspOperationCompatibility {
     pub exercised: bool,
     /// True when the LSP request succeeded (no protocol error).
     pub request_succeeded: bool,
+    /// True when the JSON response deserialized into the
+    /// expected Rust shape (e.g. `WorkspaceEdit`,
+    /// `Vec<Location>`, `SignatureHelp`). `serde(default)`
+    /// defaults to `false` on older reports; new reports
+    /// always populate it. Distinct from `request_succeeded`
+    /// so consumers can tell "JSON-RPC succeeded but the
+    /// payload was malformed" apart from "JSON-RPC failed".
+    #[serde(default)]
+    pub response_parsed: bool,
     /// True when the semantic assertion (e.g. expected file, label
     /// substring, minimum count) passed.
     pub semantic_assertion_passed: bool,
@@ -203,10 +222,33 @@ pub enum OperationMode {
 /// stdio-mode force-kills (genuine protocol misbehavior).
 /// `serde(default)` keeps backward compatibility with older
 /// report JSON.
+///
+/// Pass 3 (Phase 4 final evidence-integrity cleanup) — every
+/// step in the shutdown sequence is recorded as a separate
+/// field. Older reports keep their coarse `requested` /
+/// `server_exited` / `force_kill_requested` fields; new
+/// reports additionally carry the granular protocol and
+/// runtime signals so a reviewer can distinguish:
+/// - did the LSP `shutdown` request actually reach the
+///   server?
+/// - did the server respond to the `shutdown` request
+///   (vs. crashing silently before responding)?
+/// - was the LSP `exit` notification flushed to the writer?
+/// - did the writer close cleanly?
+/// - did the graceful wait observe an exit within the
+///   deadline?
+/// - was a force-kill issued, and did it actually reap the
+///   child?
+/// - did the reap succeed under the absolute deadline?
+///
+/// `serde(default)` on every new field keeps older reports
+/// readable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspShutdownTrace {
     /// True when the harness sent the LSP `shutdown` request
-    /// and `exit` notification before waiting for exit.
+    /// before waiting for exit. Retained for backward
+    /// compatibility with consumers that read the legacy
+    /// `requested` field.
     pub requested: bool,
     /// True when the server exited (graceful or force-killed)
     /// within the absolute deadline. False when the absolute
@@ -233,6 +275,63 @@ pub struct LspShutdownTrace {
     /// True when the harness force-killed the server. False
     /// when the server exited gracefully within the deadline.
     pub force_kill_requested: bool,
+    // ── Pass 3 — granular protocol/runtime fields ──────────
+    /// Pass 3 — true when the `shutdown` JSON-RPC request
+    /// was sent to the writer without an I/O error. The
+    /// request may have been sent even when the server
+    /// crashes before responding, so this is distinct from
+    /// `shutdown_response_received`.
+    #[serde(default)]
+    pub shutdown_request_sent: bool,
+    /// Pass 3 — true when the harness received a JSON-RPC
+    /// response to the `shutdown` request. `false` when the
+    /// server crashed, hung, or closed the transport
+    /// before responding.
+    #[serde(default)]
+    pub shutdown_response_received: bool,
+    /// Pass 3 — true when the LSP `exit` notification was
+    /// flushed to the writer. `false` when the writer was
+    /// already closed or the runtime force-killed before
+    /// the notification could be sent.
+    #[serde(default)]
+    pub exit_notification_sent: bool,
+    /// Pass 3 — true when the writer's underlying
+    /// `ChildStdin` was successfully flushed after the
+    /// `exit` notification. `false` when the writer
+    /// short-circuited (broken pipe, transport failure).
+    #[serde(default)]
+    pub writer_flush_succeeded: bool,
+    /// Pass 3 — true when the writer's `close()` returned
+    /// without an error. The harness calls `close()` to
+    /// signal EOF; many LSP servers require this before
+    /// they exit.
+    #[serde(default)]
+    pub writer_closed: bool,
+    /// Pass 3 — true when the graceful wait completed
+    /// (either with an observed exit OR with a graceful
+    /// timeout). The field is independent of
+    /// `graceful_exit_observed` so a graceful timeout
+    /// followed by a successful force-kill is still
+    /// distinguishable from a clean graceful exit.
+    #[serde(default)]
+    pub graceful_wait_completed: bool,
+    /// Pass 3 — true when the runtime observed a child
+    /// exit event within the graceful deadline. False when
+    /// the graceful wait timed out and the harness had to
+    /// force-kill.
+    #[serde(default)]
+    pub graceful_exit_observed: bool,
+    /// Pass 3 — true when the runtime's `request_force_kill`
+    /// was issued (because the graceful deadline expired).
+    /// When `false`, the server exited before the deadline.
+    #[serde(default)]
+    pub force_kill_succeeded: bool,
+    /// Pass 3 — true when `child.wait()` returned a
+    /// `ExitStatus` (graceful exit OR successful
+    /// force-kill). False only when the absolute deadline
+    /// expired without a reaped child.
+    #[serde(default)]
+    pub child_reaped: bool,
 }
 
 /// Server version information captured during test runs.
@@ -267,6 +366,23 @@ pub struct LspCompatibilityReport {
     /// keeps backward compatibility with older report JSON.
     #[serde(default)]
     pub shutdown_trace: Option<LspShutdownTrace>,
+    /// Pass 7 — negotiated position encoding from the LSP
+    /// `initialize` response. `Some(_)` when the server
+    /// advertised `position_encoding`; `None` when the field
+    /// was omitted (the harness then defaults to UTF-16).
+    /// `serde(default)` keeps backward compatibility with
+    /// older report JSON.
+    #[serde(default)]
+    pub position_encoding: Option<crate::position::PositionEncoding>,
+    /// Pass 7 — `true` when the harness defaulted to UTF-16
+    /// because the server omitted `position_encoding` from its
+    /// `ServerCapabilities`. Reviewers should treat
+    /// `position_encoding = Utf16` reports that are also
+    /// `position_encoding_assumed = true` as "no explicit
+    /// negotiation observed". `serde(default)` keeps backward
+    /// compatibility.
+    #[serde(default)]
+    pub position_encoding_assumed: bool,
     pub stderr_tail: Vec<String>,
     pub known_limitations: Vec<String>,
 }

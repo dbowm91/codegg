@@ -177,6 +177,13 @@ pub struct LspCapabilityDetails {
     pub signature_trigger_characters: Vec<String>,
     /// Semantic-token legend (token types + modifiers) when advertised.
     pub semantic_token_legend: Option<SemanticTokenLegendSnapshot>,
+    /// Pass 7 — Position encoding the server advertised during
+    /// `initialize`. `None` when the server omitted the
+    /// `position_encoding` capability; the harness then
+    /// defaults to UTF-16 (the LSP spec default). Reviewers
+    /// can read this field on the report to audit whether the
+    /// negotiated encoding was explicit.
+    pub position_encoding: Option<crate::position::PositionEncoding>,
 }
 
 /// Compact representation of the semantic-token legend advertised by
@@ -594,12 +601,28 @@ fn extract_details(caps: &ServerCapabilities) -> LspCapabilityDetails {
         }
     });
 
+    // Pass 7 — Capture the negotiated position encoding from
+    // `ServerCapabilities.position_encoding`. The LSP spec
+    // defaults to UTF-16 when the server omits the field;
+    // `None` here means "no explicit negotiation observed"
+    // so the harness can report the assumption.
+    let position_encoding = caps
+        .position_encoding
+        .as_ref()
+        .and_then(|k| match k.as_str() {
+            "utf-8" => Some(crate::position::PositionEncoding::Utf8),
+            "utf-16" => Some(crate::position::PositionEncoding::Utf16),
+            "utf-32" => Some(crate::position::PositionEncoding::Utf32),
+            _ => None,
+        });
+
     LspCapabilityDetails {
         rename_prepare_provider,
         code_action_kinds,
         completion_trigger_characters,
         signature_trigger_characters,
         semantic_token_legend,
+        position_encoding,
     }
 }
 

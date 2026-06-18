@@ -179,39 +179,75 @@ mod tests {
     #[test]
     fn utf16_ascii_is_byte_compatible() {
         let text = "hello world";
-        assert_eq!(lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16), Some(0));
-        assert_eq!(lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf16), Some(5));
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf16),
+            Some(5)
+        );
         assert_eq!(
             lsp_units_to_byte_offset(text, 11, PositionEncoding::Utf16),
             Some(11)
         );
-        assert_eq!(lsp_units_to_byte_offset(text, 12, PositionEncoding::Utf16), None);
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 12, PositionEncoding::Utf16),
+            None
+        );
     }
 
     #[test]
     fn utf16_empty_string() {
-        assert_eq!(lsp_units_to_byte_offset("", 0, PositionEncoding::Utf16), Some(0));
-        assert_eq!(lsp_units_to_byte_offset("", 1, PositionEncoding::Utf16), None);
+        assert_eq!(
+            lsp_units_to_byte_offset("", 0, PositionEncoding::Utf16),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset("", 1, PositionEncoding::Utf16),
+            None
+        );
     }
 
     #[test]
     fn utf16_non_ascii_two_byte_chars() {
         // "café" — the `é` is 2 UTF-16 units (BMP) and 2 UTF-8 bytes.
         let text = "café";
-        assert_eq!(lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16), Some(0));
-        assert_eq!(lsp_units_to_byte_offset(text, 2, PositionEncoding::Utf16), Some(2));
-        assert_eq!(lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf16), Some(3));
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 2, PositionEncoding::Utf16),
+            Some(2)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf16),
+            Some(3)
+        );
         // After the `é`: 3 UTF-16 units = 5 UTF-8 bytes.
-        assert_eq!(lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf16), Some(5));
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf16),
+            Some(5)
+        );
     }
 
     #[test]
     fn utf16_cjk_three_byte_chars() {
         // "你好" — each character is 1 UTF-16 unit and 3 UTF-8 bytes.
         let text = "你好";
-        assert_eq!(lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16), Some(0));
-        assert_eq!(lsp_units_to_byte_offset(text, 1, PositionEncoding::Utf16), Some(3));
-        assert_eq!(lsp_units_to_byte_offset(text, 2, PositionEncoding::Utf16), Some(6));
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 1, PositionEncoding::Utf16),
+            Some(3)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 2, PositionEncoding::Utf16),
+            Some(6)
+        );
     }
 
     #[test]
@@ -219,46 +255,97 @@ mod tests {
         // U+1F600 — GRINNING FACE — is 2 UTF-16 units (surrogate pair)
         // and 4 UTF-8 bytes.
         let text = "\u{1F600}!";
-        assert_eq!(lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16), Some(0));
-        assert_eq!(lsp_units_to_byte_offset(text, 1, PositionEncoding::Utf16), None);
-        assert_eq!(lsp_units_to_byte_offset(text, 2, PositionEncoding::Utf16), Some(4));
-        assert_eq!(lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf16), Some(5));
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 1, PositionEncoding::Utf16),
+            None
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 2, PositionEncoding::Utf16),
+            Some(4)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf16),
+            Some(5)
+        );
     }
 
     #[test]
     fn utf16_offset_in_middle_of_multibyte_char_rejects() {
         let text = "你";
-        assert_eq!(lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16), Some(0));
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf16),
+            Some(0)
+        );
         // 1 UTF-16 unit lands in the middle of `你`.
-        assert_eq!(lsp_units_to_byte_offset(text, 1, PositionEncoding::Utf16), None);
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 1, PositionEncoding::Utf16),
+            None
+        );
     }
 
     #[test]
     fn utf8_ascii_is_identity() {
         let text = "let x = 1;";
-        assert_eq!(lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf8), Some(0));
-        assert_eq!(lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf8), Some(5));
-        assert_eq!(lsp_units_to_byte_offset(text, 10, PositionEncoding::Utf8), Some(10));
-        assert_eq!(lsp_units_to_byte_offset(text, 11, PositionEncoding::Utf8), None);
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf8),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf8),
+            Some(5)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 10, PositionEncoding::Utf8),
+            Some(10)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 11, PositionEncoding::Utf8),
+            None
+        );
     }
 
     #[test]
     fn utf8_non_ascii_byte_counts() {
         let text = "café";
         // UTF-8 bytes: c=0, a=1, f=2, é=3,4 — length 5.
-        assert_eq!(lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf8), Some(4));
-        assert_eq!(lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf8), Some(5));
-        assert_eq!(lsp_units_to_byte_offset(text, 6, PositionEncoding::Utf8), None);
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf8),
+            Some(4)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf8),
+            Some(5)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 6, PositionEncoding::Utf8),
+            None
+        );
     }
 
     #[test]
     fn utf32_char_counting() {
         let text = "café";
         // 4 chars; `é` is one char spanning 2 UTF-8 bytes.
-        assert_eq!(lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf32), Some(0));
-        assert_eq!(lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf32), Some(3));
-        assert_eq!(lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf32), Some(5));
-        assert_eq!(lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf32), None);
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 0, PositionEncoding::Utf32),
+            Some(0)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 3, PositionEncoding::Utf32),
+            Some(3)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 4, PositionEncoding::Utf32),
+            Some(5)
+        );
+        assert_eq!(
+            lsp_units_to_byte_offset(text, 5, PositionEncoding::Utf32),
+            None
+        );
     }
 
     #[test]

@@ -48,7 +48,7 @@ pub use capability::{
 };
 pub use client::{
     ClientTransportSnapshot, DiagnosticCacheEntry, JsonRpcId, LspClient, LspClientHealthSnapshot,
-    LspClientOptions, OperationalSummary, ProgressSnapshot,
+    LspClientOptions, OperationalSummary, ProgressSnapshot, ProtocolShutdownTrace,
 };
 pub use compatibility::{
     CompatibilityCheckStatus, CompatibilityRequirement, LspCompatibilityCheck,

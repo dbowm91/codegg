@@ -193,3 +193,43 @@ jobs:
           name: lsp-compat-clangd
           path: target/lsp-compatibility/
           retention-days: 30
+
+  # Pass 9 — `matrix-summary` aggregates the per-server
+  # artifacts into a single manifest that links each server
+  # to its artifact path and exact version. Reviewers
+  # read this manifest to locate the evidence used to
+  # close Phase 4 without parsing per-server JSON. The
+  # job runs after all per-server jobs complete and
+  # fails fast if any per-server artifact is missing
+  # (which signals that a server was skipped or a test
+  # crashed before writing the report).
+  matrix-summary:
+    needs:
+      - rust-analyzer
+      - basedpyright
+      - gopls
+      - typescript-language-server
+      - clangd
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all per-server artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: target/lsp-compatibility/
+      - name: Verify matrix manifest exists
+        run: |
+          if [ ! -f target/lsp-compatibility/matrix-manifest.json ]; then
+            echo "::error::matrix-manifest.json missing — at least one server did not write a report"
+            exit 1
+          fi
+          echo "=== Matrix manifest ==="
+          cat target/lsp-compatibility/matrix-manifest.json
+      - name: Upload aggregated matrix manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-compat-matrix-manifest
+          path: target/lsp-compatibility/matrix-manifest.json
+          retention-days: 90

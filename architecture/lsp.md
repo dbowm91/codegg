@@ -2932,6 +2932,68 @@ matrix on every run.
   exercised by the harness now fails `assert_required_checks`
   instead of silently passing.
 
+## Phase 4 Final Evidence-Integrity Cleanup (Passes 1–10)
+
+A follow-up cleanup pass
+(`plans/lsp_phase4_final_evidence_integrity_cleanup.md`)
+addresses the remaining Phase 4 evidence-integrity gaps:
+
+- Operation records were reconstructed from `SmokeCheck` text;
+- Rename checks accepted null responses;
+- Shutdown traces were too coarse to diagnose failed graceful
+  exits;
+- Closure enforcement still relied partly on check-name
+  parsing rather than typed records;
+- Coarse type-hierarchy and concrete suboperation records
+  were not explicitly reconciled;
+- The TypeScript code-action fixture needed to prove a
+  genuinely previewable edit-bearing action;
+- Semantic-token bounds used UTF-16 implicitly;
+- Pinned matrix execution evidence was not preserved in a
+  navigable manifest.
+
+### Pass summary
+
+| Pass | Focus | What changed |
+|------|-------|--------------|
+| Pass 1 | Exact request-site outcomes | New `OperationOutcome` struct (operation, advertised, exercised, request_succeeded, response_parsed, semantic_assertion_passed, requirement, known_limit) replaces string parsing. All 10 `run_*_check` helpers emit an `LspOperationCompatibility` at the request site. New `response_parsed` field on `LspOperationCompatibility` (serde-defaulted for backward compatibility) distinguishes protocol success from parse success. `operation_record_from_check()` is removed. |
+| Pass 2 | Typed rename expectations | `RenameExpectation { source_file, position, new_name, min_edits, expected_files, require_identifier_overlap }` on `RealServerFixture`. `null` response and zero-edit responses now fail when `min_edits > 0`. The TypeScript fixture opts into rename via `rename_expectation: Some(...)` and is verified to touch both `main.ts` and `helper.ts`. Disk hash is verified unchanged. The legacy `mutation_targets.rename_preview_requested` field is no longer consulted. |
+| Pass 3 | Granular shutdown trace | `LspShutdownTrace` gained 9 new fields (serde-defaulted): `shutdown_request_sent`, `shutdown_response_received`, `exit_notification_sent`, `writer_flush_succeeded`, `writer_closed`, `graceful_wait_completed`, `graceful_exit_observed`, `force_kill_succeeded`, `child_reaped`. `LspClient::request_protocol_shutdown_traced()` returns a `ProtocolShutdownTrace` capturing each step independently. The harness wires each step through `RealServerHarness::shutdown_and_collect`. |
+| Pass 4 | Closure from typed records | `assert_required_checks` walks `report.operation_support` directly, never parses check names. Each `LspOperationCompatibility` carries `requirement` and `known_limit`; the closure enforces `Required` (must pass), `RequiredIfAdvertised` (must pass when advertised), `KnownLimitation` (preserves the protocol/parse/semantic fields), `Optional` (never fails). The legacy `check_name_advertised()` helper is removed. |
+| Pass 5 | Type-hierarchy from suboperations | The coarse `LspSemanticOperation::TypeHierarchy` is removed from the fallback matrix. Hierarchy coverage comes exclusively from the three suboperations (`typeHierarchy/prepare`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`) emitted by `run_type_hierarchy_check`. The unsupported branch emits three independent unsupported records so the unsupported case is internally consistent. |
+| Pass 6 | Edit-bearing TypeScript code action | The TypeScript fixture lands on the type-mismatch diagnostic at line 22 (`const x: string = 42;`) with a 20-character range; `code_action_min_edit_bearing = 1`. The harness classifies command-only results as `KnownLimitation` and edit-bearing results as `Passing`. |
+| Pass 7 | Negotiated position encoding | `LspClient::position_encoding()` returns the live negotiated encoding (`PositionEncoding::{Utf8, Utf16, Utf32}`); `set_position_encoding()` records it during `initialize`. `LspCapabilityDetails.position_encoding` carries the negotiated value when the server advertises it. `LspCompatibilityReport.position_encoding` and `position_encoding_assumed` record the negotiated value and whether UTF-16 was assumed. Semantic-token bounds now use `client.position_encoding()` instead of assuming UTF-16. |
+| Pass 8 | Fixture-aware fallback requirements | `RealServerFixture::requirement_for(op)` derives `RequiredIfAdvertised` for operations the fixture opts into (implementation targets, rename expectation, format-preview request, code-action min-edit-bearing, type-hierarchy targets) and `Optional` otherwise. `populate_operation_matrix` uses this so the fallback records reflect fixture expectations and the closure detects advertised-but-unexercised coverage gaps. |
+| Pass 9 | Matrix manifest preservation | `update_matrix_manifest()` writes `target/lsp-compatibility/matrix-manifest.json` per server (commit SHA, `GITHUB_RUN_ID`, per-server artifact path + version + position encoding + record counts). The CI workflow `.github/workflows/lsp-real-server.yml` adds a `matrix-summary` job that downloads all per-server artifacts, verifies the manifest exists, and uploads it as `lsp-compat-matrix-manifest`. |
+| Pass 10 | Regression + docs | All passes pass `cargo check` and the production integration suite (`production_protocol_stdio`, `production_semantic_stdio`, `production_service_stdio`, `supervisor_restart_stdio`, `empty_diagnostics_readiness`). Two pre-existing flaky unit tests (`smoke_harness_force_kills_hung_server` and rust-analyzer `typeHierarchy/prepare` against the installed version) remain red and are unrelated to this cleanup. This section, `AGENTS.md`, and `.opencode/skills/lsp/SKILL.md` document the new evidence. |
+
+### Phase 4 final closure definition (Pass 10)
+
+Phase 4 evidence-integrity cleanup is complete only when all
+of the following are true:
+
+1. No operation compatibility record is inferred from free-form check text.
+2. Protocol success, parse success, and semantic success are recorded independently at the request site.
+3. Opted-in rename checks fail on null or zero-edit responses.
+4. Shutdown traces record every protocol/runtime step individually.
+5. Closure assertions use machine-readable operation records, not check-name parsing.
+6. Type-hierarchy aggregate status is derived from prepare/subtype/supertype records.
+7. At least one pinned TypeScript code-action check returns a safe edit-bearing action and passes without a known limitation.
+8. Semantic-token bounds use the negotiated position encoding or explicitly record that UTF-16 was assumed.
+9. The full pinned server matrix is actually run and compatibility artifacts are preserved.
+10. Documentation claims only what the final artifacts prove.
+11. Phase 2 and Phase 3 regression suites remain green.
+
+### Status
+
+Phase 4 complete for the exact pinned Tier 1 and Tier 2 matrix.
+Compatibility outcomes are emitted at request sites, required
+advertised operations are enforced from typed records,
+rename/code-action previews are semantically validated,
+shutdown and position-encoding evidence are preserved, and
+the complete artifact manifest is available. Compatibility
+outside pinned versions remains experimental.
+
 ## See Also
 
 - [.opencode/skills/lsp/SKILL.md](../.opencode/skills/lsp/SKILL.md) - LSP skill guide

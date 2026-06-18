@@ -254,7 +254,10 @@ impl super::LspOperations {
             CapabilityDecision::Unsupported(u) => {
                 return Ok(PrepareRenameResult::Unavailable(u));
             }
-            CapabilityDecision::Unknown { operation, reason: _ } => {
+            CapabilityDecision::Unknown {
+                operation,
+                reason: _,
+            } => {
                 return Err(LspError::NotInitialized(format!(
                     "capability {} is not yet known for {}",
                     operation.as_str(),
@@ -359,7 +362,10 @@ impl super::LspOperations {
                 ));
                 PrepareRenameResult::DefaultBehavior
             }
-            CapabilityDecision::Unknown { operation, reason: _ } => {
+            CapabilityDecision::Unknown {
+                operation,
+                reason: _,
+            } => {
                 // Fail-closed: if the server's prepare-rename
                 // capability is not yet known, do not silently
                 // issue a rename.
