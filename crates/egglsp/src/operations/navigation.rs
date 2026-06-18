@@ -72,13 +72,6 @@ pub fn normalize_workspace_symbol_response(
     }
 }
 
-fn uri_to_file_path(uri: &Uri) -> Result<std::path::PathBuf, LspError> {
-    let url = Url::parse(uri.as_str())
-        .map_err(|e| LspError::RequestFailed(format!("invalid LSP URI: {e}")))?;
-    url.to_file_path()
-        .map_err(|_| LspError::RequestFailed(format!("URI is not a file path: {}", uri.as_str())))
-}
-
 impl LspOperations {
     /// Look up the [`LspCapabilitySnapshot`] for the client that
     /// services `file_path`. Returns `None` when the client has not
