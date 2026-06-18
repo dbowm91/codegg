@@ -113,14 +113,45 @@ fn format_documentation_clamped(doc: &Documentation) -> String {
     truncate_doc(&raw, SIGNATURE_DOC_MAX_CHARS)
 }
 
+/// Convert an LSP position offset (in UTF-16 code units) to a Rust
+/// byte offset within the given string. Returns `None` when the
+/// offset exceeds the string's length in UTF-16 code units or
+/// doesn't land on a char boundary.
+fn lsp_units_to_byte_offset(text: &str, units: u32) -> Option<usize> {
+    if units == 0 {
+        return Some(0);
+    }
+    let mut byte_offset = 0;
+    let mut unit_offset = 0;
+    for c in text.chars() {
+        let char_units = c.len_utf16() as u32;
+        // If the target is within this character, it's not on a boundary.
+        if unit_offset + char_units > units {
+            return None;
+        }
+        unit_offset += char_units;
+        byte_offset += c.len_utf8();
+        if unit_offset == units {
+            return Some(byte_offset);
+        }
+    }
+    None
+}
+
 fn resolve_parameter_label(sig_label: &str, label: &ParameterLabel) -> String {
     match label {
         ParameterLabel::Simple(s) => s.clone(),
         ParameterLabel::LabelOffsets([start, end]) => {
-            let s = *start as usize;
-            let e = *end as usize;
-            if e <= sig_label.len() && s <= e {
-                sig_label[s..e].to_string()
+            let s_byte = match lsp_units_to_byte_offset(sig_label, *start) {
+                Some(b) => b,
+                None => return String::new(),
+            };
+            let e_byte = match lsp_units_to_byte_offset(sig_label, *end) {
+                Some(b) => b,
+                None => return String::new(),
+            };
+            if s_byte <= e_byte && e_byte <= sig_label.len() {
+                sig_label[s_byte..e_byte].to_string()
             } else {
                 String::new()
             }
@@ -159,8 +190,10 @@ pub enum PrepareRenameResult {
     },
     /// Server returned `defaultBehavior: true`. The client should
     /// use its default rename behavior (typically identifier-aware
-    /// selection) starting at this range.
-    DefaultBehavior { range: lsp_types::Range },
+    /// selection).
+    DefaultBehavior,
+    /// Server returned null — the position cannot be renamed.
+    NotRenameable,
     /// Server does not advertise prepare-rename support.
     Unavailable(crate::capability::LspUnavailable),
 }
@@ -169,9 +202,7 @@ impl PrepareRenameResult {
     /// Build a typed result from a raw `PrepareRenameResponse`.
     pub fn from_response(resp: Option<PrepareRenameResponse>) -> Self {
         match resp {
-            None => PrepareRenameResult::DefaultBehavior {
-                range: lsp_types::Range::default(),
-            },
+            None => PrepareRenameResult::NotRenameable,
             Some(PrepareRenameResponse::Range(r)) => PrepareRenameResult::Range {
                 range: r,
                 placeholder: None,
@@ -183,28 +214,29 @@ impl PrepareRenameResult {
                 }
             }
             Some(PrepareRenameResponse::DefaultBehavior {
-                default_behavior: _,
-            }) => PrepareRenameResult::DefaultBehavior {
-                range: lsp_types::Range::default(),
-            },
+                default_behavior,
+            }) => {
+                if default_behavior {
+                    PrepareRenameResult::DefaultBehavior
+                } else {
+                    PrepareRenameResult::NotRenameable
+                }
+            }
         }
     }
 
-    /// The range over which a rename would apply (best-effort; for
-    /// `DefaultBehavior` the range is empty because the server did
-    /// not commit to one).
+    /// The range over which a rename would apply, if the server
+    /// committed to one.
     pub fn range(&self) -> Option<&lsp_types::Range> {
         match self {
             Self::Range { range, .. } => Some(range),
-            Self::DefaultBehavior { range } => {
-                if range == &lsp_types::Range::default() {
-                    None
-                } else {
-                    Some(range)
-                }
-            }
-            Self::Unavailable(_) => None,
+            _ => None,
         }
+    }
+
+    /// Whether this result indicates the position is renameable.
+    pub fn is_renameable(&self) -> bool {
+        matches!(self, Self::Range { .. } | Self::DefaultBehavior)
     }
 }
 
@@ -727,7 +759,8 @@ pub struct DecodedSemanticToken {
 ///   (absolute on that line).
 ///
 /// Returns [`LspError::RequestFailed`] when a token reports a
-/// `token_type` index that exceeds the legend.
+/// `token_type` index that exceeds the legend, or when delta
+/// arithmetic overflows.
 pub fn decode_semantic_tokens(
     tokens: &[SemanticToken],
     legend: &SemanticTokenLegendSnapshot,
@@ -736,11 +769,23 @@ pub fn decode_semantic_tokens(
     let mut prev_line: u32 = 0;
     let mut prev_start: u32 = 0;
     for (i, tok) in tokens.iter().enumerate() {
-        let line = prev_line + tok.delta_line;
+        let line = prev_line.checked_add(tok.delta_line).ok_or_else(|| {
+            LspError::RequestFailed(format!(
+                "semantic token line overflow at index {i}: \
+                 prev_line={prev_line} + delta_line={}",
+                tok.delta_line
+            ))
+        })?;
         let start = if i == 0 || tok.delta_line != 0 {
             tok.delta_start
         } else {
-            prev_start + tok.delta_start
+            prev_start.checked_add(tok.delta_start).ok_or_else(|| {
+                LspError::RequestFailed(format!(
+                    "semantic token start overflow at index {i}: \
+                     prev_start={prev_start} + delta_start={}",
+                    tok.delta_start
+                ))
+            })?
         };
         let token_type_idx = tok.token_type as usize;
         let token_type = legend
@@ -756,6 +801,9 @@ pub fn decode_semantic_tokens(
             .clone();
         let mut modifiers = Vec::new();
         let bitset = tok.token_modifiers_bitset;
+        // Modifier bits beyond the legend length are silently ignored.
+        // The LSP spec says the client should ignore bits it doesn't
+        // recognize, so this is correct behavior.
         for (bit, name) in legend.token_modifiers.iter().enumerate() {
             if bit >= 32 {
                 break;
@@ -1727,11 +1775,27 @@ impl LspOperations {
 
         // Step 1: prepare_rename (typed) → placeholder.
         let prepared = self.prepare_rename_typed(file_path, line, column).await?;
+
+        // If the server says the position is not renameable, do not
+        // send the rename request — return a structured indication.
+        if !prepared.is_renameable() {
+            let (key, _root) = self.service.get_or_create_client(file_path).await?;
+            let server_generation = self.service.generation_for_key(&key).await;
+            return Ok(RenamePreview {
+                old_name: None,
+                new_name: new_name.to_string(),
+                affected_files: Vec::new(),
+                edit_count: 0,
+                warnings: vec!["Position is not renameable (prepareRename returned null)".to_string()],
+                truncated: false,
+                server_generation,
+            });
+        }
+
         let old_name = match &prepared {
             PrepareRenameResult::Range { placeholder, .. } => placeholder.clone(),
-            PrepareRenameResult::DefaultBehavior { .. } | PrepareRenameResult::Unavailable(_) => {
-                None
-            }
+            PrepareRenameResult::DefaultBehavior | PrepareRenameResult::NotRenameable => None,
+            PrepareRenameResult::Unavailable(_) => unreachable!("checked above"),
         };
 
         // Step 2: call the existing rename pipeline to get a
@@ -3513,6 +3577,102 @@ mod tests {
         assert_eq!(decoded[2].token_type, "function");
     }
 
+    #[test]
+    fn decode_semantic_tokens_line_overflow_returns_error() {
+        let tokens = vec![
+            SemanticToken {
+                delta_line: u32::MAX,
+                delta_start: 0,
+                length: 1,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+            SemanticToken {
+                delta_line: 1,
+                delta_start: 0,
+                length: 1,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+        ];
+        let l = legend(&["function"], &[]);
+        let err = decode_semantic_tokens(&tokens, &l).expect_err("must fail");
+        match err {
+            LspError::RequestFailed(msg) => {
+                assert!(
+                    msg.contains("overflow"),
+                    "expected 'overflow' in error: {msg}"
+                );
+            }
+            other => panic!("expected RequestFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_semantic_tokens_start_overflow_returns_error() {
+        // First token sets prev_start=10. Second token is on the same
+        // line with delta_start=u32::MAX → 10 + u32::MAX overflows.
+        let tokens = vec![
+            SemanticToken {
+                delta_line: 5,
+                delta_start: 10,
+                length: 1,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+            SemanticToken {
+                delta_line: 0,
+                delta_start: u32::MAX,
+                length: 1,
+                token_type: 0,
+                token_modifiers_bitset: 0,
+            },
+        ];
+        let l = legend(&["function"], &[]);
+        let err = decode_semantic_tokens(&tokens, &l).expect_err("must fail");
+        match err {
+            LspError::RequestFailed(msg) => {
+                assert!(
+                    msg.contains("overflow"),
+                    "expected 'overflow' in error: {msg}"
+                );
+            }
+            other => panic!("expected RequestFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_semantic_tokens_zero_length_token() {
+        let tokens = vec![SemanticToken {
+            delta_line: 1,
+            delta_start: 0,
+            length: 0,
+            token_type: 0,
+            token_modifiers_bitset: 0,
+        }];
+        let l = legend(&["function"], &[]);
+        let decoded = decode_semantic_tokens(&tokens, &l).expect("decode");
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].length, 0);
+    }
+
+    #[test]
+    fn decode_semantic_tokens_modifier_bits_beyond_legend_are_ignored() {
+        // Legend has 2 modifiers (bits 0,1). Bits 2 and 5 are set but
+        // have no legend entry — they should be silently ignored.
+        let tokens = vec![SemanticToken {
+            delta_line: 0,
+            delta_start: 0,
+            length: 1,
+            token_type: 0,
+            token_modifiers_bitset: 0b100101, // bits 0, 2, 5
+        }];
+        let l = legend(&["function"], &["declaration", "readonly"]);
+        let decoded = decode_semantic_tokens(&tokens, &l).expect("decode");
+        // Only bit 0 ("declaration") is in the legend → that's the only modifier resolved.
+        assert_eq!(decoded[0].modifiers, vec!["declaration"]);
+    }
+
     // ---- PrepareRenameResult ----
 
     fn range(line: u32, col: u32) -> lsp_types::Range {
@@ -3565,28 +3725,30 @@ mod tests {
     }
 
     #[test]
-    fn prepare_rename_result_from_response_default_behavior() {
+    fn prepare_rename_result_from_response_default_behavior_true() {
         let resp = Some(PrepareRenameResponse::DefaultBehavior {
             default_behavior: true,
         });
         let out = PrepareRenameResult::from_response(resp);
-        match out {
-            PrepareRenameResult::DefaultBehavior { range: r } => {
-                assert_eq!(r, lsp_types::Range::default());
-            }
-            other => panic!("expected DefaultBehavior, got {other:?}"),
-        }
+        assert_eq!(out, PrepareRenameResult::DefaultBehavior);
+        assert!(out.is_renameable());
     }
 
     #[test]
-    fn prepare_rename_result_from_response_none_is_default_behavior() {
+    fn prepare_rename_result_from_response_default_behavior_false_is_not_renameable() {
+        let resp = Some(PrepareRenameResponse::DefaultBehavior {
+            default_behavior: false,
+        });
+        let out = PrepareRenameResult::from_response(resp);
+        assert_eq!(out, PrepareRenameResult::NotRenameable);
+        assert!(!out.is_renameable());
+    }
+
+    #[test]
+    fn prepare_rename_result_from_response_none_is_not_renameable() {
         let out = PrepareRenameResult::from_response(None);
-        match out {
-            PrepareRenameResult::DefaultBehavior { range: r } => {
-                assert_eq!(r, lsp_types::Range::default());
-            }
-            other => panic!("expected DefaultBehavior, got {other:?}"),
-        }
+        assert_eq!(out, PrepareRenameResult::NotRenameable);
+        assert!(!out.is_renameable());
     }
 
     #[test]
@@ -3597,17 +3759,22 @@ mod tests {
             placeholder: None,
         };
         assert_eq!(v.range(), Some(&r));
+        assert!(v.is_renameable());
 
-        let d = PrepareRenameResult::DefaultBehavior {
-            range: lsp_types::Range::default(),
-        };
+        let d = PrepareRenameResult::DefaultBehavior;
         assert!(d.range().is_none());
+        assert!(d.is_renameable());
+
+        let n = PrepareRenameResult::NotRenameable;
+        assert!(n.range().is_none());
+        assert!(!n.is_renameable());
 
         let u = PrepareRenameResult::Unavailable(LspUnavailable::new(
             LspSemanticOperation::PrepareRename,
             "no provider",
         ));
         assert!(u.range().is_none());
+        assert!(!u.is_renameable());
     }
 
     // ---- CodeActionSummary ----
@@ -4005,5 +4172,100 @@ mod tests {
         assert!(snap
             .unavailable(LspSemanticOperation::DocumentFormatting)
             .is_none());
+    }
+
+    // ---- lsp_units_to_byte_offset ----
+
+    #[test]
+    fn lsp_units_to_byte_offset_ascii() {
+        let text = "hello world";
+        assert_eq!(lsp_units_to_byte_offset(text, 0), Some(0));
+        assert_eq!(lsp_units_to_byte_offset(text, 5), Some(5));
+        assert_eq!(lsp_units_to_byte_offset(text, 11), Some(11));
+        assert_eq!(lsp_units_to_byte_offset(text, 12), None);
+    }
+
+    #[test]
+    fn lsp_units_to_byte_offset_empty_string() {
+        assert_eq!(lsp_units_to_byte_offset("", 0), Some(0));
+        assert_eq!(lsp_units_to_byte_offset("", 1), None);
+    }
+
+    #[test]
+    fn lsp_units_to_byte_offset_non_ascii() {
+        // "é" is 1 UTF-16 unit, 2 bytes
+        let text = "café";
+        assert_eq!(lsp_units_to_byte_offset(text, 0), Some(0));
+        assert_eq!(lsp_units_to_byte_offset(text, 2), Some(2)); // 'f'
+        assert_eq!(lsp_units_to_byte_offset(text, 3), Some(3)); // start of 'é'
+        assert_eq!(lsp_units_to_byte_offset(text, 4), Some(5)); // end of 'é' (past it)
+    }
+
+    #[test]
+    fn lsp_units_to_byte_offset_cjk() {
+        // CJK chars are 1 UTF-16 unit each, 3 bytes each
+        let text = "漢字";
+        assert_eq!(lsp_units_to_byte_offset(text, 0), Some(0));
+        assert_eq!(lsp_units_to_byte_offset(text, 1), Some(3));
+        assert_eq!(lsp_units_to_byte_offset(text, 2), Some(6));
+    }
+
+    #[test]
+    fn lsp_units_to_byte_offset_mixed_ascii_and_non_ascii() {
+        // "fn café(x: i32)" — é is 1 UTF-16 unit, 2 bytes
+        // UTF-16: f=0, n=1, ' '=2, c=3, a=4, f=5, é=6, (=7, x=8
+        // Bytes:  f=0, n=1, ' '=2, c=3, a=4, f=5, é=6-7, (=8, x=9
+        let text = "fn café(x: i32)";
+        assert_eq!(lsp_units_to_byte_offset(text, 0), Some(0)); // 'f'
+        assert_eq!(lsp_units_to_byte_offset(text, 6), Some(6)); // 'é'
+        assert_eq!(lsp_units_to_byte_offset(text, 7), Some(8)); // '('
+        assert_eq!(lsp_units_to_byte_offset(text, 8), Some(9)); // 'x'
+    }
+
+    #[test]
+    fn lsp_units_to_byte_offset_offset_in_middle_of_multibyte_char() {
+        // é is 2 bytes but 1 UTF-16 unit; offset 1 is inside the é
+        let text = "é";
+        assert_eq!(lsp_units_to_byte_offset(text, 0), Some(0));
+        assert_eq!(lsp_units_to_byte_offset(text, 1), Some(2)); // past the é
+        // Offset 0 is the start of é (valid boundary), offset 1 is past it.
+        // There is no valid boundary at offset 0+1=1 for é since é is 1 UTF-16 unit.
+    }
+
+    // ---- resolve_parameter_label with non-ASCII ----
+
+    #[test]
+    fn resolve_parameter_label_with_non_ascii() {
+        // "fn café(x: i32)"
+        // UTF-16: f=0,n=1, =2,c=3,a=4,f=5,é=6,(=7,x=8
+        let sig = "fn café(x: i32)";
+        let label = ParameterLabel::LabelOffsets([8, 9]);
+        assert_eq!(resolve_parameter_label(sig, &label), "x");
+    }
+
+    #[test]
+    fn resolve_parameter_label_simple() {
+        let label = ParameterLabel::Simple("x: i32".to_string());
+        assert_eq!(resolve_parameter_label("any", &label), "x: i32");
+    }
+
+    #[test]
+    fn resolve_parameter_label_offsets_beyond_end_returns_empty() {
+        let label = ParameterLabel::LabelOffsets([100, 200]);
+        assert_eq!(resolve_parameter_label("short", &label), "");
+    }
+
+    #[test]
+    fn resolve_parameter_label_offsets_zero_length() {
+        let label = ParameterLabel::LabelOffsets([3, 3]);
+        assert_eq!(resolve_parameter_label("hello", &label), "");
+    }
+
+    #[test]
+    fn resolve_parameter_label_offsets_ascii_passthrough() {
+        // Pure ASCII: byte offsets == UTF-16 offsets
+        let sig = "fn add(x: u32, y: u32) -> u32";
+        let label = ParameterLabel::LabelOffsets([7, 13]);
+        assert_eq!(resolve_parameter_label(sig, &label), "x: u32");
     }
 }
